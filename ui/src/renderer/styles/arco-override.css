@@ -2,11 +2,14 @@
 
 /* Arco's arco.css puts 'Inter' first in font-family, which causes very thin
    text on systems that have Inter installed. Override to use system fonts. */
+/* Notion-style font stack: system-native rendering with proper emoji + CJK fallback */
 html,
 body {
   font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, 'Apple Color Emoji', Arial, sans-serif,
+    'Segoe UI Emoji', 'Segoe UI Symbol', 'PingFang SC', 'Microsoft YaHei';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Override Arco Design component backgrounds to white in light mode */

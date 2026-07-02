@@ -1,0 +1,335 @@
+/* ==========================================================================
+   Notion — Clean, minimalist, document-first theme
+   Inspired by Notion's signature typography, airy spacing,
+   and color palette with near-zero chrome
+   ========================================================================== */
+
+/* ===== Light Mode ===== */
+:root,
+body {
+  /* ── A. App Variables ── */
+
+  /* Primary */
+  --color-primary: #2383e2;
+  --primary: #2383e2;
+  --color-primary-light-1: #4a9ae8;
+  --color-primary-light-2: #72b1ee;
+  --color-primary-light-3: #9bc8f4;
+  --color-primary-dark-1: #1a6fd1;
+  --primary-rgb: 35, 131, 226;
+
+  /* Brand */
+  --brand: #2383e2;
+  --brand-light: #e8f3fc;
+  --brand-hover: #1a6fd1;
+  --color-brand-fill: #2383e2;
+  --color-brand-bg: #e8f3fc;
+
+  /* Brand scale — 1 faint → 10 deep */
+  --aou-1: #e8f3fc;
+  --aou-2: #d1e8f9;
+  --aou-3: #baddf6;
+  --aou-4: #a3d2f3;
+  --aou-5: #8cc7f0;
+  --aou-6: #75bced;
+  --aou-7: #5eb1ea;
+  --aou-8: #47a6e7;
+  --aou-9: #309be4;
+  --aou-10: #1990e1;
+
+  /* Background */
+  --bg-base: #ffffff;
+  --bg-1: #fbfbfa;
+  --bg-2: #f7f6f3;
+  --bg-3: #f1f0ed;
+  --bg-4: #ebebe8;
+  --bg-5: #e3e2e0;
+  --bg-6: #dbdad8;
+  --bg-8: #c1c0bd;
+  --bg-9: #aaa9a5;
+  --bg-10: #787774;
+  --color-bg-1: #fbfbfa;
+  --color-bg-2: #f7f6f3;
+  --color-bg-3: #f1f0ed;
+  --color-bg-4: #ebebe8;
+  --bg-hover: #efefec;
+  --bg-active: #e3e2e0;
+
+  /* Fill */
+  --fill: #f7f6f3;
+  --color-fill: #f7f6f3;
+  --fill-0: #ffffff;
+  --fill-white-to-black: #ffffff;
+  --dialog-fill-0: #ffffff;
+  --inverse: #37352f;
+
+  /* Text */
+  --text-primary: #37352f;
+  --text-secondary: #9b9a97;
+  --text-disabled: #c1c0bd;
+  --text-0: #ffffff;
+  --text-white: #ffffff;
+
+  /* Border */
+  --border-base: #e9e9e7;
+  --border-light: #efefec;
+  --border-special: #e3e2e0;
+
+  /* Semantic */
+  --success: #0b7e3e;
+  --warning: #dfab01;
+  --danger: #e03e2d;
+  --info: #2383e2;
+
+  /* Component specific */
+  --message-user-bg: #e8f3fc;
+  --message-tips-bg: #f7f6f3;
+  --workspace-btn-bg: #f7f6f3;
+  --color-guid-agent-bar: #fbfbfa;
+  --sider-section-title-color: #9b9a97;
+
+  /* Terminal — keep dark */
+  --terminal-surface-bg: #1e1e1e;
+  --terminal-border: #2f2f2f;
+
+  /* ── B. Arco Design Tokens ── */
+
+  /* Background */
+  --color-bg-3: #f1f0ed;
+  --color-bg-4: #ebebe8;
+  --color-bg-5: #e3e2e0;
+  --color-bg-popup: #ffffff;
+  --color-bg-white: #ffffff;
+
+  /* Text */
+  --color-text-1: #37352f;
+  --color-text-2: #64615c;
+  --color-text-3: #9b9a97;
+  --color-text-4: #c1c0bd;
+
+  /* Fill */
+  --color-fill-1: #f7f6f3;
+  --color-fill-2: #efefec;
+  --color-fill-3: #e3e2e0;
+  --color-fill-4: #dbdad8;
+
+  /* Border */
+  --color-border: #e9e9e7;
+  --color-border-1: #efefec;
+  --color-border-2: #e9e9e7;
+  --color-border-3: #e3e2e0;
+  --color-border-4: #dbdad8;
+
+  /* Primary derivatives for Arco */
+  --color-primary-light-4: #c4ddf6;
+
+  /* Primary scale — RGB triplets */
+  --primary-1: 232, 243, 252;
+  --primary-2: 209, 232, 249;
+  --primary-3: 186, 221, 246;
+  --primary-4: 163, 210, 243;
+  --primary-5: 140, 199, 240;
+  --primary-6: 35, 131, 226;
+  --primary-7: 26, 111, 209;
+
+  /* Secondary button */
+  --color-secondary: #efefec;
+  --color-secondary-hover: #e3e2e0;
+  --color-secondary-active: #dbdad8;
+  --color-secondary-disabled: #f7f6f3;
+
+  /* Misc */
+  --color-tooltip-bg: #37352f;
+  --color-mask-bg: rgba(0, 0, 0, 0.3);
+  --color-spin-layer-bg: rgba(255, 255, 255, 0.6);
+  --color-menu-light-bg: #ffffff;
+  --color-menu-dark-bg: #252525;
+
+  /* ── C. Notion Signature Styling ── */
+
+  /* Global font */
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, 'Apple Color Emoji', Arial, sans-serif,
+    'Segoe UI Emoji', 'Segoe UI Symbol';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== Dark Mode ===== */
+[data-theme='dark'],
+[data-theme='dark'] body {
+  /* ── A. App Variables ── */
+
+  /* Primary */
+  --color-primary: #529cca;
+  --primary: #529cca;
+  --color-primary-light-1: #6badd4;
+  --color-primary-light-2: #85bedd;
+  --color-primary-light-3: #9ecfe7;
+  --color-primary-dark-1: #3f8ab8;
+  --primary-rgb: 82, 156, 202;
+
+  /* Brand */
+  --brand: #529cca;
+  --brand-light: #1a2530;
+  --brand-hover: #6badd4;
+  --color-brand-fill: #529cca;
+  --color-brand-bg: #1a2530;
+
+  /* Brand scale — reversed: 10 faint → 1 deep */
+  --aou-1: #0a1218;
+  --aou-2: #0e1a22;
+  --aou-3: #12222c;
+  --aou-4: #162a36;
+  --aou-5: #1a3240;
+  --aou-6: #1e3a4a;
+  --aou-7: #224254;
+  --aou-8: #264a5e;
+  --aou-9: #2a5268;
+  --aou-10: #2e5a72;
+
+  /* Background */
+  --bg-base: #191919;
+  --bg-1: #1f1f1f;
+  --bg-2: #252525;
+  --bg-3: #2a2a2a;
+  --bg-4: #2f2f2f;
+  --bg-5: #353535;
+  --bg-6: #3b3b3b;
+  --bg-8: #585858;
+  --bg-9: #787878;
+  --bg-10: #999999;
+  --color-bg-1: #1f1f1f;
+  --color-bg-2: #252525;
+  --color-bg-3: #2a2a2a;
+  --color-bg-4: #2f2f2f;
+  --bg-hover: #2a2a2a;
+  --bg-active: #353535;
+
+  /* Fill */
+  --fill: #252525;
+  --color-fill: #252525;
+  --fill-0: #191919;
+  --fill-white-to-black: #191919;
+  --dialog-fill-0: #1f1f1f;
+  --inverse: #e6e6e6;
+
+  /* Text */
+  --text-primary: #e6e6e6;
+  --text-secondary: #9b9a97;
+  --text-disabled: #585858;
+  --text-0: #191919;
+  --text-white: #ffffff;
+
+  /* Border */
+  --border-base: #2f2f2f;
+  --border-light: #2a2a2a;
+  --border-special: #353535;
+
+  /* Semantic */
+  --success: #4caf50;
+  --warning: #f5c542;
+  --danger: #e5534b;
+  --info: #529cca;
+
+  /* Component specific */
+  --message-user-bg: #1a2530;
+  --message-tips-bg: #252525;
+  --workspace-btn-bg: #252525;
+  --color-guid-agent-bar: #1f1f1f;
+  --sider-section-title-color: #9b9a97;
+
+  /* Terminal — keep dark */
+  --terminal-surface-bg: #0d0d0d;
+  --terminal-border: #2f2f2f;
+
+  /* ── B. Arco Design Tokens ── */
+
+  /* Background */
+  --color-bg-3: #2a2a2a;
+  --color-bg-4: #2f2f2f;
+  --color-bg-5: #353535;
+  --color-bg-popup: #1f1f1f;
+  --color-bg-white: #252525;
+
+  /* Text */
+  --color-text-1: #e6e6e6;
+  --color-text-2: #b0b0b0;
+  --color-text-3: #9b9a97;
+  --color-text-4: #585858;
+
+  /* Fill */
+  --color-fill-1: #252525;
+  --color-fill-2: #2a2a2a;
+  --color-fill-3: #353535;
+  --color-fill-4: #3b3b3b;
+
+  /* Border */
+  --color-border: #2f2f2f;
+  --color-border-1: #2a2a2a;
+  --color-border-2: #2f2f2f;
+  --color-border-3: #353535;
+  --color-border-4: #3b3b3b;
+
+  /* Primary derivatives for Arco */
+  --color-primary-light-4: #b8d9ed;
+
+  /* Primary scale — RGB triplets */
+  --primary-1: 10, 18, 24;
+  --primary-2: 14, 26, 34;
+  --primary-3: 18, 34, 44;
+  --primary-4: 22, 42, 54;
+  --primary-5: 26, 50, 64;
+  --primary-6: 82, 156, 202;
+  --primary-7: 63, 138, 184;
+
+  /* Secondary button */
+  --color-secondary: #2a2a2a;
+  --color-secondary-hover: #353535;
+  --color-secondary-active: #3b3b3b;
+  --color-secondary-disabled: #252525;
+
+  /* Misc */
+  --color-tooltip-bg: #e6e6e6;
+  --color-mask-bg: rgba(0, 0, 0, 0.6);
+  --color-spin-layer-bg: rgba(25, 25, 25, 0.6);
+  --color-menu-light-bg: #252525;
+  --color-menu-dark-bg: #191919;
+}
+
+/* ===== Notion Signature Styling (beyond variables) ===== */
+
+/* Minimal borders on interactive controls */
+.arco-btn {
+  border-radius: 4px;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.arco-btn-secondary {
+  border-color: var(--border-light);
+}
+
+.arco-input {
+  border-radius: 4px;
+  border-color: var(--border-light);
+}
+.arco-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: none;
+}
+
+/* Subtle sidebar styling */
+.layout-sider {
+  background: var(--bg-1);
+  border-right: 1px solid var(--border-light);
+}
+
+/* Dropdowns / popovers — clean and elevated */
+.arco-dropdown-menu,
+.arco-select-popup,
+.arco-popover-content {
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}

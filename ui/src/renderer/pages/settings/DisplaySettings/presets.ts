@@ -11,6 +11,7 @@ import rhythmDarkCss from './presets/rhythm-dark.css?raw';
 import neonRainbowCss from './presets/neon-rainbow.css?raw';
 import frostedGlassCss from './presets/frosted-glass.css?raw';
 import sunsetAfterglowCss from './presets/sunset-afterglow.css?raw';
+import notionCss from './presets/notion.css?raw';
 
 /**
  * 系统默认主题 ID / System default theme ID
@@ -56,6 +57,14 @@ export const PRESET_THEMES: ICssTheme[] = [
     name: '落日余晖 Sunset Afterglow',
     is_preset: true,
     css: sunsetAfterglowCss,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  },
+  {
+    id: 'notion',
+    name: '极简 Notion',
+    is_preset: true,
+    css: notionCss,
     created_at: Date.now(),
     updated_at: Date.now(),
   },
