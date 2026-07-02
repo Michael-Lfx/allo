@@ -72,7 +72,7 @@
       "claudeCmd": "Claude 命令",
       "claudeJson": "Claude .mcp.json",
       "codexToml": "Codex config.toml",
-      "description": "使用自定义或外置终端时，将下方配置注册到你的 CLI，即可使用平台知识库。凭据由桥在运行时安全获取，不会写入你的配置文件。需要 NomiFun 桌面应用正在运行。",
+      "description": "使用自定义或外置终端时，将下方配置注册到你的 CLI，即可使用平台知识库。凭据由桥在运行时安全获取，不会写入你的配置文件。需要 Flowy 桌面应用正在运行。",
       "geminiJson": "Gemini settings.json",
       "loading": "加载中...",
       "title": "高级：手动注册到其它 CLI / 外置终端",

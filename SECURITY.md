@@ -1,7 +1,7 @@
 # Security Policy
 
-NomiFun can execute local tools, shell commands, browser automation, desktop
-automation, and remote capability calls. Treat an authenticated NomiFun instance
+Flowy can execute local tools, shell commands, browser automation, desktop
+automation, and remote capability calls. Treat an authenticated Flowy instance
 as a high-privilege local automation surface.
 
 ## Reporting Vulnerabilities

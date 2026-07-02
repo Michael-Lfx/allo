@@ -85,7 +85,7 @@ pub async fn run_call(name: &str, args: Option<&str>, url: Option<String>, token
             }
         }
         Err(e) => {
-            eprintln!("request to {base}/v1/tools/{name} failed: {e} (is NomiFun running and NOMIFUN_URL correct?)");
+            eprintln!("request to {base}/v1/tools/{name} failed: {e} (is Flowy running and NOMIFUN_URL correct?)");
             ExitCode::from(1)
         }
     }

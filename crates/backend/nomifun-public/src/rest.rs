@@ -220,9 +220,9 @@ async fn openapi(Query(q): Query<ProfileQuery>) -> Json<Value> {
     Json(json!({
         "openapi": "3.1.0",
         "info": {
-            "title": "NomiFun Remote Capability API",
+            "title": "Flowy Remote Capability API",
             "version": "v1",
-            "description": "External-companion access to NomiFun platform capabilities. All operations require Authorization: Bearer <companion access token>."
+            "description": "External-companion access to Flowy platform capabilities. All operations require Authorization: Bearer <companion access token>."
         },
         "paths": paths,
         "components": {

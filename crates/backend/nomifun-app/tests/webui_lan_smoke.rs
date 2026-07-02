@@ -19,7 +19,7 @@ async fn webui_lan_start_smoke() {
     // Isolate the data dir via --data-dir below (NOT a process-global env var):
     // these tests run in parallel, so a shared set_var("NOMIFUN_DATA_DIR") would
     // race and two backends could resolve to the SAME dir → "data directory
-    // already in use by another running NomiFun backend".
+    // already in use by another running Flowy backend".
     let data_dir = tmp.path().to_string_lossy().into_owned();
     let spa_dir = tmp.path().join("spa");
     std::fs::create_dir_all(&spa_dir).unwrap();
@@ -146,7 +146,7 @@ async fn figure_image_get_is_public_but_listing_stays_authenticated() {
     // Isolate the data dir via --data-dir below (NOT a process-global env var):
     // these tests run in parallel, so a shared set_var("NOMIFUN_DATA_DIR") would
     // race and two backends could resolve to the SAME dir → "data directory
-    // already in use by another running NomiFun backend".
+    // already in use by another running Flowy backend".
     let data_dir = tmp.path().to_string_lossy().into_owned();
 
     let cli = nomifun_app::cli::Cli::parse_from(["nomifun-desktop-test", "--data-dir", &data_dir]);
@@ -204,7 +204,7 @@ async fn webui_lan_dev_proxy_serves_live_frontend() {
     // Isolate the data dir via --data-dir below (NOT a process-global env var):
     // these tests run in parallel, so a shared set_var("NOMIFUN_DATA_DIR") would
     // race and two backends could resolve to the SAME dir → "data directory
-    // already in use by another running NomiFun backend".
+    // already in use by another running Flowy backend".
     let data_dir = tmp.path().to_string_lossy().into_owned();
 
     // Mock vite dev server: returns a recognizable marker for any path.

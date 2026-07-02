@@ -5,15 +5,15 @@
   "platforms": {
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxOHdrTkFlS3IwRDRWYldXKytjTmtWdFRGODZNUXVJTVU0R1BLb1dJVWJIVmkzV1JqUXJMOFBYMnh5U0hRRlpnZXV3MU96cm5rSC9ia0JjQzh3aWVwaWdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzMDAyMzE2CWZpbGU6Tm9taUZ1bl8wLjEuMTdfeDY0LXNldHVwLmV4ZQozMExLS0xoQkVLb3hCc3pMOS9nQUV4L0pIckhXL0liaTdaRDFBRW1sZHU4RHhUajZkUkxYWGJ3dFVSUE5SV0I3SlNtdVlEdGtlbHFFOEpyOTFjTklEQT09Cg==",
-      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.1.17/NomiFun_0.1.17_x64-setup.exe"
+      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.1.17/Flowy_0.1.17_x64-setup.exe"
     },
     "darwin-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxODJpVGZUejZjZERmZ3RONjlHb0k2S1pYbmUrVkJ5UHlram9kOG5Ea3lXa2hMbzhVS1N1T1JhZlRWYm4zcm5XTStTS05mZTBuMXo5S2hveGFOTFVKUUFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzMDAzNTgxCWZpbGU6Tm9taUZ1bi5hcHAudGFyLmd6CjdycDZlTHRsUGR0N0ZnVmQ1ajh4WmZrcDk5UWY5ZEQ4c3Q2QzhDMHFDWTFvekZ5bTNTSVB4dUFzbDRqVnpxTy9iNDhNS1VYdWlvMjBSVVlZUW5PRUFRPT0K",
-      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.1.17/NomiFun.app.tar.gz"
+      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.1.17/Flowy.app.tar.gz"
     },
     "darwin-aarch64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxODJpVGZUejZjZERmZ3RONjlHb0k2S1pYbmUrVkJ5UHlram9kOG5Ea3lXa2hMbzhVS1N1T1JhZlRWYm4zcm5XTStTS05mZTBuMXo5S2hveGFOTFVKUUFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzMDAzNTgxCWZpbGU6Tm9taUZ1bi5hcHAudGFyLmd6CjdycDZlTHRsUGR0N0ZnVmQ1ajh4WmZrcDk5UWY5ZEQ4c3Q2QzhDMHFDWTFvekZ5bTNTSVB4dUFzbDRqVnpxTy9iNDhNS1VYdWlvMjBSVVlZUW5PRUFRPT0K",
-      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.1.17/NomiFun.app.tar.gz"
+      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.1.17/Flowy.app.tar.gz"
     }
   }
 }

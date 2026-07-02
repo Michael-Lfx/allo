@@ -1,6 +1,6 @@
 # 快速上手
 
-这页带你完成第一段 NomiFun 会话。若还没有安装，请先看
+这页带你完成第一段 Flowy 会话。若还没有安装，请先看
 [安装](installation.zh.md)。
 
 桌面应用和 Web 服务使用同一份 UI。差异主要在鉴权：桌面 WebView 通过本地
@@ -67,7 +67,7 @@ bun run serve:web
 
 5. 发送。
 
-NomiFun 会创建新会话并进入 `/conversation/:id`，随后开始流式输出。
+Flowy 会创建新会话并进入 `/conversation/:id`，随后开始流式输出。
 
 ## 5. 使用会话工作区
 

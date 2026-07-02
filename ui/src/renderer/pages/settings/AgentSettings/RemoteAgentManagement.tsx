@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -61,7 +61,7 @@ const openRemoteAgentGuide = (): void => {
   void openExternalUrl(REMOTE_AGENT_GUIDE_URL).catch(console.error);
 };
 
-/** Remote protocols NomiFun can connect to — surfaced so users can discover them. */
+/** Remote protocols Flowy can connect to — surfaced so users can discover them. */
 const REMOTE_PROTOCOLS: { key: string; label: string }[] = [
   { key: 'openclaw', label: 'OpenClaw' },
   { key: 'zeroclaw', label: 'ZeroClaw' },

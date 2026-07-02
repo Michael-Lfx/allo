@@ -1,8 +1,8 @@
-# Contributing to NomiFun
+# Contributing to Flowy
 
 Simplified Chinese: [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)
 
-NomiFun is a Rust + Tauri + React monorepo. It is also a local-first automation
+Flowy is a Rust + Tauri + React monorepo. It is also a local-first automation
 surface that can drive shells, files, browsers, desktop apps, agents, MCP
 servers, and remote capability APIs. Contributions are welcome, but they need to
 be easy to review and safe for users.

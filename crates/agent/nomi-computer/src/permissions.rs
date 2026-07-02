@@ -275,15 +275,15 @@ mod tests {
     // user to grant a terminal/editor. Off macOS the message is generic.
     #[test]
     fn macos_hints_name_the_host_app() {
-        nomi_a11y::set_host_app_label("NomiFun");
+        nomi_a11y::set_host_app_label("Flowy");
         if cfg!(target_os = "macos") {
             assert!(
-                accessibility_hint().contains("NomiFun"),
+                accessibility_hint().contains("Flowy"),
                 "accessibility hint should name the host app: {}",
                 accessibility_hint()
             );
             assert!(
-                screen_capture_hint().contains("NomiFun"),
+                screen_capture_hint().contains("Flowy"),
                 "screen-capture hint should name the host app: {}",
                 screen_capture_hint()
             );

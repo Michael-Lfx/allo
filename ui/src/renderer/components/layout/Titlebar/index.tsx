@@ -64,7 +64,7 @@ const SidebarIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({ size =
 
 const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const { t } = useTranslation();
-  const appTitle = useMemo(() => 'NomiFun', []);
+  const appTitle = useMemo(() => 'Flowy', []);
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(true);
   const [sessionSiderCollapsed, setSessionSiderCollapsed] = useState(false);
   const [mobileCenterTitle, setMobileCenterTitle] = useState(appTitle);

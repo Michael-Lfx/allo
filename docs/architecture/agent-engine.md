@@ -32,7 +32,7 @@ computer-use crates to expose those capabilities as stdio/public tools.
 
 ## Runtime Families
 
-NomiFun supports several runtime families:
+Flowy supports several runtime families:
 
 - **Nomi engine**: in-tree engine from `nomi-agent`, with providers, built-in
   tools, skills, MCP, memory, browser, and computer-use support.

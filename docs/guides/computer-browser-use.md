@@ -1,6 +1,6 @@
 # Computer Use And Browser Use
 
-NomiFun exposes two optional automation capability families to agents:
+Flowy exposes two optional automation capability families to agents:
 
 - **Computer use**: screenshots, mouse/keyboard input, window enumeration, and
   focus control through the in-process Rust implementation (`nomi-computer`,
@@ -102,10 +102,10 @@ Computer use needs OS permissions the first time it is used:
   means this permission is missing.
 
 These run **in-process inside the desktop app**, so the permission must be
-granted to **NomiFun itself** (the entry named "NomiFun" in System Settings),
+granted to **Flowy itself** (the entry named "Flowy" in System Settings),
 not to the terminal/editor — and a freshly-granted permission only takes effect
 after the app is **completely quit and reopened** (macOS does not hot-load TCC
-grants into a running process). Permission-failure messages name "NomiFun"
+grants into a running process). Permission-failure messages name "Flowy"
 explicitly so the guidance is unambiguous.
 
 Settings → Computer Use surfaces a live status panel (macOS): it shows whether
@@ -118,7 +118,7 @@ Backed by `GET/POST /api/computer/permissions[/request|/open-settings]`
 `CG*ScreenCaptureAccess`).
 
 > **Stale grant.** If a toggle is clearly on yet computer use still fails, the
-> grant is bound to an older build's identity. Quit NomiFun, run
+> grant is bound to an older build's identity. Quit Flowy, run
 > `tccutil reset Accessibility com.nomifun.desktop` and
 > `tccutil reset ScreenCapture com.nomifun.desktop`, relaunch, re-grant, and
 > fully restart once more.

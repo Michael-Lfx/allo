@@ -1,4 +1,4 @@
-# NomiFun 桌面 macOS 代码签名 + 公证(Gatekeeper)
+# Flowy 桌面 macOS 代码签名 + 公证(Gatekeeper)
 
 > 解决「把安装包发给别人,对方打开提示**已损坏,无法打开**」的问题。
 >
@@ -81,8 +81,8 @@ bun run build:signed
 ## 验证(发出去前自检)
 
 ```bash
-APP=target/release/bundle/macos/NomiFun.app
-DMG=target/release/bundle/dmg/NomiFun_0.1.0_aarch64.dmg
+APP=target/release/bundle/macos/Flowy.app
+DMG=target/release/bundle/dmg/Flowy_0.1.0_aarch64.dmg
 
 codesign -dvv "$APP"                       # 期望: Authority=Developer ID Application: ...
 codesign --verify --deep --strict -v "$APP"  # 期望: valid on disk / satisfies Designated Requirement

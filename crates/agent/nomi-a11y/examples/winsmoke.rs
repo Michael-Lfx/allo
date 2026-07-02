@@ -39,7 +39,7 @@ fn main() {
     // (the Win11 RichEdit Notepad exposes text via TextPattern, not ValuePattern).
     const MARKER: &str = "你好世界";
     let tmp = std::env::temp_dir().join("nomi_winsmoke.txt");
-    let _ = std::fs::write(&tmp, format!("NomiFun TextPattern 验证 Hello {MARKER}\n第二行 line two\n"));
+    let _ = std::fs::write(&tmp, format!("Flowy TextPattern 验证 Hello {MARKER}\n第二行 line two\n"));
 
     let mut child = None;
     let target_pid = match arg_pid {
@@ -143,7 +143,7 @@ fn main() {
     // --- SetValue actuation (RichEdit Notepad often no-ops ValuePattern.SetValue;
     //     the tool layer types instead — we just confirm the call is honest) ---
     if let Some(e) = doc {
-        let text = "NomiFun SetValue 测试".to_string();
+        let text = "Flowy SetValue 测试".to_string();
         println!("\n== invoke SetValue on [{}] {} ==", e.r#ref, e.role);
         match engine.invoke(
             &Target::Ref(e.r#ref),

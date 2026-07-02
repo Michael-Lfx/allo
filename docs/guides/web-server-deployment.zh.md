@@ -1,6 +1,6 @@
 # Web 服务器部署
 
-`nomifun-web` 是 NomiFun 的**无头、自托管**运行方式。它与 [桌面应用](./desktop-app.zh.md)嵌入的后端是同一个 Rust 后端，但被构建为一个独立二进制，并且会在同一个端口上同时提供 SPA (`ui/dist`)。它没有 GUI，没有 WebView，也不需要 `DISPLAY` —— 任何能运行静态二进制的 Linux/macOS/Windows 服务器上都能跑。
+`nomifun-web` 是 Flowy 的**无头、自托管**运行方式。它与 [桌面应用](./desktop-app.zh.md)嵌入的后端是同一个 Rust 后端，但被构建为一个独立二进制，并且会在同一个端口上同时提供 SPA (`ui/dist`)。它没有 GUI，没有 WebView，也不需要 `DISPLAY` —— 任何能运行静态二进制的 Linux/macOS/Windows 服务器上都能跑。
 
 与桌面外壳不同，**`nomifun-web` 默认要求认证**。第一个浏览器访问者要么以交互方式创建管理员账户 (首次运行设置)，要么你通过 `NOMIFUN_ADMIN_PASSWORD` 预置凭据。
 
@@ -50,7 +50,7 @@ cargo run -p nomifun-web      # 会自动使用默认 --dist=../../ui/dist
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | 绑定的 IP。`0.0.0.0` 会接收 LAN/VPN/公网流量；大范围暴露前请先预置管理员或完成首次设置。 |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP 端口。提供 API、`/ws` 处的 WebSocket，以及 SPA。 |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 后端数据目录 (SQLite 数据库、agent 状态、日志、Bun 缓存)。默认是与桌面应用共享的按用户位置 (`%LOCALAPPDATA%\NomiFun\Nomi`、`~/Library/Application Support/NomiFun/Nomi`、`$XDG_DATA_HOME/NomiFun/Nomi`)。**生产环境请仍显式指定绝对路径。** |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 后端数据目录 (SQLite 数据库、agent 状态、日志、Bun 缓存)。默认是与桌面应用共享的按用户位置 (`%LOCALAPPDATA%\Flowy\Nomi`、`~/Library/Application Support/Flowy/Nomi`、`$XDG_DATA_HOME/Flowy/Nomi`)。**生产环境请仍显式指定绝对路径。** |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | 构建好的 SPA 所在目录。**部署时请显式设置。** |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | 预置首个管理员时使用的用户名。一旦管理员存在则被忽略。 |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | 在启动时预置首个管理员密码，跳过交互式设置。一旦管理员存在则被忽略。 |
@@ -228,7 +228,7 @@ sudo systemctl status nomifun-web
 - 默认绑定 `127.0.0.1:8787`。只有在首次设置完成或已配置
   `NOMIFUN_ADMIN_PASSWORD` 后，才应把 `NOMIFUN_WEB_HOST` 改成
   `0.0.0.0`。
-- 设置 `NOMIFUN_DATA_DIR=/var/lib/nomifun` 以匹配 systemd 管理的 `StateDirectory=nomifun`。**保持这两者同步** —— 如果你删除该环境变量行，数据目录会静默回退到服务用户的按用户目录 (`$XDG_DATA_HOME/NomiFun/Nomi`，通常是 `~nomifun/.local/share/NomiFun/Nomi`)，与 systemd state 解耦。
+- 设置 `NOMIFUN_DATA_DIR=/var/lib/nomifun` 以匹配 systemd 管理的 `StateDirectory=nomifun`。**保持这两者同步** —— 如果你删除该环境变量行，数据目录会静默回退到服务用户的按用户目录 (`$XDG_DATA_HOME/Flowy/Nomi`，通常是 `~nomifun/.local/share/Flowy/Nomi`)，与 systemd state 解耦。
 - 以专用的 `nomifun` 用户运行 (`User=nomifun`、`Group=nomifun`)。
 - 失败时以 3 秒退避重启。
 - 应用适度的硬化 (`NoNewPrivileges=yes`、`PrivateTmp=yes`)。**不要添加** `ProtectHome=yes` 或严格的 `ProtectSystem` —— agent 引擎需要读写操作员指定的文件，过度沙箱化会破坏核心功能。
@@ -248,7 +248,7 @@ Environment=NOMIFUN_ADMIN_PASSWORD=change-me-to-something-strong
 
 ```text
 $ sudo systemctl status nomifun-web
-● nomifun-web.service - NomiFun web host
+● nomifun-web.service - Flowy web host
      Loaded: loaded (/etc/systemd/system/nomifun-web.service; enabled; preset: enabled)
      Active: active (running) since Tue 2026-06-25 09:12:03 UTC
    Main PID: 12345 (nomifun-web)
@@ -288,7 +288,7 @@ nomifun-web[12345]: listening on 127.0.0.1:8787 (auth: enabled)
 
 ## 另请参阅
 
-- [以桌面应用方式运行 NomiFun](./desktop-app.zh.md)
+- [以桌面应用方式运行 Flowy](./desktop-app.zh.md)
 - [WebUI 远程访问](./webui-remote-access.zh.md) —— 把现有桌面安装变成一个可远程访问的服务器 (无需另置一台机器)。
 - `packaging/linux/README.md` —— 更深入的 Linux 笔记 (主要是中文；本指南涵盖了其英文部分)。
 - `apps/web/src/main.rs` —— 参数、环境变量和引导顺序的真相之源。

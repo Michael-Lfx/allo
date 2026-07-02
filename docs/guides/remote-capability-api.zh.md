@@ -1,6 +1,6 @@
 # Remote 能力 API（外部伙伴 / MCP 接入指南）
 
-NomiFun 把整个平台的能力（agent / browser / computer / 知识库 / 文件 / 以及平台控制）通过一个**网络可达、伙伴访问令牌鉴权的 MCP 端点**暴露出来。任何 MCP 客户端（Claude Code、Cursor、自研 LLM agent）填一个 URL + 一枚访问令牌，就能像"桌面伙伴"一样驱动平台——这就是"**外部伙伴**"。每枚令牌**绑定到一个具体伙伴**：持令牌调用即以该伙伴的身份运行，继承它的 profile 模型 / 人格 / 知识库，互不串扰。
+Flowy 把整个平台的能力（agent / browser / computer / 知识库 / 文件 / 以及平台控制）通过一个**网络可达、伙伴访问令牌鉴权的 MCP 端点**暴露出来。任何 MCP 客户端（Claude Code、Cursor、自研 LLM agent）填一个 URL + 一枚访问令牌，就能像"桌面伙伴"一样驱动平台——这就是"**外部伙伴**"。每枚令牌**绑定到一个具体伙伴**：持令牌调用即以该伙伴的身份运行，继承它的 profile 模型 / 人格 / 知识库，互不串扰。
 
 > 📋 **可复制的对接示例**（MCP 客户端 / curl / Python / CLI / 自动化 / OpenAPI codegen / LLM 框架）见 **`remote-capability-api-examples.zh.md`**。
 
@@ -101,6 +101,6 @@ NOMIFUN_COMPANION_TOKEN="$(openssl rand -hex 32)" \
 - ✅ **委派目标**：`nomi_agent_run(goal,workspace?,model?,timeout_secs?)` 一句话把任务交给一个自治 nomi agent，跑完返回终稿；长任务返回 `{status:running}` 句柄，用 `nomi_agent_result(conversation_id)` 轮询。
 - ✅ **HTTP REST**：`POST /v1/tools/{name}`、`GET /v1/tools[?profile=agent]`、`GET /v1/openapi.json[?profile=agent]`（OpenAPI 3.1，同令牌）。
 - ✅ **CLI**：`nomicore tools`（离线列能力）、`nomicore call <name> [json]`、`nomicore agent "<目标>"`（读 `NOMIFUN_URL`/`NOMIFUN_COMPANION_TOKEN` 或 `--url`/`--token`）。
-- ✅ **Skill**：`docs/skills/drive-nomifun/SKILL.md` —— 教外部 agent 如何连上并驱动 NomiFun（可发布到技能市场）。
+- ✅ **Skill**：`docs/skills/drive-nomifun/SKILL.md` —— 教外部 agent 如何连上并驱动 Flowy（可发布到技能市场）。
 - ✅ **Computer**：桌面版（`computer-use` 构建）暴露 `nomi_computer_*`（snapshot/click/type/key/scroll/launch/screenshot/…），外部调用方可驱动桌面（headless/web 构建不含）。
 - ✅ **流式**：`POST /v1/tools/{name}/stream`（SSE）—— 流式工具（如 `nomi_agent_run`）实时吐 `{type:..}` delta，末帧 `{type:"__result__"}` 带终值；非流式工具仅末帧。`nomi_agent_run` 已流式（订阅 agent 广播逐条转发）。

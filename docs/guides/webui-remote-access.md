@@ -107,5 +107,5 @@ If you find yourself leaving the desktop app running on a server-like box just s
 
 ## See also
 
-- [Running NomiFun as a Desktop App](./desktop-app.md)
+- [Running Flowy as a Desktop App](./desktop-app.md)
 - [Web Server Deployment](./web-server-deployment.md) — when you want a real always-on server, not a desktop side-channel.

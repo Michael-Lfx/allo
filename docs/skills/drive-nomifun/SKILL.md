@@ -1,18 +1,18 @@
 ---
 name: drive-nomifun
 description: >-
-  Use to connect to and drive a NomiFun instance from an external agent
-  (Claude Code / Cursor / any MCP client). Delegate goals to NomiFun's
+  Use to connect to and drive a Flowy instance from an external agent
+  (Claude Code / Cursor / any MCP client). Delegate goals to Flowy's
   autonomous agent, drive its browser / computer / knowledge base / files, and
   manage the platform — over MCP or REST, with a per-companion access token (you
   run AS the bound companion). Use this whenever the user asks to control,
-  automate, or hand work off to "NomiFun", "their NomiFun", "the desktop
-  companion", or a running NomiFun server.
+  automate, or hand work off to "Flowy", "their Flowy", "the desktop
+  companion", or a running Flowy server.
 ---
 
-# Drive NomiFun (external companion)
+# Drive Flowy (external companion)
 
-NomiFun exposes its full platform capability set — an autonomous agent, browser
+Flowy exposes its full platform capability set — an autonomous agent, browser
 automation, computer control, knowledge bases, files, terminals, and platform
 management — to external callers through one **MCP** endpoint and an equivalent
 **REST** API, authenticated by a **per-companion access token**. Each token is
@@ -23,7 +23,7 @@ companion does.
 
 ## 1. Connect (MCP, recommended)
 
-Configure NomiFun as a Streamable-HTTP MCP server:
+Configure Flowy as a Streamable-HTTP MCP server:
 
 ```json
 {
@@ -37,14 +37,14 @@ Configure NomiFun as a Streamable-HTTP MCP server:
 }
 ```
 
-- `<host>` is the machine running NomiFun (`127.0.0.1` locally, or its LAN/public
+- `<host>` is the machine running Flowy (`127.0.0.1` locally, or its LAN/public
   address with WebUI remote access enabled).
 - **`/mcp-agent`** advertises a tight, curated tool set for getting work done
   (agent delegation, browser, computer, knowledge, files). Use **`/mcp`** instead
   for the full platform-control surface (~140 tools incl. channels, companions,
   cron, providers, …).
 - `<token>` is a **per-companion access token** — it binds you to one companion.
-  Get it from the NomiFun operator: in the desktop WebUI/remote panel, or by
+  Get it from the Flowy operator: in the desktop WebUI/remote panel, or by
   minting one (see "Minting a token" below). The companion you bind to **must
   have a configured model** for `nomi_agent_run` (and other model-backed caps) to
   work — otherwise minting returns a `warning` and those calls fail until a model
@@ -86,13 +86,13 @@ NOMIFUN_COMPANION_TOKEN="$(openssl rand -hex 32)" nomicore   # or nomifun-web
 
 ## 2. Delegate a goal (the headline move)
 
-To hand a whole task to NomiFun's own autonomous agent, call **`nomi_agent_run`**:
+To hand a whole task to Flowy's own autonomous agent, call **`nomi_agent_run`**:
 
 ```json
 { "goal": "Research X and write a summary to notes.md", "timeout_secs": 600 }
 ```
 
-It spins up a fresh autonomous NomiFun agent (full tools, using the **bound
+It spins up a fresh autonomous Flowy agent (full tools, using the **bound
 companion's** profile model — which must be configured), runs the goal to
 completion, and returns `{ "status": "completed", "text": "<final answer>", "conversation_id": <id> }`.
 For long tasks it returns `{ "status": "running", "conversation_id": <id> }` —
@@ -113,7 +113,7 @@ authoritative catalog with JSON Schemas.
   re-call the same tool with `"confirm": true`.
 - **Sensitive actions** (secrets, factory reset) are **denied** on this surface.
 - **Trust model:** holding a per-companion access token grants full,
-  RCE-equivalent control of that NomiFun instance (as the bound companion). Treat
+  RCE-equivalent control of that Flowy instance (as the bound companion). Treat
   the token as a high-value secret; only connect to instances you are authorized
   to drive. Revoking a token affects only its companion; other companions' tokens
   are unaffected.
@@ -124,4 +124,4 @@ authoritative catalog with JSON Schemas.
 - REST `409` (or `needs_confirmation` in the body) → re-call with `confirm: true`.
 - REST `422` / a `{ "error": ... }` body → the tool rejected the arguments;
   check the schema from `/v1/tools` and retry.
-- Connection refused → NomiFun isn't running or the URL/port is wrong.
+- Connection refused → Flowy isn't running or the URL/port is wrong.

@@ -1,6 +1,6 @@
 # Computer Use 与 Browser Use（计算机控制与浏览器自动化）
 
-NomiFun agent 内置/接入两项可选的系统级能力：
+Flowy agent 内置/接入两项可选的系统级能力：
 
 - **Computer**（computer use，进程内 Rust）：截屏、鼠标键盘合成输入、窗口枚举/聚焦——让 agent 看到并操作本机桌面。crate：`nomi-computer`（xcap + enigo）。
 - **Browser**（browser use，进程内自研 CDP 引擎）：通过内置浏览器引擎驱动 Chrome 完成导航、读取、点击、填表等，以单工具 `Browser` 暴露。crate：`nomi-browser-engine`（自研 Rust CDP）+ `nomi-browser`（facade）。首次启用时引擎按需自动获取 Chrome（`acquire.rs` 内置 CfT 下载/解压），无需 Node/npm。由 `nomi-agent::bootstrap` 在启用且 `browser-use` feature 开启时注册 `BrowserTool`。

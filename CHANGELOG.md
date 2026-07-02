@@ -1,6 +1,6 @@
 # Changelog
 
-NomiFun is pre-1.0. Until the first public release, this file records release
+Flowy is pre-1.0. Until the first public release, this file records release
 notes at a high level rather than a complete historical log.
 
 ## Unreleased

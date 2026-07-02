@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -957,7 +957,7 @@ const CompanionPage: React.FC = () => {
     };
   }, []);
 
-  // 让原生窗口标题跟随伙伴的自定义名字。建窗时只给了占位标题 "NomiFun"（见 main.rs），
+  // 让原生窗口标题跟随伙伴的自定义名字。建窗时只给了占位标题 "Flowy"（见 main.rs），
   // 窗口虽 skip_taskbar，但 alt-tab / 屏幕阅读器 / macOS 窗口菜单仍会读到它——给每个
   // 伙伴专属称呼而非千篇一律的 "nomi"。初次加载与重命名（config-updated → setProfile）
   // 都会触发本 effect。

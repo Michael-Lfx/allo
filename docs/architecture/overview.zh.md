@@ -1,6 +1,6 @@
 # 架构总览
 
-NomiFun 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态、一份前端**。无论你启动桌面产品 **NomiFun**，还是自托管 Web 服务器，同一个 `axum` HTTP/WS 服务器（`nomifun-app`，二进制 `nomicore`）都在宿主进程中执行。`ui/` 下的 React 19 SPA 是唯一客户端，它始终通过普通的 HTTP 与 WebSocket 通信 —— 没有 Electron preload，也没有 Tauri 自定义协议。
+Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态、一份前端**。无论你启动桌面产品 **Flowy**，还是自托管 Web 服务器，同一个 `axum` HTTP/WS 服务器（`nomifun-app`，二进制 `nomicore`）都在宿主进程中执行。`ui/` 下的 React 19 SPA 是唯一客户端，它始终通过普通的 HTTP 与 WebSocket 通信 —— 没有 Electron preload，也没有 Tauri 自定义协议。
 
 本文档是这张地图的总图。配套的四篇文档分别深入介绍各个部分：
 
@@ -105,7 +105,7 @@ agent 分组是**基本自包含的** —— `nomi-*` crate 不引用 `nomifun-*
 ```
 nomifun-tauri/
 ├─ apps/
-│   ├─ desktop/   nomifun-desktop  (Tauri 2 shell, this is "NomiFun" the product)
+│   ├─ desktop/   nomifun-desktop  (Tauri 2 shell, this is "Flowy" the product)
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
 │   ├─ agent/     15 nomi-*  crates  → see agent-engine.md
@@ -119,7 +119,7 @@ nomifun-tauri/
 
 ## 品牌与标识
 
-- **NomiFun** —— 桌面产品和项目 / 品牌字标（驼峰式书写，N 与 F 大写）。在散文中使用此写法。
+- **Flowy** —— 桌面产品和项目 / 品牌字标（驼峰式书写，N 与 F 大写）。在散文中使用此写法。
 - 小写的 `nomifun` 仅保留给技术标识符 —— npm/JS 包 id、Rust crate 前缀 `nomifun-*`、Tauri bundle 标识符 `com.nomifun.desktop`、环境变量 `NOMIFUN_*`，以及仓库 / 目录名。
 
 ## 宿主一览

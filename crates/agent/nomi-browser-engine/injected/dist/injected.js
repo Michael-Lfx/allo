@@ -1,5 +1,5 @@
 /*
- * NomiFun bundled Playwright InjectedScript.
+ * Flowy bundled Playwright InjectedScript.
  *
  * This file is a GENERATED bundle of vendored Playwright sources
  * (packages/injected + packages/isomorphic), Apache-2.0 licensed,

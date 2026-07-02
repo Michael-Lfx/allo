@@ -1,6 +1,6 @@
 # API Overview
 
-NomiFun's backend (`nomifun-app`, binary `nomicore`) exposes a single axum HTTP server. The SPA, the desktop shell, and any external integration all talk to it the same way: JSON over HTTP for command/query, WebSocket for streaming events.
+Flowy's backend (`nomifun-app`, binary `nomicore`) exposes a single axum HTTP server. The SPA, the desktop shell, and any external integration all talk to it the same way: JSON over HTTP for command/query, WebSocket for streaming events.
 
 This page is an **orientation**, not an exhaustive endpoint reference. The full surface lives in the route modules under `crates/backend/`; the source is the canonical reference. Group base paths and the routers that own each one are listed below — start there.
 
@@ -16,7 +16,7 @@ The SPA uses **relative paths** (`/api/...`, `/ws`). There is no separate API se
 
 ## Authentication model
 
-NomiFun runs under one of three auth policies, decided at startup:
+Flowy runs under one of three auth policies, decided at startup:
 
 ### Authenticated mode (default for `nomifun-web`)
 

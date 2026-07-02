@@ -7,7 +7,7 @@ Cargo.lock.bak
 # Packaging / runtime artifacts
 /dist/
 # Legacy dev data dirs from before all hosts shared one per-user default
-# (%LOCALAPPDATA%\NomiFun\Nomi etc.) — kept so stale checkouts don't commit them.
+# (%LOCALAPPDATA%\Flowy\Nomi etc.) — kept so stale checkouts don't commit them.
 /data/
 /data-verify/
 /.dev-data/

@@ -96,7 +96,7 @@ impl ServerHandler for RemoteMcpHandler {
         let mut info = ServerInfo::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.instructions = Some(
-            "NomiFun external companion. These tools drive the NomiFun platform \
+            "Flowy external companion. These tools drive the Flowy platform \
              (agent / browser / computer / knowledge / files / and platform control). \
              Destructive actions require re-calling with `confirm: true`; some sensitive \
              actions are disabled on this surface."

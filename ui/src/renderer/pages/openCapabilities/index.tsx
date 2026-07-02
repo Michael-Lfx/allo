@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -44,7 +44,7 @@ const MCP_DOMAIN_OPTIONS: McpDomainOption[] = [
     titleKey: 'settings.openCapabilities.domainConversationTitle',
     defaultTitle: '会话',
     descKey: 'settings.openCapabilities.domainConversationDesc',
-    defaultDesc: '创建、读取、发送和管理 NomiFun 会话。',
+    defaultDesc: '创建、读取、发送和管理 Flowy 会话。',
   },
   {
     id: 'browser',
@@ -65,7 +65,7 @@ const MCP_DOMAIN_OPTIONS: McpDomainOption[] = [
     titleKey: 'settings.openCapabilities.domainKnowledgeTitle',
     defaultTitle: '知识库',
     descKey: 'settings.openCapabilities.domainKnowledgeDesc',
-    defaultDesc: '读取、写入、绑定和维护 NomiFun 知识库内容。',
+    defaultDesc: '读取、写入、绑定和维护 Flowy 知识库内容。',
   },
   {
     id: 'files',
@@ -237,7 +237,7 @@ const OpenCapabilitiesPage: React.FC = () => {
     <HubPageShell
       title={t('settings.openCapabilities.title', { defaultValue: '远程&开放能力' })}
       subtitle={t('settings.openCapabilities.subtitle', {
-        defaultValue: '分开管理 WebUI 访问入口，以及 NomiFun Remote MCP / REST 对外开放能力。',
+        defaultValue: '分开管理 WebUI 访问入口，以及 Flowy Remote MCP / REST 对外开放能力。',
       })}
       maxWidthClass='md:max-w-1180px'
     >
@@ -254,7 +254,7 @@ const OpenCapabilitiesPage: React.FC = () => {
                 icon={<WebPage theme='outline' size='18' fill='currentColor' />}
                 title={t('settings.openCapabilities.webuiTitle', { defaultValue: 'WebUI 远程访问' })}
                 description={t('settings.openCapabilities.webuiDesc', {
-                  defaultValue: '启用后，手机、平板或远程浏览器可以打开 NomiFun。二维码登录和账号密码都在这里处理。',
+                  defaultValue: '启用后，手机、平板或远程浏览器可以打开 Flowy。二维码登录和账号密码都在这里处理。',
                 })}
               />
               <div className='mt-14px'>
@@ -268,7 +268,7 @@ const OpenCapabilitiesPage: React.FC = () => {
                 title={t('settings.openCapabilities.addressStrategyTitle', { defaultValue: '访问地址策略' })}
                 body={t('settings.openCapabilities.addressStrategyDesc', {
                   defaultValue:
-                    'NomiFun 只展示更可能被手机和局域网设备访问的地址；回环、链路本地、基准测试网段等地址不会进入二维码候选。',
+                    'Flowy 只展示更可能被手机和局域网设备访问的地址；回环、链路本地、基准测试网段等地址不会进入二维码候选。',
                 })}
               />
               <EndpointBlock
@@ -292,10 +292,10 @@ const OpenCapabilitiesPage: React.FC = () => {
               <div className='rd-12px border border-border-2 bg-fill-0 p-16px'>
                 <SectionHeader
                   icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
-                  title={t('settings.openCapabilities.remoteTitle', { defaultValue: 'NomiFun Remote MCP 能力范围' })}
+                  title={t('settings.openCapabilities.remoteTitle', { defaultValue: 'Flowy Remote MCP 能力范围' })}
                   description={t('settings.openCapabilities.remoteDesc', {
                     defaultValue:
-                      '勾选外部 Agent 通过 NomiFun Remote MCP / REST 能看到和调用的平台能力。配置会体现在生成的接入 URL 中。',
+                      '勾选外部 Agent 通过 Flowy Remote MCP / REST 能看到和调用的平台能力。配置会体现在生成的接入 URL 中。',
                   })}
                 />
 
@@ -340,7 +340,7 @@ const OpenCapabilitiesPage: React.FC = () => {
                   title={t('settings.openCapabilities.generatedConfigTitle', { defaultValue: '当前生成的接入配置' })}
                   body={t('settings.openCapabilities.generatedConfigDesc', {
                     defaultValue:
-                      '把下面的 MCP 地址写入外部 Agent。URL 中的 domains 参数就是当前勾选的 NomiFun 平台能力范围。',
+                      '把下面的 MCP 地址写入外部 Agent。URL 中的 domains 参数就是当前勾选的 Flowy 平台能力范围。',
                   })}
                 />
                 <EndpointBlock
@@ -424,7 +424,7 @@ const OpenCapabilitiesPage: React.FC = () => {
               <div className='mt-12px rd-10px border border-[rgba(var(--primary-6),0.22)] bg-[rgba(var(--primary-6),0.06)] px-12px py-10px text-12px leading-18px text-t-secondary'>
                 {t('settings.openCapabilities.oneClickPlan', {
                   defaultValue:
-                    '完整 Remote MCP 的一键项目注册可以沿用这个模式：选择项目与客户端，NomiFun 生成或复用伙伴令牌，再写入项目级 MCP 配置。由于 Remote MCP 需要 Bearer token，落地前应让用户明确确认是否把令牌写进项目文件，或改为写入环境变量引用。',
+                    '完整 Remote MCP 的一键项目注册可以沿用这个模式：选择项目与客户端，Flowy 生成或复用伙伴令牌，再写入项目级 MCP 配置。由于 Remote MCP 需要 Bearer token，落地前应让用户明确确认是否把令牌写进项目文件，或改为写入环境变量引用。',
                 })}
               </div>
             </section>

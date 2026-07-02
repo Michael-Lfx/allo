@@ -1,6 +1,6 @@
 # 项目结构
 
-这是 **NomiFun** 的当前仓库地图。后端分层详见
+这是 **Flowy** 的当前仓库地图。后端分层详见
 [`../architecture/backend-crates.md`](../architecture/backend-crates.md)，运行时总览见
 [`../architecture/overview.md`](../architecture/overview.md)。
 

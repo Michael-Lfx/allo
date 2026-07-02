@@ -1,13 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 80 80" fill="none" role="img" aria-label="Nomi">
-<title>Nomi</title>
-<defs>
-<linearGradient id="nomi-bg" x1="0" y1="0" x2="0" y2="80" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1B1822"/><stop offset="1" stop-color="#0B0A10"/></linearGradient>
-<linearGradient id="nomi-bowl" x1="15" y1="49" x2="65" y2="69" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FF9FB4"/><stop offset="1" stop-color="#FF6F91"/></linearGradient>
-</defs>
-<rect width="80" height="80" rx="18" fill="url(#nomi-bg)"/>
-<path d="M33 17 q-4.5 -4 0 -8.5" stroke="#FF8FA8" stroke-width="3" fill="none" stroke-linecap="round"/>
-<path d="M40 15 q-4.5 -4 0 -8.5" stroke="#FFB3C4" stroke-width="3" fill="none" stroke-linecap="round"/>
-<path d="M47 17 q-4.5 -4 0 -8.5" stroke="#FF8FA8" stroke-width="3" fill="none" stroke-linecap="round"/>
-<path d="M22 46 Q22 27 40 27 Q58 27 58 46 Z" fill="#FFFFFF"/>
-<path d="M14 49 H66 Q61.5 70 40 70 Q18.5 70 14 49 Z" fill="url(#nomi-bowl)"/>
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" fill="none" role="img" aria-label="Flowy">
+  <rect width="1200" height="1200" fill="#000"/>
+  <g transform="translate(0,1200) scale(0.1,-0.1)" fill="#fff">
+    <path d="M1027 11984 c-388 -60 -703 -282 -885 -624 -49 -90 -95 -220 -119 -332 -17 -79 -18 -320 -18 -5023 0 -4669 1 -4945 18 -5026 34 -169 91 -308 181 -443 173 -260 429 -433 758 -513 69 -17 308 -18 4993 -20 3145 -1 4945 2 4990 8 479 67 860 386 999 839 58 186 54 -153 52 5185 -2 4599 -3 4925 -19 4995 -82 362 -283 639 -592 814 -88 51 -210 98 -335 129 l-85 21 -4925 2 c-4139 2 -4939 0 -5013 -12z m7773 -2784 l0 -800 -2000 0 -2000 0 0 -800 0 -800 -800 0 -800 0 0 1600 0 1600 2800 0 2800 0 0 -800z m-800 -3200 l0 -800 -800 0 -800 0 0 800 0 800 800 0 800 0 0 -800z m-3200 -2400 l0 -1600 -800 0 -800 0 0 1600 0 1600 800 0 800 0 0 -1600z"/>
+  </g>
 </svg>

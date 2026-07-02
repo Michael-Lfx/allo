@@ -1,6 +1,6 @@
 # Remote Capability API
 
-NomiFun can expose its platform capabilities through a network-reachable,
+Flowy can expose its platform capabilities through a network-reachable,
 token-authenticated MCP and REST front door. A trusted external agent or MCP
 client can connect with a URL plus a companion access token and then call the
 same capability registry used by the desktop app.
@@ -134,7 +134,7 @@ curl -s "http://127.0.0.1:25808/v1/tools?profile=agent" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Run a delegated NomiFun agent task:
+Run a delegated Flowy agent task:
 
 ```bash
 curl -s -X POST "http://127.0.0.1:25808/v1/tools/nomi_agent_run" \

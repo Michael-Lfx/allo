@@ -48,7 +48,7 @@ const collect = flag('collect', false) === true;
 const version = flag('version') || readWorkspaceVersion();
 const notesFile = flag('notes-file');
 const notesFromFile = typeof notesFile === 'string' && existsSync(notesFile) ? readFileSync(notesFile, 'utf8').trim() : null;
-const notes = flag('notes') || notesFromFile || readChangelogNotes(version) || `NomiFun v${version}`;
+const notes = flag('notes') || notesFromFile || readChangelogNotes(version) || `Flowy v${version}`;
 const distDir = join(ROOT, 'dist/desktop');
 
 // 单一真源版本号：根 Cargo.toml 的 [workspace.package].version。

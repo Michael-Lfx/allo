@@ -1,6 +1,6 @@
 # MCP 与技能
 
-NomiFun 有两种容易混淆的扩展机制：
+Flowy 有两种容易混淆的扩展机制：
 
 - **MCP server** 是外部工具服务器，通过 stdio、HTTP 或 SSE 暴露可调用工具。
 - **技能** 是 markdown/文件夹知识包，告诉 agent 如何完成某个工作流；它不是常驻工具服务器。
@@ -39,7 +39,7 @@ NomiFun 有两种容易混淆的扩展机制：
 ## 导入和同步 Agent 配置
 
 `GET /api/mcp/agent-configs` 会探测已支持本地 agent CLI 的 MCP 配置。UI 可把探测到
-的 server 导入 NomiFun，也可在 adapter 支持写入时把 NomiFun 的 MCP 列表同步回选中的
+的 server 导入 Flowy，也可在 adapter 支持写入时把 Flowy 的 MCP 列表同步回选中的
 agent 配置。
 
 这只是配置管理。某次会话最终能看到哪些 MCP server，仍由该会话的选择决定。

@@ -1,6 +1,6 @@
 # Installation
 
-NomiFun has two host modes that share one Rust backend (see
+Flowy has two host modes that share one Rust backend (see
 [Introduction](introduction.md)). This page covers all three ways to install
 it today:
 
@@ -113,9 +113,9 @@ application-data directory, joined with `Nomi`:
 
 | OS | Default path |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\NomiFun\Nomi` (e.g. `C:\Users\<you>\AppData\Local\NomiFun\Nomi`) |
-| macOS | `~/Library/Application Support/NomiFun/Nomi` |
-| Linux | `$XDG_DATA_HOME/NomiFun/Nomi` (usually `~/.local/share/NomiFun/Nomi`) |
+| Windows | `%LOCALAPPDATA%\Flowy\Nomi` (e.g. `C:\Users\<you>\AppData\Local\Flowy\Nomi`) |
+| macOS | `~/Library/Application Support/Flowy/Nomi` |
+| Linux | `$XDG_DATA_HOME/Flowy/Nomi` (usually `~/.local/share/Flowy/Nomi`) |
 
 Override with `NOMIFUN_DATA_DIR=<absolute path>` before launching — the
 shell appends `/Nomi`, so the dir becomes `$NOMIFUN_DATA_DIR/Nomi`.
@@ -127,7 +127,7 @@ shell appends `/Nomi`, so the dir becomes `$NOMIFUN_DATA_DIR/Nomi`.
 > directory is kept as a backup. If the relocation cannot complete, the app
 > starts from the legacy directory and retries on the next launch.
 
-> Note: the app's user-facing name is `NomiFun` everywhere — the bundle
+> Note: the app's user-facing name is `Flowy` everywhere — the bundle
 > product name (`apps/desktop/tauri.conf.json`), the runtime window title,
 > and release artifacts. The data folder keeps its existing `/Nomi`
 > suffix for compatibility with current installs. Internal identifiers keep the legacy `nomifun`

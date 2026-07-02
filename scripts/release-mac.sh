@@ -229,10 +229,10 @@ if [[ "$Mode" == "CREATE" && -z "${NotesContent//[[:space:]]/}" ]]; then
   fail "首发(CREATE)需要 release note。请用 -NotesFile <md>（推荐，多行）或 -Notes \"...\" 提供；GitHub Release 正文与 latest.json notes 共用这一份。"
 fi
 
-Tar="target/$Triple/release/bundle/macos/NomiFun.app.tar.gz"
+Tar="target/$Triple/release/bundle/macos/Flowy.app.tar.gz"
 Sig="$Tar.sig"
-Dmg="dist/desktop/NomiFun_${TargetVersion}_universal.dmg"
-App="target/$Triple/release/bundle/macos/NomiFun.app"
+Dmg="dist/desktop/Flowy_${TargetVersion}_universal.dmg"
+App="target/$Triple/release/bundle/macos/Flowy.app"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "一键 macOS 发版计划"

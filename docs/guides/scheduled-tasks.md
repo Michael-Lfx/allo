@@ -1,6 +1,6 @@
 # Scheduled Tasks (Cron)
 
-A scheduled task in NomiFun is a recurring (or one-shot) job that fires at a
+A scheduled task in Flowy is a recurring (or one-shot) job that fires at a
 time you choose and drives an AI agent to do something. You can configure it
 from the Scheduled Tasks page, run it on demand, attach a personalised
 **skill** so the agent always behaves the right way for that job, and you
@@ -134,12 +134,12 @@ fans out one thread per fire.
 ## Keep-Awake
 
 Cron jobs only fire while the host process is running. The list page has a
-**Keep system awake while NomiFun is running** toggle that asks the OS to
+**Keep system awake while Flowy is running** toggle that asks the OS to
 inhibit sleep (Windows: `SetThreadExecutionState`, macOS: `caffeinate`,
 Linux: `systemd-inhibit` where available) so jobs you set up on a laptop
 do not silently miss their fires the moment the lid closes.
 
-If a fire is missed because the system slept anyway (or NomiFun was not
+If a fire is missed because the system slept anyway (or Flowy was not
 running), the missed-trigger handler at next boot/wake will record a
 `missed` run and post a system message into the affected conversation,
 then re-arm the timer for the next normal fire.
@@ -172,7 +172,7 @@ can review and save it as the job's skill in one click.
 
 ## Managing tasks from chat — the built-in `cron` skill
 
-NomiFun ships a built-in auto-inject skill named `cron` that any agent can
+Flowy ships a built-in auto-inject skill named `cron` that any agent can
 load when you ask it to "set up a reminder", "schedule X every Monday",
 etc. The conversation middleware then watches the agent's reply for the
 following directive blocks and runs them through the cron service:

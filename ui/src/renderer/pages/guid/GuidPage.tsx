@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -13,20 +13,15 @@ import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
-import AgentPillBar from './components/AgentPillBar';
 import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerEntryStrip';
 import GuidAssistantEditorHost from './components/GuidAssistantEditorHost';
-import { AgentPillBarSkeleton } from './components/GuidSkeleton';
 import GuidActionRow from './components/GuidActionRow';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import GuidCompanionPosterPreview from './components/GuidCompanionPosterPreview';
 import GuidInputCard from './components/GuidInputCard';
 import GuidModelSelector from './components/GuidModelSelector';
-import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
-import QuickActionButtons from './components/QuickActionButtons';
 import SummonDrawer from './components/SummonDrawer';
-import FeedbackReportModal from '@/renderer/components/settings/SettingsModal/contents/FeedbackReportModal';
 import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
@@ -67,7 +62,6 @@ const GuidPage: React.FC = () => {
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
 
   const localeKey = resolveLocaleKey(i18n.language);
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -324,24 +318,6 @@ const GuidPage: React.FC = () => {
       }
     },
     [mention, guidInput.input, send.sendMessageHandler, sendKey]
-  );
-
-  const handleSelectAgentFromPillBar = useCallback(
-    (key: string) => {
-      setOrchestrationMode(false);
-      agentSelection.setSelectedAgentKey(key);
-      mention.setMentionOpen(false);
-      mention.setMentionQuery(null);
-      mention.setMentionSelectorOpen(false);
-      mention.setMentionActiveIndex(0);
-    },
-    [
-      agentSelection.setSelectedAgentKey,
-      mention.setMentionOpen,
-      mention.setMentionQuery,
-      mention.setMentionSelectorOpen,
-      mention.setMentionActiveIndex,
-    ]
   );
 
   const handleSelectAssistant = useCallback(
@@ -678,18 +654,6 @@ const GuidPage: React.FC = () => {
               </p>
             </div>
 
-            {agentSelection.availableAgents === undefined ? (
-              <AgentPillBarSkeleton />
-            ) : agentSelection.availableAgents.length > 0 ? (
-              <AgentPillBar
-                availableAgents={agentSelection.availableAgents}
-                selectedAgentKey={agentSelection.selectedAgentKey}
-                getAgentKey={agentSelection.getAgentKey}
-                onSelectAgent={handleSelectAgentFromPillBar}
-                suppressSelectionAnimation={resetAssistantRequested}
-              />
-            ) : null}
-
             <GuidInputCard
               input={guidInput.input}
               onInputChange={handleInputChange}
@@ -746,8 +710,6 @@ const GuidPage: React.FC = () => {
               }
             />
 
-            <GuidResourceCards />
-
             {/* Editor host (modals + example prompts + fallback notice) */}
             <GuidAssistantEditorHost
               assistants={agentSelection.assistants}
@@ -782,12 +744,6 @@ const GuidPage: React.FC = () => {
           onToggleSkill={handleToggleSkill}
         />
 
-        <QuickActionButtons
-          onOpenBugReport={() => setShowFeedbackModal(true)}
-          inactiveBorderColor={inactiveBorderColor}
-          activeShadow={activeShadow}
-        />
-        <FeedbackReportModal visible={showFeedbackModal} onCancel={() => setShowFeedbackModal(false)} />
       </div>
     </ConfigProvider>
   );

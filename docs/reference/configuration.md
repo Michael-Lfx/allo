@@ -1,8 +1,8 @@
 # Configuration Reference
 
-Every flag and environment variable NomiFun reads, with defaults and the file that owns each one. Values are taken from the source — if a setting is not in this page it does not exist.
+Every flag and environment variable Flowy reads, with defaults and the file that owns each one. Values are taken from the source — if a setting is not in this page it does not exist.
 
-NomiFun ships **one** Rust backend (`nomifun-app`, binary `nomicore`) and two hosts that embed it:
+Flowy ships **one** Rust backend (`nomifun-app`, binary `nomicore`) and two hosts that embed it:
 
 - `nomifun-desktop` — the Tauri desktop shell. Boots the backend under `AuthPolicy::TrustLocalToken` on a chosen loopback port and injects a per-boot trust secret into its own WebView.
 - `nomifun-web` — the standalone web/server host. Boots the same backend in **authenticated** mode by default and serves the SPA on the same port.
@@ -17,7 +17,7 @@ Source: [`apps/web/src/main.rs`](../../apps/web/src/main.rs).
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | IP to bind on. `0.0.0.0` accepts LAN/VPN/public traffic; pre-seed or complete first-run setup before broad exposure. Hostnames are not parsed; bad input fails fast at startup. |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP port. Serves the API, the WebSocket at `/ws`, and the SPA from one socket. |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | per-user app-data dir | Backend data directory (SQLite database, agent state, logs, Bun cache). Defaults to the per-user location shared by every host — `%LOCALAPPDATA%\NomiFun\Nomi` on Windows, `~/Library/Application Support/NomiFun/Nomi` on macOS, `$XDG_DATA_HOME/NomiFun/Nomi` on Linux. Override with the flag or `NOMIFUN_DATA_DIR` (taken literally, no suffix); use an absolute path in production. |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | per-user app-data dir | Backend data directory (SQLite database, agent state, logs, Bun cache). Defaults to the per-user location shared by every host — `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` on Linux. Override with the flag or `NOMIFUN_DATA_DIR` (taken literally, no suffix); use an absolute path in production. |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | Directory containing the built SPA. Set this explicitly when deploying outside the repo. |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | Username used when pre-seeding the first admin. Ignored once an admin exists. |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | Pre-seeds the first admin password at boot, skipping interactive setup. Ignored once an admin exists. |
@@ -95,7 +95,7 @@ Source: [`crates/backend/nomifun-common/src/constants.rs`](../../crates/backend/
 ## Data directory and work directory semantics
 
 - `data-dir` holds the SQLite database (`nomifun-backend.db*`), per-agent state, the Bun cache, log files, and any embedded extension data. Treat it like any other database — back it up and restrict permissions. Sharing it between two running backends is prevented mechanically (see the server lock below).
-- All three hosts (`nomifun-desktop`, `nomifun-web`, the standalone `nomicore` binary) resolve the **same default** data dir via `nomifun_app::cli::default_data_dir()`: `%LOCALAPPDATA%\NomiFun\Nomi` on Windows, `~/Library/Application Support/NomiFun/Nomi` on macOS, `$XDG_DATA_HOME/NomiFun/Nomi` on Linux (usually `~/.local/share/NomiFun/Nomi`), resolved via the `dirs` crate, with `<system temp>/nomifun-data/Nomi` as the extreme fallback when the OS reports no user directory. One default for every host is deliberate: the dev loops (`bun run serve:web`, `dev:web`, `dev`) and the installed desktop app read and write the same state — a provider or companion configured once is testable everywhere, and troubleshooting only ever has one directory to look at. For an isolated sandbox, point `NOMIFUN_DATA_DIR` or `--data-dir` somewhere else.
+- All three hosts (`nomifun-desktop`, `nomifun-web`, the standalone `nomicore` binary) resolve the **same default** data dir via `nomifun_app::cli::default_data_dir()`: `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` on Linux (usually `~/.local/share/Flowy/Nomi`), resolved via the `dirs` crate, with `<system temp>/nomifun-data/Nomi` as the extreme fallback when the OS reports no user directory. One default for every host is deliberate: the dev loops (`bun run serve:web`, `dev:web`, `dev`) and the installed desktop app read and write the same state — a provider or companion configured once is testable everywhere, and troubleshooting only ever has one directory to look at. For an isolated sandbox, point `NOMIFUN_DATA_DIR` or `--data-dir` somewhere else.
 - At startup (before the database is opened) the backend takes an OS-level **exclusive lock** on `{data_dir}/server.lock`. A second backend process on the same data dir fails fast with an error naming the holder (pid + executable) and the two ways out: close the other instance, or give this one its own directory via `NOMIFUN_DATA_DIR` / `--data-dir`. The lock is advisory (`flock` / `LockFileEx` via `fs2`) and is released by the OS when the process exits or crashes — a leftover `server.lock` file is harmless. `nomicore doctor` and the `mcp-*` stdio subcommands do not take the lock (doctor is designed to run alongside a live server).
 - `work-dir` holds per-conversation workspaces. When unset, it resolves in this order: `--work-dir` → non-empty `NOMIFUN_WORK_DIR` env → the data dir itself. Conversations create subdirectories under `<work-dir>/conversations/`; deleting a conversation deletes its workspace.
 - The desktop shell uses the shared default above. With `NOMIFUN_DATA_DIR` set, the dir becomes `$NOMIFUN_DATA_DIR/Nomi` — the override semantics are unchanged. Older builds defaulted to `<system temp>/nomifun-data/Nomi`; on first launch with the new default, an existing temp-rooted install is relocated automatically (one-shot, the legacy dir is kept as a backup and absolute paths stored in the database are rewritten).
@@ -115,7 +115,7 @@ The same secret is also used to derive an encryption key (`derive_encryption_key
 
 ## TLS / HTTPS cookie handling
 
-NomiFun does not terminate TLS itself — put a TLS-terminating reverse proxy (Caddy, nginx, …) in front. When you do:
+Flowy does not terminate TLS itself — put a TLS-terminating reverse proxy (Caddy, nginx, …) in front. When you do:
 
 - Set `NOMIFUN_HTTPS=true` so cookies are flagged `Secure` and `SameSite=Strict`. Without this, browsers reject `Secure` cookies on HTTPS responses, and login appears to silently fail.
 - The WebSocket upgrade at `/ws` passes through any standards-compliant proxy without extra headers; Caddy handles it out of the box.
@@ -139,6 +139,6 @@ There is no separate `RUST_LOG` plumbing — `--log-level` (or its env-driven eq
 ## See also
 
 - [Web Server Deployment](../guides/web-server-deployment.md) — running `nomifun-web` with Docker, systemd, Caddy.
-- [Running NomiFun as a Desktop App](../guides/desktop-app.md) — desktop-specific configuration.
+- [Running Flowy as a Desktop App](../guides/desktop-app.md) — desktop-specific configuration.
 - [API Overview](./api-overview.md) — what the backend exposes once it is configured and running.
 - [Troubleshooting](./troubleshooting.md) — symptoms and fixes when configuration ends up wrong at runtime.

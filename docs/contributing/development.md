@@ -1,6 +1,6 @@
 # Development
 
-This page is for people changing **NomiFun** itself: the React SPA, the Rust
+This page is for people changing **Flowy** itself: the React SPA, the Rust
 backend, the agent engine, or the Tauri shell. If you only want to install or
 operate the product, start with
 [`../getting-started/installation.md`](../getting-started/installation.md) or
@@ -118,9 +118,9 @@ prints a table to stdout.
 
 All hosts share the same unset default data directory:
 
-- Windows: `%LOCALAPPDATA%\NomiFun\Nomi`
-- macOS: `~/Library/Application Support/NomiFun/Nomi`
-- Linux: `$XDG_DATA_HOME/NomiFun/Nomi` or `~/.local/share/NomiFun/Nomi`
+- Windows: `%LOCALAPPDATA%\Flowy\Nomi`
+- macOS: `~/Library/Application Support/Flowy/Nomi`
+- Linux: `$XDG_DATA_HOME/Flowy/Nomi` or `~/.local/share/Flowy/Nomi`
 
 The data dir contains SQLite state, logs, Bun runtime cache, extension data,
 agent state, and other persistent local state. The backend takes an exclusive

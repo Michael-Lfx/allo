@@ -156,7 +156,7 @@ pub fn build_knowledge_context(
     if readme {
         out.push_str(
             "# Knowledge bases\n\n\
-             This directory is mounted and managed by the NomiFun platform. It contains the \
+             This directory is mounted and managed by the Flowy platform. It contains the \
              knowledge bases bound to this session — a curated, extended knowledge source for \
              your work here. Paths below are relative to the workspace root.\n\n\
              ## Retrieval protocol\n\n",
@@ -933,7 +933,7 @@ mod tests {
         let out = build_knowledge_context(&[m], &opts).unwrap();
 
         assert!(out.starts_with("# Knowledge bases"), "got: {out}");
-        assert!(out.contains("NomiFun"), "got: {out}");
+        assert!(out.contains("Flowy"), "got: {out}");
         // Relative-path baseline disambiguation (paths are workspace-rooted).
         assert!(out.contains("Paths below are relative to the workspace root."), "got: {out}");
         assert!(out.contains("## Retrieval protocol"), "got: {out}");

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "NomiFun Dev",
+  "productName": "Flowy Dev",
   "identifier": "com.nomifun.desktop.dev",
   "plugins": {
     "deep-link": {

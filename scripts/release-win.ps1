@@ -136,7 +136,7 @@ if ($Mode -eq 'CREATE' -and (-not $NotesContent)) {
 }
 
 $NsisDir = "target/$Triple/release/bundle/nsis"
-$Exe     = "$NsisDir/NomiFun_${TargetVersion}_x64-setup.exe"
+$Exe     = "$NsisDir/Flowy_${TargetVersion}_x64-setup.exe"
 $Sig     = "$Exe.sig"
 
 # ── 计划 ─────────────────────────────────────────────────────────────────────

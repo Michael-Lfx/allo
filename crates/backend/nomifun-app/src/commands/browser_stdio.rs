@@ -18,7 +18,7 @@
 //! # R1 — no orchestration approval layer here (P4 decision D1)
 //!
 //! This bridge is a short-lived process spawned by the ACP CLI; it has NO
-//! NomiFun orchestration / supervision layer. The `BrowserTool` redline gate runs
+//! Flowy orchestration / supervision layer. The `BrowserTool` redline gate runs
 //! with default policy (`session_bypasses_approval() == false` → normal-session
 //! semantics: it does NOT hard-deny irreversible actions, leaving them to the
 //! orchestration approval the nomi engine path provides). For the ACP path the

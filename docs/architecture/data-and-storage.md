@@ -1,6 +1,6 @@
 # Data and Storage
 
-NomiFun keeps its state in three places: a SQLite database (the source of
+Flowy keeps its state in three places: a SQLite database (the source of
 truth for everything structured), a per-installation **data directory**
 (database file, logs, OS-cached runtimes), and per-conversation **work
 directories** that hold the files agents read and write. This page explains
@@ -10,8 +10,8 @@ what lives where, how it's named, and how it's protected.
 
 | Host | Default path | Override |
 | --- | --- | --- |
-| Desktop (`nomifun-desktop`) | Per-user app data: `%LOCALAPPDATA%\NomiFun\Nomi` on Windows, `~/Library/Application Support/NomiFun/Nomi` on macOS, `$XDG_DATA_HOME/NomiFun/Nomi` (usually `~/.local/share/NomiFun/Nomi`) on Linux. With `NOMIFUN_DATA_DIR` set, becomes `$NOMIFUN_DATA_DIR/Nomi`. Legacy installs under `<system temp>/nomifun-data/Nomi` are auto-relocated on launch (one-shot; the old dir is kept as a backup). | env `NOMIFUN_DATA_DIR` |
-| Web (`nomifun-web`) and the `nomicore` bin | The **same** per-user directory as the desktop shell — `%LOCALAPPDATA%\NomiFun\Nomi` / `~/Library/Application Support/NomiFun/Nomi` / `$XDG_DATA_HOME/NomiFun/Nomi` (the old `./data`-relative default is gone). With `NOMIFUN_DATA_DIR` set, the value is taken **literally** (no `/Nomi` suffix), so Docker `/data` and systemd `/var/lib/nomifun` deployments are unaffected. | flag `--data-dir` or env `NOMIFUN_DATA_DIR` |
+| Desktop (`nomifun-desktop`) | Per-user app data: `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` (usually `~/.local/share/Flowy/Nomi`) on Linux. With `NOMIFUN_DATA_DIR` set, becomes `$NOMIFUN_DATA_DIR/Nomi`. Legacy installs under `<system temp>/nomifun-data/Nomi` are auto-relocated on launch (one-shot; the old dir is kept as a backup). | env `NOMIFUN_DATA_DIR` |
+| Web (`nomifun-web`) and the `nomicore` bin | The **same** per-user directory as the desktop shell — `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi` (the old `./data`-relative default is gone). With `NOMIFUN_DATA_DIR` set, the value is taken **literally** (no `/Nomi` suffix), so Docker `/data` and systemd `/var/lib/nomifun` deployments are unaffected. | flag `--data-dir` or env `NOMIFUN_DATA_DIR` |
 
 Inside the data directory:
 
@@ -27,7 +27,7 @@ Inside the data directory:
 
 All three hosts resolve the unset default through one shared helper,
 [`nomifun_app::cli::default_data_dir()`](../../crates/backend/nomifun-app/src/cli.rs):
-`dirs::data_local_dir()/NomiFun/Nomi` (the per-user application-data
+`dirs::data_local_dir()/Flowy/Nomi` (the per-user application-data
 location), with the system temp dir (`<system temp>/nomifun-data/Nomi`)
 only as an extreme fallback when the OS reports no user dir. Env semantics
 stay host-specific: the desktop shell appends `"Nomi"` to `NOMIFUN_DATA_DIR`
@@ -174,7 +174,7 @@ directory name in a workspace path may begin or end with whitespace (or
 consist entirely of whitespace). Such names break Win32 path round-tripping
 and are visually indistinguishable in any UI. Interior whitespace is fully
 supported — the default per-user data dir on macOS
-(`~/Library/Application Support/NomiFun/Nomi`) contains a space, and every
+(`~/Library/Application Support/Flowy/Nomi`) contains a space, and every
 process-spawn pipeline passes the workspace as a discrete argument
 (`Command::current_dir`, PTY cwd, ACP session JSON), which is
 whitespace-safe.
@@ -224,7 +224,7 @@ fetched markdown snapshots in a `snapshots/` subdirectory there).
 
 ## Bundled bun runtime
 
-NomiFun ships its own `bun` runtime (1.3.13) so MCP servers and tool
+Flowy ships its own `bun` runtime (1.3.13) so MCP servers and tool
 subprocesses do not require a system Node.js install:
 
 | Step | What happens |
@@ -239,7 +239,7 @@ The runtime cache is anchored to the backend's `data_dir`:
 [`nomifun_runtime::init(&data_dir)`](../../crates/backend/nomifun-runtime/src/cache.rs)
 records `<data_dir>/runtime` as the cache root, so on the desktop the bun
 binary extracts under `<data_dir>/runtime/bun-<version>-<sha12>/` —
-i.e. `%LOCALAPPDATA%\NomiFun\Nomi\runtime\bun-…\` by default on Windows
+i.e. `%LOCALAPPDATA%\Flowy\Nomi\runtime\bun-…\` by default on Windows
 (the per-user app-data equivalents on macOS/Linux), or
 `$NOMIFUN_DATA_DIR/Nomi/runtime/bun-…/` when the env var is set. When
 `init` has not been called (the `mcp-*` subcommands, unit tests, `build.rs`)

@@ -36,7 +36,7 @@ pub(super) struct ComputerPermissionStatus {
     screen_recording: Option<bool>,
     /// `"macos" | "windows" | "linux" | "other"`.
     platform: &'static str,
-    /// The app name woven into permission guidance ("NomiFun"), so the UI names
+    /// The app name woven into permission guidance ("Flowy"), so the UI names
     /// the same entry the user sees in System Settings.
     app_label: String,
 }

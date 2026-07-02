@@ -1,10 +1,10 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  *
  * DagCanvas — react-flow theming + node pulse. We lean on react-flow's own CSS
- * custom properties so the Controls/MiniMap chrome follows the NomiFun theme,
+ * custom properties so the Controls/MiniMap chrome follows the Flowy theme,
  * and keep the brand pulse for running tasks. Theme variables only.
  */
 

@@ -8,7 +8,7 @@ let _services: IPlatformServices | null = null;
  */
 export function getDevAppName(): string {
   const isMultiInstance = process.env.NOMIFUN_MULTI_INSTANCE === '1';
-  return isMultiInstance ? 'NomiFun-Dev-2' : 'NomiFun-Dev';
+  return isMultiInstance ? 'Flowy-Dev-2' : 'Flowy-Dev';
 }
 
 export function registerPlatformServices(services: IPlatformServices): void {

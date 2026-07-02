@@ -1,6 +1,6 @@
 //! User-scope (global) one-click registration of the platform knowledge MCP
 //! into a CLI's USER-level config, so an agent CLI started in ANY directory —
-//! not just a NomiFun-managed terminal — picks up knowledge_search / knowledge_read
+//! not just a Flowy-managed terminal — picks up knowledge_search / knowledge_read
 //! / knowledge_write. Secret-free (the bridge resolves port/token from the
 //! endpoint beacon at runtime), so the written file is safe to keep and survives
 //! app restarts. Merge-safe: never clobbers the user's own servers.

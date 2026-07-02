@@ -227,9 +227,9 @@ mod tests {
     use nomifun_db::sqlx;
 
     const OLD: &str = r"C:\Users\u\AppData\Local\Temp\nomifun-data\Nomi";
-    const NEW: &str = r"C:\Users\u\AppData\Local\NomiFun\Nomi";
+    const NEW: &str = r"C:\Users\u\AppData\Local\Flowy\Nomi";
     const OLD_FS: &str = "C:/Users/u/AppData/Local/Temp/nomifun-data/Nomi";
-    const NEW_FS: &str = "C:/Users/u/AppData/Local/NomiFun/Nomi";
+    const NEW_FS: &str = "C:/Users/u/AppData/Local/Flowy/Nomi";
 
     async fn insert_kb(pool: &nomifun_db::SqlitePool, id: &str, root_path: &str) {
         sqlx::query(
@@ -531,13 +531,13 @@ mod tests {
 
     #[test]
     fn variants_deduplicate_unix_style_roots() {
-        let variants = prefix_variants("/tmp/nomifun-data/Nomi", "/home/u/.local/share/NomiFun/Nomi");
+        let variants = prefix_variants("/tmp/nomifun-data/Nomi", "/home/u/.local/share/Flowy/Nomi");
         // Backslash spelling + forward spelling; both distinct here because
         // the backslash variant mangles separators (it matches nothing real
         // on disk, which is exactly the intent).
         assert_eq!(variants.len(), 2);
         assert_eq!(variants[1].0, "/tmp/nomifun-data/Nomi");
-        assert_eq!(variants[1].1, "/home/u/.local/share/NomiFun/Nomi");
+        assert_eq!(variants[1].1, "/home/u/.local/share/Flowy/Nomi");
 
         let same = prefix_variants("/same/root", "/same/root");
         assert!(same.is_empty());

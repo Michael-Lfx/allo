@@ -1,6 +1,6 @@
 # Quick Start
 
-A short walkthrough for the first useful NomiFun session. This assumes the repo
+A short walkthrough for the first useful Flowy session. This assumes the repo
 is already installed; otherwise start with [Installation](installation.md).
 
 ## 1. Launch
@@ -51,7 +51,7 @@ reliability settings such as IDMM and model failover.
 
 For the simplest first run, use the built-in Nomi engine with an API provider
 you have credentials for. External CLIs such as Claude Code, Codex, Gemini CLI,
-Qwen, and OpenCode must also be installed on the host before NomiFun can use
+Qwen, and OpenCode must also be installed on the host before Flowy can use
 them.
 
 ## 4. Send The First Message
@@ -64,7 +64,7 @@ Back on `/guid`:
 4. Type a prompt.
 5. Send with the button or `Ctrl/Cmd+Enter`.
 
-NomiFun creates a conversation and navigates to `/conversation/<id>`.
+Flowy creates a conversation and navigates to `/conversation/<id>`.
 
 ## 5. Use The Workspace
 

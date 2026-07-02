@@ -3919,7 +3919,7 @@ mod tests {
 
     #[test]
     fn grep_page_text_hits_case_insensitive_substring() {
-        let text = "Welcome to NomiFun\nYour Order #42 is ready\nContact support";
+        let text = "Welcome to Flowy\nYour Order #42 is ready\nContact support";
         // 命中（大小写不敏感子串）。
         let hits = grep_page_text(text, "order", 0);
         assert_eq!(hits.len(), 1);

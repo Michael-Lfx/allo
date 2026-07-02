@@ -181,7 +181,7 @@ impl HttpFetcher {
             .map_err(|e| AppError::Internal(format!("failed to build http client: {e}")))?;
         client
             .get(url.clone())
-            .header(reqwest::header::USER_AGENT, "NomiFun-Knowledge/1.0")
+            .header(reqwest::header::USER_AGENT, "Flowy-Knowledge/1.0")
             .send()
             .await
             .map_err(|e| {

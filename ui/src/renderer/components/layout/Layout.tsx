@@ -1,12 +1,13 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import type { ICssTheme } from '@/common/config/storage';
+import appLogo from '@renderer/assets/logo.svg';
 import PwaPullToRefresh from '@/renderer/components/layout/PwaPullToRefresh';
 import Titlebar from '@/renderer/components/layout/Titlebar';
 import { Layout as ArcoLayout } from '@arco-design/web-react';
@@ -588,26 +589,9 @@ const Layout: React.FC<{
                   })}
                   onClick={onClick}
                 >
-                  <svg className='absolute inset-0 w-full h-full' viewBox='0 0 80 80' fill='none'>
-                    <defs>
-                      <linearGradient id='sidebar-logo-bg' x1='0' y1='0' x2='0' y2='80' gradientUnits='userSpaceOnUse'>
-                        <stop offset='0' stopColor='#1B1822'></stop>
-                        <stop offset='1' stopColor='#0B0A10'></stop>
-                      </linearGradient>
-                      <linearGradient id='sidebar-logo-bowl' x1='15' y1='49' x2='65' y2='69' gradientUnits='userSpaceOnUse'>
-                        <stop offset='0' stopColor='#FF9FB4'></stop>
-                        <stop offset='1' stopColor='#FF6F91'></stop>
-                      </linearGradient>
-                    </defs>
-                    <rect width='80' height='80' fill='url(#sidebar-logo-bg)'></rect>
-                    <path key='logo-steam-1' d='M33 17 q-4.5 -4 0 -8.5' stroke='#FF8FA8' strokeWidth='3' fill='none' strokeLinecap='round'></path>
-                    <path key='logo-steam-2' d='M40 15 q-4.5 -4 0 -8.5' stroke='#FFB3C4' strokeWidth='3' fill='none' strokeLinecap='round'></path>
-                    <path key='logo-steam-3' d='M47 17 q-4.5 -4 0 -8.5' stroke='#FF8FA8' strokeWidth='3' fill='none' strokeLinecap='round'></path>
-                    <path key='logo-rice' d='M22 46 Q22 27 40 27 Q58 27 58 46 Z' fill='#FFFFFF'></path>
-                    <path key='logo-bowl' d='M14 49 H66 Q61.5 70 40 70 Q18.5 70 14 49 Z' fill='url(#sidebar-logo-bowl)'></path>
-                  </svg>
+                  <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
                 </div>
-                <div className='text-16px text-t-primary collapsed-hidden font-semibold'>NomiFun</div>
+                <div className='text-16px text-t-primary collapsed-hidden font-semibold'>Flowy</div>
                 {isMobile && !collapsed && (
                   <button
                     type='button'

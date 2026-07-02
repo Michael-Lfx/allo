@@ -1,6 +1,6 @@
 # Code of Conduct
 
-NomiFun is intended to be a practical, respectful engineering community.
+Flowy is intended to be a practical, respectful engineering community.
 
 ## Expected Behavior
 

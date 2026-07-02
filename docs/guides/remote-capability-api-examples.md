@@ -1,7 +1,7 @@
 # Remote Capability API Examples
 
 These examples use one companion access token bound to one companion. Replace
-`$HOST` with your NomiFun host and `$TOKEN` with the token shown when it was
+`$HOST` with your Flowy host and `$TOKEN` with the token shown when it was
 created.
 
 ```bash
@@ -39,7 +39,7 @@ curl -s "http://$HOST/v1/tools?profile=agent" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Delegate a task to an autonomous NomiFun agent:
+Delegate a task to an autonomous Flowy agent:
 
 ```bash
 curl -s -X POST "http://$HOST/v1/tools/nomi_agent_run" \

@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -14,7 +14,6 @@ describe('Guid resource cards placement', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
 
     const inputIndex = source.indexOf('<GuidInputCard');
-    const resourceIndex = source.indexOf('<GuidResourceCards', inputIndex);
     const primaryStageIndex = source.indexOf('className={styles.guidPrimaryStage}');
     const discoveryAreaIndex = source.indexOf('className={styles.guidDiscoveryArea}');
     const companionPreviewIndex = source.indexOf('<GuidCompanionPosterPreview', discoveryAreaIndex);
@@ -24,8 +23,7 @@ describe('Guid resource cards placement', () => {
 
     expect(primaryStageIndex).toBeGreaterThan(-1);
     expect(inputIndex).toBeGreaterThan(-1);
-    expect(resourceIndex).toBeGreaterThan(inputIndex);
-    expect(editorHostIndex).toBeGreaterThan(resourceIndex);
+    expect(editorHostIndex).toBeGreaterThan(inputIndex);
     expect(discoveryAreaIndex).toBeGreaterThan(editorHostIndex);
     expect(companionPreviewIndex).toBeGreaterThan(discoveryAreaIndex);
     expect(discoveryAreaSource.includes('activeSkillCount={activeSkillCount}')).toBe(false);

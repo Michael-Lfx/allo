@@ -14,7 +14,7 @@
 - 后端禁 `cargo fmt`；只跑触碰 crate 的 nextest；`nomifun-app` 必须编过。
 - 前端 typecheck=0（`cd ui && npm run typecheck`，**不是** `npx tsc`）；`bun run build` 绿；禁 `any`/`ts-ignore`；Arco 弹窗用 `useArcoMessage`；icon-park 具名导入禁别名；`<div onClick>` 不用 `<button>`。
 - **禁合并 main**；分支 `feat/multi-agent-orchestrator`。
-- 品牌 NomiFun；新增/改 UI 必须漂亮、对齐既有视觉语言。
+- 品牌 Flowy；新增/改 UI 必须漂亮、对齐既有视觉语言。
 - 设备边界 id：跨设备字符串前缀；本机 `conversation_id` 用 INTEGER；ts-rs i64 用 `#[ts(type="number")]`。
 
 ## File Structure
@@ -193,7 +193,7 @@ let run = deps.orchestrator_run_service.create_adhoc(user, req).await ...;
 **改动：**
 - `agent_build_extra.rs:219-305`：`NomiBuildExtra` 加 `#[serde(default)] pub orchestrator_role: Option<String>`。
 - `factory/nomi.rs`：在组装 `system_prompt`（:291 附近，preset_rules 合并之后）时，若 `overrides.orchestrator_role.as_deref()==Some("lead")`，把**主管系统提示**前置/合并进 `system_prompt`。主管提示常量（中文，server-authored）：
-  > 「你是 NomiFun 的编排主管。用户已在本会话限定可用模型范围（见运行上下文）。对简单或单步需求：直接作答。对复杂、可拆分为多个并行/有依赖子任务的需求：调用工具 `nomi_run_create(goal)` 把需求拆成任务 DAG 并行执行（模型范围与工作目录会自动取用），随后用 `nomi_run_status`/`nomi_run_result` 跟进并向用户汇报进展与产出。不要询问 workspace 或 fleet——它们已不存在。」
+  > 「你是 Flowy 的编排主管。用户已在本会话限定可用模型范围（见运行上下文）。对简单或单步需求：直接作答。对复杂、可拆分为多个并行/有依赖子任务的需求：调用工具 `nomi_run_create(goal)` 把需求拆成任务 DAG 并行执行（模型范围与工作目录会自动取用），随后用 `nomi_run_status`/`nomi_run_result` 跟进并向用户汇报进展与产出。不要询问 workspace 或 fleet——它们已不存在。」
 - 工具可达性：lead 会话在受信桌面会话上已默认获得 desktopGateway（含 caps_orchestrator），无需新增 gateway 代码（见 spec §3.3 勘察）。**不**从客户端标记强制开 gateway（避免非受信会话自授权）；WebUI/非受信编排门控列 carry-forward。
 
 - [ ] **Step 1: 测试（失败优先）** — `NomiBuildExtra` 反序列化 `{"orchestrator_role":"lead"}` → 字段为 `Some("lead")`；factory 单测（若有可测的 system_prompt 组装函数）断言 lead 时 system_prompt 含主管提示片段；非 lead 不含。

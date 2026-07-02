@@ -1,6 +1,6 @@
 # Web Server Deployment
 
-`nomifun-web` is the **headless, self-host** way to run NomiFun. It is the same Rust backend that the [desktop app](./desktop-app.md) embeds, but built as a standalone binary that also serves the SPA (`ui/dist`) on the same port. There is no GUI, no WebView, no `DISPLAY` requirement — it runs anywhere a Linux/macOS/Windows server will run a static binary.
+`nomifun-web` is the **headless, self-host** way to run Flowy. It is the same Rust backend that the [desktop app](./desktop-app.md) embeds, but built as a standalone binary that also serves the SPA (`ui/dist`) on the same port. There is no GUI, no WebView, no `DISPLAY` requirement — it runs anywhere a Linux/macOS/Windows server will run a static binary.
 
 Unlike the desktop shell, **`nomifun-web` requires authentication by default**. The first browser visitor either creates the admin account interactively (first-run setup), or you pre-seed credentials with `NOMIFUN_ADMIN_PASSWORD`.
 
@@ -50,7 +50,7 @@ All flags below are read by `apps/web/src/main.rs`. Each has an environment-vari
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | IP to bind on. `0.0.0.0` accepts LAN/VPN/public traffic; pre-seed the admin or complete first-run setup before broad exposure. |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP port. Serves the API, the WebSocket at `/ws`, and the SPA. |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | per-user dir | Backend data dir (SQLite database, agent state, logs, Bun cache). Defaults to the per-user location shared with the desktop app (`%LOCALAPPDATA%\NomiFun\Nomi`, `~/Library/Application Support/NomiFun/Nomi`, `$XDG_DATA_HOME/NomiFun/Nomi`). **Still set an explicit absolute path in production.** |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | per-user dir | Backend data dir (SQLite database, agent state, logs, Bun cache). Defaults to the per-user location shared with the desktop app (`%LOCALAPPDATA%\Flowy\Nomi`, `~/Library/Application Support/Flowy/Nomi`, `$XDG_DATA_HOME/Flowy/Nomi`). **Still set an explicit absolute path in production.** |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | Directory containing the built SPA. **Set this explicitly when deploying.** |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | Username used when pre-seeding the first admin. Ignored once an admin exists. |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | Pre-seed the first admin password at boot, skipping interactive setup. Ignored once an admin exists. |
@@ -228,7 +228,7 @@ The shipped unit:
 - Binds `127.0.0.1:8787` by default. Change `NOMIFUN_WEB_HOST` to
   `0.0.0.0` only after first-run setup is complete or
   `NOMIFUN_ADMIN_PASSWORD` is configured.
-- Sets `NOMIFUN_DATA_DIR=/var/lib/nomifun` to match the systemd-managed `StateDirectory=nomifun`. **Keep these two in sync** — if you drop the env line, the data dir silently falls back to the service user's per-user directory (`$XDG_DATA_HOME/NomiFun/Nomi`, typically `~nomifun/.local/share/NomiFun/Nomi`), decoupled from systemd state.
+- Sets `NOMIFUN_DATA_DIR=/var/lib/nomifun` to match the systemd-managed `StateDirectory=nomifun`. **Keep these two in sync** — if you drop the env line, the data dir silently falls back to the service user's per-user directory (`$XDG_DATA_HOME/Flowy/Nomi`, typically `~nomifun/.local/share/Flowy/Nomi`), decoupled from systemd state.
 - Runs as a dedicated `nomifun` user (`User=nomifun`, `Group=nomifun`).
 - Restarts on failure with a 3 s backoff.
 - Applies moderate hardening (`NoNewPrivileges=yes`, `PrivateTmp=yes`). **Do not add** `ProtectHome=yes` or strict `ProtectSystem` — the agent engine reads/writes operator-directed files and over-sandboxing breaks core features.
@@ -248,7 +248,7 @@ Environment=NOMIFUN_ADMIN_PASSWORD=change-me-to-something-strong
 
 ```text
 $ sudo systemctl status nomifun-web
-● nomifun-web.service - NomiFun web host
+● nomifun-web.service - Flowy web host
      Loaded: loaded (/etc/systemd/system/nomifun-web.service; enabled; preset: enabled)
      Active: active (running) since Tue 2026-06-25 09:12:03 UTC
    Main PID: 12345 (nomifun-web)
@@ -289,7 +289,7 @@ nomifun-web[12345]: listening on 127.0.0.1:8787 (auth: enabled)
 
 ## See also
 
-- [Running NomiFun as a Desktop App](./desktop-app.md)
+- [Running Flowy as a Desktop App](./desktop-app.md)
 - [WebUI Remote Access](./webui-remote-access.md) — turn an existing desktop install into a remotely-accessible server (without provisioning a separate machine).
 - `packaging/linux/README.md` — deeper Linux notes (mostly Chinese; this guide subsumes the English content).
 - `apps/web/src/main.rs` — the source of truth for flags, env vars, and bootstrapping order.

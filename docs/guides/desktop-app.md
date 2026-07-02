@@ -1,4 +1,4 @@
-# Running NomiFun as a Desktop App
+# Running Flowy as a Desktop App
 
 The desktop app (`nomifun-desktop`) is a [Tauri](https://tauri.app/) shell that links the Rust backend (`nomifun-app`) **into the same process**. There is no spawned backend binary, no Electron, no bundled `nomicore`. The shell starts the backend as an async task on a free `127.0.0.1` port, then loads the bundled SPA (`ui/dist`) into a WebView and points it at `http://127.0.0.1:<port>/api`.
 
@@ -10,7 +10,7 @@ see [WebUI Remote Access](./webui-remote-access.md) for the in-app feature, or
 [Self-Host the Web Server](./web-server-deployment.md) for the standalone
 server.
 
-![NomiFun desktop main window](../images/desktop-01-main-window.png)
+![Flowy desktop main window](../images/desktop-01-main-window.png)
 
 ## Quick start
 
@@ -47,11 +47,11 @@ A successful build prints the bundle locations, for example on macOS:
 $ bun run build
    Compiling nomifun-app v0.1.0
     Finished `release` profile [optimized] target(s)
-    Bundling NomiFun.app (macos)
-    Bundling NomiFun_0.1.0_aarch64.dmg (macos)
+    Bundling Flowy.app (macos)
+    Bundling Flowy_0.1.0_aarch64.dmg (macos)
     Finished 2 bundles at:
-      target/release/bundle/macos/NomiFun.app
-      target/release/bundle/dmg/NomiFun_0.1.0_aarch64.dmg
+      target/release/bundle/macos/Flowy.app
+      target/release/bundle/dmg/Flowy_0.1.0_aarch64.dmg
 ```
 
 ## Window and titlebar
@@ -60,7 +60,7 @@ The main window is **frameless** on Windows and Linux: the React titlebar compon
 
 - Default size: `1280 × 832`, minimum `880 × 600`.
 - Resizable everywhere (edge-resize and Snap still work on Windows even without OS-drawn decorations).
-- Title bar: `NomiFun`.
+- Title bar: `Flowy`.
 
 > The exact chrome differs per OS: a frameless titlebar with in-app controls on
 > Windows and Linux, and the native traffic-light buttons (content under an
@@ -86,7 +86,7 @@ The shell ships `tauri-plugin-autostart` so the renderer can opt the app into "l
 
 ## Where data is stored
 
-The desktop app persists the SQLite database, agent state, logs, and the Bun runtime cache under the per-user application-data directory — **`%LOCALAPPDATA%\NomiFun\Nomi`** on Windows, **`~/Library/Application Support/NomiFun/Nomi`** on macOS, **`$XDG_DATA_HOME/NomiFun/Nomi`** on Linux (resolved by the shared `nomifun_app::cli::default_data_dir()`). This is the same default the `nomifun-web` host and the dev scripts use, so a provider or companion configured in one host is visible in the others.
+The desktop app persists the SQLite database, agent state, logs, and the Bun runtime cache under the per-user application-data directory — **`%LOCALAPPDATA%\Flowy\Nomi`** on Windows, **`~/Library/Application Support/Flowy/Nomi`** on macOS, **`$XDG_DATA_HOME/Flowy/Nomi`** on Linux (resolved by the shared `nomifun_app::cli::default_data_dir()`). This is the same default the `nomifun-web` host and the dev scripts use, so a provider or companion configured in one host is visible in the others.
 
 Set `NOMIFUN_DATA_DIR=<absolute path>` before launching the app and the data dir becomes `$NOMIFUN_DATA_DIR/Nomi`. The backend takes an exclusive `server.lock` on the data dir at startup; if it fails to start — for example because another instance already holds the directory — the desktop shell shows a native error dialog and exits.
 
@@ -95,7 +95,7 @@ Set `NOMIFUN_DATA_DIR=<absolute path>` before launching the app and the data dir
 To start fresh, **quit the app** and delete that directory. To migrate, copy the directory to a new machine.
 
 ```text
-~/Library/Application Support/NomiFun/Nomi/    # macOS (see paths above for Windows/Linux)
+~/Library/Application Support/Flowy/Nomi/    # macOS (see paths above for Windows/Linux)
 ├── nomifun-backend.db        # SQLite state (conversations, settings, sessions, …)
 ├── logs/                     # nomicore.log
 ├── companion/                # companions + the shared memory hub
@@ -141,7 +141,7 @@ code-signing certificate.
 Make sure the WebView runtime is installed (WebView2 on Windows 10 needs the Evergreen Bootstrapper). On Linux, `libwebkit2gtk-4.1-0` is required.
 
 **"Failed to bind backend port".**
-Another process is holding `127.0.0.1` ephemeral ports. The backend tries `pick_free_port()` and falls back to `8799` if that fails — quit any other NomiFun instance and try again.
+Another process is holding `127.0.0.1` ephemeral ports. The backend tries `pick_free_port()` and falls back to `8799` if that fails — quit any other Flowy instance and try again.
 
 **Agent commands fail with `bun: command not found`.**
 The agent engine spawns Bun as a child process for tool execution. Install Bun (`curl -fsSL https://bun.sh/install | bash`) and make sure it is on the system `PATH`, or build the desktop bundle with `NOMIFUN_EMBED_BUN=1` to embed it.

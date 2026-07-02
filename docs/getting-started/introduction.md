@@ -1,6 +1,6 @@
 # Introduction
 
-**NomiFun** is an open-source AI workstation and coding workspace. It unifies
+**Flowy** is an open-source AI workstation and coding workspace. It unifies
 multiple AI runtimes, LLM providers, MCP servers, skills, terminals, knowledge
 bases, scheduled work, and companion/remote capability surfaces in one local-first
 application.
@@ -9,12 +9,12 @@ application.
 > [Quick Start](quick-start.md). For the full documentation map, see
 > [docs/README.md](../README.md).
 
-![NomiFun guide / landing page](../images/gs-01-introduction-hero.png)
+![Flowy guide / landing page](../images/gs-01-introduction-hero.png)
 
-## What NomiFun Solves
+## What Flowy Solves
 
 Modern AI workflows are scattered across separate CLIs, terminals, browser
-tabs, MCP servers, and local scripts. NomiFun pulls them into one workspace:
+tabs, MCP servers, and local scripts. Flowy pulls them into one workspace:
 
 - **Many agents, one surface.** Use the built-in Nomi engine or external
   ACP-style CLIs such as Claude Code, Codex, Gemini CLI, Qwen, and OpenCode.
@@ -29,7 +29,7 @@ tabs, MCP servers, and local scripts. NomiFun pulls them into one workspace:
 - **Local-first deployment.** Run it as a Tauri desktop app or a self-hosted web
   server. You provide the model/API credentials and decide where the data lives.
 
-NomiFun is not a no-code SaaS chat product. It is infrastructure for users who
+Flowy is not a no-code SaaS chat product. It is infrastructure for users who
 are comfortable configuring agents, providers, local tools, and self-hosted
 services.
 
@@ -73,11 +73,11 @@ The current frontend route source is
 
 ## Project Status
 
-NomiFun is in active development. [STATUS.md](../../STATUS.md) is the compact
+Flowy is in active development. [STATUS.md](../../STATUS.md) is the compact
 current-state snapshot. Design and audit history is not kept in the repo; consult
 git history for past decisions.
 
 ## License
 
-NomiFun is released under the Apache-2.0 License. See
+Flowy is released under the Apache-2.0 License. See
 [`NOTICE`](../../NOTICE) for third-party attributions.

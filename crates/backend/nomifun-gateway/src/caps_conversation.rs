@@ -103,7 +103,7 @@ struct DeleteConversationParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct AgentRunParams {
-    /// The goal / task to delegate. A fresh autonomous NomiFun (nomi) agent is
+    /// The goal / task to delegate. A fresh autonomous Flowy (nomi) agent is
     /// spun up to accomplish it end-to-end.
     goal: String,
     /// Optional absolute workspace directory for the run. Omit for an
@@ -681,7 +681,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
         CapabilityMeta::new(
             "nomi_agent_run",
             "agent",
-            "Delegate a goal to a fresh autonomous NomiFun agent: spins up a nomi session (yolo, full platform tools), runs it to completion, and returns the final answer. Streams the agent's progress over /tool/stream (or the SSE REST endpoint); buffered callers get the final result. Long runs return a {status:\"running\"} handle — poll nomi_agent_result.",
+            "Delegate a goal to a fresh autonomous Flowy agent: spins up a nomi session (yolo, full platform tools), runs it to completion, and returns the final answer. Streams the agent's progress over /tool/stream (or the SSE REST endpoint); buffered callers get the final result. Long runs return a {status:\"running\"} handle — poll nomi_agent_result.",
             DangerTier::Write,
         ),
         agent_run,

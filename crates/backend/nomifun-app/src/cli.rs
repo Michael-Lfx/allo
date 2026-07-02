@@ -10,9 +10,9 @@ use clap::{Parser, Subcommand};
 
 /// The default data directory shared by ALL hosts (desktop shell, `nomifun-web`,
 /// the `nomicore` bin): the per-user application-data dir joined with
-/// `NomiFun/Nomi` — `%LOCALAPPDATA%\NomiFun\Nomi` on Windows,
-/// `~/Library/Application Support/NomiFun/Nomi` on macOS,
-/// `$XDG_DATA_HOME/NomiFun/Nomi` on Linux. Extreme fallback when the OS
+/// `Flowy/Nomi` — `%LOCALAPPDATA%\Flowy\Nomi` on Windows,
+/// `~/Library/Application Support/Flowy/Nomi` on macOS,
+/// `$XDG_DATA_HOME/Flowy/Nomi` on Linux. Extreme fallback when the OS
 /// reports no user dir: `<system temp>/nomifun-data/Nomi`.
 ///
 /// One default for every host is deliberate: dev loops (`bun run web`,
@@ -28,15 +28,15 @@ use clap::{Parser, Subcommand};
 /// env value, web/nomicore take it literally (clap `env` binding).
 pub fn default_data_dir() -> PathBuf {
     dirs::data_local_dir()
-        .map(|dir| dir.join("NomiFun"))
+        .map(|dir| dir.join("Flowy"))
         .unwrap_or_else(|| std::env::temp_dir().join("nomifun-data"))
         .join(nomi_leaf(&nomifun_common::channel::dir_suffix()))
 }
 
 /// The data-dir leaf for the active build channel: `Nomi` on stable, `Nomi-dev`
 /// (etc.) on non-stable channels. The channel suffix attaches to the `Nomi`
-/// leaf — NOT to the `NomiFun` vendor segment — so a non-stable build lands in a
-/// sibling directory next to the production one (`…/NomiFun/Nomi-dev`), keeping
+/// leaf — NOT to the `Flowy` vendor segment — so a non-stable build lands in a
+/// sibling directory next to the production one (`…/Flowy/Nomi-dev`), keeping
 /// dev state fully isolated from the installed app. Pure, for unit testing;
 /// only `default_data_dir`'s unset default uses it (explicit `NOMIFUN_DATA_DIR`
 /// is taken verbatim by clap, channel-agnostic).
@@ -147,7 +147,7 @@ pub enum Command {
     /// as JSON. Offline — reads the capability registry directly, no running
     /// instance required.
     Tools,
-    /// Invoke a capability on a RUNNING NomiFun instance via its REST `/v1` API.
+    /// Invoke a capability on a RUNNING Flowy instance via its REST `/v1` API.
     /// Endpoint/token from `--url`/`--token` or `NOMIFUN_URL` /
     /// `NOMIFUN_COMPANION_TOKEN`.
     Call {
@@ -162,7 +162,7 @@ pub enum Command {
         #[arg(long)]
         token: Option<String>,
     },
-    /// Delegate a goal to an autonomous NomiFun agent on a running instance
+    /// Delegate a goal to an autonomous Flowy agent on a running instance
     /// (convenience wrapper over the `nomi_agent_run` capability).
     Agent {
         /// The goal / task to delegate.
@@ -197,8 +197,8 @@ mod tests {
             "default data dir must be absolute, got {dir:?}"
         );
         assert!(
-            dir.ends_with("NomiFun/Nomi") || dir.ends_with("nomifun-data/Nomi"),
-            "default data dir should end with NomiFun/Nomi (or the temp fallback), got {dir:?}"
+            dir.ends_with("Flowy/Nomi") || dir.ends_with("nomifun-data/Nomi"),
+            "default data dir should end with Flowy/Nomi (or the temp fallback), got {dir:?}"
         );
     }
 
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn nomi_leaf_non_stable_attaches_suffix_to_nomi() {
         // The channel suffix must land on the `Nomi` leaf, yielding a sibling of
-        // the production dir (`…/NomiFun/Nomi-dev`) — never on `NomiFun`.
+        // the production dir (`…/Flowy/Nomi-dev`) — never on `Flowy`.
         assert_eq!(super::nomi_leaf("-dev"), "Nomi-dev");
     }
 

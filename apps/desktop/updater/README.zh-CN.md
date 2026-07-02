@@ -1,4 +1,4 @@
-# NomiFun 桌面端自动更新说明
+# Flowy 桌面端自动更新说明
 
 本文只说明自动更新链路。完整发版操作看根目录 `RELEASING.zh-CN.md`。
 
@@ -110,9 +110,9 @@ apps/desktop/updater/latest.json
 macOS 需要同时上传：
 
 ```text
-dist/desktop/NomiFun_<version>_universal.dmg
-target/universal-apple-darwin/release/bundle/macos/NomiFun.app.tar.gz
-target/universal-apple-darwin/release/bundle/macos/NomiFun.app.tar.gz.sig
+dist/desktop/Flowy_<version>_universal.dmg
+target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz
+target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz.sig
 apps/desktop/updater/latest.json
 ```
 

@@ -1,8 +1,8 @@
-# NomiFun WebUI 远程访问指南
+# Flowy WebUI 远程访问指南
 
-NomiFun 有两种浏览器访问方式：
+Flowy 有两种浏览器访问方式：
 
-- **桌面实例远程访问**：在现有 NomiFun 桌面应用中临时开启 LAN/VPN 访问。
+- **桌面实例远程访问**：在现有 Flowy 桌面应用中临时开启 LAN/VPN 访问。
 - **独立 Web 服务器**：使用 `nomifun-web` 在服务器上无头运行同一个后端和 SPA。
 
 桌面实例的远程访问配置都应通过 **Open Capabilities / Remote Access**
@@ -20,7 +20,7 @@ NomiFun 有两种浏览器访问方式：
 
 ## 桌面实例：Open Capabilities
 
-1. 打开 NomiFun 设置。
+1. 打开 Flowy 设置。
 2. 进入 **Open Capabilities / 开放能力**。
 3. 打开 **Remote Access / WebUI** 区域。
 4. 按需启用远程访问服务。
@@ -58,7 +58,7 @@ nomifun-web --host 0.0.0.0 --port 8787 \
 
 - 确认桌面 Open Capabilities 面板中的远程访问服务正在运行。
 - 确认手机与电脑在同一 LAN，或两端都已连接同一个 VPN/Tailscale 网络。
-- 检查系统防火墙是否阻止 NomiFun 监听端口。
+- 检查系统防火墙是否阻止 Flowy 监听端口。
 - 如果使用 `nomifun-web`，确认 `--host` 不是只绑定在 `127.0.0.1`。
 
 ### 首次登录或密码问题

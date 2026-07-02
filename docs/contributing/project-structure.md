@@ -1,6 +1,6 @@
 # Project Structure
 
-This is the authoritative repo map for **NomiFun**. It tells you which
+This is the authoritative repo map for **Flowy**. It tells you which
 directory holds what, what each Rust crate is responsible for, and the one
 architectural rule that keeps the agent engine extractable. For the
 deep-dive on backend layering see
@@ -29,7 +29,7 @@ nomifun-tauri/
 ├── docs/
 │   ├── getting-started/          install + first run
 │   ├── guides/                   task-focused how-tos for end users
-│   ├── architecture/             how NomiFun is built (runtime, crates, frontend)
+│   ├── architecture/             how Flowy is built (runtime, crates, frontend)
 │   ├── reference/                configuration, API surface, troubleshooting
 │   ├── contributing/             this directory
 │   ├── specs/                    dated engineering design docs (historical)

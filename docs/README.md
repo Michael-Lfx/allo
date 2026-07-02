@@ -1,7 +1,7 @@
-# NomiFun Documentation
+# Flowy Documentation
 
 This folder contains the current technical, operator, and contributor
-documentation for **NomiFun**. It holds only material that matches the current
+documentation for **Flowy**. It holds only material that matches the current
 implementation; historical design specs and audits are not maintained in the
 repo — consult git history when you need them.
 
@@ -13,7 +13,7 @@ repo — consult git history when you need them.
 
 | Need | Read |
 | --- | --- |
-| Understand what NomiFun is | [getting-started/introduction.md](getting-started/introduction.md) |
+| Understand what Flowy is | [getting-started/introduction.md](getting-started/introduction.md) |
 | Install or run locally | [getting-started/installation.md](getting-started/installation.md) |
 | Try the app quickly | [getting-started/quick-start.md](getting-started/quick-start.md) |
 | Understand the current architecture | [architecture/overview.md](architecture/overview.md) |

@@ -39,11 +39,11 @@ use std::sync::{Arc, RwLock};
 /// model reading "this app" reliably misattributes it to the terminal/editor it
 /// imagines is hosting the session and sends the user to grant the wrong
 /// process. The host sets this once at startup (the desktop shell sets
-/// "NomiFun"); library/headless embeddings leave it unset and get "this app".
+/// "Flowy"); library/headless embeddings leave it unset and get "this app".
 static HOST_APP_LABEL: RwLock<Option<String>> = RwLock::new(None);
 
 /// Set the host-application label used in permission-error guidance (e.g.
-/// "NomiFun"). Last writer wins; call once early in host startup. A poisoned
+/// "Flowy"). Last writer wins; call once early in host startup. A poisoned
 /// lock is ignored — the default ("this app") is a safe fallback, never a panic.
 pub fn set_host_app_label(label: impl Into<String>) {
     if let Ok(mut guard) = HOST_APP_LABEL.write() {
@@ -102,8 +102,8 @@ mod host_label_tests {
     #[test]
     fn label_defaults_then_reflects_set_and_ignores_empty() {
         assert_eq!(host_app_label(), "this app", "default before any host sets it");
-        set_host_app_label("NomiFun");
-        assert_eq!(host_app_label(), "NomiFun");
+        set_host_app_label("Flowy");
+        assert_eq!(host_app_label(), "Flowy");
         // An empty label is ignored so a mis-set never blanks the guidance.
         set_host_app_label("");
         assert_eq!(host_app_label(), "this app");

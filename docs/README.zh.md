@@ -1,6 +1,6 @@
-# NomiFun 文档
+# Flowy 文档
 
-本目录保存 **NomiFun** 当前的技术文档、运维文档与贡献者文档。这里只保留与
+本目录保存 **Flowy** 当前的技术文档、运维文档与贡献者文档。这里只保留与
 当前实现一致的内容；历史设计稿与审计记录不在仓库中维护，需要时请查阅 git
 历史。
 
@@ -12,7 +12,7 @@
 
 | 目标 | 阅读 |
 | --- | --- |
-| 了解 NomiFun 是什么 | [getting-started/introduction.zh.md](getting-started/introduction.zh.md) |
+| 了解 Flowy 是什么 | [getting-started/introduction.zh.md](getting-started/introduction.zh.md) |
 | 安装或本地运行 | [getting-started/installation.zh.md](getting-started/installation.zh.md) |
 | 快速试用 | [getting-started/quick-start.zh.md](getting-started/quick-start.zh.md) |
 | 理解当前架构 | [architecture/overview.zh.md](architecture/overview.zh.md) |

@@ -1,4 +1,4 @@
-# 在无 UI 的 Linux 服务器上部署 NomiFun WebUI
+# 在无 UI 的 Linux 服务器上部署 Flowy WebUI
 
 本目录是 **headless(无图形界面)** 部署产物。服务器上**不要**装 Tauri 桌面包(`.deb`/`.AppImage` 需要图形会话);要跑的是 `nomifun-web` —— 一个纯 axum 的 HTTP/WS 服务,后端 in-process + 同端口托管前端 SPA,**零 GUI 依赖**,可在没有显示器的服务器上运行。
 
@@ -88,7 +88,7 @@ sudo systemctl status nomifun-web
 
 同样建议在前面摆一个 Caddy/nginx 做 TLS,并在 unit 里设 `Environment=NOMIFUN_HTTPS=true`。
 
-> ⚠️ unit 里 `Environment=NOMIFUN_DATA_DIR=/var/lib/nomifun` 必须与 `StateDirectory=nomifun` **保持一致**。若你改 unit(比如注释掉 `User`/`Group` 改用 root)时不慎删掉那行,数据会悄悄落到服务用户的按用户目录(`$XDG_DATA_HOME/NomiFun/Nomi`,通常是 `~nomifun/.local/share/NomiFun/Nomi`),与 systemd 托管的 `/var/lib/nomifun` 脱钩。
+> ⚠️ unit 里 `Environment=NOMIFUN_DATA_DIR=/var/lib/nomifun` 必须与 `StateDirectory=nomifun` **保持一致**。若你改 unit(比如注释掉 `User`/`Group` 改用 root)时不慎删掉那行,数据会悄悄落到服务用户的按用户目录(`$XDG_DATA_HOME/Flowy/Nomi`,通常是 `~nomifun/.local/share/Flowy/Nomi`),与 systemd 托管的 `/var/lib/nomifun` 脱钩。
 
 ---
 
@@ -98,7 +98,7 @@ sudo systemctl status nomifun-web
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | 监听地址。`0.0.0.0` 会对 LAN/VPN/公网可达；请先完成管理员设置或预置密码，公网必须放在 TLS 之后 |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | 同时服务 API、`/ws`、SPA 的端口 |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 数据目录(db / 日志 / bun 缓存 / agent 状态)。默认是服务用户的按用户目录(Linux 为 `$XDG_DATA_HOME/NomiFun/Nomi`);生产请显式指定绝对路径 |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户目录 | 数据目录(db / 日志 / bun 缓存 / agent 状态)。默认是服务用户的按用户目录(Linux 为 `$XDG_DATA_HOME/Flowy/Nomi`);生产请显式指定绝对路径 |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | SPA 静态目录。部署时**必须**显式指定 |
 | — | `NOMIFUN_HTTPS` | `false` | 设 `true` 时会话/CSRF cookie 带 `Secure`(仅在 TLS 后用) |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | 预置管理员用户名(仅预置时用) |

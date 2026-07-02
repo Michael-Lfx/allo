@@ -1,6 +1,6 @@
 # Channels
 
-通过 **channel**，你可以从外部聊天应用——Telegram、Lark / 飞书、钉钉、微信——操作 NomiFun 的智能体，而不必坐在桌面客户端前面。你启用一个插件，粘贴它的凭证，用一次性验证码授权一个聊天用户，从此发到你机器人的消息就会被分发到智能体，智能体的回复也会回到同一个会话。
+通过 **channel**，你可以从外部聊天应用——Telegram、Lark / 飞书、钉钉、微信——操作 Flowy 的智能体，而不必坐在桌面客户端前面。你启用一个插件，粘贴它的凭证，用一次性验证码授权一个聊天用户，从此发到你机器人的消息就会被分发到智能体，智能体的回复也会回到同一个会话。
 
 Channel 适用于以下场景：
 
@@ -8,7 +8,7 @@ Channel 适用于以下场景：
 - 你希望让一个工作区感知的智能体能从团队现有 IM 中触达；
 - 你希望长时任务（[AutoWork](./autowork-requirements.zh.md)）能从桌面之外被发起，而不必启动 WebUI。
 
-> 每个平台插件都是 `nomifun-channel` 上的一个 Cargo feature（`telegram`、`lark`、`dingtalk`、`weixin`）。NomiFun 的默认构建把它们全部打开；如果你用非默认 feature 集合自行构建后端，对应的 tab 就直接消失。
+> 每个平台插件都是 `nomifun-channel` 上的一个 Cargo feature（`telegram`、`lark`、`dingtalk`、`weixin`）。Flowy 的默认构建把它们全部打开；如果你用非默认 feature 集合自行构建后端，对应的 tab 就直接消失。
 
 ![Channels 设置总览](../images/channels-01-overview.png)
 

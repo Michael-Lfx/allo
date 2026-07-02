@@ -1,4 +1,4 @@
-# 以桌面应用方式运行 NomiFun
+# 以桌面应用方式运行 Flowy
 
 桌面应用 (`nomifun-desktop`) 是一个 [Tauri](https://tauri.app/) 外壳，**在同一进程内**链接 Rust 后端 (`nomifun-app`)。这里没有派生的后端二进制，没有 Electron，也没有捆绑的 `nomicore`。外壳在一个空闲的 `127.0.0.1` 端口上将后端启动为异步任务，然后将打包好的 SPA (`ui/dist`) 加载进 WebView，并使其指向 `http://127.0.0.1:<port>/api`。
 
@@ -8,7 +8,7 @@
 [WebUI 远程访问](./webui-remote-access.zh.md)（应用内功能），或
 [自托管 Web 服务器](./web-server-deployment.zh.md)（独立服务器）。
 
-![NomiFun 桌面主窗口](../images/desktop-01-main-window.png)
+![Flowy 桌面主窗口](../images/desktop-01-main-window.png)
 
 ## 快速开始
 
@@ -45,11 +45,11 @@ bun run build
 $ bun run build
    Compiling nomifun-app v0.1.0
     Finished `release` profile [optimized] target(s)
-    Bundling NomiFun.app (macos)
-    Bundling NomiFun_0.1.0_aarch64.dmg (macos)
+    Bundling Flowy.app (macos)
+    Bundling Flowy_0.1.0_aarch64.dmg (macos)
     Finished 2 bundles at:
-      target/release/bundle/macos/NomiFun.app
-      target/release/bundle/dmg/NomiFun_0.1.0_aarch64.dmg
+      target/release/bundle/macos/Flowy.app
+      target/release/bundle/dmg/Flowy_0.1.0_aarch64.dmg
 ```
 
 ## 窗口与标题栏
@@ -58,7 +58,7 @@ $ bun run build
 
 - 默认尺寸：`1280 × 832`，最小 `880 × 600`。
 - 各处都可调整大小 (即使没有 OS 绘制的装饰，Windows 上的边缘调整和 Snap 仍然可用)。
-- 标题栏：`NomiFun`。
+- 标题栏：`Flowy`。
 
 > 窗口边框因系统而异：Windows / Linux 上是带应用内控件的无边框标题栏，macOS
 > 上保留原生红绿灯按钮（内容延伸至 `Overlay` 栏下）。
@@ -83,7 +83,7 @@ $ bun run build
 
 ## 数据存储位置
 
-桌面应用将 SQLite 数据库、agent 状态、日志和 Bun 运行时缓存持久化到按用户的应用数据目录下 —— Windows 上是 **`%LOCALAPPDATA%\NomiFun\Nomi`**，macOS 上是 **`~/Library/Application Support/NomiFun/Nomi`**，Linux 上是 **`$XDG_DATA_HOME/NomiFun/Nomi`** (由共享的 `nomifun_app::cli::default_data_dir()` 解析)。这与 `nomifun-web` 宿主和开发脚本使用的是同一个默认目录，因此在一个宿主里配置的 provider 或伙伴在其他宿主里同样可见。
+桌面应用将 SQLite 数据库、agent 状态、日志和 Bun 运行时缓存持久化到按用户的应用数据目录下 —— Windows 上是 **`%LOCALAPPDATA%\Flowy\Nomi`**，macOS 上是 **`~/Library/Application Support/Flowy/Nomi`**，Linux 上是 **`$XDG_DATA_HOME/Flowy/Nomi`** (由共享的 `nomifun_app::cli::default_data_dir()` 解析)。这与 `nomifun-web` 宿主和开发脚本使用的是同一个默认目录，因此在一个宿主里配置的 provider 或伙伴在其他宿主里同样可见。
 
 在启动应用前设置 `NOMIFUN_DATA_DIR=<absolute path>`，数据目录就会变为 `$NOMIFUN_DATA_DIR/Nomi`。后端启动时会对数据目录取排他的 `server.lock`；若启动失败 (例如该目录已被另一个实例占用)，桌面外壳会弹出原生错误对话框并退出。
 
@@ -92,7 +92,7 @@ $ bun run build
 要重新开始，**退出应用**并删除该目录。要迁移，将该目录复制到新机器上即可。
 
 ```text
-~/Library/Application Support/NomiFun/Nomi/    # macOS（Windows/Linux 路径见上文）
+~/Library/Application Support/Flowy/Nomi/    # macOS（Windows/Linux 路径见上文）
 ├── nomifun-backend.db        # SQLite 状态（会话、设置、session 等）
 ├── logs/                     # nomicore.log
 ├── companion/                # 伙伴 + 共享记忆中枢
@@ -135,7 +135,7 @@ Developer ID 签名与公证已通过 `bun run build:signed` 和
 确保已安装 WebView 运行时 (Windows 10 上的 WebView2 需要 Evergreen Bootstrapper)。在 Linux 上需要 `libwebkit2gtk-4.1-0`。
 
 **"Failed to bind backend port"。**
-另一个进程占用了 `127.0.0.1` 临时端口。后端会尝试 `pick_free_port()`，失败时回退到 `8799` —— 退出任何其他 NomiFun 实例后再试。
+另一个进程占用了 `127.0.0.1` 临时端口。后端会尝试 `pick_free_port()`，失败时回退到 `8799` —— 退出任何其他 Flowy 实例后再试。
 
 **Agent 命令失败并报 `bun: command not found`。**
 Agent 引擎会派生 Bun 作为子进程来执行工具。请安装 Bun (`curl -fsSL https://bun.sh/install | bash`) 并确保它在系统 `PATH` 上，或者使用 `NOMIFUN_EMBED_BUN=1` 构建桌面包以将其嵌入。

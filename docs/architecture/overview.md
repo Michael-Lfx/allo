@@ -1,7 +1,7 @@
 # Architecture Overview
 
-NomiFun is built around a single principle: **one Rust backend, two host modes,
-one frontend**. Whether you launch the desktop product **NomiFun** or self-host the
+Flowy is built around a single principle: **one Rust backend, two host modes,
+one frontend**. Whether you launch the desktop product **Flowy** or self-host the
 web server, the same `axum` HTTP/WS server (`nomifun-app`, binary `nomicore`)
 executes inside the host process. The React 19 SPA in `ui/` is the only client,
 and it always speaks plain HTTP and WebSocket — no Electron preload, no Tauri
@@ -120,7 +120,7 @@ default pattern.
 ```
 nomifun-tauri/
 ├─ apps/
-│   ├─ desktop/   nomifun-desktop  (Tauri 2 shell, this is "NomiFun" the product)
+│   ├─ desktop/   nomifun-desktop  (Tauri 2 shell, this is "Flowy" the product)
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
 │   ├─ agent/     15 nomi-* crates  → see agent-engine.md
@@ -134,8 +134,8 @@ nomifun-tauri/
 
 ## Brand and identifiers
 
-- **NomiFun** — the desktop product and project / brand wordmark (camelCase,
-  capital N and F). "NomiFun is an AI Workstation (desktop app plus
+- **Flowy** — the desktop product and project / brand wordmark (camelCase,
+  capital N and F). "Flowy is an AI Workstation (desktop app plus
   self-hosted web server)."
 - The lowercase `nomifun` is reserved for technical identifiers only —
   the npm/JS package id, the Rust crate prefix `nomifun-*`, the Tauri bundle

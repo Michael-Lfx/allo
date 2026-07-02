@@ -85,4 +85,4 @@
 
 ## 约束(贯穿;来自标准规则与记忆)
 
-无 IR/compile/节点图;禁 cargo fmt;禁合并 main;提交前 `git pull --rebase`(注意迁移号——本次**无新迁移**);push 仅在用户要求;中文 only;UI 必须漂亮;品牌 NomiFun;公开路由禁 extract `Extension<CurrentUser>`;icon-park 具名禁别名;交互元素 `<div role=button>` 非裸 `<button>`;Arco 弹窗经 `useArcoMessage`;无 `any`/`@ts-ignore`;用 `npm run typecheck`;per-run 锁绝不跨 LLM await;编排 WS 事件手镜像两端同步。
+无 IR/compile/节点图;禁 cargo fmt;禁合并 main;提交前 `git pull --rebase`(注意迁移号——本次**无新迁移**);push 仅在用户要求;中文 only;UI 必须漂亮;品牌 Flowy;公开路由禁 extract `Extension<CurrentUser>`;icon-park 具名禁别名;交互元素 `<div role=button>` 非裸 `<button>`;Arco 弹窗经 `useArcoMessage`;无 `any`/`@ts-ignore`;用 `npm run typecheck`;per-run 锁绝不跨 LLM await;编排 WS 事件手镜像两端同步。

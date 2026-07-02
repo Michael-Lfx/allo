@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -77,7 +77,7 @@ export class ClientFactory {
           timeout: options.timeout,
           defaultHeaders: {
             'HTTP-Referer': 'https://nomifun.com',
-            'X-Title': 'NomiFun',
+            'X-Title': 'Flowy',
           },
           ...(options.baseConfig as OpenAIClientConfig),
         };
@@ -128,7 +128,7 @@ export class ClientFactory {
           timeout: options.timeout,
           defaultHeaders: {
             'HTTP-Referer': 'https://nomifun.com',
-            'X-Title': 'NomiFun',
+            'X-Title': 'Flowy',
           },
           ...(options.baseConfig as OpenAIClientConfig),
         };

@@ -1,6 +1,6 @@
 # Communication
 
-NomiFun has several transport surfaces. They deliberately serve different
+Flowy has several transport surfaces. They deliberately serve different
 callers and security models.
 
 ## Channels

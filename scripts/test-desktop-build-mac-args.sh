@@ -10,7 +10,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 TMP_DIR="$(mktemp -d)"
-FAKE_DMG="$TMP_DIR/NomiFun-test.dmg"
+FAKE_DMG="$TMP_DIR/Flowy-test.dmg"
 LOG="$TMP_DIR/bun-args.log"
 
 cleanup() {

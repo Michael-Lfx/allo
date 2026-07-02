@@ -23,7 +23,7 @@
 - **前端 typecheck 必须归零**：用 `cd ui && npm run typecheck`（**不是** `npx tsc`，会误报 0）；本机无 vitest，**不新增前端单测文件**；改 locale 后跑 `bun run gen:i18n`（仓库根）+ 同步 `i18n-keys.d.ts`。
 - **前端铁律**：禁 `any`/`ts-ignore`/改无关行为；颜色一律 CSS 主题变量（`var(--*)` / UnoCSS 语义 token），禁硬编码 hex；`@icon-park/react` 具名导入**不起别名**；Arco 弹窗经 `useArcoMessage` 包装（不裸用 `Message.useMessage`）；无 UnoCSS button reset → 用 `<div onClick>` 不用裸 `<button>`；桌面壳判断用 `isDesktopShell()`（**非** `isElectronDesktop()` 死桩）。
 - **测试**：开发中只跑触碰的 crate（`cargo nextest run -p <crate>`），全量仅收尾一次。
-- **品牌**：字样 NomiFun（非 Nomifun）；用户可见名「智能编排」；内部标识符 `orchestrator`/`fleet` 不动。
+- **品牌**：字样 Flowy（非 Nomifun）；用户可见名「智能编排」；内部标识符 `orchestrator`/`fleet` 不动。
 - **提交**：每任务末尾 commit（feature 分支 `feat/multi-agent-orchestrator`，已建）；提交前 `git pull --rebase`（多端并行，注意迁移号撞号）。
 
 ## File Structure（P0 创建/修改）

@@ -1,6 +1,6 @@
 # AutoWork 与 Requirements
 
-AutoWork 是 NomiFun 的旗舰自动化能力：一块 **需求看板**（requirements board）加上一个 **编排器**（orchestrator），由它驱动 AI 智能体（或运行在终端中的 agent CLI）逐条处理这些需求，无需你全程盯着。
+AutoWork 是 Flowy 的旗舰自动化能力：一块 **需求看板**（requirements board）加上一个 **编排器**（orchestrator），由它驱动 AI 智能体（或运行在终端中的 agent CLI）逐条处理这些需求，无需你全程盯着。
 
 你登记需求，按 tag 分组，把 tag 绑定到一个会话（对话或终端），编排器就会按顺序认领、执行并完结它们。当某条需求进入终态时，可以触发 **完成通知**（Lark/飞书 webhook），让你的团队第一时间知道结果。
 

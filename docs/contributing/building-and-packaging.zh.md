@@ -1,6 +1,6 @@
 # 构建与打包
 
-本页说明当前 **NomiFun** monorepo 能产出的发布物：React SPA、`nomifun-web`、
+本页说明当前 **Flowy** monorepo 能产出的发布物：React SPA、`nomifun-web`、
 Tauri 桌面包、updater 产物、Docker 镜像和 Linux systemd 部署文件。
 
 日常开发循环见 [`development.zh.md`](development.zh.md)。部署运行见
@@ -64,7 +64,7 @@ OS 的安装包/应用包。
 
 产品身份来自 `apps/desktop/tauri.conf.json`：
 
-- `productName: "NomiFun"`
+- `productName: "Flowy"`
 - `identifier: "com.nomifun.desktop"`
 - 版本来自 workspace package metadata
 - dev URL `http://localhost:5173`

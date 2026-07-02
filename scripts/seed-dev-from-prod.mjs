@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Seed the dev-channel data dir (…/NomiFun/Nomi-dev) from production
- * (…/NomiFun/Nomi), so an auto-isolated dev build can reproduce prod state.
+ * Seed the dev-channel data dir (…/Flowy/Nomi-dev) from production
+ * (…/Flowy/Nomi), so an auto-isolated dev build can reproduce prod state.
  *
  * Auto-isolation (NOMI_CHANNEL=dev → `Nomi-dev`) gives a dev build its own empty
  * DB. This is the escape hatch for when you need prod's conversations /
  * providers / login in dev to reproduce a bug — it restores the "troubleshoot
  * one place" convenience that channel isolation otherwise trades away.
  *
- * SAFETY: close ALL NomiFun instances (the installed app, `bun run serve:web`,
+ * SAFETY: close ALL Flowy instances (the installed app, `bun run serve:web`,
  * `nomicore`, and any running dev build) before seeding — copying a live SQLite
  * database yields a torn snapshot. Lock and runtime files are never copied.
  *
@@ -24,11 +24,11 @@ function nomifunBase() {
   const home = homedir();
   switch (platform()) {
     case 'darwin':
-      return join(home, 'Library', 'Application Support', 'NomiFun');
+      return join(home, 'Library', 'Application Support', 'Flowy');
     case 'win32':
-      return join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'NomiFun');
+      return join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Flowy');
     default:
-      return join(process.env.XDG_DATA_HOME ?? join(home, '.local', 'share'), 'NomiFun');
+      return join(process.env.XDG_DATA_HOME ?? join(home, '.local', 'share'), 'Flowy');
   }
 }
 
@@ -60,7 +60,7 @@ if (existsSync(dev) && readdirSync(dev).length > 0) {
 console.log('Seeding dev from prod:');
 console.log(`    ${prod}`);
 console.log(`  → ${dev}`);
-console.log('  Ensure ALL NomiFun instances are closed; lock/runtime files are skipped.');
+console.log('  Ensure ALL Flowy instances are closed; lock/runtime files are skipped.');
 
 cpSync(prod, dev, {
   recursive: true,

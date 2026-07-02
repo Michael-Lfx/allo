@@ -1,6 +1,6 @@
 # 开发
 
-本页面向修改 **NomiFun** 仓库本身的人：React SPA、Rust 后端、agent 引擎或
+本页面向修改 **Flowy** 仓库本身的人：React SPA、Rust 后端、agent 引擎或
 Tauri 桌面壳。如果只是安装或部署，请先看
 [`../getting-started/installation.zh.md`](../getting-started/installation.zh.md)
 或 [`../guides/web-server-deployment.zh.md`](../guides/web-server-deployment.zh.md)。
@@ -114,9 +114,9 @@ cargo run -p nomifun-app --bin nomicore -- doctor
 
 所有 host 未显式覆盖时共享同一个默认数据目录：
 
-- Windows：`%LOCALAPPDATA%\NomiFun\Nomi`
-- macOS：`~/Library/Application Support/NomiFun/Nomi`
-- Linux：`$XDG_DATA_HOME/NomiFun/Nomi` 或 `~/.local/share/NomiFun/Nomi`
+- Windows：`%LOCALAPPDATA%\Flowy\Nomi`
+- macOS：`~/Library/Application Support/Flowy/Nomi`
+- Linux：`$XDG_DATA_HOME/Flowy/Nomi` 或 `~/.local/share/Flowy/Nomi`
 
 数据目录包含 SQLite、日志、Bun runtime cache、extension 数据和 agent 状态。
 后端启动时会先拿 `{data_dir}/server.lock` 独占锁，避免两个活跃后端同时写同一

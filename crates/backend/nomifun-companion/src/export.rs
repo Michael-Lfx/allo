@@ -574,7 +574,7 @@ fn extract_zip_validated(archive_path: &Path, destination: &Path) -> Result<Stri
     let file = std::fs::File::open(archive_path)
         .map_err(|e| AppError::BadRequest(format!("failed to open import file: {e}")))?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|_| AppError::BadRequest("不是 NomiFun 导出包".into()))?;
+        zip::ZipArchive::new(file).map_err(|_| AppError::BadRequest("不是 Flowy 导出包".into()))?;
 
     for index in 0..archive.len() {
         let mut entry = archive
@@ -587,7 +587,7 @@ fn extract_zip_validated(archive_path: &Path, destination: &Path) -> Result<Stri
         if entry.is_dir() {
             if rel != Path::new("events") {
                 return Err(AppError::BadRequest(format!(
-                    "不是 NomiFun 导出包（包含不支持的条目: {entry_name}）"
+                    "不是 Flowy 导出包（包含不支持的条目: {entry_name}）"
                 )));
             }
             std::fs::create_dir_all(destination.join(&rel))
@@ -604,7 +604,7 @@ fn extract_zip_validated(archive_path: &Path, destination: &Path) -> Result<Stri
             || (rel.parent() == Some(Path::new("events")) && rel.extension().is_some_and(|ext| ext == "jsonl"));
         if !allowed {
             return Err(AppError::BadRequest(format!(
-                "不是 NomiFun 导出包（包含不支持的条目: {entry_name}）"
+                "不是 Flowy 导出包（包含不支持的条目: {entry_name}）"
             )));
         }
 
@@ -625,9 +625,9 @@ fn extract_zip_validated(archive_path: &Path, destination: &Path) -> Result<Stri
     }
 
     let manifest_bytes = std::fs::read(destination.join("manifest.json"))
-        .map_err(|_| AppError::BadRequest("不是 NomiFun 导出包".into()))?;
+        .map_err(|_| AppError::BadRequest("不是 Flowy 导出包".into()))?;
     let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)
-        .map_err(|_| AppError::BadRequest("不是 NomiFun 导出包".into()))?;
+        .map_err(|_| AppError::BadRequest("不是 Flowy 导出包".into()))?;
     validate_manifest(&manifest)
 }
 
@@ -637,7 +637,7 @@ fn extract_zip_validated(archive_path: &Path, destination: &Path) -> Result<Stri
 fn validate_manifest(manifest: &serde_json::Value) -> Result<String, AppError> {
     let format = manifest.get("format").and_then(|v| v.as_str());
     if format != Some(EXPORT_FORMAT) {
-        return Err(AppError::BadRequest("不是 NomiFun 导出包".into()));
+        return Err(AppError::BadRequest("不是 Flowy 导出包".into()));
     }
     let version = manifest.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
     if version > u64::from(EXPORT_VERSION) {
@@ -646,7 +646,7 @@ fn validate_manifest(manifest: &serde_json::Value) -> Result<String, AppError> {
     match manifest.get("kind").and_then(|v| v.as_str()) {
         Some(kind) if kind == EXPORT_KIND_MEMORY || kind == EXPORT_KIND_COMPANION => Ok(kind.to_owned()),
         Some(kind) => Err(AppError::BadRequest(format!("导入包类型不支持: {kind}"))),
-        None => Err(AppError::BadRequest("不是 NomiFun 导出包".into())),
+        None => Err(AppError::BadRequest("不是 Flowy 导出包".into())),
     }
 }
 
@@ -961,7 +961,7 @@ mod tests {
             )],
         );
         let err = import_bundle(&store, &roster, &shared, &wrong_format).await.unwrap_err();
-        assert!(err.to_string().contains("不是 NomiFun 导出包"), "{err}");
+        assert!(err.to_string().contains("不是 Flowy 导出包"), "{err}");
 
         let wrong_kind = dir.path().join("kind.zip");
         write_test_zip(&wrong_kind, &[("manifest.json", &manifest_json(1, "knowledge-base"))]);
@@ -976,7 +976,7 @@ mod tests {
         let not_zip = dir.path().join("garbage.zip");
         std::fs::write(&not_zip, "definitely not a zip").unwrap();
         let err = import_bundle(&store, &roster, &shared, &not_zip).await.unwrap_err();
-        assert!(err.to_string().contains("不是 NomiFun 导出包"), "{err}");
+        assert!(err.to_string().contains("不是 Flowy 导出包"), "{err}");
 
         let missing = dir.path().join("missing.zip");
         let err = import_bundle(&store, &roster, &shared, &missing).await.unwrap_err();

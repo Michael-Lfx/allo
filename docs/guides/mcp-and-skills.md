@@ -1,6 +1,6 @@
 # MCP & Skills
 
-NomiFun has two extension mechanisms that are easy to confuse:
+Flowy has two extension mechanisms that are easy to confuse:
 
 - **MCP servers** are external tool servers. They expose callable tools over
   stdio, HTTP, or SSE.
@@ -42,7 +42,7 @@ OAuth-backed HTTP/SSE servers use the `/api/mcp/oauth/*` flow.
 ## Importing and Syncing Agent Configs
 
 `GET /api/mcp/agent-configs` detects MCP config files from supported local agent
-CLIs. The UI lets you import detected servers into NomiFun and push the NomiFun
+CLIs. The UI lets you import detected servers into Flowy and push the Flowy
 list back to selected agent configs when an adapter supports writing.
 
 This sync is config management only. A conversation still decides which MCP

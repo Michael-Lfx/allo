@@ -132,12 +132,12 @@ impl AppServices {
 
     pub async fn from_config(database: Database, config: &AppConfig) -> anyhow::Result<Self> {
         // Brand computer-use permission-error guidance with the host app's name so
-        // failures say "grant NomiFun … then quit and reopen NomiFun" instead of a
+        // failures say "grant Flowy … then quit and reopen Flowy" instead of a
         // generic "this app" — which a model otherwise misreads as the terminal /
         // editor and sends the user to grant the wrong process. Set once, here, so
         // every later `observe` / screenshot / input failure carries the right name.
         #[cfg(feature = "computer-use")]
-        nomi_computer::set_host_app_label("NomiFun");
+        nomi_computer::set_host_app_label("Flowy");
 
         let data_dir = config.data_dir.clone();
         let work_dir = config.work_dir.clone();

@@ -1,4 +1,4 @@
-import loginLogo from '@renderer/assets/logos/brand/app.png';
+import appLogo from '@renderer/assets/logo.svg';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage } from '@/renderer/services/i18n';
@@ -216,7 +216,7 @@ const LoginPage: React.FC = () => {
 
         <div className='login-page__header'>
           <div className='login-page__logo'>
-            <img src={loginLogo} alt={t('login.brand')} />
+            <img src={appLogo} alt={t('login.brand')} />
           </div>
           <h1 className='login-page__title'>{t('login.brand')}</h1>
           <p className='login-page__subtitle'>

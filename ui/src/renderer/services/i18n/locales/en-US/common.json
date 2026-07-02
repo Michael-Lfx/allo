@@ -69,10 +69,10 @@
   "historyBack": "Back",
   "more": "More",
   "refresh": "Refresh",
-  "tray.showWindow": "Show NomiFun",
+  "tray.showWindow": "Show Flowy",
   "tray.newChat": "New Chat",
   "tray.closeToTray": "Hide to Tray",
-  "tray.about": "About NomiFun",
+  "tray.about": "About Flowy",
   "tray.restart": "Restart App",
   "tray.quit": "Quit",
   "tray.runningTasks": "Running Tasks",
@@ -83,12 +83,12 @@
   "backendStartup": {
     "incompatibleRuntime": {
       "title": "This system is not supported by the bundled backend",
-      "description": "NomiFun opened, but the local NomiFun backend cannot run on this Linux version. Please upgrade to a supported Linux distribution and restart NomiFun.",
+      "description": "Flowy opened, but the local Flowy backend cannot run on this Linux version. Please upgrade to a supported Linux distribution and restart Flowy.",
       "requiredVersions": "Required runtime symbols: {{versions}}"
     },
     "incompleteInstallation": {
-      "title": "NomiFun installation is incomplete",
-      "description": "This installation is missing required local resources, so NomiFun cannot start. Please download and reinstall the latest NomiFun. If the issue returns after reinstalling, check whether security or antivirus software quarantined NomiFun.",
+      "title": "Flowy installation is incomplete",
+      "description": "This installation is missing required local resources, so Flowy cannot start. Please download and reinstall the latest Flowy. If the issue returns after reinstalling, check whether security or antivirus software quarantined Flowy.",
       "downloadLatest": "Download latest",
       "sendDiagnostics": "Send diagnostics"
     }

@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -52,7 +52,7 @@ const PlatformMcpRegisterPanel: React.FC = () => {
           <p className='mb-12px text-12px text-t-secondary'>
             {t('terminal.create.mcpPanel.description', {
               defaultValue:
-                '使用自定义或外置终端时，将下方配置注册到你的 CLI，即可使用平台知识库。凭据由桥在运行时安全获取，不会写入你的配置文件。需要 NomiFun 桌面应用正在运行。',
+                '使用自定义或外置终端时，将下方配置注册到你的 CLI，即可使用平台知识库。凭据由桥在运行时安全获取，不会写入你的配置文件。需要 Flowy 桌面应用正在运行。',
             })}
           </p>
 

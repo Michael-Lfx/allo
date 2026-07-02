@@ -1,6 +1,6 @@
 # 安装
 
-NomiFun 有两种宿主模式，共享同一个 Rust 后端（参见
+Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
 [简介](introduction.zh.md)）。本页覆盖目前可行的全部三种安装方式：
 
 - [从源码构建桌面应用](#从源码构建桌面应用) —— `nomifun-desktop`
@@ -27,7 +27,7 @@ NomiFun 有两种宿主模式，共享同一个 Rust 后端（参见
 | **Git** | 任何近期版本 | 克隆仓库，以及技能发现与若干内置工具会用到。 | |
 | **C/C++ 构建工具** | 因平台而异 | `rusqlite`（bundled）、`aws-lc-rs`、`libgit2-sys` 需要。 | Windows：MSVC + WebView2 运行时。macOS：Xcode CLT。Linux：`build-essential cmake clang pkg-config perl`。 |
 
-在运行 NomiFun 的宿主上推荐安装（构建机不需要）：
+在运行 Flowy 的宿主上推荐安装（构建机不需要）：
 
 - **`ripgrep`** —— 代码搜索后端；不可用时回退到 `grep`。
 - **`node` / `npm` / `npx`** —— 许多用户安装的 MCP stdio 服务通过
@@ -105,9 +105,9 @@ bun run build    # tauri build → 安装包 + 独立二进制
 
 | 操作系统 | 默认路径 |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\NomiFun\Nomi`（例如 `C:\Users\<you>\AppData\Local\NomiFun\Nomi`） |
-| macOS | `~/Library/Application Support/NomiFun/Nomi` |
-| Linux | `$XDG_DATA_HOME/NomiFun/Nomi`（通常为 `~/.local/share/NomiFun/Nomi`） |
+| Windows | `%LOCALAPPDATA%\Flowy\Nomi`（例如 `C:\Users\<you>\AppData\Local\Flowy\Nomi`） |
+| macOS | `~/Library/Application Support/Flowy/Nomi` |
+| Linux | `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`） |
 
 启动前可通过 `NOMIFUN_DATA_DIR=<absolute path>` 覆盖——外壳会附加
 `/Nomi`，因此目录会变成 `$NOMIFUN_DATA_DIR/Nomi`。
@@ -268,7 +268,7 @@ curl -sS http://127.0.0.1:8787/api/auth/status
 
 ## 接下来
 
-- [快速上手](quick-start.zh.md) —— 你在 NomiFun 中的第一段会话。
+- [快速上手](quick-start.zh.md) —— 你在 Flowy 中的第一段会话。
 - [`../guides/web-server-deployment.md`](../guides/web-server-deployment.md)
   —— Web 主机的生产环境加固。
 - [`../contributing/development.zh.md`](../contributing/development.zh.md)

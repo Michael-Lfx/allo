@@ -134,7 +134,7 @@ pub enum RelocateOutcome {
 /// Whether legacy-temp relocation should run at all. Skipped when the data dir
 /// is explicitly overridden (`NOMIFUN_DATA_DIR`) OR when this is a non-stable
 /// channel: dev/beta/canary run from an isolated sibling dir
-/// (`…/NomiFun/Nomi-dev`) and must NOT adopt the legacy temp-rooted *stable*
+/// (`…/Flowy/Nomi-dev`) and must NOT adopt the legacy temp-rooted *stable*
 /// install, which would cross-contaminate the very state we isolated. Pure, for
 /// unit testing (the live channel is compile-time, so the predicate is tested
 /// directly rather than through `effective_data_dir`).

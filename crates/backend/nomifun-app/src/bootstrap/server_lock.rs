@@ -99,7 +99,7 @@ fn acquire_server_lock_with_timeout(data_dir: &Path, timeout: Duration) -> Resul
                     let holder = std::fs::read_to_string(data_dir.join(SERVER_LOCK_INFO_FILE)).unwrap_or_default();
                     let holder = holder.trim();
                     bail!(
-                        "data directory {} is already in use by another running NomiFun backend{} — \
+                        "data directory {} is already in use by another running Flowy backend{} — \
                          close the other instance (the desktop app, `bun run web` / `dev:webui`, or `nomicore`) \
                          and retry, or point this one at its own directory via NOMIFUN_DATA_DIR / --data-dir",
                         data_dir.display(),

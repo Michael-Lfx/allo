@@ -1,7 +1,7 @@
 # Screenshot Manifest
 
 This file tracks every screenshot referenced by the documentation. All images
-are captured from the **real running NomiFun app** (not mockups) and saved into
+are captured from the **real running Flowy app** (not mockups) and saved into
 this `docs/images/` directory.
 
 ## Naming scheme
@@ -47,7 +47,7 @@ window chrome from the installed app.
    `--insecure-no-auth`. No admin yet → first-run setup; pass
    `--admin-user/--admin-password` → login screen.
 6. **Native window** (titlebar / tray): capture from the installed
-   `/Applications/NomiFun.app` with macOS window capture. Requires Screen
+   `/Applications/Flowy.app` with macOS window capture. Requires Screen
    Recording permission for the capturing process.
 
 ## Module prefixes
@@ -127,7 +127,7 @@ copy-pasteable commands or an ASCII diagram, and several are platform-specific
 `gs-02` and `desktop-01` are marked `live\*`: they currently show the **real
 current app content** captured from the web host, but **without the native
 window chrome** (titlebar / traffic-lights / tray). Replace them with a true
-native capture from the installed `/Applications/NomiFun.app` (needs Screen
+native capture from the installed `/Applications/Flowy.app` (needs Screen
 Recording permission, or a manual `Cmd+Shift+4` window capture) when convenient.
 
 A few data-heavy views are intentionally **not** screenshotted — a live

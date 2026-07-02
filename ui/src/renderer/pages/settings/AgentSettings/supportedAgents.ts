@@ -1,11 +1,11 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
 /**
- * Curated catalog of the external CLI agents NomiFun knows how to detect.
+ * Curated catalog of the external CLI agents Flowy knows how to detect.
  *
  * The backend (`/api/agents`) only returns agents whose CLI is actually
  * installed (it filters to `enabled && available`), and it carries no

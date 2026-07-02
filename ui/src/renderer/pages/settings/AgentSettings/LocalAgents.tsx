@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -50,7 +50,7 @@ const LocalAgents: React.FC = () => {
   const customAgents: AgentMetadata[] = allAgents.filter((a) => a.agent_source === 'custom');
 
   // Diff the curated catalog against what was detected so users can see — and
-  // install — the agents NomiFun supports but that aren't on this machine yet.
+  // install — the agents Flowy supports but that aren't on this machine yet.
   const installedBackends = new Set(detectedAgents.map((a) => a.backend || a.agent_type));
   const notInstalledAgents = SUPPORTED_AGENTS.filter(
     (s) => !installedBackends.has(s.backend) && (Boolean(s.website) || s.installHint.trim().length > 0)

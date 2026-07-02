@@ -802,7 +802,7 @@ async fn t2_1b_send_message_pathological_workspace_returns_runtime_whitespace_co
 }
 
 /// Regression for the macOS per-user data dir: `~/Library/Application
-/// Support/NomiFun/Nomi/conversations/...` contains interior whitespace and
+/// Support/Flowy/Nomi/conversations/...` contains interior whitespace and
 /// every conversation auto-provisioned under it must remain sendable.
 #[tokio::test]
 async fn t2_1c_send_message_accepts_interior_whitespace_workspace() {

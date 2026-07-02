@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" fill="none" role="img" aria-label="NomiFun">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" fill="none" role="img" aria-label="Flowy">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#131019"/>
@@ -36,7 +36,7 @@
     <path d="M14 49 H66 Q61.5 70 40 70 Q18.5 70 14 49 Z" fill="url(#bowl)"/>
   </g>
 
-  <text x="430" y="250" font-family="Inter, 'PingFang SC', sans-serif" font-size="86" font-weight="800" fill="#F5F3F7">NomiFun</text>
+  <text x="430" y="250" font-family="Inter, 'PingFang SC', sans-serif" font-size="86" font-weight="800" fill="#F5F3F7">Flowy</text>
   <text x="432" y="320" font-family="Inter, 'PingFang SC', sans-serif" font-size="34" font-weight="600" fill="url(#pinktext)">完全开源 · 本地优先的超级 AI 工作站</text>
   <text x="432" y="378" font-family="Inter, 'PingFang SC', sans-serif" font-size="26" font-weight="400" fill="#B8B3C4">Fully open-source, local-first super AI workstation</text>
 

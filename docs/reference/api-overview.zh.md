@@ -1,6 +1,6 @@
 # API 概览
 
-NomiFun 的后端（`nomifun-app`，二进制 `nomicore`）对外暴露的是单一的
+Flowy 的后端（`nomifun-app`，二进制 `nomicore`）对外暴露的是单一的
 axum HTTP 服务。SPA、桌面外壳，以及任何外部集成，与它沟通的方式都一样：
 HTTP 上的 JSON 用于命令/查询，WebSocket 用于流式事件。
 
@@ -21,7 +21,7 @@ SPA 使用**相对路径**（`/api/...`、`/ws`）。客户端不需要指向另
 
 ## 鉴权模型
 
-NomiFun 启动时进入三种鉴权策略之一：
+Flowy 启动时进入三种鉴权策略之一：
 
 ### 已鉴权模式（`nomifun-web` 默认）
 

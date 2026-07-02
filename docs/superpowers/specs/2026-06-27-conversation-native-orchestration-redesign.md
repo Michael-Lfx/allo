@@ -232,7 +232,7 @@ Run 结束（或主管收尾）时，对本次出现的**临时角色**（即 `a
 4. 角色资产 = 助手（统一，不再造平行概念）；`fleet_members.agent_id` 承载助手引用。
 5. 模型选择三态：单一=普通会话；自动/范围=允许编排，主管按复杂度决定是否真拆。
 6. 沉淀=建议保存（不自动写库）。
-7. 品牌字样 NomiFun；新增/改动 UI 必须漂亮（验收门槛），走既有视觉语言。
+7. 品牌字样 Flowy；新增/改动 UI 必须漂亮（验收门槛），走既有视觉语言。
 8. 禁破坏 pause/resume/steer/cancel/IDMM 语义。
 9. `ReadOnlyConversationView` 保留自挂 PreviewProvider（per-surface 不变量）。
 10. 禁合并 main；禁 cargo fmt；提交前 pull --rebase。

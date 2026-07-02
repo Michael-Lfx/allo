@@ -74,7 +74,7 @@ function groupedRows() {
 
 function printList() {
   const width = Object.keys(entries).reduce((m, k) => Math.max(m, k.length), 0);
-  console.log('\n' + bold('NomiFun 脚本目录') + dim('   bun run <script>') + '\n');
+  console.log('\n' + bold('Flowy 脚本目录') + dim('   bun run <script>') + '\n');
   for (const { group, keys } of groupedRows()) {
     console.log(bold(group.title));
     for (const k of keys) {

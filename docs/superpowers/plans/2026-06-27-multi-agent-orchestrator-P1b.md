@@ -94,7 +94,7 @@ export function useRunLive(runId: string | undefined): { detail: TRunDetail | nu
 参照模板：`useCronJobs.ts` 的 `useCronJobRuns`（per-id REST+订阅）；`useTeamSession.ts`（SWR+多 .on() unsub）；useOrchestratorData.ts 既有 useFleets/useWorkspaces。
 
 - [ ] **Step 1: 写 useRuns**（仿 useFleets/useWorkspaces SWR）。
-- [ ] **Step 2: 写 useRunLive.ts**（订阅 5 事件 filter run_id refetch；NomiFun Apache header）。
+- [ ] **Step 2: 写 useRunLive.ts**（订阅 5 事件 filter run_id refetch；Flowy Apache header）。
 - [ ] **Step 3: typecheck** → 0。
 - [ ] **Step 4: 提交** `git commit -m "feat(orchestrator): useRuns + useRunLive 实时 hook"`
 

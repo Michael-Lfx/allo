@@ -1,6 +1,6 @@
 # Building and Packaging
 
-This page covers release artifacts from the current **NomiFun** monorepo: the
+This page covers release artifacts from the current **Flowy** monorepo: the
 React SPA, `nomifun-web`, Tauri desktop bundles, updater payloads, Docker, and
 native Linux service files.
 
@@ -68,7 +68,7 @@ then creates OS-specific bundles under `target/release/bundle/`.
 
 Product identity comes from `apps/desktop/tauri.conf.json`:
 
-- `productName: "NomiFun"`
+- `productName: "Flowy"`
 - `identifier: "com.nomifun.desktop"`
 - version from workspace package metadata
 - dev URL `http://localhost:5173`

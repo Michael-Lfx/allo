@@ -1,4 +1,4 @@
-# NomiFun Desktop Updater
+# Flowy Desktop Updater
 
 中文说明见 `apps/desktop/updater/README.zh-CN.md`.
 
@@ -124,9 +124,9 @@ users silently get no update**, so make sure every platform you ship has one.
 3. Create a GitHub Release tagged `v<version>`.
 4. Upload **all** manual installers, updater packages, updater `.sig` files, and
    `latest.json` as release assets. For macOS this means both:
-   - `dist/desktop/NomiFun_<version>_universal.dmg` for manual install.
-   - `target/universal-apple-darwin/release/bundle/macos/NomiFun.app.tar.gz`
-     plus `NomiFun.app.tar.gz.sig` for auto-update.
+   - `dist/desktop/Flowy_<version>_universal.dmg` for manual install.
+   - `target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz`
+     plus `Flowy.app.tar.gz.sig` for auto-update.
    For Windows, the updater `.exe` is also the normal manual installer; upload
    any `.msi` only if the build generated one.
 5. The endpoint `releases/latest/download/latest.json` resolves to the newest

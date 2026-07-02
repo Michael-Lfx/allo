@@ -9,14 +9,14 @@ Guide users from zero to usable visualization integration in Nomi. Prefer Star-O
 
 ## What is Star Office
 
-Star Office UI is a **third-party** local visualization companion for OpenClaw / NomiFun.
+Star Office UI is a **third-party** local visualization companion for OpenClaw / Flowy.
 
 - Project: <https://github.com/ringhyacinth/Star-Office-UI>
 - License boundary: project code is MIT, but the bundled art assets are
   non-commercial only. For commercial or public product use, replace the art
   assets with original/licensed assets and keep the upstream attribution.
 - It turns chat-side agent status (idle / writing / researching / executing / syncing / error) into a live, interactive office-themed monitor view.
-- It is **not** built-in to NomiFun — it runs as a separate local service (default `http://127.0.0.1:19000`).
+- It is **not** built-in to Flowy — it runs as a separate local service (default `http://127.0.0.1:19000`).
 - OpenClaw works independently without Star Office; Star Office only animates when its own backend+frontend and event bridge are active.
 
 **Capabilities when connected:**

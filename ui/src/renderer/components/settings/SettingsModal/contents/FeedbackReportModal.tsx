@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -23,7 +23,7 @@ export const NOMIFUN_PUBLIC_LINKS = {
   emailHref: 'mailto:535526063@qq.com',
 } as const;
 
-const COPYRIGHT = '© 2025-2026 NomiFun · www.nomifun.com';
+const COPYRIGHT = '© 2025-2026 Flowy · www.nomifun.com';
 
 const CONTACT_ITEMS = [
   {

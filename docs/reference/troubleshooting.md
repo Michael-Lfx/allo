@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Symptoms you might hit running NomiFun, and the actual mechanism behind each one. If you find a problem that is not on this list, the source is the fastest reference — every behaviour described below is grounded in a specific file in `crates/backend/`.
+Symptoms you might hit running Flowy, and the actual mechanism behind each one. If you find a problem that is not on this list, the source is the fastest reference — every behaviour described below is grounded in a specific file in `crates/backend/`.
 
 ## Backend port / connection problems
 
@@ -123,9 +123,9 @@ The configured data directory must be writable by the process. Common cases:
 - A read-only mount (`RootDirectory=`, `ProtectHome=yes`, …) covering the data path. Drop the over-broad sandbox; keep the moderate hardening from the shipped unit (`NoNewPrivileges=yes`, `PrivateTmp=yes`).
 - On Docker, mounting a host directory whose UID does not match the container's. Use a named volume instead, or `chown` the host directory to the right UID.
 
-The desktop shell's default data dir is the **per-user application-data location** (`%LOCALAPPDATA%\NomiFun\Nomi` on Windows, `~/Library/Application Support/NomiFun/Nomi` on macOS, `$XDG_DATA_HOME/NomiFun/Nomi` on Linux), which is writable by the launching user by construction. Set `NOMIFUN_DATA_DIR=<absolute path>` and the dir becomes `$NOMIFUN_DATA_DIR/Nomi`. Legacy installs under `<system temp>/nomifun-data/Nomi` are relocated to the new default automatically on launch (the old dir is kept as a backup); if the relocation cannot complete, the app keeps starting from the legacy dir and retries next launch.
+The desktop shell's default data dir is the **per-user application-data location** (`%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` on Linux), which is writable by the launching user by construction. Set `NOMIFUN_DATA_DIR=<absolute path>` and the dir becomes `$NOMIFUN_DATA_DIR/Nomi`. Legacy installs under `<system temp>/nomifun-data/Nomi` are relocated to the new default automatically on launch (the old dir is kept as a backup); if the relocation cannot complete, the app keeps starting from the legacy dir and retries next launch.
 
-### `data directory ... is already in use by another running NomiFun backend`
+### `data directory ... is already in use by another running Flowy backend`
 
 Every host (desktop shell, `nomifun-web`, the `nomicore` binary) defaults to the **same** per-user data directory, and the backend takes an OS-level exclusive lock on `{data_dir}/server.lock` at startup — a second backend on the same directory fails fast with this message instead of silently corrupting shared state. The classic trigger: the desktop app is still running and you start `bun run serve:web` / `dev:web` (or vice versa). Two ways out: close the other instance (the message names the holder's pid and executable), or give the new one its own directory via `NOMIFUN_DATA_DIR` / `--data-dir`. The lock is released by the OS when the holder exits or crashes; a leftover `server.lock` file is harmless. `nomicore doctor` and the `mcp-*` stdio subcommands do not take the lock, so they are unaffected.
 

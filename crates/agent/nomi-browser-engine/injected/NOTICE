@@ -1,4 +1,4 @@
-NomiFun browser engine — vendored Playwright InjectedScript
+Flowy browser engine — vendored Playwright InjectedScript
 ============================================================
 
 This directory (`crates/agent/nomi-browser-engine/injected/`) contains source

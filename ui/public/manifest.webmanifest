@@ -1,7 +1,7 @@
 {
-  "name": "NomiFun",
-  "short_name": "NomiFun",
-  "description": "NomiFun WebUI for mobile and desktop browsers.",
+  "name": "Flowy",
+  "short_name": "Flowy",
+  "description": "Flowy WebUI for mobile and desktop browsers.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

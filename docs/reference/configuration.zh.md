@@ -1,9 +1,9 @@
 # 配置参考
 
-NomiFun 读取的每一个参数与环境变量、它们的默认值，以及各自归属的文件。
+Flowy 读取的每一个参数与环境变量、它们的默认值，以及各自归属的文件。
 所有取值都直接来自源码——本页没有列出的设置就不存在。
 
-NomiFun 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
+Flowy 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 `nomicore`），以及两个嵌入它的宿主：
 
 - `nomifun-desktop` —— Tauri 桌面外壳。在选定的 loopback 端口上以
@@ -22,7 +22,7 @@ NomiFun 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | 绑定的 IP。`0.0.0.0` 会接受 LAN/VPN/公网流量；大范围暴露前请先预置或完成首次设置。不解析主机名；非法输入将在启动阶段直接失败。 |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP 端口。在同一个 socket 上提供 API、`/ws` WebSocket 与 SPA。 |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户的应用数据目录 | 后端数据目录（SQLite 数据库、智能体状态、日志、Bun 缓存）。默认是所有宿主共享的按用户位置——Windows 上是 `%LOCALAPPDATA%\NomiFun\Nomi`，macOS 上是 `~/Library/Application Support/NomiFun/Nomi`，Linux 上是 `$XDG_DATA_HOME/NomiFun/Nomi`。可用本参数或 `NOMIFUN_DATA_DIR`（按字面值，不附加后缀）覆盖；生产环境请使用绝对路径。 |
+| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户的应用数据目录 | 后端数据目录（SQLite 数据库、智能体状态、日志、Bun 缓存）。默认是所有宿主共享的按用户位置——Windows 上是 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上是 `~/Library/Application Support/Flowy/Nomi`，Linux 上是 `$XDG_DATA_HOME/Flowy/Nomi`。可用本参数或 `NOMIFUN_DATA_DIR`（按字面值，不附加后缀）覆盖；生产环境请使用绝对路径。 |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | 已构建 SPA 所在目录。在仓库之外部署时务必显式指定。 |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | 预置首位管理员时使用的用户名。管理员存在后将被忽略。 |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | 在启动时预置首位管理员密码，跳过交互式设置。管理员存在后将被忽略。 |
@@ -107,9 +107,9 @@ NomiFun 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
   性地阻止（见下面的服务器锁）。
 - 三个宿主（`nomifun-desktop`、`nomifun-web`、独立的 `nomicore`
   二进制）通过 `nomifun_app::cli::default_data_dir()` 解析出**同一个
-  默认**数据目录：Windows 上是 `%LOCALAPPDATA%\NomiFun\Nomi`，macOS
-  上是 `~/Library/Application Support/NomiFun/Nomi`，Linux 上是
-  `$XDG_DATA_HOME/NomiFun/Nomi`（通常为 `~/.local/share/NomiFun/Nomi`），
+  默认**数据目录：Windows 上是 `%LOCALAPPDATA%\Flowy\Nomi`，macOS
+  上是 `~/Library/Application Support/Flowy/Nomi`，Linux 上是
+  `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`），
   经 `dirs` crate 解析；当 OS 报告不出用户目录时的极端回退是
   `<system temp>/nomifun-data/Nomi`。所有宿主共用一个默认值是有意为
   之：开发循环（`bun run serve:web`、`dev:web`、`dev`）与已安装
@@ -153,7 +153,7 @@ NomiFun 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 
 ## TLS / HTTPS Cookie 处理
 
-NomiFun 自身不做 TLS 终止——请在前面放一个负责 TLS 终止的反向代理
+Flowy 自身不做 TLS 终止——请在前面放一个负责 TLS 终止的反向代理
 （Caddy、nginx 等）。届时：
 
 - 设置 `NOMIFUN_HTTPS=true`，使 cookie 带上 `Secure` 标记和

@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -45,7 +45,7 @@ describe('Open Capabilities WebUI entry', () => {
     expect(pageSource.includes('activeOpenCapabilityTab')).toBe(true);
   });
 
-  test('lets users choose NomiFun Remote MCP capability domains on this page', () => {
+  test('lets users choose Flowy Remote MCP capability domains on this page', () => {
     const pageSource = readSource(new URL('../../../pages/openCapabilities/index.tsx', import.meta.url));
 
     expect(pageSource.includes('MCP_DOMAIN_OPTIONS')).toBe(true);

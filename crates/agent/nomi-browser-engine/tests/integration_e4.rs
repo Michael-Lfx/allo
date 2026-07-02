@@ -119,9 +119,9 @@ async fn download_lands_in_sandbox_and_gets_motw() {
     }
     // ── macOS MOTW 等价：下载文件必带 com.apple.quarantine（Gatekeeper 打开可执行/归档时校验）。
     //    两个写者：① chrome 原生 LSFileQuarantine（agent=Chrome,形态更全含源URL+事件UUID）;
-    //    ② 我方 write_motw 兜底（XATTR_CREATE,仅 chrome 未落时填，agent=NomiFun）。二者异步竞争,
+    //    ② 我方 write_motw 兜底（XATTR_CREATE,仅 chrome 未落时填，agent=Flowy）。二者异步竞争,
     //    最终 agent 不定——但**安全不变量=quarantine 存在且标 web-download（0081;）**,与 agent 无关。
-    //    故断言「存在 + 0081; 标志」,agent 接受 Chrome（原生）或 NomiFun（兜底）两者。轮询等其落盘。──
+    //    故断言「存在 + 0081; 标志」,agent 接受 Chrome（原生）或 Flowy（兜底）两者。轮询等其落盘。──
     #[cfg(target_os = "macos")]
     {
         let mut q: Option<String> = None;
@@ -144,11 +144,11 @@ async fn download_lands_in_sandbox_and_gets_motw() {
             value.starts_with("0081;"),
             "quarantine flags must mark web download (0081;...): {value:?}"
         );
-        // agent 是 Chrome（chrome 原生先写）或 NomiFun（chrome 未写时我方兜底）——两者都满足
+        // agent 是 Chrome（chrome 原生先写）或 Flowy（chrome 未写时我方兜底）——两者都满足
         // 「文件已被 quarantine」这一安全不变量,不耦合具体 agent（消除两写者竞争致的伪 flake）。
         assert!(
-            value.contains("Chrome") || value.contains("NomiFun"),
-            "quarantine agent should be Chrome (native) or NomiFun (fallback): {value:?}"
+            value.contains("Chrome") || value.contains("Flowy"),
+            "quarantine agent should be Chrome (native) or Flowy (fallback): {value:?}"
         );
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]

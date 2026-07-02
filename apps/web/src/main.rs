@@ -35,7 +35,7 @@ const ENV_INSECURE_NO_AUTH: &str = "NOMIFUN_WEB_INSECURE_NO_AUTH";
 #[derive(Parser, Debug)]
 #[command(
     name = "nomifun-web",
-    about = "NomiFun unified Web host (SPA + backend API)"
+    about = "Flowy unified Web host (SPA + backend API)"
 )]
 struct Args {
     /// Host/IP address to bind on. Defaults to loopback; use `0.0.0.0` to accept
@@ -47,7 +47,7 @@ struct Args {
     #[arg(long, env = "NOMIFUN_WEB_PORT", default_value_t = 8787)]
     port: u16,
     /// Data directory for the backend (db + storage). Defaults to the same
-    /// per-user dir as the desktop shell (`%LOCALAPPDATA%\NomiFun\Nomi` on
+    /// per-user dir as the desktop shell (`%LOCALAPPDATA%\Flowy\Nomi` on
     /// Windows, see `nomifun_app::cli::default_data_dir`) so every host and
     /// dev loop shares one state by default. The env value is taken literally
     /// (no `/Nomi` suffix) — production deployments (Docker `/data`, systemd

@@ -331,7 +331,7 @@ pub fn write_motw(path: &Path) -> std::io::Result<()> {
 /// 的 barebones 值（无源 URL/UUID）反而是降级，故让 chrome 的更全形态优先；chrome 未设时我们填空。
 /// 已存在（chrome 或前次已落）→ `EEXIST`，视作**成功**（安全目标=文件已被 quarantine 已达成）。
 /// 值格式照搬系统真实下载形态 `<flags>;<hex epoch secs>;<agent>;<event-uuid>`：flags `0081` = 来自
-/// web、用户尚未放行（实测系统 Edge/Safari/Chrome 下载即此值），agent 用 `NomiFun`，event-uuid 留空。
+/// web、用户尚未放行（实测系统 Edge/Safari/Chrome 下载即此值），agent 用 `Flowy`，event-uuid 留空。
 ///
 /// best-effort：失败返 `io::Error` 由调用方吞日志（MOTW 是纵深防御附加层，缺失不致命；
 /// 可执行下载的硬防线是 [`reject_executable_download`] 的 denylist，不靠 quarantine）。
@@ -345,7 +345,7 @@ pub fn write_motw(path: &Path) -> std::io::Result<()> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     // <flags>;<hex epoch>;<agent>;<event-uuid>（uuid 留空，对齐系统真实下载形态）。
-    let value = format!("0081;{secs:x};NomiFun;");
+    let value = format!("0081;{secs:x};Flowy;");
 
     let c_path = CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -697,7 +697,7 @@ mod tests {
 
         write_motw(&f).expect("write_motw should set com.apple.quarantine on a real file");
 
-        // 读回 com.apple.quarantine xattr，断言形态 `0081;<hex>;NomiFun;`。
+        // 读回 com.apple.quarantine xattr，断言形态 `0081;<hex>;Flowy;`。
         let c_path = std::ffi::CString::new(f.as_os_str().as_bytes()).unwrap();
         let c_name = std::ffi::CString::new("com.apple.quarantine").unwrap();
         // 先取长度，再读值。
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(got, len, "getxattr value read should match length");
         let value = String::from_utf8_lossy(&buf).to_string();
         assert!(value.starts_with("0081;"), "quarantine flags should mark web download: {value:?}");
-        assert!(value.contains("NomiFun"), "quarantine agent should be NomiFun: {value:?}");
+        assert!(value.contains("Flowy"), "quarantine agent should be Flowy: {value:?}");
 
         let _ = std::fs::remove_file(&f);
     }

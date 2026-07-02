@@ -1,6 +1,6 @@
 # Channels
 
-A **channel** lets you operate a NomiFun agent from an external chat app —
+A **channel** lets you operate a Flowy agent from an external chat app —
 Telegram, Lark / 飞书, DingTalk, WeChat — instead of sitting in front of
 the desktop window. You enable a plugin, paste in its credentials,
 authorize a chat user with a one-time code, and from then on messages
@@ -15,7 +15,7 @@ Channels are useful when:
   to be kickable from outside the desktop without spinning up the WebUI.
 
 > Each platform plugin is a Cargo feature on `nomifun-channel`
-> (`telegram`, `lark`, `dingtalk`, `weixin`). The default NomiFun build
+> (`telegram`, `lark`, `dingtalk`, `weixin`). The default Flowy build
 > ships with all of them on; if you build the backend yourself with a
 > non-default feature set, the corresponding tab simply disappears.
 

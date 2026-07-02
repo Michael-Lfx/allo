@@ -1,4 +1,4 @@
-# Releasing NomiFun
+# Releasing Flowy
 
 中文发版手册见 `RELEASING.zh-CN.md`.
 
@@ -134,9 +134,9 @@ Use this order for every desktop release.
 
    ```bash
    gh release create "v$VERSION" \
-     target/universal-apple-darwin/release/bundle/macos/NomiFun.app.tar.gz \
-     target/universal-apple-darwin/release/bundle/macos/NomiFun.app.tar.gz.sig \
-     dist/desktop/NomiFun_${VERSION}_universal.dmg \
+     target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz \
+     target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz.sig \
+     dist/desktop/Flowy_${VERSION}_universal.dmg \
      apps/desktop/updater/latest.json \
      --title "v$VERSION" \
      --notes "Release notes"
