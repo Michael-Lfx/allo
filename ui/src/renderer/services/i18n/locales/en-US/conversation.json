@@ -22,7 +22,6 @@
   },
   "orchestration": {
     "panelTitle": "Orchestration",
-    "startTitle": "Start orchestration",
     "planning": "Planning…",
     "collapseCanvas": "Collapse orchestration canvas",
     "expandCanvas": "Expand orchestration canvas",
@@ -146,6 +145,10 @@
       "unknown_upstream": "Upstream"
     },
     "codes": {
+      "PROVIDER_UNAVAILABLE": {
+        "title": "No model available",
+        "body": "No usable model provider is configured. Add and enable one in Models & Agent, then retry."
+      },
       "NOMIFUN_STREAM_BROKEN": {
         "title": "Response stream was interrupted",
         "body": "The app accepted your message but the response stream ended unexpectedly. Please retry; if it happens again, send feedback."
@@ -375,6 +378,12 @@
       "vscode": "VS Code",
       "terminal": "Terminal",
       "explorer": "File Explorer"
+    },
+    "bindWorkspace": {
+      "label": "Set working directory",
+      "hint": "Bind a folder on your disk — the agent will use it as its main workspace.",
+      "success": "Working directory bound. The agent will now work in this folder.",
+      "failed": "Failed to bind the working directory. Please try again."
     }
   },
   "minimap": {
@@ -386,6 +395,7 @@
   },
   "chat": {
     "noModelSelected": "No model selected for current session, cannot send message",
+    "modelHealedToDefault": "Switched to your default model {{model}}",
     "sendMessageTo": "Send message to {{model}}",
     "processing": "Processing...",
     "quotaExceededTitle": "Model quota reached",
@@ -561,10 +571,30 @@
     "action": "Edit",
     "banner": "Editing message — sending will re-run from here"
   },
+  "slashCommands": {
+    "compact": {
+      "description": "Compress conversation context"
+    }
+  },
   "clearContext": {
     "description": "Clear conversation context",
     "success": "Context cleared",
     "failed": "Failed to clear context",
     "button": "Clear context"
+  },
+  "cluster": {
+    "stripTitle": "Agent cluster",
+    "progress": "{{done}}/{{total}} nodes delivered",
+    "expand": "Expand cluster progress",
+    "collapse": "Collapse cluster progress",
+    "questionBanner": "Node \"{{title}}\" has a decision question for you",
+    "questionCta": "Answer →",
+    "toggleTitle": "Cluster",
+    "toggleDesc": "Split work across agents when it helps.",
+    "approvalTitle": "Node confirmation",
+    "approvalDesc": "Pause on key decisions and wait for you.",
+    "pillAria": "Agent cluster settings",
+    "pill": "Cluster",
+    "approvalShort": "Approve"
   }
 }

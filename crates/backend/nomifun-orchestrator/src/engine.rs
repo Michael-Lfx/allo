@@ -108,7 +108,9 @@ pub struct NoopConversationSteerer;
 #[async_trait]
 impl ConversationSteerer for NoopConversationSteerer {
     async fn steer(&self, _conversation_id: i64, _text: &str) -> Result<(), AppError> {
-        Err(AppError::BadRequest("steering is not wired in this engine".to_owned()))
+        Err(AppError::BadRequest(
+            "steering is not wired in this engine".to_owned(),
+        ))
     }
 }
 
@@ -127,6 +129,25 @@ pub enum RunOutcome {
     Stalled,
     /// An interactive run planned and parked awaiting the user's approval.
     AwaitingApproval,
+    /// A single node PERMANENTLY failed mid-run (retry budget exhausted / non-
+    /// retryable). Reported best-effort to the lead BEFORE the run's terminal state
+    /// so the master agent can repair (rerun w/ another model, adjust the graph,
+    /// adopt, or abandon) instead of waiting for the whole run to end. Distinct from
+    /// [`RunOutcome::Failed`], which is the run's terminal receipt.
+    NodeFailed,
+    /// A THROTTLED mid-run heartbeat: after a batch of nodes finished `done` the
+    /// engine re-engages the lead so the master agent can OBSERVE progress and, if
+    /// warranted, append more work (`nomi_run_add_tasks`) to the SAME run — without
+    /// waiting for the terminal receipt. Rate-limited by node-count + time (see
+    /// [`BATCH_REPORT_MIN_NODES`] / [`BATCH_REPORT_INTERVAL`]) so a fast fan-out
+    /// cannot spam the lead. Non-terminal; the run keeps running.
+    BatchProgress,
+    /// A node raised a DECISION QUESTION and parked at `needs_review`
+    /// (审批模式，迁移 030): the worker called `nomi_task_question` mid-run, so the
+    /// lead must tell the USER to dive into that node (画布/进度条的提问图标 →
+    /// 投影视图), answer in the worker conversation, then 「采用为该节点产出」to
+    /// resume. Non-terminal; the run keeps running (other branches keep driving).
+    NodeQuestion,
 }
 
 impl RunOutcome {
@@ -137,6 +158,9 @@ impl RunOutcome {
             RunOutcome::Failed => "failed",
             RunOutcome::Stalled => "stalled",
             RunOutcome::AwaitingApproval => "awaiting_approval",
+            RunOutcome::NodeFailed => "node_failed",
+            RunOutcome::BatchProgress => "batch_progress",
+            RunOutcome::NodeQuestion => "node_question",
         }
     }
 }
@@ -227,6 +251,28 @@ pub const DEFAULT_MAX_PARALLEL: usize = 4;
 /// per [`RunEngineDeps`] (tests set it small).
 pub const DEFAULT_MAX_WORKER_RETRIES: usize = 3;
 
+/// Mid-run batch-progress throttle (Phase 3a Task 3): the settle branch fires a
+/// best-effort [`RunOutcome::BatchProgress`] lead report only after AT LEAST this
+/// many nodes have completed `done` since the last report. Coupled with
+/// [`BATCH_REPORT_INTERVAL`] (BOTH must clear) so a fast fan-out cannot spam the
+/// lead conversation. Non-terminal — the run keeps driving.
+///
+/// 需求4（agent 集群实时反馈）：由 3 降到 1——中途每有节点交付，最迟一个
+/// [`BATCH_REPORT_INTERVAL`] 内主 agent 就收到一次批量回执并向用户转述各节点
+/// 产出（含 `build_summary_digest` 摘要）。防刷屏由时间间隔单独兜底：20s 内多个
+/// 节点完成仍只并成一次回执。
+const BATCH_REPORT_MIN_NODES: usize = 1;
+
+/// Minimum wall-clock between two consecutive mid-run batch-progress lead reports
+/// (see [`BATCH_REPORT_MIN_NODES`]). The FIRST eligible batch fires immediately
+/// (no prior report); subsequent ones wait out this interval.
+const BATCH_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Independent, smaller budget for NO-MARKER failures (timeout / empty reply):
+/// a worker that returns `ok:false` with no persisted error marker. Bounded
+/// separately from provider-marker retries so a genuinely stuck node cannot loop.
+pub const DEFAULT_MAX_TIMEOUT_RETRIES: usize = 2;
+
 /// Base backoff before the FIRST auto-retry; doubles each subsequent retry
 /// (`base · 2^attempt`). 5s comfortably clears a per-minute RPM cap within the
 /// retry budget while staying snappy for a one-off blip. Overridable per
@@ -250,6 +296,35 @@ pub const STRAND_GRACE_MS: i64 = 5 * 60 * 1000;
 /// itself bounded by `PLAN_TIMEOUT_SECS`, so anything past that + margin is stuck /
 /// left re-plannable and abandoned) → force-finalize as stalled.
 pub const PLANNING_MAX_MS: i64 = 10 * 60 * 1000;
+
+// ── Phase 3b: autonomous runaway backstop (deterministic hard budget) ──────
+//
+// An AUTONOMOUS run drives an EMERGENT loop: a terminal worker's report re-engages
+// the lead as a fresh turn, which may call `nomi_run_add_tasks` to append more work
+// → re-arms the run → loops. Phase 3b Task 2's autonomous prompt asks the lead to
+// stop once the goal is met, but a prompt is COOPERATIVE — the LLM can ignore it.
+// These caps are the DETERMINISTIC backstop it CANNOT bypass: the gateway's
+// appendability gate folds them in, so an autonomous run at/over EITHER cap becomes
+// NOT appendable — the next append is refused WITHOUT re-arming and the run stays
+// terminal, halting the loop cleanly. Only `autonomy == "autonomous"` runs are
+// bounded here; a manual `nomi_spawn` / `nomi_run_add_tasks` on a supervised run is
+// human-driven and unbounded.
+
+/// Cumulative token budget for an AUTONOMOUS run — the sum of its tasks' real usage
+/// (`Run.total_tokens`, written by `finish_run` via `sum_task_tokens`). At/over this
+/// the run is no longer appendable, so the emergent loop terminates deterministically.
+pub const AUTONOMOUS_TOKEN_BUDGET: i64 = 2_000_000;
+
+/// Hard cap on the number of tasks an AUTONOMOUS run may accumulate. At/over this the
+/// run is no longer appendable — bounds an append-only runaway even when each round
+/// is cheap in tokens (a token cap alone would not stop many tiny rounds).
+pub const AUTONOMOUS_MAX_TASKS: usize = 60;
+
+/// Max consecutive autonomous re-engagements that append work WITHOUT completing any
+/// new task (no forward progress) before the loop is judged stuck. Consumed by the
+/// autonomous re-engagement guard (Phase 3b Task 2); defined here now alongside the
+/// other autonomous caps so Task 1 lands the full tunable set.
+pub const NO_PROGRESS_LIMIT: u32 = 2;
 
 /// Per-run async lock registry serializing the run-loop's **terminal-check +
 /// finish** against the rerun path's **reset + re-activation** (UC-2a 评审
@@ -362,9 +437,19 @@ pub struct RunEngineDeps {
     /// (see [`DEFAULT_MAX_WORKER_RETRIES`]). 0 disables auto-retry (every failure is
     /// terminal — the pre-retry behaviour).
     pub max_worker_retries: usize,
+    /// Max auto-retries for a NO-MARKER failure (timeout / empty reply). See
+    /// [`DEFAULT_MAX_TIMEOUT_RETRIES`]. 0 disables timeout auto-retry.
+    pub max_timeout_retries: usize,
     /// Base backoff before the first auto-retry, doubled per retry
     /// (see [`DEFAULT_RETRY_BACKOFF_BASE`]). [`Duration::ZERO`] retries instantly.
     pub retry_backoff_base: Duration,
+    /// Base data dir under which a workspace-less (ad-hoc / conversation-native)
+    /// run gets an auto-allocated SHARED working directory
+    /// (`<data_dir>/orchestrator/runs/{run_id}`), so all its nodes share one cwd
+    /// (files + a shared workpath KB binding). See `run_loop`'s workspace_dir
+    /// resolution. Defaults to `.` (tests override; the app injects the real
+    /// data dir via `services.work_dir`).
+    pub data_dir: std::path::PathBuf,
 }
 
 impl RunEngineDeps {
@@ -392,7 +477,9 @@ impl RunEngineDeps {
             run_locks: Arc::new(RunLocks::new()),
             summarizer: Arc::new(NoopSummaryProducer),
             max_worker_retries: DEFAULT_MAX_WORKER_RETRIES,
+            max_timeout_retries: DEFAULT_MAX_TIMEOUT_RETRIES,
             retry_backoff_base: DEFAULT_RETRY_BACKOFF_BASE,
+            data_dir: std::path::PathBuf::from("."),
         }
     }
 }
@@ -481,6 +568,13 @@ impl RunEngine {
         );
     }
 
+    fn stop_registered_loop(&self, run_id: &str) {
+        if let Some((_, handle)) = self.handles.remove(run_id) {
+            handle.cancelled.store(true, Ordering::SeqCst);
+            handle.join.abort();
+        }
+    }
+
     /// Stop a run's loop: set the cooperative cancel flag, abort the task, and
     /// cancel any in-flight worker conversations so their turns end as
     /// `Finish(Cancelled)`.
@@ -499,10 +593,7 @@ impl RunEngine {
     /// this run's conversations are cancelled. Persisting `cancelled` is the
     /// service's job ([`RunService::cancel`](crate::run_service::RunService::cancel)).
     pub fn stop(&self, run_id: &str) {
-        if let Some((_, handle)) = self.handles.remove(run_id) {
-            handle.cancelled.store(true, Ordering::SeqCst);
-            handle.join.abort();
-        }
+        self.stop_registered_loop(run_id);
         // Cancel in-flight worker conversations for this run (detached + best
         // effort). Idempotent: if no task is running / no conversation is stamped
         // / no live agent exists, the canceller no-ops. Safe to run even when the
@@ -512,6 +603,15 @@ impl RunEngine {
         tokio::spawn(async move {
             cancel_in_flight_conversations(&deps, &run_id).await;
         });
+    }
+
+    /// Stop a run's loop and wait until in-flight worker cancellation has been
+    /// attempted. Use this before immediately rewriting `running` task rows (for
+    /// example, pause -> reset to `pending`); otherwise the detached `stop()` query
+    /// can race with the row rewrite and miss the worker conversation.
+    pub async fn stop_and_cancel_in_flight(&self, run_id: &str) {
+        self.stop_registered_loop(run_id);
+        cancel_in_flight_conversations(&self.deps, run_id).await;
     }
 
     /// Run-level stall watchdog (safety net): finalize runs stuck non-terminal with
@@ -571,6 +671,19 @@ impl RunEngine {
                     // healthy after all — do not reap.
                     if r.status == "running" && self.is_running(&run_id) {
                         false
+                    } else if r.status == "running"
+                        && self
+                            .deps
+                            .run_repo
+                            .list_tasks(&run_id)
+                            .await
+                            .map(|ts| ts.iter().any(|t| t.status == "needs_review"))
+                            .unwrap_or(false)
+                    {
+                        // 审批模式（迁移 030）：节点挂在 needs_review 等人工作答——
+                        // 合法停车（可等数小时），绝不判 stalled。用户 adopt/rerun
+                        // 后路由重启循环；此处直接放行。
+                        false
                     } else {
                         let summary = format!(
                             "编排卡死：状态「{}」超过阈值无进展，已由看门狗终止。",
@@ -587,7 +700,10 @@ impl RunEngine {
         if !finalized {
             return;
         }
-        warn!(run_id, "Run watchdog: reaped stalled run as failed(stalled)");
+        warn!(
+            run_id,
+            "Run watchdog: reaped stalled run as failed(stalled)"
+        );
         // Clean up any residual (dead/wedged) loop handle + in-flight worker convs.
         self.stop(&run_id);
         // Report to the lead so the master agent surfaces the stall (lock-free).
@@ -625,7 +741,10 @@ impl RunEngine {
             // re-runnable. Kind-aware (verify/judge/loop keep their policy config).
             match run_repo.reset_orphaned_running_tasks(None).await {
                 Ok(n) if n > 0 => {
-                    info!(reset = n, "Run engine boot: reset orphaned running tasks → pending")
+                    info!(
+                        reset = n,
+                        "Run engine boot: reset orphaned running tasks → pending"
+                    )
                 }
                 Ok(_) => {}
                 Err(e) => warn!(error = %e, "Run engine boot: reset orphaned running tasks failed"),
@@ -672,7 +791,9 @@ impl RunEngine {
         text: &str,
     ) -> Result<(), AppError> {
         if text.trim().is_empty() {
-            return Err(AppError::BadRequest("steer text must not be empty".to_owned()));
+            return Err(AppError::BadRequest(
+                "steer text must not be empty".to_owned(),
+            ));
         }
         // Confirm the run exists (clean 404 vs. a confusing task-only error).
         if self
@@ -694,7 +815,9 @@ impl RunEngine {
             .map_err(|e| AppError::Internal(format!("orchestrator database error: {e}")))?
             .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
         if task.run_id != run_id {
-            return Err(AppError::NotFound(format!("task {task_id} in run {run_id}")));
+            return Err(AppError::NotFound(format!(
+                "task {task_id} in run {run_id}"
+            )));
         }
         // A stamped conversation_id means the task's worker is (or was) live; with
         // no conversation there is nothing to steer.
@@ -772,6 +895,88 @@ impl RunEngine {
             .await
     }
 
+    /// 审批模式（迁移 030）— **节点提问 (`nomi_task_question`)**。worker 会话在自己的
+    /// 回合中途遇关键决策时调用：把问题原文写到 `pending_question`、任务转入
+    /// `needs_review`（挂起，下游保持阻塞）、emit `task.statusChanged` 点亮画布/进度条
+    /// 的提问徽标，并（锁外、best-effort）向 lead 回执 [`RunOutcome::NodeQuestion`]，
+    /// 由主 agent 提醒用户进入该节点作答。恢复路径：用户在 worker 会话内回答 →
+    /// 「采用为该节点产出」（adopt 清问题、置 done、重激活）或重跑。
+    ///
+    /// 守卫：run 必须归属 `user_id`（不泄露存在性——非 owner 一律 NotFound）、
+    /// `approval_mode == "manual"`（全授权 run 拒绝——worker 应自行决策）、任务属于该
+    /// run 且处于 `running`（本轮在飞）或 `needs_review`（幂等更新问题文本）。
+    /// DB 写在 per-run 锁内，与循环的 settle/终态判定串行；lead 回执在锁外。
+    pub async fn raise_task_question(
+        &self,
+        user_id: &str,
+        run_id: &str,
+        task_id: &str,
+        question: &str,
+    ) -> Result<(), AppError> {
+        let question = question.trim();
+        if question.is_empty() {
+            return Err(AppError::BadRequest("question must not be empty".into()));
+        }
+        let lock = self.deps.run_locks.for_run(run_id);
+        let (title, lead_conv_id) = {
+            let _guard = lock.lock().await;
+            let run = self
+                .deps
+                .run_repo
+                .get_run(run_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .ok_or_else(|| AppError::NotFound(format!("run {run_id}")))?;
+            if run.user_id != user_id {
+                return Err(AppError::NotFound(format!("run {run_id}")));
+            }
+            if run.approval_mode.as_deref() != Some("manual") {
+                return Err(AppError::BadRequest(
+                    "本编排未开启「审批模式」：不要提问，请自行选择最合理的方案继续执行，并在产出中说明你的选择理由。".into(),
+                ));
+            }
+            let task = self
+                .deps
+                .run_repo
+                .get_task(task_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+            if task.run_id != run_id {
+                return Err(AppError::NotFound(format!("task {task_id} in run {run_id}")));
+            }
+            if !matches!(task.status.as_str(), "running" | "needs_review") {
+                return Err(AppError::BadRequest(
+                    "该节点当前不在执行中，无法提交决策问题。".into(),
+                ));
+            }
+            self.deps
+                .run_repo
+                .set_task_question(task_id, Some(question))
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            update_task_status(&self.deps, task_id, "needs_review").await;
+            self.deps
+                .emitter
+                .emit_task_status(run_id, task_id, "needs_review");
+            (task.title, run.lead_conv_id)
+        };
+        // Lead 回执（锁外、best-effort）：主 agent 提醒用户进入该节点作答。失败只
+        // warn——问题已落库、画布已点亮，用户仍能从 UI 发现并处理。
+        if let Some(lead_conv_id) = lead_conv_id {
+            let brief = format!("节点『{title}』提问：{question}");
+            if let Err(e) = self
+                .deps
+                .lead_reporter
+                .report(lead_conv_id, run_id, RunOutcome::NodeQuestion, &brief)
+                .await
+            {
+                warn!(run_id, task_id, error = %e, "node-question lead report failed");
+            }
+        }
+        Ok(())
+    }
+
     /// UC-3a — **conversation-driven intelligent re-adjust** with the loop-vs-
     /// reconcile race CLOSED **and the lead LLM call moved OUT of the per-run lock
     /// (B4)**. The engine-side entry the route calls instead of
@@ -829,9 +1034,43 @@ impl RunEngine {
         // re-validate + reconcile + re-activate). Zero LLM await inside the guard.
         let lock = self.deps.run_locks.for_run(run_id);
         let guard = lock.lock().await;
-        let run = run_service.apply_adjusted_plan(user_id, run_id, adjusted).await;
+        let run = run_service
+            .apply_adjusted_plan(user_id, run_id, adjusted)
+            .await;
         drop(guard);
         run
+    }
+
+    /// **Phase 3a — runtime task APPEND under the per-run lock.** The engine-side
+    /// entry the master agent (route/gateway) calls instead of
+    /// [`RunService::add_tasks`](crate::run_service::RunService::add_tasks)
+    /// directly, so the service's insert + terminal-run re-arm run UNDER the per-run
+    /// lock — the SAME [`RunLocks`] registry the [`run_loop`]'s terminal-check-and-
+    /// finish holds. This closes the append-vs-finish race: without the lock the loop
+    /// could read `all_settled == true`, this append could insert a `pending` task in
+    /// the gap, then the loop `finish_run`s `completed` AND deregisters its handle →
+    /// a terminal run with an un-run pending task and no live driver (boot-resume only
+    /// re-lists `running`, so it would never recover). Holding the lock makes the
+    /// insert + re-arm atomic w.r.t. the loop's terminal decision.
+    ///
+    /// Unlike [`adjust`](Self::adjust) there is NO LLM await here — the whole call is
+    /// pure DB — so the entire method runs under the lock (mirrors
+    /// [`rerun_task`](Self::rerun_task) / [`adopt_task_result`](Self::adopt_task_result)).
+    /// Returns the (possibly re-armed) run DTO; the CALLER (route) makes the
+    /// engine-lifecycle decision (`run.status == "running" && !is_running →
+    /// engine.start`) OUTSIDE this lock, keeping `start` (which `stop`s first) off the
+    /// locked path so the no-deadlock invariant stays trivially obvious.
+    pub async fn add_tasks(
+        &self,
+        run_service: &crate::run_service::RunService,
+        run_id: &str,
+        tasks: Vec<nomifun_api_types::PlannedTask>,
+    ) -> Result<nomifun_api_types::Run, AppError> {
+        let lock = self.deps.run_locks.for_run(run_id);
+        let _guard = lock.lock().await;
+        run_service.add_tasks(run_id, tasks).await
+        // Lock drops here — the insert + re-arm were atomic w.r.t. the run_loop's
+        // terminal-check-and-finish (no strand, no orphaned terminal run).
     }
 }
 
@@ -903,6 +1142,61 @@ async fn run_loop(
         None
     };
 
+    // Ad-hoc/conversation-native run with no dir: auto-allocate a per-run SHARED
+    // directory so all nodes share one cwd (files + a shared workpath KB binding).
+    // Deterministic path (`<data_dir>/orchestrator/runs/{run_id}`, stable across
+    // restarts); persisted to `run.work_dir` so browse + boot-resume resolve it
+    // (and the resolution above reads it back on a later loop). Best-effort — a
+    // create/persist failure logs and falls back to per-node temp dirs (never
+    // fails the run). Runs once per loop, before the fill loop.
+    let workspace_dir: Option<String> = match workspace_dir {
+        Some(d) => Some(d),
+        // Only a TRULY ad-hoc run (no workspace binding) gets an auto-allocated
+        // shared dir. A workspace-bound run whose workspace dir couldn't be
+        // resolved (e.g. a transient ws read error) is left as-is — never rebind
+        // it to an ad-hoc dir (the persist would stick and permanently rebind it).
+        None if run.workspace_id.is_none() => {
+            let dir = deps
+                .data_dir
+                .join("orchestrator")
+                .join("runs")
+                .join(run_id);
+            match std::fs::create_dir_all(&dir) {
+                Ok(()) => {
+                    let dir_str = dir.to_string_lossy().to_string();
+                    if let Err(e) = deps
+                        .run_repo
+                        .update_run(
+                            run_id,
+                            UpdateRunParams {
+                                work_dir: Some(Some(dir_str.clone())),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                    {
+                        warn!(run_id, error = %e, "failed to persist auto shared work_dir (continuing)");
+                    }
+                    Some(dir_str)
+                }
+                Err(e) => {
+                    warn!(run_id, error = %e, "failed to create shared run dir (nodes use temp dirs)");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    // Seed a human-readable RUN_NOTES.md in the shared dir (best-effort, idempotent
+    // — only if absent, to preserve node-appended content across restart/rerun). The
+    // plan is already persisted at this point (the choreography plans BEFORE
+    // `engine.start`), so `list_tasks` here returns the planned nodes' titles. A
+    // workspace-bound run also benefits (its shared dir gets the notes seed).
+    if let Some(ref dir) = workspace_dir {
+        seed_run_notes(&deps, run_id, dir).await;
+    }
+
     // In-flight worker futures, each resolving to (task_id, outcome). The set's
     // length is the live concurrency; we never exceed `cap`.
     let mut inflight: FuturesUnordered<WorkerFuture> = FuturesUnordered::new();
@@ -917,6 +1211,13 @@ async fn run_loop(
     // error) leaves it None → the run-level watchdog reports those.
     let mut terminal_report: Option<(RunOutcome, String)> = None;
 
+    // Mid-run batch-progress throttle state (Phase 3a Task 3). `done_since_report`
+    // counts nodes that finished `done` since the last batch report; `last_batch_report`
+    // gates the wall-clock interval (None = never reported → first eligible batch
+    // fires immediately). See BATCH_REPORT_MIN_NODES / BATCH_REPORT_INTERVAL.
+    let mut last_batch_report: Option<std::time::Instant> = None;
+    let mut done_since_report: usize = 0;
+
     loop {
         // (a) Cancelled → stop scheduling. Task 3 adds in-flight cancel
         // propagation; here we simply stop dispatching and let the loop unwind
@@ -927,12 +1228,12 @@ async fn run_loop(
         }
 
         // (a') Paused gate (P3b): re-read the persisted run status each iteration.
-        // When `paused` the loop must NOT dispatch new workers — but it keeps
-        // processing any in-flight workers to completion (pause ≠ cancel). With
-        // no in-flight work it idle-waits (a short sleep, NOT a busy-spin) and
-        // re-checks, so a `resume` (status → `running`) is observed on the next
-        // iteration and filling resumes. A read error is treated as not-paused
-        // (fail-open: better to keep driving than to wedge on a transient error).
+        // The product pause route stops the loop and cancels live workers before
+        // resetting interrupted nodes. This gate remains defensive for a loop that
+        // observes `paused` through a direct state transition: it dispatches no new
+        // workers and idles when empty until `resume` flips the status to `running`.
+        // A read error is treated as not-paused (fail-open: better to keep driving
+        // than to wedge on a transient error).
         let status = match deps.run_repo.get_run(run_id).await {
             Ok(Some(r)) => Some(r.status),
             _ => None,
@@ -948,7 +1249,10 @@ async fn run_loop(
         // an awaiting run) must run nothing. With no in-flight work on a fresh start
         // there is nothing to drain, so we exit cleanly — approval will restart us.
         if matches!(status.as_deref(), Some("awaiting_plan_approval")) && inflight.is_empty() {
-            info!(run_id, "Run loop: run awaits plan approval — not dispatching (exiting until approved)");
+            info!(
+                run_id,
+                "Run loop: run awaits plan approval — not dispatching (exiting until approved)"
+            );
             break;
         }
 
@@ -1070,9 +1374,8 @@ async fn run_loop(
                             .iter()
                             .filter(|d| d.blocked_task_id == t.id)
                             .any(|d| {
-                                all.iter().any(|b| {
-                                    b.id == d.blocker_task_id && b.status == "failed"
-                                })
+                                all.iter()
+                                    .any(|b| b.id == d.blocker_task_id && b.status == "failed")
                             })
                     })
                     .cloned()
@@ -1165,8 +1468,14 @@ async fn run_loop(
                 /// failed conclusively in a way that warrants re-driving → re-loop.
                 ReLoop,
                 /// All terminal, completable → summarize (no lock) then re-verify.
-                /// Carries the tasks (for the digest) + token total.
-                Completed { tasks: Vec<OrchRunTaskRow>, total_tokens: Option<i64> },
+                /// Carries the tasks (for the digest) + token total. `with_failures`
+                /// = any node soft-failed (`on_fail=skip_and_continue`), so the run
+                /// settles `completed_with_failures` instead of `completed`.
+                Completed {
+                    tasks: Vec<OrchRunTaskRow>,
+                    total_tokens: Option<i64>,
+                    with_failures: bool,
+                },
                 /// A task failed → finished `failed` under this guard already;
                 /// carries the tasks so the after-loop lead report can build a
                 /// failure brief lock-free.
@@ -1199,24 +1508,38 @@ async fn run_loop(
                 } else {
                     match deps.run_repo.list_tasks(run_id).await {
                         Ok(tasks) => {
-                            let all_terminal = tasks
+                            // 迁移 029 终态分流。软失败 = 失败但策略 skip_and_continue
+                            // (其传递性下游已在 settle 时 skip);硬失败 = 失败且策略
+                            // fail_run(默认)。已 settled = 每个任务处于终态
+                            // (done/skipped)或软失败。硬失败优先并支配任何 done/软失败
+                            // 兄弟节点 → 整 run failed(现状,零回归)。
+                            let hard_failed = tasks
                                 .iter()
-                                .all(|t| t.status == "done" || t.status == "skipped");
-                            let any_failed = tasks.iter().any(|t| t.status == "failed");
-                            if !tasks.is_empty() && all_terminal {
-                                // Completable: capture inputs and DROP the guard at
-                                // the end of this scope — the LLM summarize runs
-                                // OUTSIDE the lock, then we re-acquire + re-verify.
-                                let total_tokens = sum_task_tokens(&tasks);
-                                TerminalDecision::Completed { tasks, total_tokens }
-                            } else if any_failed {
-                                // No LLM on the failed path → finish + deregister
+                                .any(|t| t.status == "failed" && !is_soft_fail(t));
+                            let all_settled = tasks.iter().all(|t| {
+                                t.status == "done" || t.status == "skipped" || is_soft_fail(t)
+                            });
+                            let any_soft_fail = tasks.iter().any(is_soft_fail);
+                            if hard_failed {
+                                // No LLM on the hard-failed path → finish + deregister
                                 // under THIS held guard (atomic terminal-write +
                                 // deregister, as before).
                                 let total_tokens = sum_task_tokens(&tasks);
                                 finish_run(&deps, run_id, "failed", None, total_tokens).await;
                                 handles.remove_if(run_id, |_, h| h.generation == generation);
                                 TerminalDecision::FinishedFailed { tasks }
+                            } else if !tasks.is_empty() && all_settled {
+                                // Completable: capture inputs and DROP the guard at
+                                // the end of this scope — the LLM summarize runs
+                                // OUTSIDE the lock, then we re-acquire + re-verify.
+                                // `any_soft_fail` selects completed vs
+                                // completed_with_failures at the finish site (③).
+                                let total_tokens = sum_task_tokens(&tasks);
+                                TerminalDecision::Completed {
+                                    tasks,
+                                    total_tokens,
+                                    with_failures: any_soft_fail,
+                                }
                             } else {
                                 // Not terminal and nothing ready. Distinguish a
                                 // transient-error retry-in-backoff (a `pending` task
@@ -1232,8 +1555,21 @@ async fn run_loop(
                                     t.status == "pending"
                                         && t.next_retry_at.is_some_and(|at| at > now)
                                 });
+                                // 审批模式（迁移 030）：有节点挂在 needs_review 等人工
+                                // 作答——合法停车，不是卡死。干净退出（run 保持
+                                // running；看门狗对此豁免），用户 adopt/rerun 后由路由
+                                // 重启循环再驱动（与 awaiting_plan_approval 的退出
+                                // 契约一致）。
+                                let awaiting_review =
+                                    tasks.iter().any(|t| t.status == "needs_review");
                                 if awaiting_retry {
                                     TerminalDecision::IdleRetry
+                                } else if awaiting_review {
+                                    info!(
+                                        run_id,
+                                        "Run loop: node(s) parked at needs_review (节点提问) — exiting until人工作答 re-drives"
+                                    );
+                                    TerminalDecision::Break
                                 } else {
                                     // Stuck (no ready, no in-flight, not terminal) —
                                     // break, never spin.
@@ -1273,7 +1609,11 @@ async fn run_loop(
                     terminal_report = Some((RunOutcome::Failed, build_summary_digest(&tasks)));
                     break;
                 }
-                TerminalDecision::Completed { tasks, total_tokens } => {
+                TerminalDecision::Completed {
+                    tasks,
+                    total_tokens,
+                    with_failures,
+                } => {
                     // B2: synthesize a coherent run summary with a one-shot lead
                     // call — WITH NO LOCK HELD (the guard above was dropped). This is
                     // the only slow/external await on the terminal path; holding the
@@ -1309,9 +1649,11 @@ async fn run_loop(
                     let still_terminal = match deps.run_repo.list_tasks(run_id).await {
                         Ok(now) => {
                             !now.is_empty()
-                                && now
-                                    .iter()
-                                    .all(|t| t.status == "done" || t.status == "skipped")
+                                && now.iter().all(|t| {
+                                    t.status == "done"
+                                        || t.status == "skipped"
+                                        || is_soft_fail(t)
+                                })
                         }
                         // A re-read error → do NOT finish on stale data; re-loop and
                         // re-decide on the next pass (fail toward not-committing).
@@ -1327,7 +1669,21 @@ async fn run_loop(
                         continue;
                     }
                     // Still terminal, no ready work → commit the completion.
-                    finish_run(&deps, run_id, "completed", Some(summary.clone()), total_tokens).await;
+                    // 迁移 029:有软失败节点(skip_and_continue)时写
+                    // completed_with_failures,否则 completed。
+                    let terminal_status = if with_failures {
+                        "completed_with_failures"
+                    } else {
+                        "completed"
+                    };
+                    finish_run(
+                        &deps,
+                        run_id,
+                        terminal_status,
+                        Some(summary.clone()),
+                        total_tokens,
+                    )
+                    .await;
                     // Deregister our handle UNDER the (re-acquired) lock so
                     // `is_running` flips false atomically with the terminal status
                     // write — a rerun serialized after us on this lock then observes
@@ -1345,7 +1701,50 @@ async fn run_loop(
         // completion may unblock downstream tasks, so the loop re-fills.
         if let Some((task_id, outcome)) = inflight.next().await {
             in_progress.remove(&task_id);
-            settle_task_outcome(&deps, run_id, &task_id, outcome).await;
+            // Whether this settle actually landed the node as `done` — returned by
+            // settle itself, NOT inferred from `Ok(o) if o.ok`（评审确认缺陷：审批
+            // 模式的 needs_review park 路径 worker 同样以 ok:true 结束回合，但
+            // settle 顶部守卫提前 return、节点并未完成——按 outcome 推断会紧跟
+            // NodeQuestion 回执再发一条自相矛盾的虚假 BatchProgress）。Retries /
+            // failures / park 都不计入。
+            let did_complete = settle_task_outcome(&deps, run_id, &task_id, outcome).await;
+
+            // Mid-run batch-progress heartbeat (Phase 3a Task 3). This branch is
+            // reached ONLY while `inflight` is non-empty, so it is structurally
+            // DISJOINT from the `inflight.is_empty()` terminal decision above — we
+            // never hold a RunLocks terminal guard here. Best-effort: a report
+            // failure only warns and never affects the run. Throttled by BOTH a
+            // node-count floor and a wall-clock interval so a fast fan-out cannot
+            // spam the lead. A run with no lead conversation short-circuits (None).
+            if did_complete {
+                done_since_report += 1;
+            }
+            if let Some(lead_conv_id) = run.lead_conv_id {
+                let interval_due = last_batch_report
+                    .map(|t| t.elapsed() >= BATCH_REPORT_INTERVAL)
+                    .unwrap_or(true);
+                // Gate the batch report on `did_complete` too: a settle that is a
+                // permanent FAILURE fires `NodeFailed` inside `settle_task_outcome`
+                // above, so firing the batch report on the SAME settle would emit
+                // `node_failed` then `batch_progress` back-to-back. Only consider the
+                // batch report when THIS settle was a completion (the count floor + the
+                // interval gate still apply).
+                if did_complete && done_since_report >= BATCH_REPORT_MIN_NODES && interval_due {
+                    let digest = match deps.run_repo.list_tasks(run_id).await {
+                        Ok(tasks) if !tasks.is_empty() => build_summary_digest(&tasks),
+                        _ => "（run 进行中，暂无可汇总的节点产出）".to_string(),
+                    };
+                    if let Err(e) = deps
+                        .lead_reporter
+                        .report(lead_conv_id, run_id, RunOutcome::BatchProgress, &digest)
+                        .await
+                    {
+                        warn!(run_id, error = %e, "batch-progress lead report failed");
+                    }
+                    last_batch_report = Some(std::time::Instant::now());
+                    done_since_report = 0;
+                }
+            }
         }
         // Loop again — re-evaluate the ready set (newly unblocked) and the
         // terminal condition.
@@ -1401,7 +1800,10 @@ async fn cancel_in_flight_conversations(deps: &Arc<RunEngineDeps>, run_id: &str)
         cancelled += 1;
     }
     if cancelled > 0 {
-        info!(run_id, cancelled, "Run stop: cancelled in-flight worker conversations");
+        info!(
+            run_id,
+            cancelled, "Run stop: cancelled in-flight worker conversations"
+        );
     }
 }
 
@@ -1410,6 +1812,39 @@ async fn cancel_in_flight_conversations(deps: &Arc<RunEngineDeps>, run_id: &str)
 type WorkerFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = (String, Result<WorkerOutcome, AppError>)> + Send>,
 >;
+
+/// Seed a human-readable shared notes file (`RUN_NOTES.md`) in the run's shared
+/// dir. Best-effort and idempotent — writes ONLY if the file is absent, so a
+/// restart/rerun never clobbers content nodes appended (their appends survive).
+/// Carries the run goal + plan (task titles) + a「共享笔记」append region nodes
+/// add findings to via built-in file tools (their cwd is this shared dir). A
+/// read/write failure only `warn!`s and NEVER fails the run.
+async fn seed_run_notes(deps: &Arc<RunEngineDeps>, run_id: &str, dir: &str) {
+    let path = std::path::Path::new(dir).join("RUN_NOTES.md");
+    // Idempotent: preserve any node-appended content across restart/rerun.
+    if path.exists() {
+        return;
+    }
+    let goal = deps
+        .run_repo
+        .get_run(run_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.goal)
+        .unwrap_or_default();
+    let tasks = deps.run_repo.list_tasks(run_id).await.unwrap_or_default();
+    let mut body = String::from("# RUN_NOTES\n\n## 目标 (GOAL)\n");
+    body.push_str(&goal);
+    body.push_str("\n\n## 计划 (PLAN)\n");
+    for t in &tasks {
+        body.push_str(&format!("- {}\n", t.title));
+    }
+    body.push_str("\n## 共享笔记（各节点可追加发现/结论，供其它节点参考）\n");
+    if let Err(e) = std::fs::write(&path, body) {
+        warn!(run_id, error = %e, "failed to seed RUN_NOTES.md (continuing)");
+    }
+}
 
 /// Prepare a task for dispatch: resolve its member from the run's fleet snapshot,
 /// mark it `running` + emit, compose the brief, and build the worker future
@@ -1439,9 +1874,12 @@ async fn dispatch_task(
     update_task_status(deps, &task.id, "running").await;
     deps.emitter.emit_task_status(run_id, &task.id, "running");
 
-    // Compose the brief: role hint + the task + completed upstream outputs.
+    // Compose the brief: role hint + the task + completed upstream outputs, plus
+    // cross-node context (run goal + plan shape + transitive-ancestor digest +
+    // shared-notes pointer) so a node deep in a chain retains earlier context.
     let upstream = collect_upstream_outputs(deps, run_id, &task.id).await;
-    let brief = compose_brief(member.role_hint.as_deref(), &task, &upstream);
+    let ctx = build_brief_context(deps, run_id, &task.id, workspace_dir.as_deref()).await;
+    let brief = compose_brief(member.role_hint.as_deref(), &task, &upstream, &ctx);
 
     // Clones captured by the worker future + the on_started closure. on_started is
     // a sync FnOnce(i64); the async task.conversation_id stamp is done in a
@@ -1459,6 +1897,16 @@ async fn dispatch_task(
     // 任务角色随 dispatch 下发：受限角色（searcher/reviewer/verifier）在 worker
     // 侧收缩为 per-node 工具白名单 + 网关收缩（run_restricted）。
     let task_role = task.role.clone();
+    // 受控嵌套深度（Phase 3b W7d）：从 task.pattern_config 读出 delegation_depth，随
+    // dispatch 烙进 worker 会话 extra（build_worker_extra）。pattern_config 里同时可能
+    // 存 fan-out 的 {"group":...} 等键——只读 delegation_depth，缺失/不可解析默认 0。
+    // root lead 的任务无此键 → 0；网关追加口给追加任务盖 caller_depth+1。
+    let delegation_depth = task
+        .pattern_config
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("delegation_depth").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0) as u32;
     let timeout = deps.worker_timeout;
 
     let fut: WorkerFuture = Box::pin(async move {
@@ -1496,6 +1944,7 @@ async fn dispatch_task(
         let outcome = worker
             .run_restricted(
                 task_role.as_deref(),
+                delegation_depth,
                 &member,
                 workspace_dir.as_deref(),
                 &run_id_for_run,
@@ -1517,12 +1966,45 @@ async fn dispatch_task(
 /// error) → AUTO-RETRY if the failure was a transient/retryable provider error and
 /// the retry budget remains (see [`settle_failed_or_retry`]), else mark `failed` +
 /// emit. Completion is what unblocks downstream tasks.
+///
+/// Returns `true` ONLY when this settle actually landed the node as `done` —
+/// the run_loop's batch-progress heartbeat keys off this instead of inferring
+/// from the raw outcome（needs_review park 也以 ok:true 回场，但并未完成）。
 async fn settle_task_outcome(
     deps: &Arc<RunEngineDeps>,
     run_id: &str,
     task_id: &str,
     outcome: Result<WorkerOutcome, AppError>,
-) {
+) -> bool {
+    // 审批模式（迁移 030）：worker 在本轮中途经 nomi_task_question 把任务置为
+    // `needs_review`（挂起等人工），随后它的回合正常结束并流到这里。此时绝不能把
+    // 状态覆盖为 done/failed：只补写 conversation_id / 产出文本 / tokens（供投影
+    // 视图与后续「采用为该节点产出」使用），保持 needs_review + pending_question
+    // 原样——下游保持阻塞，由用户进节点作答后 adopt/rerun 恢复。读失败按未挂起
+    // 处理（fail-open 到既有 settle 路径，绝不因一次读错吞掉正常结算）。
+    let parked_for_review = matches!(
+        deps.run_repo.get_task(task_id).await,
+        Ok(Some(t)) if t.status == "needs_review"
+    );
+    if parked_for_review {
+        if let Ok(o) = &outcome {
+            let _ = deps
+                .run_repo
+                .update_task(
+                    task_id,
+                    UpdateTaskParams {
+                        conversation_id: Some(Some(o.conversation_id)),
+                        output_summary: o.text.clone().map(Some),
+                        tokens: o.tokens.map(Some),
+                        next_retry_at: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
+        info!(run_id, task_id, "Run loop: task parked at needs_review (节点提问) — settle skipped");
+        return false;
+    }
     match outcome {
         Ok(o) if o.ok => {
             let _ = deps
@@ -1556,15 +2038,18 @@ async fn settle_task_outcome(
                 )
                 .await;
             deps.emitter.emit_task_status(run_id, task_id, "done");
+            true
         }
         Ok(o) => {
             // Worker returned but produced no final text (rate-limit / transient
             // error / timeout / empty). Auto-retry transient errors; else fail.
             settle_failed_or_retry(deps, run_id, task_id, Some(o.conversation_id), o.tokens).await;
+            false
         }
         Err(e) => {
             warn!(run_id, task_id, error = %e, "Run loop: worker errored — failing or retrying task");
             settle_failed_or_retry(deps, run_id, task_id, None, None).await;
+            false
         }
     }
 }
@@ -1574,24 +2059,37 @@ async fn settle_task_outcome(
 /// the PRE-bump retry count (0 = first retry → one `base`).
 fn retry_backoff_ms(base: Duration, attempt: i64) -> i64 {
     let base_ms = base.as_millis() as i64;
-    let factor = 1i64.checked_shl(attempt.clamp(0, 16) as u32).unwrap_or(i64::MAX);
+    let factor = 1i64
+        .checked_shl(attempt.clamp(0, 16) as u32)
+        .unwrap_or(i64::MAX);
     // Cap the exponential growth so a high retry budget can't schedule an absurd
     // multi-hour backoff (`base · 2^attempt` explodes fast). Past the cap the delay
     // is constant — still spaced out, but bounded and snappy to recover.
     base_ms.saturating_mul(factor).min(MAX_RETRY_BACKOFF_MS)
 }
 
-/// Decide a failed worker turn's fate: AUTO-RETRY a transient/retryable provider
-/// error while the retry budget remains, else mark the task permanently `failed`.
+/// Decide a failed worker turn's fate via a THREE-WAY classification against the
+/// worker conversation, honouring TWO independent per-node budgets plus a run-level
+/// total-retry budget:
 ///
-/// Retryable is classified by [`WorkerRunner::last_error_retryable`] reading the
-/// worker conversation's latest error marker (`error.retryable` — the same flag the
-/// UI shows as 「可重试」). On a retry we keep the run `running` and put the node back
-/// to `pending` with `attempt+1` and a `next_retry_at = now + backoff` gate;
-/// `list_ready_tasks` holds the node out until the backoff elapses, then the loop
-/// re-dispatches it (a fresh worker turn). After `max_worker_retries` retries — or
-/// for a non-retryable error (auth / billing / bad request → `retryable:false`) — we
-/// fall back to [`mark_task_failed`] exactly as before.
+///   - **Retryable**  — a provider marker with `retryable=true` (e.g. a rate limit):
+///     retried under [`RunEngineDeps::max_worker_retries`], the same as before.
+///   - **NoMarker**   — `ok:false` with NO error marker (a timeout / empty reply):
+///     retried under the SEPARATE, smaller [`RunEngineDeps::max_timeout_retries`]
+///     budget so a genuinely stuck node self-heals on a transient blip yet cannot
+///     loop forever. This is the Task 1 addition (previously NoMarker → fail fast).
+///   - **NonRetryable** — a provider marker with `retryable=false` (auth / billing /
+///     bad request), or an `Err` outcome with no conversation to classify: fail
+///     immediately, exactly as before.
+///
+/// On a retry we keep the run `running` and put the node back to `pending` with
+/// `attempt+1` and a `next_retry_at = now + backoff` gate; `list_ready_tasks` holds
+/// it out until the backoff elapses, then the loop re-dispatches it (a fresh worker
+/// turn). The **run-level total-retry budget** additionally bounds a wide fan-out:
+/// stateless — the sum of persisted `attempt`s across the run vs
+/// `tasks.len() * max_worker_retries` — so many independently backing-off nodes
+/// cannot storm the provider. When neither budget permits a retry we fall back to
+/// [`mark_task_failed`] exactly as before.
 async fn settle_failed_or_retry(
     deps: &Arc<RunEngineDeps>,
     run_id: &str,
@@ -1599,26 +2097,52 @@ async fn settle_failed_or_retry(
     conv_from_outcome: Option<i64>,
     tokens: Option<i64>,
 ) {
-    // Read the task once for its current attempt count + its conversation id (the
-    // worker conv to classify the error against — prefer the outcome's, else the
-    // stamped one, since an `Err` outcome carries none).
     let task = deps.run_repo.get_task(task_id).await.ok().flatten();
     let attempt = task.as_ref().map(|t| t.attempt).unwrap_or(0);
     let conv = conv_from_outcome.or_else(|| task.as_ref().and_then(|t| t.conversation_id));
 
-    let retryable = match conv {
-        Some(c) => deps.worker.last_error_retryable(&c.to_string()).await,
-        None => false,
+    // Three-way classification against the worker conversation:
+    //   Retryable  = provider marker with retryable=true (e.g. rate limit)
+    //   NoMarker   = ok:false with no error marker (timeout / empty reply)
+    //   Otherwise  = NonRetryable (auth/billing/bad-request marker, or Err w/ no conv)
+    let (retryable_marker, has_marker) = match conv {
+        Some(c) => {
+            let s = c.to_string();
+            (deps.worker.last_error_retryable(&s).await, deps.worker.last_error_present(&s).await)
+        }
+        None => (false, true), // Err outcome (no conversation) → treat as NonRetryable
+    };
+    let (should_retry, budget) = if retryable_marker {
+        (true, deps.max_worker_retries)
+    } else if !has_marker && conv.is_some() {
+        (true, deps.max_timeout_retries) // NoMarker: timeout / empty reply
+    } else {
+        (false, 0) // NonRetryable marker
     };
 
-    if retryable && (attempt as usize) < deps.max_worker_retries {
+    // Run-level total-retry budget: bound wide fan-outs so many independently
+    // backing-off nodes cannot storm the provider. Stateless: sum of persisted
+    // attempts across the run vs tasks.len() * max_worker_retries.
+    //
+    // NOTE on coupling: the cap is expressed in `max_worker_retries`, and each
+    // node's own budget already caps its attempts, so this run gate only binds
+    // AFTER nodes have exhausted their per-node budgets (inert under defaults
+    // 3/2). Two consequences to keep in mind: (a) `max_worker_retries == 0`
+    // makes `cap == 0` → this gate blocks ALL retries incl. NoMarker timeouts,
+    // regardless of `max_timeout_retries`; (b) a caller setting
+    // `max_timeout_retries > max_worker_retries` would have timeout retries
+    // throttled by this run cap. Both are as-designed (per spec) but non-obvious.
+    let within_run_budget = match deps.run_repo.list_tasks(run_id).await {
+        Ok(tasks) => {
+            let used: i64 = tasks.iter().map(|t| t.attempt).sum();
+            let cap = (tasks.len().max(1) as i64) * (deps.max_worker_retries as i64);
+            used < cap
+        }
+        Err(_) => true, // fail-open on a transient read error; per-node budget still bounds it
+    };
+
+    if should_retry && (attempt as usize) < budget && within_run_budget {
         let next = now_ms() + retry_backoff_ms(deps.retry_backoff_base, attempt);
-        // Back to `pending`, attempt+1, gated by `next_retry_at`. The run stays
-        // `running` (we never write a terminal status here), so it self-heals — and
-        // survives a restart (boot-resume re-arms the still-`running` run, the loop
-        // respects the persisted gate). Keep the conversation_id (the failed turn
-        // stays inspectable); a re-dispatch creates a fresh worker conversation and
-        // re-stamps it. Record any tokens accrued by the failed attempt.
         let _ = deps
             .run_repo
             .update_task(
@@ -1632,20 +2156,54 @@ async fn settle_failed_or_retry(
                 },
             )
             .await;
-        // Emit `pending` so the canvas reflects the node leaving its failed/running
-        // state back to a queued-retry state (the ×N attempt badge shows the count).
         deps.emitter.emit_task_status(run_id, task_id, "pending");
         info!(
             run_id,
             task_id,
             attempt = attempt + 1,
-            backoff_ms = retry_backoff_ms(deps.retry_backoff_base, attempt),
-            "Run loop: worker hit a retryable error — scheduling bounded auto-retry"
+            no_marker = !has_marker,
+            "Run loop: scheduling bounded auto-retry"
         );
     } else {
-        // Non-retryable, or retry budget exhausted → permanent failure (the run
-        // loop's terminal check then fails the run, exactly as before).
+        // Non-retryable, retry budget exhausted, or run-level budget hit → permanent
+        // failure (the run loop's terminal check then fails the run, as before).
         mark_task_failed(deps, run_id, task_id, conv_from_outcome, tokens).await;
+        // 迁移 029 部分交付:若该节点策略是 skip_and_continue,跳过它的传递性下游
+        // (标 skipped),让独立分支跑完、run 终态走 completed_with_failures。默认
+        // (None/fail_run) 不进这里 → 整 run 仍判 failed(零回归)。mark_task_failed
+        // 保持单一职责,策略分流只在此处。
+        if let Ok(Some(t)) = deps.run_repo.get_task(task_id).await {
+            if t.on_fail.as_deref() == Some("skip_and_continue") {
+                if let Ok(edges) = deps.run_repo.list_deps(run_id).await {
+                    skip_downstream(deps, run_id, task_id, &edges).await;
+                }
+            }
+        }
+
+        // 中途上报 lead:某节点永久失败时(必需节点将拖垮 run,软失败也值得知会),
+        // best-effort 唤起 master 会话让其决策(改图/换模型重跑/adopt/放弃),不等终态。
+        // 绝不在终态 `RunLocks` 锁内(本函数在 run_loop 分支(d),不持终态锁);失败仅
+        // warn。每永久失败节点触发一次(天然有界)。`last_error` 已由上面的
+        // `mark_task_failed` 落库,此处读到的是真实原因。
+        if let Ok(Some(run)) = deps.run_repo.get_run(run_id).await {
+            if let Some(lead_conv_id) = run.lead_conv_id {
+                let brief = match deps.run_repo.get_task(task_id).await {
+                    Ok(Some(t)) => format!(
+                        "节点「{}」永久失败：{}",
+                        t.title,
+                        t.last_error.as_deref().unwrap_or("未知原因")
+                    ),
+                    _ => format!("run {run_id} 的一个节点永久失败"),
+                };
+                if let Err(e) = deps
+                    .lead_reporter
+                    .report(lead_conv_id, run_id, RunOutcome::NodeFailed, &brief)
+                    .await
+                {
+                    warn!(run_id, task_id, error = %e, "mid-run node-failed lead report failed");
+                }
+            }
+        }
     }
 }
 
@@ -1689,7 +2247,11 @@ async fn resolve_task_member(
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let ov_model = task.override_model.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let ov_model = task
+            .override_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         if let (Some(p), Some(m)) = (ov_provider, ov_model) {
             member.provider_id = Some(p.to_string());
             member.model = Some(m.to_string());
@@ -1722,6 +2284,103 @@ async fn collect_upstream_outputs(
         .collect()
 }
 
+/// Build the cross-node [`BriefContext`] for a task at dispatch time (Phase 1b
+/// Task 3): the run goal, a short plan summary (task titles in plan order), a
+/// transitive-ancestor digest, and a pointer to the shared `RUN_NOTES.md`.
+///
+/// **Transitive-ancestor digest.** A node's DIRECT upstream is injected separately
+/// (as UPSTREAM RESULTS via [`collect_upstream_outputs`]); this walks the dep graph
+/// UP FROM those direct blockers to gather the blockers-of-blockers (and beyond) —
+/// the earlier context a long chain would otherwise lose. It mirrors
+/// [`skip_downstream`]'s bounded, `seen`-guarded BFS but in the REVERSE direction
+/// (following `blocked → blocker` edges upward). Direct upstream and the task
+/// itself are pre-seeded into `seen` so they are EXCLUDED (never re-injected). Only
+/// ancestors that have produced an `output_summary` land in the digest, each passed
+/// through [`truncate_summary_output`] so a verbose upstream cannot blow the budget.
+async fn build_brief_context(
+    deps: &Arc<RunEngineDeps>,
+    run_id: &str,
+    task_id: &str,
+    workspace_dir: Option<&str>,
+) -> BriefContext {
+    let run_row = deps.run_repo.get_run(run_id).await.ok().flatten();
+    let goal = run_row.as_ref().map(|r| r.goal.clone()).unwrap_or_default();
+    // 审批模式（迁移 030）：只认显式 "manual"；读失败/缺省 = 全授权（不渲染决策段）。
+    let manual_approval = run_row
+        .as_ref()
+        .and_then(|r| r.approval_mode.as_deref())
+        .is_some_and(|m| m == "manual");
+
+    let tasks = deps.run_repo.list_tasks(run_id).await.unwrap_or_default();
+    // Short plan summary: the task titles in plan order, so a node sees the overall
+    // shape and its own position. Kept compact (titles only) to bound the prompt.
+    let plan_summary = tasks
+        .iter()
+        .map(|t| t.title.as_str())
+        .collect::<Vec<_>>()
+        .join(" → ");
+
+    let dep_edges = deps.run_repo.list_deps(run_id).await.unwrap_or_default();
+    // DIRECT upstream (blockers of this task): injected separately as UPSTREAM
+    // RESULTS, so it is the SEED of the upward walk but is EXCLUDED from the digest.
+    let direct: Vec<String> = dep_edges
+        .iter()
+        .filter(|d| d.blocked_task_id == task_id)
+        .map(|d| d.blocker_task_id.clone())
+        .collect();
+
+    // Index tasks by id for O(1) title/output lookups during the walk.
+    let by_id: std::collections::HashMap<&str, &OrchRunTaskRow> =
+        tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+
+    // Reverse BFS (blocked → blocker) from the direct upstream. `seen` is pre-seeded
+    // with the task itself + its direct upstream so neither is ever added to the
+    // digest; bounded because each id is visited once.
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert(task_id.to_string());
+    let mut frontier: Vec<String> = Vec::new();
+    for d in &direct {
+        // Direct upstream: excluded from the digest but the roots of the walk.
+        seen.insert(d.clone());
+        frontier.push(d.clone());
+    }
+    let mut ancestor_digest: Vec<(String, String)> = Vec::new();
+    while let Some(current) = frontier.pop() {
+        // Enqueue `current`'s own blockers (one level further up the chain).
+        for d in dep_edges.iter().filter(|d| d.blocked_task_id == current) {
+            let ancestor = d.blocker_task_id.clone();
+            if !seen.insert(ancestor.clone()) {
+                continue;
+            }
+            // A transitive ancestor beyond the direct upstream: include only when it
+            // has an output_summary, truncated to bound the prompt.
+            if let Some(t) = by_id.get(ancestor.as_str())
+                && let Some(summary) = t.output_summary.as_deref()
+            {
+                ancestor_digest.push((t.title.clone(), truncate_summary_output(summary)));
+            }
+            frontier.push(ancestor);
+        }
+    }
+
+    // Shared-notes pointer: the run's RUN_NOTES.md (None for a dir-less run). Built
+    // with Path::join so the separator is platform-correct.
+    let notes_hint = workspace_dir.map(|d| {
+        std::path::Path::new(d)
+            .join("RUN_NOTES.md")
+            .to_string_lossy()
+            .into_owned()
+    });
+
+    BriefContext {
+        goal,
+        plan_summary,
+        ancestor_digest,
+        notes_hint,
+        manual_approval,
+    }
+}
+
 /// The `pattern_config` JSON field a `loop` body carries to its NEXT re-run with
 /// the PRIOR round's output text (written by [`settle_loop_task`] on CONTINUE).
 /// Its presence is what gates the "上一轮产出" brief section — a task without it
@@ -1741,12 +2400,42 @@ const LOOP_ITERATION_KEY: &str = "loop_iteration";
 fn loop_prior_output(pattern_config: Option<&str>) -> Option<String> {
     let raw = pattern_config.map(str::trim).filter(|s| !s.is_empty())?;
     let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
-    let prior = value.get(LOOP_PRIOR_OUTPUT_KEY).and_then(serde_json::Value::as_str)?;
+    let prior = value
+        .get(LOOP_PRIOR_OUTPUT_KEY)
+        .and_then(serde_json::Value::as_str)?;
     let prior = prior.trim();
     if prior.is_empty() {
         return None;
     }
     Some(prior.to_string())
+}
+
+/// Cross-node context injected into every worker brief (Phase 1b Task 3) so a
+/// node deep in a chain sees the whole run's goal, the plan shape, relevant
+/// transitive-ancestor outputs (not just its DIRECT deps, which long chains would
+/// otherwise lose), and where the shared notes live. Built by
+/// [`build_brief_context`] at dispatch time. Every field is optional-by-emptiness:
+/// each brief section renders ONLY when its input is non-empty, so a default/empty
+/// `BriefContext` produces the exact legacy brief (zero regression).
+pub(crate) struct BriefContext {
+    /// The run goal (`orch_runs.goal`); empty when unavailable.
+    pub goal: String,
+    /// A short plan summary — the task titles in plan order — so a node knows its
+    /// position in the overall shape. Empty when there are no tasks.
+    pub plan_summary: String,
+    /// `(title, truncated output_summary)` for transitive ancestors BEYOND the
+    /// direct upstream (which is injected separately as UPSTREAM RESULTS). Only
+    /// ancestors that have produced an `output_summary` are included; each is
+    /// passed through [`truncate_summary_output`].
+    pub ancestor_digest: Vec<(String, String)>,
+    /// Absolute path to the run's shared `RUN_NOTES.md` (None when the run has no
+    /// shared dir). A node can read it and append its findings for other nodes.
+    pub notes_hint: Option<String>,
+    /// 审批模式（迁移 030）：run 的 `approval_mode == "manual"` 时为 true——brief
+    /// 追加「决策策略」段，指示 worker 遇关键决策调用 `nomi_task_question` 挂起等
+    /// 人工。false（全授权/缺省/读失败）= 不渲染该段，brief 与既有逐字节一致
+    /// （零回归）。
+    pub manual_approval: bool,
 }
 
 /// Compose the worker's brief: role hint + task title/spec + completed upstream
@@ -1758,23 +2447,45 @@ fn loop_prior_output(pattern_config: Option<&str>) -> Option<String> {
 /// kind (the default, and anything unknown) keeps the exact previous framing
 /// (zero regression). The upstream gathering is identical for both kinds; only
 /// the framing differs.
+///
+/// **Cross-node context (Phase 1b Task 3).** Every brief also carries a
+/// [`BriefContext`] — the run goal, the plan shape, a transitive-ancestor digest
+/// (blockers-of-blockers beyond the DIRECT upstream), and a pointer to the shared
+/// notes file. Each new section renders ONLY when its input is non-empty, so an
+/// EMPTY `BriefContext` yields the exact legacy brief (zero regression).
 fn compose_brief(
     role_hint: Option<&str>,
     task: &OrchRunTaskRow,
     upstream: &[(String, String)],
+    ctx: &BriefContext,
 ) -> String {
     let mut out = if task.kind == "synthesis" {
-        compose_synthesis_brief(role_hint, task, upstream)
+        compose_synthesis_brief(role_hint, task, upstream, ctx)
     } else {
-        compose_agent_brief(role_hint, task, upstream)
+        compose_agent_brief(role_hint, task, upstream, ctx)
     };
     // 迁移 026 — 用户预置要求(启动前配置台):作为独立一段追加到 worker brief,与
     // 规划器写的 spec 分离(不覆盖它),读作明确的用户要求。门控于字段非空 —— 没有
     // 预置要求的任务与 025 前逐字节一致。对 agent / synthesis 均生效(统一在此追加)。
-    if let Some(preset) = task.preset_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(preset) = task
+        .preset_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         out.push_str("\n用户预置要求(请优先遵守):\n");
         out.push_str(preset);
         out.push('\n');
+    }
+    // 审批模式（迁移 030）：仅 manual 追加决策策略段——遇关键决策经 nomi_task_question
+    // 挂起等人工作答；auto（全授权，缺省）不渲染任何新内容，brief 零回归。
+    if ctx.manual_approval {
+        out.push_str(
+            "\n决策策略(审批模式):\n本编排处于「审批模式」。当你遇到会显著影响方向、取舍或对外效果的关键决策问题\
+             (例如互斥方案二选一、需求歧义、可能造成破坏性影响的操作)时,不要自行猜测:调用 `nomi_task_question` 工具\
+             提交问题(简明列出候选选项与你的倾向建议),然后立即结束本轮回复,等待用户进入本会话作答后再继续。\
+             琐碎的实现细节不必提问,自行合理处理。\n",
+        );
     }
     out
 }
@@ -1796,6 +2507,7 @@ fn compose_agent_brief(
     role_hint: Option<&str>,
     task: &OrchRunTaskRow,
     upstream: &[(String, String)],
+    ctx: &BriefContext,
 ) -> String {
     let mut out = String::new();
     if let Some(role) = role_hint.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1811,15 +2523,46 @@ fn compose_agent_brief(
         out.push_str(&task.spec);
         out.push('\n');
     }
+    // Phase 1b Task 3: the run goal + plan shape, so a node deep in a chain knows
+    // WHAT the whole orchestration is for and where it sits. Each gated on non-empty
+    // so an empty BriefContext yields the exact legacy brief (byte-for-byte).
+    if !ctx.goal.trim().is_empty() {
+        out.push_str("\nRUN GOAL (整个编排的目标，你的产出要服务于它):\n");
+        out.push_str(ctx.goal.trim());
+        out.push('\n');
+    }
+    if !ctx.plan_summary.trim().is_empty() {
+        out.push_str("\nPLAN (全局计划概要):\n");
+        out.push_str(ctx.plan_summary.trim());
+        out.push('\n');
+    }
     if !upstream.is_empty() {
         out.push_str("\nUPSTREAM RESULTS (completed dependencies you can build on):\n");
         for (title, summary) in upstream {
             out.push_str("- ");
             out.push_str(title);
             out.push_str(": ");
+            out.push_str(&truncate_summary_output(summary));
+            out.push('\n');
+        }
+    }
+    // Phase 1b Task 3: transitive-ancestor digest (blockers-of-blockers beyond the
+    // DIRECT upstream) + a pointer to the shared notes file. Both gated on presence
+    // (already truncated in build_brief_context). Empty ctx → neither renders.
+    if !ctx.ancestor_digest.is_empty() {
+        out.push_str("\nEARLIER CONTEXT (更早的相关产出摘要):\n");
+        for (title, summary) in &ctx.ancestor_digest {
+            out.push_str("- ");
+            out.push_str(title);
+            out.push_str(": ");
             out.push_str(summary);
             out.push('\n');
         }
+    }
+    if let Some(notes) = &ctx.notes_hint {
+        out.push_str(&format!(
+            "\nSHARED NOTES: 你可读取并追加 {notes}（记录发现/结论供其它节点参考）。\n"
+        ));
     }
     // loop 迭代回看: APPEND the prior round's output when this body re-run carries
     // it (gated on the field — zero effect on any task without it).
@@ -1840,6 +2583,7 @@ fn compose_synthesis_brief(
     role_hint: Option<&str>,
     task: &OrchRunTaskRow,
     upstream: &[(String, String)],
+    ctx: &BriefContext,
 ) -> String {
     let mut out = String::new();
     if let Some(role) = role_hint.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1858,6 +2602,19 @@ fn compose_synthesis_brief(
         out.push_str(&task.spec);
         out.push('\n');
     }
+    // Phase 1b Task 3: the run goal + plan shape (transitive ancestors carry less
+    // signal for a synthesis node — its material IS the upstream — so they are
+    // omitted here). Gated on non-empty → empty ctx = legacy synthesis brief.
+    if !ctx.goal.trim().is_empty() {
+        out.push_str("\nRUN GOAL (整个编排的目标，你的产出要服务于它):\n");
+        out.push_str(ctx.goal.trim());
+        out.push('\n');
+    }
+    if !ctx.plan_summary.trim().is_empty() {
+        out.push_str("\nPLAN (全局计划概要):\n");
+        out.push_str(ctx.plan_summary.trim());
+        out.push('\n');
+    }
     if upstream.is_empty() {
         // Defensive: a synthesis task with no resolved upstream still runs (it just
         // has nothing to merge) — note it so the worker does not hallucinate inputs.
@@ -1868,9 +2625,19 @@ fn compose_synthesis_brief(
             out.push_str("- ");
             out.push_str(title);
             out.push_str(": ");
+            // A synthesis node's PURPOSE is merging these upstream outputs — they
+            // are its source material, not mere context — so inject them VERBATIM
+            // (do NOT truncate to SUMMARY_TASK_OUTPUT_LEN as agent-node context is).
+            // Truncating/flattening here would silently degrade the merge.
             out.push_str(summary);
             out.push('\n');
         }
+    }
+    // Phase 1b Task 3: pointer to the shared notes file (gated on presence).
+    if let Some(notes) = &ctx.notes_hint {
+        out.push_str(&format!(
+            "\nSHARED NOTES: 你可读取并追加 {notes}（记录发现/结论供其它节点参考）。\n"
+        ));
     }
     out
 }
@@ -1881,9 +2648,17 @@ fn compose_synthesis_brief(
 fn aggregate_summary(tasks: &[OrchRunTaskRow]) -> String {
     let mut out = String::new();
     let done = tasks.iter().filter(|t| t.status == "done").count();
-    out.push_str(&format!("Run complete: {done}/{} tasks done.\n", tasks.len()));
+    out.push_str(&format!(
+        "Run complete: {done}/{} tasks done.\n",
+        tasks.len()
+    ));
     for t in tasks {
-        if let Some(summary) = t.output_summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(summary) = t
+            .output_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             out.push_str("\n## ");
             out.push_str(&t.title);
             out.push('\n');
@@ -1950,7 +2725,10 @@ async fn compute_completed_summary(
         Ok(text) if !text.trim().is_empty() => text,
         Ok(_) => {
             // Producer returned blank → no synthesis; fall back (no regression).
-            warn!(run_id, "B2 summary: lead returned a blank summary — using mechanical summary");
+            warn!(
+                run_id,
+                "B2 summary: lead returned a blank summary — using mechanical summary"
+            );
             aggregate_summary(tasks)
         }
         Err(e) => {
@@ -1969,7 +2747,12 @@ async fn compute_completed_summary(
 fn build_summary_digest(tasks: &[OrchRunTaskRow]) -> String {
     let mut out = String::new();
     for t in tasks {
-        let role = t.role.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("-");
+        let role = t
+            .role
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-");
         let output = t
             .output_summary
             .as_deref()
@@ -2416,11 +3199,7 @@ fn parse_judge_ballot(output_summary: Option<&str>, candidates: usize) -> Option
     }
 
     // A ballot with no usable scores at all contributes nothing → drop it.
-    if any {
-        Some(ballot)
-    } else {
-        None
-    }
+    if any { Some(ballot) } else { None }
 }
 
 /// Determine the candidate count `M` for a judge aggregator.
@@ -2448,9 +3227,15 @@ fn resolve_candidate_count(pattern_config: Option<&str>, judge_outputs: &[Option
         let Some(text) = out.map(str::trim).filter(|s| !s.is_empty()) else {
             continue;
         };
-        let Some(json) = first_json_object(text) else { continue };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
-        let Some(scores) = value.get("scores") else { continue };
+        let Some(json) = first_json_object(text) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
+            continue;
+        };
+        let Some(scores) = value.get("scores") else {
+            continue;
+        };
         match scores {
             serde_json::Value::Array(arr) => max_m = max_m.max(arr.len()),
             serde_json::Value::Object(map) => {
@@ -2496,7 +3281,11 @@ struct JudgeResult {
 /// index (the first argmax wins). Within a single judge's Borda ranking, equal
 /// scores are ordered by candidate index so the same ballots always yield the
 /// same points.
-fn aggregate_judge(ballots: &[Vec<Option<f64>>], candidates: usize, policy: JudgePolicy) -> JudgeResult {
+fn aggregate_judge(
+    ballots: &[Vec<Option<f64>>],
+    candidates: usize,
+    policy: JudgePolicy,
+) -> JudgeResult {
     let judges_total = ballots.len();
     // (ballots passed in are already the usable ones; `judges_counted` == len)
     let judges_counted = ballots.len();
@@ -2831,7 +3620,10 @@ impl LoopConfig {
     /// Parse the `stop` object fail-soft. Unknown `kind` (or a non-object) →
     /// [`StopCriteria::MaxIter`].
     fn parse_stop(stop: &serde_json::Value) -> StopCriteria {
-        let kind = stop.get("kind").and_then(serde_json::Value::as_str).unwrap_or("");
+        let kind = stop
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         match kind.trim().to_ascii_lowercase().as_str() {
             "predicate" => {
                 // The marker is required for a useful predicate; an absent/blank
@@ -2842,7 +3634,9 @@ impl LoopConfig {
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
                 match marker {
-                    Some(m) => StopCriteria::Predicate { done_marker: m.to_string() },
+                    Some(m) => StopCriteria::Predicate {
+                        done_marker: m.to_string(),
+                    },
                     None => StopCriteria::MaxIter,
                 }
             }
@@ -2939,7 +3733,9 @@ fn decide_loop(
         StopCriteria::MaxIter => LoopDecision::Continue, // cap-only: keep going
         StopCriteria::Predicate { done_marker } => {
             if predicate_done(body_output, done_marker) {
-                LoopDecision::Stop { reason: "predicate" }
+                LoopDecision::Stop {
+                    reason: "predicate",
+                }
             } else {
                 LoopDecision::Continue
             }
@@ -3000,10 +3796,16 @@ fn parse_loop_state_hashes(controller_summary: Option<&str>) -> Vec<u64> {
     let Some(text) = controller_summary else {
         return vec![];
     };
-    let Some(line) = text.lines().find(|l| l.trim_start().starts_with(LOOP_STATE_PREFIX)) else {
+    let Some(line) = text
+        .lines()
+        .find(|l| l.trim_start().starts_with(LOOP_STATE_PREFIX))
+    else {
         return vec![];
     };
-    let after = line.trim_start().trim_start_matches(LOOP_STATE_PREFIX).trim();
+    let after = line
+        .trim_start()
+        .trim_start_matches(LOOP_STATE_PREFIX)
+        .trim();
     if after.is_empty() {
         return vec![];
     }
@@ -3017,7 +3819,11 @@ fn parse_loop_state_hashes(controller_summary: Option<&str>) -> Vec<u64> {
 /// `LOOP-STATE:` line carrying the running round-hash history. Overwritten each
 /// CONTINUE settle; replaced wholesale by [`render_loop_final`] on STOP.
 fn render_loop_state(hashes: &[u64]) -> String {
-    let csv = hashes.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(",");
+    let csv = hashes
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     format!("{LOOP_STATE_PREFIX}{csv}")
 }
 
@@ -3393,6 +4199,15 @@ async fn mark_task_failed(
     deps.emitter.emit_task_status(run_id, task_id, "failed");
 }
 
+/// A *soft* failure: the task permanently `failed` but its per-node `on_fail`
+/// policy is `skip_and_continue` (迁移 029), so its transitive downstream was
+/// `skipped` and the RUN still settles — its terminal status becomes
+/// `completed_with_failures` rather than `failed`. `None`/`"fail_run"` is a HARD
+/// failure (default, current behaviour) → the whole run fails.
+fn is_soft_fail(t: &OrchRunTaskRow) -> bool {
+    t.status == "failed" && t.on_fail.as_deref() == Some("skip_and_continue")
+}
+
 /// Settle the run row to a terminal status (with an optional summary) and emit
 /// `run.completed`. Best-effort: a persistence error is logged, not propagated
 /// (the loop is exiting regardless).
@@ -3420,6 +4235,7 @@ async fn finish_run(
                 goal: None,
                 autonomy: None,
                 fleet_snapshot: None,
+                work_dir: None,
             },
         )
         .await
@@ -3482,7 +4298,12 @@ mod tests {
             }
         }
         fn names(&self) -> Vec<String> {
-            self.events.lock().unwrap().iter().map(|e| e.name.clone()).collect()
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| e.name.clone())
+                .collect()
         }
     }
     impl EventBroadcaster for RecordingBroadcaster {
@@ -3574,7 +4395,8 @@ mod tests {
             emitter.clone(),
         );
 
-        let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(777, "task output"));
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(MockWorkerRunner::with_text(777, "task output"));
         let mut engine_deps =
             RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(5);
@@ -3703,7 +4525,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(completed, "run must reach completed within the bounded poll");
+        assert!(
+            completed,
+            "run must reach completed within the bounded poll"
+        );
 
         let detail = h.run_service.get_detail(&run_id).await.expect("detail");
         // All tasks done, each with the worker's output summary.
@@ -3715,12 +4540,19 @@ mod tests {
                 "task {} output_summary should be set",
                 t.title
             );
-            assert_eq!(t.conversation_id, Some(777), "worker conversation id recorded");
+            assert_eq!(
+                t.conversation_id,
+                Some(777),
+                "worker conversation id recorded"
+            );
         }
         // Run summary non-empty.
         let summary = detail.run.summary.expect("run summary set on completion");
         assert!(!summary.trim().is_empty(), "run summary must be non-empty");
-        assert!(summary.contains("3/3"), "summary reflects 3/3 done, got: {summary}");
+        assert!(
+            summary.contains("3/3"),
+            "summary reflects 3/3 done, got: {summary}"
+        );
 
         // The realtime trail includes a run.completed event.
         let names = h.broadcaster.names();
@@ -3729,7 +4561,11 @@ mod tests {
             "run.completed must be emitted; got {names:?}"
         );
         assert!(
-            names.iter().filter(|n| *n == "orchestrator.task.statusChanged").count() >= 6,
+            names
+                .iter()
+                .filter(|n| *n == "orchestrator.task.statusChanged")
+                .count()
+                >= 6,
             "each task emits running+done (≥6 task status events); got {names:?}"
         );
 
@@ -3745,7 +4581,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert!(deregistered, "engine loop should deregister after the run completes");
+        assert!(
+            deregistered,
+            "engine loop should deregister after the run completes"
+        );
     }
 
     // ── Lead 回执（LeadReporter）：run 到终态时 exactly-once 回执给发起会话 ────────
@@ -3765,10 +4604,11 @@ mod tests {
             outcome: RunOutcome,
             _brief: &str,
         ) -> Result<(), AppError> {
-            self.reports
-                .lock()
-                .unwrap()
-                .push((lead_conv_id, run_id.to_string(), outcome.as_str().to_string()));
+            self.reports.lock().unwrap().push((
+                lead_conv_id,
+                run_id.to_string(),
+                outcome.as_str().to_string(),
+            ));
             Ok(())
         }
     }
@@ -3790,7 +4630,20 @@ mod tests {
             on_started: Box<dyn FnOnce(i64) + Send>,
         ) -> Result<WorkerOutcome, AppError> {
             on_started(778);
-            Ok(WorkerOutcome { conversation_id: 778, text: None, ok: false, tokens: None })
+            Ok(WorkerOutcome {
+                conversation_id: 778,
+                text: None,
+                ok: false,
+                tokens: None,
+            })
+        }
+        // Represents a DEFINITE failure (a marked provider error): a marker IS
+        // present but `last_error_retryable` defaults false → NonRetryable, so the
+        // node fails immediately (attempt stays 0) — NOT retried under the NoMarker
+        // timeout budget. Preserves the pre-Task-1 dispatch counts / assertions for
+        // `failed_run_reports_once_to_lead` and `failed_task_persists_last_error`.
+        async fn last_error_present(&self, _conversation_id: &str) -> bool {
+            true
         }
     }
 
@@ -3800,6 +4653,22 @@ mod tests {
         worker: Arc<dyn WorkerRunner>,
         max_retries: usize,
     ) -> (RunService, RunEngine, Arc<RecordingLeadReporter>) {
+        let (svc, engine, reporter, _repo, _pool) = reporter_stack_full(worker, max_retries).await;
+        (svc, engine, reporter)
+    }
+
+    /// [`reporter_stack`] 的全量版：额外返回 run_repo + pool，供需要直接操作行
+    /// （模拟 nomi_task_question 写入 / 老化 updated_at）的审批模式测试使用。
+    async fn reporter_stack_full(
+        worker: Arc<dyn WorkerRunner>,
+        max_retries: usize,
+    ) -> (
+        RunService,
+        RunEngine,
+        Arc<RecordingLeadReporter>,
+        Arc<SqliteRunRepository>,
+        sqlx::SqlitePool,
+    ) {
         let db = init_database_memory().await.expect("db init");
         let pool = db.pool().clone();
         let run_repo = Arc::new(SqliteRunRepository::new(pool.clone()));
@@ -3807,16 +4676,21 @@ mod tests {
         let ws_repo = Arc::new(SqliteOrchWorkspaceRepository::new(pool.clone()));
         let emitter = OrchestratorRunEventEmitter::new(Arc::new(RecordingBroadcaster::new()));
         let planner: Arc<dyn PlanProducer> = Arc::new(ChainPlanProducer);
-        let run_service =
-            RunService::new(run_repo.clone(), fleet_repo, ws_repo.clone(), planner, emitter.clone());
+        let run_service = RunService::new(
+            run_repo.clone(),
+            fleet_repo,
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
         let reporter = Arc::new(RecordingLeadReporter::default());
-        let mut engine_deps = RunEngineDeps::new(run_repo, worker, emitter, ws_repo);
+        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo);
         engine_deps.worker_timeout = Duration::from_secs(5);
         engine_deps.max_worker_retries = max_retries;
         engine_deps.retry_backoff_base = Duration::ZERO;
         engine_deps.lead_reporter = reporter.clone();
         let engine = RunEngine::new(Arc::new(engine_deps));
-        (run_service, engine, reporter)
+        (run_service, engine, reporter, run_repo, pool)
     }
 
     /// Create an ad-hoc run BOUND to a lead conversation (so the terminal report has
@@ -3826,6 +4700,7 @@ mod tests {
             .create_adhoc(
                 "u1",
                 CreateAdhocRunRequest {
+                    approval_mode: None,
                     goal: "chain".to_string(),
                     work_dir: Some("/tmp/lead-report".to_string()),
                     model_range: ModelRange::Single {
@@ -3869,22 +4744,58 @@ mod tests {
         }
     }
 
-    /// A COMPLETED run reports exactly once, with `Completed`, to its lead conv.
+    /// A COMPLETED run reports its TERMINAL `Completed` receipt exactly once to its
+    /// lead conv. (Task 3 adds a mid-run `batch_progress` receipt BEFORE the terminal
+    /// one when ≥3 nodes complete — the 3-node chain does — so this asserts on the
+    /// count of `completed` receipts, not the total report count.)
     #[tokio::test]
     async fn completed_run_reports_once_to_lead() {
-        let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(777, "task output"));
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(MockWorkerRunner::with_text(777, "task output"));
         let (run_service, engine, reporter) = reporter_stack(worker, 3).await;
         let run_id = adhoc_lead_run(&run_service, 909).await;
         engine.start(run_id.clone());
-        assert!(wait_run_status(&run_service, &run_id, "completed").await, "run must complete");
-        await_first_report(&reporter).await;
+        assert!(
+            wait_run_status(&run_service, &run_id, "completed").await,
+            "run must complete"
+        );
+        // The terminal `completed` receipt fires AFTER the loop exits, so it can lag
+        // the persisted status the poll above observed (and any mid-run
+        // `batch_progress` receipt) — wait for it specifically rather than for the
+        // first report.
+        let mut saw_completed = false;
+        for _ in 0..40 {
+            if reporter
+                .reports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, o)| o == "completed")
+            {
+                saw_completed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         let reports = reporter.reports.lock().unwrap().clone();
-        assert_eq!(reports.len(), 1, "exactly one lead report on completion, got {reports:?}");
-        assert_eq!(reports[0].0, 909, "reported to the lead conversation");
-        assert_eq!(reports[0].2, "completed", "outcome is completed");
+        assert!(
+            saw_completed,
+            "terminal completed receipt must fire, got {reports:?}"
+        );
+        // Exactly ONE terminal `completed` receipt (a mid-run `batch_progress` is
+        // correct additional behaviour, not a duplicate terminal report).
+        let completed: Vec<_> = reports.iter().filter(|(_, _, o)| o == "completed").collect();
+        assert_eq!(
+            completed.len(),
+            1,
+            "exactly one terminal `completed` lead report, got {reports:?}"
+        );
+        assert_eq!(completed[0].0, 909, "reported to the lead conversation");
     }
 
-    /// A FAILED run reports exactly once, with `Failed`, to its lead conv.
+    /// A FAILED run reports its TERMINAL `Failed` receipt exactly once to its lead
+    /// conv. (Task 3 adds a mid-run `node_failed` receipt BEFORE the terminal one, so
+    /// this asserts on the count of `failed` receipts, not the total report count.)
     #[tokio::test]
     async fn failed_run_reports_once_to_lead() {
         let worker: Arc<dyn WorkerRunner> = Arc::new(AlwaysFailWorker);
@@ -3892,12 +4803,438 @@ mod tests {
         let (run_service, engine, reporter) = reporter_stack(worker, 0).await;
         let run_id = adhoc_lead_run(&run_service, 42).await;
         engine.start(run_id.clone());
-        assert!(wait_run_status(&run_service, &run_id, "failed").await, "run must fail");
-        await_first_report(&reporter).await;
+        assert!(
+            wait_run_status(&run_service, &run_id, "failed").await,
+            "run must fail"
+        );
+        // The terminal `failed` receipt fires AFTER the loop exits, so it can lag the
+        // persisted status the poll above observed (and the mid-run `node_failed`
+        // receipt) — wait for it specifically rather than for the first report.
+        let mut saw_failed = false;
+        for _ in 0..40 {
+            if reporter
+                .reports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, o)| o == "failed")
+            {
+                saw_failed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         let reports = reporter.reports.lock().unwrap().clone();
-        assert_eq!(reports.len(), 1, "exactly one lead report on failure, got {reports:?}");
-        assert_eq!(reports[0].0, 42, "reported to the lead conversation");
-        assert_eq!(reports[0].2, "failed", "outcome is failed");
+        assert!(saw_failed, "terminal failed receipt must fire, got {reports:?}");
+        // Exactly ONE terminal `failed` receipt (the mid-run `node_failed` is correct
+        // additional behaviour, not a duplicate terminal report).
+        let failed: Vec<_> = reports.iter().filter(|(_, _, o)| o == "failed").collect();
+        assert_eq!(
+            failed.len(),
+            1,
+            "exactly one terminal `failed` lead report, got {reports:?}"
+        );
+        assert_eq!(failed[0].0, 42, "reported to the lead conversation");
+    }
+
+    /// A node that PERMANENTLY fails mid-run re-engages the lead conversation with a
+    /// best-effort `node_failed` receipt BEFORE the run reaches its terminal state,
+    /// so the master agent can repair (rerun w/ another model, adjust the graph,
+    /// adopt, or abandon) instead of waiting for the whole run to end. `AlwaysFail`
+    /// worker + `max_worker_retries = 0` → the first attempt is terminal for the
+    /// node; the mid-run report fires from `settle_failed_or_retry`'s permanent-fail
+    /// branch, after `mark_task_failed` persisted the reason.
+    #[tokio::test]
+    async fn permanent_node_failure_reports_to_lead_midrun() {
+        let worker: Arc<dyn WorkerRunner> = Arc::new(AlwaysFailWorker);
+        // max_retries = 0 → the first failure is terminal for the node (no retry wait).
+        let (run_service, engine, reporter) = reporter_stack(worker, 0).await;
+        let run_id = adhoc_lead_run(&run_service, 55).await;
+        engine.start(run_id.clone());
+        assert!(
+            wait_run_status(&run_service, &run_id, "failed").await,
+            "run must fail"
+        );
+        // The mid-run receipt is pushed during settle (before the terminal status
+        // write the poll above observed), so it is already present here — but poll a
+        // bounded moment to stay robust against scheduling.
+        let mut saw_node_failed = false;
+        for _ in 0..40 {
+            if reporter
+                .reports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, o)| o == "node_failed")
+            {
+                saw_node_failed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let reports = reporter.reports.lock().unwrap().clone();
+        assert!(
+            saw_node_failed,
+            "a permanent node failure must produce a mid-run node_failed lead report, got {reports:?}"
+        );
+        // The mid-run receipt targets the lead conversation.
+        let node_failed = reports
+            .iter()
+            .find(|(_, _, o)| o == "node_failed")
+            .expect("node_failed report present");
+        assert_eq!(
+            node_failed.0, 55,
+            "mid-run node_failed reported to the lead conversation"
+        );
+    }
+
+    /// A run that completes ≥3 nodes re-engages the lead with a THROTTLED, best-effort
+    /// `batch_progress` receipt BEFORE the terminal receipt, so the master agent can
+    /// OBSERVE progress and append more work (`nomi_run_add_tasks`) to the SAME run.
+    /// 需求4：BATCH_REPORT_MIN_NODES=1 —— 第 1 个节点完成、且首个 interval 门开放
+    /// （无前次回执）时即触发一次 `batch_progress`，先于终态 `completed` 回执。
+    #[tokio::test]
+    async fn batch_progress_reports_to_lead_midrun() {
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(MockWorkerRunner::with_text(777, "task output"));
+        let (run_service, engine, reporter) = reporter_stack(worker, 3).await;
+        let run_id = adhoc_lead_run(&run_service, 321).await;
+        engine.start(run_id.clone());
+        assert!(
+            wait_run_status(&run_service, &run_id, "completed").await,
+            "run must complete"
+        );
+        // The mid-run batch_progress receipt is pushed during settle (before the
+        // terminal completed report), but poll a bounded moment to stay robust.
+        await_first_report(&reporter).await;
+        let mut saw_batch = false;
+        for _ in 0..40 {
+            if reporter
+                .reports
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, o)| o == "batch_progress")
+            {
+                saw_batch = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let reports = reporter.reports.lock().unwrap().clone();
+        assert!(
+            saw_batch,
+            "≥3 node completions must produce a mid-run batch_progress lead report, got {reports:?}"
+        );
+        // The mid-run batch_progress targets the lead conversation and PRECEDES the
+        // terminal `completed` receipt.
+        let batch_pos = reports
+            .iter()
+            .position(|(_, _, o)| o == "batch_progress")
+            .expect("batch_progress report present");
+        assert_eq!(
+            reports[batch_pos].0, 321,
+            "mid-run batch_progress reported to the lead conversation"
+        );
+        if let Some(done_pos) = reports.iter().position(|(_, _, o)| o == "completed") {
+            assert!(
+                batch_pos < done_pos,
+                "batch_progress must precede the terminal completed receipt, got {reports:?}"
+            );
+        }
+    }
+
+    // ── 审批模式（迁移 030）：节点提问 park / 看门狗豁免 / adopt 恢复 ────────────
+
+    /// 模拟审批模式 worker：第一个被派发的任务在自己的回合中途「调用
+    /// nomi_task_question」（直写 repo：pending_question + needs_review，与网关工具
+    /// 的锁内写等效），然后正常结束回合（ok:true）；后续任务正常产出。
+    /// `read_final_output` 返回定稿文本，供「采用为该节点产出」读取。
+    struct QuestionWorker {
+        repo: Arc<SqliteRunRepository>,
+        asked: Arc<Mutex<bool>>,
+    }
+    #[async_trait]
+    impl WorkerRunner for QuestionWorker {
+        async fn run(
+            &self,
+            _member: &FleetMember,
+            _workspace_dir: Option<&str>,
+            _run_id: &str,
+            task_id: &str,
+            _brief: &str,
+            _task_spec: &str,
+            _timeout: Duration,
+            on_started: Box<dyn FnOnce(i64) + Send>,
+        ) -> Result<WorkerOutcome, AppError> {
+            on_started(881);
+            let first = {
+                let mut a = self.asked.lock().unwrap();
+                if *a {
+                    false
+                } else {
+                    *a = true;
+                    true
+                }
+            };
+            if first {
+                self.repo
+                    .set_task_question(task_id, Some("定价方案选 A（订阅）还是 B（买断）？"))
+                    .await
+                    .expect("set question");
+                self.repo
+                    .update_task(
+                        task_id,
+                        UpdateTaskParams {
+                            status: Some("needs_review".to_string()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .expect("park needs_review");
+                return Ok(WorkerOutcome {
+                    conversation_id: 881,
+                    text: Some("我已提交决策问题，等待用户选择。".to_string()),
+                    ok: true,
+                    tokens: None,
+                });
+            }
+            Ok(WorkerOutcome {
+                conversation_id: 882,
+                text: Some("后续节点产出".to_string()),
+                ok: true,
+                tokens: None,
+            })
+        }
+        async fn read_final_output(&self, _conversation_id: &str) -> Option<String> {
+            Some("用户拍板选 A：按订阅制完成定价方案定稿。".to_string())
+        }
+    }
+
+    /// 审批模式全链路：节点提问 park（settle 不覆盖 needs_review、补写产出文本、
+    /// run 保持 running、循环干净退出）→ 看门狗豁免（老化后 reap 不判 stalled）→
+    /// 「采用为该节点产出」恢复（问题清空、节点 done、重启循环后整 run completed）。
+    #[tokio::test]
+    async fn needs_review_parks_survives_watchdog_and_resumes_via_adopt() {
+        let asked = Arc::new(Mutex::new(false));
+        let (run_service, engine, reporter, repo, pool) = {
+            // 两段构造：QuestionWorker 需要 repo，而 repo 由 stack 构造——先建 stack
+            // 拿 repo，再热插 worker 不可行（deps 不可变），故手工复刻 stack 并共享 repo。
+            let db = init_database_memory().await.expect("db init");
+            let pool = db.pool().clone();
+            let run_repo = Arc::new(SqliteRunRepository::new(pool.clone()));
+            let fleet_repo = Arc::new(SqliteFleetRepository::new(pool.clone()));
+            let ws_repo = Arc::new(SqliteOrchWorkspaceRepository::new(pool.clone()));
+            let emitter = OrchestratorRunEventEmitter::new(Arc::new(RecordingBroadcaster::new()));
+            let planner: Arc<dyn PlanProducer> = Arc::new(ChainPlanProducer);
+            let run_service = RunService::new(
+                run_repo.clone(),
+                fleet_repo,
+                ws_repo.clone(),
+                planner,
+                emitter.clone(),
+            );
+            let worker: Arc<dyn WorkerRunner> = Arc::new(QuestionWorker {
+                repo: run_repo.clone(),
+                asked: asked.clone(),
+            });
+            let reporter = Arc::new(RecordingLeadReporter::default());
+            let mut engine_deps =
+                RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo);
+            engine_deps.worker_timeout = Duration::from_secs(5);
+            engine_deps.max_worker_retries = 0;
+            engine_deps.retry_backoff_base = Duration::ZERO;
+            engine_deps.lead_reporter = reporter.clone();
+            let engine = RunEngine::new(Arc::new(engine_deps));
+            (run_service, engine, reporter, run_repo, pool)
+        };
+        let run_id = adhoc_lead_run(&run_service, 606).await;
+        engine.start(run_id.clone());
+
+        // ① park：循环退出（is_running=false）、run 仍 running、首节点 needs_review
+        //    且 settle 只补写了产出文本（不覆盖状态）。
+        for _ in 0..100 {
+            if !engine.is_running(&run_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!engine.is_running(&run_id), "循环必须干净退出（park）");
+        let detail = run_service.get_detail(&run_id).await.expect("detail");
+        assert_eq!(detail.run.status, "running", "park 时 run 保持 running");
+        let parked = detail
+            .tasks
+            .iter()
+            .find(|t| t.status == "needs_review")
+            .expect("有节点挂在 needs_review");
+        assert_eq!(
+            parked.pending_question.as_deref(),
+            Some("定价方案选 A（订阅）还是 B（买断）？"),
+            "问题原文在场"
+        );
+        assert_eq!(
+            parked.output_summary.as_deref(),
+            Some("我已提交决策问题，等待用户选择。"),
+            "settle 守卫补写产出文本但不覆盖状态"
+        );
+        assert!(
+            !reporter.reports.lock().unwrap().iter().any(|(_, _, o)| o == "completed" || o == "failed"),
+            "park 不产生终态回执"
+        );
+        // 评审确认缺陷的回归锁：park 的 settle 以 ok:true 回场但节点并未完成，
+        // 绝不能紧跟 NodeQuestion 再发一条自相矛盾的虚假 batch_progress。
+        assert!(
+            !reporter.reports.lock().unwrap().iter().any(|(_, _, o)| o == "batch_progress"),
+            "park 不是完成——不得触发虚假 batch_progress 回执"
+        );
+
+        // ② 看门狗豁免：把 run 行老化到 STRAND_GRACE_MS 之外，reap 不得判 stalled。
+        sqlx::query("UPDATE orch_runs SET updated_at = ? WHERE id = ?")
+            .bind(now_ms() - STRAND_GRACE_MS - 60_000)
+            .bind(&run_id)
+            .execute(&pool)
+            .await
+            .expect("age run row");
+        engine.reap_stalled_runs().await;
+        let after_reap = run_service.get_detail(&run_id).await.expect("detail");
+        assert_eq!(
+            after_reap.run.status, "running",
+            "含 needs_review 节点的 run 豁免看门狗"
+        );
+        assert!(
+            !reporter.reports.lock().unwrap().iter().any(|(_, _, o)| o == "stalled"),
+            "不得发出 stalled 回执"
+        );
+
+        // ③ adopt 恢复：run 仍 running（例外放行 needs_review），采用产出 → done +
+        //    问题清空 → 手动重启循环（镜像路由的 engine-lifecycle 决策）→ 整链完成。
+        let task_id = parked.id.clone();
+        let run_dto = engine
+            .adopt_task_result(&run_service, "u1", &run_id, &task_id)
+            .await
+            .expect("adopt 必须放行 needs_review 节点");
+        assert_eq!(run_dto.status, "running");
+        let adopted = repo.get_task(&task_id).await.unwrap().unwrap();
+        assert_eq!(adopted.status, "done", "采用后节点 done");
+        assert!(adopted.pending_question.is_none(), "采用后问题清空");
+        assert_eq!(
+            adopted.output_summary.as_deref(),
+            Some("用户拍板选 A：按订阅制完成定价方案定稿。"),
+            "采用写入 worker 定稿文本"
+        );
+        engine.start(run_id.clone());
+        assert!(
+            wait_run_status(&run_service, &run_id, "completed").await,
+            "作答采用后整 run 必须完成"
+        );
+    }
+
+    /// `raise_task_question`（nomi_task_question 的引擎入口）守卫矩阵：
+    /// 空问题 / 非审批模式 run / 非 owner / 非在飞节点一律拒绝；合法调用写入
+    /// pending_question + needs_review 并向 lead 回执 node_question。
+    #[tokio::test]
+    async fn raise_task_question_guards_and_reports() {
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(MockWorkerRunner::with_text(777, "task output"));
+        let (run_service, engine, reporter, repo, _pool) =
+            reporter_stack_full(worker, 0).await;
+
+        // manual run（不启动引擎——手动把首节点置 running 模拟在飞）。
+        let run = run_service
+            .create_adhoc(
+                "u1",
+                CreateAdhocRunRequest {
+                    approval_mode: Some("manual".to_string()),
+                    goal: "chain".to_string(),
+                    work_dir: None,
+                    model_range: ModelRange::Single {
+                        model: ModelRef {
+                            provider_id: "prov_x".to_string(),
+                            model: "claude-opus-4-8".to_string(),
+                        },
+                    },
+                    pinned_roles: vec![],
+                    role_members: vec![],
+                    autonomy: Some("supervised".to_string()),
+                    max_parallel: None,
+                    lead_conv_id: Some(707),
+                    lead_model: None,
+                },
+            )
+            .await
+            .expect("create manual run");
+        run_service.plan(&run.id).await.expect("plan");
+        let task = run_service.get_detail(&run.id).await.unwrap().tasks[0].clone();
+        repo.update_task(
+            &task.id,
+            UpdateTaskParams {
+                status: Some("running".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // 守卫：空问题。
+        assert!(matches!(
+            engine.raise_task_question("u1", &run.id, &task.id, "  ").await,
+            Err(AppError::BadRequest(_))
+        ));
+        // 守卫：非 owner 一律 NotFound（不泄露存在性）。
+        assert!(matches!(
+            engine.raise_task_question("intruder", &run.id, &task.id, "问题?").await,
+            Err(AppError::NotFound(_))
+        ));
+
+        // 合法调用：写入 + 回执。
+        engine
+            .raise_task_question("u1", &run.id, &task.id, "选 A 还是 B？")
+            .await
+            .expect("raise ok");
+        let parked = repo.get_task(&task.id).await.unwrap().unwrap();
+        assert_eq!(parked.status, "needs_review");
+        assert_eq!(parked.pending_question.as_deref(), Some("选 A 还是 B？"));
+        let reports = reporter.reports.lock().unwrap().clone();
+        assert!(
+            reports.iter().any(|(conv, rid, o)| *conv == 707 && rid == &run.id && o == "node_question"),
+            "须向 lead 回执 node_question，got {reports:?}"
+        );
+
+        // 守卫：非审批模式 run 拒绝提问（指示自行决策）。
+        let auto_run = adhoc_lead_run(&run_service, 707).await;
+        let auto_task = run_service.get_detail(&auto_run).await.unwrap().tasks[0].clone();
+        repo.update_task(
+            &auto_task.id,
+            UpdateTaskParams {
+                status: Some("running".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let err = engine
+            .raise_task_question("u1", &auto_run, &auto_task.id, "选 A 还是 B？")
+            .await
+            .expect_err("auto run must refuse");
+        assert!(
+            err.to_string().contains("审批模式"),
+            "拒绝文案须指示自行决策: {err}"
+        );
+    }
+
+    /// compose_brief 决策策略段：manual_approval=true 追加审批模式指令（点名
+    /// nomi_task_question）；false 与既有 brief 逐字节一致（零回归由既有测试锁定）。
+    #[test]
+    fn compose_brief_manual_approval_appends_decision_policy() {
+        let task = task_row_with_kind("agent", "任务A", "做出取舍");
+        let mut ctx = empty_brief_ctx();
+        ctx.manual_approval = true;
+        let brief = compose_brief(Some("writer"), &task, &[], &ctx);
+        assert!(brief.contains("决策策略"), "决策策略段在场");
+        assert!(brief.contains("nomi_task_question"), "点名提问工具");
+        ctx.manual_approval = false;
+        let plain = compose_brief(Some("writer"), &task, &[], &ctx);
+        assert!(!plain.contains("决策策略"), "全授权不渲染决策段");
     }
 
     /// A permanently-failed task PERSISTS a `last_error` reason, surfaced on the DTO
@@ -3909,7 +5246,10 @@ mod tests {
         let (run_service, engine, _reporter) = reporter_stack(worker, 0).await;
         let run_id = adhoc_lead_run(&run_service, 7).await;
         engine.start(run_id.clone());
-        assert!(wait_run_status(&run_service, &run_id, "failed").await, "run must fail");
+        assert!(
+            wait_run_status(&run_service, &run_id, "failed").await,
+            "run must fail"
+        );
         let detail = run_service.get_detail(&run_id).await.expect("detail");
         let failed = detail
             .tasks
@@ -3917,7 +5257,10 @@ mod tests {
             .find(|t| t.status == "failed")
             .expect("a failed task");
         let err = failed.last_error.as_deref().unwrap_or("");
-        assert!(!err.is_empty(), "failed task must persist a last_error reason");
+        assert!(
+            !err.is_empty(),
+            "failed task must persist a last_error reason"
+        );
         assert!(
             err.contains("worker") || err.contains("超时") || err.contains("无回复"),
             "generic fallback reason expected, got: {err}"
@@ -3981,7 +5324,8 @@ mod tests {
             emitter.clone(),
         );
         let worker: Arc<dyn WorkerRunner> = Arc::new(TokenReportingWorker { tokens: 125 });
-        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
+        let mut engine_deps =
+            RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(5);
         let engine = RunEngine::new(Arc::new(engine_deps));
 
@@ -4006,7 +5350,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(completed, "run must reach completed within the bounded poll");
+        assert!(
+            completed,
+            "run must reach completed within the bounded poll"
+        );
 
         let detail = h.run_service.get_detail(&run_id).await.expect("detail");
         for t in &detail.tasks {
@@ -4046,19 +5393,25 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(completed, "run must reach completed within the bounded poll");
+        assert!(
+            completed,
+            "run must reach completed within the bounded poll"
+        );
 
         let detail = h.run_service.get_detail(&run_id).await.expect("detail");
         for t in &detail.tasks {
             assert_eq!(t.status, "done");
-            assert_eq!(t.tokens, None, "task {} tokens must stay None (no source)", t.title);
+            assert_eq!(
+                t.tokens, None,
+                "task {} tokens must stay None (no source)",
+                t.title
+            );
         }
         assert_eq!(
             detail.run.total_tokens, None,
             "run total_tokens must stay None when no task reported usage"
         );
     }
-
 
     // The conversation-native lead path creates an AD-HOC (workspace_id NULL) run
     // with autonomy `interactive`. After plan() the run must park at
@@ -4105,6 +5458,7 @@ mod tests {
             .create_adhoc(
                 "u1",
                 CreateAdhocRunRequest {
+                    approval_mode: None,
                     goal: "build the chain".to_string(),
                     work_dir: Some("/tmp/adhoc-proj".to_string()),
                     model_range: ModelRange::Single {
@@ -4152,7 +5506,11 @@ mod tests {
         assert!(
             detail.tasks.iter().all(|t| t.status == "pending"),
             "all tasks stay pending until approval; got {:?}",
-            detail.tasks.iter().map(|t| (&t.title, &t.status)).collect::<Vec<_>>()
+            detail
+                .tasks
+                .iter()
+                .map(|t| (&t.title, &t.status))
+                .collect::<Vec<_>>()
         );
 
         // Approve → running, then start the engine (the approve route's exact
@@ -4196,7 +5554,10 @@ mod tests {
         h.engine.stop(&run_id);
         h.run_service.cancel(&run_id).await.expect("cancel");
 
-        assert!(!h.engine.is_running(&run_id), "stopped loop is no longer registered");
+        assert!(
+            !h.engine.is_running(&run_id),
+            "stopped loop is no longer registered"
+        );
         let detail = h.run_service.get_detail(&run_id).await.expect("detail");
         assert_eq!(detail.run.status, "cancelled", "run persisted as cancelled");
     }
@@ -4204,6 +5565,7 @@ mod tests {
     #[test]
     fn compose_brief_includes_role_task_and_upstream() {
         let task = OrchRunTaskRow {
+            pending_question: None,
             last_error: None,
             id: "rtask_1".to_string(),
             run_id: "run_1".to_string(),
@@ -4225,21 +5587,91 @@ mod tests {
             override_provider_id: None,
             override_model: None,
             preset_prompt: None,
+            on_fail: None,
             created_at: 0,
             updated_at: 0,
         };
         let upstream = vec![("Gather".to_string(), "found 12 sources".to_string())];
-        let brief = compose_brief(Some("writer"), &task, &upstream);
+        let brief = compose_brief(Some("writer"), &task, &upstream, &empty_brief_ctx());
         assert!(brief.contains("ROLE: writer"));
         assert!(brief.contains("TASK: Synthesize"));
         assert!(brief.contains("write the report"));
         assert!(brief.contains("Gather: found 12 sources"));
     }
 
+    /// An empty [`BriefContext`] — no goal, no plan, no ancestors, no notes. With
+    /// it, every Phase 1b Task 3 section is gated off, so a brief is byte-for-byte
+    /// the legacy brief. Every pre-existing compose_brief test passes this.
+    fn empty_brief_ctx() -> BriefContext {
+        BriefContext {
+            manual_approval: false,
+            goal: String::new(),
+            plan_summary: String::new(),
+            ancestor_digest: vec![],
+            notes_hint: None,
+        }
+    }
+
+    // Phase 1b Task 3: a NON-empty BriefContext injects the run goal, the plan
+    // summary, a transitive-ancestor digest, and a shared-notes pointer — all
+    // ALONGSIDE the (still present) direct upstream.
+    #[test]
+    fn compose_brief_includes_goal_plan_ancestors_and_notes_pointer() {
+        let task = task_row_with_kind("agent", "Write", "写最终报告");
+        let upstream = vec![("B".to_string(), "b out".to_string())];
+        let ctx = BriefContext {
+            manual_approval: false,
+            goal: "构建报告".into(),
+            plan_summary: "A → B → Write".into(),
+            ancestor_digest: vec![("A".to_string(), "a findings".to_string())],
+            notes_hint: Some("/ws/run1/RUN_NOTES.md".into()),
+        };
+        let brief = compose_brief(Some("writer"), &task, &upstream, &ctx);
+        assert!(brief.contains("构建报告"), "run goal injected: {brief}");
+        assert!(
+            brief.contains("A → B → Write"),
+            "plan summary injected: {brief}"
+        );
+        assert!(
+            brief.contains("a findings"),
+            "transitive ancestor digest injected: {brief}"
+        );
+        assert!(brief.contains("b out"), "direct upstream still present: {brief}");
+        assert!(
+            brief.contains("RUN_NOTES.md"),
+            "shared-notes pointer injected: {brief}"
+        );
+    }
+
+    // Phase 1b Task 3: a long direct-upstream output is truncated (CJK-safe) so a
+    // verbose upstream cannot blow the worker's prompt budget — the full text is
+    // NOT carried, and the truncation ellipsis marks where it was cut.
+    #[test]
+    fn compose_brief_truncates_long_upstream() {
+        let long = "x".repeat(SUMMARY_TASK_OUTPUT_LEN + 500);
+        let upstream = vec![("B".to_string(), long.clone())];
+        let ctx = BriefContext {
+            manual_approval: false,
+            goal: "g".into(),
+            plan_summary: "p".into(),
+            ancestor_digest: vec![],
+            notes_hint: None,
+        };
+        let brief = compose_brief(
+            Some("w"),
+            &task_row_with_kind("agent", "T", "s"),
+            &upstream,
+            &ctx,
+        );
+        assert!(!brief.contains(&long), "long upstream truncated: {brief}");
+        assert!(brief.contains('…'), "truncation marker present: {brief}");
+    }
+
     /// Build an `OrchRunTaskRow` with the given `kind` (other fields fixed) — used
     /// by the kind-aware compose_brief tests.
     fn task_row_with_kind(kind: &str, title: &str, spec: &str) -> OrchRunTaskRow {
         OrchRunTaskRow {
+            pending_question: None,
             last_error: None,
             id: "rtask_k".to_string(),
             run_id: "run_1".to_string(),
@@ -4261,6 +5693,7 @@ mod tests {
             override_provider_id: None,
             override_model: None,
             preset_prompt: None,
+            on_fail: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -4278,7 +5711,7 @@ mod tests {
         ];
 
         let synth_task = task_row_with_kind("synthesis", "合并草稿", "写出最终稿");
-        let synth_brief = compose_brief(Some("写手"), &synth_task, &upstream);
+        let synth_brief = compose_brief(Some("写手"), &synth_task, &upstream, &empty_brief_ctx());
 
         // Synthesis-specific framing present.
         assert!(
@@ -4290,8 +5723,14 @@ mod tests {
             "synthesis brief uses the SYNTHESIS framing: {synth_brief}"
         );
         // The dependency outputs are merged into the brief (the material to combine).
-        assert!(synth_brief.contains("Draft A: 草稿A的要点"), "dep A output present: {synth_brief}");
-        assert!(synth_brief.contains("Draft B: 草稿B的要点"), "dep B output present: {synth_brief}");
+        assert!(
+            synth_brief.contains("Draft A: 草稿A的要点"),
+            "dep A output present: {synth_brief}"
+        );
+        assert!(
+            synth_brief.contains("Draft B: 草稿B的要点"),
+            "dep B output present: {synth_brief}"
+        );
         // The role + spec are still surfaced.
         assert!(synth_brief.contains("ROLE: 写手"));
         assert!(synth_brief.contains("写出最终稿"));
@@ -4300,9 +5739,15 @@ mod tests {
         // instruction, the plain TASK/UPSTREAM RESULTS labels) — proving the
         // branches diverge and agent is unchanged.
         let agent_task = task_row_with_kind("agent", "合并草稿", "写出最终稿");
-        let agent_brief = compose_brief(Some("写手"), &agent_task, &upstream);
-        assert_ne!(synth_brief, agent_brief, "synthesis framing must differ from agent");
-        assert!(agent_brief.contains("TASK: 合并草稿"), "agent keeps TASK framing: {agent_brief}");
+        let agent_brief = compose_brief(Some("写手"), &agent_task, &upstream, &empty_brief_ctx());
+        assert_ne!(
+            synth_brief, agent_brief,
+            "synthesis framing must differ from agent"
+        );
+        assert!(
+            agent_brief.contains("TASK: 合并草稿"),
+            "agent keeps TASK framing: {agent_brief}"
+        );
         assert!(
             agent_brief.contains("UPSTREAM RESULTS"),
             "agent keeps the build-on framing: {agent_brief}"
@@ -4320,9 +5765,12 @@ mod tests {
     fn compose_brief_agent_kind_is_unchanged_legacy_framing() {
         let task = task_row_with_kind("agent", "Synthesize", "write the report");
         let upstream = vec![("Gather".to_string(), "found 12 sources".to_string())];
-        let brief = compose_brief(Some("writer"), &task, &upstream);
+        let brief = compose_brief(Some("writer"), &task, &upstream, &empty_brief_ctx());
         let expected = "ROLE: writer\n\nTASK: Synthesize\nSPEC:\nwrite the report\n\nUPSTREAM RESULTS (completed dependencies you can build on):\n- Gather: found 12 sources\n";
-        assert_eq!(brief, expected, "agent-kind brief must match the pre-023 framing exactly");
+        assert_eq!(
+            brief, expected,
+            "agent-kind brief must match the pre-023 framing exactly"
+        );
     }
 
     // 迁移 026: a non-empty `preset_prompt` (启动前配置台) is APPENDED as its own
@@ -4332,33 +5780,47 @@ mod tests {
     fn compose_brief_appends_preset_requirement_gated_on_presence() {
         // agent: preset appended AFTER the unchanged base brief.
         let mut a = task_row_with_kind("agent", "Do X", "the spec");
-        let a_base = compose_brief(Some("writer"), &a, &[]);
+        let a_base = compose_brief(Some("writer"), &a, &[], &empty_brief_ctx());
         assert!(!a_base.contains("用户预置要求"), "no preset → no section");
         a.preset_prompt = Some("务必用中文，并附引用".to_string());
-        let a_with = compose_brief(Some("writer"), &a, &[]);
-        assert!(a_with.starts_with(&a_base), "preset is appended, base brief unchanged");
-        assert!(a_with.contains("用户预置要求"), "agent preset section present: {a_with}");
+        let a_with = compose_brief(Some("writer"), &a, &[], &empty_brief_ctx());
+        assert!(
+            a_with.starts_with(&a_base),
+            "preset is appended, base brief unchanged"
+        );
+        assert!(
+            a_with.contains("用户预置要求"),
+            "agent preset section present: {a_with}"
+        );
         assert!(a_with.contains("务必用中文，并附引用"));
 
         // synthesis: preset also appended (uniform in compose_brief).
         let mut s = task_row_with_kind("synthesis", "Merge", "synthesize");
         let up = vec![("A".to_string(), "a".to_string())];
-        let s_base = compose_brief(None, &s, &up);
+        let s_base = compose_brief(None, &s, &up, &empty_brief_ctx());
         s.preset_prompt = Some("只输出要点".to_string());
-        let s_with = compose_brief(None, &s, &up);
-        assert!(s_with.starts_with(&s_base), "synthesis preset appended after base");
+        let s_with = compose_brief(None, &s, &up, &empty_brief_ctx());
+        assert!(
+            s_with.starts_with(&s_base),
+            "synthesis preset appended after base"
+        );
         assert!(s_with.contains("用户预置要求") && s_with.contains("只输出要点"));
 
         // blank preset (whitespace only) → byte-for-byte unchanged.
         let mut b = task_row_with_kind("agent", "Y", "s");
-        let b_base = compose_brief(None, &b, &[]);
+        let b_base = compose_brief(None, &b, &[], &empty_brief_ctx());
         b.preset_prompt = Some("   \n  ".to_string());
-        assert_eq!(compose_brief(None, &b, &[]), b_base, "blank preset appends nothing");
+        assert_eq!(
+            compose_brief(None, &b, &[], &empty_brief_ctx()),
+            b_base,
+            "blank preset appends nothing"
+        );
     }
 
     #[test]
     fn aggregate_summary_is_non_empty_and_counts_done() {
         let mk = |title: &str, status: &str, summary: Option<&str>| OrchRunTaskRow {
+            pending_question: None,
             last_error: None,
             id: format!("rtask_{title}"),
             run_id: "run_1".to_string(),
@@ -4380,6 +5842,7 @@ mod tests {
             override_provider_id: None,
             override_model: None,
             preset_prompt: None,
+            on_fail: None,
             created_at: 0,
             updated_at: 0,
         };
@@ -4408,9 +5871,18 @@ mod tests {
     #[test]
     fn vote_policy_parse_is_fail_soft_to_majority() {
         // Explicit shapes.
-        assert_eq!(VotePolicy::parse(Some(r#"{"vote":"majority"}"#)), VotePolicy::Majority);
-        assert_eq!(VotePolicy::parse(Some(r#"{"vote":"unanimous"}"#)), VotePolicy::Unanimous);
-        assert_eq!(VotePolicy::parse(Some(r#"{"vote":"UNANIMOUS"}"#)), VotePolicy::Unanimous);
+        assert_eq!(
+            VotePolicy::parse(Some(r#"{"vote":"majority"}"#)),
+            VotePolicy::Majority
+        );
+        assert_eq!(
+            VotePolicy::parse(Some(r#"{"vote":"unanimous"}"#)),
+            VotePolicy::Unanimous
+        );
+        assert_eq!(
+            VotePolicy::parse(Some(r#"{"vote":"UNANIMOUS"}"#)),
+            VotePolicy::Unanimous
+        );
         assert_eq!(
             VotePolicy::parse(Some(r#"{"vote":{"threshold":2}}"#)),
             VotePolicy::Threshold(2)
@@ -4419,8 +5891,14 @@ mod tests {
         assert_eq!(VotePolicy::parse(None), VotePolicy::Majority);
         assert_eq!(VotePolicy::parse(Some("   ")), VotePolicy::Majority);
         assert_eq!(VotePolicy::parse(Some("not json")), VotePolicy::Majority);
-        assert_eq!(VotePolicy::parse(Some(r#"{"group":"x"}"#)), VotePolicy::Majority);
-        assert_eq!(VotePolicy::parse(Some(r#"{"vote":"weird"}"#)), VotePolicy::Majority);
+        assert_eq!(
+            VotePolicy::parse(Some(r#"{"group":"x"}"#)),
+            VotePolicy::Majority
+        );
+        assert_eq!(
+            VotePolicy::parse(Some(r#"{"vote":"weird"}"#)),
+            VotePolicy::Majority
+        );
     }
 
     #[test]
@@ -4428,13 +5906,22 @@ mod tests {
         // Majority = strictly more than half.
         assert!(VotePolicy::Majority.passes(2, 3), "2/3 is a majority");
         assert!(!VotePolicy::Majority.passes(1, 3), "1/3 is not");
-        assert!(!VotePolicy::Majority.passes(1, 2), "1/2 is a TIE, not a majority");
+        assert!(
+            !VotePolicy::Majority.passes(1, 2),
+            "1/2 is a TIE, not a majority"
+        );
         assert!(VotePolicy::Majority.passes(2, 2), "2/2 is a majority");
-        assert!(!VotePolicy::Majority.passes(0, 0), "0 skeptics never passes (fail-safe)");
+        assert!(
+            !VotePolicy::Majority.passes(0, 0),
+            "0 skeptics never passes (fail-safe)"
+        );
         // Unanimous = all, with at least one skeptic.
         assert!(VotePolicy::Unanimous.passes(3, 3));
         assert!(!VotePolicy::Unanimous.passes(2, 3));
-        assert!(!VotePolicy::Unanimous.passes(0, 0), "unanimous with 0 skeptics fails");
+        assert!(
+            !VotePolicy::Unanimous.passes(0, 0),
+            "unanimous with 0 skeptics fails"
+        );
         // Threshold(n) = at least n.
         assert!(VotePolicy::Threshold(2).passes(2, 5));
         assert!(VotePolicy::Threshold(2).passes(3, 5));
@@ -4443,8 +5930,12 @@ mod tests {
 
     #[test]
     fn parse_verdict_prefers_json_pass_field() {
-        assert!(parse_verdict_pass(Some(r#"{"pass": true, "critique": "looks good"}"#)));
-        assert!(!parse_verdict_pass(Some(r#"{"pass": false, "critique": "broken auth"}"#)));
+        assert!(parse_verdict_pass(Some(
+            r#"{"pass": true, "critique": "looks good"}"#
+        )));
+        assert!(!parse_verdict_pass(Some(
+            r#"{"pass": false, "critique": "broken auth"}"#
+        )));
         // JSON embedded in prose still found.
         assert!(parse_verdict_pass(Some(
             "After review: {\"pass\": true, \"critique\": \"ok\"} done."
@@ -4454,10 +5945,14 @@ mod tests {
     #[test]
     fn parse_verdict_text_fallback_fail_beats_pass() {
         // No JSON pass field → text scan. FAIL is conservative and wins.
-        assert!(!parse_verdict_pass(Some("Verdict: FAIL — the logic is wrong")));
+        assert!(!parse_verdict_pass(Some(
+            "Verdict: FAIL — the logic is wrong"
+        )));
         assert!(parse_verdict_pass(Some("Verdict: PASS — all good")));
         // Both present → FAIL wins (conservative).
-        assert!(!parse_verdict_pass(Some("It could PASS but I must FAIL it")));
+        assert!(!parse_verdict_pass(Some(
+            "It could PASS but I must FAIL it"
+        )));
     }
 
     #[test]
@@ -4465,9 +5960,15 @@ mod tests {
         // The fail-safe invariant: missing / blank / unrecognizable → FAIL.
         assert!(!parse_verdict_pass(None), "missing output → fail-safe");
         assert!(!parse_verdict_pass(Some("   ")), "blank output → fail-safe");
-        assert!(!parse_verdict_pass(Some("hmm, not sure")), "no verdict token → fail-safe");
+        assert!(
+            !parse_verdict_pass(Some("hmm, not sure")),
+            "no verdict token → fail-safe"
+        );
         // Malformed JSON with no PASS/FAIL token → fail-safe.
-        assert!(!parse_verdict_pass(Some(r#"{"pas": tru"#)), "broken JSON → fail-safe");
+        assert!(
+            !parse_verdict_pass(Some(r#"{"pas": tru"#)),
+            "broken JSON → fail-safe"
+        );
         // JSON without a `pass` field, no text token → fail-safe.
         assert!(!parse_verdict_pass(Some(r#"{"critique":"meh"}"#)));
     }
@@ -4502,13 +6003,19 @@ mod tests {
             skeptic_with("S1", Some(r#"{"pass":true}"#)),
             skeptic_with("S2", Some("PASS")),
         ];
-        assert!(tally_verify(&all_pass, VotePolicy::Unanimous).pass, "all pass → unanimous");
+        assert!(
+            tally_verify(&all_pass, VotePolicy::Unanimous).pass,
+            "all pass → unanimous"
+        );
 
         let one_fail = vec![
             skeptic_with("S1", Some(r#"{"pass":true}"#)),
             skeptic_with("S2", Some("FAIL")),
         ];
-        assert!(!tally_verify(&one_fail, VotePolicy::Unanimous).pass, "one fail breaks unanimous");
+        assert!(
+            !tally_verify(&one_fail, VotePolicy::Unanimous).pass,
+            "one fail breaks unanimous"
+        );
 
         // Threshold(1): a single pass among 3 satisfies it.
         let one_pass = vec![
@@ -4516,8 +6023,14 @@ mod tests {
             skeptic_with("S2", Some("FAIL")),
             skeptic_with("S3", Some(r#"{"pass":false}"#)),
         ];
-        assert!(tally_verify(&one_pass, VotePolicy::Threshold(1)).pass, "1 pass ≥ threshold 1");
-        assert!(!tally_verify(&one_pass, VotePolicy::Threshold(2)).pass, "1 pass < threshold 2");
+        assert!(
+            tally_verify(&one_pass, VotePolicy::Threshold(1)).pass,
+            "1 pass ≥ threshold 1"
+        );
+        assert!(
+            !tally_verify(&one_pass, VotePolicy::Threshold(2)).pass,
+            "1 pass < threshold 2"
+        );
     }
 
     #[test]
@@ -4530,7 +6043,10 @@ mod tests {
         ];
         let v = tally_verify(&mixed, VotePolicy::Majority);
         assert_eq!(v.pass_count, 1, "the unparseable skeptic counts as fail");
-        assert!(!v.pass, "1/2 (tie) fails majority — unvalidated output never approves");
+        assert!(
+            !v.pass,
+            "1/2 (tie) fails majority — unvalidated output never approves"
+        );
     }
 
     #[test]
@@ -4543,7 +6059,10 @@ mod tests {
             VotePolicy::Majority,
         );
         let s = render_verify_summary(&v, VotePolicy::Majority);
-        assert!(s.starts_with("VERDICT: FAIL"), "summary leads with the verdict: {s}");
+        assert!(
+            s.starts_with("VERDICT: FAIL"),
+            "summary leads with the verdict: {s}"
+        );
         assert!(s.contains("1/2"), "tally surfaced: {s}");
         assert!(s.contains("policy=majority"), "policy surfaced: {s}");
         // Per-skeptic critiques collected.
@@ -4557,9 +6076,18 @@ mod tests {
     #[test]
     fn judge_policy_parse_is_fail_soft_to_mean() {
         // Explicit shapes.
-        assert_eq!(JudgePolicy::parse(Some(r#"{"aggregate":"mean"}"#)), JudgePolicy::Mean);
-        assert_eq!(JudgePolicy::parse(Some(r#"{"aggregate":"borda"}"#)), JudgePolicy::Borda);
-        assert_eq!(JudgePolicy::parse(Some(r#"{"aggregate":"BORDA"}"#)), JudgePolicy::Borda);
+        assert_eq!(
+            JudgePolicy::parse(Some(r#"{"aggregate":"mean"}"#)),
+            JudgePolicy::Mean
+        );
+        assert_eq!(
+            JudgePolicy::parse(Some(r#"{"aggregate":"borda"}"#)),
+            JudgePolicy::Borda
+        );
+        assert_eq!(
+            JudgePolicy::parse(Some(r#"{"aggregate":"BORDA"}"#)),
+            JudgePolicy::Borda
+        );
         // candidates pin alongside the policy still resolves the policy.
         assert_eq!(
             JudgePolicy::parse(Some(r#"{"aggregate":"borda","candidates":3}"#)),
@@ -4569,8 +6097,14 @@ mod tests {
         assert_eq!(JudgePolicy::parse(None), JudgePolicy::Mean);
         assert_eq!(JudgePolicy::parse(Some("   ")), JudgePolicy::Mean);
         assert_eq!(JudgePolicy::parse(Some("not json")), JudgePolicy::Mean);
-        assert_eq!(JudgePolicy::parse(Some(r#"{"group":"x"}"#)), JudgePolicy::Mean);
-        assert_eq!(JudgePolicy::parse(Some(r#"{"aggregate":"weird"}"#)), JudgePolicy::Mean);
+        assert_eq!(
+            JudgePolicy::parse(Some(r#"{"group":"x"}"#)),
+            JudgePolicy::Mean
+        );
+        assert_eq!(
+            JudgePolicy::parse(Some(r#"{"aggregate":"weird"}"#)),
+            JudgePolicy::Mean
+        );
     }
 
     #[test]
@@ -4580,15 +6114,13 @@ mod tests {
         assert_eq!(arr, vec![Some(0.8), Some(0.3), Some(0.6)]);
 
         // Object form: keyed by candidate index (sparse OK — missing → None).
-        let obj = parse_judge_ballot(Some(r#"{"scores":{"0":0.8,"2":0.6}}"#), 3).expect("object ballot");
+        let obj =
+            parse_judge_ballot(Some(r#"{"scores":{"0":0.8,"2":0.6}}"#), 3).expect("object ballot");
         assert_eq!(obj, vec![Some(0.8), None, Some(0.6)]);
 
         // Embedded in prose still found.
-        let prose = parse_judge_ballot(
-            Some("After review: {\"scores\":[0.1,0.9]} done."),
-            2,
-        )
-        .expect("prose-embedded ballot");
+        let prose = parse_judge_ballot(Some("After review: {\"scores\":[0.1,0.9]} done."), 2)
+            .expect("prose-embedded ballot");
         assert_eq!(prose, vec![Some(0.1), Some(0.9)]);
 
         // Extra array entries beyond M are ignored; the ballot is sized to M.
@@ -4596,7 +6128,8 @@ mod tests {
         assert_eq!(extra, vec![Some(0.1), Some(0.2)]);
 
         // Out-of-range / non-index object keys are ignored.
-        let oor = parse_judge_ballot(Some(r#"{"scores":{"0":0.5,"9":0.9,"x":0.1}}"#), 2).expect("oor");
+        let oor =
+            parse_judge_ballot(Some(r#"{"scores":{"0":0.5,"9":0.9,"x":0.1}}"#), 2).expect("oor");
         assert_eq!(oor, vec![Some(0.5), None]);
     }
 
@@ -4604,10 +6137,22 @@ mod tests {
     fn parse_judge_ballot_unparseable_is_dropped_no_panic() {
         // The fail-safe invariant: missing / blank / unparseable / no usable
         // scores → None (the judge is DROPPED), never a panic.
-        assert!(parse_judge_ballot(None, 3).is_none(), "missing output → dropped");
-        assert!(parse_judge_ballot(Some("   "), 3).is_none(), "blank output → dropped");
-        assert!(parse_judge_ballot(Some("no json here"), 3).is_none(), "no JSON → dropped");
-        assert!(parse_judge_ballot(Some(r#"{"scor: ["#), 3).is_none(), "broken JSON → dropped");
+        assert!(
+            parse_judge_ballot(None, 3).is_none(),
+            "missing output → dropped"
+        );
+        assert!(
+            parse_judge_ballot(Some("   "), 3).is_none(),
+            "blank output → dropped"
+        );
+        assert!(
+            parse_judge_ballot(Some("no json here"), 3).is_none(),
+            "no JSON → dropped"
+        );
+        assert!(
+            parse_judge_ballot(Some(r#"{"scor: ["#), 3).is_none(),
+            "broken JSON → dropped"
+        );
         assert!(
             parse_judge_ballot(Some(r#"{"verdict":"good"}"#), 3).is_none(),
             "no scores field → dropped"
@@ -4622,7 +6167,10 @@ mod tests {
             "all out-of-range → dropped"
         );
         // An empty scores array → no usable scores → dropped (not a panic).
-        assert!(parse_judge_ballot(Some(r#"{"scores":[]}"#), 3).is_none(), "empty array → dropped");
+        assert!(
+            parse_judge_ballot(Some(r#"{"scores":[]}"#), 3).is_none(),
+            "empty array → dropped"
+        );
     }
 
     #[test]
@@ -4636,8 +6184,16 @@ mod tests {
         let r = aggregate_judge(&ballots, 3, JudgePolicy::Mean);
         assert_eq!(r.winner, Some(0), "c0 has the highest mean");
         assert_eq!(r.judges_counted, 2);
-        assert!((r.aggregate[0] - 0.8).abs() < 1e-9, "mean c0: {:?}", r.aggregate);
-        assert!((r.aggregate[2] - 0.55).abs() < 1e-9, "mean c2: {:?}", r.aggregate);
+        assert!(
+            (r.aggregate[0] - 0.8).abs() < 1e-9,
+            "mean c0: {:?}",
+            r.aggregate
+        );
+        assert!(
+            (r.aggregate[2] - 0.55).abs() < 1e-9,
+            "mean c2: {:?}",
+            r.aggregate
+        );
     }
 
     #[test]
@@ -4658,7 +6214,10 @@ mod tests {
         assert_eq!(ra.winner, Some(1), "c1 wins by mean");
         assert_eq!(ra.winner, rb.winner, "permutation-independent winner");
         for c in 0..3 {
-            assert!((ra.aggregate[c] - rb.aggregate[c]).abs() < 1e-9, "candidate {c} aggregate stable");
+            assert!(
+                (ra.aggregate[c] - rb.aggregate[c]).abs() < 1e-9,
+                "candidate {c} aggregate stable"
+            );
         }
     }
 
@@ -4673,9 +6232,21 @@ mod tests {
             vec![Some(0.7), Some(0.1), Some(0.8)],
         ];
         let r = aggregate_judge(&ballots, 3, JudgePolicy::Borda);
-        assert!((r.aggregate[0] - 3.0).abs() < 1e-9, "c0 borda=3: {:?}", r.aggregate);
-        assert!((r.aggregate[1] - 0.0).abs() < 1e-9, "c1 borda=0: {:?}", r.aggregate);
-        assert!((r.aggregate[2] - 3.0).abs() < 1e-9, "c2 borda=3: {:?}", r.aggregate);
+        assert!(
+            (r.aggregate[0] - 3.0).abs() < 1e-9,
+            "c0 borda=3: {:?}",
+            r.aggregate
+        );
+        assert!(
+            (r.aggregate[1] - 0.0).abs() < 1e-9,
+            "c1 borda=0: {:?}",
+            r.aggregate
+        );
+        assert!(
+            (r.aggregate[2] - 3.0).abs() < 1e-9,
+            "c2 borda=3: {:?}",
+            r.aggregate
+        );
         assert_eq!(r.winner, Some(0), "tie c0/c2 broken to lowest index c0");
     }
 
@@ -4690,14 +6261,21 @@ mod tests {
         ];
         let r = aggregate_judge(&a, 3, JudgePolicy::Borda);
         assert_eq!(r.winner, Some(1), "c1 is the clear borda winner");
-        assert!((r.aggregate[1] - 4.0).abs() < 1e-9, "c1 borda=4: {:?}", r.aggregate);
+        assert!(
+            (r.aggregate[1] - 4.0).abs() < 1e-9,
+            "c1 borda=4: {:?}",
+            r.aggregate
+        );
 
         // Order independence: reverse the ballots → same winner + same totals.
         let b = vec![a[1].clone(), a[0].clone()];
         let rb = aggregate_judge(&b, 3, JudgePolicy::Borda);
         assert_eq!(rb.winner, Some(1));
         for c in 0..3 {
-            assert!((r.aggregate[c] - rb.aggregate[c]).abs() < 1e-9, "candidate {c} borda stable");
+            assert!(
+                (r.aggregate[c] - rb.aggregate[c]).abs() < 1e-9,
+                "candidate {c} borda stable"
+            );
         }
     }
 
@@ -4708,9 +6286,21 @@ mod tests {
         // share (2+1)/2 = 1.5 each; c2 gets 0. Deterministic (no index drift).
         let ballots = vec![vec![Some(0.5), Some(0.5), Some(0.1)]];
         let r = aggregate_judge(&ballots, 3, JudgePolicy::Borda);
-        assert!((r.aggregate[0] - 1.5).abs() < 1e-9, "c0 shares tie: {:?}", r.aggregate);
-        assert!((r.aggregate[1] - 1.5).abs() < 1e-9, "c1 shares tie: {:?}", r.aggregate);
-        assert!((r.aggregate[2] - 0.0).abs() < 1e-9, "c2 last: {:?}", r.aggregate);
+        assert!(
+            (r.aggregate[0] - 1.5).abs() < 1e-9,
+            "c0 shares tie: {:?}",
+            r.aggregate
+        );
+        assert!(
+            (r.aggregate[1] - 1.5).abs() < 1e-9,
+            "c1 shares tie: {:?}",
+            r.aggregate
+        );
+        assert!(
+            (r.aggregate[2] - 0.0).abs() < 1e-9,
+            "c2 last: {:?}",
+            r.aggregate
+        );
         // Final tie c0/c1 → lowest index wins.
         assert_eq!(r.winner, Some(0));
     }
@@ -4721,9 +6311,9 @@ mod tests {
         // the winner is computed from the two usable ballots only.
         let candidates = 2;
         let raw = vec![
-            Some(r#"{"scores":[0.9,0.1]}"#),       // c0 strong
-            Some("worker timed out, no ballot"),   // unparseable → dropped
-            Some(r#"{"scores":[0.8,0.2]}"#),       // c0 strong
+            Some(r#"{"scores":[0.9,0.1]}"#),     // c0 strong
+            Some("worker timed out, no ballot"), // unparseable → dropped
+            Some(r#"{"scores":[0.8,0.2]}"#),     // c0 strong
         ];
         let ballots: Vec<Vec<Option<f64>>> = raw
             .iter()
@@ -4756,7 +6346,10 @@ mod tests {
             4
         );
         // No pin → infer the widest ballot across judges (array len / max key+1).
-        let outs = vec![Some(r#"{"scores":[0.1,0.2]}"#), Some(r#"{"scores":{"3":0.9}}"#)];
+        let outs = vec![
+            Some(r#"{"scores":[0.1,0.2]}"#),
+            Some(r#"{"scores":{"3":0.9}}"#),
+        ];
         assert_eq!(
             resolve_candidate_count(Some(r#"{"aggregate":"borda"}"#), &outs),
             4,
@@ -4769,18 +6362,30 @@ mod tests {
     #[test]
     fn render_judge_summary_leads_with_parseable_winner_marker() {
         let r = aggregate_judge(
-            &[vec![Some(0.9), Some(0.2), Some(0.5)], vec![Some(0.7), Some(0.4), Some(0.6)]],
+            &[
+                vec![Some(0.9), Some(0.2), Some(0.5)],
+                vec![Some(0.7), Some(0.4), Some(0.6)],
+            ],
             3,
             JudgePolicy::Mean,
         );
         let s = render_judge_summary(&r, JudgePolicy::Mean);
-        assert!(s.starts_with("WINNER: candidate 0"), "summary leads with the winner: {s}");
+        assert!(
+            s.starts_with("WINNER: candidate 0"),
+            "summary leads with the winner: {s}"
+        );
         assert!(s.contains("aggregate=mean"), "policy surfaced: {s}");
-        assert!(s.contains("scores=["), "per-candidate aggregates surfaced: {s}");
+        assert!(
+            s.contains("scores=["),
+            "per-candidate aggregates surfaced: {s}"
+        );
         assert!(s.contains("judges=2/2"), "judge count surfaced: {s}");
 
         // No winner → leads with `WINNER: none`.
-        let none = render_judge_summary(&aggregate_judge(&[], 3, JudgePolicy::Mean), JudgePolicy::Mean);
+        let none = render_judge_summary(
+            &aggregate_judge(&[], 3, JudgePolicy::Mean),
+            JudgePolicy::Mean,
+        );
         assert!(none.starts_with("WINNER: none"), "no-winner marker: {none}");
     }
 
@@ -4791,7 +6396,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     use std::sync::atomic::AtomicUsize;
-    use std::time::Instant;
 
     /// A→C, B→C diamond: task0 (A, no dep), task1 (B, no dep), task2 (C, depends
     /// on BOTH A and B). With cap≥2, A and B are concurrently dispatchable; C is
@@ -4939,7 +6543,8 @@ mod tests {
 
         let worker = Arc::new(ConcurrencyMockWorkerRunner::new(delay));
         let worker_dyn: Arc<dyn WorkerRunner> = worker.clone();
-        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker_dyn, emitter, ws_repo.clone());
+        let mut engine_deps =
+            RunEngineDeps::new(run_repo.clone(), worker_dyn, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(10);
         let engine = RunEngine::new(Arc::new(engine_deps));
 
@@ -4998,6 +6603,144 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("run did not reach a terminal status within the bounded poll");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 1b Task 1: an ad-hoc/conversation-native run with NO work_dir and NO
+    // workspace gets a per-run SHARED working directory auto-allocated under
+    // `<data_dir>/orchestrator/runs/{run_id}`, persisted to `run.work_dir`, and
+    // handed to EVERY node (so files + a shared workpath KB are shared). All-mock:
+    // the diamond planner + a temp `data_dir` on `RunEngineDeps`.
+    // -------------------------------------------------------------------------
+
+    /// Process-unique suffix so parallel/repeat runs never collide on the temp
+    /// `data_dir` base (the run subdir is already run-id-unique, this belts it).
+    static ADHOC_TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Build an ad-hoc (workspace-less) run with NO work_dir + the diamond planner,
+    /// wired to a fresh temp `data_dir` on `RunEngineDeps` so the engine can
+    /// auto-allocate a per-run shared workspace directory. Autonomous (no approval
+    /// gate) so `engine.start` drives it straight to completion. Returns
+    /// `(svc, engine, run_id, data_dir)`.
+    async fn adhoc_no_dir_harness(
+        worker: Arc<ConcurrencyMockWorkerRunner>,
+    ) -> (RunService, RunEngine, String, std::path::PathBuf) {
+        let db = init_database_memory().await.expect("db init");
+        let pool = db.pool().clone();
+        let run_repo = Arc::new(SqliteRunRepository::new(pool.clone()));
+        let fleet_repo = Arc::new(SqliteFleetRepository::new(pool.clone()));
+        let ws_repo = Arc::new(SqliteOrchWorkspaceRepository::new(pool.clone()));
+        let broadcaster = Arc::new(RecordingBroadcaster::new());
+        let emitter = OrchestratorRunEventEmitter::new(broadcaster);
+        let planner: Arc<dyn PlanProducer> = Arc::new(DiamondPlanProducer);
+
+        let run_service = RunService::new(
+            run_repo.clone(),
+            fleet_repo,
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
+
+        // Unique temp data_dir so the auto-allocated run dir is real + isolated.
+        let data_dir = std::env::temp_dir().join(format!(
+            "nomifun-test-adhoc-{}-{}",
+            now_ms(),
+            ADHOC_TEST_DIR_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+
+        let worker_dyn: Arc<dyn WorkerRunner> = worker;
+        let mut engine_deps =
+            RunEngineDeps::new(run_repo.clone(), worker_dyn, emitter, ws_repo);
+        engine_deps.worker_timeout = Duration::from_secs(10);
+        engine_deps.data_dir = data_dir.clone();
+        let engine = RunEngine::new(Arc::new(engine_deps));
+
+        // Ad-hoc run: workspace-less, NO work_dir, autonomous (no approval gate).
+        // `create_adhoc` synthesizes the fleet from the model range → member 0
+        // exists for the diamond's `member_index: Some(0)` tasks.
+        let run = run_service
+            .create_adhoc(
+                "u1",
+                CreateAdhocRunRequest {
+                    approval_mode: None,
+                    goal: "share one dir".to_string(),
+                    work_dir: None,
+                    model_range: ModelRange::Single {
+                        model: ModelRef {
+                            provider_id: "prov_x".to_string(),
+                            model: "claude-opus-4-8".to_string(),
+                        },
+                    },
+                    pinned_roles: vec![],
+                    role_members: vec![],
+                    autonomy: Some("autonomous".to_string()),
+                    max_parallel: Some(2),
+                    lead_conv_id: None,
+                    lead_model: None,
+                },
+            )
+            .await
+            .expect("create_adhoc");
+        assert!(run.workspace_id.is_none(), "ad-hoc run has no workspace");
+        assert!(run.work_dir.is_none(), "ad-hoc run starts with no work_dir");
+        run_service.plan(&run.id).await.expect("plan");
+        (run_service, engine, run.id, data_dir)
+    }
+
+    #[tokio::test]
+    async fn adhoc_run_auto_allocates_shared_workspace_dir() {
+        // 一个无 work_dir / 无 workspace 的 ad-hoc run:引擎应自动分配一个
+        // <data_dir>/orchestrator/runs/{run_id} 共享目录,持久化到 run.work_dir,
+        // 并把它作为 workspace_dir 传给每个节点(此前每节点各自临时目录、无法共享)。
+        let worker = Arc::new(ConcurrencyMockWorkerRunner::new(Duration::from_millis(10)));
+        let (svc, engine, run_id, data_dir) = adhoc_no_dir_harness(worker.clone()).await;
+        engine.start(run_id.clone());
+        let detail = drive_to_completion(&svc, &run_id).await;
+        // 持久化了 work_dir
+        let expected = data_dir.join("orchestrator").join("runs").join(&run_id);
+        assert_eq!(
+            detail.run.work_dir.as_deref(),
+            Some(expected.to_str().unwrap()),
+            "auto-allocated shared dir must be persisted to run.work_dir"
+        );
+        assert!(expected.is_dir(), "shared dir must be created on disk");
+        // 每个节点都拿到同一个共享目录
+        let dirs = worker.seen_workspace_dir.lock().unwrap().clone();
+        assert!(!dirs.is_empty());
+        for d in &dirs {
+            assert_eq!(
+                d.as_deref(),
+                expected.to_str(),
+                "every node shares the one run dir"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_start_seeds_run_notes_md() {
+        // run 启动时在共享目录 seed 一个人类可读的 RUN_NOTES.md:含 run 目标 +
+        // 计划(各节点 title)+ 「共享笔记」追加区,供节点经 cwd 内置文件工具读/追加。
+        let worker = Arc::new(ConcurrencyMockWorkerRunner::new(Duration::from_millis(10)));
+        let (svc, engine, run_id, data_dir) = adhoc_no_dir_harness(worker.clone()).await;
+        engine.start(run_id.clone());
+        let _ = drive_to_completion(&svc, &run_id).await;
+        let notes = data_dir
+            .join("orchestrator")
+            .join("runs")
+            .join(&run_id)
+            .join("RUN_NOTES.md");
+        assert!(notes.is_file(), "RUN_NOTES.md seeded in the shared dir");
+        let body = std::fs::read_to_string(&notes).unwrap();
+        assert!(
+            body.contains("目标") || body.contains("GOAL"),
+            "notes carry the run goal"
+        );
+        // 计划摘要含节点标题(harness 的 plan 至少含一个已知 title)
+        assert!(
+            body.contains("共享笔记"),
+            "has an append region for node findings"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -5063,7 +6806,12 @@ mod tests {
             on_started(900); // arbitrary fixed conv id (stamps task.conversation_id)
             if n < self.fail_times {
                 // Finished turn with NO final text → ok:false (the rate-limit shape).
-                Ok(WorkerOutcome { conversation_id: 900, text: None, ok: false, tokens: None })
+                Ok(WorkerOutcome {
+                    conversation_id: 900,
+                    text: None,
+                    ok: false,
+                    tokens: None,
+                })
             } else {
                 Ok(WorkerOutcome {
                     conversation_id: 900,
@@ -5075,6 +6823,14 @@ mod tests {
         }
         async fn last_error_retryable(&self, _conversation_id: &str) -> bool {
             self.retryable
+        }
+        // Simulates a MARKED provider error (rate-limit / auth / etc.): a marker IS
+        // present, so the three-way classification uses `retryable` above —
+        // `retryable=true` → Retryable path, `retryable=false` → NonRetryable
+        // (immediate fail). This keeps the marker-retry semantics distinct from the
+        // NoMarker timeout budget (which `TimeoutMockWorkerRunner` covers).
+        async fn last_error_present(&self, _conversation_id: &str) -> bool {
+            true
         }
     }
 
@@ -5093,8 +6849,13 @@ mod tests {
         let broadcaster = Arc::new(RecordingBroadcaster::new());
         let emitter = OrchestratorRunEventEmitter::new(broadcaster);
         let planner: Arc<dyn PlanProducer> = Arc::new(SingleTaskPlanProducer);
-        let run_service =
-            RunService::new(run_repo.clone(), fleet_repo.clone(), ws_repo.clone(), planner, emitter.clone());
+        let run_service = RunService::new(
+            run_repo.clone(),
+            fleet_repo.clone(),
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
 
         let worker = Arc::new(RetryMockWorkerRunner {
             fail_times,
@@ -5102,7 +6863,8 @@ mod tests {
             dispatches: AtomicUsize::new(0),
         });
         let worker_dyn: Arc<dyn WorkerRunner> = worker.clone();
-        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker_dyn, emitter, ws_repo.clone());
+        let mut engine_deps =
+            RunEngineDeps::new(run_repo.clone(), worker_dyn, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(10);
         engine_deps.max_worker_retries = max_retries;
         engine_deps.retry_backoff_base = Duration::ZERO; // instant retries — no wall-clock wait in tests
@@ -5156,11 +6918,18 @@ mod tests {
         let (svc, engine, worker, run_id) = retry_harness(1, true, 3).await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "a retryable failure must auto-retry to completion");
+        assert_eq!(
+            detail.run.status, "completed",
+            "a retryable failure must auto-retry to completion"
+        );
         assert_eq!(detail.tasks.len(), 1);
         assert_eq!(detail.tasks[0].status, "done", "node done after the retry");
         assert_eq!(detail.tasks[0].attempt, 1, "one retry bumps attempt 0 → 1");
-        assert_eq!(worker.dispatches.load(Ordering::SeqCst), 2, "dispatched twice: initial + 1 retry");
+        assert_eq!(
+            worker.dispatches.load(Ordering::SeqCst),
+            2,
+            "dispatched twice: initial + 1 retry"
+        );
     }
 
     #[tokio::test]
@@ -5170,10 +6939,20 @@ mod tests {
         let (svc, engine, worker, run_id) = retry_harness(99, true, 2).await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "failed", "exhausting the retry budget fails the run");
+        assert_eq!(
+            detail.run.status, "failed",
+            "exhausting the retry budget fails the run"
+        );
         assert_eq!(detail.tasks[0].status, "failed");
-        assert_eq!(detail.tasks[0].attempt, 2, "attempt reaches the retry cap (2)");
-        assert_eq!(worker.dispatches.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
+        assert_eq!(
+            detail.tasks[0].attempt, 2,
+            "attempt reaches the retry cap (2)"
+        );
+        assert_eq!(
+            worker.dispatches.load(Ordering::SeqCst),
+            3,
+            "1 initial + 2 retries"
+        );
     }
 
     #[tokio::test]
@@ -5183,10 +6962,365 @@ mod tests {
         let (svc, engine, worker, run_id) = retry_harness(99, false, 3).await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "failed", "a non-retryable failure fails the run at once");
+        assert_eq!(
+            detail.run.status, "failed",
+            "a non-retryable failure fails the run at once"
+        );
         assert_eq!(detail.tasks[0].status, "failed");
         assert_eq!(detail.tasks[0].attempt, 0, "no retry → attempt stays 0");
-        assert_eq!(worker.dispatches.load(Ordering::SeqCst), 1, "dispatched exactly once");
+        assert_eq!(
+            worker.dispatches.load(Ordering::SeqCst),
+            1,
+            "dispatched exactly once"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 迁移 029 (P1a Task 2): per-node `on_fail` policy + `completed_with_failures`
+    // terminal status. A two-INDEPENDENT-node DAG (A + B, no edge) seeded DIRECTLY
+    // via the `CreateTaskParams.on_fail` create path (the planner does not emit
+    // `on_fail` yet) proves: A's `skip_and_continue` soft-failure lets independent
+    // node B deliver and settles the run `completed_with_failures`; A's default
+    // `fail_run` policy fails the whole run (zero regression).
+    // -------------------------------------------------------------------------
+
+    /// A worker that FAILS any task whose spec contains `"FAIL"` (a MARKED,
+    /// non-retryable provider error → immediate permanent failure, attempt stays 0)
+    /// and SUCCEEDS every other task. A single instance drives a two-node DAG where
+    /// node A fails and independent node B still delivers.
+    struct SelectiveFailWorker;
+    #[async_trait]
+    impl WorkerRunner for SelectiveFailWorker {
+        async fn run(
+            &self,
+            _member: &FleetMember,
+            _workspace_dir: Option<&str>,
+            _run_id: &str,
+            task_id: &str,
+            _brief: &str,
+            task_spec: &str,
+            _timeout: Duration,
+            on_started: Box<dyn FnOnce(i64) + Send>,
+        ) -> Result<WorkerOutcome, AppError> {
+            on_started(778);
+            if task_spec.contains("FAIL") {
+                Ok(WorkerOutcome { conversation_id: 778, text: None, ok: false, tokens: None })
+            } else {
+                Ok(WorkerOutcome {
+                    conversation_id: 778,
+                    text: Some(format!("output of {task_id}")),
+                    ok: true,
+                    tokens: None,
+                })
+            }
+        }
+        // A MARKED provider error → the three-way classifier reads
+        // `last_error_retryable` (default false) → NonRetryable → the failing node
+        // fails immediately with no retry (attempt stays 0).
+        async fn last_error_present(&self, _conversation_id: &str) -> bool {
+            true
+        }
+    }
+
+    /// Two INDEPENDENT nodes A + B (no dep edge). Seeded DIRECTLY through the
+    /// `CreateTaskParams.on_fail` create path so node A carries an arbitrary
+    /// `on_fail` policy (the planner does not emit `on_fail` — 迁移 029). A's spec
+    /// contains `"FAIL"` so [`SelectiveFailWorker`] fails it permanently; B
+    /// succeeds. No assignments are created — `resolve_task_member` falls back to
+    /// member[0]. The run is flipped straight to `running` (the manual seed skips
+    /// `persist_dag_and_activate`). Returns (svc, engine, run id).
+    async fn two_independent_nodes_harness(a_on_fail: &str) -> (RunService, RunEngine, String) {
+        use nomifun_db::CreateTaskParams;
+        let db = init_database_memory().await.expect("db init");
+        let pool = db.pool().clone();
+        let run_repo = Arc::new(SqliteRunRepository::new(pool.clone()));
+        let fleet_repo = Arc::new(SqliteFleetRepository::new(pool.clone()));
+        let ws_repo = Arc::new(SqliteOrchWorkspaceRepository::new(pool.clone()));
+        let broadcaster = Arc::new(RecordingBroadcaster::new());
+        let emitter = OrchestratorRunEventEmitter::new(broadcaster);
+        // Planner is required by RunService::new but never invoked (tasks are seeded
+        // manually, `plan()` is not called).
+        let planner: Arc<dyn PlanProducer> = Arc::new(SingleTaskPlanProducer);
+        let run_service = RunService::new(
+            run_repo.clone(),
+            fleet_repo.clone(),
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
+
+        let worker: Arc<dyn WorkerRunner> = Arc::new(SelectiveFailWorker);
+        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
+        engine_deps.worker_timeout = Duration::from_secs(10);
+        engine_deps.retry_backoff_base = Duration::ZERO; // instant — no wall-clock wait
+        let engine = RunEngine::new(Arc::new(engine_deps));
+
+        let fleet = crate::service::FleetService::new(fleet_repo)
+            .create(
+                "u1",
+                CreateFleetRequest {
+                    name: "on_fail fleet".to_string(),
+                    description: None,
+                    max_parallel: None,
+                    members: vec![sample_member("agent_a")],
+                },
+            )
+            .await
+            .expect("fleet create");
+        let ws = crate::service::WorkspaceService::new(ws_repo)
+            .create(
+                "u1",
+                CreateWorkspaceRequest {
+                    name: "on_fail ws".to_string(),
+                    default_fleet_id: Some(fleet.id.clone()),
+                    workspace_dir: None,
+                },
+            )
+            .await
+            .expect("ws create");
+        let run = run_service
+            .create(
+                "u1",
+                CreateRunRequest {
+                    workspace_id: ws.id,
+                    goal: "on_fail policy test".to_string(),
+                    fleet_id: fleet.id,
+                    autonomy: None,
+                    max_parallel: Some(2),
+                },
+            )
+            .await
+            .expect("run create");
+
+        // Seed the two independent nodes DIRECTLY (bypassing the planner) so A
+        // carries the `on_fail` policy under test; B is a plain default node.
+        run_repo
+            .create_task(CreateTaskParams {
+                run_id: run.id.clone(),
+                title: "A".to_string(),
+                spec: "FAIL A".to_string(),
+                task_profile: None,
+                status: "pending".to_string(),
+                graph_x: None,
+                graph_y: None,
+                role: None,
+                kind: "agent".to_string(),
+                pattern_config: None,
+                on_fail: Some(a_on_fail.to_string()),
+            })
+            .await
+            .expect("create task A");
+        run_repo
+            .create_task(CreateTaskParams {
+                run_id: run.id.clone(),
+                title: "B".to_string(),
+                spec: "do B".to_string(),
+                task_profile: None,
+                status: "pending".to_string(),
+                graph_x: None,
+                graph_y: None,
+                role: None,
+                kind: "agent".to_string(),
+                pattern_config: None,
+                on_fail: None,
+            })
+            .await
+            .expect("create task B");
+
+        // Activate: flip the run to `running` so the engine picks it up.
+        run_repo
+            .update_run(
+                &run.id,
+                UpdateRunParams {
+                    status: Some("running".to_string()),
+                    summary: None,
+                    lead_conv_id: None,
+                    total_tokens: None,
+                    goal: None,
+                    autonomy: None,
+                    fleet_snapshot: None,
+                    work_dir: None,
+                },
+            )
+            .await
+            .expect("activate run");
+
+        (run_service, engine, run.id)
+    }
+
+    /// Poll until the run reaches ANY terminal status (completed /
+    /// completed_with_failures / failed / cancelled).
+    async fn drive_to_terminal(
+        run_service: &RunService,
+        run_id: &str,
+    ) -> nomifun_api_types::RunDetail {
+        for _ in 0..100 {
+            let d = run_service.get_detail(run_id).await.expect("detail");
+            if matches!(
+                d.run.status.as_str(),
+                "completed" | "completed_with_failures" | "failed" | "cancelled"
+            ) {
+                return d;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("run did not reach a terminal status within the bounded poll");
+    }
+
+    #[tokio::test]
+    async fn skip_and_continue_failed_node_completes_with_failures() {
+        // Two independent nodes: A permanently fails (on_fail=skip_and_continue),
+        // B succeeds. A has no downstream to skip → the run is all-settled with a
+        // soft failure → completed_with_failures, and B's product still delivers.
+        let (svc, engine, run_id) = two_independent_nodes_harness("skip_and_continue").await;
+        engine.start(run_id.clone());
+        let detail = drive_to_terminal(&svc, &run_id).await;
+        assert_eq!(detail.run.status, "completed_with_failures");
+        let a = detail.tasks.iter().find(|t| t.title == "A").expect("task A");
+        let b = detail.tasks.iter().find(|t| t.title == "B").expect("task B");
+        assert_eq!(a.status, "failed");
+        assert_eq!(b.status, "done", "independent branch still delivers");
+    }
+
+    #[tokio::test]
+    async fn fail_run_policy_fails_whole_run() {
+        // Default policy: A fails (on_fail="fail_run") → the whole run fails (the
+        // current hard-fail behaviour is preserved — zero regression).
+        let (svc, engine, run_id) = two_independent_nodes_harness("fail_run").await;
+        engine.start(run_id.clone());
+        let detail = drive_to_terminal(&svc, &run_id).await;
+        assert_eq!(detail.run.status, "failed");
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 1 (P1a): NO-MARKER (timeout / empty reply) BOUNDED auto-retry. A worker
+    // that returns `ok:false, text:None` with NO error marker is now retried under
+    // the SEPARATE `max_timeout_retries` budget (distinct from the provider-marker
+    // `max_worker_retries` path), so a transient timeout self-heals but a genuinely
+    // stuck node still fails after a bounded number of retries.
+    // -------------------------------------------------------------------------
+
+    /// Single-task harness parameterized by an arbitrary worker + ZERO backoff
+    /// (instant retries in tests). Mirrors [`retry_harness`]'s construction
+    /// (`SingleTaskPlanProducer`, one-member fleet) but leaves the retry/timeout
+    /// budgets at their [`RunEngineDeps::new`] defaults. Returns (svc, engine, run id).
+    async fn single_task_harness(worker: Arc<dyn WorkerRunner>) -> (RunService, RunEngine, String) {
+        let db = init_database_memory().await.expect("db init");
+        let pool = db.pool().clone();
+        let run_repo = Arc::new(SqliteRunRepository::new(pool.clone()));
+        let fleet_repo = Arc::new(SqliteFleetRepository::new(pool.clone()));
+        let ws_repo = Arc::new(SqliteOrchWorkspaceRepository::new(pool.clone()));
+        let broadcaster = Arc::new(RecordingBroadcaster::new());
+        let emitter = OrchestratorRunEventEmitter::new(broadcaster);
+        let planner: Arc<dyn PlanProducer> = Arc::new(SingleTaskPlanProducer);
+        let run_service =
+            RunService::new(run_repo.clone(), fleet_repo.clone(), ws_repo.clone(), planner, emitter.clone());
+
+        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
+        engine_deps.worker_timeout = Duration::from_secs(10);
+        engine_deps.retry_backoff_base = Duration::ZERO; // instant retries — no wall-clock wait in tests
+        let engine = RunEngine::new(Arc::new(engine_deps));
+
+        let fleet = crate::service::FleetService::new(fleet_repo)
+            .create(
+                "u1",
+                CreateFleetRequest {
+                    name: "timeout fleet".to_string(),
+                    description: None,
+                    max_parallel: None,
+                    members: vec![sample_member("agent_a")],
+                },
+            )
+            .await
+            .expect("fleet create");
+        let ws = crate::service::WorkspaceService::new(ws_repo)
+            .create(
+                "u1",
+                CreateWorkspaceRequest {
+                    name: "timeout ws".to_string(),
+                    default_fleet_id: Some(fleet.id.clone()),
+                    workspace_dir: None,
+                },
+            )
+            .await
+            .expect("ws create");
+        let run = run_service
+            .create(
+                "u1",
+                CreateRunRequest {
+                    workspace_id: ws.id,
+                    goal: "timeout test".to_string(),
+                    fleet_id: fleet.id,
+                    autonomy: None,
+                    max_parallel: Some(1),
+                },
+            )
+            .await
+            .expect("run create");
+        run_service.plan(&run.id).await.expect("plan");
+        (run_service, engine, run.id)
+    }
+
+    /// Simulates a worker that TIMES OUT / returns no final text with NO error
+    /// marker for the first `fail_times` dispatches, then succeeds. Mirrors the
+    /// production timeout/empty shape: `ok:false, text:None`, and (by NOT
+    /// overriding `last_error_present`) reports no error marker → NoMarker class.
+    struct TimeoutMockWorkerRunner {
+        fail_times: usize,
+        dispatches: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl WorkerRunner for TimeoutMockWorkerRunner {
+        async fn run(
+            &self,
+            _member: &FleetMember,
+            _workspace_dir: Option<&str>,
+            _run_id: &str,
+            _task_id: &str,
+            _brief: &str,
+            _task_spec: &str,
+            _timeout: Duration,
+            on_started: Box<dyn FnOnce(i64) + Send>,
+        ) -> Result<WorkerOutcome, AppError> {
+            on_started(900);
+            let n = self.dispatches.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_times {
+                Ok(WorkerOutcome { conversation_id: 900, text: None, ok: false, tokens: None })
+            } else {
+                Ok(WorkerOutcome { conversation_id: 900, text: Some("ok".into()), ok: true, tokens: None })
+            }
+        }
+        // last_error_present defaults false, last_error_retryable defaults false → NoMarker.
+    }
+
+    #[tokio::test]
+    async fn timeout_without_marker_retries_bounded_then_succeeds() {
+        // Times out once (no error marker) then succeeds → self-heals via the
+        // NoMarker timeout budget (NOT the marker-retryable path).
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(TimeoutMockWorkerRunner { fail_times: 1, dispatches: Default::default() });
+        let (svc, engine, run_id) = single_task_harness(worker.clone()).await;
+        engine.start(run_id.clone());
+        let detail = drive_to_completion(&svc, &run_id).await;
+        assert_eq!(detail.run.status, "completed", "a no-marker timeout must retry to completion");
+        assert_eq!(detail.tasks[0].status, "done");
+        assert_eq!(detail.tasks[0].attempt, 1, "one timeout retry bumps attempt 0 → 1");
+    }
+
+    #[tokio::test]
+    async fn timeout_without_marker_exhausts_timeout_budget_then_fails() {
+        // Times out more than DEFAULT_MAX_TIMEOUT_RETRIES → permanent failure.
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(TimeoutMockWorkerRunner { fail_times: 99, dispatches: Default::default() });
+        let (svc, engine, run_id) = single_task_harness(worker.clone()).await;
+        engine.start(run_id.clone());
+        let detail = drive_to_completion(&svc, &run_id).await;
+        assert_eq!(detail.run.status, "failed", "timeout budget exhausted → run fails");
+        assert_eq!(detail.tasks[0].status, "failed");
+        assert!(
+            detail.tasks[0].attempt as usize >= super::DEFAULT_MAX_TIMEOUT_RETRIES,
+            "attempt should reach the timeout budget"
+        );
     }
 
     #[tokio::test]
@@ -5212,21 +7346,35 @@ mod tests {
             );
         }
         let summary = detail.run.summary.expect("summary set");
-        assert!(summary.contains("3/3"), "summary reflects 3/3 done: {summary}");
+        assert!(
+            summary.contains("3/3"),
+            "summary reflects 3/3 done: {summary}"
+        );
 
         // CONCURRENCY PROOF: peak concurrency reached 2 (A and B overlapped).
         let peak = worker.max_concurrent.load(Ordering::SeqCst);
-        assert_eq!(peak, 2, "with cap=2, A and B must run concurrently (peak=2), got {peak}");
+        assert_eq!(
+            peak, 2,
+            "with cap=2, A and B must run concurrently (peak=2), got {peak}"
+        );
 
         // DEPENDENCY STRICTNESS: C started only after both A and B. The first two
         // starts are A,B (in some order); the third start is C.
         let order = worker.start_order.lock().unwrap().clone();
         assert_eq!(order.len(), 3, "all three tasks ran exactly once");
         let title_of = |id: &str| {
-            detail.tasks.iter().find(|t| t.id == id).map(|t| t.title.clone()).unwrap_or_default()
+            detail
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default()
         };
         let titles: Vec<String> = order.iter().map(|id| title_of(id)).collect();
-        assert_eq!(titles[2], "C", "C must be the LAST task to start (after A+B done), got {titles:?}");
+        assert_eq!(
+            titles[2], "C",
+            "C must be the LAST task to start (after A+B done), got {titles:?}"
+        );
         assert!(
             (titles[0] == "A" && titles[1] == "B") || (titles[0] == "B" && titles[1] == "A"),
             "A and B must start before C, got {titles:?}"
@@ -5246,22 +7394,20 @@ mod tests {
 
     #[tokio::test]
     async fn cap_2_total_elapsed_reflects_overlap_not_serial_sum() {
-        // Independent A,B + dependent C, each 100ms. Concurrent (cap=2): A‖B ≈
-        // 100ms, then C ≈ 100ms → ≈200ms total. Serial would be ≈300ms. Assert
-        // the elapsed is comfortably under the serial sum (proves overlap), with
-        // generous headroom for scheduler jitter on a loaded CI box.
-        let (svc, engine, _worker, run_id) =
+        // Independent A/B plus dependent C. With cap=2, peak worker concurrency
+        // is the stable proof that A and B overlapped; wall-clock elapsed is too
+        // noisy on a loaded Windows test host.
+        let (svc, engine, worker, run_id) =
             diamond_harness(2, None, Duration::from_millis(100)).await;
 
-        let start = Instant::now();
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        let elapsed = start.elapsed();
 
         assert_eq!(detail.run.status, "completed");
-        assert!(
-            elapsed < Duration::from_millis(290),
-            "A‖B overlap should keep total well under the 300ms serial sum, got {elapsed:?}"
+        let peak = worker.max_concurrent.load(Ordering::SeqCst);
+        assert_eq!(
+            peak, 2,
+            "A/B overlap should reach peak concurrency 2, got {peak}"
         );
     }
 
@@ -5280,16 +7426,27 @@ mod tests {
             assert_eq!(t.status, "done");
         }
         let peak = worker.max_concurrent.load(Ordering::SeqCst);
-        assert_eq!(peak, 1, "with cap=1, no two workers may overlap (peak=1), got {peak}");
+        assert_eq!(
+            peak, 1,
+            "with cap=1, no two workers may overlap (peak=1), got {peak}"
+        );
 
         // C is still strictly last; A/B order between them is not constrained.
         let order = worker.start_order.lock().unwrap().clone();
         let title_of = |id: &str| {
-            detail.tasks.iter().find(|t| t.id == id).map(|t| t.title.clone()).unwrap_or_default()
+            detail
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default()
         };
         let titles: Vec<String> = order.iter().map(|id| title_of(id)).collect();
         assert_eq!(titles.len(), 3);
-        assert_eq!(titles[2], "C", "C must be last even serially, got {titles:?}");
+        assert_eq!(
+            titles[2], "C",
+            "C must be last even serially, got {titles:?}"
+        );
     }
 
     #[tokio::test]
@@ -5360,7 +7517,10 @@ mod tests {
         let detail = drive_to_completion(&run_service, &run.id).await;
         assert_eq!(detail.run.status, "completed");
         let peak = worker.max_concurrent.load(Ordering::SeqCst);
-        assert_eq!(peak, 2, "absent run cap → default_max_parallel=2 governs (peak=2), got {peak}");
+        assert_eq!(
+            peak, 2,
+            "absent run cap → default_max_parallel=2 governs (peak=2), got {peak}"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -5585,7 +7745,10 @@ mod tests {
             if self.fail {
                 return Err(AppError::BadRequest("steer_unsupported".to_owned()));
             }
-            self.steered.lock().unwrap().push((conversation_id, text.to_owned()));
+            self.steered
+                .lock()
+                .unwrap()
+                .push((conversation_id, text.to_owned()));
             Ok(())
         }
     }
@@ -5716,7 +7879,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert!(worker.started.load(Ordering::SeqCst) >= 1, "first worker must start");
+        assert!(
+            worker.started.load(Ordering::SeqCst) >= 1,
+            "first worker must start"
+        );
         run_service.pause(&run.id).await.expect("pause");
 
         // While paused, the in-flight worker finishes but NO new worker dispatches.
@@ -5743,7 +7909,11 @@ mod tests {
         engine.start(run.id.clone()); // idempotent restart (route does this on resume)
         let detail = drive_to_completion(&run_service, &run.id).await;
         assert_eq!(detail.run.status, "completed", "resumed run completes");
-        assert_eq!(worker.started.load(Ordering::SeqCst), 3, "all 3 tasks eventually run");
+        assert_eq!(
+            worker.started.load(Ordering::SeqCst),
+            3,
+            "all 3 tasks eventually run"
+        );
         for t in &detail.tasks {
             assert_eq!(t.status, "done", "task {} done after resume", t.title);
         }
@@ -6164,16 +8334,25 @@ mod tests {
         let (svc, engine, worker, run_id) = verify_harness(vec![true, true, true], None).await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "PASS verdict → run completes");
+        assert_eq!(
+            detail.run.status, "completed",
+            "PASS verdict → run completes"
+        );
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
         let gate = by_title("Gate");
         // The verify aggregator is `done` with a PASS verdict and NO worker conv.
         assert_eq!(gate.kind, "verify");
         assert_eq!(gate.status, "done", "verify settled done");
-        assert_eq!(gate.conversation_id, None, "verify has no worker conversation");
+        assert_eq!(
+            gate.conversation_id, None,
+            "verify has no worker conversation"
+        );
         let gate_summary = gate.output_summary.as_deref().unwrap_or("");
-        assert!(gate_summary.starts_with("VERDICT: PASS"), "PASS verdict: {gate_summary}");
+        assert!(
+            gate_summary.starts_with("VERDICT: PASS"),
+            "PASS verdict: {gate_summary}"
+        );
         assert!(gate_summary.contains("3/3"), "3/3 tally: {gate_summary}");
 
         // Downstream Deploy actually ran (it is `done`, not skipped).
@@ -6183,10 +8362,16 @@ mod tests {
         // The verify task NEVER reached the worker (no dispatch / no spin): the
         // worker saw exactly Build + 3 skeptics + Deploy = 5 tasks, never "Gate".
         let started = worker.start_order.lock().unwrap().clone();
-        assert_eq!(started.len(), 5, "worker ran 5 tasks (verify excluded): {started:?}");
+        assert_eq!(
+            started.len(),
+            5,
+            "worker ran 5 tasks (verify excluded): {started:?}"
+        );
         let specs = worker.seen_specs.lock().unwrap().clone();
         assert!(
-            !specs.iter().any(|s| s.contains("aggregate skeptic verdicts")),
+            !specs
+                .iter()
+                .any(|s| s.contains("aggregate skeptic verdicts")),
             "the verify task's spec must never reach a worker: {specs:?}"
         );
     }
@@ -6206,24 +8391,45 @@ mod tests {
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
         let gate = by_title("Gate");
-        assert_eq!(gate.status, "done", "verify itself is done (it computed a verdict)");
-        assert_eq!(gate.conversation_id, None, "verify has no worker conversation");
+        assert_eq!(
+            gate.status, "done",
+            "verify itself is done (it computed a verdict)"
+        );
+        assert_eq!(
+            gate.conversation_id, None,
+            "verify has no worker conversation"
+        );
         let gate_summary = gate.output_summary.as_deref().unwrap_or("");
-        assert!(gate_summary.starts_with("VERDICT: FAIL"), "FAIL verdict: {gate_summary}");
+        assert!(
+            gate_summary.starts_with("VERDICT: FAIL"),
+            "FAIL verdict: {gate_summary}"
+        );
         assert!(gate_summary.contains("1/3"), "1/3 tally: {gate_summary}");
 
         // Downstream Deploy was GATED → skipped, and never reached the worker.
         let deploy = by_title("Deploy");
-        assert_eq!(deploy.status, "skipped", "downstream gated (skipped) on FAIL");
-        assert_eq!(deploy.conversation_id, None, "skipped downstream never dispatched");
+        assert_eq!(
+            deploy.status, "skipped",
+            "downstream gated (skipped) on FAIL"
+        );
+        assert_eq!(
+            deploy.conversation_id, None,
+            "skipped downstream never dispatched"
+        );
 
         let specs = worker.seen_specs.lock().unwrap().clone();
         assert!(
-            !specs.iter().any(|s| s.contains("deploy the validated feature")),
+            !specs
+                .iter()
+                .any(|s| s.contains("deploy the validated feature")),
             "gated downstream must never reach a worker: {specs:?}"
         );
         // Build + 3 skeptics ran (4 tasks); verify + Deploy did not.
-        assert_eq!(worker.start_order.lock().unwrap().len(), 4, "Build + 3 skeptics only");
+        assert_eq!(
+            worker.start_order.lock().unwrap().len(),
+            4,
+            "Build + 3 skeptics only"
+        );
     }
 
     #[tokio::test]
@@ -6237,17 +8443,27 @@ mod tests {
         let detail = drive_to_completion(&svc, &run_id).await;
         assert_eq!(detail.run.status, "completed");
         let deploy = detail.tasks.iter().find(|t| t.title == "Deploy").unwrap();
-        assert_eq!(deploy.status, "done", "unanimous PASS → downstream proceeds");
+        assert_eq!(
+            deploy.status, "done",
+            "unanimous PASS → downstream proceeds"
+        );
 
         // Second: unanimous with one FAIL → gate.
         let (svc2, engine2, _w2, run_id2) =
             verify_harness(vec![true, true, false], Some(r#"{"vote":"unanimous"}"#)).await;
         engine2.start(run_id2.clone());
         let detail2 = drive_to_completion(&svc2, &run_id2).await;
-        assert_eq!(detail2.run.status, "completed", "still completes (done/skipped)");
+        assert_eq!(
+            detail2.run.status, "completed",
+            "still completes (done/skipped)"
+        );
         let gate2 = detail2.tasks.iter().find(|t| t.title == "Gate").unwrap();
         assert!(
-            gate2.output_summary.as_deref().unwrap_or("").starts_with("VERDICT: FAIL"),
+            gate2
+                .output_summary
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("VERDICT: FAIL"),
             "unanimous broken by one fail"
         );
         let deploy2 = detail2.tasks.iter().find(|t| t.title == "Deploy").unwrap();
@@ -6264,8 +8480,14 @@ mod tests {
         assert_eq!(detail.run.status, "completed");
         let gate = detail.tasks.iter().find(|t| t.title == "Gate").unwrap();
         let summary = gate.output_summary.as_deref().unwrap_or("");
-        assert!(summary.starts_with("VERDICT: PASS"), "2 ≥ threshold 2: {summary}");
-        assert!(summary.contains("threshold:2"), "policy surfaced: {summary}");
+        assert!(
+            summary.starts_with("VERDICT: PASS"),
+            "2 ≥ threshold 2: {summary}"
+        );
+        assert!(
+            summary.contains("threshold:2"),
+            "policy surfaced: {summary}"
+        );
         let deploy = detail.tasks.iter().find(|t| t.title == "Deploy").unwrap();
         assert_eq!(deploy.status, "done", "threshold met → downstream proceeds");
     }
@@ -6280,7 +8502,10 @@ mod tests {
         h.run_service.plan(&run_id).await.expect("plan");
         h.engine.start(run_id.clone());
         let detail = drive_to_completion(&h.run_service, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "plain agent chain unaffected");
+        assert_eq!(
+            detail.run.status, "completed",
+            "plain agent chain unaffected"
+        );
         for t in &detail.tasks {
             assert_eq!(t.status, "done", "task {} done", t.title);
             assert_eq!(t.kind, "agent", "no verify kind injected");
@@ -6308,7 +8533,10 @@ mod tests {
     }
     impl BallotWorkerRunner {
         fn new() -> Self {
-            Self { start_order: Mutex::new(vec![]), seen_specs: Mutex::new(vec![]) }
+            Self {
+                start_order: Mutex::new(vec![]),
+                seen_specs: Mutex::new(vec![]),
+            }
         }
     }
     #[async_trait]
@@ -6332,7 +8560,12 @@ mod tests {
             } else {
                 format!("did {task_spec}")
             };
-            Ok(WorkerOutcome { conversation_id: 900, text: Some(text), ok: true, tokens: None })
+            Ok(WorkerOutcome {
+                conversation_id: 900,
+                text: Some(text),
+                ok: true,
+                tokens: None,
+            })
         }
     }
 
@@ -6507,14 +8740,23 @@ mod tests {
         // The judge aggregator is `done` with a parseable WINNER marker, no conv.
         assert_eq!(pick.kind, "judge");
         assert_eq!(pick.status, "done", "judge settled done");
-        assert_eq!(pick.conversation_id, None, "judge has no worker conversation");
+        assert_eq!(
+            pick.conversation_id, None,
+            "judge has no worker conversation"
+        );
         let pick_summary = pick.output_summary.as_deref().unwrap_or("");
         assert!(
             pick_summary.starts_with("WINNER: candidate 0"),
             "mean winner is c0: {pick_summary}"
         );
-        assert!(pick_summary.contains("aggregate=mean"), "policy surfaced: {pick_summary}");
-        assert!(pick_summary.contains("judges=2/2"), "both judges counted: {pick_summary}");
+        assert!(
+            pick_summary.contains("aggregate=mean"),
+            "policy surfaced: {pick_summary}"
+        );
+        assert!(
+            pick_summary.contains("judges=2/2"),
+            "both judges counted: {pick_summary}"
+        );
 
         // Downstream Consumer actually ran (NO gate — judge reports, doesn't skip).
         let consumer = by_title("Consumer");
@@ -6523,7 +8765,11 @@ mod tests {
         // The judge task NEVER reached a worker (no dispatch / no spin): the worker
         // saw 3 candidates + 2 judges + 1 consumer = 6 tasks, never "Pick".
         let started = worker.start_order.lock().unwrap().clone();
-        assert_eq!(started.len(), 6, "worker ran 6 tasks (judge excluded): {started:?}");
+        assert_eq!(
+            started.len(),
+            6,
+            "worker ran 6 tasks (judge excluded): {started:?}"
+        );
         let specs = worker.seen_specs.lock().unwrap().clone();
         assert!(
             !specs.iter().any(|s| s.contains("aggregate judge ballots")),
@@ -6548,8 +8794,14 @@ mod tests {
         assert_eq!(detail.run.status, "completed");
         let pick = detail.tasks.iter().find(|t| t.title == "Pick").unwrap();
         let summary = pick.output_summary.as_deref().unwrap_or("");
-        assert!(summary.starts_with("WINNER: candidate 1"), "borda winner is c1: {summary}");
-        assert!(summary.contains("aggregate=borda"), "policy surfaced: {summary}");
+        assert!(
+            summary.starts_with("WINNER: candidate 1"),
+            "borda winner is c1: {summary}"
+        );
+        assert!(
+            summary.contains("aggregate=borda"),
+            "policy surfaced: {summary}"
+        );
     }
 
     #[tokio::test]
@@ -6568,11 +8820,20 @@ mod tests {
         .await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "run completes despite a dropped judge");
+        assert_eq!(
+            detail.run.status, "completed",
+            "run completes despite a dropped judge"
+        );
         let pick = detail.tasks.iter().find(|t| t.title == "Pick").unwrap();
         let summary = pick.output_summary.as_deref().unwrap_or("");
-        assert!(summary.starts_with("WINNER: candidate 0"), "c0 from 2 usable ballots: {summary}");
-        assert!(summary.contains("judges=2/3"), "one judge dropped fail-safe: {summary}");
+        assert!(
+            summary.starts_with("WINNER: candidate 0"),
+            "c0 from 2 usable ballots: {summary}"
+        );
+        assert!(
+            summary.contains("judges=2/3"),
+            "one judge dropped fail-safe: {summary}"
+        );
         // Downstream still ran (no gate).
         let consumer = detail.tasks.iter().find(|t| t.title == "Consumer").unwrap();
         assert_eq!(consumer.status, "done");
@@ -6588,7 +8849,10 @@ mod tests {
         h.run_service.plan(&run_id).await.expect("plan");
         h.engine.start(run_id.clone());
         let detail = drive_to_completion(&h.run_service, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "plain agent chain unaffected");
+        assert_eq!(
+            detail.run.status, "completed",
+            "plain agent chain unaffected"
+        );
         for t in &detail.tasks {
             assert_eq!(t.status, "done", "task {} done", t.title);
             assert_eq!(t.kind, "agent", "no judge kind injected");
@@ -6613,7 +8877,10 @@ mod tests {
     }
     impl CompositionWorkerRunner {
         fn new() -> Self {
-            Self { briefs: Mutex::new(vec![]), start_order: Mutex::new(vec![]) }
+            Self {
+                briefs: Mutex::new(vec![]),
+                start_order: Mutex::new(vec![]),
+            }
         }
     }
     #[async_trait]
@@ -6630,14 +8897,22 @@ mod tests {
             on_started: Box<dyn FnOnce(i64) + Send>,
         ) -> Result<WorkerOutcome, AppError> {
             self.start_order.lock().unwrap().push(task_id.to_string());
-            self.briefs.lock().unwrap().push((task_spec.to_string(), brief.to_string()));
+            self.briefs
+                .lock()
+                .unwrap()
+                .push((task_spec.to_string(), brief.to_string()));
             on_started(900);
             let text = if let Some(idx) = task_spec.find("BALLOT:") {
                 task_spec[idx + "BALLOT:".len()..].trim().to_string()
             } else {
                 format!("did {task_spec}")
             };
-            Ok(WorkerOutcome { conversation_id: 900, text: Some(text), ok: true, tokens: None })
+            Ok(WorkerOutcome {
+                conversation_id: 900,
+                text: Some(text),
+                ok: true,
+                tokens: None,
+            })
         }
     }
 
@@ -6798,7 +9073,10 @@ mod tests {
         .await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "fan-out→judge→synthesis completes");
+        assert_eq!(
+            detail.run.status, "completed",
+            "fan-out→judge→synthesis completes"
+        );
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
 
@@ -6821,9 +9099,15 @@ mod tests {
         // The judge (no-LLM) picked the winner c0 and never reached a worker.
         let pick = by_title("Pick");
         assert_eq!(pick.kind, "judge");
-        assert_eq!(pick.conversation_id, None, "judge has no worker conversation");
+        assert_eq!(
+            pick.conversation_id, None,
+            "judge has no worker conversation"
+        );
         let pick_summary = pick.output_summary.as_deref().unwrap_or("");
-        assert!(pick_summary.starts_with("WINNER: candidate 0"), "judge picks c0: {pick_summary}");
+        assert!(
+            pick_summary.starts_with("WINNER: candidate 0"),
+            "judge picks c0: {pick_summary}"
+        );
 
         // The synthesis consumer ran (real worker) AND saw the judge's WINNER marker
         // as upstream context — proving the judge→synthesis edge actually fed data.
@@ -6844,7 +9128,11 @@ mod tests {
         // The judge aggregator NEVER reached a worker: 3 candidates + 2 judges + 1
         // synthesis = 6 worker runs (judge excluded — it settles no-LLM).
         let started = worker.start_order.lock().unwrap().clone();
-        assert_eq!(started.len(), 6, "worker ran 6 tasks (judge excluded): {started:?}");
+        assert_eq!(
+            started.len(),
+            6,
+            "worker ran 6 tasks (judge excluded): {started:?}"
+        );
     }
 
     // ── loop 模式 (UC-1d): config parse, stop decision (HARD cap wins), dry state ──
@@ -6860,9 +9148,16 @@ mod tests {
             r#"{"max_iter":4,"stop":{"kind":"predicate","done_marker":"DONE"}}"#,
         ));
         assert_eq!(c.max_iter, 4);
-        assert_eq!(c.stop, StopCriteria::Predicate { done_marker: "DONE".to_string() });
+        assert_eq!(
+            c.stop,
+            StopCriteria::Predicate {
+                done_marker: "DONE".to_string()
+            }
+        );
 
-        let c = LoopConfig::parse(Some(r#"{"max_iter":6,"stop":{"kind":"dry","quiet_rounds":2}}"#));
+        let c = LoopConfig::parse(Some(
+            r#"{"max_iter":6,"stop":{"kind":"dry","quiet_rounds":2}}"#,
+        ));
         assert_eq!(c.max_iter, 6);
         assert_eq!(c.stop, StopCriteria::Dry { quiet_rounds: 2 });
 
@@ -6870,7 +9165,10 @@ mod tests {
         // unbounded). The default max_iter is the small backstop.
         for raw in [None, Some("   "), Some("not json"), Some(r#"{"foo":1}"#)] {
             let c = LoopConfig::parse(raw);
-            assert_eq!(c.max_iter, DEFAULT_LOOP_MAX_ITER, "fail-soft cap for {raw:?}");
+            assert_eq!(
+                c.max_iter, DEFAULT_LOOP_MAX_ITER,
+                "fail-soft cap for {raw:?}"
+            );
             assert_eq!(c.stop, StopCriteria::MaxIter, "fail-soft stop for {raw:?}");
         }
 
@@ -6881,8 +9179,14 @@ mod tests {
 
         // max_iter omitted → default; max_iter=0 (invalid) → clamped to default
         // (NEVER 0 → never an unbounded/zero loop).
-        assert_eq!(LoopConfig::parse(Some(r#"{"stop":{"kind":"max_iter"}}"#)).max_iter, DEFAULT_LOOP_MAX_ITER);
-        assert_eq!(LoopConfig::parse(Some(r#"{"max_iter":0}"#)).max_iter, DEFAULT_LOOP_MAX_ITER);
+        assert_eq!(
+            LoopConfig::parse(Some(r#"{"stop":{"kind":"max_iter"}}"#)).max_iter,
+            DEFAULT_LOOP_MAX_ITER
+        );
+        assert_eq!(
+            LoopConfig::parse(Some(r#"{"max_iter":0}"#)).max_iter,
+            DEFAULT_LOOP_MAX_ITER
+        );
 
         // predicate with NO marker → degrades to cap-only (a marker-less predicate
         // could never fire, so the cap is the only stop → still bounded).
@@ -6908,7 +9212,10 @@ mod tests {
         assert!(predicate_done(Some("all polished. DONE"), "DONE"));
         assert!(!predicate_done(Some("still working"), "DONE"));
         // JSON {"done":true} anywhere triggers regardless of the text marker.
-        assert!(predicate_done(Some(r#"result: {"done":true,"note":"ok"}"#), "DONE"));
+        assert!(predicate_done(
+            Some(r#"result: {"done":true,"note":"ok"}"#),
+            "DONE"
+        ));
         assert!(!predicate_done(Some(r#"{"done":false}"#), "DONE"));
         // Missing / blank → not done.
         assert!(!predicate_done(None, "DONE"));
@@ -6921,31 +9228,49 @@ mod tests {
         // STOP exactly at the cap. max_iter=3 → iterations_done 1,2 CONTINUE; 3 STOP.
         let cfg = LoopConfig {
             max_iter: 3,
-            stop: StopCriteria::Predicate { done_marker: "NEVER".to_string() },
+            stop: StopCriteria::Predicate {
+                done_marker: "NEVER".to_string(),
+            },
         };
-        assert_eq!(decide_loop(&cfg, 1, Some("nope"), &[]), LoopDecision::Continue);
-        assert_eq!(decide_loop(&cfg, 2, Some("nope"), &[]), LoopDecision::Continue);
+        assert_eq!(
+            decide_loop(&cfg, 1, Some("nope"), &[]),
+            LoopDecision::Continue
+        );
+        assert_eq!(
+            decide_loop(&cfg, 2, Some("nope"), &[]),
+            LoopDecision::Continue
+        );
         assert_eq!(
             decide_loop(&cfg, 3, Some("nope"), &[]),
             LoopDecision::Stop { reason: "max_iter" },
             "HARD cap forces STOP at max_iter regardless of the criterion"
         );
         // And it can NEVER exceed the cap (defensive: iterations_done > max_iter).
-        assert_eq!(decide_loop(&cfg, 99, Some("nope"), &[]), LoopDecision::Stop { reason: "max_iter" });
+        assert_eq!(
+            decide_loop(&cfg, 99, Some("nope"), &[]),
+            LoopDecision::Stop { reason: "max_iter" }
+        );
     }
 
     #[test]
     fn decide_loop_predicate_stops_early_under_the_cap() {
         let cfg = LoopConfig {
             max_iter: 10,
-            stop: StopCriteria::Predicate { done_marker: "DONE".to_string() },
+            stop: StopCriteria::Predicate {
+                done_marker: "DONE".to_string(),
+            },
         };
         // Under the cap, no marker → CONTINUE.
-        assert_eq!(decide_loop(&cfg, 1, Some("round 1"), &[]), LoopDecision::Continue);
+        assert_eq!(
+            decide_loop(&cfg, 1, Some("round 1"), &[]),
+            LoopDecision::Continue
+        );
         // Marker present (still under the cap) → STOP early (reason predicate).
         assert_eq!(
             decide_loop(&cfg, 2, Some("round 2 DONE"), &[]),
-            LoopDecision::Stop { reason: "predicate" }
+            LoopDecision::Stop {
+                reason: "predicate"
+            }
         );
     }
 
@@ -6960,9 +9285,15 @@ mod tests {
         let h_a = round_hash(Some("draft A"));
         let h_b = round_hash(Some("draft B"));
         // Round 1: no prior → CONTINUE.
-        assert_eq!(decide_loop(&cfg, 1, Some("draft A"), &[]), LoopDecision::Continue);
+        assert_eq!(
+            decide_loop(&cfg, 1, Some("draft A"), &[]),
+            LoopDecision::Continue
+        );
         // Round 2 produced a DIFFERENT output than round 1 → CONTINUE.
-        assert_eq!(decide_loop(&cfg, 2, Some("draft B"), &[h_a]), LoopDecision::Continue);
+        assert_eq!(
+            decide_loop(&cfg, 2, Some("draft B"), &[h_a]),
+            LoopDecision::Continue
+        );
         // Round 3 repeats round 2's output → 2 consecutive equal (rounds 2,3) → STOP.
         assert_eq!(
             decide_loop(&cfg, 3, Some("draft B"), &[h_a, h_b]),
@@ -6971,8 +9302,14 @@ mod tests {
 
         // quiet_rounds=3 over the SAME history needs 3 consecutive equal; rounds 2,3
         // equal is only 2 → still CONTINUE.
-        let cfg3 = LoopConfig { max_iter: 10, stop: StopCriteria::Dry { quiet_rounds: 3 } };
-        assert_eq!(decide_loop(&cfg3, 3, Some("draft B"), &[h_a, h_b]), LoopDecision::Continue);
+        let cfg3 = LoopConfig {
+            max_iter: 10,
+            stop: StopCriteria::Dry { quiet_rounds: 3 },
+        };
+        assert_eq!(
+            decide_loop(&cfg3, 3, Some("draft B"), &[h_a, h_b]),
+            LoopDecision::Continue
+        );
         // A 4th identical round (history h_a,h_b,h_b, this=h_b) → rounds 2,3,4 equal → STOP.
         assert_eq!(
             decide_loop(&cfg3, 4, Some("draft B"), &[h_a, h_b, h_b]),
@@ -6985,15 +9322,30 @@ mod tests {
         // B4 verdict-gated stop: REUSE parse_verdict_pass over the body output.
         // Under the cap, a not-yet-approved (or unparseable) output CONTINUEs; a
         // PASS verdict STOPs early (reason "approved").
-        let cfg = LoopConfig { max_iter: 10, stop: StopCriteria::Approved };
+        let cfg = LoopConfig {
+            max_iter: 10,
+            stop: StopCriteria::Approved,
+        };
         // Body says FAIL → not approved → CONTINUE.
         assert_eq!(
-            decide_loop(&cfg, 1, Some(r#"{"pass":false,"critique":"needs work"}"#), &[]),
+            decide_loop(
+                &cfg,
+                1,
+                Some(r#"{"pass":false,"critique":"needs work"}"#),
+                &[]
+            ),
             LoopDecision::Continue
         );
         // Fail-safe: an unparseable / verdict-less output is NOT approval → CONTINUE.
-        assert_eq!(decide_loop(&cfg, 2, Some("still drafting, no verdict yet"), &[]), LoopDecision::Continue);
-        assert_eq!(decide_loop(&cfg, 3, None, &[]), LoopDecision::Continue, "missing output → not approved");
+        assert_eq!(
+            decide_loop(&cfg, 2, Some("still drafting, no verdict yet"), &[]),
+            LoopDecision::Continue
+        );
+        assert_eq!(
+            decide_loop(&cfg, 3, None, &[]),
+            LoopDecision::Continue,
+            "missing output → not approved"
+        );
         // Body emits a PASS verdict → APPROVED → STOP early (still under the cap).
         assert_eq!(
             decide_loop(&cfg, 4, Some(r#"{"pass":true,"critique":"good"}"#), &[]),
@@ -7011,23 +9363,38 @@ mod tests {
         // BREAK-NEVER-SPIN: a body that NEVER approves itself must STOP exactly at
         // the max_iter cap. The cap is checked FIRST in decide_loop, so the
         // verdict-gated stop can never run unbounded. max_iter=3.
-        let cfg = LoopConfig { max_iter: 3, stop: StopCriteria::Approved };
-        assert_eq!(decide_loop(&cfg, 1, Some(r#"{"pass":false}"#), &[]), LoopDecision::Continue);
-        assert_eq!(decide_loop(&cfg, 2, Some(r#"{"pass":false}"#), &[]), LoopDecision::Continue);
+        let cfg = LoopConfig {
+            max_iter: 3,
+            stop: StopCriteria::Approved,
+        };
+        assert_eq!(
+            decide_loop(&cfg, 1, Some(r#"{"pass":false}"#), &[]),
+            LoopDecision::Continue
+        );
+        assert_eq!(
+            decide_loop(&cfg, 2, Some(r#"{"pass":false}"#), &[]),
+            LoopDecision::Continue
+        );
         assert_eq!(
             decide_loop(&cfg, 3, Some(r#"{"pass":false}"#), &[]),
             LoopDecision::Stop { reason: "max_iter" },
             "the hard cap forces STOP even though the body never approves"
         );
         // Defensive: never exceeds the cap.
-        assert_eq!(decide_loop(&cfg, 99, Some(r#"{"pass":false}"#), &[]), LoopDecision::Stop { reason: "max_iter" });
+        assert_eq!(
+            decide_loop(&cfg, 99, Some(r#"{"pass":false}"#), &[]),
+            LoopDecision::Stop { reason: "max_iter" }
+        );
     }
 
     #[test]
     fn loop_state_hashes_round_trip() {
         let hashes = vec![111u64, 222u64, 333u64];
         let rendered = render_loop_state(&hashes);
-        assert!(rendered.starts_with(LOOP_STATE_PREFIX), "machine prefix present: {rendered}");
+        assert!(
+            rendered.starts_with(LOOP_STATE_PREFIX),
+            "machine prefix present: {rendered}"
+        );
         let parsed = parse_loop_state_hashes(Some(&rendered));
         assert_eq!(parsed, hashes, "hashes survive a render→parse round-trip");
         // Absent / no LOOP-STATE line → empty (fail-soft).
@@ -7042,7 +9409,10 @@ mod tests {
         assert!(s.contains("reason=predicate"), "reason surfaced: {s}");
         assert!(s.contains("iterations=2"), "iteration count surfaced: {s}");
         assert!(s.contains("max_iter=5"), "cap surfaced: {s}");
-        assert!(s.contains("the final polished draft"), "final body output carried: {s}");
+        assert!(
+            s.contains("the final polished draft"),
+            "final body output carried: {s}"
+        );
 
         let f = render_loop_final("failed", "body_failed", 1, 3, None);
         assert!(f.starts_with("LOOP: FAILED"), "failed marker: {f}");
@@ -7083,7 +9453,10 @@ mod tests {
         // fields.
         let carry = build_body_loop_carry(None, Some("round 1 output"), 2).expect("carry");
         let v: serde_json::Value = serde_json::from_str(&carry).unwrap();
-        assert_eq!(v.get("loop_prior_output").and_then(|x| x.as_str()), Some("round 1 output"));
+        assert_eq!(
+            v.get("loop_prior_output").and_then(|x| x.as_str()),
+            Some("round 1 output")
+        );
         assert_eq!(v.get("loop_iteration").and_then(|x| x.as_u64()), Some(2));
 
         // Existing config (e.g. a fan-out group) is PRESERVED while the loop fields
@@ -7091,8 +9464,15 @@ mod tests {
         let carry =
             build_body_loop_carry(Some(r#"{"group":"cands"}"#), Some("o"), 3).expect("carry");
         let v: serde_json::Value = serde_json::from_str(&carry).unwrap();
-        assert_eq!(v.get("group").and_then(|x| x.as_str()), Some("cands"), "existing key kept");
-        assert_eq!(v.get("loop_prior_output").and_then(|x| x.as_str()), Some("o"));
+        assert_eq!(
+            v.get("group").and_then(|x| x.as_str()),
+            Some("cands"),
+            "existing key kept"
+        );
+        assert_eq!(
+            v.get("loop_prior_output").and_then(|x| x.as_str()),
+            Some("o")
+        );
         assert_eq!(v.get("loop_iteration").and_then(|x| x.as_u64()), Some(3));
 
         // A blank prior output → None (nothing useful to carry → fresh next brief).
@@ -7101,7 +9481,10 @@ mod tests {
 
         // The merged config round-trips through `loop_prior_output` (the injector).
         let carry = build_body_loop_carry(None, Some("the prior"), 2).unwrap();
-        assert_eq!(loop_prior_output(Some(&carry)), Some("the prior".to_string()));
+        assert_eq!(
+            loop_prior_output(Some(&carry)),
+            Some("the prior".to_string())
+        );
     }
 
     #[test]
@@ -7110,12 +9493,15 @@ mod tests {
         // appended so it refines the prior round.
         let mut body = task_row_with_kind("agent", "Refine draft", "polish it");
         body.pattern_config = build_body_loop_carry(None, Some("草稿第一版"), 2);
-        let brief = compose_brief(Some("写手"), &body, &[]);
+        let brief = compose_brief(Some("写手"), &body, &[], &empty_brief_ctx());
         assert!(
             brief.contains("上一轮产出(请在此基础上改进/迭代):"),
             "iter>=1 body brief carries the prior-output section: {brief}"
         );
-        assert!(brief.contains("草稿第一版"), "the prior round's text is injected: {brief}");
+        assert!(
+            brief.contains("草稿第一版"),
+            "the prior round's text is injected: {brief}"
+        );
         // The normal framing is still present (role/task/spec).
         assert!(brief.contains("ROLE: 写手"));
         assert!(brief.contains("TASK: Refine draft"));
@@ -7128,8 +9514,11 @@ mod tests {
         // normal fresh brief, identical to a plain agent task (zero carry, zero
         // section). build_body_loop_carry is never invoked for the first run.
         let body = task_row_with_kind("agent", "Refine draft", "polish it");
-        assert_eq!(body.pattern_config, None, "first iteration body has no carry");
-        let brief = compose_brief(Some("写手"), &body, &[]);
+        assert_eq!(
+            body.pattern_config, None,
+            "first iteration body has no carry"
+        );
+        let brief = compose_brief(Some("写手"), &body, &[], &empty_brief_ctx());
         assert!(
             !brief.contains("上一轮产出"),
             "first iteration brief must NOT carry a prior-output section: {brief}"
@@ -7146,13 +9535,13 @@ mod tests {
         let upstream = vec![("Gather".to_string(), "found 12 sources".to_string())];
         let expected = "ROLE: writer\n\nTASK: Synthesize\nSPEC:\nwrite the report\n\nUPSTREAM RESULTS (completed dependencies you can build on):\n- Gather: found 12 sources\n";
         // No pattern_config at all.
-        assert_eq!(compose_brief(Some("writer"), &task, &upstream), expected);
+        assert_eq!(compose_brief(Some("writer"), &task, &upstream, &empty_brief_ctx()), expected);
         // A pattern_config that does NOT carry the loop key (e.g. a fan-out group)
         // is also a no-op for the brief — same bytes.
         let mut tagged = task.clone();
         tagged.pattern_config = Some(r#"{"group":"g"}"#.to_string());
         assert_eq!(
-            compose_brief(Some("writer"), &tagged, &upstream),
+            compose_brief(Some("writer"), &tagged, &upstream, &empty_brief_ctx()),
             expected,
             "a non-carry pattern_config must not perturb the brief"
         );
@@ -7230,11 +9619,27 @@ mod tests {
                 };
                 if self.fail_on_round == Some(round) {
                     // Body fails this round → ok:false (no final text).
-                    return Ok(WorkerOutcome { conversation_id: 900, text: None, ok: false, tokens: None });
+                    return Ok(WorkerOutcome {
+                        conversation_id: 900,
+                        text: None,
+                        ok: false,
+                        tokens: None,
+                    });
                 }
-                let idx = round.saturating_sub(1).min(self.rounds.len().saturating_sub(1));
-                let text = self.rounds.get(idx).cloned().unwrap_or_else(|| "body output".to_string());
-                Ok(WorkerOutcome { conversation_id: 900, text: Some(text), ok: true, tokens: None })
+                let idx = round
+                    .saturating_sub(1)
+                    .min(self.rounds.len().saturating_sub(1));
+                let text = self
+                    .rounds
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| "body output".to_string());
+                Ok(WorkerOutcome {
+                    conversation_id: 900,
+                    text: Some(text),
+                    ok: true,
+                    tokens: None,
+                })
             } else {
                 Ok(WorkerOutcome {
                     conversation_id: 900,
@@ -7243,6 +9648,15 @@ mod tests {
                     tokens: None,
                 })
             }
+        }
+        // A failing loop body is a DEFINITE failure (a marked error), NOT a transient
+        // timeout: report a marker present so `settle_failed_or_retry` classifies it
+        // NonRetryable → fail immediately. This keeps
+        // `loop_failing_body_stops_loop_and_gates_downstream_no_infinite_iterate`'s
+        // "body ran exactly twice / loop stops failed" semantics under the new
+        // NoMarker timeout budget.
+        async fn last_error_present(&self, _conversation_id: &str) -> bool {
+            true
         }
     }
 
@@ -7375,14 +9789,23 @@ mod tests {
     /// order — each entry is a task id, and the body is the only task that re-runs.
     /// The body's task id is the one that appears MORE THAN ONCE (or the single one
     /// whose detail title is Refine). We pass the run detail to resolve the title.
-    fn body_run_count(worker: &LoopBodyWorkerRunner, detail: &nomifun_api_types::RunDetail) -> usize {
+    fn body_run_count(
+        worker: &LoopBodyWorkerRunner,
+        detail: &nomifun_api_types::RunDetail,
+    ) -> usize {
         let body_id = detail
             .tasks
             .iter()
             .find(|t| t.title == "Refine")
             .map(|t| t.id.clone())
             .unwrap_or_default();
-        worker.start_order.lock().unwrap().iter().filter(|id| **id == body_id).count()
+        worker
+            .start_order
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| **id == body_id)
+            .count()
     }
 
     #[tokio::test]
@@ -7398,26 +9821,55 @@ mod tests {
         .await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "bounded loop drives to completion");
+        assert_eq!(
+            detail.run.status, "completed",
+            "bounded loop drives to completion"
+        );
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
         let body = by_title("Refine");
         let ctrl = by_title("Loop");
         // The body ran EXACTLY 3 times (the cap), tracked by attempt (0-based: the
         // last completed round is attempt 2 → 3 iterations).
-        assert_eq!(body_run_count(&worker, &detail), 3, "body ran exactly max_iter=3 times");
-        assert_eq!(body.attempt, 2, "body attempt is 2 (3rd round, 0-based) at the cap");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            3,
+            "body ran exactly max_iter=3 times"
+        );
+        assert_eq!(
+            body.attempt, 2,
+            "body attempt is 2 (3rd round, 0-based) at the cap"
+        );
         // The controller is done with the max_iter STOP marker + no worker conv.
         assert_eq!(ctrl.kind, "loop");
-        assert_eq!(ctrl.status, "done", "loop controller settled done at the cap");
-        assert_eq!(ctrl.conversation_id, None, "loop controller has no worker conversation");
+        assert_eq!(
+            ctrl.status, "done",
+            "loop controller settled done at the cap"
+        );
+        assert_eq!(
+            ctrl.conversation_id, None,
+            "loop controller has no worker conversation"
+        );
         let summary = ctrl.output_summary.as_deref().unwrap_or("");
-        assert!(summary.starts_with("LOOP: DONE"), "machine marker leads: {summary}");
-        assert!(summary.contains("reason=max_iter"), "hard cap reason: {summary}");
+        assert!(
+            summary.starts_with("LOOP: DONE"),
+            "machine marker leads: {summary}"
+        );
+        assert!(
+            summary.contains("reason=max_iter"),
+            "hard cap reason: {summary}"
+        );
         assert!(summary.contains("iterations=3"), "3 iterations: {summary}");
-        assert!(summary.contains("round3"), "final body output carried: {summary}");
+        assert!(
+            summary.contains("round3"),
+            "final body output carried: {summary}"
+        );
         // Downstream ran AFTER the loop finished (gated on the loop, not the body).
-        assert_eq!(by_title("Publish").status, "done", "downstream runs after the loop");
+        assert_eq!(
+            by_title("Publish").status,
+            "done",
+            "downstream runs after the loop"
+        );
 
         // The loop controller NEVER reached a worker (no dispatch / no spin).
         let specs = worker.seen_specs.lock().unwrap().clone();
@@ -7433,7 +9885,11 @@ mod tests {
         // 5). Body runs exactly 2 times.
         let (svc, engine, worker, run_id) = loop_harness(
             r#"{"max_iter":5,"stop":{"kind":"predicate","done_marker":"DONE"}}"#,
-            vec!["still working", "polished now DONE", "round3-should-not-happen"],
+            vec![
+                "still working",
+                "polished now DONE",
+                "round3-should-not-happen",
+            ],
             None,
         )
         .await;
@@ -7442,12 +9898,23 @@ mod tests {
         assert_eq!(detail.run.status, "completed");
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
-        assert_eq!(body_run_count(&worker, &detail), 2, "predicate stops early after 2 rounds");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            2,
+            "predicate stops early after 2 rounds"
+        );
         let ctrl = by_title("Loop");
         let summary = ctrl.output_summary.as_deref().unwrap_or("");
-        assert!(summary.contains("reason=predicate"), "early predicate stop: {summary}");
+        assert!(
+            summary.contains("reason=predicate"),
+            "early predicate stop: {summary}"
+        );
         assert!(summary.contains("iterations=2"), "2 iterations: {summary}");
-        assert_eq!(by_title("Publish").status, "done", "downstream runs after the loop");
+        assert_eq!(
+            by_title("Publish").status,
+            "done",
+            "downstream runs after the loop"
+        );
     }
 
     #[tokio::test]
@@ -7466,12 +9933,20 @@ mod tests {
         assert_eq!(detail.run.status, "completed");
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
-        assert_eq!(body_run_count(&worker, &detail), 3, "dry stops after 3 rounds (r2==r3)");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            3,
+            "dry stops after 3 rounds (r2==r3)"
+        );
         let ctrl = by_title("Loop");
         let summary = ctrl.output_summary.as_deref().unwrap_or("");
         assert!(summary.contains("reason=dry"), "dry stop reason: {summary}");
         assert!(summary.contains("iterations=3"), "3 iterations: {summary}");
-        assert_eq!(by_title("Publish").status, "done", "downstream runs after the loop");
+        assert_eq!(
+            by_title("Publish").status,
+            "done",
+            "downstream runs after the loop"
+        );
 
         // dry-stop is REACHABLE because the body now refines the prior round: each
         // iteration >=1 sees the previous round's output in its brief, so when it
@@ -7479,11 +9954,31 @@ mod tests {
         // the carry actually happened (round 2 saw round 1's "a"; round 3 saw "b").
         let briefs = worker.body_briefs.lock().unwrap().clone();
         assert_eq!(briefs.len(), 3, "the body ran 3 rounds");
-        assert!(!briefs[0].contains("上一轮产出"), "round 1 (attempt 0) has no carry: {}", briefs[0]);
-        assert!(briefs[1].contains("上一轮产出"), "round 2 carries the prior round: {}", briefs[1]);
-        assert!(briefs[1].contains('a'), "round 2 sees round 1's output 'a': {}", briefs[1]);
-        assert!(briefs[2].contains("上一轮产出"), "round 3 carries the prior round: {}", briefs[2]);
-        assert!(briefs[2].contains('b'), "round 3 sees round 2's output 'b': {}", briefs[2]);
+        assert!(
+            !briefs[0].contains("上一轮产出"),
+            "round 1 (attempt 0) has no carry: {}",
+            briefs[0]
+        );
+        assert!(
+            briefs[1].contains("上一轮产出"),
+            "round 2 carries the prior round: {}",
+            briefs[1]
+        );
+        assert!(
+            briefs[1].contains('a'),
+            "round 2 sees round 1's output 'a': {}",
+            briefs[1]
+        );
+        assert!(
+            briefs[2].contains("上一轮产出"),
+            "round 3 carries the prior round: {}",
+            briefs[2]
+        );
+        assert!(
+            briefs[2].contains('b'),
+            "round 3 sees round 2's output 'b': {}",
+            briefs[2]
+        );
     }
 
     #[tokio::test]
@@ -7502,7 +9997,11 @@ mod tests {
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
         assert_eq!(detail.run.status, "completed");
-        assert_eq!(body_run_count(&worker, &detail), 3, "body ran exactly max_iter=3 rounds");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            3,
+            "body ran exactly max_iter=3 rounds"
+        );
 
         let briefs = worker.body_briefs.lock().unwrap().clone();
         assert_eq!(briefs.len(), 3, "three body briefs recorded");
@@ -7513,7 +10012,11 @@ mod tests {
             "first iteration must NOT carry a prior-output section: {}",
             briefs[0]
         );
-        assert!(!briefs[0].contains("第一版草稿"), "first brief has no prior text: {}", briefs[0]);
+        assert!(
+            !briefs[0].contains("第一版草稿"),
+            "first brief has no prior text: {}",
+            briefs[0]
+        );
 
         // Iteration 1: carries iteration 0's output ("第一版草稿").
         assert!(
@@ -7521,19 +10024,39 @@ mod tests {
             "iter 1 brief carries the section: {}",
             briefs[1]
         );
-        assert!(briefs[1].contains("第一版草稿"), "iter 1 sees round 0's output: {}", briefs[1]);
-        assert!(!briefs[1].contains("第二版改进"), "iter 1 cannot see its own future output: {}", briefs[1]);
+        assert!(
+            briefs[1].contains("第一版草稿"),
+            "iter 1 sees round 0's output: {}",
+            briefs[1]
+        );
+        assert!(
+            !briefs[1].contains("第二版改进"),
+            "iter 1 cannot see its own future output: {}",
+            briefs[1]
+        );
 
         // Iteration 2: carries iteration 1's output ("第二版改进").
-        assert!(briefs[2].contains("上一轮产出"), "iter 2 brief carries the section: {}", briefs[2]);
-        assert!(briefs[2].contains("第二版改进"), "iter 2 sees round 1's output: {}", briefs[2]);
+        assert!(
+            briefs[2].contains("上一轮产出"),
+            "iter 2 brief carries the section: {}",
+            briefs[2]
+        );
+        assert!(
+            briefs[2].contains("第二版改进"),
+            "iter 2 sees round 1's output: {}",
+            briefs[2]
+        );
 
         // The body row's final pattern_config carries the LAST reset's prior output
         // (round 1's "第二版改进", written when CONTINUE reset it for round 2) — the
         // carry channel is the body's pattern_config, not upstream.
         let body = detail.tasks.iter().find(|t| t.title == "Refine").unwrap();
         let carried = loop_prior_output(body.pattern_config.as_deref());
-        assert_eq!(carried, Some("第二版改进".to_string()), "body pattern_config carries the prior output");
+        assert_eq!(
+            carried,
+            Some("第二版改进".to_string()),
+            "body pattern_config carries the prior output"
+        );
     }
 
     #[tokio::test]
@@ -7551,7 +10074,10 @@ mod tests {
         let detail = drive_to_completion(&svc, &run_id).await;
         assert_eq!(detail.run.status, "completed");
         let body = detail.tasks.iter().find(|t| t.title == "Refine").unwrap();
-        assert_eq!(body.attempt, 3, "body attempt increments per iteration (0-based, 4 rounds)");
+        assert_eq!(
+            body.attempt, 3,
+            "body attempt increments per iteration (0-based, 4 rounds)"
+        );
         assert_eq!(body_run_count(&worker, &detail), 4, "body ran 4 times");
     }
 
@@ -7578,13 +10104,30 @@ mod tests {
         assert_eq!(body.status, "failed", "the body is failed");
         // The body ran only twice (round1 ok → continue → round2 fails) — it did NOT
         // iterate forever on the failure.
-        assert_eq!(body_run_count(&worker, &detail), 2, "failing body did not iterate forever");
-        assert_eq!(ctrl.status, "failed", "loop controller stops failed on a failing body");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            2,
+            "failing body did not iterate forever"
+        );
+        assert_eq!(
+            ctrl.status, "failed",
+            "loop controller stops failed on a failing body"
+        );
         let summary = ctrl.output_summary.as_deref().unwrap_or("");
-        assert!(summary.starts_with("LOOP: FAILED"), "failed marker: {summary}");
-        assert!(summary.contains("reason=body_failed"), "body-failed reason: {summary}");
+        assert!(
+            summary.starts_with("LOOP: FAILED"),
+            "failed marker: {summary}"
+        );
+        assert!(
+            summary.contains("reason=body_failed"),
+            "body-failed reason: {summary}"
+        );
         // Downstream Publish was GATED → skipped (never ran on a failing loop).
-        assert_eq!(by_title("Publish").status, "skipped", "downstream gated on a failing loop");
+        assert_eq!(
+            by_title("Publish").status,
+            "skipped",
+            "downstream gated on a failing loop"
+        );
         let specs = worker.seen_specs.lock().unwrap().clone();
         assert!(
             !specs.iter().any(|s| s == "publish the refined result"),
@@ -7601,7 +10144,10 @@ mod tests {
         h.run_service.plan(&run_id).await.expect("plan");
         h.engine.start(run_id.clone());
         let detail = drive_to_completion(&h.run_service, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "plain agent chain unaffected");
+        assert_eq!(
+            detail.run.status, "completed",
+            "plain agent chain unaffected"
+        );
         for t in &detail.tasks {
             assert_eq!(t.status, "done", "task {} done", t.title);
             assert_eq!(t.kind, "agent", "no loop kind injected");
@@ -7628,23 +10174,52 @@ mod tests {
         .await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "verdict-gated loop drives to completion");
+        assert_eq!(
+            detail.run.status, "completed",
+            "verdict-gated loop drives to completion"
+        );
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
         // Body ran EXACTLY 3 times (stopped at approval, before the cap of 6).
-        assert_eq!(body_run_count(&worker, &detail), 3, "loop stops at approval after 3 rounds");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            3,
+            "loop stops at approval after 3 rounds"
+        );
         let body = by_title("Refine");
-        assert_eq!(body.attempt, 2, "body attempt is 2 (3rd round, 0-based) at approval");
+        assert_eq!(
+            body.attempt, 2,
+            "body attempt is 2 (3rd round, 0-based) at approval"
+        );
         let ctrl = by_title("Loop");
         assert_eq!(ctrl.kind, "loop");
-        assert_eq!(ctrl.status, "done", "loop controller settled done on approval");
+        assert_eq!(
+            ctrl.status, "done",
+            "loop controller settled done on approval"
+        );
         let summary = ctrl.output_summary.as_deref().unwrap_or("");
-        assert!(summary.starts_with("LOOP: DONE"), "machine marker leads: {summary}");
-        assert!(summary.contains("reason=approved"), "early verdict-gated stop: {summary}");
-        assert!(summary.contains("iterations=3"), "stopped at 3 iterations: {summary}");
-        assert!(summary.contains("draft v3"), "final approved body output carried: {summary}");
+        assert!(
+            summary.starts_with("LOOP: DONE"),
+            "machine marker leads: {summary}"
+        );
+        assert!(
+            summary.contains("reason=approved"),
+            "early verdict-gated stop: {summary}"
+        );
+        assert!(
+            summary.contains("iterations=3"),
+            "stopped at 3 iterations: {summary}"
+        );
+        assert!(
+            summary.contains("draft v3"),
+            "final approved body output carried: {summary}"
+        );
         // Downstream ran after the loop approved.
-        assert_eq!(by_title("Publish").status, "done", "downstream runs after the loop approves");
+        assert_eq!(
+            by_title("Publish").status,
+            "done",
+            "downstream runs after the loop approves"
+        );
     }
 
     #[tokio::test]
@@ -7665,19 +10240,42 @@ mod tests {
         .await;
         engine.start(run_id.clone());
         let detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(detail.run.status, "completed", "the cap guarantees termination");
+        assert_eq!(
+            detail.run.status, "completed",
+            "the cap guarantees termination"
+        );
 
         let by_title = |t: &str| detail.tasks.iter().find(|x| x.title == t).cloned().unwrap();
         // Body ran EXACTLY 3 times (the cap), never a 4th despite never approving.
-        assert_eq!(body_run_count(&worker, &detail), 3, "never-approving body stops at the cap");
+        assert_eq!(
+            body_run_count(&worker, &detail),
+            3,
+            "never-approving body stops at the cap"
+        );
         let body = by_title("Refine");
-        assert_eq!(body.attempt, 2, "body attempt is 2 (3rd round, 0-based) at the cap");
+        assert_eq!(
+            body.attempt, 2,
+            "body attempt is 2 (3rd round, 0-based) at the cap"
+        );
         let ctrl = by_title("Loop");
-        assert_eq!(ctrl.status, "done", "loop controller settled done at the cap");
+        assert_eq!(
+            ctrl.status, "done",
+            "loop controller settled done at the cap"
+        );
         let summary = ctrl.output_summary.as_deref().unwrap_or("");
-        assert!(summary.contains("reason=max_iter"), "hard cap is the stop reason: {summary}");
-        assert!(summary.contains("iterations=3"), "exactly 3 iterations at the cap: {summary}");
-        assert_eq!(by_title("Publish").status, "done", "downstream still runs after the capped loop");
+        assert!(
+            summary.contains("reason=max_iter"),
+            "hard cap is the stop reason: {summary}"
+        );
+        assert!(
+            summary.contains("iterations=3"),
+            "exactly 3 iterations at the cap: {summary}"
+        );
+        assert_eq!(
+            by_title("Publish").status,
+            "done",
+            "downstream still runs after the capped loop"
+        );
 
         // The loop controller NEVER reached a worker (no spin / no dispatch).
         let specs = worker.seen_specs.lock().unwrap().clone();
@@ -7701,7 +10299,9 @@ mod tests {
     }
     impl SpecRecordingWorkerRunner {
         fn new() -> Self {
-            Self { seen: Arc::new(Mutex::new(vec![])) }
+            Self {
+                seen: Arc::new(Mutex::new(vec![])),
+            }
         }
         fn handle(&self) -> Arc<Mutex<Vec<(String, String)>>> {
             self.seen.clone()
@@ -7736,9 +10336,7 @@ mod tests {
 
     /// Build a chain harness (A→B→C) whose worker is the supplied dyn runner, with
     /// a real engine. Returns (RunService, RunEngine, run_id) after plan.
-    async fn rerun_chain_harness(
-        worker: Arc<dyn WorkerRunner>,
-    ) -> (RunService, RunEngine, String) {
+    async fn rerun_chain_harness(worker: Arc<dyn WorkerRunner>) -> (RunService, RunEngine, String) {
         let db = init_database_memory().await.expect("db init");
         let pool = db.pool().clone();
         let run_repo = Arc::new(SqliteRunRepository::new(pool.clone()));
@@ -7860,7 +10458,13 @@ mod tests {
             adjusted: Mutex::new(crate::plan::AdjustedPlan { tasks: vec![] }),
         });
         let planner: Arc<dyn PlanProducer> = producer.clone();
-        let svc = RunService::new(run_repo.clone(), fleet_repo.clone(), ws_repo.clone(), planner, emitter.clone());
+        let svc = RunService::new(
+            run_repo.clone(),
+            fleet_repo.clone(),
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
         let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(900, "out"));
         let mut engine_deps = RunEngineDeps::new(run_repo, worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(5);
@@ -7919,12 +10523,17 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(!engine.is_running(&run_id), "completed run's loop deregistered");
+        assert!(
+            !engine.is_running(&run_id),
+            "completed run's loop deregistered"
+        );
 
         // Stage the adjusted plan: keep the done task + add one depending on it.
         *producer.adjusted.lock().unwrap() = crate::plan::AdjustedPlan {
             tasks: vec![
-                crate::plan::AdjustedNode::Keep { keep: kept_id.clone() },
+                crate::plan::AdjustedNode::Keep {
+                    keep: kept_id.clone(),
+                },
                 crate::plan::AdjustedNode::New(crate::plan::AdjustedNewTask {
                     title: "追加".to_string(),
                     spec: "build on the kept work".to_string(),
@@ -7941,26 +10550,125 @@ mod tests {
             .adjust(&svc, "u1", &run_id, "在已完成工作上追加一步")
             .await
             .expect("adjust");
-        assert_eq!(adjusted_run.status, "running", "terminal run re-activated to running");
+        assert_eq!(
+            adjusted_run.status, "running",
+            "terminal run re-activated to running"
+        );
         let started = adjusted_run.status == "running" && !engine.is_running(&run_id);
-        assert!(started, "route must (re)start the loop for the re-activated run");
+        assert!(
+            started,
+            "route must (re)start the loop for the re-activated run"
+        );
         engine.start(run_id.clone());
 
         // The re-activated run re-drives to completion WITHOUT re-running the kept
         // task (it was already done) and WITH the new task now done — no strand.
         let second = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(second.run.status, "completed", "re-activated run completes (no strand)");
+        assert_eq!(
+            second.run.status, "completed",
+            "re-activated run completes (no strand)"
+        );
         assert_eq!(second.tasks.len(), 2, "kept + new");
-        let kept = second.tasks.iter().find(|t| t.id == kept_id).expect("kept task survives");
+        let kept = second
+            .tasks
+            .iter()
+            .find(|t| t.id == kept_id)
+            .expect("kept task survives");
         assert_eq!(kept.status, "done", "kept task stayed done");
-        assert_eq!(kept.attempt, first.tasks[0].attempt, "kept task NOT re-run (attempt unchanged)");
-        let new_task = second.tasks.iter().find(|t| t.title == "追加").expect("new task added");
+        assert_eq!(
+            kept.attempt, first.tasks[0].attempt,
+            "kept task NOT re-run (attempt unchanged)"
+        );
+        let new_task = second
+            .tasks
+            .iter()
+            .find(|t| t.title == "追加")
+            .expect("new task added");
         assert_eq!(new_task.status, "done", "new task re-driven to done");
         // The dep kept→new was wired (the new task only ran after the kept blocker).
         assert!(
-            second.deps.iter().any(|d| d.blocker_task_id == kept_id && d.blocked_task_id == new_task.id),
+            second
+                .deps
+                .iter()
+                .any(|d| d.blocker_task_id == kept_id && d.blocked_task_id == new_task.id),
             "kept→new dep wired: {:?}",
             second.deps
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 3a Task 1 — `add_tasks` runtime APPEND primitive (RunService +
+    // RunEngine lock wrapper). A conversation's ONE persistent run can have NEW
+    // nodes APPENDED at runtime (Claude-Code-style dispatch-while-running); the
+    // append inserts pending tasks + deps in one transaction (empty delete list)
+    // and re-arms a terminal run so the loop drives the new work — no strand.
+    // -------------------------------------------------------------------------
+
+    /// Minimal `PlannedTask` for the append tests — `agent` kind, no deps, no
+    /// pre-assignment (the harness's single-member fleet routes it via the pure
+    /// `resolve_assignment_pick` fallback).
+    fn planned_task(title: &str, spec: &str) -> PlannedTask {
+        PlannedTask {
+            title: title.to_string(),
+            spec: spec.to_string(),
+            task_profile: None,
+            depends_on: vec![],
+            member_index: None,
+            rationale: None,
+            role: None,
+            kind: "agent".to_string(),
+            pattern_config: None,
+        }
+    }
+
+    /// A run driven to a TERMINAL state gets a NEW node APPENDED via
+    /// `engine.add_tasks`; the append re-arms the terminal run to `running`, and
+    /// the re-started loop drives the appended node to `done` (the run settles
+    /// `completed` again) — the appended pending task is never stranded.
+    #[tokio::test]
+    async fn add_tasks_appends_to_running_run_and_new_node_runs() {
+        let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(1, "x"));
+        let (svc, engine, run_id) = single_task_harness(worker).await;
+        engine.start(run_id.clone());
+        let first = drive_to_completion(&svc, &run_id).await;
+        assert_eq!(first.run.status, "completed", "initial run completes");
+
+        // Append one new node (no deps) onto the now-terminal run.
+        let new = vec![planned_task("追加节点", "do the extra work")];
+        let rearmed = engine
+            .add_tasks(&svc, &run_id, new)
+            .await
+            .expect("add_tasks");
+        assert_eq!(
+            rearmed.status, "running",
+            "terminal run re-armed to running by the append"
+        );
+
+        // The route (re)starts the loop for the re-armed run if it isn't live.
+        if !engine.is_running(&run_id) {
+            engine.start(run_id.clone());
+        }
+        let detail = drive_to_completion(&svc, &run_id).await;
+        assert_eq!(detail.run.status, "completed");
+        assert!(
+            detail
+                .tasks
+                .iter()
+                .any(|t| t.title.contains("追加节点") && t.status == "done"),
+            "appended node must run to done: {:?}",
+            detail.tasks
+        );
+    }
+
+    /// An empty append batch is a clean `BadRequest` — a no-op append would only
+    /// churn the re-arm, so a caller bug surfaces loudly (mirrors `plan_flat`).
+    #[tokio::test]
+    async fn add_tasks_empty_is_rejected() {
+        let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(1, "x"));
+        let (svc, engine, run_id) = single_task_harness(worker).await;
+        assert!(
+            engine.add_tasks(&svc, &run_id, vec![]).await.is_err(),
+            "an empty add_tasks batch must be rejected"
         );
     }
 
@@ -8036,7 +10744,13 @@ mod tests {
             entered: entered.clone(),
             release: release.clone(),
         });
-        let svc = RunService::new(run_repo.clone(), fleet_repo.clone(), ws_repo.clone(), planner, emitter.clone());
+        let svc = RunService::new(
+            run_repo.clone(),
+            fleet_repo.clone(),
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
         let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(900, "out"));
         let mut engine_deps = RunEngineDeps::new(run_repo, worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(5);
@@ -8093,7 +10807,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(!engine.is_running(&run_id), "completed run's loop deregistered");
+        assert!(
+            !engine.is_running(&run_id),
+            "completed run's loop deregistered"
+        );
 
         // Spawn `engine.adjust` — it enters the LOCK-FREE `compute_adjusted_plan` and
         // PARKS inside the lead `adjust` call (the LLM window).
@@ -8123,7 +10840,10 @@ mod tests {
         .await
         .expect("rerun must not be blocked by an in-flight (lock-free) adjust LLM")
         .expect("rerun succeeds");
-        assert_eq!(rerun.status, "running", "rerun re-activated the completed run");
+        assert_eq!(
+            rerun.status, "running",
+            "rerun re-activated the completed run"
+        );
 
         // Release the parked lead call so the adjust finishes (no leaked task / no
         // deadlock). Its apply re-reads FRESH under the lock and reconciles the (now
@@ -8196,7 +10916,13 @@ mod tests {
         let broadcaster = Arc::new(RecordingBroadcaster::new());
         let emitter = OrchestratorRunEventEmitter::new(broadcaster.clone());
         let planner: Arc<dyn PlanProducer> = Arc::new(StreamingAdjustProducer);
-        let svc = RunService::new(run_repo.clone(), fleet_repo.clone(), ws_repo.clone(), planner, emitter.clone());
+        let svc = RunService::new(
+            run_repo.clone(),
+            fleet_repo.clone(),
+            ws_repo.clone(),
+            planner,
+            emitter.clone(),
+        );
         let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(900, "out"));
         let mut engine_deps = RunEngineDeps::new(run_repo, worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(5);
@@ -8296,14 +11022,25 @@ mod tests {
         engine.start(run_id.clone());
         let first = drive_to_completion(&svc, &run_id).await;
         assert_eq!(first.run.status, "completed", "initial run completes");
-        let a = first.tasks.iter().find(|t| t.title == "A").expect("A").clone();
+        let a = first
+            .tasks
+            .iter()
+            .find(|t| t.title == "A")
+            .expect("A")
+            .clone();
         let b = first.tasks.iter().find(|t| t.title == "B").expect("B");
         let c = first.tasks.iter().find(|t| t.title == "C").expect("C");
         let (a_attempt, b_attempt, c_attempt) = (a.attempt, b.attempt, c.attempt);
 
         // Rerun the ROOT task A → it + its transitive dependents (B, C) reset.
-        let run_after = engine.rerun_task(&svc, "u1", &run_id, &a.id).await.expect("rerun A");
-        assert_eq!(run_after.status, "running", "completed run re-activated to running");
+        let run_after = engine
+            .rerun_task(&svc, "u1", &run_id, &a.id)
+            .await
+            .expect("rerun A");
+        assert_eq!(
+            run_after.status, "running",
+            "completed run re-activated to running"
+        );
 
         // Immediately after reset (before the loop re-drives), A/B/C are pending and
         // their attempt bumped. Read the detail right away — the re-activated loop is
@@ -8320,12 +11057,19 @@ mod tests {
         let c2 = reset.tasks.iter().find(|t| t.title == "C").unwrap();
         assert_eq!(a2.attempt, a_attempt + 1, "A attempt bumped");
         assert_eq!(b2.attempt, b_attempt + 1, "B (dependent) attempt bumped");
-        assert_eq!(c2.attempt, c_attempt + 1, "C (transitive dependent) attempt bumped");
+        assert_eq!(
+            c2.attempt,
+            c_attempt + 1,
+            "C (transitive dependent) attempt bumped"
+        );
 
         // Drive the re-activated run: the engine re-executes the reset tasks to done.
         engine.start(run_id.clone());
         let second = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(second.run.status, "completed", "re-activated run completes again");
+        assert_eq!(
+            second.run.status, "completed",
+            "re-activated run completes again"
+        );
         for t in &second.tasks {
             assert_eq!(t.status, "done", "task {} re-executed to done", t.title);
         }
@@ -8346,7 +11090,10 @@ mod tests {
         let b = first.tasks.iter().find(|t| t.title == "B").unwrap().clone();
         let c = first.tasks.iter().find(|t| t.title == "C").unwrap().clone();
 
-        engine.rerun_task(&svc, "u1", &run_id, &c.id).await.expect("rerun C");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &c.id)
+            .await
+            .expect("rerun C");
 
         let reset = svc.get_detail(&run_id).await.expect("detail");
         let a2 = reset.tasks.iter().find(|t| t.title == "A").unwrap();
@@ -8362,7 +11109,10 @@ mod tests {
 
         engine.start(run_id.clone());
         let second = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(second.run.status, "completed", "engine.start re-drove the completed run");
+        assert_eq!(
+            second.run.status, "completed",
+            "engine.start re-drove the completed run"
+        );
         assert_eq!(
             second.tasks.iter().find(|t| t.title == "C").unwrap().status,
             "done",
@@ -8396,7 +11146,12 @@ mod tests {
                 let n = self.calls.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
                     // First call: no final text → the engine marks the task failed.
-                    Ok(WorkerOutcome { conversation_id: 900, text: None, ok: false, tokens: None })
+                    Ok(WorkerOutcome {
+                        conversation_id: 900,
+                        text: None,
+                        ok: false,
+                        tokens: None,
+                    })
                 } else {
                     Ok(WorkerOutcome {
                         conversation_id: 900,
@@ -8406,8 +11161,18 @@ mod tests {
                     })
                 }
             }
+            // The first-call failure is a DEFINITE failure (marked error), NOT a
+            // transient timeout: report a marker present so it fails immediately
+            // (NonRetryable) rather than self-healing under the NoMarker timeout
+            // budget — the test relies on the FIRST run landing `failed` before the
+            // rerun re-executes it.
+            async fn last_error_present(&self, _conversation_id: &str) -> bool {
+                true
+            }
         }
-        let worker: Arc<dyn WorkerRunner> = Arc::new(FlakyWorker { calls: AtomicUsize::new(0) });
+        let worker: Arc<dyn WorkerRunner> = Arc::new(FlakyWorker {
+            calls: AtomicUsize::new(0),
+        });
         let (svc, engine, run_id) = rerun_chain_harness(worker).await;
 
         engine.start(run_id.clone());
@@ -8417,11 +11182,20 @@ mod tests {
         assert_eq!(a.status, "failed", "A failed");
 
         // Rerun the failed A → re-activates the failed run + re-executes.
-        let run_after = engine.rerun_task(&svc, "u1", &run_id, &a.id).await.expect("rerun failed A");
-        assert_eq!(run_after.status, "running", "failed run re-activated to running");
+        let run_after = engine
+            .rerun_task(&svc, "u1", &run_id, &a.id)
+            .await
+            .expect("rerun failed A");
+        assert_eq!(
+            run_after.status, "running",
+            "failed run re-activated to running"
+        );
         engine.start(run_id.clone());
         let second = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(second.run.status, "completed", "rerun drives the whole chain to done");
+        assert_eq!(
+            second.run.status, "completed",
+            "rerun drives the whole chain to done"
+        );
         for t in &second.tasks {
             assert_eq!(t.status, "done", "task {} done after rerun", t.title);
         }
@@ -8467,7 +11241,11 @@ mod tests {
         let mut running_id = None;
         for _ in 0..200 {
             let d = svc.get_detail(&run_id).await.expect("detail");
-            running_id = d.tasks.iter().find(|t| t.status == "running").map(|t| t.id.clone());
+            running_id = d
+                .tasks
+                .iter()
+                .find(|t| t.status == "running")
+                .map(|t| t.id.clone());
             if running_id.is_some() {
                 break;
             }
@@ -8538,7 +11316,11 @@ mod tests {
         let mut running_id = None;
         for _ in 0..200 {
             let d = svc.get_detail(&run_id).await.expect("detail");
-            running_id = d.tasks.iter().find(|t| t.status == "running").map(|t| t.id.clone());
+            running_id = d
+                .tasks
+                .iter()
+                .find(|t| t.status == "running")
+                .map(|t| t.id.clone());
             if running_id.is_some() {
                 break;
             }
@@ -8555,7 +11337,12 @@ mod tests {
         assert!(!engine.is_running(&run_id), "loop stopped → no live worker");
         let still = svc.get_detail(&run_id).await.expect("detail");
         assert_eq!(
-            still.tasks.iter().find(|t| t.id == running_id).unwrap().status,
+            still
+                .tasks
+                .iter()
+                .find(|t| t.id == running_id)
+                .unwrap()
+                .status,
             "running",
             "task is a phantom `running` orphan after the loop died"
         );
@@ -8568,7 +11355,12 @@ mod tests {
             .expect("rerun of a phantom-running orphan must recover, not reject");
         let reset = svc.get_detail(&run_id).await.expect("detail");
         assert_eq!(
-            reset.tasks.iter().find(|t| t.id == running_id).unwrap().status,
+            reset
+                .tasks
+                .iter()
+                .find(|t| t.id == running_id)
+                .unwrap()
+                .status,
             "pending",
             "phantom running recovered → pending (re-runnable)"
         );
@@ -8618,13 +11410,19 @@ mod tests {
         let a_edited = after_edit.tasks.iter().find(|t| t.title == "A").unwrap();
         assert_eq!(a_edited.spec, "重新做 A（改进版）", "spec persisted");
 
-        engine.rerun_task(&svc, "u1", &run_id, &a.id).await.expect("rerun A");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &a.id)
+            .await
+            .expect("rerun A");
         engine.start(run_id.clone());
         let second = drive_to_completion(&svc, &run_id).await;
         assert_eq!(second.run.status, "completed");
         // The re-run dispatched A with the AMENDED spec.
         assert!(
-            seen.lock().unwrap().iter().any(|(tid, s)| *tid == a.id && s == "重新做 A（改进版）"),
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|(tid, s)| *tid == a.id && s == "重新做 A（改进版）"),
             "rerun's worker brief must use the amended spec; seen={:?}",
             seen.lock().unwrap()
         );
@@ -8637,7 +11435,12 @@ mod tests {
         let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(900, "out"));
         let (svc, _engine, run_id) = rerun_chain_harness(worker).await;
         let detail = svc.get_detail(&run_id).await.expect("detail");
-        let a = detail.tasks.iter().find(|t| t.title == "A").unwrap().clone();
+        let a = detail
+            .tasks
+            .iter()
+            .find(|t| t.title == "A")
+            .unwrap()
+            .clone();
         let err = svc
             .update_task_spec("u1", &run_id, &a.id, "   ")
             .await
@@ -8663,7 +11466,12 @@ mod tests {
             ) -> Result<WorkerOutcome, AppError> {
                 on_started(900);
                 self.gate.notified().await;
-                Ok(WorkerOutcome { conversation_id: 900, text: Some(format!("out {task_id}")), ok: true, tokens: None })
+                Ok(WorkerOutcome {
+                    conversation_id: 900,
+                    text: Some(format!("out {task_id}")),
+                    ok: true,
+                    tokens: None,
+                })
             }
         }
         let gate = Arc::new(tokio::sync::Notify::new());
@@ -8673,7 +11481,11 @@ mod tests {
         let mut running_id = None;
         for _ in 0..200 {
             let d = svc2.get_detail(&run_id2).await.expect("detail");
-            running_id = d.tasks.iter().find(|t| t.status == "running").map(|t| t.id.clone());
+            running_id = d
+                .tasks
+                .iter()
+                .find(|t| t.status == "running")
+                .map(|t| t.id.clone());
             if running_id.is_some() {
                 break;
             }
@@ -8708,28 +11520,49 @@ mod tests {
         let a = first.tasks.iter().find(|t| t.title == "A").unwrap().clone();
 
         // Wrong user → 403 for both controls.
-        let err = engine.rerun_task(&svc, "intruder", &run_id, &a.id).await.expect_err("cross-user rerun");
-        assert!(matches!(err, AppError::Forbidden(_)), "rerun cross-user is 403, got: {err:?}");
+        let err = engine
+            .rerun_task(&svc, "intruder", &run_id, &a.id)
+            .await
+            .expect_err("cross-user rerun");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "rerun cross-user is 403, got: {err:?}"
+        );
         let err = svc
             .update_task_spec("intruder", &run_id, &a.id, "盗改")
             .await
             .expect_err("cross-user spec edit");
-        assert!(matches!(err, AppError::Forbidden(_)), "spec cross-user is 403, got: {err:?}");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "spec cross-user is 403, got: {err:?}"
+        );
 
         // Missing run → 404 for both.
-        let err = engine.rerun_task(&svc, "u1", "run_missing", &a.id).await.expect_err("missing run rerun");
-        assert!(matches!(err, AppError::NotFound(_)), "rerun missing is 404, got: {err:?}");
+        let err = engine
+            .rerun_task(&svc, "u1", "run_missing", &a.id)
+            .await
+            .expect_err("missing run rerun");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "rerun missing is 404, got: {err:?}"
+        );
         let err = svc
             .update_task_spec("u1", "run_missing", &a.id, "x")
             .await
             .expect_err("missing run spec edit");
-        assert!(matches!(err, AppError::NotFound(_)), "spec missing is 404, got: {err:?}");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "spec missing is 404, got: {err:?}"
+        );
 
         // The run is untouched: A is still done with its original spec.
         let detail = svc.get_detail(&run_id).await.expect("detail");
         let a_after = detail.tasks.iter().find(|t| t.title == "A").unwrap();
         assert_eq!(a_after.status, "done", "non-owner ops did not reset A");
-        assert_eq!(a_after.spec, "do A", "non-owner edit did not change the spec");
+        assert_eq!(
+            a_after.spec, "do A",
+            "non-owner edit did not change the spec"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -8761,7 +11594,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(!engine.is_running(&run_id), "completed run's loop deregistered");
+        assert!(
+            !engine.is_running(&run_id),
+            "completed run's loop deregistered"
+        );
         let a = first.tasks.iter().find(|t| t.title == "A").unwrap().clone();
 
         // Route path: rerun under the engine lock, then apply the route's gate.
@@ -8769,16 +11605,25 @@ mod tests {
             .rerun_task(&svc, "u1", &run_id, &a.id)
             .await
             .expect("rerun A");
-        assert_eq!(run.status, "running", "completed run re-activated to running");
+        assert_eq!(
+            run.status, "running",
+            "completed run re-activated to running"
+        );
         // EXACT route decision — only start when running AND no live loop.
         let started = run.status == "running" && !engine.is_running(&run_id);
-        assert!(started, "route must (re)start the loop for a re-activated run with no live driver");
+        assert!(
+            started,
+            "route must (re)start the loop for a re-activated run with no live driver"
+        );
         engine.start(run_id.clone());
 
         // The re-activated run re-drives to completion — a LIVE loop drove it, the
         // run was NOT stranded `running`-with-pending-and-no-loop.
         let second = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(second.run.status, "completed", "re-activated run completes (no strand)");
+        assert_eq!(
+            second.run.status, "completed",
+            "re-activated run completes (no strand)"
+        );
         for t in &second.tasks {
             assert_eq!(t.status, "done", "task {} re-executed to done", t.title);
         }
@@ -8870,7 +11715,8 @@ mod tests {
             calls: Arc::new(Mutex::new(vec![])),
             run_repo: run_repo.clone(),
         });
-        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
+        let mut engine_deps =
+            RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(10);
         let engine = RunEngine::new(Arc::new(engine_deps));
 
@@ -8919,10 +11765,20 @@ mod tests {
         let mut a_id = None;
         for _ in 0..300 {
             let d = svc.get_detail(&run_id).await.expect("detail");
-            let b_running = d.tasks.iter().any(|t| t.title == "B" && t.status == "running");
+            let b_running = d
+                .tasks
+                .iter()
+                .any(|t| t.title == "B" && t.status == "running");
             if b_running {
-                a_id = d.tasks.iter().find(|t| t.title == "A").map(|t| t.id.clone());
-                assert_eq!(d.run.status, "running", "run is still running while B is in flight");
+                a_id = d
+                    .tasks
+                    .iter()
+                    .find(|t| t.title == "A")
+                    .map(|t| t.id.clone());
+                assert_eq!(
+                    d.run.status, "running",
+                    "run is still running while B is in flight"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -8933,10 +11789,19 @@ mod tests {
         // resets A (root) → its dependents B,C. B is `running` → it is a BOUNDARY
         // (skipped, not descended): C is NOT reset off B here (Important-2). A is
         // reset to pending. The run stays `running` (re-read status under the lock).
-        let run_after = engine.rerun_task(&svc, "u1", &run_id, &a_id).await.expect("rerun A");
-        assert_eq!(run_after.status, "running", "run stays running (not re-activated)");
+        let run_after = engine
+            .rerun_task(&svc, "u1", &run_id, &a_id)
+            .await
+            .expect("rerun A");
+        assert_eq!(
+            run_after.status, "running",
+            "run stays running (not re-activated)"
+        );
         // Route gate: run is running AND a live loop exists → do NOT restart.
-        assert!(engine.is_running(&run_id), "the live loop is still registered (not stranded)");
+        assert!(
+            engine.is_running(&run_id),
+            "the live loop is still registered (not stranded)"
+        );
 
         // Release B's gate so the run can drain. The live loop must re-pick the
         // reset A and converge — never leaving the run terminal with a pending task.
@@ -8950,7 +11815,10 @@ mod tests {
             }
         });
         let final_detail = drive_to_completion(&svc, &run_id).await;
-        assert_eq!(final_detail.run.status, "completed", "run converges (no strand)");
+        assert_eq!(
+            final_detail.run.status, "completed",
+            "run converges (no strand)"
+        );
         for t in &final_detail.tasks {
             assert_eq!(t.status, "done", "task {} done at convergence", t.title);
         }
@@ -8966,12 +11834,24 @@ mod tests {
         engine.start(run_id.clone());
         let first = drive_to_completion(&svc, &run_id).await;
         assert_eq!(first.run.status, "completed");
-        let gate = first.tasks.iter().find(|t| t.title == "Gate").unwrap().clone();
+        let gate = first
+            .tasks
+            .iter()
+            .find(|t| t.title == "Gate")
+            .unwrap()
+            .clone();
         assert_eq!(gate.kind, "verify");
-        assert_eq!(gate.pattern_config.as_deref(), Some(cfg), "policy present before rerun");
+        assert_eq!(
+            gate.pattern_config.as_deref(),
+            Some(cfg),
+            "policy present before rerun"
+        );
 
         // Rerun the verify node: its policy must SURVIVE the reset.
-        engine.rerun_task(&svc, "u1", &run_id, &gate.id).await.expect("rerun Gate");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &gate.id)
+            .await
+            .expect("rerun Gate");
         let after = svc.get_detail(&run_id).await.expect("detail");
         let gate2 = after.tasks.iter().find(|t| t.title == "Gate").unwrap();
         assert_eq!(gate2.status, "pending", "verify reset to pending");
@@ -8991,11 +11871,23 @@ mod tests {
         engine.start(run_id.clone());
         let first = drive_to_completion(&svc, &run_id).await;
         assert_eq!(first.run.status, "completed");
-        let pick = first.tasks.iter().find(|t| t.title == "Pick").unwrap().clone();
+        let pick = first
+            .tasks
+            .iter()
+            .find(|t| t.title == "Pick")
+            .unwrap()
+            .clone();
         assert_eq!(pick.kind, "judge");
-        assert_eq!(pick.pattern_config.as_deref(), Some(cfg), "policy present before rerun");
+        assert_eq!(
+            pick.pattern_config.as_deref(),
+            Some(cfg),
+            "policy present before rerun"
+        );
 
-        engine.rerun_task(&svc, "u1", &run_id, &pick.id).await.expect("rerun Pick");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &pick.id)
+            .await
+            .expect("rerun Pick");
         let after = svc.get_detail(&run_id).await.expect("detail");
         let pick2 = after.tasks.iter().find(|t| t.title == "Pick").unwrap();
         assert_eq!(pick2.status, "pending", "judge reset to pending");
@@ -9019,8 +11911,18 @@ mod tests {
         engine.start(run_id.clone());
         let first = drive_to_completion(&svc, &run_id).await;
         assert_eq!(first.run.status, "completed");
-        let controller = first.tasks.iter().find(|t| t.title == "Loop").unwrap().clone();
-        let body = first.tasks.iter().find(|t| t.title == "Refine").unwrap().clone();
+        let controller = first
+            .tasks
+            .iter()
+            .find(|t| t.title == "Loop")
+            .unwrap()
+            .clone();
+        let body = first
+            .tasks
+            .iter()
+            .find(|t| t.title == "Refine")
+            .unwrap()
+            .clone();
         assert_eq!(controller.kind, "loop");
         assert_eq!(
             controller.pattern_config.as_deref(),
@@ -9039,7 +11941,10 @@ mod tests {
         );
 
         // Rerun the loop CONTROLLER → its policy must survive.
-        engine.rerun_task(&svc, "u1", &run_id, &controller.id).await.expect("rerun Loop");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &controller.id)
+            .await
+            .expect("rerun Loop");
         let after = svc.get_detail(&run_id).await.expect("detail");
         let controller2 = after.tasks.iter().find(|t| t.title == "Loop").unwrap();
         assert_eq!(controller2.status, "pending", "loop controller reset");
@@ -9055,7 +11960,10 @@ mod tests {
         // Whether or not the body is a downstream of the controller in the cascade,
         // an explicit body rerun must clear the carry. Assert via a direct body
         // rerun to make the contract unambiguous.
-        engine.rerun_task(&svc, "u1", &run_id, &body2.id).await.expect("rerun body");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &body2.id)
+            .await
+            .expect("rerun body");
         let after2 = svc.get_detail(&run_id).await.expect("detail");
         let body3 = after2.tasks.iter().find(|t| t.title == "Refine").unwrap();
         assert_eq!(body3.status, "pending", "loop body reset");
@@ -9130,7 +12038,8 @@ mod tests {
             gate: gate.clone(),
             run_repo: run_repo.clone(),
         });
-        let mut engine_deps = RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
+        let mut engine_deps =
+            RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(10);
         let engine = RunEngine::new(Arc::new(engine_deps));
 
@@ -9180,7 +12089,10 @@ mod tests {
         for _ in 0..300 {
             let d = svc.get_detail(&run_id).await.expect("detail");
             let a_done = d.tasks.iter().any(|t| t.title == "A" && t.status == "done");
-            let b_running = d.tasks.iter().any(|t| t.title == "B" && t.status == "running");
+            let b_running = d
+                .tasks
+                .iter()
+                .any(|t| t.title == "B" && t.status == "running");
             if a_done && b_running {
                 let a = d.tasks.iter().find(|t| t.title == "A").unwrap();
                 a_id = Some(a.id.clone());
@@ -9196,7 +12108,10 @@ mod tests {
 
         // Rerun A: cascade reaches B (running → boundary: skipped, NOT descended) so
         // C is NOT reset (it sits beyond the running B).
-        engine.rerun_task(&svc, "u1", &run_id, &a_id).await.expect("rerun A");
+        engine
+            .rerun_task(&svc, "u1", &run_id, &a_id)
+            .await
+            .expect("rerun A");
         let after = svc.get_detail(&run_id).await.expect("detail");
         let a = after.tasks.iter().find(|t| t.title == "A").unwrap();
         let b = after.tasks.iter().find(|t| t.title == "B").unwrap();
@@ -9204,8 +12119,15 @@ mod tests {
         // The rerun DID run (target A reset → attempt bumped, pending) — so the
         // cascade machinery executed; C being untouched is a real boundary decision.
         assert_eq!(a.status, "pending", "target A reset to pending");
-        assert_eq!(a.attempt, a_attempt_before + 1, "target A attempt bumped (rerun ran)");
-        assert_eq!(b.status, "running", "running B left untouched (skipped, not clobbered)");
+        assert_eq!(
+            a.attempt,
+            a_attempt_before + 1,
+            "target A attempt bumped (rerun ran)"
+        );
+        assert_eq!(
+            b.status, "running",
+            "running B left untouched (skipped, not clobbered)"
+        );
         assert_eq!(
             c.attempt, c_attempt_before,
             "C beyond the running boundary was NOT reset (attempt unchanged): no stale-lineage re-run"
@@ -9251,7 +12173,9 @@ mod tests {
             _members: &[FleetMember],
             _sink: Option<&crate::plan::LeadThinkingSink>,
         ) -> Result<PlannedDag, AppError> {
-            Err(AppError::BadRequest("stub summarizer does not plan".to_string()))
+            Err(AppError::BadRequest(
+                "stub summarizer does not plan".to_string(),
+            ))
         }
         async fn summarize(
             &self,
@@ -9277,7 +12201,9 @@ mod tests {
             _members: &[FleetMember],
             _sink: Option<&crate::plan::LeadThinkingSink>,
         ) -> Result<PlannedDag, AppError> {
-            Err(AppError::BadRequest("stub summarizer does not plan".to_string()))
+            Err(AppError::BadRequest(
+                "stub summarizer does not plan".to_string(),
+            ))
         }
         async fn summarize(
             &self,
@@ -9310,7 +12236,8 @@ mod tests {
             emitter.clone(),
         );
 
-        let worker: Arc<dyn WorkerRunner> = Arc::new(MockWorkerRunner::with_text(777, "task output"));
+        let worker: Arc<dyn WorkerRunner> =
+            Arc::new(MockWorkerRunner::with_text(777, "task output"));
         let mut engine_deps =
             RunEngineDeps::new(run_repo.clone(), worker, emitter, ws_repo.clone());
         engine_deps.worker_timeout = Duration::from_secs(5);
@@ -9359,9 +12286,18 @@ mod tests {
         // The summarizer saw the run goal, a non-empty digest, and the fleet members.
         let (goal, digest, member_count) = seen.lock().unwrap().clone().expect("summarize called");
         assert_eq!(goal, "build the chain", "goal threaded into summarize");
-        assert!(digest.contains("status=done"), "digest carries the task statuses: {digest}");
-        assert!(digest.contains("task output"), "digest carries the task outputs: {digest}");
-        assert_eq!(member_count, 1, "the run's single fleet member is handed to summarize");
+        assert!(
+            digest.contains("status=done"),
+            "digest carries the task statuses: {digest}"
+        );
+        assert!(
+            digest.contains("task output"),
+            "digest carries the task outputs: {digest}"
+        );
+        assert_eq!(
+            member_count, 1,
+            "the run's single fleet member is handed to summarize"
+        );
     }
 
     // A summarizer that ERRORS → the run `summary` FALLS BACK to the mechanical
@@ -9378,7 +12314,10 @@ mod tests {
         let detail = drive_to_completion(&h.run_service, &run_id).await;
 
         // Fail-soft: the run still COMPLETES despite the summary error.
-        assert_eq!(detail.run.status, "completed", "summary error must NOT fail the run");
+        assert_eq!(
+            detail.run.status, "completed",
+            "summary error must NOT fail the run"
+        );
         let summary = detail.run.summary.expect("run summary set on completion");
         // The mechanical concat is the fallback (its distinctive count header).
         assert!(
@@ -9433,7 +12372,10 @@ mod tests {
         let detail = drive_to_completion(&h.run_service, &run_id).await;
 
         // The completion committed under the RE-ACQUIRED lock (second scope).
-        assert_eq!(detail.run.status, "completed", "run must complete via the re-verify path");
+        assert_eq!(
+            detail.run.status, "completed",
+            "run must complete via the re-verify path"
+        );
         let summary = detail.run.summary.expect("run summary set on completion");
         assert_eq!(
             summary, "重取锁重校验后写入的综合总结。",
@@ -9441,7 +12383,10 @@ mod tests {
         );
 
         // `summarize` was actually awaited (the drop→summarize step ran with no lock).
-        assert!(seen.lock().unwrap().is_some(), "summarize must have been called outside the lock");
+        assert!(
+            seen.lock().unwrap().is_some(),
+            "summarize must have been called outside the lock"
+        );
 
         // The loop handle was deregistered UNDER the re-acquired lock, atomically
         // with the terminal write — the run is no longer registered as running.
@@ -9465,7 +12410,10 @@ mod tests {
                 || SUMMARY_SYSTEM.to_ascii_lowercase().contains("concatenate"),
             "must warn against concatenation: {SUMMARY_SYSTEM}"
         );
-        assert!(SUMMARY_SYSTEM.contains("GOAL"), "must reference the goal: {SUMMARY_SYSTEM}");
+        assert!(
+            SUMMARY_SYSTEM.contains("GOAL"),
+            "must reference the goal: {SUMMARY_SYSTEM}"
+        );
         assert!(
             SUMMARY_SYSTEM.contains("no JSON") || SUMMARY_SYSTEM.contains("JSON"),
             "must forbid JSON output: {SUMMARY_SYSTEM}"
@@ -9483,8 +12431,14 @@ mod tests {
             summary_task("校对", "skipped", None),
         ];
         let digest = build_summary_digest(&tasks);
-        assert!(digest.contains("研究 | role=研究 | status=done | output=找到三个来源"), "{digest}");
-        assert!(digest.contains("校对 | role=研究 | status=skipped | output=-"), "no-output → -: {digest}");
+        assert!(
+            digest.contains("研究 | role=研究 | status=done | output=找到三个来源"),
+            "{digest}"
+        );
+        assert!(
+            digest.contains("校对 | role=研究 | status=skipped | output=-"),
+            "no-output → -: {digest}"
+        );
         // The 800-char output was truncated with an ellipsis.
         assert!(digest.contains('…'), "long output truncated: {digest}");
         assert!(
@@ -9496,6 +12450,7 @@ mod tests {
     /// Build a minimal completed-run task row for the digest test.
     fn summary_task(title: &str, status: &str, output: Option<&str>) -> OrchRunTaskRow {
         OrchRunTaskRow {
+            pending_question: None,
             last_error: None,
             id: format!("rtask_{title}"),
             run_id: "run_x".to_string(),
@@ -9517,6 +12472,7 @@ mod tests {
             override_provider_id: None,
             override_model: None,
             preset_prompt: None,
+            on_fail: None,
             created_at: 0,
             updated_at: 0,
         }

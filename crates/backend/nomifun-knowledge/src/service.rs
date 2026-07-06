@@ -148,6 +148,19 @@ pub struct KbFileEntry {
     pub modified_at: Option<TimestampMs>,
 }
 
+/// One immediate child in the knowledge-base document tree. Directories are
+/// browse-only; files are markdown documents that can be read/edited.
+#[derive(Debug, Clone, Serialize)]
+pub struct KbTreeEntry {
+    pub name: String,
+    pub rel_path: String,
+    pub is_dir: bool,
+    pub is_file: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    pub modified_at: Option<TimestampMs>,
+}
+
 /// Content payload for a single file read.
 #[derive(Debug, Clone, Serialize)]
 pub struct KbFileContent {
@@ -836,11 +849,25 @@ impl KnowledgeService {
 
     pub async fn list_bases(&self) -> Result<Vec<KnowledgeBaseInfo>, AppError> {
         let rows = self.repo.list_bases().await?;
-        let mut infos = Vec::with_capacity(rows.len());
-        for row in rows {
-            infos.push(self.row_to_info(row).await);
-        }
+        // Materialize each base concurrently (bounded), preserving registry
+        // order. Sequentially, one slow/NAS-bound base's walk would block
+        // materialization of every other (fast, local) base and could push the
+        // whole list past the client timeout; `.buffered` caps that to roughly
+        // one base's [`BASE_WALK_BUDGET`] regardless of how many bases exist.
+        let infos = stream::iter(rows.into_iter().map(|row| self.row_to_info(row)))
+            .buffered(LIST_BASES_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
         Ok(infos)
+    }
+
+    /// Registered base ids only, straight from the registry (DB) — performs NO
+    /// filesystem access. Callers that merely need to validate that an id
+    /// exists (knowledge binding, `ensure_known_kb_ids`) MUST use this rather
+    /// than [`Self::list_bases`], which walks every base's directory tree and
+    /// would pay a full (possibly NAS-bound) walk just to produce a set of ids.
+    pub async fn list_base_ids(&self) -> Result<Vec<String>, AppError> {
+        Ok(self.repo.list_bases().await?.into_iter().map(|r| r.id).collect())
     }
 
     pub async fn get_base_info(&self, id: &str) -> Result<KnowledgeBaseInfo, AppError> {
@@ -944,7 +971,12 @@ impl KnowledgeService {
                 if !dir.is_absolute() {
                     return Err(AppError::BadRequest("external root_path must be absolute".into()));
                 }
-                if !dir.is_dir() {
+                // Off the async worker: an external root may be a slow/stale NAS
+                // mount and `Path::is_dir()` is a blocking stat — running it on a
+                // tokio worker thread would stall the runtime. `tokio::fs` routes
+                // the stat to the blocking pool instead.
+                let is_dir = tokio::fs::metadata(&dir).await.map(|m| m.is_dir()).unwrap_or(false);
+                if !is_dir {
                     return Err(AppError::BadRequest(format!("directory does not exist: {path}")));
                 }
                 (dir, false)
@@ -1140,9 +1172,56 @@ impl KnowledgeService {
     pub async fn list_files(&self, id: &str) -> Result<Vec<KbFileEntry>, AppError> {
         let row = self.require_base(id).await?;
         let root = PathBuf::from(&row.root_path);
-        tokio::task::spawn_blocking(move || list_md_files(&root))
+        // Bounded so a slow/stale NAS root degrades to an empty listing instead
+        // of hanging the detail view (and the agent write-path collision check).
+        Ok(bounded_blocking(BASE_WALK_BUDGET, Vec::new(), move || list_md_files(&root)).await)
+    }
+
+    pub async fn list_tree(&self, id: &str, rel_path: &str) -> Result<Vec<KbTreeEntry>, AppError> {
+        let row = self.require_base(id).await?;
+        let root = PathBuf::from(&row.root_path);
+        let rel_path = normalize_tree_rel_path(rel_path)?;
+        Ok(bounded_blocking(BASE_WALK_BUDGET, Ok(Vec::new()), move || {
+            list_tree_level(&root, &rel_path)
+        })
+        .await?)
+    }
+
+    pub async fn create_folder(&self, id: &str, rel_path: &str) -> Result<KbTreeEntry, AppError> {
+        let row = self.require_base(id).await?;
+        let root = PathBuf::from(&row.root_path);
+        let rel_path = normalize_tree_rel_path(rel_path)?;
+        if rel_path.is_empty() {
+            return Err(AppError::BadRequest("folder path must not be empty".into()));
+        }
+        tokio::task::spawn_blocking(move || create_tree_folder(&root, &rel_path))
             .await
-            .map_err(|e| AppError::Internal(format!("list task join error: {e}")))
+            .map_err(|e| AppError::Internal(format!("folder create task join error: {e}")))?
+    }
+
+    pub async fn delete_folder(&self, id: &str, rel_path: &str) -> Result<(), AppError> {
+        let row = self.require_base(id).await?;
+        let root = PathBuf::from(&row.root_path);
+        let rel_path = normalize_tree_rel_path(rel_path)?;
+        if rel_path.is_empty() {
+            return Err(AppError::BadRequest("folder path must not be empty".into()));
+        }
+        tokio::task::spawn_blocking(move || delete_tree_folder(&root, &rel_path))
+            .await
+            .map_err(|e| AppError::Internal(format!("folder delete task join error: {e}")))?
+    }
+
+    pub async fn rename_tree_entry(&self, id: &str, rel_path: &str, new_name: &str) -> Result<KbTreeEntry, AppError> {
+        let row = self.require_base(id).await?;
+        let root = PathBuf::from(&row.root_path);
+        let rel_path = normalize_tree_rel_path(rel_path)?;
+        if rel_path.is_empty() {
+            return Err(AppError::BadRequest("path must not be empty".into()));
+        }
+        let new_name = validate_tree_entry_name(new_name)?;
+        tokio::task::spawn_blocking(move || rename_tree_entry(&root, &rel_path, &new_name))
+            .await
+            .map_err(|e| AppError::Internal(format!("tree rename task join error: {e}")))?
     }
 
     pub async fn read_file(&self, id: &str, rel_path: &str) -> Result<KbFileContent, AppError> {
@@ -1302,9 +1381,13 @@ impl KnowledgeService {
     pub async fn count_pending_inbox(&self) -> Result<usize, AppError> {
         let rows = self.repo.list_bases().await?;
         let roots: Vec<PathBuf> = rows.iter().map(|r| PathBuf::from(&r.root_path)).collect();
-        tokio::task::spawn_blocking(move || roots.iter().map(|root| list_inbox_entries(root).len()).sum())
-            .await
-            .map_err(|e| AppError::Internal(format!("inbox count task join error: {e}")))
+        // Bounded: this backs the app-wide sidebar red-dot (fires on every page
+        // load), so a single slow/stale NAS base's `_inbox` walk must degrade to
+        // 0 rather than stall unrelated navigation.
+        Ok(bounded_blocking(BASE_WALK_BUDGET, 0usize, move || {
+            roots.iter().map(|root| list_inbox_entries(root).len()).sum()
+        })
+        .await)
     }
 
     /// Resolve a model-supplied write target to a canonical document + op.
@@ -1988,12 +2071,12 @@ impl KnowledgeService {
         }
         let query = query.to_owned();
         let cache = Arc::clone(&self.search_cache);
-        let mut hits = tokio::task::spawn_blocking(move || {
+        let mut hits = bounded_blocking(SEARCH_WALK_BUDGET, Vec::new(), move || {
             let query_lc = query.to_lowercase();
             let terms = query_terms(&query_lc);
             let mut all: Vec<KnowledgeSearchHit> = Vec::new();
             for (kb_id, kb_name, root) in &roots {
-                for entry in walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok) {
+                for entry in vault_walker(root) {
                     if !entry.file_type().is_file() {
                         continue;
                     }
@@ -2070,8 +2153,7 @@ impl KnowledgeService {
             }
             all
         })
-        .await
-        .map_err(|e| AppError::Internal(format!("knowledge search task failed: {e}")))?;
+        .await;
 
         hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.rel_path.cmp(&b.rel_path)));
         hits.truncate(limit);
@@ -2228,28 +2310,30 @@ impl KnowledgeService {
         let source = source_from_extra(&row.extra);
         let root = PathBuf::from(&row.root_path);
         let root_for_inbox = root.clone();
-        let (file_count, total_size, root_exists) = tokio::task::spawn_blocking(move || {
-            if !root.is_dir() {
-                return (0, 0, false);
-            }
-            let mut count = 0u64;
-            let mut size = 0u64;
-            for entry in walkdir::WalkDir::new(&root).into_iter().flatten() {
-                if entry.file_type().is_file() && is_md(entry.path()) {
-                    count += 1;
-                    size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        // Bounded so a slow/stale NAS mount degrades (assume present, counts
+        // unknown) instead of hanging the list/detail response past the
+        // client's request timeout — the reported "加载失败" failure mode.
+        let (file_count, total_size, root_exists) =
+            bounded_blocking(BASE_WALK_BUDGET, (0u64, 0u64, true), move || {
+                if !root.is_dir() {
+                    return (0u64, 0u64, false);
                 }
-            }
-            (count, size, true)
-        })
-        .await
-        .unwrap_or((0, 0, false));
+                let mut count = 0u64;
+                let mut size = 0u64;
+                for entry in vault_walker(&root) {
+                    if entry.file_type().is_file() && is_md(entry.path()) {
+                        count += 1;
+                        size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    }
+                }
+                (count, size, true)
+            })
+            .await;
 
-        let pending_inbox = tokio::task::spawn_blocking(move || {
+        let pending_inbox = bounded_blocking(BASE_WALK_BUDGET, 0u64, move || {
             list_inbox_entries(&root_for_inbox).len() as u64
         })
-        .await
-        .unwrap_or(0);
+        .await;
 
         let tags: Vec<String> = row
             .tags
@@ -2691,13 +2775,14 @@ fn toc_rank(rel: &str) -> (u8, usize) {
 /// [`crate::context::apply_toc_budgets`].
 async fn build_toc(root: &Path) -> Vec<String> {
     let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
+    // Bounded + machinery-pruned: at session mount this opens every note for its
+    // first heading, so a slow/large NAS vault must degrade to an empty toc
+    // rather than block session start.
+    bounded_blocking(BASE_WALK_BUDGET, Vec::new(), move || {
         if !root.is_dir() {
             return Vec::new();
         }
-        let mut rels: Vec<String> = walkdir::WalkDir::new(&root)
-            .into_iter()
-            .flatten()
+        let mut rels: Vec<String> = vault_walker(&root)
             .filter(|e| e.file_type().is_file() && is_md(e.path()))
             .filter_map(|e| {
                 let rel = e.path().strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
@@ -2713,7 +2798,6 @@ async fn build_toc(root: &Path) -> Vec<String> {
             .collect()
     })
     .await
-    .unwrap_or_default()
 }
 
 /// First `# `-style heading of a markdown file, read from the first KB only
@@ -2789,6 +2873,77 @@ pub(crate) fn is_md(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
 }
+
+/// True for a directory that is knowledge-base *machinery*, never a source of
+/// knowledge documents, and must be pruned from every base walk BEFORE its
+/// contents are stat'd: any hidden (dot-prefixed) directory — `.obsidian/`
+/// (Obsidian plugins + workspace + cache), `.git/`, `.trash/` — plus a couple
+/// of well-known heavy non-note dirs. The root itself (depth 0) is never
+/// pruned, so a base may still be rooted at a dotted path.
+///
+/// This is both a correctness fix (those files are not notes) and the dominant
+/// performance fix: on a real Obsidian vault the `.obsidian/` tree alone can
+/// dwarf the note count, and descending into it issues one `readdir`/`stat`
+/// network round-trip per entry — on a slow NAS mount that is what pushes the
+/// per-base walk past the client request timeout and surfaces as "加载失败".
+fn is_machinery_dir(entry: &walkdir::DirEntry) -> bool {
+    if entry.depth() == 0 || !entry.file_type().is_dir() {
+        return false;
+    }
+    let name = entry.file_name().to_string_lossy();
+    name.starts_with('.') || name == "node_modules"
+}
+
+/// The canonical markdown walker for a knowledge-base `root`: a [`walkdir`]
+/// iterator that prunes [`is_machinery_dir`] directories before descending, so
+/// no `stat` is ever issued inside `.obsidian/`, `.git/`, etc. `follow_links`
+/// stays at walkdir's default (`false`) — that is correct and must be kept, as
+/// it rules out symlink-cycle / root-escape traversal. Every KB file walk goes
+/// through here so the traversal policy is defined once.
+fn vault_walker(root: &Path) -> impl Iterator<Item = walkdir::DirEntry> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| !is_machinery_dir(e))
+        .flatten()
+}
+
+/// Run a blocking filesystem walk on the blocking pool but never let it hold up
+/// the caller past `budget`; on expiry (a slow or stale NAS mount) or a panic
+/// in the walk, return `on_timeout` and leave the walk to finish detached
+/// (`spawn_blocking` closures cannot be cancelled). This bounds every KB
+/// directory walk so a wedged mount degrades the response instead of hanging
+/// the request past the client's ~60s deadline (the reported failure mode).
+async fn bounded_blocking<T: Send + 'static>(
+    budget: std::time::Duration,
+    on_timeout: T,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let handle = tokio::task::spawn_blocking(f);
+    match tokio::time::timeout(budget, handle).await {
+        Ok(Ok(v)) => v,
+        // Walk panicked → degrade rather than propagate.
+        Ok(Err(_join_err)) => on_timeout,
+        // Slow/stale mount exceeded the budget → degrade; the detached walk
+        // finishes on its own and its result is discarded.
+        Err(_elapsed) => on_timeout,
+    }
+}
+
+/// Per-base walk budget. Pruning ([`is_machinery_dir`]) makes a healthy vault
+/// walk finish well within this; the budget is the safety net for a large or
+/// stale NAS mount so the list/detail response never blocks past it.
+const BASE_WALK_BUDGET: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Max concurrent per-base walks in [`KnowledgeService::list_bases`]. Small and
+/// fixed: enough to overlap a few slow (NAS) bases with the fast local ones
+/// without fanning out an unbounded number of blocking-pool tasks.
+const LIST_BASES_CONCURRENCY: usize = 8;
+
+/// Budget for a full `search_bases` sweep (walk + cold-cache reads across every
+/// scoped base). More generous than a single-base stat walk because search
+/// legitimately reads file bodies; on expiry the search degrades to the hits
+/// gathered so far being dropped (empty) rather than hanging the agent tool.
+const SEARCH_WALK_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Split a lowercased query into non-empty, deduped whitespace terms. For CJK
 /// (no spaces) this yields the whole query as one term, which still
@@ -2897,6 +3052,284 @@ fn safe_md_path(root: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
     Ok(root.join(rel))
 }
 
+fn is_excluded_tree_dir_name(name: &str) -> bool {
+    name.starts_with('.') || name == "node_modules" || name == KB_INBOX_REL_DIR
+}
+
+fn looks_like_windows_drive_prefix(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    bytes.len() == 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
+}
+
+fn normalize_tree_rel_path(rel_path: &str) -> Result<String, AppError> {
+    let normalized = rel_path.trim().replace('\\', "/");
+    let trimmed = normalized.trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut segments = Vec::new();
+    for segment in trimmed.split('/') {
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || looks_like_windows_drive_prefix(segment)
+        {
+            return Err(AppError::BadRequest(format!("invalid path: {rel_path}")));
+        }
+        if is_excluded_tree_dir_name(segment) {
+            return Err(AppError::BadRequest(format!(
+                "directory is excluded: {segment}"
+            )));
+        }
+        segments.push(segment);
+    }
+    Ok(segments.join("/"))
+}
+
+fn join_tree_rel_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn list_tree_level(root: &Path, rel_path: &str) -> Result<Vec<KbTreeEntry>, AppError> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let dir = if rel_path.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_path)
+    };
+    let meta = match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(_) => return Ok(Vec::new()),
+    };
+    if !meta.file_type().is_dir() {
+        return Err(AppError::NotFound(format!(
+            "directory not found: {rel_path}"
+        )));
+    }
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) => return Err(AppError::Internal(format!("failed to read directory: {e}"))),
+    };
+
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let child_rel = join_tree_rel_path(rel_path, &name);
+        if file_type.is_dir() {
+            if is_excluded_tree_dir_name(&name) {
+                continue;
+            }
+            out.push(KbTreeEntry {
+                name,
+                rel_path: child_rel,
+                is_dir: true,
+                is_file: false,
+                size: None,
+                modified_at: None,
+            });
+            continue;
+        }
+        if file_type.is_file() && is_md(&entry.path()) {
+            let meta = entry.metadata().ok();
+            out.push(KbTreeEntry {
+                name,
+                rel_path: child_rel,
+                is_dir: false,
+                is_file: true,
+                size: meta.as_ref().map(|m| m.len()),
+                modified_at: meta.as_ref().and_then(modified_ms),
+            });
+        }
+    }
+
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(out)
+}
+
+fn create_tree_folder(root: &Path, rel_path: &str) -> Result<KbTreeEntry, AppError> {
+    if !root.is_dir() {
+        return Err(AppError::NotFound("knowledge base directory not found".into()));
+    }
+
+    let segments: Vec<&str> = rel_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Err(AppError::BadRequest("folder path must not be empty".into()));
+    }
+
+    let mut cursor = root.to_path_buf();
+    for (idx, segment) in segments.iter().enumerate() {
+        cursor.push(segment);
+        let is_final = idx + 1 == segments.len();
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(AppError::BadRequest(format!("path crosses a symlink: {rel_path}")));
+                }
+                if !meta.file_type().is_dir() {
+                    return Err(AppError::BadRequest(format!(
+                        "path is not a directory: {}",
+                        segments[..=idx].join("/")
+                    )));
+                }
+                if is_final {
+                    return Err(AppError::Conflict(format!("folder already exists: {rel_path}")));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&cursor)
+                    .map_err(|e| AppError::Internal(format!("failed to create folder: {e}")))?;
+            }
+            Err(e) => return Err(AppError::Internal(format!("failed to inspect folder path: {e}"))),
+        }
+    }
+
+    let meta = std::fs::metadata(&cursor).ok();
+    Ok(KbTreeEntry {
+        name: segments.last().unwrap_or(&rel_path).to_string(),
+        rel_path: rel_path.to_owned(),
+        is_dir: true,
+        is_file: false,
+        size: None,
+        modified_at: meta.as_ref().and_then(modified_ms),
+    })
+}
+
+fn validate_tree_entry_name(name: &str) -> Result<String, AppError> {
+    let normalized = name.trim().replace('\\', "/");
+    if normalized.is_empty() || normalized.contains('/') || normalized == "." || normalized == ".." || looks_like_windows_drive_prefix(&normalized) {
+        return Err(AppError::BadRequest(format!("invalid name: {name}")));
+    }
+    if is_excluded_tree_dir_name(&normalized) {
+        return Err(AppError::BadRequest(format!(
+            "directory is excluded: {normalized}"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn resolve_tree_existing_path(root: &Path, rel_path: &str) -> Result<(PathBuf, std::fs::Metadata), AppError> {
+    if !root.is_dir() {
+        return Err(AppError::NotFound("knowledge base directory not found".into()));
+    }
+    let segments: Vec<&str> = rel_path.split('/').filter(|segment| !segment.is_empty()).collect();
+    if segments.is_empty() {
+        return Err(AppError::BadRequest("path must not be empty".into()));
+    }
+
+    let mut cursor = root.to_path_buf();
+    for (idx, segment) in segments.iter().enumerate() {
+        cursor.push(segment);
+        let meta = std::fs::symlink_metadata(&cursor)
+            .map_err(|_| AppError::NotFound(format!("path not found: {rel_path}")))?;
+        if meta.file_type().is_symlink() {
+            return Err(AppError::BadRequest(format!("path crosses a symlink: {rel_path}")));
+        }
+        if idx + 1 < segments.len() && !meta.file_type().is_dir() {
+            return Err(AppError::BadRequest(format!(
+                "path is not a directory: {}",
+                segments[..=idx].join("/")
+            )));
+        }
+        if idx + 1 == segments.len() {
+            return Ok((cursor, meta));
+        }
+    }
+    Err(AppError::BadRequest("path must not be empty".into()))
+}
+
+fn remove_tree_dir_no_follow(path: &Path) -> Result<(), AppError> {
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| AppError::Internal(format!("failed to read folder before delete: {e}")))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::Internal(format!("failed to read folder entry before delete: {e}")))?;
+        let child = entry.path();
+        let meta = std::fs::symlink_metadata(&child)
+            .map_err(|e| AppError::Internal(format!("failed to inspect folder entry before delete: {e}")))?;
+        if meta.file_type().is_dir() {
+            remove_tree_dir_no_follow(&child)?;
+        } else {
+            std::fs::remove_file(&child)
+                .map_err(|e| AppError::Internal(format!("failed to delete folder entry: {e}")))?;
+        }
+    }
+    std::fs::remove_dir(path)
+        .map_err(|e| AppError::Internal(format!("failed to delete folder: {e}")))?;
+    Ok(())
+}
+
+fn delete_tree_folder(root: &Path, rel_path: &str) -> Result<(), AppError> {
+    let (path, meta) = resolve_tree_existing_path(root, rel_path)?;
+    if !meta.file_type().is_dir() {
+        return Err(AppError::BadRequest(format!("path is not a directory: {rel_path}")));
+    }
+    remove_tree_dir_no_follow(&path)
+}
+
+fn rename_tree_entry(root: &Path, rel_path: &str, new_name: &str) -> Result<KbTreeEntry, AppError> {
+    let (from, meta) = resolve_tree_existing_path(root, rel_path)?;
+    let file_type = meta.file_type();
+    let is_file = file_type.is_file();
+    let is_dir = file_type.is_dir();
+    if !is_file && !is_dir {
+        return Err(AppError::BadRequest(format!("unsupported path type: {rel_path}")));
+    }
+    if is_file && !is_md(Path::new(new_name)) {
+        return Err(AppError::BadRequest("markdown files must keep a .md extension".into()));
+    }
+
+    let segments: Vec<&str> = rel_path.split('/').filter(|segment| !segment.is_empty()).collect();
+    let parent_rel = if segments.len() <= 1 {
+        String::new()
+    } else {
+        segments[..segments.len() - 1].join("/")
+    };
+    let parent = from
+        .parent()
+        .ok_or_else(|| AppError::BadRequest(format!("invalid path: {rel_path}")))?;
+    let to = parent.join(new_name);
+    match std::fs::symlink_metadata(&to) {
+        Ok(_) => return Err(AppError::Conflict(format!("path already exists: {}", join_tree_rel_path(&parent_rel, new_name)))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(AppError::Internal(format!("failed to inspect target path: {e}"))),
+    }
+
+    std::fs::rename(&from, &to)
+        .map_err(|e| AppError::Internal(format!("failed to rename tree entry: {e}")))?;
+
+    let target_meta = std::fs::metadata(&to).ok();
+    Ok(KbTreeEntry {
+        name: new_name.to_owned(),
+        rel_path: join_tree_rel_path(&parent_rel, new_name),
+        is_dir,
+        is_file,
+        size: if is_file { target_meta.as_ref().map(|m| m.len()) } else { None },
+        modified_at: target_meta.as_ref().and_then(modified_ms),
+    })
+}
+
 /// Sanitize a base name into a directory-safe mount link name, deduplicating
 /// collisions (with other mounts AND with the platform-managed companion
 /// files inside the mount root, e.g. a base literally named `README.md`)
@@ -2945,9 +3378,7 @@ fn list_md_files(root: &Path) -> Vec<KbFileEntry> {
     if !root.is_dir() {
         return Vec::new();
     }
-    let mut entries: Vec<KbFileEntry> = walkdir::WalkDir::new(root)
-        .into_iter()
-        .flatten()
+    let mut entries: Vec<KbFileEntry> = vault_walker(root)
         .filter(|e| e.file_type().is_file() && is_md(e.path()))
         .filter_map(|e| {
             let rel = e.path().strip_prefix(root).ok()?;
@@ -2976,9 +3407,7 @@ fn list_inbox_entries(root: &Path) -> Vec<InboxEntry> {
     if !inbox_root.is_dir() {
         return Vec::new();
     }
-    let mut entries: Vec<InboxEntry> = walkdir::WalkDir::new(&inbox_root)
-        .into_iter()
-        .flatten()
+    let mut entries: Vec<InboxEntry> = vault_walker(&inbox_root)
         .filter(|e| e.file_type().is_file() && is_md(e.path()))
         .filter_map(|e| {
             let rel = e.path().strip_prefix(&inbox_root).ok()?;
@@ -3405,6 +3834,44 @@ mod tests {
         assert!(shallow < deep, "shallow zzz.md before deep aaa/early.md: {toc:?}");
     }
 
+    /// build_toc (run at session mount) must prune machinery dirs (`.obsidian/`,
+    /// `.git/`): those files are not notes and, on a NAS vault, dominate the
+    /// mount-time walk that opens every file for its first heading.
+    #[tokio::test]
+    async fn build_toc_skips_machinery_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+        std::fs::write(root.join(".obsidian/workspace.md"), "# machinery\n").unwrap();
+        std::fs::write(root.join(".git/COMMIT_EDITMSG.md"), "# machinery\n").unwrap();
+
+        let toc = build_toc(root).await;
+        assert_eq!(toc.len(), 1, "only the real note belongs in the toc: {toc:?}");
+        assert!(toc[0].starts_with("note.md"), "{toc:?}");
+    }
+
+    /// search_bases must not index files under machinery dirs (`.obsidian/`,
+    /// `.git/`) — vault plumbing is never a knowledge document.
+    #[tokio::test]
+    async fn search_bases_skips_machinery_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        std::fs::write(vault.join("real.md"), "# Real\n关于部署的说明").unwrap();
+        std::fs::write(vault.join(".obsidian/plugin.md"), "# 机器\n关于部署的说明").unwrap();
+        let kb = service
+            .create_base("v", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+
+        let hits = service.search_bases(&[kb.id], "部署", 10).await.unwrap();
+        let rels: Vec<&str> = hits.iter().map(|h| h.rel_path.as_str()).collect();
+        assert_eq!(rels, vec!["real.md"], "machinery-dir files must not be searchable: {rels:?}");
+    }
+
     #[test]
     fn toc_rank_prioritizes_index_then_depth() {
         assert!(toc_rank("README.md") < toc_rank("alpha.md"));
@@ -3643,6 +4110,247 @@ mod tests {
         service.set_completer(FakeCompleter::new(&long, ""));
         let outcome = service.generate_overview(&kb.id, true, None).await.unwrap();
         assert_eq!(outcome.description.chars().count(), autogen::DESCRIPTION_MAX_CHARS);
+    }
+
+    /// Regression (NAS load-failure root cause): a base rooted on a real
+    /// Obsidian-style vault carries a `.obsidian/` (plugins/cache) tree and
+    /// often a `.git/` tree whose `.md` files are machinery, not knowledge
+    /// documents. row_to_info's file_count/total_size walk and list_files must
+    /// PRUNE dot-directories before stat'ing — otherwise a large `.obsidian/`
+    /// inflates the per-base directory walk (which, on a slow NAS mount, blows
+    /// past the client request timeout and surfaces as "加载失败") and pollutes
+    /// the counts/listing with non-notes.
+    #[tokio::test]
+    async fn dotdir_files_are_pruned_from_counts_and_listing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("sub")).unwrap();
+        std::fs::create_dir_all(vault.join(".obsidian/plugins")).unwrap();
+        std::fs::create_dir_all(vault.join(".git")).unwrap();
+        std::fs::write(vault.join("note.md"), "# Note").unwrap();
+        std::fs::write(vault.join("sub/real.md"), "# Real").unwrap();
+        std::fs::write(vault.join(".obsidian/plugins/data.md"), "x").unwrap();
+        std::fs::write(vault.join(".git/COMMIT.md"), "x").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+
+        // Only the two real notes are knowledge documents; the .obsidian/.git
+        // markdown must never be counted or walked.
+        assert_eq!(info.file_count, 2, "dot-dir markdown must not inflate file_count");
+
+        let files = service.list_files(&info.id).await.unwrap();
+        let rels: Vec<&str> = files.iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(
+            rels,
+            vec!["note.md", "sub/real.md"],
+            "dot-dir files must not appear in the document listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn tree_listing_shows_real_dirs_and_markdown_files_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("raw")).unwrap();
+        std::fs::create_dir_all(vault.join("empty")).unwrap();
+        std::fs::create_dir_all(vault.join("assets")).unwrap();
+        std::fs::create_dir_all(vault.join("_inbox/conv_x")).unwrap();
+        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(vault.join("node_modules/pkg")).unwrap();
+        std::fs::write(vault.join("README.md"), "# Root").unwrap();
+        std::fs::write(vault.join("raw/python3-type-conversion.md"), "# Types").unwrap();
+        std::fs::write(vault.join("assets/logo.png"), "png").unwrap();
+        std::fs::write(vault.join("_inbox/conv_x/draft.md"), "# Draft").unwrap();
+        std::fs::write(vault.join(".obsidian/workspace.md"), "# Tooling").unwrap();
+        std::fs::write(vault.join("node_modules/pkg/readme.md"), "# Package").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+
+        let root = service.list_tree(&info.id, "").await.unwrap();
+        let root_names: Vec<(&str, bool, bool)> = root
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.is_dir, entry.is_file))
+            .collect();
+        assert_eq!(
+            root_names,
+            vec![
+                ("assets", true, false),
+                ("empty", true, false),
+                ("raw", true, false),
+                ("README.md", false, true),
+            ]
+        );
+
+        let raw = service.list_tree(&info.id, "raw").await.unwrap();
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].rel_path, "raw/python3-type-conversion.md");
+        assert!(raw[0].is_file);
+
+        let empty = service.list_tree(&info.id, "empty").await.unwrap();
+        assert!(
+            empty.is_empty(),
+            "empty folders should be expandable but list no children"
+        );
+        assert!(service.list_tree(&info.id, "../escape").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_folder_creates_real_empty_folder_visible_in_tree() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("README.md"), "# Root").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+
+        service.create_folder(&info.id, "raw/tutorials").await.unwrap();
+        assert!(vault.join("raw/tutorials").is_dir());
+
+        let raw = service.list_tree(&info.id, "raw").await.unwrap();
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].rel_path, "raw/tutorials");
+        assert!(raw[0].is_dir);
+
+        assert!(service.create_folder(&info.id, "").await.is_err());
+        assert!(service.create_folder(&info.id, "../escape").await.is_err());
+        assert!(service.create_folder(&info.id, "_inbox/draft").await.is_err());
+        assert!(service.create_folder(&info.id, "node_modules/pkg").await.is_err());
+        assert!(service.create_folder(&info.id, "README.md/child").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_folder_removes_visible_markdown_tree_and_rejects_unsafe_targets() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("docs/nested")).unwrap();
+        std::fs::write(vault.join("docs/README.md"), "# Docs").unwrap();
+        std::fs::write(vault.join("docs/nested/topic.md"), "# Topic").unwrap();
+        std::fs::write(vault.join("root.md"), "# Root").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+
+        service.delete_folder(&info.id, "docs").await.unwrap();
+        assert!(!vault.join("docs").exists());
+        assert!(vault.join("root.md").exists());
+
+        assert!(service.delete_folder(&info.id, "").await.is_err());
+        assert!(service.delete_folder(&info.id, "../escape").await.is_err());
+        assert!(service.delete_folder(&info.id, "root.md").await.is_err());
+        assert!(service.delete_folder(&info.id, "_inbox").await.is_err());
+        assert!(service.delete_folder(&info.id, "node_modules").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_tree_entry_renames_files_and_folders_within_the_same_parent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("docs/nested")).unwrap();
+        std::fs::write(vault.join("docs/old.md"), "# Old").unwrap();
+        std::fs::write(vault.join("docs/nested/topic.md"), "# Topic").unwrap();
+        std::fs::write(vault.join("taken.md"), "# Taken").unwrap();
+        std::fs::write(vault.join("existing.md"), "# Existing").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+
+        let file = service
+            .rename_tree_entry(&info.id, "docs/old.md", "new.md")
+            .await
+            .unwrap();
+        assert_eq!(file.rel_path, "docs/new.md");
+        assert!(file.is_file);
+        assert!(vault.join("docs/new.md").is_file());
+        assert!(!vault.join("docs/old.md").exists());
+
+        let folder = service
+            .rename_tree_entry(&info.id, "docs/nested", "renamed")
+            .await
+            .unwrap();
+        assert_eq!(folder.rel_path, "docs/renamed");
+        assert!(folder.is_dir);
+        assert!(vault.join("docs/renamed/topic.md").is_file());
+
+        assert!(service.rename_tree_entry(&info.id, "", "root").await.is_err());
+        assert!(service.rename_tree_entry(&info.id, "docs/new.md", "bad.txt").await.is_err());
+        assert!(service.rename_tree_entry(&info.id, "docs/new.md", "../escape.md").await.is_err());
+        assert!(service.rename_tree_entry(&info.id, "docs/new.md", "renamed").await.is_err());
+        assert!(service.rename_tree_entry(&info.id, "taken.md", "existing.md").await.is_err());
+    }
+
+    /// The per-base walk must be bounded: a walk that finishes within budget
+    /// returns its real value, but one that exceeds it degrades to the fallback
+    /// (a slow/stale NAS mount must never hang the response past the client
+    /// timeout). The detached closure keeps running; its result is discarded.
+    #[tokio::test]
+    async fn bounded_blocking_returns_value_then_degrades_on_timeout() {
+        use std::time::Duration;
+
+        let v = bounded_blocking(Duration::from_secs(5), 999u32, || 7u32).await;
+        assert_eq!(v, 7, "value must be returned when the walk finishes within budget");
+
+        let v = bounded_blocking(Duration::from_millis(1), 999u32, || {
+            std::thread::sleep(Duration::from_millis(60));
+            7u32
+        })
+        .await;
+        assert_eq!(v, 999, "a walk that exceeds the budget must degrade to the fallback");
+    }
+
+    /// `list_base_ids` returns every registered base id straight from the DB,
+    /// with no directory walk — the disk-free path binding/ensure-known callers
+    /// must use instead of the walking `list_bases`.
+    #[tokio::test]
+    async fn list_base_ids_returns_all_ids_from_registry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let a = service.create_base("a", "", None, None).await.unwrap();
+        let b = service.create_base("b", "", None, None).await.unwrap();
+
+        let mut got = service.list_base_ids().await.unwrap();
+        got.sort();
+        let mut expected = vec![a.id, b.id];
+        expected.sort();
+        assert_eq!(got, expected);
+    }
+
+    /// The concurrent `list_bases` must still return EVERY base and preserve
+    /// registry order (guards the `.buffered` parallelization against dropping
+    /// or reordering rows).
+    #[tokio::test]
+    async fn list_bases_returns_every_base_in_registry_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let a = service.create_base("a", "", None, None).await.unwrap();
+        let b = service.create_base("b", "", None, None).await.unwrap();
+        let c = service.create_base("c", "", None, None).await.unwrap();
+
+        let infos = service.list_bases().await.unwrap();
+        let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec![a.id.as_str(), b.id.as_str(), c.id.as_str()]);
     }
 
     #[tokio::test]

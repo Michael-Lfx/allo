@@ -5,7 +5,9 @@
  */
 
 import { ipcBridge } from '@/common';
+import { configService } from '@/common/config/configService';
 import type { IMcpServer } from '@/common/config/storage';
+import type { TModelRange, TModelRef } from '@/common/types/orchestrator/orchestratorTypes';
 import { resolveLocaleKey } from '@/common/utils';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
@@ -16,9 +18,11 @@ import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
 import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerEntryStrip';
 import GuidAssistantEditorHost from './components/GuidAssistantEditorHost';
 import GuidActionRow from './components/GuidActionRow';
-import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import GuidCompanionPosterPreview from './components/GuidCompanionPosterPreview';
 import GuidInputCard from './components/GuidInputCard';
+import GuidClusterApprovalSelector from './components/GuidClusterApprovalSelector';
+import type { GuidClusterApprovalMode } from './components/GuidClusterApprovalSelector';
+import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import GuidModelSelector from './components/GuidModelSelector';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import SummonDrawer from './components/SummonDrawer';
@@ -27,7 +31,6 @@ import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
-import { useGuidCollaborators } from './hooks/useGuidCollaborators';
 import { autoWorkStartDisabled, isAutoWorkEntry } from './hooks/autoWorkEntry';
 import { useGuidInput } from './hooks/useGuidInput';
 import { useGuidMention } from './hooks/useGuidMention';
@@ -66,12 +69,14 @@ const GuidPage: React.FC = () => {
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<'assistant' | 'skills'>('assistant');
-
-  // --- Orchestration mode (homepage 智能编排 on-ramp) ---
-  // When on, the composer's send button starts a conversation-hosted
-  // orchestration run instead of a normal chat send. Mutually exclusive with
-  // the「召唤助手」preset-agent flow (toggling one resets the other).
-  const [orchestrationMode, setOrchestrationMode] = useState(false);
+  // 「agent 集群」模式（需求1）：composer 顶部 toggle。选中后发送即在新会话 extra
+  // 落 agent_cluster_mode=true——主 agent 对每个任务刻意评估是否开多 agent 集群，
+  // 太简单则先向用户说明使用简单模式的原因。仅 nomi 主 agent 路径消费。
+  const [clusterMode, setClusterMode] = useState(false);
+  const [clusterApprovalMode, setClusterApprovalMode] = useState<GuidClusterApprovalMode>('auto');
+  const [orchestrationCollaborators, setOrchestrationCollaborators] = useState<TModelRef[]>(
+    () => configService.get('nomi.orchestrationCollaborators') ?? []
+  );
 
   // --- Skills state ---
   // All available skills (builtin auto-injected + user-imported custom) merged
@@ -137,6 +142,30 @@ const GuidPage: React.FC = () => {
   // Only nomi uses this provider-based model picker now (Gemini runs as a
   // regular ACP backend with its own model selector).
   const modelSelection = useGuidModelSelection('nomi');
+  const mainModelRef = useMemo<TModelRef | null>(
+    () =>
+      modelSelection.current_model
+        ? { provider_id: modelSelection.current_model.id, model: modelSelection.current_model.use_model }
+        : null,
+    [modelSelection.current_model?.id, modelSelection.current_model?.use_model]
+  );
+  const handleOrchestrationCollaboratorsChange = useCallback((next: TModelRef[]) => {
+    setOrchestrationCollaborators(next);
+    void configService.set('nomi.orchestrationCollaborators', next).catch((error) => {
+      console.error('[GuidPage] Failed to save orchestration collaborators:', error);
+    });
+  }, []);
+  const orchestratorModelRange = useMemo<TModelRange | undefined>(() => {
+    if (!mainModelRef) return undefined;
+    const models = [
+      mainModelRef,
+      ...orchestrationCollaborators.filter(
+        (item) => item.provider_id !== mainModelRef.provider_id || item.model !== mainModelRef.model
+      ),
+    ];
+    return { mode: 'range', models };
+  }, [mainModelRef, orchestrationCollaborators]);
+  const orchestratorApprovalMode = clusterApprovalMode;
 
   const navState = location.state as { resetAssistant?: boolean; selectedAgentKey?: string } | null;
   const resetAssistantRequested = navState?.resetAssistant === true;
@@ -157,9 +186,6 @@ const GuidPage: React.FC = () => {
   // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
   // collected up front and applied right after the conversation is created.
   const advancedConfig = useGuidAdvancedConfig();
-
-  // 智能编排「协作模型」偏好（多选，持久化）。主模型 = modelSelection.current_model。
-  const collaborators = useGuidCollaborators();
 
   const mention = useGuidMention({
     availableAgents: agentSelection.availableAgents,
@@ -205,10 +231,9 @@ const GuidPage: React.FC = () => {
     isGoogleAuth: modelSelection.isGoogleAuth,
     applyAdvancedConfig: advancedConfig.applyToConversation,
     autoWork: advancedConfig.autoWork,
-
-    // Orchestration entry
-    orchestrationMode,
-    collaborators: collaborators.collaborators,
+    clusterMode,
+    orchestratorModelRange,
+    orchestratorApprovalMode,
 
     // Mention state reset
     setMentionOpen: mention.setMentionOpen,
@@ -320,9 +345,25 @@ const GuidPage: React.FC = () => {
     [mention, guidInput.input, send.sendMessageHandler, sendKey]
   );
 
+  const handleSelectAgentFromPillBar = useCallback(
+    (key: string) => {
+      agentSelection.setSelectedAgentKey(key);
+      mention.setMentionOpen(false);
+      mention.setMentionQuery(null);
+      mention.setMentionSelectorOpen(false);
+      mention.setMentionActiveIndex(0);
+    },
+    [
+      agentSelection.setSelectedAgentKey,
+      mention.setMentionOpen,
+      mention.setMentionQuery,
+      mention.setMentionSelectorOpen,
+      mention.setMentionActiveIndex,
+    ]
+  );
+
   const handleSelectAssistant = useCallback(
     (assistantId: string) => {
-      setOrchestrationMode(false);
       agentSelection.setSelectedAgentKey(assistantId);
       mention.setMentionOpen(false);
       mention.setMentionQuery(null);
@@ -396,7 +437,6 @@ const GuidPage: React.FC = () => {
     guidInput.setInput('');
     guidInput.setFiles([]);
     guidInput.setLoading(false);
-    setOrchestrationMode(false);
     if (!(location.state as { workspace?: string } | null)?.workspace) {
       guidInput.setDir('');
     }
@@ -536,22 +576,17 @@ const GuidPage: React.FC = () => {
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
     />
   );
-
-  // 智能编排「协作模型」选择器 — 仅编排模式显示，挂在主模型选择器旁。主模型
-  // (current_model) 作为 lead/规划器始终在池中，故从协作列表中排除。
-  const mainModelRef = modelSelection.current_model
-    ? { provider_id: modelSelection.current_model.id, model: modelSelection.current_model.use_model }
-    : null;
-  const collaboratorSelectorNode =
-    orchestrationMode && isGeminiMode ? (
-      <GuidCollaboratorSelector
-        value={collaborators.collaborators}
-        onChange={(next) => {
-          void collaborators.setCollaborators(next);
-        }}
-        mainModel={mainModelRef}
-      />
-    ) : null;
+  const collaboratorSelectorNode = (
+    <GuidCollaboratorSelector
+      value={orchestrationCollaborators}
+      onChange={handleOrchestrationCollaboratorsChange}
+      mainModel={mainModelRef}
+      className='nomi-sendbox-model-btn'
+    />
+  );
+  const clusterApprovalSelectorNode = (
+    <GuidClusterApprovalSelector value={clusterApprovalMode} onChange={setClusterApprovalMode} />
+  );
 
   // Advanced drafts — the same controls as the conversation header, in draft
   // mode (collected locally, applied right after the conversation is created).
@@ -588,7 +623,8 @@ const GuidPage: React.FC = () => {
       files={guidInput.files}
       onFilesUploaded={guidInput.handleFilesUploaded}
       modelSelectorNode={modelSelectorNode}
-      collaboratorSelectorNode={collaboratorSelectorNode}
+      collaboratorSelectorNode={clusterMode ? collaboratorSelectorNode : undefined}
+      clusterApprovalSelectorNode={clusterMode ? clusterApprovalSelectorNode : undefined}
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}
@@ -608,12 +644,9 @@ const GuidPage: React.FC = () => {
       onToggleMcpServer={handleToggleMcpServer}
       hidePresetTag
       loading={guidInput.loading}
-      autoWorkMode={isAutoWorkMode && !orchestrationMode}
-      orchestrationMode={orchestrationMode}
+      autoWorkMode={isAutoWorkMode}
       isButtonDisabled={
-        // 智能编排 takes precedence over AutoWork: orchestration needs a typed goal,
-        // so it always uses the normal send-disabled (typed-input) predicate.
-        isAutoWorkMode && !orchestrationMode
+        isAutoWorkMode
           ? autoWorkStartDisabled(guidInput.loading, advancedConfig.autoWork)
           : send.isButtonDisabled
       }
@@ -691,21 +724,13 @@ const GuidPage: React.FC = () => {
                   isPresetAgent={agentSelection.is_presetAgent}
                   assistantLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
                   assistantAvatar={selectedAssistantAvatar ?? undefined}
-                  onSummon={() => { setOrchestrationMode(false); setDrawerMode('assistant'); setDrawerOpen(true); }}
+                  onSummon={() => { setDrawerMode('assistant'); setDrawerOpen(true); }}
                   onAdjustSkills={handleOpenSkillsDrawer}
-                  onFree={() => { setOrchestrationMode(false); agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); }}
-                  onOrchestrate={() =>
-                    setOrchestrationMode((prev) => {
-                      const next = !prev;
-                      // Mutually exclusive with the summon flow — drop back to the
-                      // default (free) agent when entering orchestration mode.
-                      if (next) agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                      return next;
-                    })
-                  }
-                  isOrchestrationMode={orchestrationMode}
+                  onFree={() => { agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); }}
                   activeSkillCount={activeSkillCount}
                   activeSkills={activeSkills}
+                  clusterActive={clusterMode}
+                  onToggleCluster={() => setClusterMode((v) => !v)}
                 />
               }
             />
@@ -737,7 +762,7 @@ const GuidPage: React.FC = () => {
           assistants={agentSelection.assistants}
           localeKey={localeKey}
           onSelectAssistant={(id) => { handleSelectAssistant(`custom:${id}`); setDrawerOpen(false); }}
-          onFree={() => { setOrchestrationMode(false); agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); setDrawerOpen(false); }}
+          onFree={() => { agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); setDrawerOpen(false); }}
           allSkills={allSkills}
           enabledSkills={guidEnabledSkills ?? []}
           disabledBuiltinSkills={guidDisabledBuiltinSkills ?? []}

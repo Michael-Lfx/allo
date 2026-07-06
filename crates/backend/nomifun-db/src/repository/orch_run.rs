@@ -23,6 +23,7 @@ pub struct CreateRunParams {
 /// For the nullable columns, the nesting distinguishes "skip" from "set NULL":
 /// `None` = skip, `Some(None)` = set NULL, `Some(Some(v))` = set `v`.
 /// `status` is a plain non-null column: `None` = skip, `Some(v)` = set `v`.
+#[derive(Default)]
 pub struct UpdateRunParams {
     pub status: Option<String>,
     pub summary: Option<Option<String>>,
@@ -37,6 +38,12 @@ pub struct UpdateRunParams {
     /// Fleet snapshot JSON (replan rebuilds it from a new model range). `NOT NULL`
     /// column → single-`Option` skip/set encoding.
     pub fleet_snapshot: Option<String>,
+    /// Working directory (nullable column → double-`Option` skip/NULL/set). Used by
+    /// the engine to persist an AUTO-ALLOCATED shared working directory for an
+    /// ad-hoc/conversation-native run that had neither a `work_dir` nor a workspace
+    /// (`Some(Some(dir))` sets it, stable across restarts + browsable; `Some(None)`
+    /// clears; `None` skips).
+    pub work_dir: Option<Option<String>>,
 }
 
 /// Parameters for creating a task within a run. `id` is minted
@@ -59,6 +66,11 @@ pub struct CreateTaskParams {
     /// Optional per-kind config JSON (迁移 023, nullable), e.g. fan-out 分组
     /// `{"group":"<label>"}`。`None` when unused.
     pub pattern_config: Option<String>, // JSON
+    /// Per-node failure policy (迁移 029, nullable): `None`/`"fail_run"` = default
+    /// (a hard failure fails the whole run); `"skip_and_continue"` = soft failure
+    /// (skip downstream, run may settle `completed_with_failures`). Today the
+    /// planner persists `None`; a later phase sets it per node.
+    pub on_fail: Option<String>,
 }
 
 /// Parameters for a partial task update. `None` = leave the column unchanged.
@@ -219,6 +231,25 @@ pub trait IRunRepository: Send + Sync {
         override_provider_id: Option<String>,
         override_model: Option<String>,
         preset_prompt: Option<String>,
+    ) -> Result<(), sqlx::Error>;
+
+    /// 写 run 的节点级审批模式（迁移 030）：`Some("manual")` = 审批模式；`None` =
+    /// 置 NULL（读回视作 `"auto"` 全授权）。单列写 + `updated_at`，与
+    /// [`set_task_overrides`](Self::set_task_overrides) 同理独立于既有 Params，
+    /// 避免触碰大量 `UpdateRunParams` 调用点。
+    async fn set_run_approval_mode(
+        &self,
+        id: &str,
+        approval_mode: Option<&str>,
+    ) -> Result<(), sqlx::Error>;
+
+    /// 写/清任务挂起的决策问题（迁移 030）：`Some(q)` = worker 经 nomi_task_question
+    /// 提交问题；`None` = 解决后清空（采用产出/重跑）。状态迁移（↔ `needs_review`）
+    /// 由调用方经 [`update_task`](Self::update_task) 处理，本方法只管这一列。
+    async fn set_task_question(
+        &self,
+        id: &str,
+        question: Option<&str>,
     ) -> Result<(), sqlx::Error>;
 
     /// Delete ONE task (`DELETE FROM orch_run_tasks WHERE id = ?`). The task-keyed

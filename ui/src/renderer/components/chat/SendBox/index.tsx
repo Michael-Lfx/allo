@@ -27,6 +27,7 @@ import { Button, Input, Message, Tag } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { ArrowUp, CloseSmall, Lightning, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
+import type { TFunction } from 'i18next';
 import { theme } from '@/platform';
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +46,8 @@ import { allSupportedExts } from '@renderer/services/FileService';
 import SpeechInputButton from '@/renderer/components/chat/SpeechInputButton';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory, isCaretOnFirstLine } from '@/renderer/utils/chat/messageHistory';
+import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
+import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
 import './sendbox.css';
 
 const constVoid = (): void => undefined;
@@ -153,6 +156,13 @@ function extractBtwQuestion(value: string): string | null {
   return match ? match[1] || '' : null;
 }
 
+function getSlashCommandDescription(command: SlashCommandItem, t: TFunction): string {
+  if (command.source !== 'builtin' && command.name === 'compact') {
+    return t('conversation.slashCommands.compact.description', { defaultValue: command.description });
+  }
+  return command.description;
+}
+
 const SendBox: React.FC<{
   value?: string;
   onChange?: (value: string) => void;
@@ -174,6 +184,7 @@ const SendBox: React.FC<{
   className?: string;
   tools?: React.ReactNode;
   rightTools?: React.ReactNode;
+  topRightTools?: React.ReactNode;
   prefix?: React.ReactNode;
   placeholder?: string;
   onFilesAdded?: (files: FileMetadata[]) => void;
@@ -190,6 +201,8 @@ const SendBox: React.FC<{
   selectedWorkspaceItems?: FileSelectionItem[];
   onSelectedWorkspaceItemsChange?: (items: FileSelectionItem[]) => void;
   bottomHint?: React.ReactNode;
+  /** Conversation-only: render the compact plan strip directly above the input panel. */
+  showPinnedPlan?: boolean;
   /**
    * Mobile-only: open a parent-supplied action sheet via the `+` button.
    * When provided, mobile renders a single `+` button (left) and send/stop button (right);
@@ -208,6 +221,7 @@ const SendBox: React.FC<{
   loading,
   tools,
   rightTools,
+  topRightTools,
   disabled,
   placeholder,
   value: input = '',
@@ -226,6 +240,7 @@ const SendBox: React.FC<{
   selectedWorkspaceItems,
   onSelectedWorkspaceItemsChange,
   bottomHint,
+  showPinnedPlan = false,
   onMobilePlusClick,
 }) => {
   const layout = useLayoutContext();
@@ -251,6 +266,7 @@ const SendBox: React.FC<{
   const latestInputRef = useLatestRef(input);
   const setInputRef = useLatestRef(setInput);
   const messageList = useMessageList();
+  const pinnedPlan = useMemo(() => (showPinnedPlan ? derivePinnedPlan(messageList) : null), [messageList, showPinnedPlan]);
   const [historyNavigationIndex, setHistoryNavigationIndex] = useState<number | null>(null);
   const historyDraftRef = useRef<string | null>(null);
   const [replyQuote, setReplyQuote] = useState<ReplyQuote | null>(null);
@@ -563,10 +579,10 @@ const SendBox: React.FC<{
       slashController.filteredCommands.map((command) => ({
         key: command.name,
         label: `/${command.name}`,
-        description: command.description,
+        description: getSlashCommandDescription(command, t),
         badge: command.hint,
       })),
-    [slashController.filteredCommands]
+    [slashController.filteredCommands, t]
   );
 
   const isCommandMenuOpen = conversationExport.isOpen || slashController.isOpen;
@@ -1522,7 +1538,25 @@ const SendBox: React.FC<{
   }, [allAtFileQueries, input]);
 
   return (
-    <div className={className}>
+    <div className={`relative ${className ?? ''}`}>
+      {pinnedPlan && (
+        <div
+          className='pointer-events-none absolute left-0 right-0 bottom-[calc(100%+4px)] z-30 flex items-start justify-center px-1'
+          data-testid='sendbox-plan-overlay'
+        >
+          <div className='pointer-events-auto w-full'>
+            <PinnedPlan plan={pinnedPlan} />
+          </div>
+        </div>
+      )}
+      {topRightTools && (
+        <div
+          className='pointer-events-none absolute right-4px bottom-[calc(100%+4px)] h-36px z-40 flex items-center justify-end'
+          data-testid='sendbox-top-right-tools'
+        >
+          <div className='pointer-events-auto'>{topRightTools}</div>
+        </div>
+      )}
       <div
         ref={containerRef}
         className={`sendbox-panel relative p-16px border-3 b bg-dialog-fill-0 b-solid rd-20px flex flex-col ${isOverlayOpen ? 'overflow-visible' : 'overflow-hidden'} ${isFileDragging ? 'b-dashed sendbox-panel--dragging' : ''}`}

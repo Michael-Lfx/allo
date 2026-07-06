@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 use crate::channel_settings::{ChannelSettingsService, resolved_model_to_provider};
 use crate::constants::{STREAM_THROTTLE_INTERVAL, TOOL_CONFIRM_TIMEOUT};
 use crate::error::ChannelError;
-use crate::types::{ActionButton, OutgoingMessageType, PluginType, UnifiedOutgoingMessage};
+use crate::types::{OutgoingMessageType, PluginType, UnifiedOutgoingMessage};
 
 /// Profile of the desktop's master agent (the companion). The channel layer
 /// resolves which companion greets a session via the channel row's own `companion_id`
@@ -37,6 +37,13 @@ pub trait MasterAgentProfile: Send + Sync {
     /// Whether `companion_id` names a live companion. Used to validate companion-binding
     /// writes and to skip dead channel bindings.
     async fn companion_exists(&self, companion_id: &str) -> bool;
+
+    /// Display name of `companion_id`, `None` when it does not exist. Used only to
+    /// render a friendlier "already bound to companion …" error (name over raw id).
+    /// Default `None` keeps companion-only / test impls unaffected.
+    async fn companion_name(&self, _companion_id: &str) -> Option<String> {
+        None
+    }
 
     /// Idempotently resolve (create-or-get) the companion's ONE persistent
     /// session conversation id. This is what unifies a companion's IM-channel
@@ -66,6 +73,12 @@ pub trait MasterAgentProfile: Send + Sync {
     /// domain wired) — the binding route then rejects unknown ids.
     async fn public_agent_exists(&self, _id: &str) -> bool {
         false
+    }
+
+    /// Display name of public agent `id`, `None` when it does not exist. Used only
+    /// to render a friendlier "already bound to public agent …" error. Default `None`.
+    async fn public_agent_name(&self, _id: &str) -> Option<String> {
+        None
     }
 
     /// The configured answering model of public agent `id`, `None` when the agent
@@ -670,30 +683,19 @@ impl ChannelMessageService {
         }
     }
 
-    /// Builds the final message after streaming completes, including
-    /// action buttons for the user.
+    /// Builds the final message after streaming completes.
+    ///
+    /// The `Buttons` message type is retained purely as the "final turn" marker
+    /// that channels key off to finalize a streaming card (e.g. DingTalk flips
+    /// its AI Card to FINISHED on this type). No action buttons are attached:
+    /// the Regenerate / Continue / New Session affordances were removed because
+    /// they cluttered the reply and hurt readability across IM channels.
     pub fn build_final_message(text: &str) -> UnifiedOutgoingMessage {
         UnifiedOutgoingMessage {
             message_type: OutgoingMessageType::Buttons,
             text: Some(text.to_owned()),
             parse_mode: None,
-            buttons: Some(vec![vec![
-                ActionButton {
-                    label: "\u{1f504} Regenerate".into(),
-                    action: "chat.regenerate".into(),
-                    params: None,
-                },
-                ActionButton {
-                    label: "\u{25b6}\u{fe0f} Continue".into(),
-                    action: "chat.continue".into(),
-                    params: None,
-                },
-                ActionButton {
-                    label: "\u{2795} New Session".into(),
-                    action: "session.new".into(),
-                    params: None,
-                },
-            ]]),
+            buttons: None,
             keyboard: None,
             image_url: None,
             file_url: None,
@@ -914,6 +916,7 @@ fn platform_to_source(platform: PluginType) -> ConversationSource {
         | PluginType::Mattermost
         | PluginType::Twitch
         | PluginType::Nostr
+        | PluginType::Wecom
         | PluginType::Qqbot => ConversationSource::Nomifun,
     }
 }
@@ -946,6 +949,7 @@ fn channel_conversation_name(
         PluginType::Lark => "lark",
         PluginType::Dingtalk => "ding",
         PluginType::Weixin => "wx",
+        PluginType::Wecom => "wecom",
         PluginType::Slack => "slack",
         PluginType::Discord => "discord",
         PluginType::Matrix => "matrix",
@@ -1396,13 +1400,13 @@ mod tests {
     // ── build_final_message ────────────────────────────────────────────
 
     #[test]
-    fn final_message_has_buttons() {
+    fn final_message_is_marked_final_without_buttons() {
         let msg = ChannelMessageService::build_final_message("Response text");
+        // `Buttons` type is kept as the "final turn" marker (channels key off it
+        // to finalize a streaming card), but no action buttons are attached.
         assert_eq!(msg.message_type, OutgoingMessageType::Buttons);
         assert_eq!(msg.text.as_deref(), Some("Response text"));
-        let buttons = msg.buttons.unwrap();
-        assert!(!buttons.is_empty());
-        assert!(buttons[0].len() >= 2);
+        assert!(msg.buttons.is_none(), "final reply must carry no action buttons");
     }
 
     // ── build_streaming_message ────────────────────────────────────────

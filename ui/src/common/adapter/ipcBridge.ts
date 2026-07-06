@@ -1764,9 +1764,10 @@ export interface ICreateConversationParams {
     context?: string;
     context_file_name?: string;
     preset_rules?: string;
-    /** Orchestration lead role. When `'lead'`, the backend composes the
-     *  LEAD_ORCHESTRATOR_PROMPT so the agent decomposes complex goals via
-     *  `nomi_run_create` (homepage 智能编排 entry). Prompt-only; never grants tools. */
+    /** Legacy field kept for backward-compat only (`#[serde(default)]`); no longer
+     *  drives any lead prompt (the homepage 智能编排 entry was removed). The model
+     *  range (主/协作) is now set per-conversation via the composer's collaborator
+     *  selector into `extra.orchestrator_model_range`. */
     orchestrator_role?: string;
     /** Curated model range for the orchestration run this lead conversation
      *  spawns (homepage「主模型 + 协作模型」picker). `models[0]` = 主模型 (also the
@@ -1774,6 +1775,13 @@ export interface ICreateConversationParams {
      *  gateway handler from the conversation's extra (deterministic, not via the
      *  LLM). Absent ⇒ Auto (every enabled model). */
     orchestrator_model_range?: TModelRange;
+    /** 「agent 集群」意图标记（需求1）：composer 顶部 toggle 选中后落此键。后端
+     *  nomi 工厂据此在常驻 subagent 提示之上追加 CLUSTER_MODE_HINT（对每个任务
+     *  刻意评估是否开集群、太简单先向用户说明原因）。 */
+    agent_cluster_mode?: boolean;
+    /** 节点级审批模式（需求5，迁移 030）：'manual' = 集群节点遇关键决策挂起向
+     *  用户提问；'auto'/缺省 = 全授权。建 run 时由网关从会话 extra 读取生效。 */
+    orchestrator_approval_mode?: string;
     /** Transient: preset opt-in skills. Consumed by backend create handler
      *  and stripped before persistence. */
     preset_enabled_skills?: string[];
@@ -2111,6 +2119,12 @@ type RawPairing = Record<string, unknown>;
 type RawUser = Record<string, unknown>;
 type RawSession = Record<string, unknown>;
 
+interface IChannelBridgeResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
 function toPluginStatus(raw: RawPluginStatus): IChannelPluginStatus {
   return {
     id: (raw.plugin_id ?? raw.id) as string,
@@ -2181,7 +2195,7 @@ export const channel = {
    *   （二者互斥）；同一机器人(bot_key)已绑其他对象时后端 409。
    */
   enablePlugin: httpPost<
-    void,
+    IChannelBridgeResponse,
     { plugin_id?: string; plugin_type?: string; companion_id?: string; public_agent_id?: string; config: Record<string, unknown> }
   >('/api/channel/plugins/enable'),
   disablePlugin: httpPost<void, { plugin_id: string }>('/api/channel/plugins/disable'),
@@ -3562,6 +3576,16 @@ export interface IKnowledgeFileEntry {
   modified_at: number | null;
 }
 
+export interface IKnowledgeTreeEntry {
+  name: string;
+  rel_path: string;
+  is_dir: boolean;
+  is_file: boolean;
+  size?: number;
+  modified_at: number | null;
+  children?: IKnowledgeTreeEntry[];
+}
+
 export interface IKnowledgeFileContent {
   rel_path: string;
   content: string;
@@ -3756,8 +3780,18 @@ export const publicAgent = {
   ),
 };
 
+/**
+ * Client-side deadline for knowledge-base READ endpoints. The backend now
+ * bounds each base's directory walk (≈6s) and parallelizes the list, so these
+ * return quickly in normal operation; this is only a safety net so a wedged
+ * NAS/offline root surfaces a legible timeout error instead of hanging the UI.
+ * NOT applied to knowledge mutations (autogen / snapshot fetch / import) — those
+ * legitimately take minutes.
+ */
+const KB_READ_TIMEOUT_MS = 30_000;
+
 export const knowledge = {
-  listBases: httpGet<IKnowledgeBase[], void>('/api/knowledge/bases'),
+  listBases: httpGet<IKnowledgeBase[], void>('/api/knowledge/bases', { timeoutMs: KB_READ_TIMEOUT_MS }),
   createBase: httpPost<
     IKnowledgeBase,
     {
@@ -3770,7 +3804,7 @@ export const knowledge = {
       tags?: string[];
     }
   >('/api/knowledge/bases'),
-  getBase: httpGet<IKnowledgeBase, { id: string }>((p) => `/api/knowledge/bases/${p.id}`),
+  getBase: httpGet<IKnowledgeBase, { id: string }>((p) => `/api/knowledge/bases/${p.id}`, { timeoutMs: KB_READ_TIMEOUT_MS }),
   updateBase: httpPut<IKnowledgeBase, { id: string; name?: string; description?: string; tags?: string[] }>(
     (p) => `/api/knowledge/bases/${p.id}`,
     (p) => ({ name: p.name, description: p.description, tags: p.tags })
@@ -3806,9 +3840,25 @@ export const knowledge = {
   deleteBase: httpDelete<void, { id: string; purge?: boolean }>(
     (p) => `/api/knowledge/bases/${p.id}${p.purge ? '?purge=true' : ''}`
   ),
-  listFiles: httpGet<IKnowledgeFileEntry[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/files`),
+  listFiles: httpGet<IKnowledgeFileEntry[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/files`, { timeoutMs: KB_READ_TIMEOUT_MS }),
+  listTree: httpGet<IKnowledgeTreeEntry[], { id: string; path?: string }>(
+    (p) => `/api/knowledge/bases/${p.id}/tree${p.path ? `?path=${encodeURIComponent(p.path)}` : ''}`,
+    { timeoutMs: KB_READ_TIMEOUT_MS }
+  ),
+  createFolder: httpPost<IKnowledgeTreeEntry, { id: string; path: string }>(
+    (p) => `/api/knowledge/bases/${p.id}/folder`,
+    (p) => ({ path: p.path })
+  ),
+  deleteFolder: httpDelete<void, { id: string; path: string }>(
+    (p) => `/api/knowledge/bases/${p.id}/folder?path=${encodeURIComponent(p.path)}`
+  ),
+  renameTreeEntry: httpPost<IKnowledgeTreeEntry, { id: string; path: string; newName: string }>(
+    (p) => `/api/knowledge/bases/${p.id}/tree/rename`,
+    (p) => ({ path: p.path, new_name: p.newName })
+  ),
   readFile: httpGet<IKnowledgeFileContent, { id: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/file?path=${encodeURIComponent(p.path)}`
+    (p) => `/api/knowledge/bases/${p.id}/file?path=${encodeURIComponent(p.path)}`,
+    { timeoutMs: KB_READ_TIMEOUT_MS }
   ),
   writeFile: httpPut<void, { id: string; path: string; content: string }>(
     (p) => `/api/knowledge/bases/${p.id}/file`,
@@ -3844,7 +3894,7 @@ export const knowledge = {
   importBase: httpPost<IKnowledgeBase, { src_path: string }>('/api/knowledge/bases/import'),
   // ── P4 inbox review (staged write-back proposals) ──
   /** List staged write-back proposals under `_inbox/` (group by `scope` client-side). */
-  listInbox: httpGet<IKnowledgeInboxEntry[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/inbox`),
+  listInbox: httpGet<IKnowledgeInboxEntry[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/inbox`, { timeoutMs: KB_READ_TIMEOUT_MS }),
   /** Server-computed unified diff of one proposal vs. the current base document. */
   getInboxDiff: httpGet<IKnowledgeInboxDiff, { id: string; scope: string; path: string }>(
     (p) =>
@@ -3861,9 +3911,9 @@ export const knowledge = {
     (p) => ({ scope: p.scope, path: p.path })
   ),
   /** Bindings currently mounting this base (enabled AND disabled). */
-  listConsumers: httpGet<IKnowledgeConsumer[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/consumers`),
+  listConsumers: httpGet<IKnowledgeConsumer[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/consumers`, { timeoutMs: KB_READ_TIMEOUT_MS }),
   /** Total unreviewed staged proposals across all bases (sidebar red-dot signal). */
-  pendingInboxCount: httpGet<number, void>('/api/knowledge/inbox/pending-count'),
+  pendingInboxCount: httpGet<number, void>('/api/knowledge/inbox/pending-count', { timeoutMs: KB_READ_TIMEOUT_MS }),
   // ── P3 source connectors (Feishu, …) ──
   /** Pull a connector-backed base's remote docs into snapshots/ (distinct from refresh-source). */
   syncSource: httpPost<IKnowledgeSourceFetchSummary, { id: string }>(

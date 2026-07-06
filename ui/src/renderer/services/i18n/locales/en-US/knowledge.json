@@ -6,14 +6,18 @@
     "autogenOkNoReadme": "AI description generated (existing README.md kept)",
     "autogenOkReadme": "AI description generated; README.md written",
     "cancel": "Cancel",
+    "createFolderOk": "Folder created",
     "createOk": "Created",
     "delete": "Delete",
     "deleteConfirm": "Delete this knowledge base?",
     "deleteFileConfirm": "Delete this document?",
+    "deleteFolderOk": "Folder deleted",
     "deleteOk": "Deleted",
     "deleteWithFiles": "Also delete files in the directory",
     "edit": "Edit",
     "openFolder": "Open folder",
+    "rename": "Rename",
+    "renameOk": "Renamed",
     "save": "Save",
     "saveOk": "Saved",
     "viewDetail": "View details"
@@ -122,6 +126,7 @@
     "docs": {
       "edit": "Edit",
       "newFile": "New file",
+      "newFolder": "New folder",
       "noSearchResults": "No matching files",
       "preview": "Preview",
       "searchPlaceholder": "Search documents…",
@@ -300,6 +305,8 @@
   "newBase": "New knowledge base",
   "newFile": "New document",
   "newFilePlaceholder": "File name or relative path, e.g. concepts.md or api/conventions.md",
+  "newFolder": "New folder",
+  "newFolderPlaceholder": "Folder name or relative path, e.g. raw or raw/tutorials",
   "noFiles": "No .md documents yet — drop files into the directory or create one",
   "onboarding": {
     "import": "Import",
@@ -443,6 +450,12 @@
     "modalTitle": "Manage Tags",
     "renameFailed": "Failed to rename tag",
     "renameHint": "Click to rename"
+  },
+  "renamePlaceholder": "Enter a new name",
+  "renameTitle": "Rename",
+  "tree": {
+    "deleteFolderTitle": "Delete folder?",
+    "deleteFolderWarning": "Deleting “{{name}}” will remove all documents and subfolders inside it. This cannot be undone."
   },
   "title": "Knowledge"
 }

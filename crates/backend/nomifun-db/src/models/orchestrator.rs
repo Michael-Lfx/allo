@@ -62,6 +62,11 @@ pub struct OrchRunRow {
     pub forked_from: Option<String>,
     /// Working directory for an ad-hoc (workspace-less) run.
     pub work_dir: Option<String>,
+    /// 节点级审批模式（迁移 030，可空）：`NULL`/`"auto"` = 全授权（节点遇抉择自行
+    /// 判断，现状零回归）；`"manual"` = 审批模式（worker 可经 nomi_task_question
+    /// 挂起提问）。旧行读回 `None`。
+    #[serde(default)]
+    pub approval_mode: Option<String>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }
@@ -121,6 +126,22 @@ pub struct OrchRunTaskRow {
     /// re-reading the worker conversation.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Per-node failure policy (迁移 029, nullable): how the engine settles the RUN
+    /// when THIS task permanently fails.
+    ///   `None` / `"fail_run"`   = default — a hard failure fails the whole run
+    ///                             (current behaviour, zero regression).
+    ///   `"skip_and_continue"`   = a soft failure — the engine skips this node's
+    ///                             transitive downstream, lets independent branches
+    ///                             finish, and settles the run
+    ///                             `completed_with_failures` (not `failed`).
+    /// Set by the planner in a later phase; today all planned nodes persist `None`.
+    #[serde(default)]
+    pub on_fail: Option<String>,
+    /// 节点挂起的决策问题原文（迁移 030，可空）：审批模式下 worker 经
+    /// nomi_task_question 提交、任务转入 `needs_review` 时在场；解决（采用产出/
+    /// 重跑）后清空。旧行读回 `None`。
+    #[serde(default)]
+    pub pending_question: Option<String>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }

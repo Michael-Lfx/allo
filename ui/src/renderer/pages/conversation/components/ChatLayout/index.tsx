@@ -114,6 +114,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
     conversation_id,
     preferenceKey: workspacePreferenceKey ?? (conversation_id != null ? String(conversation_id) : undefined),
     isTemporaryWorkspace,
+    autoExpandOnFiles: false,
   });
 
   // --- Hook B: container width ---
@@ -375,6 +376,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
               togglePlacement={layout?.isMobile ? 'left' : 'right'}
               workspacePath={workspacePath}
               isTemporaryWorkspace={isTemporaryWorkspace}
+              conversation_id={conversation_id}
             >
               {props.siderTitle}
             </WorkspacePanelHeader>
@@ -395,6 +397,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
             sider={props.sider}
             workspacePath={workspacePath}
             isTemporaryWorkspace={isTemporaryWorkspace}
+            conversation_id={conversation_id}
           />
         )}
 

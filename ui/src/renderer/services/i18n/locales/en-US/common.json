@@ -51,6 +51,7 @@
   "saveSuccess": "Saved successfully",
   "saveFailed": "Failed to save",
   "unknownError": "Unknown error",
+  "unknownUser": "Unknown user",
   "confirmDelete": "Confirm Delete",
   "deleteSuccess": "Deleted successfully",
   "deleteFailed": "Failed to delete",
@@ -110,6 +111,7 @@
   "optional": "(optional)",
   "clear": "Clear",
   "unit": {
+    "hour_short": "h",
     "minute_short": "m",
     "second_short": "s"
   }

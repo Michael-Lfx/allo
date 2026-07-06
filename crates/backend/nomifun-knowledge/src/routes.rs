@@ -14,7 +14,7 @@ use crate::connector::ConnectorIdentity;
 use crate::export::{self, ExportSummary, ImportSummary};
 use crate::service::{
     AutogenOutcome, ConsumerInfo, InboxDiff, InboxEntry, InboxMergeResult, KbFileContent, KbFileEntry,
-    KnowledgeBaseInfo, KnowledgeBinding, KnowledgeSearchHit, RefreshSourceSummary,
+    KbTreeEntry, KnowledgeBaseInfo, KnowledgeBinding, KnowledgeSearchHit, RefreshSourceSummary,
 };
 use crate::state::KnowledgeRouterState;
 
@@ -54,6 +54,9 @@ pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
             axum::routing::put(update_tag).delete(delete_tag),
         )
         .route("/api/knowledge/bases/{id}/files", get(list_files))
+        .route("/api/knowledge/bases/{id}/tree", get(list_tree))
+        .route("/api/knowledge/bases/{id}/folder", post(create_folder).delete(delete_folder))
+        .route("/api/knowledge/bases/{id}/tree/rename", post(rename_tree_entry))
         .route("/api/knowledge/bases/{id}/inbox", get(list_inbox))
         .route("/api/knowledge/inbox/pending-count", get(pending_inbox_count))
         .route("/api/knowledge/bases/{id}/inbox/diff", get(inbox_diff))
@@ -199,6 +202,66 @@ async fn list_files(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<KbFileEntry>>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.list_files(&id).await?)))
+}
+
+#[derive(Deserialize, Default)]
+struct TreeQuery {
+    #[serde(default)]
+    path: String,
+}
+
+async fn list_tree(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<ApiResponse<Vec<KbTreeEntry>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_tree(&id, &query.path).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+struct CreateFolderRequest {
+    path: String,
+}
+
+async fn create_folder(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<CreateFolderRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<KbTreeEntry>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(state.service.create_folder(&id, &req.path).await?)))
+}
+
+async fn delete_folder(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.delete_folder(&id, &query.path).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+struct RenameTreeEntryRequest {
+    path: String,
+    new_name: String,
+}
+
+async fn rename_tree_entry(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<RenameTreeEntryRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<KbTreeEntry>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state.service.rename_tree_entry(&id, &req.path, &req.new_name).await?,
+    )))
 }
 
 #[derive(Deserialize)]

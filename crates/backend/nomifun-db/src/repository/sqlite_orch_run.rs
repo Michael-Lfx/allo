@@ -61,6 +61,7 @@ impl IRunRepository for SqliteRunRepository {
             total_tokens: None,
             forked_from: None,
             work_dir: p.work_dir,
+            approval_mode: None,
             created_at: now,
             updated_at: now,
         })
@@ -131,6 +132,9 @@ impl IRunRepository for SqliteRunRepository {
         if p.fleet_snapshot.is_some() {
             sets.push("fleet_snapshot = ?");
         }
+        if p.work_dir.is_some() {
+            sets.push("work_dir = ?");
+        }
         if sets.is_empty() {
             return Ok(());
         }
@@ -159,6 +163,11 @@ impl IRunRepository for SqliteRunRepository {
         if let Some(fleet_snapshot) = &p.fleet_snapshot {
             q = q.bind(fleet_snapshot);
         }
+        if let Some(work_dir) = &p.work_dir {
+            // `work_dir: &Option<String>` — sqlx binds `None` as NULL, `Some(v)` as v
+            // (skip/NULL/set, matching the `summary` column above).
+            q = q.bind(work_dir);
+        }
         q = q.bind(now_ms());
         q = q.bind(id);
         q.execute(&self.pool).await?;
@@ -185,8 +194,8 @@ impl IRunRepository for SqliteRunRepository {
             "INSERT INTO orch_run_tasks (\
                 id, run_id, title, spec, task_profile, status, conversation_id, \
                 output_summary, output_files, attempt, tokens, graph_x, graph_y, role, \
-                kind, pattern_config, created_at, updated_at\
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                kind, pattern_config, on_fail, created_at, updated_at\
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&p.run_id)
@@ -199,6 +208,7 @@ impl IRunRepository for SqliteRunRepository {
         .bind(&p.role)
         .bind(&p.kind)
         .bind(&p.pattern_config)
+        .bind(&p.on_fail)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -225,6 +235,8 @@ impl IRunRepository for SqliteRunRepository {
             override_model: None,
             preset_prompt: None,
             last_error: None,
+            on_fail: p.on_fail,
+            pending_question: None,
             created_at: now,
             updated_at: now,
         })
@@ -355,6 +367,37 @@ impl IRunRepository for SqliteRunRepository {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    async fn set_run_approval_mode(
+        &self,
+        id: &str,
+        approval_mode: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        // 迁移 030：单列写。`None` = 回到 auto（列置 NULL）。
+        sqlx::query("UPDATE orch_runs SET approval_mode = ?, updated_at = ? WHERE id = ?")
+            .bind(approval_mode)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_task_question(
+        &self,
+        id: &str,
+        question: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        // 迁移 030：节点挂起问题单列写。`None` = 清空（采用产出/重跑后）。状态迁移
+        // （pending/running ↔ needs_review）由调用方经既有 update_task 处理。
+        sqlx::query("UPDATE orch_run_tasks SET pending_question = ?, updated_at = ? WHERE id = ?")
+            .bind(question)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -516,8 +559,8 @@ impl IRunRepository for SqliteRunRepository {
                 "INSERT INTO orch_run_tasks (\
                     id, run_id, title, spec, task_profile, status, conversation_id, \
                     output_summary, output_files, attempt, tokens, graph_x, graph_y, role, \
-                    kind, pattern_config, created_at, updated_at\
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                    kind, pattern_config, on_fail, created_at, updated_at\
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&task_id)
             .bind(run_id)
@@ -530,6 +573,7 @@ impl IRunRepository for SqliteRunRepository {
             .bind(&t.role)
             .bind(&t.kind)
             .bind(&t.pattern_config)
+            .bind(&t.on_fail)
             .bind(now)
             .bind(now)
             .execute(&mut *tx)
@@ -804,6 +848,7 @@ mod tests {
                 role: None,
                 kind: "agent".into(),
                 pattern_config: None,
+                on_fail: None,
             })
             .await
             .unwrap();
@@ -879,6 +924,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         let a = repo.create_task(mk("A")).await.unwrap();
         let b = repo.create_task(mk("B")).await.unwrap();
@@ -960,6 +1006,7 @@ mod tests {
                 goal: None,
                 autonomy: None,
                 fleet_snapshot: None,
+                work_dir: None,
             },
         )
         .await
@@ -1004,6 +1051,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         // p1, p2 are independent blockers of c; standalone has no deps.
         let p1 = repo.create_task(mk("p1")).await.unwrap();
@@ -1180,6 +1228,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         let a = repo.create_task(mk("A")).await.unwrap();
         let b = repo.create_task(mk("B")).await.unwrap();
@@ -1223,6 +1272,7 @@ mod tests {
                 role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
             })
             .await
             .unwrap();
@@ -1286,6 +1336,7 @@ mod tests {
                 goal: Some("new goal".into()),
                 autonomy: None,
                 fleet_snapshot: None,
+                work_dir: None,
             },
         )
         .await
@@ -1334,6 +1385,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         let a = repo.create_task(mk(run.id.clone(), "A")).await.unwrap();
         let b = repo.create_task(mk(run.id.clone(), "B")).await.unwrap();
@@ -1427,6 +1479,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         // A→B→C chain; delete B (the middle task) — both its edges (A→B, B→C) and
         // its assignment must cascade; A and C (and their kept edges/assignments)
@@ -1501,6 +1554,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         let a = repo.create_task(mk(run.id.clone(), "A")).await.unwrap();
         let b = repo.create_task(mk(run.id.clone(), "B")).await.unwrap();
@@ -1570,6 +1624,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         // Seed: keep + drop tasks, an edge keep→drop, and an assignment on each.
         let keep = repo.create_task(mk("keep")).await.unwrap();
@@ -1602,6 +1657,7 @@ mod tests {
                 role: None,
                 kind: "agent".into(),
                 pattern_config: None,
+                on_fail: None,
             },
             assignment: Some(CreateAssignmentParams {
                 task_id: String::new(), // overwritten with the minted id
@@ -1689,6 +1745,7 @@ mod tests {
             role: None,
             kind: "agent".into(),
             pattern_config: None,
+            on_fail: None,
         };
         let keep = repo.create_task(mk("keep")).await.unwrap();
         let drop = repo.create_task(mk("drop")).await.unwrap();
@@ -1708,6 +1765,7 @@ mod tests {
                 role: None,
                 kind: "agent".into(),
                 pattern_config: None,
+                on_fail: None,
             },
             assignment: None,
             depends_on: vec![ReconcileDepRef::Kept("rtask_does_not_exist".into())],
@@ -1761,6 +1819,7 @@ mod tests {
             role: None,
             kind: kind.into(),
             pattern_config: pattern_config.map(str::to_string),
+            on_fail: None,
         })
         .await
         .unwrap()
@@ -1881,6 +1940,38 @@ mod tests {
     // Fix B PRIMITIVE: `mark_run_running_tasks_cancelled` marks ONLY the run's
     // `running` tasks `cancelled` (preserving their partial output for inspection),
     // leaving settled/pending tasks and other runs untouched.
+    // 迁移 030: set_run_approval_mode / set_task_question 单列写往返——写入读回、
+    // 清空读回 None；旧行（未写过）读回 None（零回归）。
+    #[tokio::test]
+    async fn approval_mode_and_pending_question_roundtrip() {
+        let db = init_database_memory().await.unwrap();
+        let pool = db.pool().clone();
+        let ws = make_workspace(&pool).await;
+        let repo = SqliteRunRepository::new(pool);
+        let run = mk_run(&repo, Some(ws), "审批模式往返").await;
+        let task = mk_task(&repo, &run, "节点", "agent", "running", None).await;
+
+        // 旧行读回 None（迁移默认）。
+        let r0 = repo.get_run(&run).await.unwrap().unwrap();
+        assert!(r0.approval_mode.is_none(), "未写过的 run 读回 None");
+        let t0 = repo.get_task(&task).await.unwrap().unwrap();
+        assert!(t0.pending_question.is_none(), "未写过的 task 读回 None");
+
+        // 写入读回。
+        repo.set_run_approval_mode(&run, Some("manual")).await.unwrap();
+        let r1 = repo.get_run(&run).await.unwrap().unwrap();
+        assert_eq!(r1.approval_mode.as_deref(), Some("manual"));
+        repo.set_task_question(&task, Some("选方案A还是B？")).await.unwrap();
+        let t1 = repo.get_task(&task).await.unwrap().unwrap();
+        assert_eq!(t1.pending_question.as_deref(), Some("选方案A还是B？"));
+
+        // 清空读回 None。
+        repo.set_run_approval_mode(&run, None).await.unwrap();
+        assert!(repo.get_run(&run).await.unwrap().unwrap().approval_mode.is_none());
+        repo.set_task_question(&task, None).await.unwrap();
+        assert!(repo.get_task(&task).await.unwrap().unwrap().pending_question.is_none());
+    }
+
     #[tokio::test]
     async fn mark_run_running_tasks_cancelled_settles_only_running() {
         let db = init_database_memory().await.unwrap();

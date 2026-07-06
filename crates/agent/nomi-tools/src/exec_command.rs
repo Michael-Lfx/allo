@@ -14,7 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use nomi_config::shell::shell_info;
+use nomi_config::shell::{shell_command_args, shell_info};
 use nomi_protocol::events::ToolCategory;
 use nomi_types::tool::{JsonSchema, ToolResult};
 
@@ -32,9 +32,8 @@ const OUTPUT_CAP_BYTES: usize = 128 * 1024;
 pub struct ExecCommandTool {
     store: Arc<ProcessStore>,
     default_cwd: PathBuf,
-    /// Shell program + flag used to run `cmd` (e.g. `sh -c`), from platform.
+    /// Shell program used to run command strings.
     shell_program: String,
-    shell_flag: String,
 }
 
 impl ExecCommandTool {
@@ -44,7 +43,6 @@ impl ExecCommandTool {
             store,
             default_cwd: cwd,
             shell_program: info.program.to_string(),
-            shell_flag: info.flag.to_string(),
         }
     }
 }
@@ -57,6 +55,10 @@ impl Tool for ExecCommandTool {
 
     fn description(&self) -> &str {
         "Runs a command in a PTY, returning its output or a session_id for ongoing interaction.\n\n\
+         The command is executed by the platform shell. On Windows this is PowerShell \
+         (use PowerShell syntax such as Get-ChildItem, $env:NAME, and ';' for sequencing; \
+         run cmd /C \"...\" explicitly when cmd.exe syntax is required). On macOS/Linux this \
+         is POSIX sh.\n\n\
          Use this for long-lived, interactive processes: REPLs (python, node), TUIs, and \
          interactive installers — things the one-shot Bash tool cannot drive.\n\n\
          - If the process exits within yield_time_ms, the result reports its exit_code and NO \
@@ -126,10 +128,10 @@ impl Tool for ExecCommandTool {
             .unwrap_or(DEFAULT_YIELD_MS)
             .clamp(MIN_YIELD_MS, MAX_YIELD_MS);
 
-        // Run through the platform login shell, mirroring nomi's Bash tool.
+        // Run through the platform shell, mirroring nomi's Bash tool.
         let params = PtyParams {
             program: self.shell_program.clone(),
-            args: vec![self.shell_flag.clone(), cmd.clone()],
+            args: shell_command_args(&cmd),
             cwd,
             env: std::env::vars().collect(),
             cols: if tty { 120 } else { 80 },
@@ -139,11 +141,8 @@ impl Tool for ExecCommandTool {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("exec_command: spawn failed: {e}")),
         };
-        // Subscribe immediately after spawn so we don't miss the first output.
-        let rx = pty.subscribe();
-
         let deadline = tokio::time::Instant::now() + Duration::from_millis(yield_ms);
-        let collected = collect_until_deadline(&pty, rx, deadline).await;
+        let (collected, read_offset) = collect_until_deadline(&pty, 0, deadline).await;
         let text = truncate_middle(
             &String::from_utf8_lossy(&collected),
             TruncationBudget::Bytes(OUTPUT_CAP_BYTES),
@@ -158,6 +157,7 @@ impl Tool for ExecCommandTool {
                 .insert(ExecSession {
                     id: 0,
                     pty: pty.clone(),
+                    read_offset,
                     command: cmd,
                     tty,
                     last_used: tokio::time::Instant::now(),
@@ -195,7 +195,11 @@ mod tests {
         assert!(!r.is_error, "unexpected error: {}", r.content);
         assert!(r.content.contains("exit_code=0"), "got: {}", r.content);
         assert!(r.content.contains("done_marker"), "got: {}", r.content);
-        assert!(parse_session_id(&r.content).is_none(), "should not get a session_id: {}", r.content);
+        assert!(
+            parse_session_id(&r.content).is_none(),
+            "should not get a session_id: {}",
+            r.content
+        );
     }
 
     #[tokio::test]

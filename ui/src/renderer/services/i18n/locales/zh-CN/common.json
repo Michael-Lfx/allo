@@ -51,6 +51,7 @@
   "saveSuccess": "保存成功",
   "saveFailed": "保存失败",
   "unknownError": "未知错误",
+  "unknownUser": "未知用户",
   "confirmDelete": "确认删除",
   "deleteSuccess": "删除成功",
   "deleteFailed": "删除失败",
@@ -110,6 +111,7 @@
   "optional": "（可选）",
   "clear": "清除",
   "unit": {
+    "hour_short": "时",
     "minute_short": "分",
     "second_short": "秒"
   }

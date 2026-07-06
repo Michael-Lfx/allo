@@ -19,6 +19,12 @@
       "placeholder": "Pick collaborator models for orchestration…",
       "emptyHint": "The main model is always in the pool; add collaborators to let it offload simpler tasks to cheaper models by difficulty.",
       "selectedHint": "Pool = main model + {{count}} collaborator(s); the main model assigns each node by difficulty, balancing cost and quality."
+    },
+    "approval": {
+      "title": "Approval mode",
+      "desc": "Pause on key decisions and wait for you.",
+      "auto": "Approval · auto",
+      "manual": "Approval · confirm"
     }
   },
   "workspace": {
@@ -49,12 +55,14 @@
   "entry": {
     "free": "Free-form",
     "summon": "Summon assistant",
-    "orchestrate": "Orchestrate",
     "skills": "Use Skills",
     "skillsActive": "Use Skills · Enabled",
     "skillsAdjustAria": "Adjust the {{count}} Skills enabled for this chat",
     "skillsActiveAria": "View {{count}} Skills enabled for this chat",
-    "backToFree": "Free-form"
+    "backToFree": "Free-form",
+    "cluster": "Agent cluster",
+    "clusterAria": "Toggle agent cluster mode",
+    "clusterHint": "Multi-agent teamwork: the lead agent deliberately evaluates and splits work across independent agents; trivial tasks get a stated reason and a direct answer."
   },
   "skillsPopover": {
     "title": "Skills used in this chat",
