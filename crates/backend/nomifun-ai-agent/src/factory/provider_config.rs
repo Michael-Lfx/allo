@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use nomi_config::config::{CliArgs, Config};
 use nomi_providers::{LlmProvider, ProviderError, create_provider};
-use nomi_types::llm::{LlmEvent, LlmRequest};
+use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
 use nomifun_common::AppError;
 use nomifun_db::IProviderRepository;
@@ -178,6 +178,28 @@ pub async fn one_shot_completion(
     streaming_completion(cfg, system, messages, max_tokens, |_| {}).await
 }
 
+/// Like [`one_shot_completion`] but explicitly disables thinking/reasoning so
+/// auxiliary tasks (title generation, compaction) get a direct answer in `content`.
+pub async fn one_shot_completion_no_thinking(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+) -> Result<String, AppError> {
+    streaming_completion_no_thinking(cfg, system, messages, max_tokens, |_| {}).await
+}
+
+/// Like [`one_shot_completion`] but falls back to the reasoning channel when the
+/// model leaves `content` empty (common for OpenAI-compatible reasoning models).
+pub async fn one_shot_completion_text_or_reasoning(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+) -> Result<String, AppError> {
+    streaming_completion_text_or_reasoning(cfg, system, messages, max_tokens, |_, _| {}).await
+}
+
 /// Like [`one_shot_completion`] but invokes `on_delta` for every text chunk
 /// as it streams in, so callers can fan deltas out (e.g. over WebSocket)
 /// while the full reply is still being assembled.
@@ -197,6 +219,33 @@ pub async fn streaming_completion(
         tools: vec![],
         max_tokens,
         thinking: None,
+        reasoning_effort: None,
+    };
+
+    let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
+
+    drain_text_response_with(rx, on_delta).await
+}
+
+/// Like [`streaming_completion`] but sends `thinking: Disabled` and omits
+/// `reasoning_effort`, so providers that default to chain-of-thought answer in
+/// `content` instead of `reasoning_content`.
+pub async fn streaming_completion_no_thinking(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+    on_delta: impl FnMut(&str) + Send,
+) -> Result<String, AppError> {
+    let provider: Arc<dyn LlmProvider> = create_provider(cfg);
+
+    let request = LlmRequest {
+        model: cfg.model.clone(),
+        system: system.to_owned(),
+        messages,
+        tools: vec![],
+        max_tokens,
+        thinking: Some(ThinkingConfig::Disabled),
         reasoning_effort: None,
     };
 

@@ -5532,6 +5532,7 @@ version = "0.1.17"
 dependencies = [
  "async-trait",
  "axum",
+ "dashmap",
  "nomifun-ai-agent",
  "nomifun-api-types",
  "nomifun-auth",

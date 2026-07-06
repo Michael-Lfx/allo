@@ -40,6 +40,9 @@ use crate::skill_resolver::SkillResolver;
 use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills};
 use crate::stream_relay::StreamRelay;
 use std::sync::RwLock;
+use dashmap::DashMap;
+
+use nomifun_ai_agent::conversation_title_completer::ConversationTitleCompleter;
 
 const MAX_CRON_CONTINUATIONS_PER_TURN: usize = 4;
 
@@ -158,6 +161,14 @@ pub struct ConversationService {
     /// —— fail-safe,所以不跑故障转移的上下文(测试、纯 webui)无需任何改动。
     failover_provider_repo: Arc<RwLock<Option<Arc<dyn nomifun_db::IProviderRepository>>>>,
     failover_client_prefs: Arc<RwLock<Option<Arc<dyn nomifun_db::IClientPreferenceRepository>>>>,
+    /// LLM completer for auto-titling a new conversation from its first user
+    /// message. Same post-construction registration pattern as `cron_service`.
+    /// `None` → no LLM auto-title (feature unavailable without a provider).
+    title_completer: Arc<RwLock<Option<Arc<dyn ConversationTitleCompleter>>>>,
+    /// In-process once-guard: records every conversation for which `maybe_autotitle`
+    /// has already been dispatched in this server lifetime. Prevents duplicate LLM
+    /// calls on retried sends. The persistent guard is `extra.autoTitleState`.
+    llm_title_fired: Arc<DashMap<i64, ()>>,
 }
 
 // ── Construction & Dependency Injection ──────────────────────────────
@@ -191,6 +202,8 @@ impl ConversationService {
             supervision_hook: Arc::new(RwLock::new(None)),
             failover_provider_repo: Arc::new(RwLock::new(None)),
             failover_client_prefs: Arc::new(RwLock::new(None)),
+            title_completer: Arc::new(RwLock::new(None)),
+            llm_title_fired: Arc::new(DashMap::new()),
         }
     }
 
@@ -254,6 +267,14 @@ impl ConversationService {
     pub fn with_delete_hook(&self, hook: Arc<dyn OnConversationDelete>) {
         if let Ok(mut guard) = self.delete_hooks.write() {
             guard.push(hook);
+        }
+    }
+
+    /// Wire the LLM completer for conversation auto-titling. Same slot pattern
+    /// as `with_supervision_hook` — called by `nomifun-app` after construction.
+    pub fn with_title_completer(&self, completer: Arc<dyn ConversationTitleCompleter>) {
+        if let Ok(mut g) = self.title_completer.write() {
+            *g = Some(completer);
         }
     }
 
@@ -1699,6 +1720,10 @@ impl ConversationService {
         let user_id_owned = user_id.to_owned();
         let service = self.clone();
         let task_manager = Arc::clone(task_manager);
+        // Capture user message content for auto-title (fires after first turn completes,
+        // with both user + assistant context available, matching the reference pattern).
+        let autotitle_user_content = req.content.clone();
+        let autotitle_conv_id = user_msg.conversation_id;
         // Orchestrator-driven worker conversations carry `orchestrator_run_id` in
         // their `extra` (stamped by `build_worker_extra`). For those — and ONLY
         // those — hand the relay a clone of the runtime state so it accumulates
@@ -1999,8 +2024,7 @@ impl ConversationService {
                 if outcome.system_responses.is_empty() {
                     break;
                 }
-                continuation_count += 1;
-                let next_turn_msg_id = Self::mint_msg_id();
+                continuation_count += 1;                let next_turn_msg_id = Self::mint_msg_id();
                 pending_send = Some((
                     SendMessageData {
                         content: outcome.system_responses.join("\n"),
@@ -2014,6 +2038,16 @@ impl ConversationService {
                     },
                     next_turn_msg_id,
                 ));
+            }
+
+            // Fire auto-title after first exchange completes: at this point both
+            // user and assistant messages are in the DB (matches reference pattern).
+            // Best-effort — never blocks turn completion.
+            {
+                let svc_title = service.clone();
+                tokio::spawn(async move {
+                    svc_title.maybe_autotitle(autotitle_conv_id, autotitle_user_content).await;
+                });
             }
 
             turn_claim.release();
@@ -2714,6 +2748,113 @@ impl ConversationService {
             "Persisted auto-resolved workspace to conversation.extra"
         );
         Ok(())
+    }
+
+    /// Auto-generate an LLM title for a newly created conversation.
+    ///
+    /// Fires at most once per conversation per process (DashMap once-guard) and
+    /// skips permanently after the first successful generation
+    /// (`extra.autoTitleState == "done"`).  Best-effort: every failure path
+    /// only logs and never surfaces an error to the caller.
+    ///
+    /// Triggered after the first exchange completes so both user and assistant
+    /// messages are available in the DB, matching the reference pattern.
+    async fn maybe_autotitle(&self, conversation_id: i64, first_user_content: String) {
+        if self.llm_title_fired.insert(conversation_id, ()).is_some() {
+            return;
+        }
+
+        let completer = match self.title_completer.read().ok().and_then(|g| g.clone()) {
+            Some(c) => c,
+            None => {
+                warn!(conversation_id, "auto-title: no completer wired, skipping");
+                return;
+            }
+        };
+
+        let Ok(Some(row)) = self.conversation_repo.get(conversation_id).await else {
+            warn!(conversation_id, "auto-title: conversation not found");
+            return;
+        };
+
+        if let Ok(extra) = serde_json::from_str::<serde_json::Value>(&row.extra) {
+            if extra.get("autoTitleState").and_then(|v| v.as_str()) == Some("done") {
+                debug!(conversation_id, "auto-title: already generated (persistent guard), skipping");
+                return;
+            }
+        }
+
+        // Build "User: ...\nAssistant: ..." content from first exchange.
+        // Truncate each side to 500 chars (mirrors reference implementation).
+        let user_snippet = &first_user_content[..first_user_content.len().min(500)];
+        let assistant_snippet: String = self
+            .conversation_repo
+            .get_messages(conversation_id, 0, 100, SortOrder::Asc)
+            .await
+            .map(|result| {
+                result
+                    .items
+                    .into_iter()
+                    .find(|m| {
+                        m.position.as_deref() == Some("left")
+                            && m.r#type == "text"
+                            && !m.hidden
+                    })
+                    .and_then(|m| {
+                        serde_json::from_str::<serde_json::Value>(&m.content)
+                            .ok()
+                            .and_then(|v| v.get("content").and_then(|c| c.as_str()).map(|s| s.to_owned()))
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        let content = if assistant_snippet.is_empty() {
+            debug!(conversation_id, "auto-title: no assistant message yet, using user snippet only");
+            user_snippet.to_owned()
+        } else {
+            let asst_snippet = &assistant_snippet[..assistant_snippet.len().min(500)];
+            format!("User: {user_snippet}\n\nAssistant: {asst_snippet}")
+        };
+
+        info!(conversation_id, "auto-title: calling LLM");
+        let title = match completer.summarize(&content).await {
+            Ok(t) if !t.is_empty() => t,
+            Ok(_) => {
+                warn!(conversation_id, "auto-title: LLM returned empty string; using fallback");
+                crate::title::fallback_title_from_first_message(user_snippet, crate::title::TITLE_MAX_CHARS)
+            }
+            Err(e) => {
+                warn!(conversation_id, error = %e, "auto-title: LLM call failed; using fallback");
+                crate::title::fallback_title_from_first_message(user_snippet, crate::title::TITLE_MAX_CHARS)
+            }
+        };
+        if title.is_empty() {
+            return;
+        }
+        info!(conversation_id, title = %title, "auto-title: applying title");
+
+        let new_extra = match serde_json::from_str::<serde_json::Value>(&row.extra) {
+            Ok(mut v) => {
+                v["autoTitleState"] = serde_json::json!("done");
+                serde_json::to_string(&v).unwrap_or_else(|_| row.extra.clone())
+            }
+            Err(_) => row.extra.clone(),
+        };
+
+        let update = ConversationRowUpdate {
+            name: Some(title),
+            extra: Some(new_extra),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        if let Err(e) = self.conversation_repo.update(conversation_id, &update).await {
+            warn!(conversation_id, error = %e, "conversation auto-title DB update failed");
+            return;
+        }
+
+        self.broadcast_list_changed(&conversation_id.to_string(), "updated", None);
+        info!(conversation_id, "conversation auto-title applied");
     }
 
     /// Broadcast a `conversation.listChanged` WebSocket event.

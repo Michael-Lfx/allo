@@ -3,7 +3,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use nomi_types::llm::{LlmEvent, LlmRequest};
+use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomi_types::tool::{ToolDef, truncate_deferred_description};
 
@@ -354,6 +354,11 @@ impl OpenAIProvider {
 
         if let Some(effort) = &request.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
+        }
+
+        if matches!(request.thinking, Some(ThinkingConfig::Disabled)) {
+            body["thinking"] = json!({ "type": "disabled" });
+            body["enable_thinking"] = json!(false);
         }
 
         body
@@ -1304,6 +1309,24 @@ mod tests {
         let body = provider.build_request_body(&req);
         assert_eq!(body["max_completion_tokens"], 2048);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_thinking_disabled_in_request_body() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = LlmRequest {
+            model: "deepseek-v4-pro".into(),
+            system: String::new(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: 64,
+            thinking: Some(ThinkingConfig::Disabled),
+            reasoning_effort: None,
+        };
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["enable_thinking"], false);
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     // --- merge_assistant_messages ---

@@ -337,6 +337,19 @@ pub fn build_conversation_state(
         Arc::new(SqliteProviderRepository::new(services.database.pool().clone())),
         Arc::new(SqliteClientPreferenceRepository::new(services.database.pool().clone())),
     );
+    // Wire the LLM auto-title completer: a new conversation's first user
+    // message is summarized into a short work-content title via the default
+    // provider/model (same resolution as `LiveTerminalTitleCompleter`).
+    // Best-effort — no provider configured means no LLM title, fallback via
+    // the frontend's first-message heuristic still applies.
+    {
+        let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
+        conversation_service.with_title_completer(Arc::new(nomifun_ai_agent::LiveConversationTitleCompleter {
+            provider_repo: Arc::new(SqliteProviderRepository::new(services.database.pool().clone())),
+            encryption_key,
+            workspace: services.data_dir.clone(),
+        }));
+    }
     // Drop the conversation's knowledge binding when the conversation goes away.
     conversation_service.with_delete_hook(services.knowledge_service.clone());
     // Clear the dual-domain owner of any requirement this conversation owned —

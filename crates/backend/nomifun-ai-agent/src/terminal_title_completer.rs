@@ -15,7 +15,7 @@ use nomifun_common::AppError;
 use nomifun_db::IProviderRepository;
 use nomifun_terminal::TerminalTitleCompleter;
 
-use crate::factory::provider_config::{one_shot_completion, resolve_provider_config, user_message};
+use crate::factory::provider_config::{one_shot_completion_no_thinking, resolve_provider_config, user_message};
 use crate::knowledge_completer::first_enabled_model;
 
 /// The reply is a single short line; a tiny budget keeps the call cheap and
@@ -69,6 +69,6 @@ impl TerminalTitleCompleter for LiveTerminalTitleCompleter {
             &self.workspace,
         )
         .await?;
-        one_shot_completion(&cfg, TITLE_SYSTEM, vec![user_message(content)], TITLE_MAX_TOKENS).await
+        one_shot_completion_no_thinking(&cfg, TITLE_SYSTEM, vec![user_message(content)], TITLE_MAX_TOKENS).await
     }
 }

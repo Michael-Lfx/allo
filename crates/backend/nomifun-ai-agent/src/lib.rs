@@ -21,6 +21,7 @@ pub mod routes;
 pub(crate) mod services;
 pub mod shared_kernel;
 pub mod task_manager;
+pub mod conversation_title_completer;
 pub mod terminal_title_completer;
 pub mod types;
 
@@ -59,6 +60,7 @@ pub use knowledge_completer::LiveKnowledgeCompleter;
 pub use knowledge_completer::resolve_default_model;
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;
 pub use knowledge_writeback::LiveKnowledgeWritebackSink;
+pub use conversation_title_completer::{ConversationTitleCompleter, LiveConversationTitleCompleter};
 pub use terminal_title_completer::LiveTerminalTitleCompleter;
 pub use nomifun_api_types::{
     AcpBuildExtra, AcpModelInfo, NomiBuildExtra, OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra,

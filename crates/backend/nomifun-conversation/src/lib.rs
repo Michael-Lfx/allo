@@ -1,5 +1,6 @@
 //! Conversation and message CRUD with streaming relay and event emission.
 mod acp_error_recovery;
+pub mod title;
 mod convert;
 mod failover_seam;
 mod message_persistence;
