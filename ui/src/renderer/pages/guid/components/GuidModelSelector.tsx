@@ -15,6 +15,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
+import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
 
 type GuidModelSelectorProps = {
   // Gemini model state
@@ -105,7 +106,11 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
       <Dropdown
         trigger='click'
         droplist={
-          <Menu selectedKeys={current_model ? [current_model.id + current_model.use_model] : []}>
+          <Menu
+            className={dropdownMenuStyles.configDropdownMenu}
+            data-testid='guid-model-dropdown-menu'
+            selectedKeys={current_model ? [current_model.id + current_model.use_model] : []}
+          >
             {!hasModels
               ? [
                   <Menu.Item
@@ -131,11 +136,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                           return (
                             <Menu.Item
                               key={provider.id + modelName}
-                              className={
-                                (current_model?.id ?? '') + (current_model?.use_model ?? '') === provider.id + modelName
-                                  ? '!bg-2'
-                                  : ''
-                              }
                               onClick={() => {
                                 setCurrentModel({ ...provider, use_model: modelName }).catch((error) => {
                                   console.error('Failed to set current model:', error);
@@ -178,7 +178,11 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
         <Dropdown
           trigger='click'
           droplist={
-            <Menu selectedKeys={selectedAcpModel ? [selectedAcpModel] : []}>
+            <Menu
+              className={dropdownMenuStyles.configDropdownMenu}
+              data-testid='guid-model-dropdown-menu'
+              selectedKeys={selectedAcpModel ? [selectedAcpModel] : []}
+            >
               {currentAcpCachedModelInfo.available_models.map((model) => {
                 // 获取模型健康状态
                 const providerConfig = modelConfig?.find((p) => p.platform?.includes(''));
@@ -191,11 +195,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                       : 'bg-gray-400';
 
                 return (
-                  <Menu.Item
-                    key={model.id}
-                    className={model.id === selectedAcpModel ? '!bg-2' : ''}
-                    onClick={() => setSelectedAcpModel(model.id)}
-                  >
+                  <Menu.Item key={model.id} onClick={() => setSelectedAcpModel(model.id)}>
                     <div className='flex items-center gap-8px w-full'>
                       {healthStatus !== 'unknown' && (
                         <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />

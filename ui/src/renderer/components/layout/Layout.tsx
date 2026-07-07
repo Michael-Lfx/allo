@@ -630,7 +630,7 @@ const Layout: React.FC<{
             </ArcoLayout.Sider>
 
             <ArcoLayout.Content
-              className={'bg-1 layout-content flex flex-col min-h-0'}
+              className={'bg-base layout-content flex flex-col min-h-0'}
               onClick={() => {
                 if (isMobile && !collapsed) setCollapsed(true);
               }}

@@ -186,7 +186,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
               defaultValue: '查看本次会话已启用的 {{count}} 个 Skills',
             })}
           >
-            {skillCount}
+            <span className={styles.entryCountBadgeDigit}>{skillCount}</span>
           </button>
         </Trigger>
       </span>
@@ -195,7 +195,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         {skillsButton}
         {skillCount > 0 && (
           <span className={styles.entryCountBadge} aria-label={`${skillCount} skills`}>
-            {skillCount}
+            <span className={styles.entryCountBadgeDigit}>{skillCount}</span>
           </span>
         )}
       </span>

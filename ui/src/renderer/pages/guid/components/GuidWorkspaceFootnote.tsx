@@ -282,7 +282,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
             data-testid='workspace-selector-btn'
             onClick={recentWorkspaces.length > 0 ? toggleOpen : handleBrowseWorkspace}
           >
-            <FolderIcon size={14} />
+            <FolderIcon size={16} />
             <span>{t('guid.workspace.workInProject')}</span>
             {recentWorkspaces.length > 0 && (
               <Down

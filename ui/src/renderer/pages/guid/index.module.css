@@ -729,19 +729,28 @@ button.guidResourceCard:focus-visible {
 }
 
 .entryCountBadge {
+  box-sizing: border-box;
   min-width: 20px;
   height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 7px;
+  padding: 0 5px;
   border-radius: 999px;
   color: #fff;
   background: rgb(var(--primary-6));
   font-size: 11px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  text-align: center;
   box-shadow: 0 4px 10px rgba(var(--primary-6), 0.18);
+}
+
+.entryCountBadgeDigit {
+  display: block;
+  line-height: 1;
+  transform: translateY(-1px);
 }
 
 .entrySkillControl {
@@ -753,8 +762,10 @@ button.guidResourceCard:focus-visible {
 
 .entrySkillCountTrigger {
   border: 0;
+  margin: 0;
+  appearance: none;
   cursor: pointer;
-  font-family: inherit;
+  font: inherit;
   transition:
     transform 160ms ease,
     box-shadow 160ms ease,
@@ -1525,6 +1536,31 @@ button.guidResourceCard:focus-visible {
   margin-right: 0;
 }
 
+.actionEntry :global(.arco-btn),
+.actionEntry :global(.arco-btn:active),
+.actionEntry :global(.arco-btn:focus),
+.actionEntry :global(.arco-btn:focus-visible) {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.actionEntry :global(.arco-btn:hover) {
+  background: var(--color-fill-3) !important;
+}
+
+.actionFileAttachBtn:global(.arco-btn) {
+  line-height: 1 !important;
+}
+
+.actionFileAttachBtn:global(.arco-btn) :global(.arco-icon) {
+  font-size: 14px !important;
+}
+
 /* 方案E：模型 + 权限各自独立 tb-btn，中间有竖线分隔 */
 .actionConfigGroup {
   display: inline-flex;
@@ -1534,22 +1570,37 @@ button.guidResourceCard:focus-visible {
   flex: 0 1 auto;
 }
 
-/* 首页输入框右下「模型 / 模式」按钮：与对话框 .sendbox-tools/.sendbox-actions 同款 */
-.actionSubmit :global(.sendbox-model-btn),
-.actionSubmit :global(.sendbox-model-btn:hover),
-.actionSubmit :global(.sendbox-model-btn:active),
-.actionSubmit :global(.sendbox-model-btn:focus),
-.actionSubmit :global(.sendbox-model-btn:focus-visible) {
+/* 首页输入框右下「模型 / 模式」按钮：默认透明，悬浮显示背景 */
+.actionSubmit :global(.sendbox-model-btn.arco-btn),
+.actionSubmit :global(.sendbox-model-btn.arco-btn:active),
+.actionSubmit :global(.sendbox-model-btn.arco-btn:focus) {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
   color: var(--text-secondary) !important;
+  border-radius: 6px !important;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 
-.actionSubmit :global(.sendbox-model-btn:hover),
-.actionSubmit :global(.sendbox-model-btn:active),
-.actionSubmit :global(.sendbox-model-btn:focus),
-.actionSubmit :global(.sendbox-model-btn:focus-visible) {
+.actionSubmit :global(.sendbox-model-btn.arco-btn:hover),
+.actionSubmit :global(.sendbox-model-btn.arco-btn:focus-visible) {
+  background: var(--color-fill-3) !important;
+  color: var(--text-primary) !important;
+}
+
+.actionConfigGroup :global(.sendbox-model-btn.arco-btn),
+.actionConfigGroup :global(.sendbox-model-btn.arco-btn:active),
+.actionConfigGroup :global(.sendbox-model-btn.arco-btn:focus) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.actionConfigGroup :global(.sendbox-model-btn.arco-btn:hover),
+.actionConfigGroup :global(.sendbox-model-btn.arco-btn:focus-visible) {
+  background: var(--color-fill-3) !important;
   color: var(--text-primary) !important;
 }
 
@@ -1582,24 +1633,22 @@ button.guidResourceCard:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--color-text-3);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-text-2);
   background: transparent;
   border: none;
   padding: 4px 6px;
   border-radius: 6px;
   cursor: pointer;
   font-family: inherit;
-  transition:
-    color 0.15s,
-    background 0.15s;
+  transition: color 0.15s;
   line-height: 1;
 }
 
 .workspaceEmptyBtn:hover {
   color: var(--color-text-2);
-  background: var(--color-fill-3);
+  background: transparent;
 }
 
 /* 选中态：和空状态同色系，不做颜色跳变 */
@@ -1753,19 +1802,6 @@ button.guidResourceCard:focus-visible {
 .lightPlaceholder::placeholder {
   color: #b4b5bc;
   opacity: 1;
-}
-
-.plusButtonRotate {
-  animation: rotate-animation 0.3s ease-in-out;
-}
-
-@keyframes rotate-animation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(45deg);
-  }
 }
 
 /* Skeleton shimmer animation */

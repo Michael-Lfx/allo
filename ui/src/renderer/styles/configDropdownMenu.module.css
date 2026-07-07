@@ -1,0 +1,74 @@
+/*
+ * Shared Arco Dropdown+Menu styling for homepage / sendbox config pills
+ * (model selector, permission mode, etc.). Arco clones <Menu> inside <Dropdown>
+ * and rewrites prefixCls to "arco-dropdown-menu".
+ */
+.configDropdownMenu:global(.arco-dropdown-menu) {
+  min-width: 168px !important;
+  padding: 4px 4px !important;
+  box-sizing: border-box !important;
+}
+
+.configDropdownMenu :global(.arco-dropdown-menu-group-title) {
+  margin-top: 4px !important;
+  margin-bottom: 2px !important;
+  padding: 0 16px 0 10px !important;
+  line-height: 18px !important;
+  font-size: 12px !important;
+}
+
+.configDropdownMenu :global(.arco-dropdown-menu-item) {
+  margin: 0;
+  height: auto !important;
+  min-height: 0 !important;
+  line-height: 20px !important;
+  padding: 4px 20px 4px 10px !important;
+  box-sizing: border-box !important;
+  font-size: 14px !important;
+  border-radius: 8px;
+  background-color: transparent !important;
+  font-weight: inherit !important;
+}
+
+.configDropdownMenu :global(.arco-dropdown-menu-item > *) {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.configDropdownMenu :global(.arco-dropdown-menu-item:hover) {
+  background-color: var(--bg-2) !important;
+}
+
+.configDropdownMenu :global(.arco-dropdown-menu-item.arco-dropdown-menu-selected) {
+  background-color: transparent !important;
+  font-weight: inherit !important;
+}
+
+/* Fallback if Menu is ever rendered outside Dropdown */
+.configDropdownMenu:global(.arco-menu) {
+  min-width: 168px !important;
+  padding: 2px 2px !important;
+  box-sizing: border-box !important;
+}
+
+.configDropdownMenu :global(.arco-menu-item) {
+  margin: 0;
+  height: auto !important;
+  min-height: 0 !important;
+  line-height: 20px !important;
+  padding: 4px 20px 4px 10px !important;
+  box-sizing: border-box !important;
+  font-size: 14px !important;
+  border-radius: 8px;
+  background-color: transparent !important;
+  font-weight: inherit !important;
+}
+
+.configDropdownMenu :global(.arco-menu-item:hover) {
+  background-color: var(--bg-2) !important;
+}
+
+.configDropdownMenu :global(.arco-menu-item.arco-menu-selected) {
+  background-color: transparent !important;
+  font-weight: inherit !important;
+}

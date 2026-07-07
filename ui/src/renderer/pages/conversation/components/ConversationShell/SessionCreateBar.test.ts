@@ -20,18 +20,23 @@ describe('session sidebar toolbar tooltips', () => {
   });
 
   test('uses the local instant hover tooltip instead of Arco Tooltip for toolbar actions', () => {
-    const createBarSource = readSource(new URL('./SessionCreateBar.tsx', import.meta.url));
     const displaySettingsSource = readSource(new URL('./SessionDisplaySettingsPopover.tsx', import.meta.url));
     const actionsSource = readSource(
       new URL('../../../../components/layout/Sider/SiderNav/ConversationSiderActions.tsx', import.meta.url)
     );
 
-    expect(createBarSource.includes('<InstantHoverTooltip')).toBe(true);
     expect(displaySettingsSource.includes('<InstantHoverTooltip')).toBe(true);
     expect(actionsSource.includes('<InstantHoverTooltip')).toBe(true);
-    expect(createBarSource.includes('<Tooltip')).toBe(false);
     expect(displaySettingsSource.includes('<Tooltip')).toBe(false);
     expect(actionsSource.includes('<Tooltip')).toBe(false);
+  });
+
+  test('does not render an in-panel collapse control in the session title row', () => {
+    const createBarSource = readSource(new URL('./SessionCreateBar.tsx', import.meta.url));
+
+    expect(createBarSource.includes("data-testid='session-sider-collapse'")).toBe(false);
+    expect(createBarSource.includes('sessionList.collapseList')).toBe(false);
+    expect(createBarSource.includes('onCollapse')).toBe(false);
   });
 
   test('does not use native title fallbacks for toolbar buttons', () => {
