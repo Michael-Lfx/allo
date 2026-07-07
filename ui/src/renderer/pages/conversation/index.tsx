@@ -38,7 +38,11 @@ const ChatConversationIndex: React.FC = () => {
   }, [id, conversationId, mutate]);
 
   useEffect(() => {
-    if (!data || data.name !== defaultConversationTitle) {
+    if (!data) {
+      return;
+    }
+    const name = data.name?.trim() ?? '';
+    if (name !== '' && name !== defaultConversationTitle) {
       return;
     }
 

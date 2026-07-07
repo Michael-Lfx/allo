@@ -2781,17 +2781,22 @@ impl ConversationService {
         if self.llm_title_fired.insert(conversation_id, ()).is_some() {
             return;
         }
+        let release_once_guard = || {
+            self.llm_title_fired.remove(&conversation_id);
+        };
 
         let completer = match self.title_completer.read().ok().and_then(|g| g.clone()) {
             Some(c) => c,
             None => {
                 warn!(conversation_id, "auto-title: no completer wired, skipping");
+                release_once_guard();
                 return;
             }
         };
 
         let Ok(Some(row)) = self.conversation_repo.get(conversation_id).await else {
             warn!(conversation_id, "auto-title: conversation not found");
+            release_once_guard();
             return;
         };
 
@@ -2848,6 +2853,7 @@ impl ConversationService {
             }
         };
         if title.is_empty() {
+            release_once_guard();
             return;
         }
         info!(conversation_id, title = %title, "auto-title: applying title");
@@ -2868,6 +2874,7 @@ impl ConversationService {
         };
         if let Err(e) = self.conversation_repo.update(conversation_id, &update).await {
             warn!(conversation_id, error = %e, "conversation auto-title DB update failed");
+            release_once_guard();
             return;
         }
 

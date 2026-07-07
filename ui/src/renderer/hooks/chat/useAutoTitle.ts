@@ -13,7 +13,8 @@ export const useAutoTitle = () => {
       const defaultTitle = t('conversation.welcome.newConversation');
       try {
         const conversation = await getConversationOrNull(conversation_id);
-        if (!conversation || conversation.name !== defaultTitle) {
+        const name = conversation?.name?.trim() ?? '';
+        if (!conversation || (name !== '' && name !== defaultTitle)) {
           return;
         }
 

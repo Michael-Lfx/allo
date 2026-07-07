@@ -12,7 +12,6 @@ use tracing::warn;
 use crate::factory::provider_config::{
     one_shot_completion_no_thinking, resolve_provider_config, user_message,
 };
-use crate::knowledge_completer::first_enabled_model;
 use nomi_config::config::Config;
 
 const TITLE_MAX_TOKENS: u32 = 128;
@@ -44,20 +43,33 @@ pub struct LiveConversationTitleCompleter {
 }
 
 impl LiveConversationTitleCompleter {
-    async fn resolve_default_model(&self) -> Result<(String, String), AppError> {
+    async fn resolve_title_model(&self) -> Result<(String, String), AppError> {
         let providers = self
             .provider_repo
             .list()
             .await
             .map_err(|e| AppError::Internal(format!("failed to list providers: {e}")))?;
+        let mut reasoning_fallback: Option<(String, String)> = None;
         for provider in providers.iter().filter(|p| p.enabled) {
-            if let Some(model) = first_enabled_model(&provider.models, provider.model_enabled.as_deref()) {
-                return Ok((provider.id.clone(), model));
+            let models = enabled_models(&provider.models, provider.model_enabled.as_deref());
+            for model in models {
+                let pair = (provider.id.clone(), model.clone());
+                if is_reasoning_heavy_model(&model) {
+                    reasoning_fallback.get_or_insert(pair);
+                } else {
+                    return Ok(pair);
+                }
             }
         }
-        Err(AppError::Conflict(
-            "conversation auto-title unavailable: no enabled provider/model is configured".into(),
-        ))
+        reasoning_fallback.ok_or_else(|| {
+            AppError::Conflict(
+                "conversation auto-title unavailable: no enabled provider/model is configured".into(),
+            )
+        })
+    }
+
+    async fn resolve_default_model(&self) -> Result<(String, String), AppError> {
+        self.resolve_title_model().await
     }
 
     fn title_system_for(content: &str) -> &'static str {
@@ -79,6 +91,29 @@ impl LiveConversationTitleCompleter {
                 .await?;
         Ok(normalize_title_output(&raw))
     }
+}
+
+fn enabled_models(models_json: &str, model_enabled_json: Option<&str>) -> Vec<String> {
+    use std::collections::HashMap;
+
+    let models: Vec<String> = serde_json::from_str(models_json).unwrap_or_default();
+    let enabled: HashMap<String, bool> = model_enabled_json
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default();
+    models
+        .into_iter()
+        .map(|m| m.trim().to_owned())
+        .filter(|m| !m.is_empty() && enabled.get(m).copied().unwrap_or(true))
+        .collect()
+}
+
+fn is_reasoning_heavy_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    [
+        "-r1", "r1-", "reasoner", "thinking", "-think", "qwq", "o1-", "o1", "o3", "o4",
+    ]
+    .iter()
+    .any(|needle| m.contains(needle))
 }
 
 fn is_meta_title_line(line: &str) -> bool {
@@ -400,6 +435,13 @@ impl ConversationTitleCompleter for LiveConversationTitleCompleter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_reasoning_heavy_models_for_title() {
+        assert!(is_reasoning_heavy_model("deepseek-r1"));
+        assert!(is_reasoning_heavy_model("qwen-qwq-32b"));
+        assert!(!is_reasoning_heavy_model("deepseek-chat"));
+    }
 
     #[test]
     fn rejects_instruction_echo_reasoning() {
