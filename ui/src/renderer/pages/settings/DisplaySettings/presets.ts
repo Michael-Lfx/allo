@@ -21,6 +21,29 @@ import notionCss from './presets/notion.css?raw';
  */
 export const DEFAULT_THEME_ID = 'codex-neutral';
 
+export const PRESET_THEME_NAME_KEYS = {
+  [DEFAULT_THEME_ID]: 'settings.cssTheme.presets.codexNeutral',
+  'rhythm-dark': 'settings.cssTheme.presets.rhythmDark',
+  'neon-rainbow': 'settings.cssTheme.presets.neonRainbow',
+  'frosted-glass': 'settings.cssTheme.presets.frostedGlass',
+  'sunset-afterglow': 'settings.cssTheme.presets.sunsetAfterglow',
+} as const;
+
+export type PresetThemeNameKey = (typeof PRESET_THEME_NAME_KEYS)[keyof typeof PRESET_THEME_NAME_KEYS];
+
+export const getPresetThemeNameKey = (themeId: string): PresetThemeNameKey | undefined => {
+  if (!Object.prototype.hasOwnProperty.call(PRESET_THEME_NAME_KEYS, themeId)) return undefined;
+  return PRESET_THEME_NAME_KEYS[themeId as keyof typeof PRESET_THEME_NAME_KEYS];
+};
+
+export const getCssThemeDisplayName = (
+  theme: Pick<ICssTheme, 'id' | 'name' | 'is_preset'>,
+  translate: (key: PresetThemeNameKey) => string
+): string => {
+  const nameKey = theme.is_preset ? getPresetThemeNameKey(theme.id) : undefined;
+  return nameKey ? translate(nameKey) : theme.name;
+};
+
 /**
  * 预设 CSS 主题列表 / Preset CSS themes list
  * 这些主题是内置的，用户可以直接选择使用 / These themes are built-in and can be directly used by users
@@ -39,7 +62,7 @@ export const PRESET_THEMES: ICssTheme[] = [
   },
   {
     id: 'rhythm-dark',
-    name: '律动暗黑 Rhythm Dark',
+    name: '律动暗黑',
     is_preset: true,
     css: rhythmDarkCss,
     created_at: Date.now(),
@@ -47,7 +70,7 @@ export const PRESET_THEMES: ICssTheme[] = [
   },
   {
     id: 'neon-rainbow',
-    name: '暗夜霓虹 Neon Night',
+    name: '暗夜霓虹',
     is_preset: true,
     css: neonRainbowCss,
     created_at: Date.now(),
@@ -55,7 +78,7 @@ export const PRESET_THEMES: ICssTheme[] = [
   },
   {
     id: 'frosted-glass',
-    name: '冰晶幻境 Frosted Glass',
+    name: '冰晶幻境',
     is_preset: true,
     css: frostedGlassCss,
     created_at: Date.now(),
@@ -63,7 +86,7 @@ export const PRESET_THEMES: ICssTheme[] = [
   },
   {
     id: 'sunset-afterglow',
-    name: '落日余晖 Sunset Afterglow',
+    name: '落日余晖',
     is_preset: true,
     css: sunsetAfterglowCss,
     created_at: Date.now(),
