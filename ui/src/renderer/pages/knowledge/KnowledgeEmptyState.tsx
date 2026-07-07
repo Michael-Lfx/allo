@@ -31,19 +31,19 @@ const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onI
   const steps: { num: number; icon: React.ReactNode; title: string; desc: string }[] = [
     {
       num: 1,
-      icon: <Plus theme='outline' size='18' />,
+      icon: <Plus theme='outline' size='18' fill='currentColor' className='block' />,
       title: t('knowledge.onboarding.step1Title', { defaultValue: '创建' }),
       desc: t('knowledge.onboarding.step1Desc', { defaultValue: '从空白、本地文件夹或一组 URL 创建知识库。' }),
     },
     {
       num: 2,
-      icon: <BookOne theme='outline' size='18' />,
+      icon: <BookOne theme='outline' size='18' fill='currentColor' className='block' />,
       title: t('knowledge.onboarding.step2Title', { defaultValue: '填充' }),
       desc: t('knowledge.onboarding.step2Desc', { defaultValue: '放入 .md 文档——也可以让 AI 自动生成梗概和 README。' }),
     },
     {
       num: 3,
-      icon: <FolderOpen theme='outline' size='18' />,
+      icon: <FolderOpen theme='outline' size='18' fill='currentColor' className='block' />,
       title: t('knowledge.onboarding.step3Title', { defaultValue: '挂载' }),
       desc: t('knowledge.onboarding.step3Desc', { defaultValue: '挂载到会话，模型会在 .nomi/knowledge/ 下随时查阅。' }),
     },
@@ -106,20 +106,24 @@ const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onI
         {steps.map((s) => (
           <div
             key={s.num}
-            className='flex flex-1 flex-col gap-10px rounded-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-20px'
+            className='flex flex-1 flex-col rounded-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-20px'
           >
-            {/* Step number badge + title */}
-            <div className='flex items-center gap-10px'>
-              <span className='flex size-28px items-center justify-center rounded-8px bg-[var(--color-primary-light-1)] text-[rgb(var(--primary-6))] text-12px font-bold'>
+            <div className='grid grid-cols-[28px_minmax(0,1fr)] gap-x-10px gap-y-8px'>
+              <span className='col-start-1 row-start-1 flex size-28px shrink-0 items-center justify-center self-center rounded-8px bg-[var(--color-primary-light-1)] text-[rgb(var(--primary-6))] text-12px font-bold leading-none'>
                 {s.num}
               </span>
-              <span className='flex items-center gap-6px text-14px font-semibold text-[var(--color-text-1)]'>
-                {s.icon}
-                {s.title}
+              <div className='col-start-2 row-start-1 flex min-h-28px min-w-0 items-center gap-10px'>
+                <span className='flex size-20px shrink-0 items-center justify-center text-[rgb(var(--primary-6))] leading-none [&_svg]:block'>
+                  {s.icon}
+                </span>
+                <span className='min-w-0 text-14px font-semibold leading-5 text-[var(--color-text-1)]'>
+                  {s.title}
+                </span>
+              </div>
+              <span className='col-start-2 row-start-2 text-13px leading-[1.7] text-[var(--color-text-3)]'>
+                {s.desc}
               </span>
             </div>
-            {/* Description */}
-            <span className='text-13px leading-[1.7] text-[var(--color-text-3)]'>{s.desc}</span>
           </div>
         ))}
       </div>

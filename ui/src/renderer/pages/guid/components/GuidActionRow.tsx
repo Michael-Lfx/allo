@@ -308,10 +308,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             loading={loading}
             disabled={isButtonDisabled}
             className='send-button-custom'
-            style={{
-              backgroundColor: isButtonDisabled ? undefined : '#000000',
-              borderColor: isButtonDisabled ? undefined : '#000000',
-            }}
             icon={
               autoWorkMode ? (
                 <Robot theme='filled' size='14' fill='white' strokeWidth={5} />

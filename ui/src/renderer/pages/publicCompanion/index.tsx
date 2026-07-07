@@ -53,7 +53,7 @@ const PublicCompanionRosterPage: React.FC = () => {
               </p>
             </div>
           </div>
-          <Button type='primary' size='default' className='shrink-0' onClick={() => setCreateOpen(true)}>
+          <Button type='primary' shape='round' size='default' className='shrink-0' onClick={() => setCreateOpen(true)}>
             <span className='inline-flex items-center gap-6px'>
               <Plus theme='outline' size='15' fill='currentColor' className='block' style={{ lineHeight: 0 }} />
               {t('publicCompanion.create.action', { defaultValue: '创建对外伙伴' })}
@@ -109,7 +109,7 @@ const PublicCompanionRosterPage: React.FC = () => {
                 })}
               </span>
             </div>
-            <Button type='primary' onClick={() => setCreateOpen(true)}>
+            <Button type='primary' shape='round' onClick={() => setCreateOpen(true)}>
               <span className='inline-flex items-center gap-6px'>
                 <Plus theme='outline' size='15' fill='currentColor' className='block' style={{ lineHeight: 0 }} />
                 {t('publicCompanion.empty.action', { defaultValue: '创建第一位对外伙伴' })}

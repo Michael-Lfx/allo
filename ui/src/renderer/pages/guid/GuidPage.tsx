@@ -41,6 +41,7 @@ import { useTypewriterPlaceholder } from './hooks/useTypewriterPlaceholder';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { ConfigProvider, Message } from '@arco-design/web-react';
+import { Robot } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -254,17 +255,8 @@ const GuidPage: React.FC = () => {
   const handleInputChange = useCallback(
     (value: string) => {
       guidInput.setInput(value);
-      const match = value.match(mention.mentionMatchRegex);
-      // 首页不根据输入 @ 呼起 mention 列表，占位符里的 @agent 仅为提示，选 agent 用顶部栏或下拉手动选
-      if (match) {
-        mention.setMentionQuery(match[1]);
-        mention.setMentionOpen(false);
-      } else {
-        mention.setMentionQuery(null);
-        mention.setMentionOpen(false);
-      }
     },
-    [mention.mentionMatchRegex, guidInput.setInput, mention.setMentionQuery, mention.setMentionOpen]
+    [guidInput.setInput]
   );
 
   const [sendKeyPref] = useConfig('chat.sendKey');
@@ -400,12 +392,40 @@ const GuidPage: React.FC = () => {
     }
   }, [agentSelection.is_presetAgent, selectedAssistantRecord]);
 
+  const welcomeTitle = t('conversation.welcome.title');
   const heroTitle = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return t('conversation.welcome.title');
+    if (!agentSelection.is_presetAgent) return welcomeTitle;
     const i18nName = selectedAssistantRecord?.name_i18n?.[localeKey];
     if (i18nName) return i18nName;
-    return mention.selectedAgentLabel || t('conversation.welcome.title');
-  }, [agentSelection.is_presetAgent, selectedAssistantRecord, localeKey, mention.selectedAgentLabel, t]);
+    return mention.selectedAgentLabel || welcomeTitle;
+  }, [agentSelection.is_presetAgent, selectedAssistantRecord, localeKey, mention.selectedAgentLabel, welcomeTitle]);
+  const heroSubtitle = useMemo(() => {
+    if (!agentSelection.is_presetAgent || !selectedAssistantRecord) return null;
+    return (
+      selectedAssistantRecord.description_i18n?.[localeKey] ||
+      selectedAssistantRecord.description_i18n?.['en-US'] ||
+      selectedAssistantRecord.description ||
+      null
+    );
+  }, [agentSelection.is_presetAgent, selectedAssistantRecord, localeKey]);
+  const renderHeroAvatar = () => {
+    if (!selectedAssistantAvatar) return null;
+    switch (selectedAssistantAvatar.kind) {
+      case 'image':
+        return (
+          <img
+            src={selectedAssistantAvatar.value}
+            alt=''
+            className='w-28px h-28px rounded-8px object-contain'
+          />
+        );
+      case 'emoji':
+        return <span className={styles.heroTitleEmoji}>{selectedAssistantAvatar.value}</span>;
+      case 'icon':
+      default:
+        return <Robot theme='outline' size={22} fill='currentColor' />;
+    }
+  };
   const selectedAssistantAvatar = useMemo(() => {
     if (!agentSelection.is_presetAgent) return null;
     const selectedId = agentSelection.selectedAgentInfo?.custom_agent_id;
@@ -682,9 +702,21 @@ const GuidPage: React.FC = () => {
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
-              <p className='text-2xl font-semibold mb-0 text-0 text-center'>
-                {t('conversation.welcome.title')}
-              </p>
+              {agentSelection.is_presetAgent ? (
+                <>
+                  <h1 className={`${styles.heroTitle} text-2xl font-semibold text-0 text-center`}>
+                    {selectedAssistantAvatar ? (
+                      <span className={styles.heroTitleInlineIcon} aria-hidden='true'>
+                        {renderHeroAvatar()}
+                      </span>
+                    ) : null}
+                    <span>{heroTitle}</span>
+                  </h1>
+                  {heroSubtitle ? <p className={styles.heroDescription}>{heroSubtitle}</p> : null}
+                </>
+              ) : (
+                <p className='text-2xl font-semibold mb-0 text-0 text-center'>{welcomeTitle}</p>
+              )}
             </div>
 
             <GuidInputCard
@@ -694,7 +726,7 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={`${mention.selectedAgentLabel}, ${typewriterPlaceholder || t('conversation.welcome.placeholder')}`}
+              placeholder={typewriterPlaceholder || t('conversation.welcome.placeholder')}
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
@@ -722,7 +754,7 @@ const GuidPage: React.FC = () => {
               entryStrip={
                 <ComposerEntryStrip
                   isPresetAgent={agentSelection.is_presetAgent}
-                  assistantLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                  assistantLabel={heroTitle !== welcomeTitle ? heroTitle : undefined}
                   assistantAvatar={selectedAssistantAvatar ?? undefined}
                   onSummon={() => { setDrawerMode('assistant'); setDrawerOpen(true); }}
                   onAdjustSkills={handleOpenSkillsDrawer}
