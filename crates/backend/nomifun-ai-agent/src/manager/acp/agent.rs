@@ -1,12 +1,12 @@
 use crate::agent_runtime::AgentRuntime;
 use crate::capability::PromptCtx;
 use crate::capability::cli_process::CliAgentProcess;
-use crate::capability::prompt_pipeline::PromptPipeline;
+use crate::capability::prompt_pipeline::{PreSendHook, PromptPipeline};
 use crate::capability::skill_manager::AcpSkillManager;
 use crate::factory::acp_assembler::AcpSessionParams;
 use crate::manager::acp::{
     AcpSession, AcpSessionEvent, KnowledgeContextHook, ModelIdentityReminderHook, PermissionRouter,
-    SessionNewPreludeHook,
+    PoiPrefetchHook, SessionNewPreludeHook,
 };
 use crate::manager::process_registry::{register_session_process, unregister_agent_process};
 use crate::protocol::acp::AcpProtocol;
@@ -189,6 +189,7 @@ impl AcpAgentManager {
         params: Arc<AcpSessionParams>,
         skill_manager: Arc<AcpSkillManager>,
         catalog_tx: &CatalogSender,
+        poi_service: Option<Arc<nomifun_poi::PoiService>>,
     ) -> Result<
         (
             Self,
@@ -197,7 +198,8 @@ impl AcpAgentManager {
         ),
         AppError,
     > {
-        let (this, domain_event_rx, notification_rx) = AcpAgentManager::new(params, skill_manager).await?;
+        let (this, domain_event_rx, notification_rx) =
+            AcpAgentManager::new(params, skill_manager, poi_service).await?;
         this.init(catalog_tx).await;
         Ok((this, domain_event_rx, notification_rx))
     }
@@ -205,6 +207,7 @@ impl AcpAgentManager {
     async fn new(
         params: Arc<AcpSessionParams>,
         skill_manager: Arc<AcpSkillManager>,
+        poi_service: Option<Arc<nomifun_poi::PoiService>>,
     ) -> Result<
         (
             Self,
@@ -302,13 +305,15 @@ impl AcpAgentManager {
 
         let session = AcpSession::new(initial_mode, initial_model, initial_config);
 
-        let pipeline = PromptPipeline::new(vec![
-            // KnowledgeContextHook runs first so its block ends up closest to
-            // the user's task in the folded first prompt (each hook prepends).
+        let mut pipeline_hooks: Vec<Arc<dyn PreSendHook>> = vec![
             Arc::new(KnowledgeContextHook),
             Arc::new(SessionNewPreludeHook),
             Arc::new(ModelIdentityReminderHook),
-        ]);
+        ];
+        if let Some(poi) = poi_service {
+            pipeline_hooks.push(Arc::new(PoiPrefetchHook::new(poi)));
+        }
+        let pipeline = PromptPipeline::new(pipeline_hooks);
 
         let manager = Self {
             params,

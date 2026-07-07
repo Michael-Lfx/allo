@@ -1,0 +1,30 @@
+{
+  "title": "Media Generation",
+  "description": "Configure default Flowy image and video models. Media is provided by Flowy Cloud only.",
+  "agentHintLogin": "Sign in to Flowy Cloud and save settings to enable image/video tools in agent chat.",
+  "agentHintReady": "Flowy Cloud is connected. In agent chat you can ask to generate images or videos; the agent will use image_generate / video_generate tools.",
+  "credits": {
+    "authenticated": "Signed in",
+    "notAuthenticated": "Not signed in",
+    "balance": "Balance: {{balance}}"
+  },
+  "settings": {
+    "provider": "Provider",
+    "imageModel": "Image model",
+    "videoModel": "Video model",
+    "selectModel": "Select or enter model ID",
+    "videoDuration": "Default video duration (s)",
+    "imageSaveLocally": "Save images locally",
+    "videoSaveLocally": "Save videos locally",
+    "workflowsEnabled": "Enable workflows",
+    "saved": "Media settings saved"
+  },
+  "history": {
+    "title": "Workflow history",
+    "workflow": "Workflow",
+    "status": "Status",
+    "step": "Step",
+    "error": "Error",
+    "empty": "No workflow runs yet"
+  }
+}

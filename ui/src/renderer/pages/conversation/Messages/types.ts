@@ -15,6 +15,18 @@ export interface ImageGenerationResult {
   error?: string;
 }
 
+export interface VideoGenerationResult {
+  success?: boolean;
+  video?: string;
+  local_path?: string;
+  error?: string;
+  assets?: Array<{
+    url?: string;
+    local_path?: string;
+    kind?: string;
+  }>;
+}
+
 export interface WriteFileResult {
   file_diff: string;
   file_name: string;

@@ -7,6 +7,7 @@ mod agent_error;
 mod assistant;
 mod auth;
 mod channel;
+mod cloud;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -16,12 +17,15 @@ mod exposure;
 mod extension;
 mod file;
 mod idmm;
+mod insights;
 mod knowledge;
 mod lifecycle;
 mod mcp;
+mod media;
 pub mod model_capability;
 mod office;
 mod orchestrator;
+mod poi;
 mod provider;
 mod remote_agent;
 mod requirement;
@@ -76,6 +80,12 @@ pub use channel::{
     SyncChannelSettingsRequest, TestPluginExtraConfig, TestPluginRequest, TestPluginResponse,
     UserAuthorizedPayload,
 };
+pub use cloud::{
+    CloudLoginContinueRequest, CloudLoginFailedResponse, CloudLoginInput,
+    CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
+    CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudWhoamiResponse,
+    UpdateCloudServerSettingsRequest,
+};
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,
 };
@@ -121,6 +131,10 @@ pub use idmm::{
     IdmmTargetKind, InterventionRecord, ModelFailoverConfig, OpenQuestionRule, OptionRule,
     PermissionRule, ScanScope, SetIdmmRequest, Tendency, WakeStrategy, WatchBase, WatchTier,
 };
+pub use insights::{
+    InsightsContributionStatusResponse, InsightsFlushResponse, InsightsResetOutboxRequest,
+    InsightsResetOutboxResponse, UpdateInsightsContributionRequest,
+};
 pub use knowledge::{
     ConnectorCredentialSummary, ConnectorSyncState, CreateKnowledgeTagRequest, KnowledgeMountInfo,
     KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag,
@@ -136,6 +150,10 @@ pub use mcp::{
     McpConnectionTestResult, McpServerResponse, McpToolResponse, McpTransport,
     OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest,
     OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
+};
+pub use media::{
+    MediaCreditsResponse, MediaModelListResponse, MediaSettingsResponse,
+    MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
 pub use model_capability::infer_model_modalities;
 pub use office::{
@@ -154,6 +172,10 @@ pub use orchestrator::{
     TaskProfile, TaskSpecUpdateRequest, UpdateFleetRequest, UpdateWorkspaceRequest, derive_capability,
 };
 pub use orchestrator::AdjustRunRequest;
+pub use poi::{
+    PoiPinRequest, PoiSettingsResponse, PoiStatusResponse, PoiTopicListResponse, PoiTopicResponse,
+    PoiTopicStatusRequest, UpdatePoiSettingsRequest,
+};
 pub use provider::{
     BedrockAuthMethod, BedrockConfig, CreateProviderRequest, DetectProtocolRequest,
     DetectedProtocol, DetectionSuggestion, FetchModelsAnonymousRequest, FetchModelsRequest,

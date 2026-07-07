@@ -19,7 +19,7 @@ const tauriArgs = [
   ...process.argv.slice(2),
 ];
 
-const result = spawnSync('bun', ['x', 'tauri', ...tauriArgs], {
+const result = spawnSync(process.execPath, ['x', 'tauri', ...tauriArgs], {
   cwd: ROOT,
   stdio: 'inherit',
   env: { ...process.env, NOMI_CHANNEL: 'dev' },

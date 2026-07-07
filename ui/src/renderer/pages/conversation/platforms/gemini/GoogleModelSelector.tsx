@@ -115,7 +115,7 @@ const GoogleModelSelector: React.FC<{
                     onClick={() => void handleSelectModel(provider, modelName)}
                   >
                     <div className='flex items-center gap-8px w-full'>
-                      <span>{modelName}</span>
+                      <span>{formatModelLabel(provider, modelName)}</span>
                     </div>
                   </Menu.Item>
                 ))}

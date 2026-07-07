@@ -10,7 +10,12 @@ pub(crate) mod cli_process;
 pub(crate) mod first_message_injector;
 pub mod model_identity_reminder;
 pub mod prompt_pipeline;
+pub mod session_lifecycle;
 pub(crate) mod skill_manager;
 pub mod superpowers_scenario;
 
 pub use prompt_pipeline::{PostRecvHook, PreSendHook, PromptCtx, PromptPipeline};
+pub use session_lifecycle::{
+    PostTurnHook, PreTurnHook, SessionEndContext, SessionEndHook, SessionEndReason,
+    SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
+};

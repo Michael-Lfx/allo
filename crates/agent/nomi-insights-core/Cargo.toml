@@ -1,0 +1,29 @@
+[package]
+name = "nomi-insights-core"
+description = "De-identified insights contribution pipeline and POI sanitization helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomi-skills.workspace = true
+nomi-types.workspace = true
+nomi-auxiliary.workspace = true
+nomi-poi.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"], default-features = false }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+sha2 = "0.11"
+hex.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile.workspace = true

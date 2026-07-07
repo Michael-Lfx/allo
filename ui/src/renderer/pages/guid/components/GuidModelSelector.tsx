@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { iconColors } from '@/renderer/styles/colors';
 import { getModelDisplayLabel } from '@/renderer/utils/model/agentLogo';
+import { formatCloudModelLabel, hydrateProviderWithModel } from '@/renderer/utils/model/cloudModelLabel';
 import type { AcpModelInfo } from '../types';
 import { getAvailableModels } from '../utils/modelUtils';
 import { Button, Dropdown, Menu, Tooltip } from '@arco-design/web-react';
@@ -51,9 +53,13 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   }, [modelList]);
 
   const geminiSelectedLabel = React.useMemo(() => {
-    if (!current_model?.use_model) return '';
-    return current_model.use_model;
-  }, [current_model?.use_model]);
+    const hydrated = hydrateProviderWithModel(enabledModelList, current_model);
+    if (!hydrated?.use_model) return '';
+    return formatCloudModelLabel(
+      hydrated.use_model,
+      hydrated.model_descriptions as Record<string, string> | undefined
+    );
+  }, [current_model, enabledModelList]);
 
   const geminiButtonLabel = React.useMemo(() => {
     return getModelDisplayLabel({
@@ -115,10 +121,18 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                   >
                     {t('settings.noAvailableModels')}
                   </Menu.Item>,
-                  <Menu.Item key='add-model' className='text-12px text-t-secondary' onClick={() => navigate('/models?section=models')}>
-                    <Plus theme='outline' size='12' />
-                    {t('settings.addModel')}
-                  </Menu.Item>,
+                  ...(SERVER_MANAGED_MODELS
+                    ? []
+                    : [
+                        <Menu.Item
+                          key='add-model'
+                          className='text-12px text-t-secondary'
+                          onClick={() => navigate('/models?section=models')}
+                        >
+                          <Plus theme='outline' size='12' />
+                          {t('settings.addModel')}
+                        </Menu.Item>,
+                      ]),
                 ]
               : [
                   ...enabledModelList.map((provider) => {
@@ -128,6 +142,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                       <Menu.ItemGroup title={provider.name} key={provider.id}>
                         {available_models.map((modelName) => {
                           const dot = healthDotColor(provider.id, modelName);
+                          const label = formatCloudModelLabel(modelName, provider.model_descriptions);
                           return (
                             <Menu.Item
                               key={provider.id + modelName}
@@ -144,7 +159,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                             >
                               <div className='flex items-center gap-8px w-full'>
                                 {dot && <div className={`w-6px h-6px rounded-full shrink-0 ${dot}`} />}
-                                <span>{modelName}</span>
+                                <span>{label}</span>
                               </div>
                             </Menu.Item>
                           );
@@ -152,10 +167,18 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                       </Menu.ItemGroup>
                     );
                   }),
-                  <Menu.Item key='add-model' className='text-12px text-t-secondary' onClick={() => navigate('/models?section=models')}>
-                    <Plus theme='outline' size='12' />
-                    {t('settings.addModel')}
-                  </Menu.Item>,
+                  ...(SERVER_MANAGED_MODELS
+                    ? []
+                    : [
+                        <Menu.Item
+                          key='add-model'
+                          className='text-12px text-t-secondary'
+                          onClick={() => navigate('/models?section=models')}
+                        >
+                          <Plus theme='outline' size='12' />
+                          {t('settings.addModel')}
+                        </Menu.Item>,
+                      ]),
                 ]}
           </Menu>
         }

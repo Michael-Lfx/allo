@@ -1,0 +1,32 @@
+{
+  "title": "洞察贡献",
+  "description": "选择是否上传脱敏工作包，用于运维分析。",
+  "status": {
+    "uploadReady": "可上传",
+    "authConfigured": "已配置认证",
+    "endpoint": "上报端点",
+    "endpointPending": "登录 Flowy 云账号后自动配置",
+    "outboxPending": "待发",
+    "outboxFailed": "失败",
+    "outboxSent": "已发送",
+    "installationId": "安装 ID"
+  },
+  "settings": {
+    "enabled": "启用贡献",
+    "serverManagedHint": "上报端点与认证令牌由 Flowy 云账号自动管理，无需手动填写。",
+    "onSessionEnd": "会话结束时入队",
+    "redactedBody": "包含脱敏技能正文",
+    "saved": "洞察设置已保存"
+  },
+  "actions": {
+    "flush": "刷新发件箱",
+    "flushSuccess": "已上传 {{uploaded}}，重复 {{duplicates}}，拒绝 {{rejected}}",
+    "resetFailed": "重置失败项",
+    "resetAll": "清空发件箱",
+    "resetFailedTitle": "重置失败条目？",
+    "resetFailedContent": "将失败的发件箱条目移回待发队列以便重试。",
+    "resetAllTitle": "清空整个发件箱？",
+    "resetAllContent": "删除所有待发、失败和已发送的发件箱记录。",
+    "resetSuccess": "已重置 {{count}} 条"
+  }
+}

@@ -69,6 +69,9 @@ pub(crate) async fn resolve_provider_fields(
     // 依进程级 registry 命中把「不支持图片」透传为 compat override(主动剔除)。
     // 未命中 → None → 下游默认 supports_image=true,现有行为不变。
     compat_overrides.supports_image = image_support_override(provider_id, model);
+    if provider_id == "flowy-cloud" {
+        compat_overrides.mirror_bearer_header = Some("token".to_string());
+    }
 
     let bedrock_config = if row.platform == "bedrock" {
         resolve_bedrock_config(row.bedrock_config.as_deref())
@@ -184,6 +187,9 @@ pub async fn resolve_provider_config(
     }
     if let Some(path) = fields.compat_overrides.api_path {
         config.compat.api_path = Some(path);
+    }
+    if let Some(header) = fields.compat_overrides.mirror_bearer_header.clone() {
+        config.compat.mirror_bearer_header = Some(header);
     }
     // NB: compat_overrides.supports_image is intentionally NOT applied here —
     // this one-shot path (IDMM sidecar) builds text-only messages, so image

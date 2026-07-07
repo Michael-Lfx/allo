@@ -24,9 +24,19 @@ import { ToolConfirmationOutcome } from '@renderer/utils/common';
 import { ImagePreviewContext } from '../MessageList';
 import { COLLAPSE_CONFIG, TEXT_CONFIG } from '../constants';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
-import type { ImageGenerationResult, WriteFileResult } from '../types';
+import type { ImageGenerationResult, VideoGenerationResult, WriteFileResult } from '../types';
 
 const CODE_STYLE = { marginTop: 4, marginBottom: 4 };
+
+const VIDEO_TOOL_NAMES = new Set(['VideoGeneration', 'video_generate']);
+
+const resolveVideoUrl = (result: VideoGenerationResult): string | undefined => {
+  if (result.video) return result.video;
+  const asset = result.assets?.find((a) => a.kind === 'video' || a.url || a.local_path);
+  return asset?.url ?? asset?.local_path;
+};
+
+const isVideoGenerationTool = (name: string) => VIDEO_TOOL_NAMES.has(name);
 
 // Alert 组件样式常量 Alert component style constant
 // 顶部对齐图标与内容，避免多行文本时图标垂直居中
@@ -427,6 +437,97 @@ const ImageDisplay: React.FC<{
   );
 };
 
+// VideoDisplay: 视频生成结果展示组件 Video generation result display component
+const VideoDisplay: React.FC<{
+  videoUrl: string;
+  relativePath?: string;
+}> = ({ videoUrl, relativePath }) => {
+  const { t } = useTranslation();
+  const [messageApi, messageContext] = useArcoMessage();
+  const [resolvedUrl, setResolvedUrl] = useState(videoUrl);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  React.useEffect(() => {
+    if (videoUrl.startsWith('http') || videoUrl.startsWith('blob:') || videoUrl.startsWith('data:')) {
+      setResolvedUrl(videoUrl);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(false);
+    ipcBridge.fs.getImageBase64
+      .invoke({ path: videoUrl })
+      .then((base64) => {
+        if (!base64) throw new Error('Video file not found');
+        setResolvedUrl(base64);
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to load video:', err);
+        setError(true);
+        setLoading(false);
+      });
+  }, [videoUrl]);
+
+  const handleDownload = useCallback(async () => {
+    try {
+      const response = await fetch(resolvedUrl);
+      const blob = await response.blob();
+      const file_name = relativePath?.split(/[\\/]/).pop() || 'video.mp4';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file_name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      messageApi.success(t('messages.downloadSuccess', { defaultValue: 'Download successful' }));
+    } catch (err) {
+      console.error('Failed to download video:', err);
+      messageApi.error(t('messages.downloadFailed', { defaultValue: 'Failed to download' }));
+    }
+  }, [resolvedUrl, relativePath, t, messageApi]);
+
+  if (loading) {
+    return (
+      <div className='flex items-center gap-8px my-8px'>
+        <LoadingOne className='loading' theme='outline' size='14' fill={iconColors.primary} />
+        <span className='text-t-secondary text-sm'>{t('common.loading', { defaultValue: 'Loading...' })}</span>
+      </div>
+    );
+  }
+
+  if (error || !resolvedUrl) {
+    return (
+      <div className='flex items-center gap-8px my-8px text-t-secondary text-sm'>
+        <span>{t('messages.videoLoadFailed', { defaultValue: 'Failed to load video' })}</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {messageContext}
+      <div className='flex flex-col gap-8px my-8px' style={{ maxWidth: '360px' }}>
+        <video src={resolvedUrl} controls className='max-w-100% rd-8px' />
+        <div className='flex gap-8px'>
+          <Tooltip content={t('common.download', { defaultValue: 'Download' })}>
+            <Button
+              type='secondary'
+              size='small'
+              shape='circle'
+              icon={<Download theme='outline' size='14' fill={iconColors.primary} />}
+              onClick={handleDownload}
+            />
+          </Tooltip>
+        </div>
+      </div>
+    </>
+  );
+};
+
 const ToolResultDisplay: React.FC<{
   content: IMessageToolGroupProps['message']['content'][number];
 }> = ({ content }) => {
@@ -446,6 +547,15 @@ const ToolResultDisplay: React.FC<{
       );
     }
     // 如果是错误，继续走下面的 JSON 显示逻辑
+  }
+
+  // 视频生成特殊处理 Special handling for video generation
+  if (isVideoGenerationTool(name) && typeof result_display === 'object') {
+    const result = result_display as VideoGenerationResult;
+    const videoUrl = resolveVideoUrl(result);
+    if (videoUrl) {
+      return <VideoDisplay videoUrl={videoUrl} relativePath={result.local_path} />;
+    }
   }
 
   // 将结果转换为字符串 Convert result to string
@@ -543,6 +653,15 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
           const result = result_display as ImageGenerationResult;
           if (result.img_url) {
             return <ImageDisplay key={call_id} imgUrl={result.img_url} relativePath={result.relative_path} />;
+          }
+        }
+
+        // VideoGeneration 特殊处理：单独展示视频 Special handling for VideoGeneration: display video separately without Alert wrapper
+        if (isVideoGenerationTool(name) && typeof result_display === 'object') {
+          const result = result_display as VideoGenerationResult;
+          const videoUrl = resolveVideoUrl(result);
+          if (videoUrl) {
+            return <VideoDisplay key={call_id} videoUrl={videoUrl} relativePath={result.local_path} />;
           }
         }
 

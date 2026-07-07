@@ -219,6 +219,9 @@ pub struct AgentFactoryDeps {
     /// still yields a hard-clamped session. `None` (standalone / tests) leaves
     /// public-agent resolution unwired.
     pub public_agent_provider: Option<Arc<dyn PublicAgentProvider>>,
+    /// POI service for per-turn prefetch in ACP prompt pipeline. `None` disables
+    /// interest prefetch (tests, standalone).
+    pub poi_service: Option<Arc<nomifun_poi::PoiService>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.

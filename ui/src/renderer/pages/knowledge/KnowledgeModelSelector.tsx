@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
 import { Brain, Down, Plus } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
+import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { iconColors } from '@/renderer/styles/colors';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
@@ -96,16 +97,22 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
         {defaultLabel}
       </Menu.Item>
       {providers.length === 0
-        ? [
-            <Menu.Item
-              key='add-model'
-              className='text-12px text-t-secondary'
-              onClick={() => navigate('/models?section=models')}
-            >
-              <Plus theme='outline' size='12' />
-              {t('settings.addModel')}
-            </Menu.Item>,
-          ]
+        ? SERVER_MANAGED_MODELS
+          ? [
+              <Menu.Item key='no-models' disabled>
+                {t('settings.noAvailableModels')}
+              </Menu.Item>,
+            ]
+          : [
+              <Menu.Item
+                key='add-model'
+                className='text-12px text-t-secondary'
+                onClick={() => navigate('/models?section=models')}
+              >
+                <Plus theme='outline' size='12' />
+                {t('settings.addModel')}
+              </Menu.Item>,
+            ]
         : providers.map((provider) => {
             const models = getAvailableModels(provider);
             if (models.length === 0) return null;

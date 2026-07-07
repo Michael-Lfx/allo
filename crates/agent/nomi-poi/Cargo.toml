@@ -1,0 +1,24 @@
+[package]
+name = "nomi-poi"
+description = "Local user interest (POI) topic store and extraction pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomi-types.workspace = true
+nomi-auxiliary.workspace = true
+rusqlite.workspace = true
+regex.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

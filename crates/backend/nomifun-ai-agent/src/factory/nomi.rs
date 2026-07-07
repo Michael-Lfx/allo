@@ -966,7 +966,7 @@ pub(crate) fn resolve_nomi_url_and_compat(
 
     if is_full_url {
         let trimmed = raw_base_url.trim_end_matches('/');
-        compat.api_path = Some(String::new());
+        compat.api_path = Some("/chat/completions".to_string());
         return (Some(trimmed.to_owned()), compat);
     }
 

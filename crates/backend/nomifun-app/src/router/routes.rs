@@ -26,6 +26,10 @@ use nomifun_extension::{extension_routes, hub_routes, skill_routes};
 use nomifun_file::file_routes;
 use nomifun_idmm::idmm_routes;
 use nomifun_knowledge::knowledge_routes;
+use nomifun_poi::poi_routes;
+use nomifun_insights::insights_routes;
+use nomifun_media::media_routes;
+use nomifun_cloud::cloud_routes;
 use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
 use nomifun_orchestrator::orchestrator_routes;
@@ -419,6 +423,18 @@ pub fn create_router_with_all_state(
     let knowledge_authenticated = knowledge_routes(states.knowledge)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    let poi_authenticated = poi_routes(states.poi)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    let insights_authenticated = insights_routes(states.insights)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    let media_authenticated = media_routes(states.media)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    let cloud_authenticated = cloud_routes(states.cloud)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Webhook + tag-settings routes protected by auth middleware
     let webhook_authenticated = webhook_routes(states.webhook)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -571,6 +587,10 @@ pub fn create_router_with_all_state(
         .merge(companion_authenticated)
         .merge(public_agent_authenticated)
         .merge(knowledge_authenticated)
+        .merge(poi_authenticated)
+        .merge(insights_authenticated)
+        .merge(media_authenticated)
+        .merge(cloud_authenticated)
         .merge(webhook_authenticated)
         .merge(orchestrator_authenticated)
         .merge(secret_authenticated)

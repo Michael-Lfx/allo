@@ -1,0 +1,40 @@
+{
+  "title": "兴趣主题 (POI)",
+  "description": "管理兴趣提取设置，并查看从对话中检测到的主题。",
+  "status": {
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "topicCount": "{{count}} 个主题",
+    "extractMode": "提取模式：{{mode}}"
+  },
+  "settings": {
+    "enabled": "启用兴趣追踪",
+    "extractMode": "提取模式",
+    "extractModeKeywords": "仅关键词",
+    "extractModeLlm": "LLM",
+    "extractModeHybrid": "混合",
+    "maxTopics": "最大主题数",
+    "minTurnChars": "最小轮次字符数",
+    "llmOnSessionEnd": "会话结束时 LLM 提取",
+    "perTurnBuffer": "每轮缓冲",
+    "perTurnPersist": "每轮持久化",
+    "saved": "POI 设置已保存"
+  },
+  "topics": {
+    "title": "主题列表",
+    "label": "标签",
+    "status": "状态",
+    "weight": "权重",
+    "pinned": "置顶",
+    "empty": "暂无主题",
+    "clearAll": "清空全部",
+    "clearConfirmTitle": "清空所有主题？",
+    "clearConfirmContent": "此操作将永久删除所有已存储的兴趣主题。",
+    "cleared": "主题已清空",
+    "statuses": {
+      "candidate": "候选",
+      "active": "活跃",
+      "rejected": "已拒绝"
+    }
+  }
+}

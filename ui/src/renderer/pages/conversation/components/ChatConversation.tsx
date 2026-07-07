@@ -27,6 +27,7 @@ import { saveNomiDefaultModel } from '@/renderer/pages/guid/hooks/agentSelection
 import { configService } from '@/common/config/configService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { resolveHealModel } from '../platforms/nomi/healConversationModel';
+import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { getConversationOrNull, seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { isConversationProcessing } from '@/renderer/pages/conversation/utils/conversationRuntime';
@@ -259,7 +260,11 @@ const NomiConversationPanel: React.FC<{ conversation: NomiConversation; sliderTi
       const ok = await ipcBridge.conversation.update.invoke({ id: conversation.id, updates: { model: selected } });
       if (ok) {
         void saveNomiDefaultModel(heal.provider.id, heal.use_model);
-        Message.info(t('conversation.chat.modelHealedToDefault', { model: heal.use_model }));
+        Message.info(
+          t('conversation.chat.modelHealedToDefault', {
+            model: formatModelLabelForProvider(heal.provider, heal.use_model),
+          })
+        );
       }
     })();
     // 仅在会话或供应商列表变化时评估

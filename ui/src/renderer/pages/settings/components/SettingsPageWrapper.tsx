@@ -5,7 +5,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { Computer, Earth, Info, Lightning, LinkCloud, Puzzle, Robot, Send, Speed, System } from '@icon-park/react';
+import { Computer, Earth, Info, Lightning, LinkCloud, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, Send, Speed, System } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -81,6 +81,24 @@ export function getBuiltinSettingsNavItems(t: TranslateFn): NavItem[] {
       label: t('settings.computerUseNav'),
       icon: <Computer theme='outline' size='16' />,
       path: 'computer-use',
+    },
+    poi: {
+      id: 'poi',
+      label: t('settings.poiNav'),
+      icon: <Brain theme='outline' size='16' />,
+      path: 'poi',
+    },
+    insights: {
+      id: 'insights',
+      label: t('settings.insightsNav'),
+      icon: <ChartPie theme='outline' size='16' />,
+      path: 'insights',
+    },
+    media: {
+      id: 'media',
+      label: t('settings.mediaNav'),
+      icon: <Pic theme='outline' size='16' />,
+      path: 'media',
     },
     about: { id: 'about', label: t('settings.about'), icon: <Info theme='outline' size='16' />, path: 'about' },
   };

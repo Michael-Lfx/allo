@@ -1,0 +1,14 @@
+[package]
+name = "nomi-auxiliary"
+description = "Minimal auxiliary LLM client types for side tasks (POI, resolution labeling)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-types.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

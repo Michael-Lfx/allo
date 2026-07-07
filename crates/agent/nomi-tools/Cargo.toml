@@ -25,6 +25,7 @@ serde_json.workspace  = true
 async-trait.workspace = true
 base64.workspace      = true
 glob.workspace        = true
+indexmap = { version = "2", features = ["serde"] }
 lru.workspace         = true
 portable-pty.workspace = true
 libc.workspace        = true

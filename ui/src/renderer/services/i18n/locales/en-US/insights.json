@@ -1,0 +1,32 @@
+{
+  "title": "Insights Contribution",
+  "description": "Opt in to upload anonymized work packages for ops analytics.",
+  "status": {
+    "uploadReady": "Upload ready",
+    "authConfigured": "Auth configured",
+    "endpoint": "Ingest endpoint",
+    "endpointPending": "Configured automatically after Flowy cloud sign-in",
+    "outboxPending": "Outbox pending",
+    "outboxFailed": "Outbox failed",
+    "outboxSent": "Outbox sent",
+    "installationId": "Installation ID"
+  },
+  "settings": {
+    "enabled": "Enable contribution",
+    "serverManagedHint": "Ingest endpoint and auth token are managed automatically by your Flowy cloud account.",
+    "onSessionEnd": "Enqueue on session end",
+    "redactedBody": "Include redacted skill body",
+    "saved": "Insights settings saved"
+  },
+  "actions": {
+    "flush": "Flush outbox",
+    "flushSuccess": "Uploaded {{uploaded}}, duplicates {{duplicates}}, rejected {{rejected}}",
+    "resetFailed": "Reset failed",
+    "resetAll": "Reset all outbox",
+    "resetFailedTitle": "Reset failed entries?",
+    "resetFailedContent": "Moves failed outbox entries back to pending for retry.",
+    "resetAllTitle": "Clear entire outbox?",
+    "resetAllContent": "Removes all pending, failed, and sent outbox records.",
+    "resetSuccess": "Reset {{count}} entries"
+  }
+}

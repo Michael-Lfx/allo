@@ -1,0 +1,49 @@
+{
+  "pageTitle": "Flowy - Sign In",
+  "brand": "Flowy",
+  "subtitle": "Sign in to your Flowy cloud account to unlock AI and media",
+  "accountSubtitle": "You're signed in — continue to the app",
+  "account": {
+    "signedIn": "Signed in"
+  },
+  "login": {
+    "preparing": "Preparing sign-in…",
+    "progressLabel": "Sign-in progress",
+    "stepEmail": "Email",
+    "stepOtp": "Verify",
+    "emailLabel": "Email address",
+    "emailPlaceholder": "you@example.com",
+    "emailRequired": "Enter your email address",
+    "sendCode": "Send code",
+    "sendingCode": "Sending",
+    "codeSent": "Code sent — check your inbox",
+    "sendCodeFirst": "Send the verification code first",
+    "submit": "Sign in",
+    "loggingIn": "Signing in",
+    "otpLabel": "Verification code",
+    "otpPlaceholder": "6-digit code",
+    "otpRequired": "Enter the verification code",
+    "otpSentTo": "Code sent to {{email}}",
+    "verify": "Verify & sign in",
+    "verifying": "Verifying…",
+    "back": "← Use a different email",
+    "successRedirect": "Signed in — opening app…",
+    "continue": "Continue to app",
+    "logout": "Sign out",
+    "loggedOut": "Signed out"
+  },
+  "footerPrimary": "Cloud-powered AI",
+  "footerSecondary": "Secure · Seamless",
+  "errors": {
+    "unknown": "Sign-in failed. Please try again.",
+    "invalidCode": "Invalid or expired code. Please request a new one."
+  },
+  "settings": {
+    "title": "Server connection",
+    "enabled": "Enable Flowy server",
+    "baseUrl": "Server base URL",
+    "channel": "Channel",
+    "app": "App ID",
+    "saved": "Cloud settings saved"
+  }
+}
