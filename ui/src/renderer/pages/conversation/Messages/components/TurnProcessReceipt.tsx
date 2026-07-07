@@ -8,7 +8,7 @@ import type { TurnDisclosureProcessState } from '../turnDisclosureModel';
 import { Spin } from '@arco-design/web-react';
 import { Attention, Brain, CheckOne, Edit, FolderOpen, Right, Terminal } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export type TurnProcessReceiptIcon = 'tool' | 'file' | 'edit' | 'thinking' | 'permission' | 'status';
 
@@ -28,28 +28,63 @@ interface TurnProcessReceiptProps<T> {
   renderProcessItem: (item: T) => React.ReactNode;
 }
 
+export interface TurnProcessReceiptExpansionSnapshot {
+  receiptId: string;
+  canExpand: boolean;
+}
+
 const sanitizeDomId = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, '_');
+
+const getDefaultExpanded = (defaultExpanded: boolean, canExpand: boolean): boolean => defaultExpanded && canExpand;
+
+const receiptIconMarkerByIcon: Record<TurnProcessReceiptIcon, string> = {
+  tool: 'terminal',
+  file: 'file',
+  edit: 'edit',
+  thinking: 'thinking',
+  permission: 'permission',
+  status: 'status',
+};
+
+export function shouldResetTurnProcessReceiptExpansion(
+  previous: TurnProcessReceiptExpansionSnapshot,
+  next: TurnProcessReceiptExpansionSnapshot
+): boolean {
+  if (previous.receiptId !== next.receiptId) return true;
+  if (previous.canExpand !== next.canExpand) return true;
+  return false;
+}
 
 const ReceiptIcon: React.FC<{
   icon: TurnProcessReceiptIcon;
   state: TurnDisclosureProcessState;
 }> = ({ icon, state }) => {
   if (state === 'running') return <Spin size={12} />;
-  if (state === 'failed' || state === 'canceled') return <Attention theme='outline' size='15' />;
-  if (icon === 'file') return <FolderOpen theme='outline' size='15' />;
-  if (icon === 'edit') return <Edit theme='outline' size='15' />;
-  if (icon === 'thinking') return <Brain theme='outline' size='15' />;
-  if (icon === 'permission') return <Attention theme='outline' size='15' />;
-  if (icon === 'status') return <CheckOne theme='outline' size='15' />;
-  return <Terminal theme='outline' size='15' />;
+  if (state === 'failed' || state === 'canceled') return <Attention theme='outline' size='15' fill='currentColor' />;
+  if (icon === 'file') return <FolderOpen theme='outline' size='15' fill='currentColor' />;
+  if (icon === 'edit') return <Edit theme='outline' size='15' fill='currentColor' />;
+  if (icon === 'thinking') return <Brain theme='outline' size='15' fill='currentColor' />;
+  if (icon === 'permission') return <Attention theme='outline' size='15' fill='currentColor' />;
+  if (icon === 'status') return <CheckOne theme='outline' size='15' fill='currentColor' />;
+  return <Terminal theme='outline' size='15' fill='currentColor' />;
 };
 
 function TurnProcessReceipt<T>({ receipt, highlighted = false, renderProcessItem }: TurnProcessReceiptProps<T>) {
   const canExpand = receipt.hasDetail === true;
-  const [expanded, setExpanded] = useState(receipt.defaultExpanded && canExpand);
+  const [expanded, setExpanded] = useState(() => getDefaultExpanded(receipt.defaultExpanded, canExpand));
+  const expansionSnapshotRef = useRef<TurnProcessReceiptExpansionSnapshot>({
+    receiptId: receipt.id,
+    canExpand,
+  });
 
   useEffect(() => {
-    setExpanded(receipt.defaultExpanded && canExpand);
+    const nextSnapshot: TurnProcessReceiptExpansionSnapshot = { receiptId: receipt.id, canExpand };
+    const shouldReset = shouldResetTurnProcessReceiptExpansion(expansionSnapshotRef.current, nextSnapshot);
+    expansionSnapshotRef.current = nextSnapshot;
+
+    if (shouldReset) {
+      setExpanded(getDefaultExpanded(receipt.defaultExpanded, canExpand));
+    }
   }, [canExpand, receipt.defaultExpanded, receipt.id]);
 
   useEffect(() => {
@@ -57,9 +92,15 @@ function TurnProcessReceipt<T>({ receipt, highlighted = false, renderProcessItem
   }, [canExpand, highlighted]);
 
   const bodyId = `turn-process-receipt-body-${sanitizeDomId(receipt.id)}`;
+  const receiptIconMarker =
+    receipt.state === 'running'
+      ? 'loading'
+      : receipt.state === 'failed' || receipt.state === 'canceled'
+        ? 'attention'
+        : receiptIconMarkerByIcon[receipt.icon];
   const headerContent = (
     <>
-      <span className='turn-process-receipt__icon'>
+      <span className='turn-process-receipt__icon' aria-hidden='true' data-receipt-icon={receiptIconMarker}>
         <ReceiptIcon icon={receipt.icon} state={receipt.state} />
       </span>
       <span className='turn-process-receipt__label'>{receipt.label}</span>
