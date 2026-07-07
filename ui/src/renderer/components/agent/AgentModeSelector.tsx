@@ -16,6 +16,7 @@ import { Down } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarqueePillLabel from './MarqueePillLabel';
+import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
 
 /**
  * Extract mode options from cached ACP config_options.
@@ -250,12 +251,16 @@ const AgentModeSelector: React.FC<AgentModeSelectorProps> = ({
 
   // Dropdown menu (shared between compact and full mode)
   const dropdownMenu = (
-    <Menu onClickMenuItem={(key) => void handleModeChange(key)}>
+    <Menu
+      className={dropdownMenuStyles.configDropdownMenu}
+      data-testid='agent-mode-dropdown-menu'
+      onClickMenuItem={(key) => void handleModeChange(key)}
+    >
       <Menu.ItemGroup title={t('agentMode.switchMode', { defaultValue: 'Switch Mode' })}>
         {modes.map((mode: AgentModeOption) => (
-          <Menu.Item key={mode.value} className={current_mode === mode.value ? '!bg-2' : ''}>
+          <Menu.Item key={mode.value}>
             <div
-              className='flex items-center gap-8px'
+              className='flex w-full items-center gap-8px'
               data-mode-value={mode.value}
               data-testid={`nomi-mode-option-${mode.value}`}
             >

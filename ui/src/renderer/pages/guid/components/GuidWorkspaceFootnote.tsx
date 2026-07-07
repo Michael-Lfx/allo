@@ -169,7 +169,8 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
             const name = path.split(/[\\/]/).pop() || path;
             const isActive = path === workspaceDir;
             return (
-              <div
+              <button
+                type='button'
                 key={path}
                 className={`${styles.wsDropdownItem} ${isActive ? styles.wsDropdownItemActive : ''}`}
                 onClick={() => handleSelectPath(path)}
@@ -194,21 +195,27 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
                     <path d='M20 6L9 17l-5-5' />
                   </svg>
                 )}
-              </div>
+              </button>
             );
           })}
 
           {filteredRecent.length > 0 && <div className={styles.wsDropdownSep} />}
 
-          <div className={`${styles.wsDropdownItem} ${styles.wsDropdownItemAccent}`} onClick={handleBrowseWorkspace}>
+          <button
+            type='button'
+            className={`${styles.wsDropdownItem} ${styles.wsDropdownItemAccent}`}
+            onClick={handleBrowseWorkspace}
+          >
             <PlusIcon />
             <span>{t('team.create.chooseDifferentFolder')}</span>
-          </div>
+          </button>
 
           <>
             <div className={styles.wsDropdownSep} />
-            <div
+            <button
+              type='button'
               className={`${styles.wsDropdownItem} ${workspaceDir ? styles.wsDropdownItemMuted : styles.wsDropdownItemMutedDisabled}`}
+              disabled={!workspaceDir}
               onClick={() => {
                 if (workspaceDir) onClearWorkspace();
                 closeDropdown();
@@ -227,7 +234,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
                 <line x1='2' y1='2' x2='22' y2='22' strokeWidth='1.5' />
               </svg>
               <span>{t('guid.workspace.defaultWorkspace')}</span>
-            </div>
+            </button>
           </>
         </div>,
         document.body
@@ -259,8 +266,8 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
                 tooltip={t('common.copyPath')}
                 className='size-18px shrink-0 hover:bg-fill-3'
               />
-              <span
-                role='button'
+              <button
+                type='button'
                 aria-label={t('guid.workspace.clearWorkspace')}
                 className={styles.workspacePillClose}
                 onClick={(e) => {
@@ -269,7 +276,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
                 }}
               >
                 <Close theme='outline' size='10' fill='currentColor' />
-              </span>
+              </button>
             </div>
           </Tooltip>
           {dropdownEl}
@@ -282,7 +289,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
             data-testid='workspace-selector-btn'
             onClick={recentWorkspaces.length > 0 ? toggleOpen : handleBrowseWorkspace}
           >
-            <FolderIcon size={14} />
+            <FolderIcon size={16} />
             <span>{t('guid.workspace.workInProject')}</span>
             {recentWorkspaces.length > 0 && (
               <Down

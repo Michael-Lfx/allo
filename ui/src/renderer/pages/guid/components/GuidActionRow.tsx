@@ -99,7 +99,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const { t } = useTranslation();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
-  const [isPlusDropdownOpen, setIsPlusDropdownOpen] = useState(false);
   const modeBackend = effectiveModeAgent || selectedAgent;
   const showModeSwitch = supportsModeSwitch(modeBackend);
   const configOptionCount =
@@ -231,13 +230,14 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
     <div className={styles.actionRow}>
       <div className={styles.actionTools}>
         <div className={styles.actionEntry}>
-          <Dropdown trigger='hover' onVisibleChange={setIsPlusDropdownOpen} droplist={menuContent}>
+          <Dropdown trigger='hover' droplist={menuContent}>
             <span className='flex items-center gap-4px cursor-pointer lh-[1]'>
               <Button
                 type='secondary'
                 shape='circle'
-                className={isPlusDropdownOpen ? styles.plusButtonRotate : ''}
-                icon={<Plus theme='outline' size='14' strokeWidth={2} fill={iconColors.primary} />}
+                size='mini'
+                className={styles.actionFileAttachBtn}
+                icon={<Plus theme='outline' size='14' strokeWidth={3} fill={iconColors.primary} />}
                 loading={uploading}
                 disabled={uploading}
                 data-testid='file-upload-btn'
@@ -308,10 +308,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             loading={loading}
             disabled={isButtonDisabled}
             className='send-button-custom'
-            style={{
-              backgroundColor: isButtonDisabled ? undefined : '#000000',
-              borderColor: isButtonDisabled ? undefined : '#000000',
-            }}
             icon={
               autoWorkMode ? (
                 <Robot theme='filled' size='14' fill='white' strokeWidth={5} />

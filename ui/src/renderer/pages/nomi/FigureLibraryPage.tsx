@@ -124,7 +124,7 @@ const FigureLibraryPage: React.FC = () => {
           <h2 className='m-0 text-17px font-700 text-t-primary'>{t('nomi.customFigure.libraryTitle')}</h2>
           <span className='text-12px text-t-tertiary'>{t('nomi.customFigure.homeEntryHint')}</span>
         </div>
-        <Button type='primary' icon={<IconPlus />} onClick={() => setWizardOpen(true)}>
+        <Button type='primary' shape='round' icon={<IconPlus />} onClick={() => setWizardOpen(true)}>
           {t('nomi.customFigure.createNew')}
         </Button>
       </div>
@@ -142,7 +142,7 @@ const FigureLibraryPage: React.FC = () => {
             <span className='text-14px font-600 text-t-primary'>{t('nomi.customFigure.libraryEmpty')}</span>
             <span className='text-12px text-t-tertiary'>{t('nomi.customFigure.copyrightHint')}</span>
           </div>
-          <Button type='primary' icon={<IconPlus />} onClick={() => setWizardOpen(true)}>
+          <Button type='primary' shape='round' icon={<IconPlus />} onClick={() => setWizardOpen(true)}>
             {t('nomi.customFigure.createNew')}
           </Button>
         </div>

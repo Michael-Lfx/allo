@@ -77,8 +77,12 @@
 }
 
 .composerTextarea :global(textarea::placeholder) {
-  color: #b4b5bc !important;
+  color: var(--color-text-4) !important;
   opacity: 1 !important;
+}
+
+:global([data-theme='dark']) .composerTextarea :global(textarea::placeholder) {
+  color: var(--color-text-3) !important;
 }
 
 /* Bottom toolbar — model/autonomy pills on the right, send button at the far

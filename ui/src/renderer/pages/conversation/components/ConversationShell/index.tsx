@@ -147,7 +147,6 @@ const ConversationShell: React.FC = () => {
       displayPreferences={displayPreferences}
       onDisplayPresetChange={applyDisplayPreset}
       onDisplayPreferenceChange={updateDisplayPreference}
-      onCollapse={collapse}
       onSessionClick={isMobile ? handleSessionClick : undefined}
       onConversationSelect={handleConversationSelect}
     />
