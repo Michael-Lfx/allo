@@ -21,8 +21,11 @@ mod insights;
 mod knowledge;
 mod lifecycle;
 mod mcp;
+pub mod dispatch_target;
 mod media;
 pub mod model_capability;
+pub mod model_catalog;
+pub mod model_task;
 mod office;
 mod orchestrator;
 mod poi;
@@ -156,7 +159,13 @@ pub use media::{
     MediaCreditsResponse, MediaModelListResponse, MediaSettingsResponse,
     MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
-pub use model_capability::infer_model_modalities;
+pub use model_capability::{infer_generation_capabilities, infer_model_modalities};
+pub use dispatch_target::{resolve_dispatch_target, DispatchTarget, RequestShape};
+pub use model_catalog::{resolve_models, CatalogModelRef, ResolveModelsRequest, ResolveModelsResponse};
+pub use model_task::{
+    derive_tasks_and_traits, ModelProfile, ModelProfileKeyRequest, ModelProfileUpsertRequest,
+    ModelTask, ModelTrait, ProfileSource,
+};
 pub use office::{
     CellCoord, CellRange, ConversionResultDto, ConversionTarget, DetectStarOfficeRequest,
     DocumentConversionRequest, DocumentConversionResponse, ExcelSheetData, ExcelSheetImage,

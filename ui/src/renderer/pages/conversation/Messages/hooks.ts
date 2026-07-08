@@ -6,12 +6,15 @@
 
 import { ipcBridge } from '@/common';
 import type { AgentStreamErrorInfo, IMessageThinking, IMessageTips, TMessage } from '@/common/chat/chatLib';
+import { toDisplayText } from '@/common/chat/displayText';
 import {
   composeMessage,
   mergeAcpToolCallContent,
   mergeTextMessageContent,
+  normalizeKnowledgeWritebackState,
   normalizeAgentStreamError,
   preferTextMessageVersion,
+  transformKnowledgeWritebackEvent,
 } from '@/common/chat/chatLib';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createContext } from '@renderer/utils/ui/createContext';
@@ -40,19 +43,21 @@ function getMessageIndexKey(message: TMessage): string | undefined {
   return message.msg_id;
 }
 
-const compactThinkingStreamText = (value: string): string => value.replace(/\s+/g, ' ').trim();
+const compactThinkingStreamText = (value: unknown): string => toDisplayText(value).replace(/\s+/g, ' ').trim();
 
-export function mergeThinkingStreamContent(existing: string, incoming: string): string {
-  if (!incoming) return existing;
-  if (!existing) return incoming;
-  if (incoming === existing) return existing;
-  const existingCompact = compactThinkingStreamText(existing);
-  const incomingCompact = compactThinkingStreamText(incoming);
-  if (incomingCompact === existingCompact) return existing;
-  if (incomingCompact && existingCompact.startsWith(incomingCompact)) return existing;
-  if (existingCompact && incomingCompact.startsWith(existingCompact)) return incoming;
-  if (incoming.startsWith(existing)) return incoming;
-  return existing + incoming;
+export function mergeThinkingStreamContent(existing: unknown, incoming: unknown): string {
+  const existingText = toDisplayText(existing);
+  const incomingText = toDisplayText(incoming);
+  if (!incomingText) return existingText;
+  if (!existingText) return incomingText;
+  if (incomingText === existingText) return existingText;
+  const existingCompact = compactThinkingStreamText(existingText);
+  const incomingCompact = compactThinkingStreamText(incomingText);
+  if (incomingCompact === existingCompact) return existingText;
+  if (incomingCompact && existingCompact.startsWith(incomingCompact)) return existingText;
+  if (existingCompact && incomingCompact.startsWith(existingCompact)) return incomingText;
+  if (incomingText.startsWith(existingText)) return incomingText;
+  return existingText + incomingText;
 }
 
 // 使用 WeakMap 缓存索引，当列表被 GC 时自动清理
@@ -118,6 +123,28 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
 
   if (logDroppedToolCallWithoutCallId(message)) {
     return list || [];
+  }
+
+  if (message.type === 'text' && message.content.knowledge_writeback && message.msg_id) {
+    const existingIdx = index.msgIdIndex.get(message.msg_id);
+    if (existingIdx !== undefined && existingIdx < list.length) {
+      const existingMsg = list[existingIdx];
+      if (existingMsg.type === 'text') {
+        const newList = list.slice();
+        newList[existingIdx] = {
+          ...existingMsg,
+          content: {
+            ...mergeTextMessageContent(existingMsg.content, message.content),
+            content: existingMsg.content.content,
+          },
+        };
+        return newList;
+      }
+    }
+
+    const newIdx = list.length;
+    index.msgIdIndex.set(message.msg_id, newIdx);
+    return list.concat(message);
   }
 
   if (!list?.length) {
@@ -214,6 +241,20 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
     if (existingIdx !== undefined && existingIdx < list.length) {
       const existingMsg = list[existingIdx];
       if (existingMsg.type === 'text') {
+        const existingIsWritebackOnly =
+          existingMsg.position === 'left' &&
+          existingMsg.content.content.length === 0 &&
+          Boolean(existingMsg.content.knowledge_writeback);
+        if (existingIsWritebackOnly && message.position === 'left') {
+          const newList = list.slice();
+          newList[existingIdx] = {
+            ...existingMsg,
+            ...message,
+            id: existingMsg.id,
+            content: mergeTextMessageContent(existingMsg.content, message.content),
+          };
+          return newList;
+        }
         // User messages (right position) are complete — skip if already exists to prevent duplicates
         if (message.position === 'right') {
           return list;
@@ -424,6 +465,20 @@ export const useAddOrUpdateMessage = () => {
   );
 };
 
+export const useKnowledgeWritebackEvents = (conversationId: number | undefined) => {
+  const addOrUpdateMessage = useAddOrUpdateMessage();
+
+  useEffect(() => {
+    if (!conversationId) return;
+    return ipcBridge.conversation.knowledgeWriteback.on((event) => {
+      if (conversationId !== Number(event.conversation_id)) {
+        return;
+      }
+      addOrUpdateMessage(transformKnowledgeWritebackEvent(event));
+    });
+  }, [conversationId, addOrUpdateMessage]);
+};
+
 export const useRemoveMessageByMsgId = () => {
   const update = useUpdateMessageList();
 
@@ -604,10 +659,12 @@ export function normalizeDbMessage(msg: TMessage): TMessage {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (typeof parsed.content !== 'string') return msg;
+    const knowledgeWriteback = normalizeKnowledgeWritebackState(parsed.knowledge_writeback);
     return {
       ...msg,
       content: {
         content: parsed.content as string,
+        ...(knowledgeWriteback ? { knowledge_writeback: knowledgeWriteback } : {}),
         ...(parsed.teammate_message ? { teammateMessage: true } : {}),
         ...(parsed.sender_name ? { senderName: parsed.sender_name as string } : {}),
         ...(parsed.sender_backend ? { senderAgentType: parsed.sender_backend as string } : {}),
@@ -809,4 +866,10 @@ export const useMessageLstCache = (key: number, opts?: { windowed?: boolean }) =
   return { loadOlder, hasMore, loadingOlder };
 };
 
-export { MessageListLoadingProvider, MessageListProvider, useMessageList, useMessageListLoading, useUpdateMessageList };
+export {
+  MessageListLoadingProvider,
+  MessageListProvider,
+  useMessageList,
+  useMessageListLoading,
+  useUpdateMessageList,
+};

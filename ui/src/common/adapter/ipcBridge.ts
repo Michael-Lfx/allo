@@ -54,6 +54,7 @@ import type {
   IMcpServer,
   IProvider,
   ISessionMcpServer,
+  ModelProfile,
   TChatConversation,
   TProviderWithModel,
 } from '../config/storage';
@@ -74,8 +75,12 @@ import type {
   CreateProviderRequest,
   FetchModelsAnonymousRequest,
   FetchModelsResponse,
+  ModelProfileKeyRequest,
+  ModelProfileUpsertRequest,
   ProviderHealthCheckRequest,
   ProviderHealthCheckResponse,
+  ResolveModelsRequest,
+  ResolveModelsResponse,
   UpdateProviderRequest,
 } from '../types/provider/providerApi';
 import type { SpeechToTextRequest, SpeechToTextResult } from '../types/provider/speech';
@@ -316,6 +321,7 @@ export const conversation = {
    *  IUserMessageCreatedEvent). */
   userCreated: wsEmitter<IUserMessageCreatedEvent>('message.userCreated'),
   artifactStream: wsEmitter<IConversationArtifact>('conversation.artifact'),
+  knowledgeWriteback: wsEmitter<IKnowledgeWritebackEvent>('knowledge.writeback'),
   turnStarted: wsMappedEmitter<IConversationTurnStartedEvent>('turn.started', (raw) => {
     const r = raw as Record<string, unknown>;
     const rawRuntime = (r.runtime ?? {}) as Record<string, unknown>;
@@ -909,6 +915,17 @@ export const mode = {
    */
   fetchModelList: httpPost<FetchModelsResponse, FetchModelsAnonymousRequest>('/api/providers/fetch-models'),
   detectProtocol: httpPost<ProtocolDetectionResponse, ProtocolDetectionRequest>('/api/providers/detect-protocol'),
+};
+
+// ---------------------------------------------------------------------------
+// Model profiles (multimodal model hub) — routed to /api/model-profiles/*
+// ---------------------------------------------------------------------------
+
+export const modelProfile = {
+  list: httpGet<ModelProfile[], void>('/api/model-profiles'),
+  upsert: httpPost<ModelProfile, ModelProfileUpsertRequest>('/api/model-profiles'),
+  remove: httpPost<void, ModelProfileKeyRequest>('/api/model-profiles/delete'),
+  resolve: httpPost<ResolveModelsResponse, ResolveModelsRequest>('/api/model-profiles/resolve'),
 };
 
 // ---------------------------------------------------------------------------
@@ -1868,6 +1885,38 @@ export interface IResponseMessage {
   /** Originating subsystem of the turn's user message (companion/cron/autowork/
    *  idmm); null/absent = typed by a real person. */
   origin?: string | null;
+}
+
+export interface IKnowledgeWritebackEvent {
+  conversation_id: number | string;
+  msg_id: string;
+  status:
+    | 'started'
+    | 'extracting'
+    | 'writing'
+    | 'written'
+    | 'partial'
+    | 'failed'
+    | 'no_candidate'
+    | 'no_completer'
+    | 'disabled'
+    | 'interrupted';
+  attempt_id?: string;
+  started_at?: number;
+  updated_at?: number;
+  finished_at?: number | null;
+  retryable?: boolean;
+  candidates?: number;
+  written?: Array<{
+    kb_id?: string | null;
+    rel_path?: string | null;
+    staged?: boolean;
+  }>;
+  failures?: Array<{
+    kb_id?: string | null;
+    rel_path?: string | null;
+    error?: string;
+  }>;
 }
 
 /** `message.userCreated` broadcast: a user message was persisted (covers IM
