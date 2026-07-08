@@ -7,7 +7,8 @@ use axum::extract::{Extension, Json, State};
 use axum::routing::{get, post};
 
 use nomifun_api_types::{
-    ApiResponse, CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
+    ApiResponse, CloudDeviceActivationRetryResponse, CloudDeviceActivationStatusResponse,
+    CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudServerSettingsResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
 };
 use nomifun_auth::CurrentUser;
@@ -42,6 +43,8 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
     Router::new()
         .route("/api/cloud/settings", get(get_settings).patch(patch_settings))
         .route("/api/cloud/whoami", get(whoami))
+        .route("/api/cloud/device/status", get(device_activation_status))
+        .route("/api/cloud/device/activate", post(retry_device_activation))
         .route("/api/cloud/login/start", post(login_start))
         .route("/api/cloud/login/continue", post(login_continue))
         .route("/api/cloud/logout", post(logout))
@@ -70,6 +73,24 @@ async fn whoami(
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<CloudWhoamiResponse>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.whoami().await?)))
+}
+
+async fn device_activation_status(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<CloudDeviceActivationStatusResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.device_activation_status().await?,
+    )))
+}
+
+async fn retry_device_activation(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<CloudDeviceActivationRetryResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.retry_device_activation().await?,
+    )))
 }
 
 async fn login_start(

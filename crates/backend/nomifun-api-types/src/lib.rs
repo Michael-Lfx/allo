@@ -81,6 +81,7 @@ pub use channel::{
     UserAuthorizedPayload,
 };
 pub use cloud::{
+    CloudDeviceActivationRetryResponse, CloudDeviceActivationStatusResponse,
     CloudLoginContinueRequest, CloudLoginFailedResponse, CloudLoginInput,
     CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudWhoamiResponse,

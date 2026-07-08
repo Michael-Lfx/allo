@@ -45,5 +45,16 @@
     "channel": "Channel",
     "app": "App ID",
     "saved": "Cloud settings saved"
+  },
+  "device": {
+    "title": "Device activation",
+    "activated": "This device has reported activation to the cloud",
+    "pending": "Activation has not been reported yet",
+    "serial": "Serial number",
+    "version": "App version",
+    "ip": "Last reported IP",
+    "retry": "Report again",
+    "reported": "Device activation reported",
+    "upToDate": "Device activation is already up to date"
   }
 }

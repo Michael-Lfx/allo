@@ -47,6 +47,15 @@ struct DeviceStateFile {
     activation_uploaded_app_version: String,
 }
 
+/// Local device activation snapshot for status APIs and settings UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceActivationStatus {
+    pub serial_number: String,
+    pub app_version: String,
+    pub activated_for_version: bool,
+    pub last_reported_ip: Option<String>,
+}
+
 pub struct DeviceActivation {
     state_path: std::path::PathBuf,
 }
@@ -56,6 +65,25 @@ impl DeviceActivation {
         Self {
             state_path: device_state_path(data_dir.as_ref()),
         }
+    }
+
+    /// Read persisted activation state for a user (no network I/O).
+    pub async fn status_for_user(
+        &self,
+        user_id: i64,
+    ) -> Result<DeviceActivationStatus, ServerClientError> {
+        let state = self.load_state().await?;
+        let app_version = env!("CARGO_PKG_VERSION").to_string();
+        Ok(DeviceActivationStatus {
+            serial_number: state.sn.clone(),
+            app_version: app_version.clone(),
+            activated_for_version: already_activated(&state, user_id, &app_version),
+            last_reported_ip: state
+                .last_reported_ip_by_user
+                .get(&user_id.to_string())
+                .cloned()
+                .filter(|ip| !ip.is_empty()),
+        })
     }
 
     /// Report activation once per `(user_id, app_version)`; re-report when public IP changes.
@@ -310,6 +338,27 @@ mod tests {
                 .get("_legacy_device")
                 .is_some_and(|v| v.contains("0.15.0"))
         );
+    }
+
+    #[tokio::test]
+    async fn status_for_user_reflects_recorded_activation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let activation = DeviceActivation::new(dir.path());
+        let mut state = DeviceStateFile::default();
+        state.sn = "SN-TEST".into();
+        record_activation(&mut state, 42, env!("CARGO_PKG_VERSION"), "203.0.113.1");
+        activation.save_state(&state).await.expect("save");
+
+        let status = activation.status_for_user(42).await.expect("status");
+        assert_eq!(status.serial_number, "SN-TEST");
+        assert!(status.activated_for_version);
+        assert_eq!(
+            status.last_reported_ip.as_deref(),
+            Some("203.0.113.1")
+        );
+
+        let other = activation.status_for_user(99).await.expect("status");
+        assert!(!other.activated_for_version);
     }
 
     #[test]

@@ -100,6 +100,12 @@ export function getBuiltinSettingsNavItems(t: TranslateFn): NavItem[] {
       icon: <Pic theme='outline' size='16' />,
       path: 'media',
     },
+    'cloud-login': {
+      id: 'cloud-login',
+      label: t('settings.cloudLoginNav'),
+      icon: <CloudStorage theme='outline' size='16' />,
+      path: 'cloud-login',
+    },
     about: { id: 'about', label: t('settings.about'), icon: <Info theme='outline' size='16' />, path: 'about' },
   };
 

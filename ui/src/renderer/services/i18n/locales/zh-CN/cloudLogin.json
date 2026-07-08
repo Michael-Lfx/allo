@@ -45,5 +45,16 @@
     "channel": "渠道",
     "app": "应用 ID",
     "saved": "云设置已保存"
+  },
+  "device": {
+    "title": "设备激活",
+    "activated": "本设备已向云端上报激活信息",
+    "pending": "尚未向云端上报激活信息",
+    "serial": "设备序列号",
+    "version": "应用版本",
+    "ip": "上次上报 IP",
+    "retry": "重新上报",
+    "reported": "设备激活已上报",
+    "upToDate": "设备激活已是最新，无需重复上报"
   }
 }

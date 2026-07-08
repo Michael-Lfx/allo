@@ -33,6 +33,7 @@ const ConversationShell = React.lazy(() => import('@renderer/pages/conversation/
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
 const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
+const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 
 const withRouteFallback = (Component: React.LazyExoticComponent<React.ComponentType>) => (
@@ -224,7 +225,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />
           <Route path='/settings/insights' element={withRouteFallback(InsightsSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
-          <Route path='/settings/cloud-login' element={<Navigate to='/cloud-login' replace />} />
+          <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/ext/:tabId' element={withRouteFallback(ExtensionSettingsPage)} />
           {/* Relocated out of Settings → AI Core: Assistants → /assistants, Webhook → requirements 扩展能力 */}

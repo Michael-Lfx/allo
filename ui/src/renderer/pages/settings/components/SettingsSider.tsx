@@ -34,6 +34,7 @@ export const BUILTIN_TAB_IDS = [
   'poi',
   'insights',
   'media',
+  'cloud-login',
   'about',
 ] as const;
 
@@ -135,6 +136,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.mediaNav'),
         icon: <Pic />,
         path: 'media',
+      },
+      'cloud-login': {
+        id: 'cloud-login',
+        label: t('settings.cloudLoginNav'),
+        icon: <CloudStorage />,
+        path: 'cloud-login',
       },
       about: { id: 'about', label: t('settings.about'), icon: <Info />, path: 'about' },
     };

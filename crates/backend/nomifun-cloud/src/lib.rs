@@ -18,10 +18,11 @@ pub mod platform;
 pub mod profile;
 pub mod provider_sync;
 pub mod session;
+pub mod telemetry;
 pub mod token_store;
 pub mod transport;
 
-pub use activation::DeviceActivation;
+pub use activation::{DeviceActivation, DeviceActivationStatus};
 pub use config_defaults::{
     FLOWY_BUILTIN_PROVIDER_ID, default_gateway_config, default_server_config,
     ensure_gateway_defaults, insights_batch_endpoint,
@@ -43,6 +44,7 @@ pub use profile::ProfileStore;
 pub use session::{SERVER_TOKEN_PROVIDER, ServerSession, ServerTokens, TokenSource};
 pub use http_routes::{CloudRouterState, cloud_routes};
 pub use http_service::CloudService;
+pub use telemetry::start_cloud_telemetry;
 pub use transport::HttpTransport;
 
 #[cfg(test)]

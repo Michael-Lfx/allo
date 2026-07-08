@@ -5027,7 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-auxiliary"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "async-trait",
  "nomi-types",
@@ -5168,7 +5168,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-insights-core"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "chrono",
  "hex",
@@ -5210,7 +5210,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-media"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5251,7 +5251,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-poi"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "chrono",
  "hex",
@@ -5613,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cloud"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5908,7 +5908,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-insights"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "axum",
  "nomi-config",
@@ -5981,7 +5981,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-media"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6058,7 +6058,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-poi"
-version = "0.2.7"
+version = "0.2.9"
 dependencies = [
  "axum",
  "nomi-config",
