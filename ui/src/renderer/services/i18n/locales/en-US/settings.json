@@ -1357,6 +1357,19 @@
   "baseUrlSuggestion": "Detected a reachable endpoint: {{base_url}}",
   "baseUrlSuggestionApply": "Use it",
   "baseUrlSuggestionKeep": "Keep mine",
+  "developerMode": {
+    "sectionTitle": "Advanced",
+    "title": "Developer mode",
+    "description": "Unlock advanced settings such as Cloud Account. When off, those entries are hidden from Settings.",
+    "passwordModalTitle": "Enable developer mode",
+    "passwordModalDesc": "Developer mode exposes advanced settings such as Cloud Account. Enter the password to continue.",
+    "passwordPlaceholder": "Developer mode password",
+    "passwordIncorrect": "Incorrect password. Please try again.",
+    "enableConfirm": "Enable",
+    "enabled": "Developer mode enabled",
+    "enableFailed": "Failed to enable developer mode. Please try again.",
+    "disableFailed": "Failed to disable developer mode. Please try again."
+  },
   "factoryReset": {
     "dangerZone": "Danger Zone",
     "title": "Reset System Data (Factory Reset)",

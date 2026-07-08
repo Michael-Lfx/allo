@@ -92,6 +92,8 @@ export interface IConfigStorageRefer {
   'system.keepAwake'?: boolean;
   // Automatically preview newly created Office files in the current workspace
   'system.autoPreviewOfficeFiles'?: boolean;
+  // Unlock advanced settings tabs (e.g. cloud account) after a password gate in System settings.
+  'system.developerMode'?: boolean;
   // Telegram assistant agent selection / Telegram 助手所使用的 Agent
   'assistant.telegram.agent'?: {
     backend: string;

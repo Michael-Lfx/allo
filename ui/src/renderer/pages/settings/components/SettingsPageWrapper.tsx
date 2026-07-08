@@ -1,5 +1,7 @@
 import classNames from 'classnames';
 import React from 'react';
+import { filterDeveloperGatedTabs } from '@/common/config/developerMode';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { SettingsViewModeProvider } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
@@ -22,7 +24,10 @@ type NavItem = { label: string; icon: React.ReactElement; path: string; id: stri
 
 type TranslateFn = (key: string, options?: { defaultValue?: string }) => string;
 
-export function getBuiltinSettingsNavItems(t: TranslateFn): NavItem[] {
+export function getBuiltinSettingsNavItems(
+  t: TranslateFn,
+  options?: { developerModeEnabled?: boolean }
+): NavItem[] {
   const builtinMap: Record<string, NavItem> = {
     model: { id: 'model', label: t('settings.model'), icon: <LinkCloud theme='outline' size='16' />, path: 'model' },
     assistants: {
@@ -109,7 +114,12 @@ export function getBuiltinSettingsNavItems(t: TranslateFn): NavItem[] {
     about: { id: 'about', label: t('settings.about'), icon: <Info theme='outline' size='16' />, path: 'about' },
   };
 
-  return BUILTIN_TAB_IDS.map((id) => builtinMap[id]);
+  const visibleBuiltinTabIds = filterDeveloperGatedTabs(
+    BUILTIN_TAB_IDS,
+    options?.developerModeEnabled === true
+  );
+
+  return visibleBuiltinTabIds.map((id) => builtinMap[id]);
 }
 
 const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, className, contentClassName }) => {
@@ -122,9 +132,10 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
   const extensionTabs = useExtensionSettingsTabs();
 
   const { resolveExtTabName } = useExtI18n();
+  const [developerMode] = useConfig('system.developerMode');
 
   const menuItems = React.useMemo(() => {
-    const builtins = getBuiltinSettingsNavItems(t);
+    const builtins = getBuiltinSettingsNavItems(t, { developerModeEnabled: developerMode === true });
 
     // Insert extension tabs at their anchor, or (unanchored) at the end of the
     // "Application" group — before "about" — to keep them inside that group.
@@ -182,7 +193,7 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
     }
 
     return result;
-  }, [t, extensionTabs, resolveExtTabName]);
+  }, [t, extensionTabs, resolveExtTabName, developerMode]);
 
   const containerClass = classNames(
     'settings-page-wrapper w-full min-h-full box-border overflow-y-auto',
