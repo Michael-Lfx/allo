@@ -412,9 +412,6 @@ const OrchestratorComposer: React.FC<OrchestratorComposerProps> = ({
               </Dropdown>
             )}
 
-            {/* Circular send button — Arco primary circle (mirrors GuidActionRow's
-                send affordance). White ArrowUp; disabled goes through the
-                `.send-button-custom` class default (no inline override). */}
             <Button
               shape='circle'
               type='primary'

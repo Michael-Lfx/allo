@@ -1636,9 +1636,9 @@ button.guidResourceCard:focus-visible {
 
 /* Guid send button mirrors sendbox.css — keep only actionSubmit scoping for load order. */
 .actionSubmit :global(.send-button-custom.arco-btn.arco-btn-shape-circle) {
-  width: 30px !important;
-  height: 30px !important;
-  min-width: 30px !important;
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
   padding: 0 !important;
   flex-shrink: 0 !important;
 }

@@ -1428,8 +1428,8 @@ const SendBox: React.FC<{
     <Button
       shape='circle'
       type='secondary'
-      className='bg-animate sendbox-stop-button'
-      icon={<div className='mx-auto size-12px bg-6'></div>}
+      className='send-button-custom sendbox-stop-button'
+      icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
       onClick={stopHandler}
     ></Button>
   );

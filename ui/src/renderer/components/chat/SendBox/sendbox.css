@@ -1,10 +1,10 @@
 /* Sendbox component styles */
 
-/* Composer send button — 30×30 circle (2px smaller than the 32px + pole). */
+/* Composer send button — 26×26 circle (6px smaller than the 32px + pole). */
 .send-button-custom.arco-btn.arco-btn-shape-circle {
-  width: 30px !important;
-  height: 30px !important;
-  min-width: 30px !important;
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
   padding: 0 !important;
   flex-shrink: 0 !important;
   line-height: 1 !important;
@@ -46,15 +46,38 @@
 .send-button-custom:disabled,
 .send-button-custom.arco-btn:disabled,
 .send-button-custom.arco-btn-primary:disabled,
+.send-button-custom.arco-btn-secondary:disabled,
 .send-button-custom.arco-btn-disabled,
 .send-button-custom.arco-btn-primary.arco-btn-disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-disabled,
 .send-button-custom.arco-btn-primary.arco-btn-icon-only.arco-btn-disabled,
-.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled {
+.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-icon-only.arco-btn-disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-icon-only:disabled {
   background: #d3d4d9 !important;
   background-color: #d3d4d9 !important;
   background-image: none !important;
   border-color: #d3d4d9 !important;
   opacity: 1 !important;
+}
+
+/* Stop: dark circle with light inner glyph (send uses primary like Guid). */
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: #2b2f36 !important;
+  background-image: none !important;
+  border-color: #2b2f36 !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: #1f2128 !important;
+  border-color: #1f2128 !important;
+}
+
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) .arco-icon,
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) svg {
+  color: #fff !important;
+  fill: #fff !important;
 }
 
 /* Make arrow icon thicker */
@@ -63,17 +86,23 @@
   filter: drop-shadow(0 0 0.5px currentColor);
 }
 
-/* Dark mode: adjust send button brightness */
-[data-theme='dark'] .send-button-custom:not(:disabled) {
-  background-color: var(--aou-4) !important;
-  border-color: var(--aou-4) !important;
+[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: #52525b !important;
+  border-color: #52525b !important;
+}
+
+[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: #71717a !important;
+  border-color: #71717a !important;
 }
 
 [data-theme='dark'] .send-button-custom:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn-primary:disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-secondary:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn-disabled,
-[data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled {
+[data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-secondary.arco-btn-disabled {
   background-color: color-mix(in srgb, var(--color-fill-4) 94%, var(--color-border-2)) !important;
   border-color: color-mix(in srgb, var(--color-fill-4) 96%, var(--color-border-2)) !important;
 }
@@ -122,60 +151,16 @@
   box-shadow: none !important;
 }
 
-[data-theme='dark'] .sendbox-stop-button,
-[data-theme='dark'] .sendbox-stop-button.arco-btn,
-[data-theme='dark'] .sendbox-stop-button.arco-btn-secondary {
-  border: 1px solid color-mix(in srgb, var(--color-fill-4) 94%, var(--color-bg-2)) !important;
+.sendbox-stop-icon {
+  width: 10px;
+  height: 10px;
+  margin: 0 auto;
+  border-radius: 2px;
+  background-color: #fff !important;
 }
 
-.sendbox-stop-button.bg-animate,
-.sendbox-stop-button.arco-btn.bg-animate,
-.sendbox-stop-button.arco-btn-secondary.bg-animate {
-  animation: sendbox-stop-breathe 1.4s ease-in-out infinite alternate;
-}
-
-[data-theme='dark'] .sendbox-stop-button.bg-animate,
-[data-theme='dark'] .sendbox-stop-button.arco-btn.bg-animate,
-[data-theme='dark'] .sendbox-stop-button.arco-btn-secondary.bg-animate {
-  animation: sendbox-stop-breathe-dark 1.4s ease-in-out infinite alternate;
-}
-
-.sendbox-stop-button.bg-animate .arco-icon,
-.sendbox-stop-button.bg-animate svg {
-  color: #fff !important;
-  fill: #fff !important;
-}
-
-@keyframes sendbox-stop-breathe {
-  0% {
-    background-color: var(--aou-2) !important;
-    border-color: var(--aou-2) !important;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--aou-6-brand) 0%, transparent);
-    transform: scale(1);
-  }
-
-  100% {
-    background-color: var(--aou-5) !important;
-    border-color: var(--aou-5) !important;
-    box-shadow: 0 0 0 8px color-mix(in srgb, var(--aou-6-brand) 22%, transparent);
-    transform: scale(1.08);
-  }
-}
-
-@keyframes sendbox-stop-breathe-dark {
-  0% {
-    background-color: var(--aou-2) !important;
-    border-color: var(--aou-2) !important;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--aou-5) 0%, transparent);
-    transform: scale(1);
-  }
-
-  100% {
-    background-color: var(--aou-5) !important;
-    border-color: var(--aou-5) !important;
-    box-shadow: 0 0 0 8px color-mix(in srgb, var(--aou-5) 28%, transparent);
-    transform: scale(1.08);
-  }
+[data-theme='dark'] .sendbox-stop-icon {
+  background-color: #fafafa !important;
 }
 
 /* Input placeholder color */

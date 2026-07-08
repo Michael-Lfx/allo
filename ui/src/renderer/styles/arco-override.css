@@ -54,8 +54,12 @@ body {
  * white ArrowUp icon and makes the affordance nearly invisible on new-chat surfaces. */
 .send-button-custom.arco-btn-primary.arco-btn-disabled,
 .send-button-custom.arco-btn-primary:disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-disabled,
+.send-button-custom.arco-btn-secondary:disabled,
 .send-button-custom.arco-btn-primary.arco-btn-icon-only.arco-btn-disabled,
-.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled {
+.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-icon-only.arco-btn-disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-icon-only:disabled {
   background: #d3d4d9 !important;
   background-color: #d3d4d9 !important;
   background-image: none !important;
@@ -64,9 +68,9 @@ body {
 }
 
 .send-button-custom.arco-btn.arco-btn-shape-circle {
-  width: 30px !important;
-  height: 30px !important;
-  min-width: 30px !important;
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
   padding: 0 !important;
   flex-shrink: 0 !important;
   line-height: 1 !important;
@@ -77,13 +81,32 @@ body {
   filter: drop-shadow(0 0 0.5px currentColor);
 }
 
-[data-theme='dark'] .send-button-custom.arco-btn-primary:not(.arco-btn-disabled):not(:disabled) {
-  background-color: var(--aou-4) !important;
-  border-color: var(--aou-4) !important;
+.send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: #2b2f36 !important;
+  background-image: none !important;
+  border-color: #2b2f36 !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: #1f2128 !important;
+  border-color: #1f2128 !important;
+}
+
+[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: #52525b !important;
+  border-color: #52525b !important;
+}
+
+[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: #71717a !important;
+  border-color: #71717a !important;
 }
 
 [data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled,
-[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled {
+[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-secondary.arco-btn-disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-secondary:disabled {
   background-color: color-mix(in srgb, var(--color-fill-4) 94%, var(--color-border-2)) !important;
   border-color: color-mix(in srgb, var(--color-fill-4) 96%, var(--color-border-2)) !important;
 }
