@@ -11,6 +11,7 @@ use crate::config_defaults::ensure_gateway_defaults;
 use crate::{
     AuthManager, AuthPollResult, AuthUserInput, LoginMethod, PendingLogin, ServerClientError,
 };
+use crate::activation::DeviceActivation;
 use nomifun_common::AppError;
 
 #[derive(Clone)]
@@ -47,7 +48,7 @@ impl CloudService {
         config_yaml_path(Some(&self.data_dir))
     }
 
-    fn auth_manager(&self) -> Result<AuthManager, AppError> {
+    pub(crate) fn auth_manager(&self) -> Result<AuthManager, AppError> {
         let cfg = self.gateway_config();
         AuthManager::new(cfg.server.clone(), &self.data_dir)
             .map_err(|e| AppError::Internal(e.to_string()))
@@ -222,5 +223,62 @@ impl CloudService {
 
     pub async fn is_authenticated(&self) -> bool {
         self.whoami().await.map(|w| w.authenticated).unwrap_or(false)
+    }
+
+    pub async fn device_activation_status(
+        &self,
+    ) -> Result<nomifun_api_types::CloudDeviceActivationStatusResponse, AppError> {
+        let mgr = self.auth_manager()?;
+        let status = mgr
+            .whoami()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if !status.is_logged_in() {
+            return Ok(nomifun_api_types::CloudDeviceActivationStatusResponse {
+                authenticated: false,
+                serial_number: None,
+                app_version: None,
+                activated_for_version: false,
+                last_reported_ip: None,
+            });
+        }
+
+        let user_id = if let Some(profile) = status.cached_profile.as_ref() {
+            profile.id
+        } else {
+            mgr.fetch_profile()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .id
+        };
+
+        let activation = DeviceActivation::new(&self.data_dir);
+        let local = activation
+            .status_for_user(user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        Ok(nomifun_api_types::CloudDeviceActivationStatusResponse {
+            authenticated: true,
+            serial_number: if local.serial_number.is_empty() {
+                None
+            } else {
+                Some(local.serial_number)
+            },
+            app_version: Some(local.app_version),
+            activated_for_version: local.activated_for_version,
+            last_reported_ip: local.last_reported_ip,
+        })
+    }
+
+    pub async fn retry_device_activation(
+        &self,
+    ) -> Result<nomifun_api_types::CloudDeviceActivationRetryResponse, AppError> {
+        let mgr = self.auth_manager()?;
+        let reported = mgr
+            .ensure_device_activation()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(nomifun_api_types::CloudDeviceActivationRetryResponse { reported })
     }
 }

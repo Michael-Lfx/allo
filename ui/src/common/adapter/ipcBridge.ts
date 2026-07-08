@@ -4182,6 +4182,18 @@ export interface ICloudWhoami {
   serverBaseUrl?: string;
 }
 
+export interface ICloudDeviceActivationStatus {
+  authenticated: boolean;
+  serialNumber?: string;
+  appVersion?: string;
+  activatedForVersion: boolean;
+  lastReportedIp?: string;
+}
+
+export interface ICloudDeviceActivationRetryResponse {
+  reported: boolean;
+}
+
 export interface ICloudLoginStartResponse {
   pendingId: string;
   method: string;
@@ -4223,6 +4235,8 @@ export const cloud = {
   getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
   updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
   whoami: httpGet<ICloudWhoami, void>('/api/cloud/whoami'),
+  deviceStatus: httpGet<ICloudDeviceActivationStatus, void>('/api/cloud/device/status'),
+  retryDeviceActivation: httpPost<ICloudDeviceActivationRetryResponse, void>('/api/cloud/device/activate'),
   loginStart: httpPost<ICloudLoginStartResponse, { method?: string }>('/api/cloud/login/start', (p) => ({
     method: p?.method ?? 'email_otp',
   })),

@@ -91,3 +91,19 @@ pub struct UpdateCloudServerSettingsRequest {
     pub channel: Option<String>,
     pub app: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudDeviceActivationStatusResponse {
+    pub authenticated: bool,
+    pub serial_number: Option<String>,
+    pub app_version: Option<String>,
+    pub activated_for_version: bool,
+    pub last_reported_ip: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudDeviceActivationRetryResponse {
+    pub reported: bool,
+}

@@ -8,7 +8,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Divider, Input, Message, Steps, Switch, Typography } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
-import type { ICloudServerSettings, ICloudWhoami } from '@/common/adapter/ipcBridge';
+import type { ICloudDeviceActivationStatus, ICloudServerSettings, ICloudWhoami } from '@/common/adapter/ipcBridge';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 type LoginStep = 'email' | 'otp' | 'done';
@@ -17,6 +17,7 @@ const CloudLoginSettings: React.FC = () => {
   const { t } = useTranslation();
   const [serverSettings, setServerSettings] = useState<ICloudServerSettings | null>(null);
   const [whoami, setWhoami] = useState<ICloudWhoami | null>(null);
+  const [deviceStatus, setDeviceStatus] = useState<ICloudDeviceActivationStatus | null>(null);
   const [loginStep, setLoginStep] = useState<LoginStep>('email');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [loginMessage, setLoginMessage] = useState('');
@@ -25,6 +26,7 @@ const CloudLoginSettings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
+  const [deviceRetryLoading, setDeviceRetryLoading] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -37,6 +39,10 @@ const CloudLoginSettings: React.FC = () => {
       setWhoami(user);
       if (user.authenticated) {
         setLoginStep('done');
+        const status = await ipcBridge.cloud.deviceStatus.invoke();
+        setDeviceStatus(status);
+      } else {
+        setDeviceStatus(null);
       }
     } catch (e) {
       Message.error(String(e));
@@ -162,6 +168,23 @@ const CloudLoginSettings: React.FC = () => {
     }
   };
 
+  const retryDeviceActivation = async () => {
+    setDeviceRetryLoading(true);
+    try {
+      const res = await ipcBridge.cloud.retryDeviceActivation.invoke();
+      Message.success(
+        res.reported
+          ? t('cloudLogin.device.reported')
+          : t('cloudLogin.device.upToDate')
+      );
+      void refresh();
+    } catch (e) {
+      Message.error(String(e));
+    } finally {
+      setDeviceRetryLoading(false);
+    }
+  };
+
   const stepIndex = loginStep === 'email' ? 1 : loginStep === 'otp' ? 2 : 3;
 
   return (
@@ -183,6 +206,36 @@ const CloudLoginSettings: React.FC = () => {
             {whoami.username && <div className='text-13px text-t-secondary'>{whoami.username}</div>}
             {whoami.serverBaseUrl && (
               <div className='text-12px text-t-tertiary'>{whoami.serverBaseUrl}</div>
+            )}
+            {deviceStatus && (
+              <div className='mt-8px pt-12px border-t border-[var(--color-border-2)] flex flex-col gap-6px'>
+                <div className='text-13px text-t-primary font-500'>{t('cloudLogin.device.title')}</div>
+                <div className='text-12px text-t-secondary'>
+                  {deviceStatus.activatedForVersion
+                    ? t('cloudLogin.device.activated')
+                    : t('cloudLogin.device.pending')}
+                </div>
+                {deviceStatus.serialNumber && (
+                  <div className='text-12px text-t-tertiary'>
+                    {t('cloudLogin.device.serial')}: {deviceStatus.serialNumber}
+                  </div>
+                )}
+                {deviceStatus.appVersion && (
+                  <div className='text-12px text-t-tertiary'>
+                    {t('cloudLogin.device.version')}: {deviceStatus.appVersion}
+                  </div>
+                )}
+                {deviceStatus.lastReportedIp && (
+                  <div className='text-12px text-t-tertiary'>
+                    {t('cloudLogin.device.ip')}: {deviceStatus.lastReportedIp}
+                  </div>
+                )}
+                {!deviceStatus.activatedForVersion && (
+                  <Button size='small' loading={deviceRetryLoading} onClick={retryDeviceActivation}>
+                    {t('cloudLogin.device.retry')}
+                  </Button>
+                )}
+              </div>
             )}
             <div>
               <Button status='danger' loading={loginLoading} onClick={logout}>
