@@ -8,8 +8,7 @@
  * RequirementListRow — a single refined row in the requirements workspace list
  * (replaces the old dense Arco Table row). Layout, left→right:
  *   checkbox · `#id` badge (tabular-nums) · title + 1-2 line content snippet
- *   · tag chip (mirrors AssistantCard chip) · StatusPill · hover-revealed
- *   edit/delete actions.
+ *   · trailing cluster (tag chip · StatusPill · hover edit/delete).
  *
  * The whole row is a `<div role="button">` whose background click opens the
  * detail drawer (`onOpenDetail`). Interactive children — checkbox, status pill,
@@ -125,69 +124,71 @@ const RequirementListRow: React.FC<RequirementListRowProps> = ({
         )}
       </div>
 
-      {/* Tag chip — mirrors the AssistantCard pill. Hides first on narrow widths. */}
-      {item.tag && (
-        <span
-          className={[
-            'hidden flex-shrink-0 sm:inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px max-w-140px',
-            'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]',
-          ].join(' ')}
-        >
-          <span className='truncate'>{item.tag}</span>
-        </span>
-      )}
+      {/* Trailing cluster — tag, status, and actions share one flex row so they
+          stay vertically aligned regardless of title/content height. */}
+      <div className='flex flex-shrink-0 items-center gap-8px'>
+        {item.tag && (
+          <span
+            className={[
+              'hidden sm:inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px max-w-140px',
+              'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]',
+            ].join(' ')}
+          >
+            <span className='truncate'>{item.tag}</span>
+          </span>
+        )}
 
-      {/* Status — clickable pill; stopPropagation so it doesn't open the drawer */}
-      <div className='flex-shrink-0' onClick={stop}>
-        <StatusPill
-          status={item.status}
-          size='sm'
-          onChange={(next) => onStatusChange(item.id, next)}
-        />
-      </div>
+        <div className='inline-flex items-center' onClick={stop}>
+          <StatusPill
+            status={item.status}
+            size='sm'
+            onChange={(next) => onStatusChange(item.id, next)}
+          />
+        </div>
 
-      {/* Hover-revealed actions — quiet icon links, kept off the keyboard tab
-          flow until visible to avoid surprising focus jumps on the row. */}
-      <div
-        className='flex flex-shrink-0 items-center gap-10px opacity-0 group-hover:opacity-100 transition-opacity duration-150'
-        onClick={stop}
-      >
-        <span
-          role='button'
-          tabIndex={0}
-          aria-label={t('requirements.actions.edit')}
-          title={t('requirements.actions.edit')}
-          onClick={() => onEdit(item.id)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onEdit(item.id);
-            }
-          }}
-          className='inline-flex items-center text-[var(--color-text-3)] cursor-pointer hover:text-[rgb(var(--primary-6))] transition-colors'
-        >
-          <Edit theme='outline' size={15} strokeWidth={3} />
-        </span>
-        <Popconfirm
-          title={t('requirements.actions.deleteConfirm')}
-          onOk={() => onDelete(item.id)}
+        {/* Hover-revealed actions — quiet icon links, kept off the keyboard tab
+            flow until visible to avoid surprising focus jumps on the row. */}
+        <div
+          className='flex items-center gap-10px opacity-0 group-hover:opacity-100 transition-opacity duration-150'
+          onClick={stop}
         >
           <span
             role='button'
             tabIndex={0}
-            aria-label={t('requirements.actions.delete')}
-            title={t('requirements.actions.delete')}
+            aria-label={t('requirements.actions.edit')}
+            title={t('requirements.actions.edit')}
+            onClick={() => onEdit(item.id)}
             onKeyDown={(e) => {
-              if (e.key === ' ') {
+              if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                (e.currentTarget as HTMLElement).click();
+                onEdit(item.id);
               }
             }}
-            className='inline-flex items-center text-[var(--color-text-3)] cursor-pointer hover:text-[rgb(var(--danger-6))] transition-colors'
+            className='inline-flex items-center text-[var(--color-text-3)] cursor-pointer hover:text-[rgb(var(--primary-6))] transition-colors'
           >
-            <Delete theme='outline' size={15} strokeWidth={3} />
+            <Edit theme='outline' size={15} strokeWidth={3} />
           </span>
-        </Popconfirm>
+          <Popconfirm
+            title={t('requirements.actions.deleteConfirm')}
+            onOk={() => onDelete(item.id)}
+          >
+            <span
+              role='button'
+              tabIndex={0}
+              aria-label={t('requirements.actions.delete')}
+              title={t('requirements.actions.delete')}
+              onKeyDown={(e) => {
+                if (e.key === ' ') {
+                  e.preventDefault();
+                  (e.currentTarget as HTMLElement).click();
+                }
+              }}
+              className='inline-flex items-center text-[var(--color-text-3)] cursor-pointer hover:text-[rgb(var(--danger-6))] transition-colors'
+            >
+              <Delete theme='outline' size={15} strokeWidth={3} />
+            </span>
+          </Popconfirm>
+        </div>
       </div>
     </div>
   );
