@@ -21,6 +21,7 @@ import { useDeepLink } from '@renderer/hooks/system/useDeepLink';
 import { useNotificationClick } from '@renderer/hooks/system/useNotificationClick';
 import { useDirectorySelection } from '@renderer/hooks/file/useDirectorySelection';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
+import { SEND_BUTTON_GUARD_CSS } from '@renderer/utils/theme/sendButtonGuardCss';
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
@@ -264,7 +265,7 @@ const Layout: React.FC<{
       return;
     }
 
-    const wrappedCss = processCustomCss(customCss);
+    const wrappedCss = `${processCustomCss(customCss)}\n${SEND_BUTTON_GUARD_CSS}`;
 
     const ensureStyleAtEnd = () => {
       let styleEl = document.getElementById(styleId) as HTMLStyleElement | null;

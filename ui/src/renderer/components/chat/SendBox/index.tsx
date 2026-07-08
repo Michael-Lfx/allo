@@ -1484,7 +1484,7 @@ const SendBox: React.FC<{
     <Button
       shape='circle'
       type='secondary'
-      className='sendbox-mobile-plus-btn'
+      className='sendbox-composer-plus-btn sendbox-mobile-plus-btn'
       icon={<Plus theme='outline' size='16' />}
       onClick={onMobilePlusClick}
       data-testid='sendbox-mobile-plus-btn'

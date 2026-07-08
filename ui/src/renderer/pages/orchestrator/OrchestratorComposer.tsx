@@ -14,6 +14,7 @@ import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { useCompositionInput } from '@/renderer/hooks/chat/useCompositionInput';
 import { iconColors } from '@/renderer/styles/colors';
 import { type ModelMode, encodePair, useModelRange } from './useModelRange';
+import '@/renderer/components/chat/SendBox/sendbox.css';
 import styles from './orchestratorComposer.module.css';
 
 /** The orchestration autonomy levels — mirrors {@link NewRunComposer}'s create

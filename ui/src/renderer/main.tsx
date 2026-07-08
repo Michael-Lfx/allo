@@ -33,6 +33,7 @@ import { useTranslation } from 'react-i18next';
 // Styles
 import 'uno.css';
 import './styles/arco-override.css';
+import '@/renderer/components/chat/SendBox/sendbox.css';
 import './styles/themes/index.css';
 
 // Config service — kick off initialization before i18n / theme modules load,

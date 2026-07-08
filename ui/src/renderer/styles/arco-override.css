@@ -43,9 +43,49 @@ body {
   }
 }
 
-.arco-btn-primary.arco-btn-disabled {
+.arco-btn-primary.arco-btn-disabled:not(.send-button-custom) {
   background-color: var(--aou-2) !important;
   border-color: var(--aou-2) !important;
+}
+
+/* Send button — Guid / OrchestratorComposer use `.send-button-custom` but do not
+ * import sendbox.css (only SendBox does). Without this, disabled falls through to
+ * the generic primary-disabled wash above (--aou-2), which is too light for the
+ * white ArrowUp icon and makes the affordance nearly invisible on new-chat surfaces. */
+.send-button-custom.arco-btn-primary.arco-btn-disabled,
+.send-button-custom.arco-btn-primary:disabled,
+.send-button-custom.arco-btn-primary.arco-btn-icon-only.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled {
+  background: #d3d4d9 !important;
+  background-color: #d3d4d9 !important;
+  background-image: none !important;
+  border-color: #d3d4d9 !important;
+  opacity: 1 !important;
+}
+
+.send-button-custom.arco-btn.arco-btn-shape-circle {
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+}
+
+.send-button-custom .arco-icon > svg {
+  stroke-width: 5 !important;
+  filter: drop-shadow(0 0 0.5px currentColor);
+}
+
+[data-theme='dark'] .send-button-custom.arco-btn-primary:not(.arco-btn-disabled):not(:disabled) {
+  background-color: var(--aou-4) !important;
+  border-color: var(--aou-4) !important;
+}
+
+[data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled {
+  background-color: color-mix(in srgb, var(--color-fill-4) 94%, var(--color-border-2)) !important;
+  border-color: color-mix(in srgb, var(--color-fill-4) 96%, var(--color-border-2)) !important;
 }
 
 .arco-collapse {

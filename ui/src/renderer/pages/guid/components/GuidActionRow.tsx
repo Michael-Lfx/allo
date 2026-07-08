@@ -19,6 +19,7 @@ import { Button, Checkbox, Dropdown, Menu, Message, Tooltip } from '@arco-design
 import { ArrowUp, Plus, Robot, Shield, UploadOne } from '@icon-park/react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import '@/renderer/components/chat/SendBox/sendbox.css';
 import styles from '../index.module.css';
 
 type GuidActionRowProps = {
@@ -235,8 +236,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               <Button
                 type='secondary'
                 shape='circle'
-                size='mini'
-                className={styles.actionFileAttachBtn}
+                className={`sendbox-composer-plus-btn ${styles.actionFileAttachBtn}`}
                 icon={<Plus theme='outline' size='14' strokeWidth={3} fill={iconColors.primary} />}
                 loading={uploading}
                 disabled={uploading}

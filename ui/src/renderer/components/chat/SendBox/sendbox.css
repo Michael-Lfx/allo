@@ -1,10 +1,58 @@
 /* Sendbox component styles */
 
-/* Send button disabled state - override Arco Design default disabled styles */
+/* Composer send button — 30×30 circle (2px smaller than the 32px + pole). */
+.send-button-custom.arco-btn.arco-btn-shape-circle {
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+}
+
+.sendbox-composer-plus-btn,
+.sendbox-composer-plus-btn.arco-btn,
+.sendbox-composer-plus-btn.arco-btn-secondary,
+.sendbox-mobile-plus-btn,
+.sendbox-mobile-plus-btn.arco-btn,
+.sendbox-mobile-plus-btn.arco-btn-secondary {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: var(--color-fill-2) !important;
+  color: var(--color-text-1) !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+}
+
+.sendbox-composer-plus-btn:hover,
+.sendbox-composer-plus-btn:active,
+.sendbox-composer-plus-btn:focus,
+.sendbox-composer-plus-btn:focus-visible,
+.sendbox-mobile-plus-btn:hover,
+.sendbox-mobile-plus-btn:active,
+.sendbox-mobile-plus-btn:focus,
+.sendbox-mobile-plus-btn:focus-visible {
+  background: var(--color-fill-3) !important;
+}
+
+/* Send button disabled state - override Arco Design default disabled styles.
+ * Also target `.arco-btn-disabled` — Arco adds the class alongside the native
+ * disabled attribute; the global rule lives in arco-override.css for surfaces
+ * that do not import this file (Guid / OrchestratorComposer). */
 .send-button-custom:disabled,
 .send-button-custom.arco-btn:disabled,
-.send-button-custom.arco-btn-primary:disabled {
+.send-button-custom.arco-btn-primary:disabled,
+.send-button-custom.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-icon-only.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled {
+  background: #d3d4d9 !important;
   background-color: #d3d4d9 !important;
+  background-image: none !important;
   border-color: #d3d4d9 !important;
   opacity: 1 !important;
 }
@@ -23,9 +71,11 @@
 
 [data-theme='dark'] .send-button-custom:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn:disabled,
-[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled {
-  background-color: color-mix(in srgb, var(--color-fill-4) 82%, var(--color-bg-2)) !important;
-  border-color: color-mix(in srgb, var(--color-fill-4) 88%, var(--color-bg-2)) !important;
+[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled {
+  background-color: color-mix(in srgb, var(--color-fill-4) 94%, var(--color-border-2)) !important;
+  border-color: color-mix(in srgb, var(--color-fill-4) 96%, var(--color-border-2)) !important;
 }
 
 /* Secondary "steer now" action — same circle/size as the send button but a
@@ -502,26 +552,11 @@
 }
 
 /* Mobile compact: `+` launcher button replaces inline tools when the
- * action sheet pattern is active. Sized to match the send button so the
- * left/right poles feel balanced. */
+ * action sheet pattern is active. Shares `.sendbox-composer-plus-btn` sizing. */
 .sendbox-mobile-plus-btn,
 .sendbox-mobile-plus-btn.arco-btn,
 .sendbox-mobile-plus-btn.arco-btn-secondary {
-  width: 32px !important;
-  height: 32px !important;
-  min-width: 32px !important;
-  padding: 0 !important;
-  border: none !important;
-  background: var(--color-fill-2) !important;
-  color: var(--color-text-1) !important;
   flex-shrink: 0 !important;
-}
-
-.sendbox-mobile-plus-btn:hover,
-.sendbox-mobile-plus-btn:active,
-.sendbox-mobile-plus-btn:focus,
-.sendbox-mobile-plus-btn:focus-visible {
-  background: var(--color-fill-3) !important;
 }
 
 .sendbox-tools-mobile-compact {
