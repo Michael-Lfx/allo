@@ -3035,6 +3035,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzzy-matcher"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54614a3312934d066701a80f20f15fa3b56d67ac7722b39eea5b4c9dd1d66c94"
+dependencies = [
+ "thread_local",
+]
+
+[[package]]
 name = "g2gen"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5699,6 +5708,7 @@ dependencies = [
  "async-trait",
  "axum",
  "dashmap",
+ "fuzzy-matcher",
  "nomifun-ai-agent",
  "nomifun-api-types",
  "nomifun-auth",
@@ -5750,6 +5760,7 @@ dependencies = [
  "async-trait",
  "fs2",
  "nomifun-common",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",

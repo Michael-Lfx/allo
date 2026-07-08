@@ -236,7 +236,7 @@ pub fn row_to_artifact_response(row: ConversationArtifactRow) -> Result<Conversa
 /// Message content is stored as JSON (arrays, objects with nested strings).
 /// This recursively collects all string values and joins them with spaces,
 /// producing a flat preview suitable for search snippet display.
-fn extract_preview_text(raw_content: &str) -> String {
+pub fn extract_preview_text(raw_content: &str) -> String {
     fn collect_strings(value: &serde_json::Value, bucket: &mut Vec<String>) {
         match value {
             serde_json::Value::String(s) => {
@@ -305,6 +305,7 @@ pub fn search_row_to_item(row: MessageSearchRow, data_dir: &Path) -> Result<Mess
         message_created_at: row.created_at,
         preview_text,
         conversation,
+        match_indices: None,
     })
 }
 

@@ -275,6 +275,11 @@ pub struct MessageSearchItem {
     pub message_created_at: TimestampMs,
     pub preview_text: String,
     pub conversation: ConversationResponse,
+    /// Character indices (0-based, into preview_text) that matched the
+    /// fuzzy search keyword.  `None` when fuzzy scoring is not available
+    /// or the match was purely via the LIKE pre-filter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_indices: Option<Vec<usize>>,
 }
 
 /// Paginated search results for messages.
@@ -646,6 +651,7 @@ mod tests {
             message_type: "text".into(),
             message_created_at: 1712345678000,
             preview_text: "matched snippet".into(),
+            match_indices: None,
             conversation: ConversationResponse {
                 id: 1,
                 name: "Code Review".into(),
@@ -682,6 +688,7 @@ mod tests {
             message_type: "tips".into(),
             message_created_at: 9000,
             preview_text: "some content preview".into(),
+            match_indices: None,
             conversation: ConversationResponse {
                 id: 4,
                 name: "Search Test".into(),
@@ -796,6 +803,7 @@ mod tests {
                 message_type: "text".into(),
                 message_created_at: 5000,
                 preview_text: "matched".into(),
+                match_indices: Some(vec![0, 1, 2]),
                 conversation: ConversationResponse {
                     id: 5,
                     name: "Conv".into(),

@@ -30,18 +30,56 @@ const SNIPPET_SUFFIX_CONTEXT_LENGTH = 58;
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const buildSnippet = (text: string, keyword: string, maxLength = SNIPPET_MAX_LENGTH): string => {
+const buildSnippet = (text: string, keyword: string, matchIndices?: number[] | null, maxLength = SNIPPET_MAX_LENGTH): { snippet: string; adjustedIndices?: number[] } => {
   const normalized = text.replace(/\s+/g, ' ').trim();
-  if (!normalized) return '';
+  const empty = { snippet: '', adjustedIndices: undefined as number[] | undefined };
+  if (!normalized) return empty;
   if (!keyword.trim()) {
-    return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trimEnd()}...` : normalized;
+    return {
+      snippet: normalized.length > maxLength ? `${normalized.slice(0, maxLength).trimEnd()}...` : normalized,
+      adjustedIndices: undefined,
+    };
   }
 
+  // Use fuzzy match_indices from the server when available to center the
+  // snippet around the best-matching span.
+  if (matchIndices && matchIndices.length > 0) {
+    const sorted = [...matchIndices].sort((a, b) => a - b);
+    const firstMatch = sorted[0];
+    const lastMatch = sorted[sorted.length - 1];
+    const matchLength = lastMatch - firstMatch + 1;
+
+    let start = Math.max(0, firstMatch - SNIPPET_PREFIX_CONTEXT_LENGTH);
+    let end = Math.min(normalized.length, lastMatch + SNIPPET_SUFFIX_CONTEXT_LENGTH);
+
+    if (end - start > maxLength) {
+      const centeredStart = Math.max(0, firstMatch - Math.floor((maxLength - matchLength) / 2));
+      start = Math.min(centeredStart, Math.max(0, normalized.length - maxLength));
+      end = Math.min(normalized.length, start + maxLength);
+    }
+
+    const snippet = normalized.slice(start, end).trim();
+    // Shift match_indices to be relative to the snippet, then offset for "..." prefix.
+    const prefixLen = start > 0 ? 3 : 0;
+    const adjustedIndices = matchIndices
+      .map((i) => i - start + prefixLen)
+      .filter((i) => i >= prefixLen && i < prefixLen + snippet.length);
+
+    return {
+      snippet: `${start > 0 ? '...' : ''}${snippet}${end < normalized.length ? '...' : ''}`,
+      adjustedIndices: adjustedIndices.length > 0 ? adjustedIndices : undefined,
+    };
+  }
+
+  // Fallback: exact substring matching (for backwards compatibility).
   const lowerText = normalized.toLowerCase();
   const lowerKeyword = keyword.trim().toLowerCase();
   const matchIndex = lowerText.indexOf(lowerKeyword);
   if (matchIndex === -1) {
-    return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trimEnd()}...` : normalized;
+    return {
+      snippet: normalized.length > maxLength ? `${normalized.slice(0, maxLength).trimEnd()}...` : normalized,
+      adjustedIndices: undefined,
+    };
   }
 
   let start = Math.max(0, matchIndex - SNIPPET_PREFIX_CONTEXT_LENGTH);
@@ -54,14 +92,62 @@ const buildSnippet = (text: string, keyword: string, maxLength = SNIPPET_MAX_LEN
   }
 
   const snippet = normalized.slice(start, end).trim();
-  return `${start > 0 ? '...' : ''}${snippet}${end < normalized.length ? '...' : ''}`;
+  return {
+    snippet: `${start > 0 ? '...' : ''}${snippet}${end < normalized.length ? '...' : ''}`,
+    adjustedIndices: undefined,
+  };
 };
 
-const renderHighlightedText = (text: string, keyword: string) => {
+const renderHighlightedText = (text: string, keyword: string, matchIndices?: number[] | null) => {
   if (!keyword.trim()) {
     return text;
   }
 
+  // When fuzzy match_indices are available from the server, highlight
+  // exactly the characters that contributed to the fuzzy score.
+  if (matchIndices && matchIndices.length > 0) {
+    const indexSet = new Set(matchIndices);
+    const chars: React.ReactNode[] = [];
+    let buffer = '';
+    let inMatch = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const isMatch = indexSet.has(i);
+      if (isMatch !== inMatch) {
+        if (buffer) {
+          if (inMatch) {
+            chars.push(
+              <mark key={`match-${chars.length}`} className='conversation-search-modal__highlight'>
+                {buffer}
+              </mark>
+            );
+          } else {
+            chars.push(<React.Fragment key={`text-${chars.length}`}>{buffer}</React.Fragment>);
+          }
+          buffer = '';
+        }
+        inMatch = isMatch;
+      }
+      buffer += text[i];
+    }
+
+    // Flush remaining buffer
+    if (buffer) {
+      if (inMatch) {
+        chars.push(
+          <mark key={`match-${chars.length}`} className='conversation-search-modal__highlight'>
+            {buffer}
+          </mark>
+        );
+      } else {
+        chars.push(<React.Fragment key={`text-${chars.length}`}>{buffer}</React.Fragment>);
+      }
+    }
+
+    return <>{chars}</>;
+  }
+
+  // Fallback: exact substring match highlighting for backwards compatibility.
   const pattern = new RegExp(`(${escapeRegExp(keyword.trim())})`, 'ig');
   const parts = text.split(pattern);
   const lowerKeyword = keyword.trim().toLowerCase();
@@ -393,7 +479,7 @@ const ConversationSearchPopover: React.FC<ConversationSearchPopoverProps> = ({
       >
         <div className='conversation-search-modal__results flex flex-col'>
           {items.map((item) => {
-            const snippet = buildSnippet(item.preview_text, debouncedKeyword);
+            const { snippet, adjustedIndices } = buildSnippet(item.preview_text, debouncedKeyword, item.match_indices);
             return (
               <button
                 key={`${item.message_id}-${item.message_created_at}`}
@@ -418,7 +504,7 @@ const ConversationSearchPopover: React.FC<ConversationSearchPopoverProps> = ({
                   <span className='shrink-0 text-11px text-t-secondary'>{formatTime(item.message_created_at)}</span>
                 </div>
                 <div className='conversation-search-modal__snippet text-13px leading-22px text-t-primary/92 break-words'>
-                  {renderHighlightedText(snippet, debouncedKeyword)}
+                  {renderHighlightedText(snippet, debouncedKeyword, adjustedIndices)}
                 </div>
               </button>
             );

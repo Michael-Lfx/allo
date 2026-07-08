@@ -38,6 +38,7 @@ use crate::convert::{
 };
 use crate::skill_resolver::SkillResolver;
 use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills};
+use fuzzy_matcher::FuzzyMatcher;
 use crate::stream_relay::StreamRelay;
 use std::sync::RwLock;
 use dashmap::DashMap;
@@ -1559,22 +1560,58 @@ impl ConversationService {
 
         let page = query.page.unwrap_or(1);
         let page_size = query.page_size.unwrap_or(20);
+        let keyword = query.keyword.trim();
 
+        // Fetch a large batch from the repository to have enough candidates for
+        // fuzzy scoring + pagination.  We always start at SQL offset 0 because
+        // fuzzy scoring re-ranks globally; SQL-level pagination would
+        // arbitrarily skip high-scoring matches on earlier pages.
+        let fetch_page_size = std::cmp::max(page * page_size * 3, 60);
         let result = self
             .conversation_repo
-            .search_messages(user_id, &query.keyword, page, page_size)
+            .search_messages(user_id, keyword, 1, fetch_page_size)
             .await?;
 
-        let items = result
+        let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+        let fuzzy_threshold: i64 = 1; // require at least a minimal fuzzy match
+
+        let mut scored: Vec<_> = result
             .items
             .into_iter()
-            .map(|row| search_row_to_item(row, &self.workspace_root))
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter_map(|row| {
+                let preview = crate::convert::extract_preview_text(&row.content);
+                matcher
+                    .fuzzy_indices(&preview, keyword)
+                    .filter(|(score, _indices)| *score >= fuzzy_threshold)
+                    .map(|(score, indices)| (score, indices, row))
+            })
+            .collect();
+
+        // Sort by fuzzy score descending; stable sort keeps DB order for ties.
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let total = scored.len() as u64;
+
+        // Apply in-memory pagination after fuzzy scoring.
+        let offset = ((page.saturating_sub(1)) as usize).saturating_mul(page_size as usize);
+        let items: Vec<_> = scored
+            .into_iter()
+            .skip(offset)
+            .take(page_size as usize)
+            .map(|(score, indices, row)| {
+                let mut item = search_row_to_item(row, &self.workspace_root)?;
+                item.match_indices = Some(indices);
+                let _ = score; // score consumed; may be logged in the future
+                Ok(item)
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+
+        let has_more = (offset + items.len()) < total as usize;
 
         Ok(PaginatedResult {
             items,
-            total: result.total,
-            has_more: result.has_more,
+            total,
+            has_more,
         })
     }
 }

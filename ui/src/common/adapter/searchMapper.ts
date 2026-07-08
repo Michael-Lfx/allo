@@ -15,6 +15,8 @@ export interface ApiMessageSearchItem {
   message_type: string;
   message_created_at: number;
   preview_text: string;
+  /** Character indices (0-based) that matched the fuzzy search keyword. */
+  match_indices?: number[] | null;
   conversation: {
     id: string;
     name: string;
@@ -50,5 +52,6 @@ function fromApiSearchItem(item: ApiMessageSearchItem): IMessageSearchItem {
     message_type: item.message_type as TMessage['type'],
     message_created_at: item.message_created_at,
     preview_text: item.preview_text,
+    match_indices: item.match_indices ?? undefined,
   };
 }

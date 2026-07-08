@@ -519,7 +519,20 @@ impl IConversationRepository for SqliteConversationRepository {
         let offset = (effective_page - 1) * effective_size;
         let fetch_limit = effective_size + 1;
 
-        let like_pattern = format!("%{keyword}%");
+        // Build a fuzzy-friendly LIKE pattern: each character of the keyword
+        // is separated by '%' so that "abc" becomes "%a%b%c%".
+        // This pre-filters the SQL result set to rows that contain all
+        // keyword characters in order, which is a superset of the fuzzy
+        // matches that SkimMatcherV2 will later score in the service layer.
+        let fuzzy_like: String = keyword
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .fold(String::from('%'), |mut acc, c| {
+                acc.push(c);
+                acc.push('%');
+                acc
+            });
+        let like_pattern = fuzzy_like;
 
         let count_row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM messages m \
