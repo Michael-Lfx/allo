@@ -28,7 +28,7 @@ interface Props {
 const CompanionModelControl: React.FC<Props> = ({ companion }) => {
   const { t } = useTranslation();
   const { profile, patchCompanion } = companion;
-  const { providers, getAvailableModels } = useModelProviderList();
+  const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
 
   const currentProvider = useMemo(
     () => providers.find((p) => p.id === profile?.model.provider_id),
@@ -73,7 +73,7 @@ const CompanionModelControl: React.FC<Props> = ({ companion }) => {
       >
         {(currentProvider ? getAvailableModels(currentProvider) : []).map((m) => (
           <Select.Option key={m} value={m}>
-            {m}
+            {formatModelLabel(currentProvider, m)}
           </Select.Option>
         ))}
       </Select>

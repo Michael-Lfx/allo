@@ -26,7 +26,7 @@ interface Props {
 const LearnTab: React.FC<Props> = ({ shared }) => {
   const { t } = useTranslation();
   const { sharedConfig, patchSharedConfig } = shared;
-  const { providers, getAvailableModels } = useModelProviderList();
+  const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
   const [runs, setRuns] = useState<ICompanionLearnRun[]>([]);
   const [running, setRunning] = useState(false);
 
@@ -135,7 +135,7 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
           >
             {(currentProvider ? getAvailableModels(currentProvider) : []).map((m) => (
               <Select.Option key={m} value={m}>
-                {m}
+                {formatModelLabel(currentProvider, m)}
               </Select.Option>
             ))}
           </Select>

@@ -489,7 +489,15 @@ impl StreamRelay {
                             emitted_response = true;
                             match data.status {
                                 ToolCallStatus::Running => {
-                                    active_tool_calls.insert(data.call_id.clone(), data.clone());
+                                    if !self.tool_call_already_settled(&data.call_id).await {
+                                        active_tool_calls.insert(data.call_id.clone(), data.clone());
+                                    } else {
+                                        debug!(
+                                            call_id = %data.call_id,
+                                            tool = %data.name,
+                                            "Ignoring stale Running tool_call event for already-settled call"
+                                        );
+                                    }
                                 }
                                 ToolCallStatus::Completed | ToolCallStatus::Error => {
                                     active_tool_calls.remove(&data.call_id);
@@ -1077,6 +1085,17 @@ impl StreamRelay {
             .await
             .unwrap_or(None);
 
+        if let Some(existing_row) = &existing {
+            if status == "work" && Self::tool_call_row_is_settled(existing_row) {
+                debug!(
+                    call_id = %data.call_id,
+                    tool = %data.name,
+                    "Ignoring stale Running tool_call update for already-settled call"
+                );
+                return;
+            }
+        }
+
         if let Some(existing_row) = existing {
             let merged_content = Self::merge_json_content(&existing_row.content, &content);
             let update = nomifun_db::MessageRowUpdate {
@@ -1148,6 +1167,31 @@ impl StreamRelay {
         }
     }
 
+    fn tool_call_row_is_settled(row: &MessageRow) -> bool {
+        if matches!(row.status.as_deref(), Some("finish") | Some("error")) {
+            return true;
+        }
+        serde_json::from_str::<nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData>(&row.content)
+            .ok()
+            .is_some_and(|data| {
+                matches!(
+                    data.status,
+                    ToolCallStatus::Completed | ToolCallStatus::Error
+                )
+            })
+    }
+
+    async fn tool_call_already_settled(&self, call_id: &str) -> bool {
+        let Ok(Some(row)) = self
+            .repo
+            .get_message_by_msg_id(self.conv_id(), call_id, "tool_call")
+            .await
+        else {
+            return false;
+        };
+        Self::tool_call_row_is_settled(&row)
+    }
+
     async fn fail_active_tool_calls(
         &self,
         active_tool_calls: &mut HashMap<String, ToolCallEventData>,
@@ -1158,14 +1202,21 @@ impl StreamRelay {
         }
 
         let output = format!("The turn ended before this tool completed: {reason}");
-        let failed: Vec<ToolCallEventData> = active_tool_calls
-            .drain()
-            .map(|(_, mut data)| {
-                data.status = ToolCallStatus::Error;
-                data.output = Some(output.clone());
-                data
-            })
-            .collect();
+        let drained: Vec<(String, ToolCallEventData)> = active_tool_calls.drain().collect();
+        let mut failed = Vec::new();
+        for (call_id, mut data) in drained {
+            if self.tool_call_already_settled(&call_id).await {
+                debug!(
+                    call_id = %call_id,
+                    tool = %data.name,
+                    "Skipping fail_active for tool call already settled"
+                );
+                continue;
+            }
+            data.status = ToolCallStatus::Error;
+            data.output = Some(output.clone());
+            failed.push(data);
+        }
 
         for data in failed {
             let event = AgentStreamEvent::ToolCall(data);
@@ -1813,6 +1864,77 @@ mod tests {
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
         assert_eq!(content["status"], "error");
         assert_eq!(content["output"], "The turn ended before this tool completed: max_tokens");
+    }
+
+    #[tokio::test]
+    async fn run_skips_fail_active_for_tool_call_already_settled_in_db() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-computer".into(),
+            name: "Computer".into(),
+            args: json!({"action": "launch"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: Some(json!({"action": "launch"})),
+            output: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-computer".into(),
+            name: "Computer".into(),
+            args: serde_json::Value::Null,
+            status: ToolCallStatus::Completed,
+            description: None,
+            input: None,
+            output: Some("Opened page".into()),
+        }))
+        .unwrap();
+        // Simulate a stale Running entry left in relay state after the tool settled.
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-computer".into(),
+            name: "Computer".into(),
+            args: json!({"action": "launch"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: Some(json!({"action": "launch"})),
+            output: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "provider fault after tool completed",
+            None,
+        )))
+        .unwrap();
+
+        relay.consume(rx).await;
+
+        let updates = repo.take_updates();
+        assert!(
+            !updates.iter().any(|(id, update)| {
+                id == "tc-computer"
+                    && update
+                        .content
+                        .as_deref()
+                        .is_some_and(|content| content.contains("\"status\":\"error\""))
+            }),
+            "already-settled tool call should not be re-marked failed on terminal error"
+        );
     }
 
     #[tokio::test]
@@ -2898,10 +3020,25 @@ mod tests {
             msg_type: &str,
         ) -> Result<Option<MessageRow>, DbError> {
             let inserts = self.inserts.lock().unwrap();
-            Ok(inserts
+            let mut row = inserts
                 .iter()
                 .find(|m| m.msg_id.as_deref() == Some(msg_id) && m.r#type == msg_type)
-                .cloned())
+                .cloned();
+            drop(inserts);
+            if let Some(found) = row.as_mut() {
+                for (_, update) in self.updates.lock().unwrap().iter().filter(|(id, _)| id == msg_id) {
+                    if let Some(content) = &update.content {
+                        found.content = content.clone();
+                    }
+                    if let Some(status) = &update.status {
+                        found.status = status.clone();
+                    }
+                    if let Some(hidden) = update.hidden {
+                        found.hidden = hidden;
+                    }
+                }
+            }
+            Ok(row)
         }
         async fn search_messages(
             &self,
