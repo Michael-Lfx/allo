@@ -34,13 +34,16 @@ linker = "rust-lld.exe"
 [build]
 build-dir = "{workspace-root}/build.noindex"
 incremental = true
-rustc-wrapper = "sccache.exe"
+
 
 [profile.dev]
 opt-level = 0
 debug = 1
 codegen-units = 64
 lto = false
+
+[profile.release]
+codegen-units = 8
 
 # Enlarge rustc's compilation-thread stack. The release `tauri build` embeds the
 # entire frontend `ui/dist` (~34 MB, hundreds of files) into the `Flowy`

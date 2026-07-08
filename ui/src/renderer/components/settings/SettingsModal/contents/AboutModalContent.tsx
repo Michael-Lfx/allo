@@ -122,18 +122,18 @@ const AboutModalContent: React.FC = () => {
               <span className='px-10px py-4px rd-6px text-13px bg-fill-2 text-t-primary font-500'>
                 v{appVersion || '—'}
               </span>
-              <div
+              {/*<div
                 className='text-t-primary cursor-pointer hover:text-t-secondary transition-colors p-4px'
                 onClick={() =>
                   openLink(NOMIFUN_PUBLIC_LINKS.repository).catch((error) => console.error('Failed to open link:', error))
                 }
               >
                 <Github theme='outline' size='20' />
-              </div>
+              </div>*/}
             </div>
 
             {/* Check Update Section */}
-            {isDesktop && (
+            {/*{isDesktop && (
               <div className='flex flex-wrap items-center justify-center gap-8px w-full max-w-360px bg-fill-2 p-16px rounded-lg'>
                 <Button
                   type='primary'
@@ -155,14 +155,14 @@ const AboutModalContent: React.FC = () => {
                   {t('settings.baiduManualDownload')}
                 </Button>
               </div>
-            )}
+            )}*/}
           </div>
 
           {/* Divider */}
           <Divider className='my-16px' />
 
           {/* Links Section */}
-          <div className='flex flex-col gap-4px pt-8px'>
+          {/*<div className='flex flex-col gap-4px pt-8px'>
             {linkItems.map((item, index) => (
               <div
                 key={index}
@@ -186,7 +186,7 @@ const AboutModalContent: React.FC = () => {
                 <div className='text-t-secondary group-hover:text-t-primary transition-colors'>{item.icon}</div>
               </div>
             ))}
-          </div>
+          </div>*/}
         </div>
       </div>
     </div>
