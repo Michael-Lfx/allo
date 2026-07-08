@@ -43,6 +43,7 @@ use std::sync::RwLock;
 use dashmap::DashMap;
 
 use nomifun_ai_agent::conversation_title_completer::ConversationTitleCompleter;
+use nomifun_ai_agent::capability::{SessionEndContext, SessionEndReason, SessionLifecycleCoordinator};
 
 const MAX_CRON_CONTINUATIONS_PER_TURN: usize = 4;
 
@@ -52,6 +53,27 @@ const MAX_CRON_CONTINUATIONS_PER_TURN: usize = 4;
 pub(crate) fn parse_conv_id(id: &str) -> Result<i64, nomifun_common::AppError> {
     id.parse::<i64>()
         .map_err(|_| nomifun_common::AppError::NotFound(format!("conversation {id}")))
+}
+
+fn rows_to_session_end_messages(rows: &[MessageRow]) -> Vec<serde_json::Value> {
+    rows.iter()
+        .filter(|row| !row.hidden)
+        .map(|row| {
+            let role = match row.position.as_deref() {
+                Some("left") => "assistant",
+                _ => "user",
+            };
+            let content = serde_json::from_str::<serde_json::Value>(&row.content)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("content")
+                        .and_then(|c| c.as_str().map(str::to_owned))
+                })
+                .unwrap_or_else(|| row.content.clone());
+            serde_json::json!({ "role": role, "content": content })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -169,6 +191,8 @@ pub struct ConversationService {
     /// has already been dispatched in this server lifetime. Prevents duplicate LLM
     /// calls on retried sends. The persistent guard is `extra.autoTitleState`.
     llm_title_fired: Arc<DashMap<i64, ()>>,
+    /// POI prefetch + insights session-end pipeline (post-construction registration).
+    session_lifecycle: Arc<RwLock<Option<Arc<SessionLifecycleCoordinator>>>>,
 }
 
 // ── Construction & Dependency Injection ──────────────────────────────
@@ -204,6 +228,7 @@ impl ConversationService {
             failover_client_prefs: Arc::new(RwLock::new(None)),
             title_completer: Arc::new(RwLock::new(None)),
             llm_title_fired: Arc::new(DashMap::new()),
+            session_lifecycle: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -276,6 +301,56 @@ impl ConversationService {
         if let Ok(mut g) = self.title_completer.write() {
             *g = Some(completer);
         }
+    }
+
+    /// Wire POI/insights session lifecycle (prefetch touch + session-end pipeline).
+    pub fn with_session_lifecycle(&self, coordinator: Arc<SessionLifecycleCoordinator>) {
+        if let Ok(mut guard) = self.session_lifecycle.write() {
+            *guard = Some(coordinator);
+        }
+    }
+
+    fn session_lifecycle_coordinator(&self) -> Option<Arc<SessionLifecycleCoordinator>> {
+        self.session_lifecycle.read().ok().and_then(|g| g.clone())
+    }
+
+    fn touch_session_lifecycle(&self, conversation_id: &str) {
+        if let Some(coordinator) = self.session_lifecycle_coordinator() {
+            coordinator.touch_session(conversation_id);
+        }
+    }
+
+    async fn end_session_lifecycle(
+        &self,
+        conversation_id: &str,
+        conv_id: i64,
+        reason: SessionEndReason,
+    ) {
+        let Some(coordinator) = self.session_lifecycle_coordinator() else {
+            return;
+        };
+        let messages = match self
+            .conversation_repo
+            .get_messages(conv_id, 1, 5000, SortOrder::Asc)
+            .await
+        {
+            Ok(page) => rows_to_session_end_messages(&page.items),
+            Err(err) => {
+                warn!(
+                    conversation_id,
+                    error = %ErrorChain(&err),
+                    "session_lifecycle: failed to load messages for session end"
+                );
+                return;
+            }
+        };
+        let ctx = SessionEndContext {
+            conversation_id: conversation_id.to_owned(),
+            session_id: conversation_id.to_owned(),
+            messages,
+            reason,
+        };
+        coordinator.run_session_end(&ctx).await;
     }
 
     /// The single source of truth for `msg_id` values across the backend.
@@ -1140,6 +1215,9 @@ impl ConversationService {
             .as_deref()
             .and_then(|s| string_to_enum::<ConversationSource>(s).ok());
 
+        self.end_session_lifecycle(id, conv_id, SessionEndReason::Deleted)
+            .await;
+
         self.conversation_repo.delete(conv_id).await?;
         // No FK / CASCADE on `acp_session`: clean it up here so non-ACP
         // conversations that used to be ACP (shouldn't happen but is
@@ -1201,9 +1279,13 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {id} not found")))?;
 
+        let conv_id = parse_conv_id(id)?;
+        self.end_session_lifecycle(id, conv_id, SessionEndReason::Reset)
+            .await;
+
         // Delete all messages
-        self.conversation_repo.delete_messages_by_conversation(parse_conv_id(id)?).await?;
-        self.conversation_repo.delete_artifacts_by_conversation(parse_conv_id(id)?).await?;
+        self.conversation_repo.delete_messages_by_conversation(conv_id).await?;
+        self.conversation_repo.delete_artifacts_by_conversation(conv_id).await?;
 
         // Reset status to pending
         let now = now_ms();
@@ -1212,7 +1294,7 @@ impl ConversationService {
             updated_at: Some(now),
             ..Default::default()
         };
-        self.conversation_repo.update(parse_conv_id(id)?, &updates).await?;
+        self.conversation_repo.update(conv_id, &updates).await?;
 
         info!("Conversation reset");
         Ok(())
@@ -1655,6 +1737,8 @@ impl ConversationService {
         }
 
         info!(msg_id = %user_msg_id, "User message persisted");
+
+        self.touch_session_lifecycle(conversation_id);
 
         // Companion wire markers (see `companion_context_from_extra`): stamped on
         // every broadcast of this turn so the companion collector can classify the
@@ -2373,6 +2457,10 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
 
+        let conv_id = parse_conv_id(conversation_id)?;
+        self.end_session_lifecycle(conversation_id, conv_id, SessionEndReason::NewSession)
+            .await;
+
         // 1. Reset the live agent's context, if one is running.
         if let Some(agent) = task_manager.get_task(conversation_id) {
             agent.clear_context().await?;
@@ -2382,7 +2470,7 @@ impl ConversationService {
 
         // 2. Forget the persisted ACP session so a rebuild does not resume the
         //    old session. Returns false (no-op) for non-ACP conversations.
-        if let Err(e) = self.acp_session_repo.clear_session_id(parse_conv_id(conversation_id)?).await {
+        if let Err(e) = self.acp_session_repo.clear_session_id(conv_id).await {
             warn!(error = %ErrorChain(&e), "Failed to clear persisted acp_session during clear_context");
         }
 
@@ -2417,6 +2505,9 @@ impl ConversationService {
 
         // 1. Delete the persisted transcript and artifacts (NOT status).
         let conv_id = parse_conv_id(conversation_id)?;
+        self.end_session_lifecycle(conversation_id, conv_id, SessionEndReason::ClearMessages)
+            .await;
+
         self.conversation_repo.delete_messages_by_conversation(conv_id).await?;
         self.conversation_repo.delete_artifacts_by_conversation(conv_id).await?;
 

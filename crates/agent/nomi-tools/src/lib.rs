@@ -5,6 +5,7 @@ pub mod exec_command;
 pub mod file_cache;
 pub mod glob;
 pub mod grep;
+pub mod handler_tool;
 pub mod lsp;
 pub mod output_truncation;
 pub mod path_guard;
@@ -15,6 +16,7 @@ pub mod read;
 pub mod registry;
 pub mod sandbox;
 pub mod tool_search;
+pub mod tools;
 pub mod update_plan;
 pub mod worktree;
 pub mod write;
@@ -25,6 +27,11 @@ pub mod write_stdin;
 pub(crate) mod test_support;
 
 pub use output_truncation::{TruncationBudget, approx_token_count, truncate_middle};
+
+pub use registry::ToolRegistry;
+pub use handler_tool::HandlerTool;
+pub use tools::image_gen::{ImageGenBackend, ImageGenRequest, ImageGenerateHandler};
+pub use tools::video::{VideoGenerateBackend, VideoGenerateHandler, VideoGenerateRequest};
 
 use async_trait::async_trait;
 use serde_json::Value;

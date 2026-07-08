@@ -1,0 +1,16 @@
+[package]
+name = "nomifun-insights"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nomifun-common.workspace = true
+nomifun-api-types.workspace = true
+nomifun-cloud.workspace = true
+nomi-config.workspace = true
+nomi-insights-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

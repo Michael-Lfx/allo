@@ -3,12 +3,12 @@ import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParam
 import AppLoader from '@renderer/components/layout/AppLoader';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const AssistantSettings = React.lazy(() => import('@renderer/pages/settings/AssistantSettings'));
-const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
@@ -30,6 +30,10 @@ const KnowledgeListPage = React.lazy(() => import('@renderer/pages/knowledge/Kno
 const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeDetailPage'));
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const ConversationShell = React.lazy(() => import('@renderer/pages/conversation/components/ConversationShell'));
+const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
+const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
+const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
+const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 
 const withRouteFallback = (Component: React.LazyExoticComponent<React.ComponentType>) => (
   <RouteErrorBoundary>
@@ -78,14 +82,19 @@ const getHashRouteRedirectUrl = () => {
 };
 
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
-  const { status } = useAuth();
+  const { status: localStatus } = useAuth();
+  const { status: cloudStatus, ready: cloudReady } = useCloudAuth();
 
-  if (status === 'checking') {
+  if (localStatus === 'checking' || !cloudReady || cloudStatus === 'checking') {
     return <AppLoader />;
   }
 
-  if (status !== 'authenticated') {
+  if (localStatus !== 'authenticated') {
     return <Navigate to='/login' replace />;
+  }
+
+  if (cloudStatus !== 'authenticated') {
+    return <Navigate to='/cloud-login' replace />;
   }
 
   return (
@@ -144,7 +153,8 @@ const CompanionNavigateListener: React.FC = () => {
 };
 
 const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
-  const { status } = useAuth();
+  const { status: localStatus } = useAuth();
+  const { status: cloudStatus } = useCloudAuth();
   const hashRouteRedirectUrl = getHashRouteRedirectUrl();
 
   if (hashRouteRedirectUrl) {
@@ -157,14 +167,30 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
       <Routes>
         <Route
           path='/login'
-          element={status === 'authenticated' ? <Navigate to='/guid' replace /> : withRouteFallback(LoginPage)}
+          element={
+            localStatus === 'authenticated' ? (
+              <Navigate to={cloudStatus === 'authenticated' ? '/guid' : '/cloud-login'} replace />
+            ) : (
+              withRouteFallback(LoginPage)
+            )
+          }
+        />
+        <Route
+          path='/cloud-login'
+          element={
+            localStatus !== 'authenticated' ? (
+              <Navigate to='/login' replace />
+            ) : (
+              withRouteFallback(CloudLoginPage)
+            )
+          }
         />
         {/* The desktop-companion window route: fullscreen transparent, no app layout/sidebar. */}
         <Route path='/companion' element={withRouteFallback(CompanionPage)} />
         <Route element={<ProtectedLayout layout={layout} />}>
           <Route index element={<Navigate to='/guid' replace />} />
           {/* Model Management, Assistant & Skill, and MCP — top-level homepage destinations */}
-          <Route path='/models' element={withRouteFallback(ModelHubPage)} />
+          <Route path='/models' element={<Navigate to='/guid' replace />} />
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
@@ -184,8 +210,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
             <Route path='/terminal/:id' element={withRouteFallback(TerminalSessionPage)} />
           </Route>
           {/* Relocated to the homepage: Agents/Models → /models, Capabilities → Assistant & Skill / MCP */}
-          <Route path='/settings/model' element={<Navigate to='/models?section=models' replace />} />
-          <Route path='/settings/agent' element={<Navigate to='/models?section=agents' replace />} />
+          <Route path='/settings/model' element={<Navigate to='/guid' replace />} />
+          <Route path='/settings/agent' element={<Navigate to='/guid' replace />} />
           <Route path='/settings/capabilities' element={<Navigate to='/assistants?tab=skills' replace />} />
           <Route path='/settings/skills-hub' element={<Navigate to='/assistants?tab=skills' replace />} />
           <Route path='/settings/tools' element={<Navigate to='/open-capabilities' replace />} />
@@ -195,6 +221,10 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/agent-runtime' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/browser-use' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/computer-use' element={withRouteFallback(SystemSettings)} />
+          <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />
+          <Route path='/settings/insights' element={withRouteFallback(InsightsSettings)} />
+          <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
+          <Route path='/settings/cloud-login' element={<Navigate to='/cloud-login' replace />} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/ext/:tabId' element={withRouteFallback(ExtensionSettingsPage)} />
           {/* Relocated out of Settings → AI Core: Assistants → /assistants, Webhook → requirements 扩展能力 */}
@@ -225,7 +255,21 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/knowledge' element={withRouteFallback(KnowledgeListPage)} />
           <Route path='/knowledge/:id' element={withRouteFallback(KnowledgeDetailPage)} />
         </Route>
-        <Route path='*' element={<Navigate to={status === 'authenticated' ? '/guid' : '/login'} replace />} />
+        <Route
+          path='*'
+          element={
+            <Navigate
+              to={
+                localStatus !== 'authenticated'
+                  ? '/login'
+                  : cloudStatus !== 'authenticated'
+                    ? '/cloud-login'
+                    : '/guid'
+              }
+              replace
+            />
+          }
+        />
       </Routes>
     </HashRouter>
   );

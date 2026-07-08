@@ -3966,3 +3966,269 @@ export const knowledge = {
     (p) => ({ kbId: p.kbId, scope: p.scope })
   ),
 };
+
+// ---------------------------------------------------------------------------
+// POI (interest topics) — /api/poi/*
+// ---------------------------------------------------------------------------
+
+export interface IPoiTopic {
+  id: string;
+  label: string;
+  summary: string;
+  weight: number;
+  status: string;
+  source: string;
+  confidence: number;
+  evidenceCount: number;
+  tags: string[];
+  pinned: boolean;
+  lastSeenAt: string;
+}
+
+export interface IPoiTopicListResponse {
+  topics: IPoiTopic[];
+  databasePath: string;
+}
+
+export interface IPoiStatusResponse {
+  enabled: boolean;
+  extractMode: string;
+  perTurnBuffer: boolean;
+  perTurnPersist: boolean;
+  sessionEndLlm: boolean;
+  topicCount: number;
+  databasePath: string;
+}
+
+export interface IPoiSettings {
+  enabled: boolean;
+  maxTopics: number;
+  snapshotTopK: number;
+  prefetchTopK: number;
+  charBudgetSnapshot: number;
+  charBudgetPrefetch: number;
+  extractMode: string;
+  decayHalfLifeDays: number;
+  llmOnSessionEnd: boolean;
+  perTurnBuffer: boolean;
+  perTurnPersist: boolean;
+  promoteMinEvidence: number;
+  promoteMinConfidence: number;
+  minTurnChars: number;
+}
+
+export type IUpdatePoiSettings = Partial<IPoiSettings>;
+
+export const poi = {
+  listTopics: httpGet<IPoiTopicListResponse, void>('/api/poi/topics'),
+  clearTopics: httpDelete<void, void>('/api/poi/topics'),
+  status: httpGet<IPoiStatusResponse, void>('/api/poi/status'),
+  getSettings: httpGet<IPoiSettings, void>('/api/poi/settings'),
+  updateSettings: httpPatch<IPoiSettings, IUpdatePoiSettings>('/api/poi/settings'),
+  pinTopic: httpPost<IPoiTopic, { id: string; pinned: boolean }>(
+    (p) => `/api/poi/topics/${encodeURIComponent(p.id)}/pin`,
+    (p) => ({ pinned: p.pinned })
+  ),
+  setTopicStatus: httpPut<IPoiTopic, { id: string; status: string }>(
+    (p) => `/api/poi/topics/${encodeURIComponent(p.id)}/status`,
+    (p) => ({ status: p.status })
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Insights contribution — /api/insights/contribution/*
+// ---------------------------------------------------------------------------
+
+export interface IInsightsContributionStatus {
+  enabled: boolean;
+  on_session_end: boolean;
+  min_evidence_tier: string;
+  require_skill_binding: boolean;
+  min_work_turns: number;
+  redacted_body: boolean;
+  endpoint: string;
+  auth_configured: boolean;
+  upload_ready: boolean;
+  outbox_pending: number;
+  outbox_failed: number;
+  outbox_sent: number;
+  installation_id: string;
+  consent_version: string;
+}
+
+export interface IUpdateInsightsContribution {
+  enabled?: boolean;
+  endpoint?: string;
+  auth_token?: string;
+  on_session_end?: boolean;
+  redacted_body?: boolean;
+}
+
+export interface IInsightsFlushResponse {
+  uploaded: number;
+  duplicates: number;
+  rejected: number;
+  skipped_no_endpoint: boolean;
+}
+
+export interface IInsightsResetOutboxRequest {
+  clear_all?: boolean;
+}
+
+export interface IInsightsResetOutboxResponse {
+  affected: number;
+  outbox_pending: number;
+  outbox_failed: number;
+  outbox_sent: number;
+}
+
+export const insights = {
+  getStatus: httpGet<IInsightsContributionStatus, void>('/api/insights/contribution/status'),
+  updateContribution: httpPost<IInsightsContributionStatus, IUpdateInsightsContribution>(
+    '/api/insights/contribution'
+  ),
+  flushContribution: httpPost<IInsightsFlushResponse, void>('/api/insights/contribution/flush'),
+  resetOutbox: httpPost<IInsightsResetOutboxResponse, IInsightsResetOutboxRequest>(
+    '/api/insights/contribution/reset'
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Media generation — /api/media/*
+// ---------------------------------------------------------------------------
+
+export interface IMediaSettings {
+  provider: string;
+  image_model: string;
+  video_model: string;
+  image_save_locally: boolean;
+  video_save_locally: boolean;
+  video_default_duration: number;
+  video_default_aspect_ratio: string;
+  video_default_resolution: string;
+  workflows_enabled: boolean;
+  workflows_max_retries: number;
+  workflows_async_execution: boolean;
+  workflows_llm_prompt_refine: boolean;
+  workflows_check_credits: boolean;
+  flowy_media_exposed: boolean;
+}
+
+export type IUpdateMediaSettings = Partial<
+  Pick<
+    IMediaSettings,
+    | 'provider'
+    | 'image_model'
+    | 'video_model'
+    | 'image_save_locally'
+    | 'video_save_locally'
+    | 'video_default_duration'
+    | 'workflows_enabled'
+    | 'workflows_max_retries'
+  >
+>;
+
+export interface IMediaCredits {
+  balance: number;
+  authenticated: boolean;
+}
+
+export interface IMediaModelList {
+  image_models: string[];
+  video_models: string[];
+}
+
+export interface IMediaWorkflowHistoryItem {
+  run_id: string;
+  workflow_id: string;
+  status: string;
+  current_step?: string;
+  error?: string;
+  artifacts: unknown[];
+}
+
+export interface IMediaWorkflowHistory {
+  runs: IMediaWorkflowHistoryItem[];
+}
+
+export const media = {
+  getSettings: httpGet<IMediaSettings, void>('/api/media/settings'),
+  updateSettings: httpPatch<IMediaSettings, IUpdateMediaSettings>('/api/media/settings'),
+  getCredits: httpGet<IMediaCredits, void>('/api/media/credits'),
+  listModels: httpGet<IMediaModelList, void>('/api/media/models'),
+  workflowHistory: httpGet<IMediaWorkflowHistory, { limit?: number }>(
+    (p) => `/api/media/workflows/history${p.limit ? `?limit=${p.limit}` : ''}`
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Flowy cloud account — /api/cloud/*
+// ---------------------------------------------------------------------------
+
+export interface ICloudServerSettings {
+  enabled: boolean;
+  baseUrl: string;
+  channel: string;
+  app: string;
+}
+
+export type IUpdateCloudServerSettings = Partial<ICloudServerSettings>;
+
+export interface ICloudWhoami {
+  authenticated: boolean;
+  userId?: string;
+  username?: string;
+  email?: string;
+  serverBaseUrl?: string;
+}
+
+export interface ICloudLoginStartResponse {
+  pendingId: string;
+  method: string;
+  message: string;
+  expiresAt?: string;
+}
+
+export type ICloudLoginInput =
+  | { type: 'email'; address: string }
+  | { type: 'otp_code'; code: string }
+  | { type: 'poll' };
+
+export interface ICloudLoginContinueRequest {
+  pendingId: string;
+  input: ICloudLoginInput;
+}
+
+export type ICloudLoginContinueResponse =
+  | {
+      status: 'pending';
+      pendingId: string;
+      method: string;
+      message: string;
+      expiresAt?: string;
+    }
+  | {
+      status: 'success';
+      authenticated: boolean;
+      userId?: string;
+      username?: string;
+      email?: string;
+    }
+  | {
+      status: 'failed';
+      error: string;
+    };
+
+export const cloud = {
+  getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
+  updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
+  whoami: httpGet<ICloudWhoami, void>('/api/cloud/whoami'),
+  loginStart: httpPost<ICloudLoginStartResponse, { method?: string }>('/api/cloud/login/start', (p) => ({
+    method: p?.method ?? 'email_otp',
+  })),
+  loginContinue: httpPost<ICloudLoginContinueResponse, ICloudLoginContinueRequest>(
+    '/api/cloud/login/continue',
+    (p) => ({ pendingId: p.pendingId, input: p.input })
+  ),
+  logout: httpPost<boolean, void>('/api/cloud/logout'),
+};

@@ -1,0 +1,40 @@
+{
+  "title": "Interest Topics (POI)",
+  "description": "Manage interest extraction settings and review detected topics from conversations.",
+  "status": {
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "topicCount": "{{count}} topics",
+    "extractMode": "Extract mode: {{mode}}"
+  },
+  "settings": {
+    "enabled": "Enable interest tracking",
+    "extractMode": "Extract mode",
+    "extractModeKeywords": "Keywords only",
+    "extractModeLlm": "LLM",
+    "extractModeHybrid": "Hybrid",
+    "maxTopics": "Max topics",
+    "minTurnChars": "Min turn characters",
+    "llmOnSessionEnd": "LLM extract on session end",
+    "perTurnBuffer": "Per-turn buffer",
+    "perTurnPersist": "Per-turn persist",
+    "saved": "POI settings saved"
+  },
+  "topics": {
+    "title": "Topics",
+    "label": "Label",
+    "status": "Status",
+    "weight": "Weight",
+    "pinned": "Pinned",
+    "empty": "No topics yet",
+    "clearAll": "Clear all",
+    "clearConfirmTitle": "Clear all topics?",
+    "clearConfirmContent": "This permanently removes all stored interest topics.",
+    "cleared": "Topics cleared",
+    "statuses": {
+      "candidate": "Candidate",
+      "active": "Active",
+      "rejected": "Rejected"
+    }
+  }
+}

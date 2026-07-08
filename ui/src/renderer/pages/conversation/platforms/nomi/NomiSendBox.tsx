@@ -567,7 +567,7 @@ const NomiSendBox: React.FC<{
     const modelOptions: MobileActionSheetOption[] = modelSelection.providers.flatMap((provider) =>
       modelSelection.getAvailableModels(provider).map((modelName) => ({
         key: `${provider.id}::${modelName}`,
-        label: modelName,
+        label: modelSelection.formatModelLabel(provider, modelName),
         description: provider.name,
         active:
           modelSelection.current_model?.id === provider.id && modelSelection.current_model?.use_model === modelName,
@@ -576,7 +576,9 @@ const NomiSendBox: React.FC<{
 
     const currentModeLabel =
       modeOptions.find((opt) => opt.active)?.label ?? t('agentMode.default', { defaultValue: 'Default' });
-    const currentModelLabel = modelSelection.current_model?.use_model || t('conversation.welcome.selectModel');
+    const currentModelLabel =
+      modelSelection.getDisplayModelName(modelSelection.current_model?.use_model) ||
+      t('conversation.welcome.selectModel');
 
     const entries: MobileActionSheetEntry[] = [
       // Locked surfaces (companion) hide the model + permission entries: model is

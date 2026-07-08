@@ -28,7 +28,6 @@ computer-use = [
     "nomifun-ai-agent/computer-use",
     "nomifun-gateway/computer-use",
     "dep:nomi-computer",
-    "dep:nomi-config",
     "dep:nomi-tools",
     "dep:nomi-types",
 ]
@@ -45,7 +44,6 @@ browser-use = [
     "nomifun-gateway/browser-use",
     "dep:nomi-browser",
     "dep:nomi-browser-engine",
-    "dep:nomi-config",
     "dep:nomi-tools",
     "dep:nomi-types",
 ]
@@ -70,6 +68,10 @@ nomifun-cron.workspace = true
 nomifun-requirement.workspace = true
 nomifun-idmm.workspace = true
 nomifun-knowledge.workspace = true
+nomifun-poi.workspace = true
+nomifun-insights.workspace = true
+nomifun-media.workspace = true
+nomifun-cloud.workspace = true
 nomifun-orchestrator.workspace = true
 nomifun-companion.workspace = true
 nomifun-public-agent.workspace = true
@@ -117,7 +119,7 @@ nomi-browser = { workspace = true, optional = true }
 # directly (create_engine + capture_storage_state + storage_state vault), so the
 # login persists into the shared profile/vault. Only the browser-use feature pulls it.
 nomi-browser-engine = { workspace = true, optional = true }
-nomi-config = { workspace = true, optional = true }
+nomi-config.workspace = true
 nomi-tools = { workspace = true, optional = true }
 nomi-types = { workspace = true, optional = true }
 

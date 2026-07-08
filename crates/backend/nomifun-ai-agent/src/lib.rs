@@ -45,6 +45,11 @@ pub use capability::skill_manager::{
     build_system_instructions_with_skills_index, detect_skill_load_request, prepare_first_message,
     prepare_first_message_with_skills_index,
 };
+pub use capability::{
+    PostTurnHook, PreTurnHook, SessionEndContext, SessionEndHook, SessionEndReason,
+    SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
+};
+pub use manager::acp::PoiPrefetchHook;
 pub use factory::provider_config::{
     one_shot_completion, resolve_provider_config, streaming_completion, streaming_completion_kinded,
     streaming_completion_text_or_reasoning, user_message, DeltaKind,

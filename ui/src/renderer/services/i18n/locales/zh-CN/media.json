@@ -1,0 +1,30 @@
+{
+  "title": "媒体生成",
+  "description": "配置 Flowy 图像与视频生成的默认模型与选项。媒体服务由 Flowy 云端提供。",
+  "agentHintLogin": "登录 Flowy 云账号并保存设置后，Agent 对话中可直接使用生图、生视频工具。",
+  "agentHintReady": "已连接 Flowy 云服务。在 Agent 对话中可直接说「帮我生成一张…」或「生成一段视频…」，Agent 会调用 image_generate / video_generate 等工具。",
+  "credits": {
+    "authenticated": "已登录",
+    "notAuthenticated": "未登录",
+    "balance": "余额：{{balance}}"
+  },
+  "settings": {
+    "provider": "提供商",
+    "imageModel": "图像模型",
+    "videoModel": "视频模型",
+    "selectModel": "选择或输入模型 ID",
+    "videoDuration": "默认视频时长（秒）",
+    "imageSaveLocally": "本地保存图像",
+    "videoSaveLocally": "本地保存视频",
+    "workflowsEnabled": "启用工作流",
+    "saved": "媒体设置已保存"
+  },
+  "history": {
+    "title": "工作流历史",
+    "workflow": "工作流",
+    "status": "状态",
+    "step": "步骤",
+    "error": "错误",
+    "empty": "暂无工作流运行记录"
+  }
+}

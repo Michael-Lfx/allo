@@ -1,0 +1,30 @@
+[package]
+name = "nomi-media"
+description = "Flowy-backed media generation and multi-step workflow orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomi-types.workspace = true
+nomi-tools.workspace = true
+nomifun-cloud.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+indexmap = "2"
+reqwest = { workspace = true, features = ["json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+image.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

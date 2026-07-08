@@ -1,10 +1,11 @@
 import { ipcBridge } from '@/common';
-import { GOOGLE_AUTH_PROVIDER_ID } from '@/common/config/constants';
+import { FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID, SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import type { IProvider } from '@/common/config/storage';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import useSWR, { type SWRConfiguration } from 'swr';
 import { useGoogleAuthModels } from './useGoogleAuthModels';
 import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabilities';
+import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 
 export interface ModelProviderListResult {
   providers: IProvider[];
@@ -76,6 +77,10 @@ export const useModelProviderList = (): ModelProviderListResult => {
     // 过滤掉被禁用的 provider（默认为启用）
     list = list.filter((p) => p.enabled !== false);
 
+    if (SERVER_MANAGED_MODELS) {
+      return list.filter((p) => p.id === FLOWY_BUILTIN_PROVIDER_ID && getAvailableModels(p).length > 0);
+    }
+
     if (isGoogleAuth) {
       const googleProvider: IProvider = {
         id: GOOGLE_AUTH_PROVIDER_ID,
@@ -93,10 +98,13 @@ export const useModelProviderList = (): ModelProviderListResult => {
     return list.filter((p) => getAvailableModels(p).length > 0);
   }, [getAvailableModels, isGoogleAuth, modelConfig]);
 
-  const formatModelLabel = useCallback((_provider: { platform?: string } | undefined, modelName?: string) => {
-    if (!modelName) return '';
-    return modelName;
-  }, []);
+  const formatModelLabel = useCallback(
+    (provider: { platform?: string; model_descriptions?: Record<string, string> } | undefined, modelName?: string) => {
+      if (!modelName) return '';
+      return formatCloudModelLabel(modelName, provider?.model_descriptions);
+    },
+    []
+  );
 
   return { providers, getAvailableModels, formatModelLabel };
 };

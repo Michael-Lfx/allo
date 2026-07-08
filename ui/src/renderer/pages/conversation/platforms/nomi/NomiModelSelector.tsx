@@ -55,11 +55,13 @@ const NomiModelSelector: React.FC<{
     );
   }
 
-  const { providers, getAvailableModels, handleSelectModel } = selection;
+  const { providers, getAvailableModels, handleSelectModel, formatModelLabel, getDisplayModelName } = selection;
+
+  const selectedLabel = getDisplayModelName(current_model?.use_model);
 
   const label = getModelDisplayLabel({
     selected_value: current_model?.use_model,
-    selectedLabel: current_model?.use_model || '',
+    selectedLabel,
     defaultModelLabel,
     fallbackLabel: t('conversation.welcome.selectModel'),
   });
@@ -86,7 +88,7 @@ const NomiModelSelector: React.FC<{
                     onClick={() => void handleSelectModel(provider, modelName)}
                   >
                     <div className='flex items-center gap-8px w-full'>
-                      <span>{modelName}</span>
+                      <span>{formatModelLabel(provider, modelName)}</span>
                     </div>
                   </Menu.Item>
                 ))}

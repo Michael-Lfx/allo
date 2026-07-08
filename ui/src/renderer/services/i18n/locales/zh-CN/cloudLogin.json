@@ -1,0 +1,49 @@
+{
+  "pageTitle": "Flowy - 登录",
+  "brand": "Flowy",
+  "subtitle": "登录 Flowy 云账号，开启 AI 对话与媒体能力",
+  "accountSubtitle": "你已登录，可直接进入应用",
+  "account": {
+    "signedIn": "已登录"
+  },
+  "login": {
+    "preparing": "正在准备登录…",
+    "progressLabel": "登录进度",
+    "stepEmail": "邮箱",
+    "stepOtp": "验证",
+    "emailLabel": "邮箱地址",
+    "emailPlaceholder": "you@example.com",
+    "emailRequired": "请输入邮箱地址",
+    "sendCode": "发送验证码",
+    "sendingCode": "发送中",
+    "codeSent": "验证码已发送，请查收邮件",
+    "sendCodeFirst": "请先发送验证码",
+    "submit": "登录",
+    "loggingIn": "登录中",
+    "otpLabel": "验证码",
+    "otpPlaceholder": "6 位验证码",
+    "otpRequired": "请输入验证码",
+    "otpSentTo": "验证码已发送至 {{email}}",
+    "verify": "验证并登录",
+    "verifying": "验证中…",
+    "back": "← 更换邮箱",
+    "successRedirect": "登录成功，正在进入…",
+    "continue": "进入应用",
+    "logout": "退出登录",
+    "loggedOut": "已退出登录"
+  },
+  "footerPrimary": "云端 AI 能力",
+  "footerSecondary": "安全 · 便捷",
+  "errors": {
+    "unknown": "登录失败，请稍后再试",
+    "invalidCode": "验证码无效或已过期，请重新获取"
+  },
+  "settings": {
+    "title": "服务器连接",
+    "enabled": "启用 Flowy 服务器",
+    "baseUrl": "服务器地址",
+    "channel": "渠道",
+    "app": "应用 ID",
+    "saved": "云设置已保存"
+  }
+}

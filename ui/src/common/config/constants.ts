@@ -60,3 +60,9 @@ export const WEBUI_DEFAULT_PORT = (() => {
 // Stable ID for the Google Auth virtual provider.
 // Shared between frontend (useModelProviderList) and backend (SystemActions).
 export const GOOGLE_AUTH_PROVIDER_ID = 'google-auth-gemini';
+
+/** Built-in Flowy Cloud provider — models and keys come from server login. */
+export const FLOWY_BUILTIN_PROVIDER_ID = 'flowy-cloud';
+
+/** When true, hide local provider management and only expose Flowy Cloud models. */
+export const SERVER_MANAGED_MODELS = true;

@@ -33,6 +33,10 @@ import publicCompanion from './publicCompanion.json';
 import sessionList from './sessionList.json';
 import modelFailover from './modelFailover.json';
 import orchestrator from './orchestrator.json';
+import poi from './poi.json';
+import insights from './insights.json';
+import media from './media.json';
+import cloudLogin from './cloudLogin.json';
 
 export default {
   common,
@@ -65,4 +69,8 @@ export default {
   sessionList,
   modelFailover,
   orchestrator,
+  poi,
+  insights,
+  media,
+  cloudLogin,
 };

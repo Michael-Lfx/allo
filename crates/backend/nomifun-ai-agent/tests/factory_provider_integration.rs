@@ -96,6 +96,7 @@ fn make_factory(
         companion_sink: None,
         knowledge_retrieval: None,
         knowledge_writeback: None,
+        poi_service: None,
     })
 }
 

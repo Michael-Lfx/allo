@@ -110,6 +110,14 @@ pub struct AppServices {
     /// the `/api/knowledge/*` routes and the `ConversationService`, which
     /// mounts bound bases into session workspaces at task start.
     pub knowledge_service: Arc<nomifun_knowledge::KnowledgeService>,
+    /// Local user interest (POI) topic store and settings.
+    pub poi_service: Arc<nomifun_poi::PoiService>,
+    /// De-identified insights contribution pipeline.
+    pub insights_service: Arc<nomifun_insights::InsightsService>,
+    /// Flowy media generation settings, credits, and workflow history.
+    pub media_service: Arc<nomifun_media::MediaApiService>,
+    /// Flowy cloud account (email OTP login, whoami).
+    pub cloud_service: Arc<nomifun_cloud::CloudService>,
 }
 
 impl AppServices {
@@ -614,6 +622,15 @@ impl AppServices {
         let provider_repo_for_services: Arc<dyn IProviderRepository> =
             provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>;
 
+        let poi_service = Arc::new(
+            nomifun_poi::PoiService::open(data_dir.join("poi"), nomi_config::InterestConfig::default())
+                .map_err(|e| anyhow::anyhow!("Failed to open POI service: {e}"))?,
+        );
+        let insights_service = Arc::new(
+            nomifun_insights::InsightsService::new(data_dir.join("insights"))
+                .map_err(|e| anyhow::anyhow!("Failed to open insights service: {e}"))?,
+        );
+
         let factory = build_agent_factory(AgentFactoryDeps {
             skill_manager: AcpSkillManager::new(skill_paths.clone()),
             remote_agent_repo,
@@ -678,6 +695,7 @@ impl AppServices {
             public_agent_provider: Some(
                 public_agent_service.clone() as Arc<dyn nomifun_ai_agent::PublicAgentProvider>
             ),
+            poi_service: Some(poi_service.clone()),
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -687,6 +705,29 @@ impl AppServices {
         let worker_task_manager: Arc<dyn IWorkerTaskManager> = task_manager_concrete.clone();
         let task_manager_delete_hook: Arc<dyn OnConversationDelete> = task_manager_concrete;
         let conversation_runtime_state = Arc::new(ConversationRuntimeStateService::default());
+
+        let media_service = Arc::new(
+            nomifun_media::MediaApiService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open media service: {e}"))?,
+        );
+        let cloud_service = Arc::new(
+            nomifun_cloud::CloudService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
+        );
+
+        if cloud_service.is_authenticated().await {
+            let gateway = cloud_service.gateway_config_snapshot();
+            if let Err(e) = nomifun_cloud::sync_flowy_builtin_provider(
+                &provider_repo_for_services,
+                &encryption_key,
+                &gateway.server,
+                cloud_service.data_dir(),
+            )
+            .await
+            {
+                tracing::warn!("Failed to sync Flowy built-in provider on startup: {e}");
+            }
+        }
 
         Ok(Self {
             database,
@@ -723,6 +764,10 @@ impl AppServices {
             companion_service,
             public_agent_service,
             knowledge_service,
+            poi_service,
+            insights_service,
+            media_service,
+            cloud_service,
         })
     }
 }

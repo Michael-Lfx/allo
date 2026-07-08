@@ -30,6 +30,7 @@ nomifun-cron = { path = "crates/backend/nomifun-cron" }
 nomifun-requirement = { path = "crates/backend/nomifun-requirement" }
 nomifun-idmm = { path = "crates/backend/nomifun-idmm" }
 nomifun-knowledge = { path = "crates/backend/nomifun-knowledge" }
+nomifun-poi = { path = "crates/backend/nomifun-poi" }
 nomifun-companion = { path = "crates/backend/nomifun-companion" }
 nomifun-gateway = { path = "crates/backend/nomifun-gateway" }
 nomifun-public = { path = "crates/backend/nomifun-public" }
@@ -40,6 +41,9 @@ nomifun-assistant = { path = "crates/backend/nomifun-assistant" }
 nomifun-secret = { path = "crates/backend/nomifun-secret" }
 nomifun-public-agent = { path = "crates/backend/nomifun-public-agent" }
 nomifun-app = { path = "crates/backend/nomifun-app" }
+nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
+nomifun-insights = { path = "crates/backend/nomifun-insights" }
+nomifun-media = { path = "crates/backend/nomifun-media" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
@@ -55,6 +59,10 @@ nomi-tools = { path = "crates/agent/nomi-tools" }
 nomi-mcp = { path = "crates/agent/nomi-mcp" }
 nomi-skills = { path = "crates/agent/nomi-skills" }
 nomi-memory = { path = "crates/agent/nomi-memory" }
+nomi-poi = { path = "crates/agent/nomi-poi" }
+nomi-auxiliary = { path = "crates/agent/nomi-auxiliary" }
+nomi-insights-core = { path = "crates/agent/nomi-insights-core" }
+nomi-media = { path = "crates/agent/nomi-media" }
 nomi-agent = { path = "crates/agent/nomi-agent" }
 nomi-computer = { path = "crates/agent/nomi-computer" }
 nomi-a11y = { path = "crates/agent/nomi-a11y" }

@@ -32,7 +32,15 @@ impl OpenAIProvider {
         let auth = HeaderValue::from_str(&bearer).map_err(|e| {
             ProviderError::Connection(format!("Invalid authorization header: {}", e))
         })?;
-        headers.insert(AUTHORIZATION, auth);
+        headers.insert(AUTHORIZATION, auth.clone());
+        if let Some(name) = self.compat.mirror_bearer_header.as_deref() {
+            let token = HeaderValue::from_str(&self.api_key).map_err(|e| {
+                ProviderError::Connection(format!("Invalid mirror bearer header: {}", e))
+            })?;
+            if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) {
+                headers.insert(header_name, token);
+            }
+        }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         Ok(headers)
     }

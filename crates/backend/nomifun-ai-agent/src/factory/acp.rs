@@ -231,7 +231,7 @@ pub(super) async fn build(
     let catalog_tx = deps.agent_registry.catalog_sender();
 
     let (agent, domain_rx, notification_rx) =
-        AcpAgentManager::build(params, skill_mgr, &catalog_tx).await?;
+        AcpAgentManager::build(params, skill_mgr, &catalog_tx, deps.poi_service.clone()).await?;
 
     let arc = Arc::new(agent);
     arc.start_permission_handler();

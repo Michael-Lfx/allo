@@ -12,6 +12,7 @@ import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
+import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge';
 import {
   SiderAssistantSkillsEntry,
@@ -92,7 +93,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleAssistantSkillsClick = () => navTo('/assistants?tab=assistants');
   const handleMcpClick = () => navTo('/mcp');
   const handleOpenCapabilitiesClick = () => navTo('/open-capabilities');
-  const handleModelHubClick = () => navTo('/models');
 
   const handleSettingsClick = () => {
     cleanupSiderTooltips();
@@ -244,13 +244,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       <div className='shrink-0 mt-auto pt-8px flex flex-col gap-2px border-t border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-b-0'>
         {/* 设置 — section label; the enclosing border-t already separates this region when collapsed */}
         <SiderSectionHeader label={t('common.siderSection.settings')} collapsed={collapsed} collapsedRule={false} />
-        <SiderModelHubEntry
-          isMobile={isMobile}
-          isActive={pathname.startsWith('/models')}
-          collapsed={collapsed}
-          siderTooltipProps={siderTooltipProps}
-          onClick={handleModelHubClick}
-        />
+        {!SERVER_MANAGED_MODELS && (
+          <SiderModelHubEntry
+            isMobile={isMobile}
+            isActive={pathname.startsWith('/models')}
+            collapsed={collapsed}
+            siderTooltipProps={siderTooltipProps}
+            onClick={() => navTo('/models')}
+          />
+        )}
         <SiderOpenCapabilitiesEntry
           isMobile={isMobile}
           isActive={pathname.startsWith('/open-capabilities')}

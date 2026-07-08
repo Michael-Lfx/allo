@@ -342,16 +342,22 @@ body.login-page-active {
   }
 }
 
-.login-page__message--error {
-  background-color: #fef2f2;
-  color: #dc2626;
-  border: 1px solid #fecaca;
-}
-
 .login-page__message--success {
   background-color: #f0fdf4;
   color: #16a34a;
   border: 1px solid #bbf7d0;
+}
+
+.login-page__message--info {
+  background-color: rgba(102, 126, 234, 0.08);
+  color: #555;
+  border: 1px solid rgba(102, 126, 234, 0.2);
+}
+
+.login-page__message--error {
+  background-color: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
 }
 
 .login-page__footer {

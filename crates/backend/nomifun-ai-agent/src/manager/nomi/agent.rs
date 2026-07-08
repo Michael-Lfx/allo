@@ -244,6 +244,9 @@ impl NomiAgentManager {
         if let Some(supports_image) = config_extra.compat_overrides.supports_image {
             config.compat.supports_image = Some(supports_image);
         }
+        if let Some(header) = config_extra.compat_overrides.mirror_bearer_header {
+            config.compat.mirror_bearer_header = Some(header);
+        }
 
         // Make the engine compact against the provider's declared context
         // window when set (else keep the resolved default). Same value the
@@ -255,6 +258,21 @@ impl NomiAgentManager {
 
         if !config_extra.extra_mcp_servers.is_empty() {
             config.mcp.servers.extend(config_extra.extra_mcp_servers.clone());
+        }
+
+        let gateway_data_dir = config_extra
+            .session_directory
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| config_extra.session_directory.clone());
+        let gateway_config = nomi_config::load_config(Some(&gateway_data_dir)).unwrap_or_default();
+        if nomi_config::flowy_media_exposed(&gateway_config) {
+            let hint = nomi_media::gateway_media_system_hint(gateway_config.media.workflows.enabled);
+            let merged = match config.system_prompt.as_deref() {
+                Some(existing) if !existing.trim().is_empty() => format!("{existing}\n\n{hint}"),
+                _ => hint,
+            };
+            config.system_prompt = Some(merged);
         }
 
         // Session-level opt-in for desktop/browser automation tools. The
@@ -491,6 +509,22 @@ impl NomiAgentManager {
                 );
             }
         }
+
+        let media_wired = nomi_media::wire_flowy_media(
+            engine.registry_mut(),
+            &gateway_config,
+            &gateway_data_dir,
+        );
+        if media_wired.has_image || media_wired.has_video {
+            debug!(
+                conversation_id = %conversation_id,
+                has_image = media_wired.has_image,
+                has_video = media_wired.has_video,
+                has_workflow = media_wired.has_workflow,
+                "Registered Flowy media generation tools"
+            );
+        }
+
         // C3-fix: all post-build native tools are now registered. Re-apply the
         // per-session native allowlist so it actually constrains the memory /
         // knowledge / companion / requirement tools registered above (they were

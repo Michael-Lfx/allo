@@ -66,6 +66,9 @@ pub struct ProviderCompat {
     /// 为 Some(false) 时 OpenAI provider 的 build_messages 会剔除图片、改文字占位。
     /// 由 VisionUnsupportedRegistry 在工厂构建时按 provider+model 注入,不持久化。
     pub supports_image: Option<bool>,
+
+    /// Duplicate the Bearer token into an additional request header (Flowy server uses `token`).
+    pub mirror_bearer_header: Option<String>,
 }
 
 impl ProviderCompat {
@@ -130,6 +133,7 @@ impl ProviderCompat {
             supports_effort: user.supports_effort.or(defaults.supports_effort),
             effort_levels: user.effort_levels.or(defaults.effort_levels),
             supports_image: user.supports_image.or(defaults.supports_image),
+            mirror_bearer_header: user.mirror_bearer_header.or(defaults.mirror_bearer_header),
         }
     }
 

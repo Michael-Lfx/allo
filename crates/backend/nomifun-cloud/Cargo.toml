@@ -1,0 +1,39 @@
+[package]
+name = "nomifun-cloud"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nomifun-common.workspace = true
+nomifun-api-types.workspace = true
+nomifun-auth.workspace = true
+nomifun-db.workspace = true
+nomi-config.workspace = true
+nomi-providers.workspace = true
+nomi-types.workspace = true
+axum.workspace = true
+dashmap.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+image.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+sha2.workspace = true
+hex.workspace = true
+aes-gcm.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+rqrr = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+nomi-types.workspace = true

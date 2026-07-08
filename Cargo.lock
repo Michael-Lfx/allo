@@ -3035,6 +3035,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "g2gen"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7e0eb46f83a20260b850117d204366674e85d3a908d90865c78df9a6b1dfc"
+dependencies = [
+ "g2poly",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "g2p"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "539e2644c030d3bf4cd208cb842d2ce2f80e82e6e8472390bcef83ceba0d80ad"
+dependencies = [
+ "g2gen",
+ "g2poly",
+]
+
+[[package]]
+name = "g2poly"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
+
+[[package]]
 name = "gbm"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4587,6 +4615,15 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "lru"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+dependencies = [
+ "hashbrown 0.15.5",
+]
+
+[[package]]
+name = "lru"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
@@ -4989,6 +5026,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-auxiliary"
+version = "0.2.7"
+dependencies = [
+ "async-trait",
+ "nomi-types",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nomi-browser"
 version = "0.2.9"
 dependencies = [
@@ -5105,6 +5153,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5113,7 +5162,32 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "which 7.0.3",
  "wiremock",
+]
+
+[[package]]
+name = "nomi-insights-core"
+version = "0.2.7"
+dependencies = [
+ "chrono",
+ "hex",
+ "nomi-auxiliary",
+ "nomi-config",
+ "nomi-poi",
+ "nomi-skills",
+ "nomi-types",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -5135,6 +5209,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-media"
+version = "0.2.7"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "image",
+ "indexmap 2.14.0",
+ "nomi-config",
+ "nomi-tools",
+ "nomi-types",
+ "nomifun-cloud",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "nomi-memory"
 version = "0.2.9"
 dependencies = [
@@ -5147,6 +5246,25 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "nomi-poi"
+version = "0.2.7"
+dependencies = [
+ "chrono",
+ "hex",
+ "nomi-auxiliary",
+ "nomi-config",
+ "nomi-types",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 
@@ -5228,8 +5346,9 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "glob",
+ "indexmap 2.14.0",
  "libc",
- "lru",
+ "lru 0.18.0",
  "nomi-config",
  "nomi-protocol",
  "nomi-types",
@@ -5247,8 +5366,10 @@ version = "0.2.9"
 dependencies = [
  "async-trait",
  "chrono",
+ "indexmap 2.14.0",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5271,7 +5392,9 @@ dependencies = [
  "nomi-browser",
  "nomi-browser-engine",
  "nomi-config",
+ "nomi-insights-core",
  "nomi-mcp",
+ "nomi-media",
  "nomi-memory",
  "nomi-protocol",
  "nomi-providers",
@@ -5283,9 +5406,11 @@ dependencies = [
  "nomifun-common",
  "nomifun-db",
  "nomifun-extension",
+ "nomifun-insights",
  "nomifun-knowledge",
  "nomifun-mcp",
  "nomifun-net",
+ "nomifun-poi",
  "nomifun-realtime",
  "nomifun-runtime",
  "nomifun-secret",
@@ -5346,6 +5471,7 @@ dependencies = [
  "nomifun-assistant",
  "nomifun-auth",
  "nomifun-channel",
+ "nomifun-cloud",
  "nomifun-common",
  "nomifun-companion",
  "nomifun-conversation",
@@ -5355,11 +5481,14 @@ dependencies = [
  "nomifun-file",
  "nomifun-gateway",
  "nomifun-idmm",
+ "nomifun-insights",
  "nomifun-knowledge",
  "nomifun-mcp",
+ "nomifun-media",
  "nomifun-net",
  "nomifun-office",
  "nomifun-orchestrator",
+ "nomifun-poi",
  "nomifun-public",
  "nomifun-public-agent",
  "nomifun-realtime",
@@ -5480,6 +5609,42 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "nomifun-cloud"
+version = "0.2.7"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dashmap",
+ "futures",
+ "getrandom 0.2.17",
+ "hex",
+ "image",
+ "nomi-config",
+ "nomi-providers",
+ "nomi-types",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-common",
+ "nomifun-db",
+ "regex",
+ "reqwest 0.12.28",
+ "rqrr",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -5742,6 +5907,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomifun-insights"
+version = "0.2.7"
+dependencies = [
+ "axum",
+ "nomi-config",
+ "nomi-insights-core",
+ "nomifun-api-types",
+ "nomifun-cloud",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nomifun-knowledge"
 version = "0.2.9"
 dependencies = [
@@ -5795,6 +5976,22 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.2",
+ "tracing",
+]
+
+[[package]]
+name = "nomifun-media"
+version = "0.2.7"
+dependencies = [
+ "axum",
+ "nomi-config",
+ "nomi-media",
+ "nomifun-api-types",
+ "nomifun-cloud",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -5854,6 +6051,24 @@ dependencies = [
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "nomifun-poi"
+version = "0.2.7"
+dependencies = [
+ "axum",
+ "nomi-config",
+ "nomi-poi",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tower",
  "tracing",
@@ -7807,6 +8022,17 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "rqrr"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2260da7f69877ba68c49a0c2d9946829848236c708dd40d2a6baf8c868ee887"
+dependencies = [
+ "g2p",
+ "image",
+ "lru 0.12.5",
 ]
 
 [[package]]

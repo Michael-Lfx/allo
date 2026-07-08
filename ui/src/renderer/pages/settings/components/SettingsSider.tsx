@@ -9,6 +9,10 @@ import {
   Info,
   Lightning,
   LinkCloud,
+  Pic,
+  Brain,
+  ChartPie,
+  CloudStorage,
   Puzzle,
   Robot,
   Speed,
@@ -22,7 +26,16 @@ import { Tooltip } from '@arco-design/web-react';
 import { getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 
 /** Builtin settings tab IDs in display order (must match router paths). */
-export const BUILTIN_TAB_IDS = ['system', 'agent-runtime', 'browser-use', 'computer-use', 'about'] as const;
+export const BUILTIN_TAB_IDS = [
+  'system',
+  'agent-runtime',
+  'browser-use',
+  'computer-use',
+  'poi',
+  'insights',
+  'media',
+  'about',
+] as const;
 
 /**
  * Legacy anchor IDs that have been merged into other tabs.
@@ -104,6 +117,24 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.computerUseNav'),
         icon: <Computer />,
         path: 'computer-use',
+      },
+      poi: {
+        id: 'poi',
+        label: t('settings.poiNav'),
+        icon: <Brain />,
+        path: 'poi',
+      },
+      insights: {
+        id: 'insights',
+        label: t('settings.insightsNav'),
+        icon: <ChartPie />,
+        path: 'insights',
+      },
+      media: {
+        id: 'media',
+        label: t('settings.mediaNav'),
+        icon: <Pic />,
+        path: 'media',
       },
       about: { id: 'about', label: t('settings.about'), icon: <Info />, path: 'about' },
     };

@@ -30,6 +30,10 @@ use nomifun_extension::{
 use nomifun_file::{FileRouterState, FileService, FileWatchService, SnapshotService};
 use nomifun_idmm::{IdmmManager, IdmmRouterState};
 use nomifun_knowledge::KnowledgeRouterState;
+use nomifun_poi::PoiRouterState;
+use nomifun_insights::InsightsRouterState;
+use nomifun_media::MediaRouterState;
+use nomifun_cloud::CloudRouterState;
 use nomifun_mcp::{
     ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, McpAgentAdapter, McpConfigService,
     McpConnectionTestService, McpRouterState, McpSyncService, NomiAdapter, NomifunAdapter, OpencodeAdapter,
@@ -82,6 +86,10 @@ pub struct ModuleStates {
     pub requirement: RequirementRouterState,
     pub idmm: IdmmRouterState,
     pub knowledge: KnowledgeRouterState,
+    pub poi: PoiRouterState,
+    pub insights: InsightsRouterState,
+    pub media: MediaRouterState,
+    pub cloud: CloudRouterState,
     pub companion: CompanionRouterState,
     pub public_agent: PublicAgentRouterState,
     pub webhook: WebhookRouterState,
@@ -215,6 +223,20 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         requirement: requirement_state,
         idmm: idmm_state,
         knowledge: KnowledgeRouterState::new(services.knowledge_service.clone()),
+        poi: PoiRouterState::new(services.poi_service.clone()),
+        insights: InsightsRouterState::new(
+            services.insights_service.clone(),
+            services.insights_service.data_dir().to_path_buf(),
+        ),
+        media: MediaRouterState::new(
+            services.media_service.clone(),
+            services.media_service.data_dir().to_path_buf(),
+        ),
+        cloud: CloudRouterState::new(
+            services.cloud_service.clone(),
+            services.provider_repo.clone(),
+            derive_encryption_key(&services.jwt_secret_raw),
+        ),
         companion: companion_state,
         public_agent: PublicAgentRouterState::new(services.public_agent_service.clone()),
         webhook: build_webhook_state(services),
@@ -397,6 +419,12 @@ pub fn build_conversation_state(
         conversation_service.with_delete_hook(cron_service.clone());
         conversation_service.with_cron_service(Some(cron_service));
     }
+    conversation_service.with_session_lifecycle(Arc::new(
+        nomifun_ai_agent::capability::SessionLifecycleCoordinator::from_poi_and_insights(
+            services.poi_service.clone(),
+            services.insights_service.clone(),
+        ),
+    ));
     ConversationRouterState {
         service: conversation_service,
         task_manager: services.worker_task_manager.clone(),

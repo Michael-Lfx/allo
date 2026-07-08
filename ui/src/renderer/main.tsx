@@ -17,6 +17,7 @@ import { createRoot } from 'react-dom/client';
 
 // Context providers
 import { AuthProvider } from './hooks/context/AuthContext';
+import { CloudAuthProvider } from './hooks/context/CloudAuthContext';
 import { FeedbackProvider } from './hooks/context/FeedbackContext';
 import { ThemeProvider } from './hooks/context/ThemeContext';
 
@@ -55,6 +56,7 @@ import Layout from './components/layout/Layout';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
 import { useAuth } from './hooks/context/AuthContext';
+import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
 
@@ -67,7 +69,11 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
   React.createElement(
     AuthProvider,
     null,
-    React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+    React.createElement(
+      CloudAuthProvider,
+      null,
+      React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+    )
   );
 
 const Config: React.FC<PropsWithChildren> = ({ children }) => {
@@ -81,10 +87,11 @@ const Config: React.FC<PropsWithChildren> = ({ children }) => {
 
 const Main = () => {
   const { ready } = useAuth();
+  const { ready: cloudReady } = useCloudAuth();
   const [configReady, setConfigReady] = useState(false);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !cloudReady) return;
     // Prefetch `/api/agents` in parallel with configService.initialize() and
     // seed the shared SWR cache so the Guid page's model/mode selectors can
     // read `handshake.available_models` on the very first render — without
@@ -99,14 +106,14 @@ const Main = () => {
           console.error('Failed to prefetch agents:', err);
         }),
     ]).finally(() => setConfigReady(true));
-  }, [ready]);
+  }, [ready, cloudReady]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !cloudReady) return;
     void repairAllCronJobTimeZonesOnce();
-  }, [ready]);
+  }, [ready, cloudReady]);
 
-  if (!ready || !configReady) {
+  if (!ready || !cloudReady || !configReady) {
     return null;
   }
 
