@@ -379,6 +379,37 @@ fn generate_call_id() -> String {
     format!("call_{}", uuid::Uuid::now_v7().simple())
 }
 
+/// Apply a provider-supplied tool call id without breaking consistency with an
+/// id that was already announced to the frontend via `ToolUseDelta`.
+///
+/// Some OpenAI-compatible APIs stream argument deltas before the stable
+/// `tool_calls[].id` arrives, or send a different id in a later chunk. If we
+/// overwrite an auto-generated progress id, the UI keeps a stale Running card
+/// (`nomi-call_auto`) while the executed tool completes under another id
+/// (`nomi-call_provider`), and the turn terminal then marks the orphan as failed.
+fn apply_provider_tool_call_id(acc: &mut ToolCallAccumulator, provider_id: &str) {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return;
+    }
+    if acc.id.is_empty() {
+        acc.id = provider_id.to_string();
+        return;
+    }
+    if acc.announced && acc.id != provider_id {
+        tracing::debug!(
+            progress_id = %acc.id,
+            provider_id = %provider_id,
+            tool = %acc.name,
+            "Ignoring late provider tool_call id that differs from already-announced progress id"
+        );
+        return;
+    }
+    if acc.id != provider_id {
+        acc.id = provider_id.to_string();
+    }
+}
+
 /// Build a follow-up user message carrying a tool result's images.
 ///
 /// The OpenAI wire format only allows string content in `tool` role
@@ -1559,7 +1590,7 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id: bool) -> V
             let acc = state.get_or_create_tool(index);
 
             if let Some(id) = tc["id"].as_str() {
-                acc.id = id.to_string();
+                apply_provider_tool_call_id(acc, id);
             }
             // Only overwrite when non-empty — some third-party APIs send `"name":""`
             // in every delta chunk which would erase the real name from the first chunk.
@@ -2513,6 +2544,37 @@ mod tests {
             .expect("final tool use should be emitted");
 
         assert_eq!(progress_id, final_id);
+    }
+
+    #[test]
+    fn auto_tool_id_is_kept_when_provider_sends_a_different_late_id() {
+        let mut state = StreamState::new();
+
+        let chunk1 = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"Computer","arguments":"{\"action\":\"launch\""}}]},"finish_reason":null,"index":0}]}"#;
+        let events1 = parse_sse_chunk(chunk1, &mut state, true);
+        let progress_id = events1
+            .iter()
+            .find_map(|e| match e {
+                LlmEvent::ToolUseDelta { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("auto-id providers should announce progress before the provider id arrives");
+
+        let chunk2 = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_provider_late","function":{"arguments":"}"}}]},"finish_reason":null,"index":0}]}"#;
+        let _ = parse_sse_chunk(chunk2, &mut state, true);
+
+        let chunk3 = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}"#;
+        let events3 = parse_sse_chunk(chunk3, &mut state, true);
+        let final_id = events3
+            .iter()
+            .find_map(|e| match e {
+                LlmEvent::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("final tool use should be emitted");
+
+        assert_eq!(progress_id, final_id);
+        assert_ne!(final_id, "call_provider_late");
     }
 
     #[test]

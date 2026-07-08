@@ -815,6 +815,7 @@ impl AgentEngine {
             let mut cancelled_midstream = false;
             let mut idle_activity_active = false;
             let mut first_token_logged = false;
+            let mut announced_tool_calls: Vec<(String, String)> = Vec::new();
             loop {
                 let event = match &self.cancel_token {
                     Some(token) => {
@@ -896,6 +897,12 @@ impl AgentEngine {
                                 tool = %name,
                                 "provider tool call received"
                             );
+                            if !announced_tool_calls
+                                .iter()
+                                .any(|(tool_id, _)| tool_id == &id)
+                            {
+                                announced_tool_calls.push((id.clone(), name.clone()));
+                            }
                         }
                         let input_str = serde_json::to_string(&input).unwrap_or_default();
                         self.output.emit_tool_call(&id, &name, &input_str);
@@ -907,6 +914,13 @@ impl AgentEngine {
                         });
                     }
                     LlmEvent::ToolUseDelta { id, name, input } => {
+                        if !id.trim().is_empty()
+                            && !announced_tool_calls
+                                .iter()
+                                .any(|(tool_id, _)| tool_id == &id)
+                        {
+                            announced_tool_calls.push((id.clone(), name.clone()));
+                        }
                         let input_str = input
                             .as_ref()
                             .map(serde_json::to_string)
@@ -929,12 +943,22 @@ impl AgentEngine {
                         turn_usage = usage;
                     }
                     LlmEvent::Error(e) => {
+                        Self::emit_announced_tool_failures(
+                            self.output.as_ref(),
+                            &announced_tool_calls,
+                            &format!("Model stream failed before the tool finished: {e}"),
+                        );
                         return Err(AgentError::ApiError(e));
                     }
                 }
             }
 
             if cancelled_midstream {
+                Self::emit_announced_tool_failures(
+                    self.output.as_ref(),
+                    &announced_tool_calls,
+                    "Tool execution canceled by user",
+                );
                 // Cooperative cancel while awaiting the model stream: stop before
                 // pushing this turn's assistant message so self.messages stays
                 // consistent (no dangling tool_use). The host maps this to a
@@ -1509,6 +1533,19 @@ impl AgentEngine {
         self.last_turn_start_len = None;
         self.save_session();
         true
+    }
+
+    fn emit_announced_tool_failures(
+        output: &dyn crate::output::OutputSink,
+        announced: &[(String, String)],
+        reason: &str,
+    ) {
+        for (tool_use_id, name) in announced {
+            if tool_use_id.trim().is_empty() {
+                continue;
+            }
+            output.emit_tool_result(tool_use_id, name, true, reason);
+        }
     }
 
     /// Close a partially recorded turn after the host cancels execution.

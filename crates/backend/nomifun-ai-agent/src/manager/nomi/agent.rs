@@ -871,6 +871,8 @@ impl crate::agent_task::IAgentTask for NomiAgentManager {
                     error = %ErrorChain(&e),
                     "Nomi engine.run() failed, emitting Error+Finish"
                 );
+                self.backend_output_sink
+                    .fail_active_tool_calls(&error_msg);
                 let send_error = nomi_engine_error_to_send_error(error_msg);
                 self.runtime.emit_error_data(send_error.stream_error().clone());
                 self.runtime.emit_finish(None);
@@ -885,6 +887,8 @@ impl crate::agent_task::IAgentTask for NomiAgentManager {
                 // treat the stop as a recoverable stall (injecting a hidden
                 // "Please continue."). Downstream consumers now see the
                 // explicit Cancelled stop_reason and stand down.
+                self.backend_output_sink
+                    .fail_active_tool_calls("Tool execution canceled by user");
                 self.runtime.emit_finish_with_reason(None, Some(TurnStopReason::Cancelled));
                 Ok(())
             }

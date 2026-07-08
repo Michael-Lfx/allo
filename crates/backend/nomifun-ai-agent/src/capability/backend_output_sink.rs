@@ -145,6 +145,42 @@ impl BackendOutputSink {
         }
     }
 
+    /// Close any tool calls still marked Running before a terminal Error event.
+    pub(crate) fn fail_active_tool_calls(&self, reason: &str) {
+        let interrupted: Vec<ActiveToolCall> = match self.active_tool_calls.lock() {
+            Ok(mut active) => active.drain().map(|(_, data)| data).collect(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "Failed to resolve active tool calls before terminal error"
+                );
+                Vec::new()
+            }
+        };
+
+        if interrupted.is_empty() {
+            return;
+        }
+
+        let output = reason.to_owned();
+        for active in interrupted {
+            tracing::info!(
+                call_id = %active.call_id,
+                tool = %active.name,
+                "closing active tool call before terminal error"
+            );
+            let _ = self.event_tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+                call_id: active.call_id,
+                name: active.name,
+                args: active.args,
+                status: ToolCallStatus::Error,
+                input: active.input,
+                output: Some(output.clone()),
+                description: None,
+            }));
+        }
+    }
+
     /// Citation reflow: parse the `<nomi-mem-citation>` block from the turn's
     /// final assistant text and bump each cited memory file's usage stats.
     /// Silent on every failure — a stale citation or unreadable file must
@@ -533,6 +569,22 @@ mod tests {
                 assert_eq!(data.status, ToolCallStatus::Error);
             }
             other => panic!("Expected ToolCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fail_active_tool_calls_emits_error_for_running_tools() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_tool_call("call_computer_1", "Computer", r#"{"action":"observe"}"#);
+        let _ = rx.try_recv().unwrap();
+        sink.fail_active_tool_calls("upstream provider fault");
+        match rx.try_recv().unwrap() {
+            AgentStreamEvent::ToolCall(data) => {
+                assert_eq!(data.name, "Computer");
+                assert_eq!(data.status, ToolCallStatus::Error);
+                assert_eq!(data.output.as_deref(), Some("upstream provider fault"));
+            }
+            other => panic!("Expected ToolCall error, got {:?}", other),
         }
     }
 
