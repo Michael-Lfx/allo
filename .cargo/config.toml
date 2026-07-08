@@ -19,6 +19,9 @@ git-fetch-with-cli = true
 # rebuild); subsequent builds get the speedup.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+# Linker parallelism: 32 matches the 32 logical processors (16 physical cores ×
+# SMT). Higher values (e.g. 64) would oversubscribe the CPU and hurt throughput.
+# rustflags = ["-C", "link-arg=/threads:32"]
 
 # Route intermediate artifacts (deps/.fingerprint/incremental — the high-churn
 # bulk of build output) into a ".noindex" directory: that suffix is macOS
@@ -36,14 +39,13 @@ build-dir = "{workspace-root}/build.noindex"
 incremental = true
 
 
-[profile.dev]
-opt-level = 0
-debug = 1
-codegen-units = 64
-lto = false
-
-[profile.release]
-codegen-units = 8
+# Profile settings are managed in the workspace Cargo.toml to keep a single
+# source of truth. Do NOT add [profile.*] sections here — they override the
+# workspace manifest, not merge with it.
+#
+# Workspace dev profile:  debug = "line-tables-only"       (fast to compile)
+#                          [dev.package."*"] debug = false  (deps skip debuginfo)
+# Workspace release:       opt-level=3, lto="thin", codegen-units=1, strip=true
 
 # Enlarge rustc's compilation-thread stack. The release `tauri build` embeds the
 # entire frontend `ui/dist` (~34 MB, hundreds of files) into the `Flowy`
