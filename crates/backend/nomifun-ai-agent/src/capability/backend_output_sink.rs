@@ -10,6 +10,7 @@ use crate::protocol::events::{
     StartEventData, TextEventData, ThinkingEventData, TipType, TipsEventData, ToolCallEventData,
     ToolCallStatus,
 };
+use crate::protocol::events::tool_call::{is_canonical_executable_tool_call, should_supersede_preview};
 
 pub struct BackendOutputSink {
     event_tx: broadcast::Sender<AgentStreamEvent>,
@@ -110,6 +111,55 @@ impl BackendOutputSink {
                     "Failed to clear active tool call after tool result"
                 );
             }
+        }
+    }
+
+    fn supersede_orphan_preview_tool_calls(&self, canonical: &ToolCallEventData) {
+        if !is_canonical_executable_tool_call(canonical) {
+            return;
+        }
+        match self.active_tool_calls.lock() {
+            Ok(mut active) => {
+                let superseded: Vec<String> = active
+                    .iter()
+                    .filter(|(_, preview)| {
+                        let preview_event = Self::active_tool_call_from_event(
+                            preview.call_id.clone(),
+                            preview.name.clone(),
+                            preview.args.clone(),
+                            preview.input.clone(),
+                        );
+                        should_supersede_preview(&preview_event, canonical)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in superseded {
+                    active.remove(&id);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "Failed to supersede orphan preview tool calls"
+                );
+            }
+        }
+    }
+
+    fn active_tool_call_from_event(
+        call_id: String,
+        name: String,
+        args: serde_json::Value,
+        input: Option<serde_json::Value>,
+    ) -> ToolCallEventData {
+        ToolCallEventData {
+            call_id,
+            name,
+            args: args.clone(),
+            status: ToolCallStatus::Running,
+            input,
+            output: None,
+            description: None,
         }
     }
 
@@ -290,6 +340,14 @@ impl OutputSink for BackendOutputSink {
             "Emitting nomi tool_call event"
         );
 
+        let event = Self::active_tool_call_from_event(
+            call_id.clone(),
+            name.to_owned(),
+            parsed_input.clone(),
+            Some(parsed_input.clone()),
+        );
+        self.supersede_orphan_preview_tool_calls(&event);
+
         self.remember_active_tool_call(
             call_id.clone(),
             name.to_owned(),
@@ -464,6 +522,38 @@ mod tests {
             }
             other => panic!("Expected ToolCall, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn emit_tool_call_supersedes_orphan_text_preview_from_active_map() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_tool_call_delta("call_fbb31e380c974b268f4561c1", "Browser", None);
+        let preview = rx.try_recv().unwrap();
+        assert!(matches!(
+            preview,
+            AgentStreamEvent::ToolCall(data) if data.call_id == "nomi-call_fbb31e380c974b268f4561c1"
+        ));
+
+        sink.emit_tool_call(
+            "call_019real",
+            "Browser",
+            r#"{"action":"navigate","url":"https://example.com"}"#,
+        );
+        let canonical = rx.try_recv().unwrap();
+        assert!(matches!(
+            canonical,
+            AgentStreamEvent::ToolCall(data) if data.call_id == "nomi-call_019real"
+        ));
+
+        sink.complete_active_tool_calls_for_auto_continue("output token limit");
+        match rx.try_recv().unwrap() {
+            AgentStreamEvent::ToolCall(data) => {
+                assert_eq!(data.call_id, "nomi-call_019real");
+                assert_eq!(data.status, ToolCallStatus::Completed);
+            }
+            other => panic!("Expected canonical auto-continue ToolCall, got {:?}", other),
+        }
+        assert!(rx.try_recv().is_err(), "preview should not be auto-continued as orphaned");
     }
 
     #[test]

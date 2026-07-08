@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use nomifun_ai_agent::{
     AgentSendError, AgentStreamEvent,
     protocol::events::{
         PlanEventData, ThinkingEventData,
-        tool_call::{AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData, ToolCallStatus},
+        tool_call::{AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData, ToolCallStatus, should_supersede_preview},
     },
 };
 
@@ -15,7 +15,7 @@ use nomifun_api_types::{AgentErrorCode, ConversationRuntimeSummary, WebSocketMes
 use nomifun_common::{ErrorChain, normalize_keys_to_snake_case, now_ms};
 
 use crate::service::ConversationService;
-use nomifun_db::{IConversationRepository, MessageRowUpdate};
+use nomifun_db::{DbError, IConversationRepository, MessageRowUpdate};
 use nomifun_db::models::MessageRow;
 use nomifun_realtime::EventBroadcaster;
 use serde_json::{Value, json};
@@ -534,6 +534,7 @@ impl StreamRelay {
         let mut active_text: Option<TextSegmentState> = None;
         let mut active_thinking: Option<ThinkingSegmentState> = None;
         let mut active_tool_calls: HashMap<String, ToolCallEventData> = HashMap::new();
+        let mut pending_superseded_call_ids: HashSet<String> = HashSet::new();
         let mut used_primary_segment_msg_id = false;
         let mut first_agent_event_logged = false;
         let mut first_visible_output_logged = false;
@@ -696,7 +697,12 @@ impl StreamRelay {
                                 info!("StreamRelay suppressing pre-response error pending model failover");
                             } else {
                                 if let Some(reason) = Self::incomplete_tool_reason(&event) {
-                                    self.fail_active_tool_calls(&mut active_tool_calls, reason).await;
+                                    self.fail_active_tool_calls(
+                                        &mut active_tool_calls,
+                                        reason,
+                                        &mut pending_superseded_call_ids,
+                                    )
+                                    .await;
                                 }
                                 self.forward_to_websocket(&event);
                             }
@@ -733,6 +739,12 @@ impl StreamRelay {
                             match data.status {
                                 ToolCallStatus::Running => {
                                     if !self.tool_call_already_settled(&data.call_id).await {
+                                        self.supersede_orphan_preview_tool_calls(
+                                            &mut active_tool_calls,
+                                            &data,
+                                            &mut pending_superseded_call_ids,
+                                        )
+                                        .await;
                                         active_tool_calls.insert(data.call_id.clone(), data.clone());
                                     } else {
                                         debug!(
@@ -750,7 +762,7 @@ impl StreamRelay {
                             self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
                                 .await;
                             self.forward_to_websocket(&event);
-                            self.persist_tool_call(data).await;
+                            self.persist_tool_call(data, &mut pending_superseded_call_ids).await;
                         }
                         AgentStreamEvent::AcpToolCall(data) => {
                             // Plan D4: see ToolCall — an ACP tool call is a
@@ -1315,7 +1327,11 @@ impl StreamRelay {
 
     /// Persist a Gemini-style tool_call event.
     #[tracing::instrument(skip_all)]
-    async fn persist_tool_call(&self, data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData) {
+    async fn persist_tool_call(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
+        pending_superseded_call_ids: &mut HashSet<String>,
+    ) {
         if data.call_id.trim().is_empty() {
             warn!(
                 tool = %data.name,
@@ -1373,6 +1389,14 @@ impl StreamRelay {
                 );
             }
         } else {
+            let superseded = pending_superseded_call_ids.remove(&data.call_id);
+            let row_status = if superseded { "finish" } else { status };
+            let mut persisted = data.clone();
+            if superseded {
+                persisted.status = ToolCallStatus::Completed;
+            }
+            let content = serde_json::to_string(&persisted).unwrap_or_default();
+
             let row = MessageRow {
                 id: data.call_id.clone(),
                 conversation_id: self.conv_id(),
@@ -1380,15 +1404,15 @@ impl StreamRelay {
                 r#type: "tool_call".into(),
                 content,
                 position: Some("left".into()),
-                status: Some(status.to_owned()),
-                hidden: false,
+                status: Some(row_status.to_owned()),
+                hidden: superseded,
                 created_at: now_ms(),
             };
             if let Err(e) = self.repo.insert_message(&row).await {
                 error!(
                     call_id = %data.call_id,
                     tool = %data.name,
-                    status,
+                    status = row_status,
                     error = %ErrorChain(&e),
                     "Failed to persist tool_call message"
                 );
@@ -1396,7 +1420,7 @@ impl StreamRelay {
                 debug!(
                     call_id = %data.call_id,
                     tool = %data.name,
-                    status,
+                    status = row_status,
                     "Persisted tool_call message"
                 );
             }
@@ -1445,10 +1469,86 @@ impl StreamRelay {
         Self::tool_call_row_is_settled(&row)
     }
 
+    /// Drop superseded streaming previews (text-channel tool progress, partial Browser
+    /// args) so they are not left active until the turn ends with a false `end_turn`.
+    async fn supersede_orphan_preview_tool_calls(
+        &self,
+        active_tool_calls: &mut HashMap<String, ToolCallEventData>,
+        canonical: &ToolCallEventData,
+        pending_superseded_call_ids: &mut HashSet<String>,
+    ) {
+        let superseded: Vec<String> = active_tool_calls
+            .iter()
+            .filter(|(_, preview)| should_supersede_preview(preview, canonical))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for call_id in superseded {
+            active_tool_calls.remove(&call_id);
+            self.hide_tool_call_message(&call_id, pending_superseded_call_ids)
+                .await;
+        }
+    }
+
+    async fn hide_tool_call_message(
+        &self,
+        call_id: &str,
+        pending_superseded_call_ids: &mut HashSet<String>,
+    ) {
+        let content = self
+            .repo
+            .get_message_by_msg_id(self.conv_id(), call_id, "tool_call")
+            .await
+            .ok()
+            .flatten()
+            .map(|row| Self::superseded_preview_content(&row.content));
+
+        let update = MessageRowUpdate {
+            content,
+            status: Some(Some("finish".to_owned())),
+            hidden: Some(true),
+        };
+        match self.repo.update_message(call_id, &update).await {
+            Ok(()) => {
+                pending_superseded_call_ids.remove(call_id);
+                debug!(call_id, "Hidden superseded tool_call preview message");
+                self.broadcast_stream_payload(json!({
+                    "conversation_id": self.conv_id(),
+                    "msg_id": call_id,
+                    "type": "tool_call",
+                    "data": {
+                        "call_id": call_id,
+                        "status": "completed",
+                        "superseded": true,
+                    },
+                    "status": "finish",
+                    "hidden": true,
+                    "replace": true,
+                }));
+            }
+            Err(e) => {
+                if matches!(e, DbError::NotFound(_)) {
+                    pending_superseded_call_ids.insert(call_id.to_owned());
+                    debug!(
+                        call_id,
+                        "Queued superseded tool_call preview for hidden insert (row not persisted yet)"
+                    );
+                } else {
+                    debug!(
+                        call_id,
+                        error = %ErrorChain(&e),
+                        "Could not hide superseded tool_call preview"
+                    );
+                }
+            }
+        }
+    }
+
     async fn fail_active_tool_calls(
         &self,
         active_tool_calls: &mut HashMap<String, ToolCallEventData>,
         reason: &str,
+        pending_superseded_call_ids: &mut HashSet<String>,
     ) {
         if active_tool_calls.is_empty() {
             return;
@@ -1475,7 +1575,7 @@ impl StreamRelay {
             let event = AgentStreamEvent::ToolCall(data);
             self.forward_to_websocket(&event);
             if let AgentStreamEvent::ToolCall(data) = &event {
-                self.persist_tool_call(data).await;
+                self.persist_tool_call(data, pending_superseded_call_ids).await;
             }
         }
     }
@@ -1524,6 +1624,17 @@ impl StreamRelay {
                     error!(error = %ErrorChain(&e), "Failed to update acp_tool_call message");
                 }
             }
+        }
+    }
+
+    /// Patch stored tool_call JSON so superseded previews show terminal status in content.
+    fn superseded_preview_content(existing_json: &str) -> String {
+        match serde_json::from_str::<ToolCallEventData>(existing_json) {
+            Ok(mut data) => {
+                data.status = ToolCallStatus::Completed;
+                serde_json::to_string(&data).unwrap_or_else(|_| existing_json.to_owned())
+            }
+            Err(_) => existing_json.to_owned(),
         }
     }
 
@@ -1755,12 +1866,33 @@ impl ICronService for SharedCronService {
 }
 
 #[cfg(test)]
+impl StreamRelay {
+    async fn test_hide_tool_call_message(
+        &self,
+        call_id: &str,
+        pending_superseded_call_ids: &mut HashSet<String>,
+    ) {
+        self.hide_tool_call_message(call_id, pending_superseded_call_ids)
+            .await;
+    }
+
+    async fn test_persist_tool_call(
+        &self,
+        data: &ToolCallEventData,
+        pending_superseded_call_ids: &mut HashSet<String>,
+    ) {
+        self.persist_tool_call(data, pending_superseded_call_ids).await;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use nomifun_ai_agent::protocol::events::{
         ErrorEventData, FinishEventData, PlanEventData, TextEventData, ThinkingEventData,
     };
     use nomifun_db::DbError;
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
     // ── run() async tests ─────────────────────────────────────────
@@ -2117,6 +2249,162 @@ mod tests {
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
         assert_eq!(content["status"], "error");
         assert_eq!(content["output"], "The turn ended before this tool completed: max_tokens");
+    }
+
+    #[test]
+    fn superseded_preview_content_sets_completed_status() {
+        let preview_json = serde_json::json!({
+            "call_id": "nomi-call_call_preview",
+            "name": "Browser",
+            "args": {"url": "https://example.com"},
+            "status": "running"
+        })
+        .to_string();
+
+        let patched = StreamRelay::superseded_preview_content(&preview_json);
+        let value: serde_json::Value = serde_json::from_str(&patched).unwrap();
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["call_id"], "nomi-call_call_preview");
+    }
+
+    #[tokio::test]
+    async fn persist_tool_call_inserts_hidden_when_pending_superseded() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(StrictRecordingRepo::new());
+        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
+        let relay = StreamRelay::new(
+            "1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+
+        let preview = ToolCallEventData {
+            call_id: "nomi-call_call_race_preview".into(),
+            name: "Browser".into(),
+            args: json!({"url": "https://example.com"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+        };
+
+        let mut pending = HashSet::from(["nomi-call_call_race_preview".to_string()]);
+        relay
+            .test_hide_tool_call_message("nomi-call_call_race_preview", &mut pending)
+            .await;
+        assert!(pending.contains("nomi-call_call_race_preview"));
+
+        relay.test_persist_tool_call(&preview, &mut pending).await;
+        assert!(!pending.contains("nomi-call_call_race_preview"));
+
+        let inserts = repo.take_inserts();
+        assert_eq!(inserts.len(), 1);
+        assert!(inserts[0].hidden);
+        assert_eq!(inserts[0].status.as_deref(), Some("finish"));
+        let content: ToolCallEventData = serde_json::from_str(&inserts[0].content).unwrap();
+        assert_eq!(content.status, ToolCallStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn run_supersedes_preview_tool_call_when_canonical_browser_call_arrives() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+        use nomifun_ai_agent::protocol::events::{FinishEventData, TurnStopReason};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "nomi-call_call_fbb31e380c974b268f4561c1".into(),
+            name: "Browser".into(),
+            args: serde_json::Value::Null,
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "nomi-call_019canonical".into(),
+            name: "Browser".into(),
+            args: json!({"action": "navigate", "url": "https://example.com"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: Some(json!({"action": "navigate", "url": "https://example.com"})),
+            output: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "nomi-call_019canonical".into(),
+            name: "Browser".into(),
+            args: json!({"action": "navigate", "url": "https://example.com"}),
+            status: ToolCallStatus::Completed,
+            description: None,
+            input: Some(json!({"action": "navigate", "url": "https://example.com"})),
+            output: Some("ok".into()),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::EndTurn),
+        }))
+        .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let updates = repo.take_updates();
+        assert!(
+            updates
+                .iter()
+                .any(|(id, update)| id == "nomi-call_call_fbb31e380c974b268f4561c1" && update.hidden == Some(true)),
+            "preview tool_call should be hidden when superseded"
+        );
+        assert!(
+            updates.iter().any(|(id, update)| {
+                id == "nomi-call_call_fbb31e380c974b268f4561c1"
+                    && update.hidden == Some(true)
+                    && update
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.as_deref())
+                        == Some("finish")
+            }),
+            "superseded preview update must set hidden=true and status=finish"
+        );
+        assert!(
+            updates.iter().any(|(id, update)| {
+                id == "nomi-call_call_fbb31e380c974b268f4561c1"
+                    && update.content.as_ref().is_some_and(|c| c.contains("\"status\":\"completed\""))
+            }),
+            "superseded preview update must patch content status to completed"
+        );
+        assert!(
+            !updates.iter().any(|(id, update)| {
+                id == "nomi-call_call_fbb31e380c974b268f4561c1"
+                    && update
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.as_deref())
+                        == Some("error")
+            }),
+            "superseded preview must not be marked end_turn error"
+        );
     }
 
     #[tokio::test]
@@ -3175,6 +3463,109 @@ mod tests {
         }
     }
 
+    /// Like RecordingRepo but returns NotFound on update when the row was never inserted.
+    struct StrictRecordingRepo {
+        inner: RecordingRepo,
+    }
+
+    impl StrictRecordingRepo {
+        fn new() -> Self {
+            Self {
+                inner: RecordingRepo::new(),
+            }
+        }
+
+        fn take_inserts(&self) -> Vec<MessageRow> {
+            self.inner.take_inserts()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl IConversationRepository for StrictRecordingRepo {
+        async fn get(&self, id: i64) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
+            self.inner.get(id).await
+        }
+        async fn create(&self, row: &nomifun_db::models::ConversationRow) -> Result<i64, DbError> {
+            self.inner.create(row).await
+        }
+        async fn update(&self, id: i64, updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
+            self.inner.update(id, updates).await
+        }
+        async fn delete(&self, id: i64) -> Result<(), DbError> {
+            self.inner.delete(id).await
+        }
+        async fn list_paginated(
+            &self,
+            user_id: &str,
+            filters: &nomifun_db::ConversationFilters,
+        ) -> Result<nomifun_common::PaginatedResult<nomifun_db::models::ConversationRow>, DbError> {
+            self.inner.list_paginated(user_id, filters).await
+        }
+        async fn find_by_source_and_chat(
+            &self,
+            user_id: &str,
+            source: &str,
+            chat_id: &str,
+            agent_type: &str,
+        ) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
+            self.inner
+                .find_by_source_and_chat(user_id, source, chat_id, agent_type)
+                .await
+        }
+        async fn list_by_cron_job(
+            &self,
+            user_id: &str,
+            cron_job_id: &str,
+        ) -> Result<Vec<nomifun_db::models::ConversationRow>, DbError> {
+            self.inner.list_by_cron_job(user_id, cron_job_id).await
+        }
+        async fn list_associated(
+            &self,
+            user_id: &str,
+            conversation_id: i64,
+        ) -> Result<Vec<nomifun_db::models::ConversationRow>, DbError> {
+            self.inner.list_associated(user_id, conversation_id).await
+        }
+        async fn get_messages(
+            &self,
+            conv_id: i64,
+            page: u32,
+            page_size: u32,
+            order: nomifun_db::SortOrder,
+        ) -> Result<nomifun_common::PaginatedResult<MessageRow>, DbError> {
+            self.inner.get_messages(conv_id, page, page_size, order).await
+        }
+        async fn insert_message(&self, row: &MessageRow) -> Result<(), DbError> {
+            self.inner.insert_message(row).await
+        }
+        async fn update_message(&self, id: &str, updates: &nomifun_db::MessageRowUpdate) -> Result<(), DbError> {
+            if !self.inner.has_message_id(id) {
+                return Err(DbError::NotFound(format!("Message '{id}' not found")));
+            }
+            self.inner.update_message(id, updates).await
+        }
+        async fn delete_messages_by_conversation(&self, conv_id: i64) -> Result<(), DbError> {
+            self.inner.delete_messages_by_conversation(conv_id).await
+        }
+        async fn get_message_by_msg_id(
+            &self,
+            conv_id: i64,
+            msg_id: &str,
+            msg_type: &str,
+        ) -> Result<Option<MessageRow>, DbError> {
+            self.inner.get_message_by_msg_id(conv_id, msg_id, msg_type).await
+        }
+        async fn search_messages(
+            &self,
+            user_id: &str,
+            keyword: &str,
+            page: u32,
+            page_size: u32,
+        ) -> Result<nomifun_common::PaginatedResult<nomifun_db::MessageSearchRow>, DbError> {
+            self.inner.search_messages(user_id, keyword, page, page_size).await
+        }
+    }
+
     /// Recording repo that captures insert/update calls for assertions.
     struct RecordingRepo {
         inserts: Mutex<Vec<MessageRow>>,
@@ -3191,6 +3582,10 @@ mod tests {
 
         fn take_inserts(&self) -> Vec<MessageRow> {
             std::mem::take(&mut self.inserts.lock().unwrap())
+        }
+
+        fn has_message_id(&self, id: &str) -> bool {
+            self.inserts.lock().unwrap().iter().any(|m| m.id == id)
         }
 
         #[allow(dead_code)]
