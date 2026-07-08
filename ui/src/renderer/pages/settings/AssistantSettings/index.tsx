@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
-import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import { useDetectedAgents, useAssistantEditor, useAssistantList, useAssistantTags } from '@/renderer/hooks/assistant';
 import SkillsHubSettings from '../SkillsHubSettings';
@@ -56,13 +55,14 @@ const AssistantSettings: React.FC = () => {
   const navigationState = (location.state as AssistantNavigationState | null) ?? null;
   const highlightId = searchParams.get('highlight');
 
+  // Sync from URL only when searchParams change. Do not depend on activeTab:
+  // handleTabChange updates state before the URL catches up, and comparing
+  // against activeTab would briefly snap back to the previous tab.
   useEffect(() => {
     const param = searchParams.get('tab');
     const nextTab = isAssistantSkillsTab(param) ? param : 'assistants';
-    if (nextTab !== activeTab) {
-      setActiveTab(nextTab);
-    }
-  }, [activeTab, searchParams]);
+    setActiveTab(nextTab);
+  }, [searchParams]);
 
   const handleTabChange = useCallback(
     (key: string) => {
@@ -153,100 +153,98 @@ const AssistantSettings: React.FC = () => {
   }, [assistants, editor, navigationState]);
 
   const assistantManagementContent = (
-    <div className='flex flex-col h-full w-full'>
-      <NomiScrollArea className='flex-1 min-h-0 pb-16px scrollbar-hide' disableOverflow>
-        <AssistantListPanel
-          assistants={assistants}
-          localeKey={localeKey}
-          avatarImageMap={avatarImageMap}
-          isExtensionAssistant={isExtensionAssistant}
-          onEdit={(assistant) => void editor.handleEdit(assistant)}
-          onDuplicate={(assistant) => void editor.handleDuplicate(assistant)}
-          onCreate={() => void editor.handleCreate()}
-          onToggleEnabled={(assistant, checked) => void editor.handleToggleEnabled(assistant, checked)}
-          setActiveAssistantId={setActiveAssistantId}
-          highlightId={highlightId}
-          onHighlightConsumed={handleHighlightConsumed}
-          audienceTags={tags.audienceTags}
-          scenarioTags={tags.scenarioTags}
-          tagByKey={tags.tagByKey}
-          onManageTags={() => setTagModalVisible(true)}
-        />
+    <div className='w-full pb-16px'>
+      <AssistantListPanel
+        assistants={assistants}
+        localeKey={localeKey}
+        avatarImageMap={avatarImageMap}
+        isExtensionAssistant={isExtensionAssistant}
+        onEdit={(assistant) => void editor.handleEdit(assistant)}
+        onDuplicate={(assistant) => void editor.handleDuplicate(assistant)}
+        onCreate={() => void editor.handleCreate()}
+        onToggleEnabled={(assistant, checked) => void editor.handleToggleEnabled(assistant, checked)}
+        setActiveAssistantId={setActiveAssistantId}
+        highlightId={highlightId}
+        onHighlightConsumed={handleHighlightConsumed}
+        audienceTags={tags.audienceTags}
+        scenarioTags={tags.scenarioTags}
+        tagByKey={tags.tagByKey}
+        onManageTags={() => setTagModalVisible(true)}
+      />
 
-        <AssistantEditDrawer
-          editVisible={editor.editVisible}
-          setEditVisible={editor.setEditVisible}
-          isCreating={editor.isCreating}
-          editName={editor.editName}
-          setEditName={editor.setEditName}
-          editDescription={editor.editDescription}
-          setEditDescription={editor.setEditDescription}
-          editAvatar={editor.editAvatar}
-          setEditAvatar={editor.setEditAvatar}
-          editAvatarImage={editAvatarImage}
-          editAgent={editor.editAgent}
-          setEditAgent={editor.setEditAgent}
-          editModels={editor.editModels}
-          setEditModels={editor.setEditModels}
-          editContext={editor.editContext}
-          setEditContext={editor.setEditContext}
-          promptViewMode={editor.promptViewMode}
-          setPromptViewMode={editor.setPromptViewMode}
-          availableSkills={editor.availableSkills}
-          selectedSkills={editor.selectedSkills}
-          setSelectedSkills={editor.setSelectedSkills}
-          pendingSkills={editor.pendingSkills}
-          customSkills={editor.customSkills}
-          setDeletePendingSkillName={editor.setDeletePendingSkillName}
-          setDeleteCustomSkillName={editor.setDeleteCustomSkillName}
-          builtinAutoSkills={editor.builtinAutoSkills}
-          disabledBuiltinSkills={editor.disabledBuiltinSkills}
-          setDisabledBuiltinSkills={editor.setDisabledBuiltinSkills}
-          editAudienceTags={editor.editAudienceTags}
-          setEditAudienceTags={editor.setEditAudienceTags}
-          editScenarioTags={editor.editScenarioTags}
-          setEditScenarioTags={editor.setEditScenarioTags}
-          audienceTags={tags.audienceTags}
-          scenarioTags={tags.scenarioTags}
-          onCreateTag={tags.createTag}
-          readOnly={
-            editor.isCreating
-              ? false
-              : activeAssistant?.source === 'builtin' || isExtensionAssistant(activeAssistant)
-          }
-          localeKey={localeKey}
-          activeAssistant={activeAssistant}
-          activeAssistantId={activeAssistantId}
-          isExtensionAssistant={isExtensionAssistant}
-          availableBackends={availableBackends}
-          handleSave={editor.handleSave}
-          onImportAgentSkills={editor.handleImportAgentSkills}
-          handleDeleteClick={editor.handleDeleteClick}
-          handleDuplicate={(assistant) => void editor.handleDuplicate(assistant)}
-        />
+      <AssistantEditDrawer
+        editVisible={editor.editVisible}
+        setEditVisible={editor.setEditVisible}
+        isCreating={editor.isCreating}
+        editName={editor.editName}
+        setEditName={editor.setEditName}
+        editDescription={editor.editDescription}
+        setEditDescription={editor.setEditDescription}
+        editAvatar={editor.editAvatar}
+        setEditAvatar={editor.setEditAvatar}
+        editAvatarImage={editAvatarImage}
+        editAgent={editor.editAgent}
+        setEditAgent={editor.setEditAgent}
+        editModels={editor.editModels}
+        setEditModels={editor.setEditModels}
+        editContext={editor.editContext}
+        setEditContext={editor.setEditContext}
+        promptViewMode={editor.promptViewMode}
+        setPromptViewMode={editor.setPromptViewMode}
+        availableSkills={editor.availableSkills}
+        selectedSkills={editor.selectedSkills}
+        setSelectedSkills={editor.setSelectedSkills}
+        pendingSkills={editor.pendingSkills}
+        customSkills={editor.customSkills}
+        setDeletePendingSkillName={editor.setDeletePendingSkillName}
+        setDeleteCustomSkillName={editor.setDeleteCustomSkillName}
+        builtinAutoSkills={editor.builtinAutoSkills}
+        disabledBuiltinSkills={editor.disabledBuiltinSkills}
+        setDisabledBuiltinSkills={editor.setDisabledBuiltinSkills}
+        editAudienceTags={editor.editAudienceTags}
+        setEditAudienceTags={editor.setEditAudienceTags}
+        editScenarioTags={editor.editScenarioTags}
+        setEditScenarioTags={editor.setEditScenarioTags}
+        audienceTags={tags.audienceTags}
+        scenarioTags={tags.scenarioTags}
+        onCreateTag={tags.createTag}
+        readOnly={
+          editor.isCreating
+            ? false
+            : activeAssistant?.source === 'builtin' || isExtensionAssistant(activeAssistant)
+        }
+        localeKey={localeKey}
+        activeAssistant={activeAssistant}
+        activeAssistantId={activeAssistantId}
+        isExtensionAssistant={isExtensionAssistant}
+        availableBackends={availableBackends}
+        handleSave={editor.handleSave}
+        onImportAgentSkills={editor.handleImportAgentSkills}
+        handleDeleteClick={editor.handleDeleteClick}
+        handleDuplicate={(assistant) => void editor.handleDuplicate(assistant)}
+      />
 
-        <DeleteAssistantModal
-          visible={editor.deleteConfirmVisible}
-          onCancel={() => editor.setDeleteConfirmVisible(false)}
-          onConfirm={editor.handleDeleteConfirm}
-          activeAssistant={activeAssistant}
-          avatarImageMap={avatarImageMap}
-        />
+      <DeleteAssistantModal
+        visible={editor.deleteConfirmVisible}
+        onCancel={() => editor.setDeleteConfirmVisible(false)}
+        onConfirm={editor.handleDeleteConfirm}
+        activeAssistant={activeAssistant}
+        avatarImageMap={avatarImageMap}
+      />
 
-        <SkillConfirmModals
-          deletePendingSkillName={editor.deletePendingSkillName}
-          setDeletePendingSkillName={editor.setDeletePendingSkillName}
-          pendingSkills={editor.pendingSkills}
-          setPendingSkills={editor.setPendingSkills}
-          deleteCustomSkillName={editor.deleteCustomSkillName}
-          setDeleteCustomSkillName={editor.setDeleteCustomSkillName}
-          customSkills={editor.customSkills}
-          setCustomSkills={editor.setCustomSkills}
-          selectedSkills={editor.selectedSkills}
-          setSelectedSkills={editor.setSelectedSkills}
-          message={message}
-        />
-      </NomiScrollArea>
+      <SkillConfirmModals
+        deletePendingSkillName={editor.deletePendingSkillName}
+        setDeletePendingSkillName={editor.setDeletePendingSkillName}
+        pendingSkills={editor.pendingSkills}
+        setPendingSkills={editor.setPendingSkills}
+        deleteCustomSkillName={editor.deleteCustomSkillName}
+        setDeleteCustomSkillName={editor.setDeleteCustomSkillName}
+        customSkills={editor.customSkills}
+        setCustomSkills={editor.setCustomSkills}
+        selectedSkills={editor.selectedSkills}
+        setSelectedSkills={editor.setSelectedSkills}
+        message={message}
+      />
 
       <TagManagementModal
         visible={tagModalVisible}
@@ -275,7 +273,7 @@ const AssistantSettings: React.FC = () => {
         activeTab={activeTab}
         onChange={handleTabChange}
         type='line'
-        className='flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
+        className='assistant-skills-hub-tabs [&>.arco-tabs-content]:pt-0 [&_.arco-tabs-nav]:!min-h-40px [&_.arco-tabs-nav-tab]:!py-8px [&_.arco-tabs-nav-tab]:!font-500 [&_.arco-tabs-nav-tab-active]:!font-500 [&_.arco-tabs-nav-tab]:!leading-22px'
       >
         <Tabs.TabPane
           key='assistants'

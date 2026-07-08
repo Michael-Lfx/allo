@@ -30,6 +30,7 @@ import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkCo
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
+import { findAssistantById, parseCustomAssistantId } from './hooks/agentSelectionUtils';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
 import { autoWorkStartDisabled, isAutoWorkEntry } from './hooks/autoWorkEntry';
 import { useGuidInput } from './hooks/useGuidInput';
@@ -213,6 +214,7 @@ const GuidPage: React.FC = () => {
     selectedAgentKey: agentSelection.selectedAgentKey,
     selectedAgentInfo: agentSelection.selectedAgentInfo,
     is_presetAgent: agentSelection.is_presetAgent,
+    is_presetAgentPending: agentSelection.is_presetAgentPending,
     selectedMode: agentSelection.selectedMode,
     selectedAcpModel: agentSelection.selectedAcpModel,
     currentAcpCachedModelInfo: agentSelection.currentAcpCachedModelInfo,
@@ -373,41 +375,57 @@ const GuidPage: React.FC = () => {
 
   // Typewriter placeholder
   const typewriterPlaceholder = useTypewriterPlaceholder(t('conversation.welcome.placeholder'));
+  const isPresetAssistantLike = agentSelection.is_presetAgent || agentSelection.is_presetAgentPending;
   const selectedAssistantRecord = useMemo(() => {
-    if (!agentSelection.is_presetAgent || !agentSelection.selectedAgentInfo?.custom_agent_id) return undefined;
-    const selectedId = agentSelection.selectedAgentInfo.custom_agent_id;
-    const strippedId = selectedId.replace(/^builtin-/, '');
-    const candidates = new Set([selectedId, `builtin-${strippedId}`, strippedId]);
-    return agentSelection.assistants.find((item) => candidates.has(item.id));
-  }, [agentSelection.assistants, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.custom_agent_id]);
+    if (!isPresetAssistantLike) return undefined;
+    const selectedId =
+      agentSelection.selectedAgentInfo?.custom_agent_id ??
+      parseCustomAssistantId(agentSelection.selectedAgentKey) ??
+      undefined;
+    if (!selectedId) return undefined;
+    return findAssistantById(agentSelection.assistants, selectedId);
+  }, [
+    agentSelection.assistants,
+    agentSelection.selectedAgentInfo?.custom_agent_id,
+    agentSelection.selectedAgentKey,
+    isPresetAssistantLike,
+  ]);
 
   // Sync disabledBuiltinSkills + enabledSkills from preset assistant config
   useEffect(() => {
-    if (agentSelection.is_presetAgent && selectedAssistantRecord) {
+    if (!isPresetAssistantLike) {
+      setGuidDisabledBuiltinSkills(undefined);
+      setGuidEnabledSkills(undefined);
+      return;
+    }
+    if (selectedAssistantRecord) {
       setGuidDisabledBuiltinSkills(selectedAssistantRecord.disabled_builtin_skills ?? []);
       setGuidEnabledSkills(selectedAssistantRecord.enabled_skills ?? []);
-    } else {
+      return;
+    }
+    // Catalog is loaded but the saved preset id no longer resolves — drop stale overrides.
+    if (agentSelection.assistants.length > 0) {
       setGuidDisabledBuiltinSkills(undefined);
       setGuidEnabledSkills(undefined);
     }
-  }, [agentSelection.is_presetAgent, selectedAssistantRecord]);
+  }, [isPresetAssistantLike, selectedAssistantRecord, agentSelection.assistants]);
 
   const welcomeTitle = t('conversation.welcome.title');
   const heroTitle = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return welcomeTitle;
+    if (!isPresetAssistantLike) return welcomeTitle;
     const i18nName = selectedAssistantRecord?.name_i18n?.[localeKey];
     if (i18nName) return i18nName;
     return mention.selectedAgentLabel || welcomeTitle;
-  }, [agentSelection.is_presetAgent, selectedAssistantRecord, localeKey, mention.selectedAgentLabel, welcomeTitle]);
+  }, [isPresetAssistantLike, selectedAssistantRecord, localeKey, mention.selectedAgentLabel, welcomeTitle]);
   const heroSubtitle = useMemo(() => {
-    if (!agentSelection.is_presetAgent || !selectedAssistantRecord) return null;
+    if (!isPresetAssistantLike || !selectedAssistantRecord) return null;
     return (
       selectedAssistantRecord.description_i18n?.[localeKey] ||
       selectedAssistantRecord.description_i18n?.['en-US'] ||
       selectedAssistantRecord.description ||
       null
     );
-  }, [agentSelection.is_presetAgent, selectedAssistantRecord, localeKey]);
+  }, [isPresetAssistantLike, selectedAssistantRecord, localeKey]);
   const renderHeroAvatar = () => {
     if (!selectedAssistantAvatar) return null;
     switch (selectedAssistantAvatar.kind) {
@@ -427,11 +445,12 @@ const GuidPage: React.FC = () => {
     }
   };
   const selectedAssistantAvatar = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return null;
-    const selectedId = agentSelection.selectedAgentInfo?.custom_agent_id;
-    const strippedId = selectedId?.replace(/^builtin-/, '');
-    const candidates = new Set(selectedId && strippedId ? [selectedId, `builtin-${strippedId}`, strippedId] : []);
-    const selectedAssistant = agentSelection.assistants.find((item) => candidates.has(item.id));
+    if (!isPresetAssistantLike) return null;
+    const selectedId =
+      agentSelection.selectedAgentInfo?.custom_agent_id ??
+      parseCustomAssistantId(agentSelection.selectedAgentKey) ??
+      undefined;
+    const selectedAssistant = selectedId ? findAssistantById(agentSelection.assistants, selectedId) : undefined;
     const avatarValue = selectedAssistant?.avatar?.trim() || agentSelection.selectedAgentInfo?.avatar?.trim();
     if (!avatarValue) return { kind: 'icon' as const };
     const mappedAvatar = CUSTOM_AVATAR_IMAGE_MAP[avatarValue];
@@ -447,10 +466,17 @@ const GuidPage: React.FC = () => {
     return { kind: 'emoji' as const, value: avatarValue };
   }, [
     agentSelection.assistants,
-    agentSelection.is_presetAgent,
     agentSelection.selectedAgentInfo?.avatar,
     agentSelection.selectedAgentInfo?.custom_agent_id,
+    agentSelection.selectedAgentKey,
+    isPresetAssistantLike,
   ]);
+  const summonSelectedAssistantId = useMemo(
+    () =>
+      agentSelection.selectedAgentInfo?.custom_agent_id ??
+      parseCustomAssistantId(agentSelection.selectedAgentKey),
+    [agentSelection.selectedAgentInfo?.custom_agent_id, agentSelection.selectedAgentKey]
+  );
   // Reset guid-local UI state before paint so same-route navigations do not
   // briefly show the previous draft or preset assistant layout.
   useLayoutEffect(() => {
@@ -563,7 +589,7 @@ const GuidPage: React.FC = () => {
   );
 
   // Resolve the effective agent type once — covers both direct selection and preset assistants
-  const effectiveAgentType = agentSelection.is_presetAgent
+  const effectiveAgentType = isPresetAssistantLike
     ? agentSelection.currentEffectiveAgentInfo.agent_type
     : agentSelection.selectedAgent;
 
@@ -572,7 +598,7 @@ const GuidPage: React.FC = () => {
   const PROVIDER_BASED_AGENTS = new Set(['nomi']);
   const isGeminiMode =
     PROVIDER_BASED_AGENTS.has(effectiveAgentType) &&
-    (!agentSelection.is_presetAgent || agentSelection.currentEffectiveAgentInfo.isAvailable);
+    (!isPresetAssistantLike || agentSelection.currentEffectiveAgentInfo.isAvailable);
 
   // Build the mention dropdown node
   const mentionDropdownNode = (
@@ -649,7 +675,7 @@ const GuidPage: React.FC = () => {
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}
       onModeSelect={agentSelection.setSelectedMode}
-      is_presetAgent={agentSelection.is_presetAgent}
+      is_presetAgent={isPresetAssistantLike}
       selectedAgentInfo={agentSelection.selectedAgentInfo}
       assistants={agentSelection.assistants}
       localeKey={localeKey}
@@ -702,7 +728,7 @@ const GuidPage: React.FC = () => {
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
-              {agentSelection.is_presetAgent ? (
+              {isPresetAssistantLike ? (
                 <>
                   <h1 className={`${styles.heroTitle} text-2xl font-semibold text-0 text-center`}>
                     {selectedAssistantAvatar ? (
@@ -753,7 +779,7 @@ const GuidPage: React.FC = () => {
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
                 <ComposerEntryStrip
-                  isPresetAgent={agentSelection.is_presetAgent}
+                  isPresetAgent={isPresetAssistantLike}
                   assistantLabel={heroTitle !== welcomeTitle ? heroTitle : undefined}
                   assistantAvatar={selectedAssistantAvatar ?? undefined}
                   onSummon={() => { setDrawerMode('assistant'); setDrawerOpen(true); }}
@@ -793,6 +819,7 @@ const GuidPage: React.FC = () => {
           onClose={() => setDrawerOpen(false)}
           assistants={agentSelection.assistants}
           localeKey={localeKey}
+          selectedAssistantId={summonSelectedAssistantId}
           onSelectAssistant={(id) => { handleSelectAssistant(`custom:${id}`); setDrawerOpen(false); }}
           onFree={() => { agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); setDrawerOpen(false); }}
           allSkills={allSkills}

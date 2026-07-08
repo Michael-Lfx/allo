@@ -5,7 +5,9 @@
  */
 
 import { configService } from '@/common/config/configService';
+import type { Assistant } from '@/common/types/agent/assistantTypes';
 import type { AgentSource } from '@/renderer/utils/model/agentTypes';
+import type { AvailableAgent } from '../types';
 
 /** Save preferred mode to the agent's own config key */
 export async function savePreferredMode(agentKey: string, mode: string): Promise<void> {
@@ -66,3 +68,34 @@ export const getAgentKey = (agent: {
   if (rowScoped && agent.id) return agent.id;
   return agent.backend || agent.agent_type;
 };
+
+/** Parse `custom:<assistantId>` selection keys from the Guid agent picker. */
+export const parseCustomAssistantId = (agentKey: string): string | null => {
+  if (!agentKey.startsWith('custom:')) return null;
+  const assistantId = agentKey.slice('custom:'.length);
+  return assistantId || null;
+};
+
+/** Match assistant catalog ids, including builtin- alias normalization. */
+export const assistantIdMatches = (recordId: string, targetId: string): boolean => {
+  const stripped = targetId.replace(/^builtin-/, '');
+  const candidates = new Set([targetId, `builtin-${stripped}`, stripped]);
+  return candidates.has(recordId);
+};
+
+/** Resolve an assistant row from the catalog using id alias normalization. */
+export const findAssistantById = <T extends { id: string }>(assistants: T[], targetId: string): T | undefined =>
+  assistants.find((item) => assistantIdMatches(item.id, targetId));
+
+/** Map a catalog assistant row into the Guid preset `AvailableAgent` shape. */
+export const toPresetAvailableAgent = (assistant: Assistant): AvailableAgent => ({
+  agent_type: assistant.preset_agent_type || 'gemini',
+  backend: assistant.preset_agent_type || 'gemini',
+  name: assistant.name,
+  id: assistant.id,
+  custom_agent_id: assistant.id,
+  is_preset: true,
+  context: '',
+  avatar: assistant.avatar,
+  presetAgentType: assistant.preset_agent_type,
+});

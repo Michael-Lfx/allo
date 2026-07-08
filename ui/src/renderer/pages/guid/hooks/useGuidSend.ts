@@ -12,7 +12,7 @@ import { toSessionMcpServer } from '@/renderer/hooks/mcp/catalog';
 import { emitter } from '@/renderer/utils/emitter';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
 import { Message } from '@arco-design/web-react';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { type TFunction } from 'i18next';
 import type { NavigateFunction } from 'react-router-dom';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
@@ -39,6 +39,7 @@ export type GuidSendDeps = {
   selectedAgentKey: string;
   selectedAgentInfo: AvailableAgent | undefined;
   is_presetAgent: boolean;
+  is_presetAgentPending: boolean;
   selectedMode: string;
   selectedAcpModel: string | null;
   currentAcpCachedModelInfo: AcpModelInfo | null;
@@ -125,6 +126,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAgentKey,
     selectedAgentInfo,
     is_presetAgent,
+    is_presetAgentPending,
     selectedMode,
     selectedAcpModel,
     currentAcpCachedModelInfo,
@@ -166,8 +168,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     // "conversation N is already running".
     const entryPlan = planGuidEntry(input, autoWork);
 
-    const agentInfo = selectedAgentInfo;
-    const is_preset = is_presetAgent;
+    const agentInfo = selectedAgentInfo ?? findAgentByKey(selectedAgentKey);
+    const is_preset = is_presetAgent || is_presetAgentPending;
+    if (is_preset && !agentInfo) {
+      return;
+    }
     const preset_assistant_id = is_preset ? agentInfo?.custom_agent_id : undefined;
 
     const { agent_type: effectiveAgentType } = getEffectiveAgentType(agentInfo);
@@ -180,7 +185,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     // `preset_enabled_skills` regardless of `is_preset`).
     const presetEnabledSkillsDefault = resolveEnabledSkills(agentInfo);
     const enabled_skills = guidEnabledSkills ?? presetEnabledSkillsDefault;
-    const enabled_skills_to_send = is_presetAgent
+    const enabled_skills_to_send = is_preset
       ? enabled_skills
       : guidEnabledSkills?.length
         ? guidEnabledSkills
@@ -465,6 +470,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAgentKey,
     selectedAgentInfo,
     is_presetAgent,
+    is_presetAgentPending,
     selectedMode,
     selectedAcpModel,
     currentAcpCachedModelInfo,
@@ -539,7 +545,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
   ]);
 
   // Calculate button disabled state
-  const isButtonDisabled = loading || !input.trim();
+  const resolvedPresetSelection = useMemo(
+    () => selectedAgentInfo ?? (is_presetAgentPending ? findAgentByKey(selectedAgentKey) : undefined),
+    [selectedAgentInfo, is_presetAgentPending, findAgentByKey, selectedAgentKey]
+  );
+  const isButtonDisabled =
+    loading || !input.trim() || (is_presetAgentPending && !resolvedPresetSelection);
 
   return {
     handleSend,

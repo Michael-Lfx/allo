@@ -234,10 +234,11 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
   const isSearchVisible = searchExpanded || search_query.length > 0;
 
   const mainContent = (
-    <div className='flex flex-col h-full w-full'>
+    <div className='w-full pb-16px'>
       {messageContext}
-      <div className='space-y-16px pb-24px'>
-        <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
+      <div className='space-y-16px'>
+        <div className='py-2'>
+          <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
           {/* Header: title + actions */}
           <div className='flex flex-col gap-16px mb-20px'>
             <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
@@ -374,6 +375,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
               </span>
             </div>
           )}
+          </div>
         </div>
 
         {/* Usage tip */}

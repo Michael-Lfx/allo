@@ -21,6 +21,7 @@ import { useAssistantTags } from '@/renderer/hooks/assistant';
 import AssistantTagFilterBar from '@/renderer/pages/settings/AssistantSettings/AssistantTagFilterBar';
 import { filterAssistantsByTags } from '@/renderer/pages/settings/AssistantSettings/assistantUtils';
 import { filterSkillsByTags } from '@/renderer/pages/settings/skill/skillFilter';
+import { assistantIdMatches } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
 import DrawerAssistantCard from './DrawerAssistantCard';
 import DrawerSkillCard from './DrawerSkillCard';
@@ -36,6 +37,7 @@ export interface SummonDrawerProps {
   assistants: Assistant[];
   localeKey: string;
   // Assistant single-select
+  selectedAssistantId?: string | null;
   onSelectAssistant: (assistantId: string) => void;
   onFree: () => void;
   // Skills multi-select (controlled by parent GuidPage)
@@ -68,6 +70,7 @@ const SummonDrawer: React.FC<SummonDrawerProps> = ({
   onClose,
   assistants,
   localeKey,
+  selectedAssistantId,
   onSelectAssistant,
   onFree,
   allSkills,
@@ -267,7 +270,7 @@ const SummonDrawer: React.FC<SummonDrawerProps> = ({
                 <DrawerAssistantCard
                   key={a.id}
                   assistant={a}
-                  selected={false}
+                  selected={selectedAssistantId != null && assistantIdMatches(a.id, selectedAssistantId)}
                   localeKey={localeKey}
                   avatarImageMap={AVATAR_IMAGE_MAP}
                   onSelect={handleSelectAssistant}

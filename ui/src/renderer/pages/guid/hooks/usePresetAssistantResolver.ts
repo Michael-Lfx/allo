@@ -7,6 +7,7 @@
 import { ipcBridge } from '@/common';
 import type { Assistant } from '@/common/types/agent/assistantTypes';
 import { useCallback } from 'react';
+import { findAssistantById } from './agentSelectionUtils';
 
 type UsePresetAssistantResolverOptions = {
   /**
@@ -95,8 +96,8 @@ export const usePresetAssistantResolver = ({
     (agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined): string => {
       if (!agentInfo) return 'gemini';
       if (!agentInfo.custom_agent_id) return agentInfo.backend || agentInfo.agent_type;
-      const assistant = assistants.find((a) => a.id === agentInfo.custom_agent_id);
-      return assistant?.preset_agent_type || 'gemini';
+      const assistant = findAssistantById(assistants, agentInfo.custom_agent_id);
+      return assistant?.preset_agent_type || agentInfo.backend || agentInfo.agent_type || 'gemini';
     },
     [assistants]
   );
@@ -106,7 +107,7 @@ export const usePresetAssistantResolver = ({
       agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
     ): string[] | undefined => {
       if (!agentInfo || !agentInfo.custom_agent_id) return undefined;
-      const assistant = assistants.find((a) => a.id === agentInfo.custom_agent_id);
+      const assistant = findAssistantById(assistants, agentInfo.custom_agent_id);
       // Preserve legacy "undefined means use agent default" semantics by
       // treating an empty list the same as absent. The field is typed as
       // required `string[]`, but legacy/extension assistants can omit it,
@@ -122,7 +123,7 @@ export const usePresetAssistantResolver = ({
       agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
     ): string[] | undefined => {
       if (!agentInfo || !agentInfo.custom_agent_id) return undefined;
-      const assistant = assistants.find((a) => a.id === agentInfo.custom_agent_id);
+      const assistant = findAssistantById(assistants, agentInfo.custom_agent_id);
       if (!assistant?.disabled_builtin_skills?.length) return undefined;
       return assistant.disabled_builtin_skills;
     },

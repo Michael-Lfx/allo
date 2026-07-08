@@ -21,7 +21,7 @@ import {
 import { getAgentModes, getFullAutoMode } from '@/renderer/utils/model/agentModes';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
-import { savePreferredMode, savePreferredModelId, getAgentKey as getAgentKeyUtil } from './agentSelectionUtils';
+import { savePreferredMode, savePreferredModelId, getAgentKey as getAgentKeyUtil, findAssistantById, parseCustomAssistantId, toPresetAvailableAgent } from './agentSelectionUtils';
 import { usePresetAssistantResolver } from './usePresetAssistantResolver';
 import { useAgentAvailability } from './useAgentAvailability';
 import { useCustomAgentsLoader } from './useCustomAgentsLoader';
@@ -33,6 +33,8 @@ export type GuidAgentSelectionResult = {
   selectedAgent: string;
   selectedAgentInfo: AvailableAgent | undefined;
   is_presetAgent: boolean;
+  /** Saved `custom:<id>` key before the assistant catalog has hydrated. */
+  is_presetAgentPending: boolean;
   availableAgents: AvailableAgent[] | undefined;
   /** Backend-merged preset catalog: builtin + user + extension. */
   assistants: Assistant[];
@@ -221,21 +223,10 @@ export const useGuidAgentSelection = ({
    */
   const findAgentByKey = (key: string): AvailableAgent | undefined => {
     if (key.startsWith('custom:')) {
-      const assistantId = key.slice(7);
-      const assistant = assistants.find((a) => a.id === assistantId);
-      if (assistant) {
-        return {
-          agent_type: assistant.preset_agent_type || 'gemini',
-          backend: assistant.preset_agent_type || 'gemini',
-          name: assistant.name,
-          id: assistant.id,
-          custom_agent_id: assistant.id,
-          is_preset: true,
-          context: '',
-          avatar: assistant.avatar,
-          presetAgentType: assistant.preset_agent_type,
-        };
-      }
+      const assistantId = parseCustomAssistantId(key);
+      if (!assistantId) return undefined;
+      const assistant = findAssistantById(assistants, assistantId);
+      if (assistant) return toPresetAvailableAgent(assistant);
       return undefined;
     }
     // Row id (custom ACP / remote) takes precedence, so two rows sharing
@@ -259,6 +250,7 @@ export const useGuidAgentSelection = ({
     return findAgentByKey(selectedAgentKey);
   }, [selectedAgentKey, availableAgents, assistants]);
   const is_presetAgent = Boolean(selectedAgentInfo?.is_preset);
+  const is_presetAgentPending = selectedAgentKey.startsWith('custom:') && !is_presetAgent;
 
   // --- SWR: Fetch detected execution engines (shared cache) ---
   const { data: availableAgentsData } = useSWR<AvailableAgent[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
@@ -561,6 +553,7 @@ export const useGuidAgentSelection = ({
     selectedAgent,
     selectedAgentInfo,
     is_presetAgent,
+    is_presetAgentPending,
     availableAgents,
     assistants,
     customAgents,
