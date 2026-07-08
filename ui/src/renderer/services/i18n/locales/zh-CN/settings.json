@@ -1358,6 +1358,19 @@
   "baseUrlSuggestion": "检测到可用的请求地址：{{base_url}}",
   "baseUrlSuggestionApply": "采用",
   "baseUrlSuggestionKeep": "保留当前",
+  "developerMode": {
+    "sectionTitle": "高级",
+    "title": "进入开发者模式",
+    "description": "启用后可访问云账号等高级设置。关闭后相关入口将从设置中隐藏。",
+    "passwordModalTitle": "启用开发者模式",
+    "passwordModalDesc": "开发者模式会显示高级设置项（如云账号）。请输入密码以继续。",
+    "passwordPlaceholder": "请输入开发者模式密码",
+    "passwordIncorrect": "密码不正确，请重试",
+    "enableConfirm": "确认启用",
+    "enabled": "开发者模式已启用",
+    "enableFailed": "启用开发者模式失败，请重试",
+    "disableFailed": "关闭开发者模式失败，请重试"
+  },
   "factoryReset": {
     "dangerZone": "危险区",
     "title": "初始化系统数据（恢复出厂设置）",

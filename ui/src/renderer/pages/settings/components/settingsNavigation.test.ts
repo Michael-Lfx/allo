@@ -35,4 +35,20 @@ describe('settings navigation', () => {
     expect(routerSource.includes("path='/settings/browser-use' element={<Navigate to='/settings/system'")).toBe(false);
     expect(routerSource.includes("path='/settings/computer-use' element={<Navigate to='/settings/system'")).toBe(false);
   });
+
+  test('gates cloud account settings behind developer mode helpers', () => {
+    const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
+    const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
+    const cloudLoginSource = readSource(new URL('../CloudLoginSettings.tsx', import.meta.url));
+    const systemSource = readSource(
+      new URL('../../../components/settings/SettingsModal/contents/SystemModalContent/index.tsx', import.meta.url)
+    );
+
+    expect(siderSource.includes('filterDeveloperGatedTabs')).toBe(true);
+    expect(siderSource.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(pageWrapperSource.includes('filterDeveloperGatedTabs')).toBe(true);
+    expect(cloudLoginSource.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(cloudLoginSource.includes("Navigate to='/settings/system'")).toBe(true);
+    expect(systemSource.includes('DeveloperModeSetting')).toBe(true);
+  });
 });

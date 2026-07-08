@@ -1,4 +1,6 @@
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
+import { filterDeveloperGatedTabs } from '@/common/config/developerMode';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -77,8 +79,10 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
 
   const extensionTabs = useExtensionSettingsTabs();
   const { resolveExtTabName } = useExtI18n();
+  const [developerMode] = useConfig('system.developerMode');
 
   const { menus, groupHeaderAt } = useMemo(() => {
+    const visibleBuiltinTabIds = filterDeveloperGatedTabs(BUILTIN_TAB_IDS, developerMode === true);
     // Build builtin items
     const builtinMap: Record<string, SiderItem> = {
       model: { id: 'model', label: t('settings.model'), icon: <LinkCloud />, path: 'model' },
@@ -147,7 +151,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     };
 
     // Start with ordered builtin IDs
-    const result: SiderItem[] = BUILTIN_TAB_IDS.map((id) => builtinMap[id]);
+    const result: SiderItem[] = visibleBuiltinTabIds.map((id) => builtinMap[id]);
 
     // Extension tabs with position anchoring
     const beforeMap = new Map<string, IExtensionSettingsTab[]>();
@@ -223,7 +227,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     }
 
     return { menus: result, groupHeaderAt: headerAt };
-  }, [t, extensionTabs, resolveExtTabName]);
+  }, [t, extensionTabs, resolveExtTabName, developerMode]);
 
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   return (

@@ -48,6 +48,7 @@ const ALL_LEGACY_KEYS: ConfigKey[] = [
   'system.cronNotificationEnabled',
   'system.keepAwake',
   'system.autoPreviewOfficeFiles',
+  'system.developerMode',
   'assistant.telegram.agent',
   'assistant.lark.agent',
   'assistant.dingtalk.agent',

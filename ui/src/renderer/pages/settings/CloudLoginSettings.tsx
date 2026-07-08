@@ -6,15 +6,18 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Navigate } from 'react-router-dom';
 import { Button, Divider, Input, Message, Steps, Switch, Typography } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import type { ICloudDeviceActivationStatus, ICloudServerSettings, ICloudWhoami } from '@/common/adapter/ipcBridge';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 type LoginStep = 'email' | 'otp' | 'done';
 
 const CloudLoginSettings: React.FC = () => {
   const { t } = useTranslation();
+  const [developerMode] = useConfig('system.developerMode');
   const [serverSettings, setServerSettings] = useState<ICloudServerSettings | null>(null);
   const [whoami, setWhoami] = useState<ICloudWhoami | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<ICloudDeviceActivationStatus | null>(null);
@@ -186,6 +189,10 @@ const CloudLoginSettings: React.FC = () => {
   };
 
   const stepIndex = loginStep === 'email' ? 1 : loginStep === 'otp' ? 2 : 3;
+
+  if (!developerMode) {
+    return <Navigate to='/settings/system' replace />;
+  }
 
   return (
     <SettingsPageWrapper>
