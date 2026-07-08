@@ -3,6 +3,32 @@
 version = 4
 
 [[package]]
+name = "Flowy"
+version = "0.2.9"
+dependencies = [
+ "anyhow",
+ "clap",
+ "junction",
+ "keepawake",
+ "nomifun-app",
+ "nomifun-runtime",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-process",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5766,32 +5792,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "nomifun-desktop"
-version = "0.2.9"
-dependencies = [
- "anyhow",
- "clap",
- "junction",
- "keepawake",
- "nomifun-app",
- "nomifun-runtime",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tempfile",
  "tokio",
  "tracing",
 ]

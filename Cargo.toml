@@ -251,10 +251,10 @@ debug = "line-tables-only"
 [profile.test.package."*"]
 debug = false
 
-# Size-optimized release profile. The packaged `nomifun-desktop.exe` is the first
+# Size-optimized release profile. The packaged `Flowy.exe` is the first
 # and largest file the NSIS installer writes, and an oversized *unsigned* binary
 # is the dominant cause of end-user "Extract: error writing to file
-# nomifun-desktop.exe" failures: the longer the write window, the more likely
+# Flowy.exe" failures: the longer the write window, the more likely
 # antivirus real-time scanning locks/quarantines the half-written exe (and the
 # bigger the download). Cargo's default release profile (no LTO,
 # codegen-units=16) left the binary at ~140 MB. These knobs cut the machine-code

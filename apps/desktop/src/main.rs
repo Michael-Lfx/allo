@@ -2,7 +2,7 @@
 // keep the console so backend `tracing` logs are visible during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! `nomifun-desktop` — the Tauri shell (replaces the Electron shell).
+//! `Flowy` — the Tauri shell (replaces the Electron shell).
 //!
 //! Core idea (the whole point of this rewrite): there is NO spawned backend
 //! binary. The unified Rust backend (`nomifun-app`, ex-`nomicore`) is linked
@@ -10,7 +10,7 @@
 //! loads the bundled SPA (`ui/dist`) and talks to `http://127.0.0.1:<port>/api`
 //! exactly as it does today — so the renderer's ~295 HTTP calls are unchanged.
 //!
-//! ┌── nomifun-desktop (this process) ──────────────────────────┐
+//! ┌── Flowy (this process) ───────────────────────────────────┐
 //! │  Tauri shell (window/tray/dialog/deep-link/updater)         │
 //! │  └─ tokio task: nomifun_app embedded axum on 127.0.0.1:<p>  │
 //! │  WebView2/WKWebView/WebKitGTK ── HTTP ──▶ 127.0.0.1:<p>/api │
@@ -503,7 +503,7 @@ fn main() -> std::process::ExitCode {
     // runs the backend under `TrustLocalToken` (trusts only its own webview via
     // a per-boot secret) so the LAN listener can require login. Only the data
     // dir + log level flow from here; the listeners bind their own ports.
-    let mut cli = nomifun_app::cli::Cli::parse_from(["nomifun-desktop"]);
+    let mut cli = nomifun_app::cli::Cli::parse_from(["Flowy"]);
     cli.data_dir = data_dir;
     // Opt-in verbose backend logging without a custom build, e.g.
     //   NOMI_LOG_LEVEL=debug            (everything)

@@ -98,9 +98,9 @@ pub struct GatewayMcpConfig {
 
 impl GatewayMcpConfig {
     /// Wire-level MCP server name. Kept short so the longest wire-level tool
-    /// name `mcp__nomifun-desktop__nomi_send_to_conversation` (47 chars) stays
+    /// name `mcp__Flowy__nomi_send_to_conversation` (36 chars) stays
     /// within Anthropic's 64-char tool-name limit (see ELECTRON-1JY).
-    pub const SERVER_NAME: &'static str = "nomifun-desktop";
+    pub const SERVER_NAME: &'static str = "Flowy";
     /// env key the stdio bridge reads to learn the backend HTTP port.
     pub const ENV_PORT: &'static str = "NOMI_GW_MCP_PORT";
     /// env key the stdio bridge reads to learn the auth token.

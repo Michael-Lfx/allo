@@ -212,7 +212,7 @@ pub fn effective_data_dir(default_dir: PathBuf) -> PathBuf {
 /// Stderr immediately (visible in dev) + queued for the backend log (visible
 /// in production, where stderr goes nowhere — see module docs).
 fn boot_note(level: BootNoteLevel, message: String) {
-    eprintln!("nomifun-desktop: {message}");
+    eprintln!("Flowy: {message}");
     record_boot_note(level, message);
 }
 

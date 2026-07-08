@@ -1,7 +1,7 @@
 //! Shared MCP stdio bridge dispatch for every host binary.
 //!
 //! The unified backend is hosted by several binaries — `nomicore`, the
-//! `nomifun-web` server, and the `nomifun-desktop` Tauri shell. When an ACP
+//! `nomifun-web` server, and the `Flowy` Tauri shell. When an ACP
 //! agent CLI (claude/codex/gemini) needs a stdio MCP server it spawns
 //! `current_exe() <subcommand>`, which is whichever host binary is running.
 //! Every host must therefore honor these subcommands or the injected tools
@@ -45,7 +45,7 @@ fn mcp_stdio_subcommand(argv1: Option<&str>) -> Option<&'static str> {
 /// window creation: the helpers read their config (port/token/conversation id)
 /// from env, speak MCP over inherited stdio, and must not touch the database,
 /// services, or open a GUI. Mirrors `nomicore`'s clap dispatch so every embedded
-/// host (`nomifun-web`, `nomifun-desktop`) honors the same single-binary model.
+/// host (`nomifun-web`, `Flowy`) honors the same single-binary model.
 pub fn run_mcp_stdio_subcommand_if_present() -> Option<ExitCode> {
     let argv1 = std::env::args().nth(1);
     let argv1_str = argv1.as_deref();

@@ -140,8 +140,8 @@ pub fn decide(meta: &CapabilityMeta, surface: Surface, confirmed: bool) -> Decis
 /// to build and the bridge can list tools with zero allocation beyond the schema.
 pub struct CapabilityMeta {
     /// MCP tool name. Convention: `nomi_<domain>_<verb_object>`, lower_snake,
-    /// kept concise. The fully-namespaced wire name is `mcp__nomifun-desktop__<name>`
-    /// (22-char prefix); Anthropic caps that at 64 chars, so the tool name has a
+    /// name. The fully-namespaced wire name is `mcp__Flowy__<name>`
+    /// (12-char prefix); Anthropic caps that at 64 chars, so the tool name has a
     /// 42-char hard budget. The registry self-test enforces both the hard limit
     /// and a tighter style budget so names cannot creep toward the ceiling.
     pub name: &'static str,

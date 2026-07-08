@@ -5,7 +5,7 @@
 //! chance to run. Neither helps when this process is force-killed — which is
 //! exactly what `tauri dev` does on rebuild/Ctrl+C — so descendant trees like
 //! `bunx → codex-acp → MCP stdio bridges` survive as orphans. The bridges are
-//! this very executable (`nomifun-desktop.exe mcp-*-stdio`), so a leftover
+//! this very executable (`Flowy.exe mcp-*-stdio`), so a leftover
 //! tree keeps the binary locked and the next build dies with os error 5.
 //!
 //! A Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is the OS-level fix:

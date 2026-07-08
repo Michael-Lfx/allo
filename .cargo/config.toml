@@ -33,9 +33,17 @@ linker = "rust-lld.exe"
 # to reclaim the orphaned old target/ contents.
 [build]
 build-dir = "{workspace-root}/build.noindex"
+incremental = true
+rustc-wrapper = "sccache.exe"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+codegen-units = 64
+lto = false
 
 # Enlarge rustc's compilation-thread stack. The release `tauri build` embeds the
-# entire frontend `ui/dist` (~34 MB, hundreds of files) into the `nomifun-desktop`
+# entire frontend `ui/dist` (~34 MB, hundreds of files) into the `Flowy`
 # binary via `tauri::generate_context!`, then optimizes it at opt-level=3. That
 # codegen overflows rustc's default 8 MB thread stack and the compiler dies on its
 # guard page WITHOUT a diagnostic — surfacing as a non-deterministic native crash
@@ -47,4 +55,3 @@ build-dir = "{workspace-root}/build.noindex"
 # `tauri build`, CI — so the failure cannot regress on a machine that forgets it.
 [env]
 RUST_MIN_STACK = "134217728"
-
