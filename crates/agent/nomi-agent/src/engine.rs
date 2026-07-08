@@ -746,38 +746,57 @@ impl AgentEngine {
                     .to_tool_defs_filtered(|t| t.name() != "ExitPlanMode")
             };
 
-            // Build system prompt: append plan mode instructions when active
-            let system = if self.plan_state.is_active {
-                format!(
-                    "{}\n\n{}",
-                    self.system_prompt,
-                    plan_prompt::plan_mode_instructions()
-                )
-            } else {
-                self.system_prompt.clone()
-            };
+            // Cache-first design: the system prompt is the cache-stable prefix.
+            // It must stay byte-stable across turns so DeepSeek's automatic prefix
+            // cache stays warm. Dynamic content (date, plan mode, RAG injections
+            // from ContextContributor) rides the **turn tail** — it is injected into
+            // the messages array (prepended to the last user message) instead of
+            // the system prompt. This mirrors DeepSeek-Reasonix's cache-stable
+            // prefix design.
+            let system = self.system_prompt.clone();
+
+            // Collect dynamic per-turn context for the turn tail.
+            let mut turn_tail_extras: Vec<String> = Vec::new();
+
+            // Current date — injected per-turn to keep the system prompt date-free
+            // and byte-stable across days. Previously this was in the intro section
+            // of the system prompt, which broke the prefix cache daily.
+            turn_tail_extras.push(format!(
+                "Current date: {}",
+                chrono::Local::now().format("%Y-%m-%d")
+            ));
+
+            // Plan mode instructions — ride the turn tail instead of the system
+            // prompt so toggling plan mode doesn't break the prefix cache.
+            if self.plan_state.is_active {
+                turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
+            }
 
             // §3.5: let registered contributors inject dynamic per-turn context
             // (knowledge RAG, memory, …). No-op when none are registered.
-            let system = if self.context_contributors.is_empty() {
-                system
-            } else {
-                let mut extras = Vec::new();
-                for contributor in &self.context_contributors {
-                    if let Some(extra) = contributor.pre_turn_context().await {
-                        extras.push(extra);
-                    }
+            for contributor in &self.context_contributors {
+                if let Some(extra) = contributor.pre_turn_context().await {
+                    turn_tail_extras.push(extra);
                 }
-                crate::context_contributor::merge_pre_turn_context(system, extras)
-            };
+            }
 
-            // Record prompt state for cache diagnostics
+            // Build the turn-tail context string and inject into messages.
+            // Only the last message is modified — all previous messages and the
+            // system prompt stay byte-stable for prefix caching.
+            let turn_tail =
+                crate::context_contributor::build_turn_tail_context(turn_tail_extras);
+            let messages = crate::context_contributor::inject_turn_tail_context(
+                self.messages.clone(),
+                turn_tail,
+            );
+
+            // Record prompt state for cache diagnostics (system prompt is stable)
             self.cache_detector.record_request(&system, &tools);
 
             let request = LlmRequest {
                 model: self.model.clone(),
                 system,
-                messages: self.messages.clone(),
+                messages,
                 tools,
                 max_tokens: self.max_tokens,
                 thinking: self.thinking.clone(),
@@ -1178,6 +1197,13 @@ impl AgentEngine {
     /// because the context has been significantly reduced.
     async fn run_compaction(&mut self) -> Result<(), AgentError> {
         // 1. Microcompact (lightweight, no LLM call)
+        //
+        // Microcompact clears old tool-result content in-place. When it frees
+        // enough tokens to drop below the autocompact trigger, the (expensive,
+        // cache-breaking) LLM summarization is skipped entirely — mirroring
+        // Reasonix's `PruneStaleToolResults` which runs before `compact` and
+        // short-circuits when pruning alone clears the trigger.
+        let mut micro_freed: usize = 0;
         if micro::should_microcompact(&self.messages, &self.compact_config) {
             let result = micro::microcompact(&mut self.messages, &self.compact_config);
             if result.cleared_count > 0 {
@@ -1185,13 +1211,45 @@ impl AgentEngine {
                     "Microcompact: cleared {} tool results (~{} tokens freed)",
                     result.cleared_count, result.estimated_tokens_freed
                 ));
+                micro_freed = result.estimated_tokens_freed;
             }
         }
 
+        // Reflect microcompact's token savings in the watermark so the
+        // autocompact trigger check accounts for them. The watermark only
+        // goes down (saturating at 0); it will be re-raised by the next real
+        // API response if the estimate was too optimistic.
+        if micro_freed > 0 && self.compact_state.last_input_tokens > 0 {
+            let adjusted = self
+                .compact_state
+                .last_input_tokens
+                .saturating_sub(micro_freed as u64);
+            self.compact_state.last_input_tokens = adjusted;
+        }
+
+        // Soft-compaction notice: when tokens cross 50% of the window, emit
+        // a growing-context warning once without compacting. A compaction here
+        // would needlessly crater the DeepSeek prefix cache — the cache-stable
+        // prefix stays intact until the hard trigger. Mirrors Reasonix's
+        // `softCompactNoticed`.
+        if self.compact_state.check_soft_compact(&self.compact_config) {
+            let pct = (crate::compact::state::SOFT_COMPACT_RATIO * 100.0) as u32;
+            self.output.emit_info(&format!(
+                "Context reached {pct}% of window; keeping cache-first prefix \
+                 until compact threshold"
+            ));
+        }
+
         // 2. Autocompact (LLM summarization)
+        //
+        // Only fires if microcompact didn't free enough tokens to drop below
+        // the trigger. This is the key cache optimization: when pruning alone
+        // clears the trigger, no LLM summarization happens and the DeepSeek
+        // prefix cache stays fully warm.
         let mut compacted = false;
         let should_compact =
             auto::should_autocompact(self.compact_state.last_input_tokens, &self.compact_config);
+
         if should_compact {
             tracing::info!(target: "nomi_agent", last_input_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
             let threshold = if let Some(pct) = self.compact_config.autocompact_threshold_pct {
@@ -1208,8 +1266,32 @@ impl AgentEngine {
                     .saturating_sub(self.compact_config.autocompact_buffer)
             };
             let _ = threshold;
+        } else {
+            // A turn that sits under the trigger is the breathing room a
+            // healthy compaction buys; it clears the stuck latch and the run
+            // counter. Also reset the soft-notice if tokens dropped.
+            self.compact_state.clear_compact_stall();
+            self.compact_state.maybe_reset_soft_notice(&self.compact_config);
         }
-        if should_compact && !self.compact_state.is_circuit_broken(&self.compact_config) {
+
+        // Skip auto-compaction when stuck (consecutive compactions couldn't
+        // bring the prompt below the trigger — the system prompt plus one
+        // verbatim turn already exceeds the window). Re-firing every turn is
+        // the loop users hit, so pause and say why. Mirrors Reasonix's
+        // `compactStuck`.
+        if should_compact && self.compact_state.is_compact_stuck() {
+            self.output.emit_info(&format!(
+                "Auto-compaction paused: context_window={} is too small for \
+                 compaction to help (system prompt + one turn exceeds trigger). \
+                 Raise context_window or shrink tool output.",
+                self.compact_config.context_window
+            ));
+        }
+
+        if should_compact
+            && !self.compact_state.is_circuit_broken(&self.compact_config)
+            && !self.compact_state.is_compact_stuck()
+        {
             let provider = Arc::clone(&self.provider);
             match auto::autocompact(
                 provider.as_ref(),
@@ -1221,13 +1303,40 @@ impl AgentEngine {
             .await
             {
                 Ok(result) => {
-                    self.output.emit_info(&format!(
-                        "Autocompact: summarized {} messages ({} tokens → compact)",
-                        result.messages_summarized, result.pre_compact_tokens
-                    ));
-                    self.messages = result.messages;
-                    self.last_turn_start_len = None;
-                    compacted = true;
+                    if result.messages_summarized > 0 {
+                        if result.mechanical_fold {
+                            self.output.emit_warning(&format!(
+                                "Autocompact: folded {} messages mechanically ({} tokens → compact; summary unavailable)",
+                                result.messages_summarized, result.pre_compact_tokens
+                            ));
+                        } else {
+                            self.output.emit_info(&format!(
+                                "Autocompact: summarized {} messages ({} tokens → compact)",
+                                result.messages_summarized, result.pre_compact_tokens
+                            ));
+                        }
+                        self.messages = result.messages;
+                        self.last_turn_start_len = None;
+                        compacted = true;
+                        // Notify the cache detector that a compaction happened —
+                        // the next cache miss should be attributed to Compaction,
+                        // not TtlExpiry. Mirrors Reasonix's RewriteVersion increment.
+                        self.cache_detector.notify_compaction();
+                        // Track consecutive compactions. A healthy compaction
+                        // drops the prompt below the trigger; if it doesn't,
+                        // the kept tail alone exceeds the trigger and we'll
+                        // re-fire next turn. After 2 consecutive, pause.
+                        let stuck_now = self.compact_state.record_consecutive_compact();
+                        if stuck_now {
+                            self.output.emit_info(&format!(
+                                "Auto-compaction paused: context_window={} is too small \
+                                 for compaction to help (system prompt + one turn \
+                                 already exceeds trigger). Raise context_window or \
+                                 shrink tool output.",
+                                self.compact_config.context_window
+                            ));
+                        }
+                    }
                 }
                 Err(auto::CompactError::CircuitBroken { .. }) => {
                     // Already tripped; logged at circuit-breaker level
@@ -1238,11 +1347,15 @@ impl AgentEngine {
                 }
             }
         } else if should_compact {
-            self.output.emit_info(&format!(
-                "Autocompact: skipped (circuit breaker tripped after {} consecutive failures, \
-                 last_input_tokens={})",
-                self.compact_state.consecutive_failures, self.compact_state.last_input_tokens
-            ));
+            if self.compact_state.is_compact_stuck() {
+                // Already logged above; no duplicate message.
+            } else {
+                self.output.emit_info(&format!(
+                    "Autocompact: skipped (circuit breaker tripped after {} consecutive failures, \
+                     last_input_tokens={})",
+                    self.compact_state.consecutive_failures, self.compact_state.last_input_tokens
+                ));
+            }
         } else if !self.compact_config.enabled {
             let threshold = if let Some(pct) = self.compact_config.autocompact_threshold_pct {
                 self.compact_config.context_window * pct as usize / 100
