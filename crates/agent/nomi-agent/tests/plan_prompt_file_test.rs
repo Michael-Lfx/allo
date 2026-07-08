@@ -57,11 +57,15 @@ fn tc_3_4_01_instructions_forbid_writes() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-3.4-03  System prompt with plan mode active
+// TC-3.4-03  Plan mode is NOT in system prompt (cache-stability invariant)
+// ---------------------------------------------------------------------------
+// Plan mode instructions now ride the turn tail (injected into the last user
+// message by the engine) to keep the system prompt byte-stable for DeepSeek
+// prefix caching.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn tc_3_4_03_system_prompt_includes_plan_instructions_when_active() {
+fn tc_3_4_03_plan_mode_not_in_system_prompt() {
     let result = build_system_prompt(
         &mut SystemPromptCache::new(),
         None,
@@ -70,24 +74,29 @@ fn tc_3_4_03_system_prompt_includes_plan_instructions_when_active() {
         &[],
         None,
         None,
-        true,
         false,
         false,
     );
 
-    // Should contain plan mode instructions
+    // Plan mode instructions must NOT be in the system prompt — they ride
+    // the turn tail to keep the prefix cache-stable.
     assert!(
-        result.contains("Plan Mode"),
-        "active plan mode should inject plan mode instructions"
+        !result.contains("# Plan Mode"),
+        "system prompt must NOT contain plan mode heading (it rides the turn tail)"
     );
     assert!(
-        result.contains("ExitPlanMode"),
-        "plan mode instructions should mention ExitPlanMode"
+        !result.contains("ExitPlanMode"),
+        "system prompt must NOT reference ExitPlanMode tool"
     );
     assert!(
-        result.contains("MUST NOT"),
-        "plan mode instructions should contain restrictions"
+        !result.contains("MUST NOT"),
+        "system prompt must NOT contain plan mode restrictions"
     );
+
+    // Verify plan mode instructions still exist for turn-tail injection
+    let plan_instructions = nomi_agent::plan::prompt::plan_mode_instructions();
+    assert!(plan_instructions.contains("Plan Mode"));
+    assert!(plan_instructions.contains("ExitPlanMode"));
 }
 
 // ---------------------------------------------------------------------------
@@ -106,13 +115,12 @@ fn tc_3_4_04_system_prompt_excludes_plan_instructions_when_inactive() {
         None,
         false,
         false,
-        false,
     );
 
     // Should NOT contain plan mode instructions
     assert!(
         !result.contains("# Plan Mode"),
-        "inactive plan mode should not inject plan mode heading"
+        "system prompt should not contain plan mode heading"
     );
 }
 
@@ -209,11 +217,11 @@ fn write_then_read_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Additional: plan mode instructions appear in correct position in system prompt
+// Additional: plan mode instructions NOT in system prompt (cache-stable)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn plan_instructions_appear_after_memory_before_skills() {
+fn plan_mode_not_in_system_prompt_with_memory() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mem_dir = tmp.path().join("memory");
     std::fs::create_dir_all(&mem_dir).unwrap();
@@ -227,22 +235,23 @@ fn plan_instructions_appear_after_memory_before_skills() {
         &[],
         None,
         Some(&mem_dir),
-        true,
         false,
         false,
     );
 
+    // Memory should be present
     let memory_pos = result
         .find("auto memory")
         .expect("memory section should be present");
-    let plan_pos = result
-        .find("# Plan Mode")
-        .expect("plan mode instructions should be present");
 
+    // Plan mode must NOT be in the system prompt (rides turn tail instead)
     assert!(
-        memory_pos < plan_pos,
-        "memory should appear before plan mode instructions"
+        !result.contains("# Plan Mode"),
+        "system prompt must NOT contain plan mode instructions (cache-stable prefix)"
     );
+
+    // Memory position is valid — just verify it's present
+    assert!(memory_pos < result.len());
 }
 
 // ---------------------------------------------------------------------------

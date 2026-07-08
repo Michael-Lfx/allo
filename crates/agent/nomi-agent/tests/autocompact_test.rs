@@ -185,12 +185,12 @@ async fn tc_2_4_07_circuit_breaker_blocks_autocompact() {
     assert!(matches!(result, Err(CompactError::CircuitBroken { .. })));
 }
 
-// ── TC-2.4-08: Prompt contains all 9 sections ──────────────────────────────
+// ── TC-2.4-08: Prompt contains all 7 sections ──────────────────────────────
 
 #[test]
 fn tc_2_4_08_prompt_contains_all_sections() {
     let prompt = build_compact_prompt();
-    for i in 1..=9 {
+    for i in 1..=7 {
         assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
     }
     assert!(prompt.contains("CRITICAL: Respond with TEXT ONLY"));
@@ -311,21 +311,35 @@ async fn tc_2_4_16_success_resets_failure_counter() {
     assert_eq!(state.consecutive_failures, 0);
 }
 
-// ── TC-2.4-17: Failure increments failure counter ───────────────────────────
+// ── TC-2.4-17: Provider error triggers mechanical fold ─────────────────────
 
 #[tokio::test]
-async fn tc_2_4_17_failure_increments_counter() {
-    let provider = MockProvider::with_error(ProviderError::Api {
-        status: 500,
-        message: "Internal error".to_string(),
-    });
+async fn tc_2_4_17_provider_error_mechanical_fold() {
+    // Two error responses: the transient retry retries once before
+    // falling to mechanical fold.
+    let provider = MockProvider::new(vec![
+        Err(ProviderError::Api {
+            status: 500,
+            message: "Internal error".to_string(),
+        }),
+        Err(ProviderError::Api {
+            status: 500,
+            message: "Internal error".to_string(),
+        }),
+    ]);
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
 
-    let result = autocompact(&provider, &messages, "test-model", &config, &mut state).await;
-    assert!(result.is_err());
-    assert_eq!(state.consecutive_failures, 1);
+    let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should succeed with mechanical fold");
+
+    // Mechanical fold: context is freed even when summarizer is unreachable
+    assert!(result.mechanical_fold);
+    assert_eq!(result.messages_summarized, 10);
+    // record_success is called — this is a graceful degradation, not a failure
+    assert_eq!(state.consecutive_failures, 0);
 }
 
 // ── TC-2.4-18: PTL retry succeeds on second attempt ────────────────────────
@@ -368,10 +382,10 @@ async fn tc_2_4_18_ptl_retry_succeeds() {
     }
 }
 
-// ── TC-2.4-19: PTL retry exhausted ─────────────────────────────────────────
+// ── TC-2.4-19: PTL retry exhausted → mechanical fold ────────────────────────
 
 #[tokio::test]
-async fn tc_2_4_19_ptl_retry_exhausted() {
+async fn tc_2_4_19_ptl_retry_exhausted_mechanical_fold() {
     let provider = MockProvider::new(vec![
         Err(ProviderError::PromptTooLong("too long 1".to_string())),
         Err(ProviderError::PromptTooLong("too long 2".to_string())),
@@ -382,9 +396,12 @@ async fn tc_2_4_19_ptl_retry_exhausted() {
     let config = default_config();
     let mut state = CompactState::new();
 
-    let result = autocompact(&provider, &messages, "test-model", &config, &mut state).await;
-    assert!(matches!(result, Err(CompactError::PromptTooLong { .. })));
-    assert_eq!(state.consecutive_failures, 1);
+    let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should succeed with mechanical fold after PTL exhausted");
+
+    assert!(result.mechanical_fold);
+    assert_eq!(state.consecutive_failures, 0);
 }
 
 // ── TC-2.4-20: PTL retry truncates messages ─────────────────────────────────
@@ -466,36 +483,57 @@ async fn tc_2_4_20_ptl_retry_truncates_messages() {
 // ── Additional edge cases ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn empty_response_fails() {
-    // Provider returns Done without any TextDelta
-    let provider = MockProvider::new(vec![Ok(vec![LlmEvent::Done {
-        stop_reason: StopReason::EndTurn,
-        usage: TokenUsage::default(),
-    }])]);
+async fn empty_response_mechanical_fold() {
+    // Two empty responses: the transient retry retries once before
+    // falling to mechanical fold.
+    let provider = MockProvider::new(vec![
+        Ok(vec![LlmEvent::Done {
+            stop_reason: StopReason::EndTurn,
+            usage: TokenUsage::default(),
+        }]),
+        Ok(vec![LlmEvent::Done {
+            stop_reason: StopReason::EndTurn,
+            usage: TokenUsage::default(),
+        }]),
+    ]);
 
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
 
-    let result = autocompact(&provider, &messages, "test-model", &config, &mut state).await;
-    assert!(matches!(result, Err(CompactError::EmptyResponse)));
-    assert_eq!(state.consecutive_failures, 1);
+    let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should succeed with mechanical fold on empty response");
+
+    assert!(result.mechanical_fold);
+    assert_eq!(state.consecutive_failures, 0);
 }
 
 #[tokio::test]
-async fn stream_error_fails() {
-    let provider = MockProvider::new(vec![Ok(vec![
-        LlmEvent::TextDelta("partial".to_string()),
-        LlmEvent::Error("connection reset".to_string()),
-    ])]);
+async fn stream_error_mechanical_fold() {
+    // Two stream-error responses: the transient retry retries once
+    // before falling to mechanical fold.
+    let provider = MockProvider::new(vec![
+        Ok(vec![
+            LlmEvent::TextDelta("partial".to_string()),
+            LlmEvent::Error("connection reset".to_string()),
+        ]),
+        Ok(vec![
+            LlmEvent::TextDelta("partial".to_string()),
+            LlmEvent::Error("connection reset".to_string()),
+        ]),
+    ]);
 
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
 
-    let result = autocompact(&provider, &messages, "test-model", &config, &mut state).await;
-    assert!(matches!(result, Err(CompactError::StreamError(_))));
-    assert_eq!(state.consecutive_failures, 1);
+    let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should succeed with mechanical fold on stream error");
+
+    assert!(result.mechanical_fold);
+    assert_eq!(state.consecutive_failures, 0);
 }
 
 #[test]
@@ -509,4 +547,119 @@ fn summary_content_auto_has_continuation() {
 fn summary_content_manual_no_continuation() {
     let content = build_summary_content("Summary:\ntest", false);
     assert!(!content.contains("Continue the conversation"));
+}
+
+// ── P5: Transient error retry ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn transient_error_retry_succeeds() {
+    // First attempt fails with a transient error, second succeeds.
+    // Mirrors Reasonix's `summarizeWithRetry` which retries one non-timeout
+    // failure.
+    let provider = MockProvider::new(vec![
+        Err(ProviderError::Api {
+            status: 429,
+            message: "rate limited".to_string(),
+        }),
+        Ok(vec![
+            LlmEvent::TextDelta("<summary>retried successfully</summary>".to_string()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage::default(),
+            },
+        ]),
+    ]);
+
+    let messages = sample_conversation(10);
+    let config = default_config();
+    let mut state = CompactState::new();
+
+    let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should succeed after transient retry");
+
+    assert!(!result.mechanical_fold);
+    assert_eq!(state.consecutive_failures, 0);
+
+    // Verify summary content from the second attempt
+    match &result.messages[1].content[0] {
+        ContentBlock::Text { text } => {
+            assert!(text.contains("retried successfully"));
+        }
+        _ => panic!("expected Text block"),
+    }
+}
+
+// ── P5: Force compaction ratio bypasses fold economics ─────────────────────
+
+#[tokio::test]
+async fn force_ratio_bypasses_fold_economics() {
+    // When the prompt is at 90% of the window, compaction is forced even
+    // if the foldable region is small (fold_economics would skip it).
+    // Mirrors Reasonix's `compactForceRatio = 0.9`.
+    let provider = MockProvider::with_summary("<summary>forced</summary>");
+
+    // Build a conversation with >= 20 messages (tail-preserving mode).
+    // 1 pinned user + 16 short messages (foldable, < 400 tokens) +
+    // 4 large messages (tail, fill the budget).
+    let mut msgs = vec![text_msg(Role::User, "Start")];
+    for i in 0..8 {
+        msgs.push(text_msg(Role::Assistant, &format!("a{i}")));
+        msgs.push(text_msg(Role::User, &format!("u{i}")));
+    }
+    for _ in 0..2 {
+        msgs.push(text_msg(Role::Assistant, &"x".repeat(4000)));
+        msgs.push(text_msg(Role::User, &"y".repeat(4000)));
+    }
+    // Total: 1 + 16 + 4 = 21 messages
+
+    // Small window so the tail budget is tiny and the 4 large messages
+    // fill it, leaving the 16 short messages as a small foldable region.
+    let config = CompactConfig {
+        context_window: 1_000,
+        ..default_config()
+    };
+    let mut state = CompactState::new();
+    // 90% of 1000 = 900 → force = true
+    state.last_input_tokens = 900;
+
+    let result = autocompact(&provider, &msgs, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should proceed with force ratio");
+
+    // Compaction happened despite small foldable region
+    assert!(result.messages_summarized > 0);
+    assert!(!result.mechanical_fold);
+}
+
+#[tokio::test]
+async fn no_force_ratio_skips_small_fold() {
+    // When the prompt is below 90% of the window, fold_economics still
+    // skips compaction for a small foldable region.
+    let provider = MockProvider::with_summary("<summary>should not happen</summary>");
+
+    let mut msgs = vec![text_msg(Role::User, "Start")];
+    for i in 0..8 {
+        msgs.push(text_msg(Role::Assistant, &format!("a{i}")));
+        msgs.push(text_msg(Role::User, &format!("u{i}")));
+    }
+    for _ in 0..2 {
+        msgs.push(text_msg(Role::Assistant, &"x".repeat(4000)));
+        msgs.push(text_msg(Role::User, &"y".repeat(4000)));
+    }
+
+    let config = CompactConfig {
+        context_window: 1_000,
+        ..default_config()
+    };
+    let mut state = CompactState::new();
+    // 80% of 1000 = 800 → force = false (below 90%)
+    state.last_input_tokens = 800;
+
+    let result = autocompact(&provider, &msgs, "test-model", &config, &mut state)
+        .await
+        .expect("autocompact should succeed (no-op)");
+
+    // Fold economics skipped compaction — no messages summarized
+    assert_eq!(result.messages_summarized, 0);
 }

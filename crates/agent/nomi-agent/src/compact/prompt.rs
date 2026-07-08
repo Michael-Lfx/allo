@@ -4,8 +4,14 @@
 //! post-compact message construction.
 
 /// System prompt used for the compact LLM call.
-pub const COMPACT_SYSTEM_PROMPT: &str =
-    "You are a helpful AI assistant tasked with summarizing conversations.";
+///
+/// Mirrors Reasonix's `summarySystemPrompt`: tells the model that user turns
+/// are kept verbatim alongside the summary, so its job is to fold the
+/// assistant/tool work into a briefing the agent can resume from.
+pub const COMPACT_SYSTEM_PROMPT: &str = "You are compacting the earlier part of a coding agent's \
+    conversation to save context. The agent keeps your summary alongside the user's own turns \
+    (kept verbatim) and the recent tail; your job is to fold the assistant/tool work into a \
+    briefing it can resume from.";
 
 /// Maximum output tokens for the compact LLM call.
 pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 20_000;
@@ -28,24 +34,28 @@ const BODY: &str = "\
 Your task is to create a detailed summary of the conversation so far, paying close attention \
 to the user's explicit requests and your previous actions. This summary should be thorough in \
 capturing technical details, code patterns, and architectural decisions that would be essential \
-for continuing development work.
+for continuing development work. The user's own messages are kept verbatim alongside your \
+summary, so focus on the assistant/tool work — do NOT reproduce user messages.
 
 Before providing your final summary, wrap your analysis in <analysis> tags to organize your \
 thoughts and ensure completeness.
 
 Your summary should include the following sections:
 
-1. **Primary Request and Intent**: What has the user asked for? Include ALL explicit requests \
-made during the conversation.
-2. **Key Technical Concepts**: Important technical details, patterns, or architectural decisions discussed.
-3. **Files and Code Sections**: All files that have been viewed or modified, with brief descriptions of changes.
-4. **Errors and Fixes**: Any errors encountered and how they were resolved.
-5. **Problem Solving Progress**: Current state of each problem — what's solved and what remains.
-6. **All User Messages**: A summary of every non-tool user message, preserving intent and context.
-7. **Pending Tasks**: Any tasks that are not yet complete.
-8. **Current Work**: What was being worked on immediately before this summary.
-9. **Suggested Next Step**: The single most logical next action, which MUST be directly in line \
-with the most recent explicit user request. Quote the user's request verbatim to prevent drift.";
+1. **Standing Facts & Constraints**: Everything the user stated that still governs the work — \
+names, paths, IDs, versions, preferences, and hard \"never do X\" rules. Be exhaustive; this is \
+the durable contract.
+2. **Goal**: The user's request and intent.
+3. **Decisions & Rationale**: Key choices made so far and why — so they are not re-litigated \
+or reversed.
+4. **Files & Code**: Files read or modified, with the specific facts that matter: signatures, \
+line locations, data shapes, and exact edits applied. Be concrete.
+5. **Commands & Outcomes**: Commands run (builds, tests, git) and their relevant results — \
+what passed, what failed, and the error text that matters.
+6. **Errors & Fixes**: Problems hit and how they were resolved (or not), so the same dead ends \
+are not repeated.
+7. **Pending & Next Step**: What is still in progress or unstarted, and the single most concrete \
+next action to take.";
 
 const FORMAT_INSTRUCTIONS: &str = "\
 Format your response exactly as follows:
@@ -179,9 +189,9 @@ mod tests {
     // ── build_compact_prompt ────────────────────────────────────────────
 
     #[test]
-    fn prompt_contains_all_nine_sections() {
+    fn prompt_contains_all_seven_sections() {
         let prompt = build_compact_prompt();
-        for i in 1..=9 {
+        for i in 1..=7 {
             assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
         }
     }

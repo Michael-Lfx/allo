@@ -446,7 +446,6 @@ fn case_8_toon_system_prompt_injection() {
         &[],
         None,
         None,
-        false,
         true, // toon_enabled
         false, // browser_enabled
     );
@@ -475,7 +474,6 @@ fn case_8_toon_system_prompt_injection() {
         &[],
         None,
         None,
-        false,
         false, // toon_enabled
         false, // browser_enabled
     );

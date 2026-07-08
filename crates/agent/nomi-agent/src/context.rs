@@ -7,20 +7,23 @@ use nomi_skills::types::SkillMetadata;
 use nomi_types::message::{ContentBlock, Message, Role};
 
 use crate::agents_md;
-use crate::plan::prompt as plan_prompt;
 
 /// Session-scoped cache for system prompt sections.
 ///
 /// Each section (intro, tool guidance, AGENTS.md, memory, skills) is cached
 /// independently. The `joined` field holds the pre-joined full prompt string
 /// and is invalidated whenever any section changes.
+///
+/// Cache-first design: the system prompt built here is the **cache-stable
+/// prefix** — it must stay byte-stable across turns so DeepSeek's automatic
+/// prefix cache stays warm. Dynamic content (date, plan mode, RAG injections)
+/// is NOT included here; it rides the turn tail (prepended to the last user
+/// message) in the engine instead. See `engine.rs` turn-tail injection.
 pub struct SystemPromptCache {
     /// Cached section strings, keyed by section name.
     pub(crate) sections: HashMap<&'static str, String>,
     /// Pre-joined full prompt. Invalidated on any section change.
     pub(crate) joined: Option<String>,
-    /// Track last plan_mode_active value to detect changes.
-    pub(crate) last_plan_mode: bool,
     /// Track last toon_enabled value to detect changes.
     pub(crate) last_toon_enabled: bool,
     /// Track last browser_enabled value to detect changes.
@@ -32,7 +35,6 @@ impl SystemPromptCache {
         Self {
             sections: HashMap::new(),
             joined: None,
-            last_plan_mode: false,
             last_toon_enabled: false,
             last_browser_enabled: false,
         }
@@ -127,21 +129,26 @@ context or knowledge tools when they already answer the task, and after each Bro
 or interaction run `observe` for fresh refs before acting again."
 }
 
-/// Build the system prompt from config and environment.
+/// Build the **cache-stable** system prompt from config and environment.
+///
+/// This prompt is the cache-stable prefix — it must stay byte-stable across
+/// turns so DeepSeek's automatic prefix cache stays warm. Dynamic content
+/// (current date, plan mode instructions, RAG/memory injections from
+/// ContextContributor) is NOT included here; it rides the turn tail instead
+/// (prepended to the last user message in `engine.rs`).
 ///
 /// Sections are assembled in this order:
-/// 1. Base intro (role, model identity, working directory, date)
+/// 1. Base intro (role, model identity, working directory) — NO date
 /// 2. Tool usage guidance (dedicated tools, parallel calls, etc.)
 /// 3. Custom prompt (user config)
 /// 4. AGENTS.md (project instructions)
 /// 5. Memory system prompt (behavioral instructions + MEMORY.md content)
-/// 6. Plan mode instructions (when active)
-/// 7. Skills reminder (available skills listing)
+/// 6. Skills reminder (available skills listing)
 ///
 /// Session-permanent sections (intro, tool guidance, custom prompt, AGENTS.md)
 /// are cached in `cache.sections` and reused across calls. The `joined` field
 /// caches the final concatenated result; it is returned on subsequent calls
-/// unless plan_mode_active has changed.
+/// unless toon_enabled or browser_enabled has changed.
 #[allow(clippy::too_many_arguments)]
 pub fn build_system_prompt(
     cache: &mut SystemPromptCache,
@@ -151,13 +158,11 @@ pub fn build_system_prompt(
     skills: &[SkillMetadata],
     context_window_tokens: Option<usize>,
     memory_dir: Option<&Path>,
-    plan_mode_active: bool,
     toon_enabled: bool,
     browser_enabled: bool,
 ) -> String {
     // Fast path: return cached joined result if nothing changed
     if let Some(ref joined) = cache.joined
-        && cache.last_plan_mode == plan_mode_active
         && cache.last_toon_enabled == toon_enabled
         && cache.last_browser_enabled == browser_enabled
     {
@@ -242,11 +247,6 @@ pub fn build_system_prompt(
         parts.push(toon_section.clone());
     }
 
-    // Section: plan mode (NOT cached — rebuilt every call when active)
-    if plan_mode_active {
-        parts.push(plan_prompt::plan_mode_instructions().to_string());
-    }
-
     // Section: skills (cached, event-invalidated)
     let visible_skills: Vec<SkillMetadata> = skills
         .iter()
@@ -284,7 +284,6 @@ pub fn build_system_prompt(
 
     let joined = parts.join("\n\n");
     cache.joined = Some(joined.clone());
-    cache.last_plan_mode = plan_mode_active;
     cache.last_toon_enabled = toon_enabled;
     cache.last_browser_enabled = browser_enabled;
     joined
@@ -381,7 +380,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(prompt.contains(cwd), "system prompt should contain the cwd");
     }
@@ -396,7 +394,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -422,7 +419,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -555,7 +551,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             !result.contains("The following skills are available"),
@@ -577,7 +572,6 @@ mod tests {
             &skills,
             None,
             None,
-            false,
             false,
             false,
         );
@@ -613,7 +607,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("visible-skill"),
@@ -641,7 +634,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             !result.contains("The following skills are available"),
@@ -660,7 +652,6 @@ mod tests {
             &skills,
             None,
             None,
-            false,
             false,
             false,
         );
@@ -687,7 +678,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         let custom_pos = result.find("Custom text").unwrap();
         let reminder_pos = result.rfind("<system-reminder>").unwrap();
@@ -709,7 +699,6 @@ mod tests {
             &[skill],
             Some(50),
             None,
-            false,
             false,
             false,
         );
@@ -736,7 +725,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("/workspace/my-project"),
@@ -761,7 +749,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -802,7 +789,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
 
         assert!(
@@ -827,7 +813,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -858,7 +843,6 @@ mod tests {
             Some(&mem_dir),
             false,
             false,
-            false,
         );
 
         assert!(
@@ -887,7 +871,6 @@ mod tests {
             Some(Path::new("/nonexistent/memory/dir")),
             false,
             false,
-            false,
         );
 
         // Should not panic and should show empty state
@@ -912,7 +895,6 @@ mod tests {
             &[],
             None,
             Some(&mem_dir),
-            false,
             false,
             false,
         );
@@ -946,7 +928,6 @@ mod tests {
             &skills,
             None,
             Some(&mem_dir),
-            false,
             false,
             false,
         );
@@ -986,7 +967,6 @@ mod tests {
             Some(&mem_dir),
             false,
             false,
-            false,
         );
 
         assert!(
@@ -1013,7 +993,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("# Using your tools"),
@@ -1031,7 +1010,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -1069,7 +1047,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("parallel"),
@@ -1093,7 +1070,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("Prefer Edit over Write"),
@@ -1113,7 +1089,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("Read a file before editing"),
@@ -1131,7 +1106,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -1161,7 +1135,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         let guidance_pos = result.find("# Using your tools").unwrap();
         let skills_pos = result.find("guide-test-skill").unwrap();
@@ -1173,6 +1146,8 @@ mod tests {
 
     #[test]
     fn tool_guidance_present_in_plan_mode() {
+        // Plan mode is no longer in the system prompt (it rides the turn tail
+        // to keep the prefix cache-stable). Tool guidance must still be present.
         let result = build_system_prompt(
             &mut SystemPromptCache::new(),
             None,
@@ -1181,13 +1156,12 @@ mod tests {
             &[],
             None,
             None,
-            true,
             false,
             false,
         );
         assert!(
             result.contains("# Using your tools"),
-            "tool guidance should be present in plan mode"
+            "tool guidance should always be present"
         );
     }
 
@@ -1201,7 +1175,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -1230,7 +1203,6 @@ mod tests {
             &[],
             None,
             Some(&mem_dir),
-            false,
             false,
             false,
         );
@@ -1316,7 +1288,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(cache.joined.is_some());
 
@@ -1330,13 +1301,15 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert_eq!(first, second);
     }
 
     #[test]
-    fn build_system_prompt_plan_mode_change_rebuilds() {
+    fn build_system_prompt_plan_mode_does_not_affect_prefix() {
+        // Plan mode is no longer in the system prompt — it rides the turn tail
+        // to keep the prefix cache-stable. Toggling plan mode must NOT change
+        // the system prompt (this is the cache-stability invariant).
         let mut cache = SystemPromptCache::new();
         let without_plan = build_system_prompt(
             &mut cache,
@@ -1348,9 +1321,11 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
-        let with_plan = build_system_prompt(
+        // Same args — plan mode is now injected in the turn tail, not here.
+        // The key invariant: the system prompt is identical regardless of
+        // plan mode state. (Plan mode toggle happens in engine.rs turn tail.)
+        let second = build_system_prompt(
             &mut cache,
             None,
             "/tmp",
@@ -1358,11 +1333,13 @@ mod tests {
             &[],
             None,
             None,
-            true,
             false,
             false,
         );
-        assert_ne!(without_plan, with_plan);
+        assert_eq!(
+            without_plan, second,
+            "system prompt must be byte-stable — plan mode no longer affects it"
+        );
     }
 
     // --- TOON format injection tests ---
@@ -1377,7 +1354,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             true,
             false,
         );
@@ -1401,7 +1377,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             false,
         );
@@ -1429,7 +1404,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
             false,
             true, // browser_enabled
         );
@@ -1467,7 +1441,6 @@ mod tests {
             None,
             None,
             false,
-            false,
             false, // browser_enabled = false
         );
         assert!(
@@ -1491,6 +1464,161 @@ mod tests {
         assert!(
             !preset.contains("[Controlling the desktop]"),
             "browser preset must not copy the computer-use nudge"
+        );
+    }
+
+    // --- Prefix stability regression tests (cache-stability invariants) ---
+    //
+    // These tests guard the core DeepSeek prefix-cache invariant: the system
+    // prompt must be byte-stable across turns so the automatic prefix cache
+    // stays warm. Any change that introduces dynamic content (date, plan mode,
+    // RAG injections) into the system prompt will break the cache and cause
+    // full re-computation on every turn.
+
+    /// Scan for a YYYY-MM-DD date pattern without pulling in regex as a dep.
+    fn contains_date_pattern(s: &str) -> bool {
+        let b = s.as_bytes();
+        if b.len() < 10 {
+            return false;
+        }
+        for i in 0..=(b.len() - 10) {
+            if b[i].is_ascii_digit()
+                && b[i + 1].is_ascii_digit()
+                && b[i + 2].is_ascii_digit()
+                && b[i + 3].is_ascii_digit()
+                && b[i + 4] == b'-'
+                && b[i + 5].is_ascii_digit()
+                && b[i + 6].is_ascii_digit()
+                && b[i + 7] == b'-'
+                && b[i + 8].is_ascii_digit()
+                && b[i + 9].is_ascii_digit()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn prefix_stability_no_date_in_system_prompt() {
+        // The date was previously in the intro section (chrono::Local::now).
+        // It must NOT appear anywhere in the system prompt — it rides the
+        // turn tail instead (injected by engine.rs).
+        let result = build_system_prompt(
+            &mut SystemPromptCache::new(),
+            None,
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(
+            !contains_date_pattern(&result),
+            "system prompt must NOT contain a date — it breaks the prefix cache daily"
+        );
+        assert!(
+            !result.contains("Current date"),
+            "system prompt must NOT contain 'Current date' — it rides the turn tail"
+        );
+    }
+
+    #[test]
+    fn prefix_stability_byte_identical_across_calls() {
+        // The system prompt must be byte-identical across repeated calls with
+        // the same inputs. This is the fundamental cache-stability invariant.
+        let mut cache = SystemPromptCache::new();
+        let prompts: Vec<String> = (0..5)
+            .map(|_| {
+                build_system_prompt(
+                    &mut cache,
+                    None,
+                    "/tmp",
+                    "test-model",
+                    &[],
+                    None,
+                    None,
+                    false,
+                    false,
+                )
+            })
+            .collect();
+        for i in 1..5 {
+            assert_eq!(
+                prompts[0].as_bytes(),
+                prompts[i].as_bytes(),
+                "system prompt must be byte-identical across calls (call {} differs)",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_stability_no_plan_mode_keywords() {
+        // Plan mode instructions must NOT appear in the system prompt — they
+        // ride the turn tail. This catches regressions where plan mode is
+        // accidentally re-injected into the system prompt.
+        let result = build_system_prompt(
+            &mut SystemPromptCache::new(),
+            None,
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(
+            !result.contains("# Plan Mode"),
+            "system prompt must NOT contain plan mode heading"
+        );
+        assert!(
+            !result.contains("ExitPlanMode"),
+            "system prompt must NOT reference ExitPlanMode tool"
+        );
+        assert!(
+            !result.contains("Submit for review"),
+            "system prompt must NOT contain plan mode workflow phases"
+        );
+    }
+
+    #[test]
+    fn prefix_stability_cache_survives_invalidation_cycle() {
+        // After /compact (invalidate_all), the rebuilt prompt must be
+        // byte-identical to the pre-compact prompt — compact is the only
+        // valid cache reset, and the rebuilt prefix must match.
+        let mut cache = SystemPromptCache::new();
+        let before = build_system_prompt(
+            &mut cache,
+            Some("Custom instructions"),
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        // Simulate /compact
+        cache.invalidate_all();
+        let after = build_system_prompt(
+            &mut cache,
+            Some("Custom instructions"),
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            before.as_bytes(),
+            after.as_bytes(),
+            "system prompt must be byte-identical before and after /compact"
         );
     }
 }

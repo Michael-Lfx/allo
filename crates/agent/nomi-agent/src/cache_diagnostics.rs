@@ -44,6 +44,9 @@ pub enum CacheBreakCause {
     ToolsChanged,
     TtlExpiry,
     FirstRequest,
+    /// Compaction replaced the message history — a deliberate cache-reset point.
+    /// Mirrors Reasonix's `log_rewrite` change reason.
+    Compaction,
 }
 
 /// Detects prompt cache breaks by comparing consecutive turns.
@@ -54,6 +57,10 @@ pub struct CacheBreakDetector {
     current_snapshot: Option<PromptSnapshot>,
     /// Cache stats from the previous API response.
     prev_stats: Option<CacheStats>,
+    /// Set by `notify_compaction` — consumed by the next `attribute_cause` call
+    /// so a cache miss right after compaction is attributed correctly instead
+    /// of falling through to `TtlExpiry`.
+    compaction_pending: bool,
 }
 
 impl CacheBreakDetector {
@@ -62,17 +69,35 @@ impl CacheBreakDetector {
             prev_snapshot: None,
             current_snapshot: None,
             prev_stats: None,
+            compaction_pending: false,
         }
     }
 
+    /// Notify the detector that a compaction just happened. The next cache-miss
+    /// diagnosis will be attributed to [`CacheBreakCause::Compaction`] instead
+    /// of `TtlExpiry`. This mirrors Reasonix's `RewriteVersion` increment.
+    pub fn notify_compaction(&mut self) {
+        self.compaction_pending = true;
+    }
+
     /// Record the prompt state before an API call.
+    ///
+    /// Tools are sorted by name before hashing so that a different
+    /// presentation order (e.g. plan-mode filtering that keeps the same
+    /// tools but shifts their positions) does not cause a false
+    /// `ToolsChanged` cache-break diagnosis. Mirrors Reasonix's
+    /// `normalizeToolSchemas`.
     pub fn record_request(&mut self, system: &str, tools: &[ToolDef]) {
         let mut system_hasher = DefaultHasher::new();
         system.hash(&mut system_hasher);
         let system_hash = system_hasher.finish();
 
+        // Sort tools by name before hashing so order doesn't affect the hash.
+        let mut sorted_tools: Vec<&ToolDef> = tools.iter().collect();
+        sorted_tools.sort_by(|a, b| a.name.cmp(&b.name));
+
         let mut tools_hasher = DefaultHasher::new();
-        for t in tools {
+        for t in &sorted_tools {
             t.name.hash(&mut tools_hasher);
             t.description.hash(&mut tools_hasher);
             let schema_str = serde_json::to_string(&t.input_schema).unwrap_or_default();
@@ -93,13 +118,13 @@ impl CacheBreakDetector {
     ///
     /// Returns `None` if no snapshot was recorded before the call.
     pub fn check_response(&mut self, stats: CacheStats) -> Option<CacheDiagnostic> {
-        let current = self.current_snapshot.as_ref()?;
-        let diagnostic = self.compute_diagnostic(current, &stats);
+        let current = self.current_snapshot.clone()?;
+        let diagnostic = self.compute_diagnostic(&current, &stats);
         self.prev_stats = Some(stats);
         Some(diagnostic)
     }
 
-    fn compute_diagnostic(&self, current: &PromptSnapshot, stats: &CacheStats) -> CacheDiagnostic {
+    fn compute_diagnostic(&mut self, current: &PromptSnapshot, stats: &CacheStats) -> CacheDiagnostic {
         let Some(prev) = &self.prev_stats else {
             // First request — no previous data to compare
             return CacheDiagnostic::Healthy { hit_rate: 0.0 };
@@ -143,7 +168,15 @@ impl CacheBreakDetector {
     }
 
     /// Determine what caused the cache break by comparing prev vs current snapshots.
-    fn attribute_cause(&self, current: &PromptSnapshot) -> CacheBreakCause {
+    fn attribute_cause(&mut self, current: &PromptSnapshot) -> CacheBreakCause {
+        // Compaction is the highest-priority cause: if a compaction happened
+        // since the last turn, the message history was replaced and the cache
+        // miss is expected.
+        if self.compaction_pending {
+            self.compaction_pending = false;
+            return CacheBreakCause::Compaction;
+        }
+
         let Some(prev) = &self.prev_snapshot else {
             return CacheBreakCause::FirstRequest;
         };
@@ -399,5 +432,140 @@ mod tests {
             cache_creation_tokens: 0,
         });
         assert!(diag.is_none());
+    }
+
+    #[test]
+    fn full_miss_after_compaction_attributed_to_compaction() {
+        // After compaction, the message history is replaced — the cache miss
+        // should be attributed to Compaction, not TtlExpiry.
+        let mut detector = CacheBreakDetector::new();
+
+        // Turn 1 — cache established
+        detector.record_request("prompt", &make_tools());
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        // Compaction happens
+        detector.notify_compaction();
+
+        // Turn 2 — same prompt and tools but cache lost (compaction replaced messages)
+        detector.record_request("prompt", &make_tools());
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 10000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 10000,
+            })
+            .unwrap();
+
+        match diag {
+            CacheDiagnostic::FullMiss { cause } => {
+                assert_eq!(cause, CacheBreakCause::Compaction);
+            }
+            _ => panic!("expected FullMiss with Compaction cause"),
+        }
+    }
+
+    #[test]
+    fn compaction_flag_consumed_after_one_diagnosis() {
+        // The compaction flag should be consumed after one diagnosis, so a
+        // subsequent cache miss is attributed correctly (not to Compaction).
+        let mut detector = CacheBreakDetector::new();
+
+        // Turn 1
+        detector.record_request("prompt", &make_tools());
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        // Compaction + Turn 2 (cache miss attributed to Compaction)
+        detector.notify_compaction();
+        detector.record_request("prompt", &make_tools());
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 10000,
+        });
+
+        // Turn 3 — same prompt and tools, cache miss again (TTL expiry)
+        detector.record_request("prompt", &make_tools());
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 10000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 10000,
+            })
+            .unwrap();
+
+        match diag {
+            CacheDiagnostic::FullMiss { cause } => {
+                assert_eq!(
+                    cause, CacheBreakCause::TtlExpiry,
+                    "compaction flag should have been consumed — cause should be TtlExpiry"
+                );
+            }
+            _ => panic!("expected FullMiss"),
+        }
+    }
+
+    #[test]
+    fn tool_order_invariance_no_false_break() {
+        // Same tools in different order should NOT trigger ToolsChanged.
+        // Mirrors Reasonix's normalizeToolSchemas which sorts before hashing.
+        let mut detector = CacheBreakDetector::new();
+
+        let tools_order_a = vec![
+            ToolDef {
+                name: "Read".into(),
+                description: "Read a file".into(),
+                input_schema: json!({"type": "object"}),
+                deferred: false,
+            },
+            ToolDef {
+                name: "Write".into(),
+                description: "Write a file".into(),
+                input_schema: json!({"type": "object"}),
+                deferred: false,
+            },
+            ToolDef {
+                name: "Bash".into(),
+                description: "Run a command".into(),
+                input_schema: json!({"type": "object"}),
+                deferred: false,
+            },
+        ];
+
+        // Same tools, reversed order
+        let tools_order_b: Vec<ToolDef> = tools_order_a.iter().rev().cloned().collect();
+
+        // Turn 1 — cache established with order A
+        detector.record_request("prompt", &tools_order_a);
+        detector.check_response(CacheStats {
+            input_tokens: 10000,
+            cache_read_tokens: 8000,
+            cache_creation_tokens: 2000,
+        });
+
+        // Turn 2 — same prompt, same tools in different order, full cache hit
+        detector.record_request("prompt", &tools_order_b);
+        let diag = detector
+            .check_response(CacheStats {
+                input_tokens: 10000,
+                cache_read_tokens: 10000,
+                cache_creation_tokens: 0,
+            })
+            .unwrap();
+
+        // Should be Healthy (full hit), NOT a ToolsChanged break
+        assert!(
+            matches!(diag, CacheDiagnostic::Healthy { .. }),
+            "tool order change should not cause cache break: {:?}",
+            diag
+        );
     }
 }

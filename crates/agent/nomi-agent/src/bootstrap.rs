@@ -559,7 +559,6 @@ impl AgentBootstrap {
             &skills,
             None,
             memory_dir.as_deref(),
-            false,
             self.config.compact.toon,
             self.config.tools.browser.enabled,
         );

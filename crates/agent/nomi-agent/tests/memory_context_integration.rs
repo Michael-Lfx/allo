@@ -33,7 +33,6 @@ fn tc_7_1_memory_dir_with_content_injects_prompt() {
         Some(&mem_dir),
         false,
         false,
-        false,
     );
 
     // Should contain minimal memory system sections
@@ -75,7 +74,6 @@ fn tc_7_2_no_memory_dir_no_injection() {
         &[],
         None,
         None,
-        false,
         false,
         false,
     );
@@ -145,7 +143,6 @@ fn tc_7_3_section_ordering() {
         Some(&mem_dir),
         false,
         false,
-        false,
     );
 
     let agents_pos = result
@@ -182,7 +179,6 @@ fn tc_7_4_nonexistent_dir_graceful_degradation() {
         &[],
         None,
         Some(std::path::Path::new("/nonexistent/memory/dir")),
-        false,
         false,
         false,
     );
@@ -223,7 +219,6 @@ fn tc_7_5_memory_md_content_injected() {
         &[],
         None,
         Some(&mem_dir),
-        false,
         false,
         false,
     );
@@ -267,7 +262,6 @@ fn tc_7_6_no_memory_md_shows_empty() {
         Some(&mem_dir),
         false,
         false,
-        false,
     );
 
     assert!(
@@ -299,7 +293,6 @@ fn tc_7_7_no_bb_brand_in_integrated_prompt() {
         &[],
         None,
         Some(&mem_dir),
-        false,
         false,
         false,
     );

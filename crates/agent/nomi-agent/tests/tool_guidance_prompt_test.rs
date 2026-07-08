@@ -51,7 +51,6 @@ fn tc_4_3_01_tool_guidance_section_exists() {
         None,
         None,
         false,
-        false,
         false, // browser_enabled
     );
     assert!(
@@ -74,7 +73,6 @@ fn tc_4_3_02_bash_prohibition_list() {
         &[],
         None,
         None,
-        false,
         false,
         false, // browser_enabled
     );
@@ -121,7 +119,6 @@ fn tc_4_3_03_parallel_call_guidance() {
         None,
         None,
         false,
-        false,
         false, // browser_enabled
     );
     assert!(
@@ -149,7 +146,6 @@ fn tc_4_3_04_edit_write_read_rules() {
         None,
         None,
         false,
-        false,
         false, // browser_enabled
     );
     assert!(
@@ -176,7 +172,6 @@ fn tc_4_3_05_order_after_intro_before_custom() {
         &[],
         None,
         None,
-        false,
         false,
         false, // browser_enabled
     );
@@ -217,7 +212,6 @@ fn tc_4_3_06_order_before_skills() {
         None,
         None,
         false,
-        false,
         false, // browser_enabled
     );
 
@@ -253,7 +247,6 @@ fn tc_4_3_06_order_before_memory() {
         &[],
         None,
         Some(&mem_dir),
-        false,
         false,
         false, // browser_enabled
     );
@@ -302,7 +295,6 @@ fn tc_4_3_07_all_sections_coexist() {
         &skills,
         None,
         Some(&mem_dir),
-        true, // plan mode active
         false,
         false, // browser_enabled
     );
@@ -351,6 +343,10 @@ fn tc_4_3_07_all_sections_coexist() {
 
 #[test]
 fn tc_4_3_08_guidance_in_plan_mode() {
+    // Plan mode instructions are no longer in the system prompt — they ride
+    // the turn tail (injected into messages) to keep the prefix cache-stable.
+    // This test verifies tool guidance is still present and plan mode is NOT
+    // in the system prompt.
     let result = build_system_prompt(
         &mut SystemPromptCache::new(),
         None,
@@ -359,17 +355,17 @@ fn tc_4_3_08_guidance_in_plan_mode() {
         &[],
         None,
         None,
-        true,
         false,
         false, // browser_enabled
     );
     assert!(
         result.contains("# Using your tools"),
-        "tool guidance should be present even in plan mode"
+        "tool guidance should always be present"
     );
-    // Plan mode instructions should also be present
+    // Plan mode instructions should NOT be in the cache-stable system prompt
+    // — they are injected into the turn tail by the engine instead.
     assert!(
-        result.contains("plan") || result.contains("Plan"),
-        "plan mode instructions should coexist with tool guidance"
+        !result.contains("plan mode"),
+        "plan mode instructions should NOT be in the cache-stable system prompt"
     );
 }
