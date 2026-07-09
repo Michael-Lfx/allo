@@ -5654,6 +5654,7 @@ dependencies = [
 name = "nomifun-channel"
 version = "0.2.13"
 dependencies = [
+ "aes",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -5661,6 +5662,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.17",
  "hex",
+ "md-5",
  "nomifun-ai-agent",
  "nomifun-api-types",
  "nomifun-common",
