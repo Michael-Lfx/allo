@@ -275,6 +275,30 @@
   min-width: 0;
 }
 
+/* Secondary inline mic slides in from the primary slot when send/stop/robot
+   appears, instead of the filled mic jumping left and losing its black fill. */
+.composer-submit-cluster__speech-secondary {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.composer-submit-cluster--with-secondary-speech .composer-submit-cluster__speech-secondary {
+  animation: composer-speech-secondary-in 0.16s ease-out;
+}
+
+@keyframes composer-speech-secondary-in {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 /* While recording/transcribing (`.speech-input-control--active` present),
    hide the toolbar icons so the waveform owns the row instead of squeezing
    between the model/permission pills. Pure CSS show/hide via :has() —
@@ -298,10 +322,6 @@
   min-width: 0;
   flex-shrink: 1;
   height: 26px;
-}
-
-.speech-input-control--inline {
-  height: 32px;
 }
 
 .speech-input-feedback {
@@ -336,10 +356,6 @@
   overflow: hidden;
 }
 
-.speech-input-control--inline .speech-input-feedback__waveform {
-  height: 16px;
-}
-
 .speech-input-feedback__bar {
   width: 2px;
   border-radius: 999px;
@@ -367,14 +383,10 @@
   padding-left: 2px;
 }
 
-.speech-input-control--inline .speech-input-feedback__label {
-  line-height: 16px;
-}
-
 .speech-input-button {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
   padding: 0 !important;
   border: none !important;
   box-shadow: none !important;
@@ -397,8 +409,11 @@
   stroke: #fff;
 }
 
-/* With draft: gray line mic beside the send button. */
+/* With draft: gray line mic beside the send button (same 26×26 as send). */
 .speech-input-button--inline {
+  width: 26px !important;
+  min-width: 26px !important;
+  height: 26px !important;
   background: transparent !important;
   color: var(--color-text-3) !important;
 }

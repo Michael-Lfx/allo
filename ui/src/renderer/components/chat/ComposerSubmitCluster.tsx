@@ -65,21 +65,30 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   const showSendWithAutoWork = hasDraft && autoWorkMode;
   const showAutoWorkButton = autoWorkMode;
 
-  // `filled` (black circle) is reserved for when the mic is the ONLY primary
-  // button (empty idle composer). Whenever another circle button is visible
-  // (stop while streaming, autowork robot, send with draft), fall back to the
-  // gray inline mic so there is never a second black circle.
-  const speechVariant = hasDraft || showStop || autoWorkMode ? 'inline' : 'filled';
+  // Keep the rightmost circle slot stable: idle composer shows a filled (black)
+  // mic there; once send/stop/robot appears that slot stays put and a gray
+  // inline mic opens to its left — avoids the mic jumping right→left and
+  // swapping black→transparent on the first keystroke.
+  const hasCompanionCircle =
+    showStop || showAutoWorkButton || showSendButton || showSendWithAutoWork;
+  const showSecondarySpeech = !hideSpeech && hasCompanionCircle;
+  const showPrimaryFilledSpeech = !hideSpeech && !hasCompanionCircle;
+
+  const speechButtonProps = {
+    disabled: speechDisabled,
+    locale: speechLocale,
+    onTranscript: onSpeechTranscript,
+  };
 
   return (
-    <div className='composer-submit-cluster flex items-center gap-2'>
-      <SpeechInputButton
-        hidden={hideSpeech}
-        disabled={speechDisabled}
-        variant={speechVariant}
-        locale={speechLocale}
-        onTranscript={onSpeechTranscript}
-      />
+    <div
+      className={`composer-submit-cluster flex items-center gap-2${showSecondarySpeech ? ' composer-submit-cluster--with-secondary-speech' : ''}`}
+    >
+      {showSecondarySpeech ? (
+        <div className='composer-submit-cluster__speech-secondary'>
+          <SpeechInputButton {...speechButtonProps} variant='inline' />
+        </div>
+      ) : null}
 
       {showStop && onStop ? (
         <Button
@@ -144,6 +153,10 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           onClick={onSend}
           data-testid={sendTestId}
         />
+      ) : null}
+
+      {showPrimaryFilledSpeech ? (
+        <SpeechInputButton {...speechButtonProps} variant='filled' />
       ) : null}
     </div>
   );
