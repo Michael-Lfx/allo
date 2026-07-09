@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Flowy"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -5093,7 +5093,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-auxiliary"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "nomi-types",
@@ -5213,6 +5213,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs 6.0.0",
+ "futures",
  "glob",
  "nomi-compact",
  "nomi-types",
@@ -5220,6 +5221,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5230,11 +5232,13 @@ dependencies = [
  "tracing-subscriber",
  "which 7.0.3",
  "wiremock",
+ "xz2",
+ "zip 2.4.2",
 ]
 
 [[package]]
 name = "nomi-insights-core"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "chrono",
  "hex",
@@ -5276,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-media"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5317,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-poi"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "chrono",
  "hex",
@@ -5682,7 +5686,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cloud"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5853,32 +5857,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nomifun-desktop"
-version = "0.2.13"
-dependencies = [
- "anyhow",
- "clap",
- "junction",
- "keepawake",
- "nomifun-app",
- "nomifun-runtime",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "nomifun-extension"
 version = "0.2.13"
 dependencies = [
@@ -6003,7 +5981,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-insights"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6079,7 +6057,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-media"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6156,7 +6134,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-poi"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "axum",
  "nomi-config",

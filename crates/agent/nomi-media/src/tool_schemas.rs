@@ -25,7 +25,7 @@ pub fn flowy_video_generate_schema() -> ToolSchema {
         "model".into(),
         json!({
             "type": "string",
-            "description": "Optional Flowy video model list id (AIPC-... from `hermes media models`). Omit to use config default."
+            "description": "Optional Flowy video model list id (AIPC-...). Omit to use config default."
         }),
     );
     props.insert(
@@ -132,7 +132,7 @@ pub fn flowy_image_generate_schema() -> ToolSchema {
         "model".into(),
         json!({
             "type": "string",
-            "description": "Optional Flowy image model list id (AIPC-... from `hermes media models`). Omit to use config default."
+            "description": "Optional Flowy image model list id (AIPC-...). Omit to use config default."
         }),
     );
     props.insert(

@@ -45,8 +45,11 @@ impl VideoGenerateBackend for FlowyVideoGenerateRouter {
         }
 
         let target = resolve_target_duration(request.duration, &request.prompt, default_duration);
-        if let Some(prior) =
-            find_resumable_long_video_run(self.runner.store().as_ref(), Some(target))
+        if let Some(prior) = find_resumable_long_video_run(
+            self.runner.store().as_ref(),
+            Some(target),
+            |run_id| self.runner.control().contains(run_id),
+        )
         {
             info!(
                 run_id = %prior.run_id,

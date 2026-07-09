@@ -22,6 +22,25 @@ use super::FlowyApiClient;
 
 const DEFAULT_VIDEO_POLL_INTERVAL_SECS: u64 = 5;
 const DEFAULT_VIDEO_POLL_TIMEOUT_SECS: u64 = 600;
+const VIDEO_CREATE_MAX_ATTEMPTS: u32 = 4;
+
+fn is_retryable_video_upstream_err(err: &ServerClientError) -> bool {
+    match err {
+        ServerClientError::Api { code, msg } => {
+            matches!(*code, 429 | 500 | 502 | 503 | 504)
+                || msg.to_ascii_lowercase().contains("temporarily unavailable")
+        }
+        ServerClientError::Http(msg) => {
+            let lower = msg.to_ascii_lowercase();
+            lower.contains("502")
+                || lower.contains("503")
+                || lower.contains("504")
+                || lower.contains("timeout")
+                || lower.contains("temporarily unavailable")
+        }
+        _ => false,
+    }
+}
 
 pub type VideoTaskProgressFn = Box<dyn FnMut(&VideoTaskRecord, u64) + Send>;
 
@@ -80,6 +99,37 @@ impl FlowyApiClient {
     ) -> Result<CreateVideoTaskResponse, ServerClientError> {
         self.post_data("/video/generations/tasks", Some(session), &body)
             .await
+    }
+
+    /// Create a video task with bounded retries for transient upstream faults (502/503/etc.).
+    pub async fn create_video_task_with_retry(
+        &self,
+        session: &ServerSession,
+        body: Value,
+    ) -> Result<CreateVideoTaskResponse, ServerClientError> {
+        let mut last_err = None;
+        for attempt in 0..VIDEO_CREATE_MAX_ATTEMPTS {
+            match self.create_video_task(session, body.clone()).await {
+                Ok(created) => return Ok(created),
+                Err(err) => {
+                    let retryable = is_retryable_video_upstream_err(&err);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        retryable,
+                        error = %err,
+                        "video task create failed"
+                    );
+                    last_err = Some(err);
+                    if !retryable || attempt + 1 >= VIDEO_CREATE_MAX_ATTEMPTS {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(2_u64.pow(attempt))).await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            ServerClientError::InvalidResponse("video task create failed without error".into())
+        }))
     }
 
     /// `GET {业务根}/video/generations/tasks/:id`
@@ -238,7 +288,8 @@ impl FlowyApiClient {
         should_cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
         on_task_created: Option<Box<dyn FnMut(i64) + Send>>,
     ) -> Result<VideoTaskRecord, ServerClientError> {
-        let created: CreateVideoTaskResponse = self.create_video_task(session, body).await?;
+        let created: CreateVideoTaskResponse =
+            self.create_video_task_with_retry(session, body).await?;
         if let Some(mut cb) = on_task_created {
             cb(created.id);
         }
@@ -390,6 +441,18 @@ mod tests {
     fn video_task_status_user_message_zh_covers_queue_and_running() {
         assert!(video_task_status_user_message_zh(1, 5).contains("排队"));
         assert!(video_task_status_user_message_zh(2, 30).contains("渲染"));
+    }
+
+    #[test]
+    fn retryable_video_upstream_errors_include_502() {
+        assert!(is_retryable_video_upstream_err(&ServerClientError::Api {
+            code: 502,
+            msg: "Video generation service is temporarily unavailable".into(),
+        }));
+        assert!(!is_retryable_video_upstream_err(&ServerClientError::Api {
+            code: 400,
+            msg: "bad request".into(),
+        }));
     }
 
     #[test]

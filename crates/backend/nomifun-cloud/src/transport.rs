@@ -143,7 +143,9 @@ impl HttpTransport {
             match builder.send().await {
                 Ok(resp) => {
                     let status = resp.status();
-                    if (status.as_u16() == 429 || status.as_u16() == 503) && attempt < 3 {
+                    if (status.as_u16() == 429 || status.as_u16() == 502 || status.as_u16() == 503)
+                        && attempt < 3
+                    {
                         let delay = Duration::from_millis(250 * 2u64.pow(attempt - 1));
                         tokio::time::sleep(delay).await;
                         continue;

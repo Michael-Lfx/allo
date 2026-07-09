@@ -150,19 +150,19 @@ pub fn require_ffmpeg() -> Result<(), ToolError> {
 
 fn ffmpeg_missing_error() -> ToolError {
     ToolError::ExecutionFailed(
-        "ffmpeg is required for long video concat — Hermes will auto-install it on first use; \
-         retry in a moment or ensure NOMIFUN_AUTO_ENSURE_DEPS is enabled"
+        "ffmpeg is required for long video concat — Allo will auto-install it on first use; \
+         retry in a moment or ensure NOMIFUN_AUTO_ENSURE_DEPS is enabled (default: on)"
             .into(),
     )
 }
 
-/// Ensure ffmpeg is available, triggering Hermes managed auto-install when needed.
+/// Ensure ffmpeg is available, triggering Allo managed auto-install when needed.
 pub async fn ensure_ffmpeg_ready() -> Result<PathBuf, ToolError> {
     if let Some(path) = nomi_config::dep_check::resolve_ffmpeg_executable() {
         return Ok(path);
     }
 
-    report_media_progress("长视频拼接需要 ffmpeg，Hermes 正在后台自动安装…");
+    report_media_progress("长视频拼接需要 ffmpeg，Allo 正在后台自动安装…");
     nomi_config::spawn_background_install(vec![RuntimeDep::Ffmpeg]);
     let notify = Arc::new(|msg: String| report_media_progress(msg));
     if !nomi_config::await_tool_deps("media_long_video", notify).await {
@@ -172,7 +172,39 @@ pub async fn ensure_ffmpeg_ready() -> Result<PathBuf, ToolError> {
     nomi_config::dep_check::resolve_ffmpeg_executable().ok_or_else(ffmpeg_missing_error)
 }
 
-/// Extract the last frame of a local video to PNG (for next-segment first_frame).
+/// Extract the last frame of a local video to JPEG (for next-segment first_frame).
+pub async fn extract_last_frame_jpeg(video_path: &Path, output_jpg: &Path) -> Result<(), ToolError> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if !video_path.is_file() {
+        return Err(ToolError::ExecutionFailed(format!(
+            "segment video missing: {}",
+            video_path.display()
+        )));
+    }
+    if let Some(parent) = output_jpg.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("create frame dir: {e}")))?;
+    }
+
+    let duration_secs = probe_video_duration_secs(video_path, &ffmpeg).await;
+    let mut last_err = None;
+    for (label, args) in frame_extract_attempts_jpeg(video_path, output_jpg, duration_secs) {
+        if run_ffmpeg_frame_extract(&ffmpeg, &args).await.is_ok() && frame_image_ready(output_jpg) {
+            return Ok(());
+        }
+        last_err = Some(format!("ffmpeg {label} did not produce a frame jpeg"));
+        let _ = tokio::fs::remove_file(output_jpg).await;
+    }
+
+    Err(ToolError::ExecutionFailed(format!(
+        "ffmpeg extract last frame failed for {}: {}",
+        video_path.display(),
+        last_err.unwrap_or_else(|| "unknown".into())
+    )))
+}
+
+/// Extract the last frame of a local video to PNG (legacy / tests).
 pub async fn extract_last_frame_png(video_path: &Path, output_png: &Path) -> Result<(), ToolError> {
     let ffmpeg = ensure_ffmpeg_ready().await?;
     if !video_path.is_file() {
@@ -320,6 +352,74 @@ fn frame_extract_attempts(
     attempts
 }
 
+fn frame_extract_attempts_jpeg(
+    video_path: &Path,
+    output_jpg: &Path,
+    duration_secs: Option<f64>,
+) -> Vec<(&'static str, Vec<std::ffi::OsString>)> {
+    let mut attempts = frame_extract_attempts(
+        video_path,
+        &output_jpg.with_extension("png"),
+        duration_secs,
+    );
+    for (_, args) in attempts.iter_mut() {
+        if let Some(last) = args.last_mut() {
+            *last = output_jpg.as_os_str().to_os_string();
+        }
+        if let Some(qv_idx) = args.iter().position(|a| a == "2") {
+            args[qv_idx] = "4".into();
+        }
+    }
+    if attempts.is_empty() {
+        attempts.push((
+            "jpeg_tail",
+            vec![
+                "-hide_banner".into(),
+                "-loglevel".into(),
+                "error".into(),
+                "-sseof".into(),
+                "-0.08".into(),
+                "-i".into(),
+                video_path.as_os_str().to_os_string(),
+                "-vframes".into(),
+                "1".into(),
+                "-q:v".into(),
+                "4".into(),
+                "-y".into(),
+                output_jpg.as_os_str().to_os_string(),
+            ],
+        ));
+    }
+    attempts
+}
+
+async fn convert_png_to_jpeg(png_path: &Path, jpg_path: &Path) -> Result<(), ToolError> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if let Some(parent) = jpg_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("create frame dir: {e}")))?;
+    }
+    let output = Command::new(&ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(png_path)
+        .args(["-q:v", "4", "-y"])
+        .arg(jpg_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("ffmpeg png->jpeg: {e}")))?;
+    if output.status.success() && frame_image_ready(jpg_path) {
+        Ok(())
+    } else {
+        Err(ToolError::ExecutionFailed(format!(
+            "ffmpeg png->jpeg failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+}
+
 async fn run_ffmpeg_frame_extract(
     ffmpeg: &Path,
     args: &[std::ffi::OsString],
@@ -341,11 +441,15 @@ async fn run_ffmpeg_frame_extract(
     }
 }
 
-fn frame_png_ready(path: &Path) -> bool {
+fn frame_image_ready(path: &Path) -> bool {
     path.is_file()
         && std::fs::metadata(path)
             .ok()
             .is_some_and(|meta| meta.len() > 64)
+}
+
+fn frame_png_ready(path: &Path) -> bool {
+    frame_image_ready(path)
 }
 
 /// Build a first-frame data URL for the next segment (required for multi-clip consistency).
@@ -354,18 +458,25 @@ pub async fn require_segment_chain_image_url(
     work_dir: &Path,
     seg_index: usize,
 ) -> Result<String, ToolError> {
-    let frame_path = work_dir.join(format!("seg_{seg_index}_last.png"));
-    if frame_png_ready(&frame_path) {
-        return png_file_to_data_url(&frame_path);
+    let frame_path = work_dir.join(format!("seg_{seg_index}_last.jpg"));
+    if frame_image_ready(&frame_path) {
+        return jpeg_file_to_data_url(&frame_path);
     }
-    extract_last_frame_png(video_path, &frame_path).await?;
-    if !frame_png_ready(&frame_path) {
+    let png_fallback = work_dir.join(format!("seg_{seg_index}_last.png"));
+    if frame_image_ready(&png_fallback) {
+        convert_png_to_jpeg(&png_fallback, &frame_path).await?;
+        if frame_image_ready(&frame_path) {
+            return jpeg_file_to_data_url(&frame_path);
+        }
+    }
+    extract_last_frame_jpeg(video_path, &frame_path).await?;
+    if !frame_image_ready(&frame_path) {
         return Err(ToolError::ExecutionFailed(format!(
-            "last-frame png missing after ffmpeg extract: {}",
+            "last-frame jpeg missing after ffmpeg extract: {}",
             frame_path.display()
         )));
     }
-    png_file_to_data_url(&frame_path)
+    jpeg_file_to_data_url(&frame_path)
 }
 
 /// Extract the opening frame of a clip as a character anchor for later segments.
@@ -373,9 +484,16 @@ pub async fn require_segment_anchor_image_url(
     video_path: &Path,
     work_dir: &Path,
 ) -> Result<String, ToolError> {
-    let frame_path = work_dir.join("seg_0_first.png");
-    if frame_png_ready(&frame_path) {
-        return png_file_to_data_url(&frame_path);
+    let frame_path = work_dir.join("seg_0_first.jpg");
+    if frame_image_ready(&frame_path) {
+        return jpeg_file_to_data_url(&frame_path);
+    }
+    let png_fallback = work_dir.join("seg_0_first.png");
+    if frame_image_ready(&png_fallback) {
+        convert_png_to_jpeg(&png_fallback, &frame_path).await?;
+        if frame_image_ready(&frame_path) {
+            return jpeg_file_to_data_url(&frame_path);
+        }
     }
     let ffmpeg = ensure_ffmpeg_ready().await?;
     if !video_path.is_file() {
@@ -387,20 +505,20 @@ pub async fn require_segment_anchor_image_url(
     let output = Command::new(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-ss", "0", "-i"])
         .arg(video_path)
-        .args(["-vframes", "1", "-q:v", "2", "-y"])
+        .args(["-vframes", "1", "-q:v", "4", "-y"])
         .arg(&frame_path)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("ffmpeg extract first frame: {e}")))?;
-    if !output.status.success() || !frame_png_ready(&frame_path) {
+    if !output.status.success() || !frame_image_ready(&frame_path) {
         return Err(ToolError::ExecutionFailed(format!(
             "ffmpeg extract first frame failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    png_file_to_data_url(&frame_path)
+    jpeg_file_to_data_url(&frame_path)
 }
 
 pub fn local_image_path_to_data_url(path: &Path) -> Result<String, ToolError> {
@@ -445,6 +563,18 @@ pub fn normalize_video_first_frame_url(url: &str) -> Result<String, ToolError> {
     Err(ToolError::ExecutionFailed(format!(
         "video first_frame image not found locally: {trimmed}"
     )))
+}
+
+pub fn jpeg_file_to_data_url(path: &Path) -> Result<String, ToolError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| ToolError::ExecutionFailed(format!("read frame jpeg: {e}")))?;
+    jpeg_bytes_to_data_url(&bytes)
+}
+
+pub fn jpeg_bytes_to_data_url(bytes: &[u8]) -> Result<String, ToolError> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
 /// Encode PNG bytes as a data URL for Seedance `first_frame` chaining.
@@ -707,7 +837,7 @@ mod tests {
 
     #[test]
     fn frame_png_ready_requires_nonempty_file() {
-        let dir = std::env::temp_dir().join(format!("hermes-frame-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("allo-frame-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("empty.png");
         std::fs::write(&path, b"").expect("write");
@@ -761,5 +891,16 @@ mod tests {
     fn png_data_url_roundtrip_prefix() {
         let url = png_bytes_to_data_url(b"\x89PNG").expect("data url");
         assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn chain_image_url_uses_jpeg_data_url() {
+        let dir = std::env::temp_dir().join(format!("allo-frame-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("seg_0_last.jpg");
+        std::fs::write(&path, [0xFF, 0xD8, 0xFF, 0x00].repeat(32)).expect("write");
+        let url = jpeg_file_to_data_url(&path).expect("url");
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

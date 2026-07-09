@@ -127,17 +127,30 @@ fn is_stale_running(record: &WorkflowRunRecord) -> bool {
         .unwrap_or(true)
 }
 
-pub fn record_is_resumable(record: &WorkflowRunRecord, target_duration_secs: Option<u32>) -> bool {
+pub fn record_is_resumable(
+    record: &WorkflowRunRecord,
+    target_duration_secs: Option<u32>,
+    actively_executing: bool,
+) -> bool {
     if !record.workflow_id.starts_with("long_") {
         return false;
     }
+
+    let work_dir = long_video_work_dir(&record.run_id);
+    let has_incomplete_checkpoint = read_long_video_checkpoint(&work_dir)
+        .is_some_and(|cp| !cp.is_complete());
+
     match record.status {
         WorkflowRunStatus::Failed => {}
+        WorkflowRunStatus::Running if actively_executing => return false,
+        WorkflowRunStatus::Running if !has_incomplete_checkpoint && !is_stale_running(record) => {
+            return false;
+        }
         WorkflowRunStatus::Running if is_stale_running(record) => {}
+        WorkflowRunStatus::Running => {}
         _ => return false,
     }
 
-    let work_dir = long_video_work_dir(&record.run_id);
     if let Some(cp) = read_long_video_checkpoint(&work_dir) {
         if cp.is_complete() {
             return false;
@@ -163,12 +176,14 @@ pub fn record_is_resumable(record: &WorkflowRunRecord, target_duration_secs: Opt
 pub fn find_resumable_long_video_run(
     store: &WorkflowRunStore,
     target_duration_secs: Option<u32>,
+    actively_executing: impl Fn(&str) -> bool,
 ) -> Option<WorkflowRunRecord> {
     if let Some(active) = read_active_job()
         && let Some(record) = store.get(&active.run_id)
         && record_is_resumable(
             &record,
             target_duration_secs.or(Some(active.target_duration_secs)),
+            actively_executing(&record.run_id),
         )
     {
         return Some(record);
@@ -177,7 +192,13 @@ pub fn find_resumable_long_video_run(
     store
         .list_records_newest_first()
         .into_iter()
-        .find(|record| record_is_resumable(record, target_duration_secs))
+        .find(|record| {
+            record_is_resumable(
+                record,
+                target_duration_secs,
+                actively_executing(&record.run_id),
+            )
+        })
 }
 
 pub fn user_wants_resume(params: &serde_json::Value, objective: Option<&str>) -> bool {
@@ -236,6 +257,23 @@ mod tests {
             artifacts: vec![],
             error: Some("credits".into()),
         };
-        assert!(record_is_resumable(&record, Some(20)));
+        assert!(record_is_resumable(&record, Some(20), false));
+    }
+
+    #[test]
+    fn running_with_checkpoint_resumable_when_not_actively_executing() {
+        let record = WorkflowRunRecord {
+            run_id: "r-running".into(),
+            workflow_id: "long_txt2video".into(),
+            status: WorkflowRunStatus::Running,
+            inputs: json!({"duration": 20}),
+            current_step: Some("generate".into()),
+            step_outputs: HashMap::from([("refine_prompt".into(), json!({}))]),
+            artifacts: vec![],
+            error: None,
+        };
+        // Without a checkpoint on disk this should still be false.
+        assert!(!record_is_resumable(&record, Some(20), false));
+        assert!(!record_is_resumable(&record, Some(20), true));
     }
 }

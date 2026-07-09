@@ -14,7 +14,7 @@ use crate::workflows::WorkflowPlan;
 use crate::workflows::definition::parse_workflow_plan;
 use crate::workflows::runner::WorkflowRunner;
 use crate::workflows::store::WorkflowRunStatus;
-use crate::workflows::templates::{builtin_template, default_template_inputs};
+use crate::workflows::templates::{builtin_template, default_template_inputs, suggest_template_id};
 
 pub struct MediaWorkflowRunHandler {
     runner: Arc<WorkflowRunner>,
@@ -39,28 +39,49 @@ impl ToolHandler for MediaWorkflowRunHandler {
             return Ok(serialize_run_result(&record));
         }
 
-        let plan: WorkflowPlan = if let Some(plan_val) = params.get("plan") {
+        let plan: WorkflowPlan = if let Some(plan_val) = params.get("plan").filter(|v| {
+            v.as_object().is_some_and(|obj| !obj.is_empty())
+        }) {
             parse_workflow_plan(plan_val.clone())
                 .map_err(|e| ToolError::InvalidParams(e))?
         } else {
-            let workflow_id = params
-                .get("workflow_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    ToolError::InvalidParams("provide 'plan' or 'workflow_id' + 'prompt'".into())
-                })?;
             let prompt = params
                 .get("prompt")
+                .or_else(|| params.get("objective"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("missing prompt".into()))?;
-            let mut workflow_id = workflow_id.to_string();
-            let default_duration = self.runner.executor().services.media.video.default_duration;
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let explicit_workflow_id = params
+                .get("workflow_id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+
+            let prompt = prompt.ok_or_else(|| {
+                ToolError::InvalidParams(
+                    "provide 'plan' (from media_workflow_plan), or 'workflow_id' + 'prompt'/'objective'. \
+                     Example: {\"workflow_id\":\"long_txt2video\",\"prompt\":\"...\",\"duration\":20}"
+                        .into(),
+                )
+            })?;
+
+            let has_image = params
+                .get("image_url")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.trim().is_empty());
+            let media_cfg = &self.runner.executor().services.media;
+            let mut workflow_id = explicit_workflow_id
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    suggest_template_id(prompt, has_image, &media_cfg.workflows.default_templates)
+                });
+            let default_duration = media_cfg.video.default_duration;
             let target_duration = params
                 .get("duration")
                 .and_then(|v| v.as_u64())
                 .map(|d| d as u32)
                 .unwrap_or_else(|| resolve_target_duration(None, prompt, default_duration));
-            let model = self.runner.executor().services.media.video.model.clone();
+            let model = media_cfg.video.model.clone();
             workflow_id = route_long_video_template(&workflow_id, target_duration, &model);
             let def = builtin_template(&workflow_id).ok_or_else(|| {
                 ToolError::InvalidParams(format!("unknown workflow_id: {workflow_id}"))
@@ -89,8 +110,11 @@ impl ToolHandler for MediaWorkflowRunHandler {
 
         if !force_new
             && plan.workflow_id.starts_with("long_")
-            && let Some(prior) =
-                find_resumable_long_video_run(self.runner.store().as_ref(), Some(target_duration))
+            && let Some(prior) = find_resumable_long_video_run(
+                self.runner.store().as_ref(),
+                Some(target_duration),
+                |run_id| self.runner.control().contains(run_id),
+            )
         {
             nomi_types::report_tool_progress(format!(
                 "检测到未完成的长视频任务（run_id={}），正在续传已保存的分段…",
@@ -157,15 +181,27 @@ impl ToolHandler for MediaWorkflowRunHandler {
         );
         props.insert(
             "plan".into(),
-            json!({"type":"object","description":"Plan object from media_workflow_plan"}),
+            json!({"type":"object","description":"Plan object from media_workflow_plan (preferred)"}),
         );
         props.insert(
             "workflow_id".into(),
-            json!({"type":"string","description":"Builtin template id when plan is omitted"}),
+            json!({"type":"string","description":"Builtin template id when plan is omitted (e.g. long_txt2video). Optional if prompt clearly implies the workflow."}),
         );
         props.insert(
             "prompt".into(),
-            json!({"type":"string","description":"Objective when plan is omitted"}),
+            json!({"type":"string","description":"User objective when plan is omitted. Required unless plan or resume_run_id is provided."}),
+        );
+        props.insert(
+            "objective".into(),
+            json!({"type":"string","description":"Alias for prompt when plan is omitted."}),
+        );
+        props.insert(
+            "duration".into(),
+            json!({"type":"integer","description":"Video duration in seconds when plan is omitted (e.g. 20 for long video)."}),
+        );
+        props.insert(
+            "image_url".into(),
+            json!({"type":"string","description":"Optional reference image URL when plan is omitted (img2video)."}),
         );
         props.insert(
             "wait".into(),
@@ -176,7 +212,7 @@ impl ToolHandler for MediaWorkflowRunHandler {
         );
         tool_schema(
             "media_workflow_run",
-            "Execute a media workflow plan. Default wait=true blocks until complete (no LLM polling). Pass the plan object from media_workflow_plan verbatim.",
+            "Execute a media workflow. Prefer plan from media_workflow_plan. Or pass workflow_id+prompt (or prompt alone). Empty {} is invalid. Default wait=true blocks until complete.",
             JsonSchema::object(props, vec![]),
         )
     }
@@ -218,7 +254,7 @@ fn serialize_run_result(record: &crate::workflows::store::WorkflowRunRecord) -> 
         "artifacts": record.artifacts,
         "step_outputs": record.step_outputs,
         "media_tags": media_tags,
-        "manifest_path": format!("~/.hermes/media/workflows/{}/manifest.json", record.run_id),
+        "manifest_path": format!("~/.nomifun/media/workflows/{}/manifest.json", record.run_id),
         "hint": if hint_parts.is_empty() { Value::Null } else { json!(hint_parts.join("\n\n")) },
     });
     if let (Some(obj), Some(prompts)) = (body.as_object_mut(), prompt_payload.as_object()) {

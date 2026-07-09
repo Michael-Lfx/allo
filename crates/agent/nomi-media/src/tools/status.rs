@@ -57,7 +57,7 @@ impl ToolHandler for MediaWorkflowStatusHandler {
 
         let mut out = json!({
             "run": record,
-            "manifest_hint": format!("~/.hermes/media/workflows/{}/manifest.json", record.run_id),
+            "manifest_hint": format!("~/.nomifun/media/workflows/{}/manifest.json", record.run_id),
             "waited": wait,
         });
         let prompt_payload = workflow_prompt_json(&record);

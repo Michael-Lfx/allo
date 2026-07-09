@@ -115,7 +115,11 @@ impl WorkflowRunner {
             )));
         };
         if record.status == WorkflowRunStatus::Running
-            && !crate::long_video_active::record_is_resumable(&record, None)
+            && !crate::long_video_active::record_is_resumable(
+                &record,
+                None,
+                self.control.contains(run_id),
+            )
         {
             return Ok(run_id.to_string());
         }

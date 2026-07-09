@@ -35,6 +35,10 @@ pub fn wire_flowy_media(
     config: &GatewayConfig,
     data_dir: &Path,
 ) -> WireFlowyMediaResult {
+    // Ensure ffmpeg auto-install hooks are registered once media tools are wired.
+    // Idempotent: subsequent calls keep the first registered hooks.
+    nomi_config::register_dep_gate_hooks();
+
     let mut result = WireFlowyMediaResult::default();
     if !flowy_media_exposed(config) {
         debug!(
