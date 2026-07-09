@@ -26,6 +26,15 @@ describe('Guid homepage single-screen layout', () => {
     expect(source.includes('onFillPrompt')).toBe(false);
   });
 
+  test('allows vertical scroll on guidContainer so short viewports can reach editor-host content', () => {
+    const css = readSource(new URL('../index.module.css', import.meta.url));
+    const block =
+      css.match(/\.guidContainer\s*\{[^}]*\}/)?.[0] ?? '';
+
+    expect(block.includes('overflow-y: auto')).toBe(true);
+    expect(block.includes('overflow: hidden')).toBe(false);
+  });
+
   test('contains docs, promo video, and contact feedback cards without recent prompt data access', () => {
     const source = readSource(new URL('./GuidResourceCards.tsx', import.meta.url));
 

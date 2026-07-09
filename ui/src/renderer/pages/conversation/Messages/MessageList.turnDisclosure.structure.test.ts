@@ -91,9 +91,15 @@ describe('MessageList turn completion disclosure structure', () => {
     expect(permissionCase.match(/hasDetail: true/g) ?? []).toHaveLength(2);
   });
 
-  test('routes context compaction tips through process receipts instead of assistant text', () => {
-    expect(source.includes('isContextCompressionTip')).toBe(true);
-    expect(source.includes("if (isContextCompressionTip(item)) return 'process';")).toBe(true);
+  test('routes context compaction and error tips through process evidence instead of assistant text', () => {
+    const roleSource =
+      source.match(/const getProcessedItemRole = \(item: IRenderableItem\): TurnDisclosureInputItem\['role'\] => \{[\s\S]*?\n\};/)?.[0] ??
+      '';
+    expect(roleSource.includes("case 'tips':")).toBe(true);
+    expect(roleSource.includes("item.content.type === 'error'")).toBe(true);
+    expect(roleSource.includes('isContextCompressionTip(item)')).toBe(true);
+    expect(roleSource.includes("return 'process';")).toBe(true);
+    expect(roleSource.includes("return 'assistant';")).toBe(true);
   });
 
   test('keeps the implementation scoped to the message content area', () => {

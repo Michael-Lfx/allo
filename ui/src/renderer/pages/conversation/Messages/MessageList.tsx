@@ -193,7 +193,9 @@ const getProcessedItemRole = (item: IRenderableItem): TurnDisclosureInputItem['r
     case 'text':
       return item.position === 'right' ? 'user' : 'assistant';
     case 'tips':
-      if (isContextCompressionTip(item)) return 'process';
+      // Error tips are failure evidence for the turn banner, not a final answer.
+      // Context-compaction tips are process receipts. Other tips stay assistant.
+      if (item.content.type === 'error' || isContextCompressionTip(item)) return 'process';
       return 'assistant';
     case 'thinking':
       return 'process_content';

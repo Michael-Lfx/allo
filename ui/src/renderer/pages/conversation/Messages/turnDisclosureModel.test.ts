@@ -250,7 +250,7 @@ describe('buildTurnDisclosureItems', () => {
     expect(disclosure.processItemIds).toEqual(['permission']);
   });
 
-  test('surfaces failed process state on a completed disclosure', () => {
+  test('does not fail the turn banner when tools erred but a final answer exists', () => {
     const result = buildTurnDisclosureItems(
       [
         item('user', 'user', { createdAt: 1000 }),
@@ -264,7 +264,59 @@ describe('buildTurnDisclosureItems', () => {
     expect(disclosure.type).toBe('turn_disclosure');
     if (disclosure.type !== 'turn_disclosure') return;
     expect(disclosure.defaultCollapsed).toBe(true);
+    expect(disclosure.state).toBe('completed');
+    expect(disclosure.processItemStates.tool).toBe('failed');
+  });
+
+  test('fails the turn banner when the turn closed with failure evidence and no final answer', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('tool', 'process', { createdAt: 2000, processState: 'failed' }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
     expect(disclosure.state).toBe('failed');
+    expect(disclosure.processItemIds).toEqual(['tool']);
+  });
+
+  test('fails the turn banner when the only trailing evidence is a failed error tip process item', () => {
+    // Error tips must be mapped to role=process (not assistant) by MessageList;
+    // otherwise hasFinalAssistant would be true and the banner would show completed.
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('tool', 'process', { createdAt: 2000, processState: 'failed' }),
+        item('error-tip', 'process', { createdAt: 3000, processState: 'failed' }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('failed');
+    expect(disclosure.processItemIds).toEqual(['tool', 'error-tip']);
+  });
+
+  test('keeps cancel as canceled even when tools also failed', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('tool', 'process', { createdAt: 2000, processState: 'failed' }),
+        item('cancel', 'process', { createdAt: 2500, processState: 'canceled' }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('canceled');
   });
 
   test('keeps a completed process-only tail inside the live disclosure until the request closes', () => {

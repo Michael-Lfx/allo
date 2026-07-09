@@ -86,6 +86,17 @@ const getProcessStartAt = (entry: TurnDisclosureInputItem): number => entry.proc
 
 const getProcessEndAt = (entry: TurnDisclosureInputItem): number => entry.processEndedAt ?? entry.createdAt;
 
+/**
+ * Turn-level banner state (「处理失败 / 已处理 / …」).
+ *
+ * Failure is answer-scoped, not tool-scoped:
+ * - 「处理失败」only when the turn closed without a final assistant reply AND
+ *   there is failure evidence (Error stream / model fault / hard interrupt).
+ * - Intermediate tool errors (Bash path miss, Read miss, …) stay visible on
+ *   individual process rows via `processItemStates`, but must not paint the
+ *   whole turn red once the agent produced a final answer.
+ * - User cancel is its own state, never remapped to failed.
+ */
 const resolveDisclosureState = (
   processItems: TurnDisclosureInputItem[],
   options: { isClosed: boolean; hasFinalAssistant: boolean }
@@ -93,8 +104,8 @@ const resolveDisclosureState = (
   const states = processItems.map((entry) => getEffectiveProcessState(entry, options));
   if (states.includes('waiting')) return 'waiting';
   if (states.includes('running')) return 'running';
-  if (states.includes('failed')) return 'failed';
   if (states.includes('canceled')) return 'canceled';
+  if (!options.hasFinalAssistant && states.includes('failed')) return 'failed';
   return 'completed';
 };
 

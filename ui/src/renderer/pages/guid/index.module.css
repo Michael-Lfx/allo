@@ -1963,11 +1963,13 @@ button.guidResourceCard:focus-visible {
   }
 }
 
-/* 首页只保留对话一屏，禁止纵向滚动露出下方内容 */
+/* 首页以对话舞台为主；矮视口仍需纵向滚动，才能看到输入框下方的描述/示例提示 */
 .guidContainer {
   height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   position: relative;
+  -webkit-overflow-scrolling: touch;
 }
 
 .guidPrimaryStage {

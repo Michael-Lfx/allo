@@ -18,9 +18,25 @@ const FILE_UNCHANGED_STUB: &str = "File unchanged since last read. The content f
      tool_result in this conversation is still current — refer to that \
      instead of re-reading.";
 
+/// Soft-miss guidance when the model probes for optional session memory.
+/// Must stay `is_error: false` so orchestration does not cascade-skip the
+/// rest of the turn (agents often Read MEMORY.md at startup even when the
+/// runtime already injects memory, or when no memory file exists yet).
+const MEMORY_MD_SOFT_MISS: &str = "No MEMORY.md found; continue without prior memory. \
+     Do not retry alternate MEMORY.md paths in this turn.";
+
 /// Image read returns the bytes to the LLM as a ToolImage instead of the
 /// "(binary file)" stub. Capped so a huge image cannot blow up the request.
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// True when `path` refers to the conventional optional memory index file
+/// (`MEMORY.md` / `memory.md`), including under a `memory/` directory.
+fn is_optional_memory_md(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("MEMORY.md"))
+}
 
 /// MIME type for image extensions the LLM API accepts as image content blocks
 /// (jpeg/png/gif/webp). bmp/tiff keep the binary stub; svg is text and is read
@@ -141,6 +157,16 @@ impl Tool for ReadTool {
         let content = match std::fs::read(file_path) {
             Ok(bytes) => bytes,
             Err(e) => {
+                // Optional MEMORY.md probes are expected to miss on fresh
+                // temp workspaces. Soft-miss so the turn can continue
+                // (avoids cascade-skip of parallel Bash/Glob calls).
+                if e.kind() == std::io::ErrorKind::NotFound && is_optional_memory_md(file_path) {
+                    return ToolResult {
+                        content: MEMORY_MD_SOFT_MISS.to_string(),
+                        is_error: false,
+                        images: Vec::new(),
+                    };
+                }
                 return ToolResult {
                     content: format!("Failed to read file {}: {}", file_path, e),
                     is_error: true,
@@ -309,6 +335,50 @@ mod tests {
     async fn test_read_nonexistent_file() {
         let tool = ReadTool::new(None, None);
         let input = json!({ "file_path": "/tmp/nonexistent_file_abc123.txt" });
+        let result = tool.execute(input).await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Failed to read file"));
+    }
+
+    #[tokio::test]
+    async fn missing_memory_md_is_soft_miss_not_hard_error() {
+        let dir = tempdir().unwrap();
+        let memory_path = dir.path().join("memory").join("MEMORY.md");
+        let tool = ReadTool::new(None, None);
+        let input = json!({ "file_path": memory_path.to_str().unwrap() });
+        let result = tool.execute(input).await;
+
+        assert!(
+            !result.is_error,
+            "missing MEMORY.md must not halt the turn: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("No MEMORY.md found"),
+            "expected soft-miss guidance, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_memory_md_at_workspace_root_is_soft_miss() {
+        let dir = tempdir().unwrap();
+        let memory_path = dir.path().join("MEMORY.md");
+        let tool = ReadTool::new(None, None);
+        let input = json!({ "file_path": memory_path.to_str().unwrap() });
+        let result = tool.execute(input).await;
+
+        assert!(!result.is_error, "got: {}", result.content);
+        assert!(result.content.contains("No MEMORY.md found"));
+    }
+
+    #[tokio::test]
+    async fn missing_non_memory_file_remains_hard_error() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory").join("notes.txt");
+        let tool = ReadTool::new(None, None);
+        let input = json!({ "file_path": path.to_str().unwrap() });
         let result = tool.execute(input).await;
 
         assert!(result.is_error);
