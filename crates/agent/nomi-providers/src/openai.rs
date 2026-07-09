@@ -1591,9 +1591,6 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id: bool) -> V
 
             if let Some(id) = tc["id"].as_str() {
                 apply_provider_tool_call_id(acc, id);
-                if let Some(text_acc) = state.text_tool_calls.get_mut(index) {
-                    text_acc.id = acc.id.clone();
-                }
             }
             // Only overwrite when non-empty — some third-party APIs send `"name":""`
             // in every delta chunk which would erase the real name from the first chunk.
@@ -1608,6 +1605,13 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id: bool) -> V
             }
             if let Some(event) = maybe_tool_progress_event(acc, auto_tool_id) {
                 events.push(event);
+            }
+            // Keep text-channel progress ids aligned once structured-tool fields are settled.
+            if tc["id"].as_str().is_some() {
+                let synced_id = state.tool_calls[index].id.clone();
+                if let Some(text_acc) = state.text_tool_calls.get_mut(index) {
+                    text_acc.id = synced_id;
+                }
             }
         }
     }
