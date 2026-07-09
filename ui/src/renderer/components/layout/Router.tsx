@@ -6,6 +6,7 @@ import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
+import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const AssistantSettings = React.lazy(() => import('@renderer/pages/settings/AssistantSettings'));
@@ -132,10 +133,7 @@ const TrayLabelsMount: React.FC = () => {
 const CompanionNavigateListener: React.FC = () => {
   const navigate = useNavigate();
   useEffect(() => {
-    const isTauri =
-      typeof window !== 'undefined' &&
-      (Boolean((window as { isTauri?: boolean }).isTauri) || '__TAURI_INTERNALS__' in window);
-    if (!isTauri) return;
+    if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void import('@tauri-apps/api/event').then(({ listen }) =>

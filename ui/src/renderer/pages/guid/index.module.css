@@ -1542,6 +1542,10 @@ button.guidResourceCard:focus-visible {
   width: 100%;
   gap: 8px;
   margin-top: auto;
+  /* The 32px "+" button normally sets the row height. Keep that height when
+     the toolbar is hidden during voice recording (cluster alone is 26px),
+     otherwise the composer jumps by ~6px when recording starts/stops. */
+  min-height: 32px;
 }
 
 .actionTools {
@@ -1563,17 +1567,7 @@ button.guidResourceCard:focus-visible {
 .actionEntry :global(.arco-btn:active),
 .actionEntry :global(.arco-btn:focus),
 .actionEntry :global(.arco-btn:focus-visible) {
-  width: 26px !important;
-  height: 26px !important;
-  min-width: 26px !important;
-  padding: 0 !important;
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}
-
-.actionEntry :global(.arco-btn:hover) {
-  background: var(--color-fill-3) !important;
+  flex-shrink: 0 !important;
 }
 
 .actionFileAttachBtn:global(.arco-btn) {
@@ -1642,6 +1636,41 @@ button.guidResourceCard:focus-visible {
   flex-shrink: 0;
   margin-left: auto;
   min-width: 0;
+}
+
+/* While recording/transcribing, hide the toolbar icons (attach button, model /
+   permission pills, preset tag) so the speech waveform owns the row. Mirrors
+   the .sendbox-tools/.sendbox-actions rules in sendbox.css. */
+.actionRow:has(:global(.speech-input-control--active)) .actionTools {
+  display: none;
+}
+
+.actionSubmit:has(:global(.speech-input-control--active)) > :not(:global(.composer-submit-cluster)) {
+  display: none;
+}
+
+/* Guid send button mirrors sendbox.css — keep only actionSubmit scoping for load order. */
+.actionSubmit :global(.send-button-custom.arco-btn.arco-btn-shape-circle) {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+}
+
+.actionSubmit :global(.send-button-custom.arco-btn-primary.arco-btn-disabled),
+.actionSubmit :global(.send-button-custom.arco-btn-primary:disabled) {
+  background: #d3d4d9 !important;
+  background-color: #d3d4d9 !important;
+  background-image: none !important;
+  border-color: #d3d4d9 !important;
+  opacity: 1 !important;
+}
+
+:global([data-theme='dark']) .actionSubmit :global(.send-button-custom.arco-btn-primary.arco-btn-disabled),
+:global([data-theme='dark']) .actionSubmit :global(.send-button-custom.arco-btn-primary:disabled) {
+  background-color: color-mix(in srgb, var(--color-fill-4) 94%, var(--color-border-2)) !important;
+  border-color: color-mix(in srgb, var(--color-fill-4) 96%, var(--color-border-2)) !important;
 }
 
 .workspaceFootnote {

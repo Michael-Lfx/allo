@@ -36,7 +36,8 @@ pub use doctor::{DoctorReport, run_doctor};
 pub use error::{CloudError, ServerClientError};
 pub use flowy::{
     ClawModelEntry, CreateVideoTaskResponse, CreditsBalance, CreditsCheckinResponse,
-    FlowyApiClient, ImageGenerationRequest, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO, UserMe,
+    FlowyApiClient, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
+    MODEL_CATEGORY_VIDEO, UserMe,
     VideoContentImage, VideoCreateParams, VideoTaskRecord, resolve_model_in_catalog,
 };
 pub use llm::ServerLlmProvider;

@@ -4,34 +4,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ipcBridge } from '@/common';
+import { speechToText } from '@/common/adapter/ipcBridge';
+import { isBackendHttpError, isBackendRequestError } from '@/common/adapter/httpBridge';
 import type { SpeechToTextResult } from '@/common/types/provider/speech';
-import { isElectronDesktop } from '@/renderer/utils/platform';
 
 const MAX_AUDIO_FILE_SIZE_MB = 30;
 const MAX_AUDIO_FILE_SIZE_BYTES = MAX_AUDIO_FILE_SIZE_MB * 1024 * 1024;
 
-const getAudioExtension = (mimeType: string) => {
-  switch (mimeType) {
-    case 'audio/mp4':
-    case 'audio/x-m4a':
-      return 'm4a';
-    case 'audio/mpeg':
-      return 'mp3';
-    case 'audio/ogg':
-    case 'audio/ogg;codecs=opus':
-      return 'ogg';
-    case 'audio/wav':
-    case 'audio/wave':
-      return 'wav';
-    default:
-      return 'webm';
-  }
-};
-
-const createAudioFileName = (mimeType: string) => {
-  return `speech-input.${getAudioExtension(mimeType)}`;
-};
+const STT_CONFIG_ERROR_CODES = new Set([
+  'STT_DISABLED',
+  'STT_OPENAI_NOT_CONFIGURED',
+  'STT_DEEPGRAM_NOT_CONFIGURED',
+  'STT_CLAW_NOT_CONFIGURED',
+]);
 
 const ensureAudioSize = (blob: Blob) => {
   if (blob.size > MAX_AUDIO_FILE_SIZE_BYTES) {
@@ -39,69 +24,31 @@ const ensureAudioSize = (blob: Blob) => {
   }
 };
 
-const parseWebResponse = async (response: XMLHttpRequest): Promise<SpeechToTextResult> => {
-  const payload = JSON.parse(response.responseText) as {
-    data?: SpeechToTextResult;
-    msg?: string;
-    success: boolean;
-  };
-
-  if (!payload.success || !payload.data) {
-    throw new Error(payload.msg || 'STT_REQUEST_FAILED');
+const mapSttTransportError = (error: unknown): never => {
+  if (isBackendRequestError(error)) {
+    throw new Error('STT_NETWORK_ERROR');
   }
 
-  return payload.data;
+  if (isBackendHttpError(error)) {
+    if (error.status === 413) {
+      throw new Error('STT_FILE_TOO_LARGE');
+    }
+    if (error.code && STT_CONFIG_ERROR_CODES.has(error.code)) {
+      throw new Error(error.code);
+    }
+    const detail = error.backendMessage || `${error.status}`;
+    throw new Error(`STT_REQUEST_FAILED:${detail}`);
+  }
+
+  throw error instanceof Error ? error : new Error(String(error));
 };
 
 export async function transcribeAudioBlob(blob: Blob, languageHint?: string): Promise<SpeechToTextResult> {
   ensureAudioSize(blob);
 
-  const mimeType = blob.type || 'audio/webm';
-  const file_name = createAudioFileName(mimeType);
-
-  if (isElectronDesktop()) {
-    const audioBuffer = new Uint8Array(await blob.arrayBuffer());
-    return ipcBridge.speechToText.transcribe.invoke({
-      audioBuffer: Array.from(audioBuffer),
-      file_name,
-      languageHint,
-      mimeType,
-    });
+  try {
+    return await speechToText.transcribe.invoke({ blob, languageHint });
+  } catch (error) {
+    return mapSttTransportError(error);
   }
-
-  const formData = new FormData();
-  formData.append('audio', blob, file_name);
-  formData.append('mimeType', mimeType);
-  if (languageHint) {
-    formData.append('languageHint', languageHint);
-  }
-
-  return new Promise<SpeechToTextResult>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/stt');
-    xhr.withCredentials = true;
-
-    xhr.addEventListener('load', () => {
-      if (xhr.status === 413) {
-        reject(new Error('STT_FILE_TOO_LARGE'));
-        return;
-      }
-      if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(`STT_REQUEST_FAILED:${xhr.status} ${xhr.statusText}`));
-        return;
-      }
-
-      parseWebResponse(xhr).then(resolve).catch(reject);
-    });
-
-    xhr.addEventListener('error', () => {
-      reject(new Error('STT_NETWORK_ERROR'));
-    });
-
-    xhr.addEventListener('abort', () => {
-      reject(new Error('STT_ABORTED'));
-    });
-
-    xhr.send(formData);
-  });
 }

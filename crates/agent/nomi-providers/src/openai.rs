@@ -1606,11 +1606,24 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id: bool) -> V
             if let Some(event) = maybe_tool_progress_event(acc, auto_tool_id) {
                 events.push(event);
             }
+            // Keep text-channel progress ids aligned once structured-tool fields are settled.
+            if tc["id"].as_str().is_some() {
+                let synced_id = state.tool_calls[index].id.clone();
+                if let Some(text_acc) = state.text_tool_calls.get_mut(index) {
+                    text_acc.id = synced_id;
+                }
+            }
         }
     }
 
     if state.tool_calls.is_empty() {
-        events.extend(text_tool_progress_events(state));
+        let structured_delta = delta
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .is_some_and(|calls| !calls.is_empty());
+        if !structured_delta {
+            events.extend(text_tool_progress_events(state));
+        }
     }
 
     // Check finish_reason — defer Done until [DONE] so the trailing usage

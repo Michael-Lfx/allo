@@ -5,6 +5,7 @@ pub mod routes;
 pub mod shell;
 pub mod state;
 pub mod stt;
+pub(crate) mod stt_claw;
 pub(crate) mod stt_deepgram;
 pub(crate) mod stt_openai;
 

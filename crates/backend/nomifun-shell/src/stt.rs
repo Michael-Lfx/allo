@@ -59,6 +59,7 @@ impl SttService {
                 let deepgram_config = config.deepgram.as_ref().ok_or(SttError::DeepgramNotConfigured)?;
                 stt_deepgram::transcribe(&client, deepgram_config, audio_data, mime_type, language_hint).await
             }
+            SpeechToTextProvider::Claw => Err(SttError::ClawNotConfigured),
         }
     }
 }

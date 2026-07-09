@@ -52,6 +52,7 @@ pub struct OpenFolderWithRequest {
 pub enum SpeechToTextProvider {
     Openai,
     Deepgram,
+    Claw,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,6 +196,7 @@ mod tests {
             serde_json::to_value(SpeechToTextProvider::Deepgram).unwrap(),
             "deepgram"
         );
+        assert_eq!(serde_json::to_value(SpeechToTextProvider::Claw).unwrap(), "claw");
     }
 
     #[test]
@@ -203,6 +205,8 @@ mod tests {
         assert_eq!(o, SpeechToTextProvider::Openai);
         let d: SpeechToTextProvider = serde_json::from_str(r#""deepgram""#).unwrap();
         assert_eq!(d, SpeechToTextProvider::Deepgram);
+        let c: SpeechToTextProvider = serde_json::from_str(r#""claw""#).unwrap();
+        assert_eq!(c, SpeechToTextProvider::Claw);
     }
 
     #[test]

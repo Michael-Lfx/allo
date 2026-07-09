@@ -1,0 +1,29 @@
+/**
+ * @license
+ * Copyright 2025-2026 Flowy (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { readFileSync } from 'node:fs';
+import { describe, expect, test } from 'bun:test';
+
+const readSource = (url: URL) => readFileSync(url, 'utf8');
+
+describe('ComposerSubmitCluster', () => {
+  test('empty draft renders speech without always-on disabled send', () => {
+    const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
+
+    expect(source.includes('hasDraft')).toBe(true);
+    expect(source.includes('SpeechInputButton')).toBe(true);
+    expect(source.includes("data-testid={sendTestId}")).toBe(true);
+    expect(source.includes('showSendButton = hasDraft && !autoWorkMode')).toBe(true);
+  });
+
+  test('autoWorkMode renders robot button alongside speech', () => {
+    const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
+
+    expect(source.includes('autoWorkMode')).toBe(true);
+    expect(source.includes('Robot')).toBe(true);
+    expect(source.includes('composer-autowork-btn')).toBe(true);
+  });
+});

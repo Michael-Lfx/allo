@@ -142,6 +142,7 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
       <Button
         type='secondary'
         shape='circle'
+        className='sendbox-composer-plus-btn'
         icon={plusIcon}
         onClick={openFileSelector}
         data-testid='nomi-attach-folder-btn'
@@ -315,6 +316,7 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
         <Button
           type='secondary'
           shape='circle'
+          className='sendbox-composer-plus-btn'
           icon={plusIcon}
           loading={uploading}
           disabled={uploading}

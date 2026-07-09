@@ -21,6 +21,7 @@ import { useDeepLink } from '@renderer/hooks/system/useDeepLink';
 import { useNotificationClick } from '@renderer/hooks/system/useNotificationClick';
 import { useDirectorySelection } from '@renderer/hooks/file/useDirectorySelection';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
+import { SEND_BUTTON_GUARD_CSS, SEND_BUTTON_GUARD_STYLE_ID } from '@renderer/utils/theme/sendButtonGuardCss';
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
@@ -250,49 +251,78 @@ const Layout: React.FC<{
     void loadAndHealCustomCss();
   }, [location.pathname, location.search, location.hash, loadAndHealCustomCss]);
 
-  // 注入自定义 CSS / Inject custom CSS into document head
+  // 注入自定义 CSS + send-button guard（单一 observer，避免两个 style 标签互相抢 last 导致内存暴涨）
   useEffect(() => {
-    const styleId = 'user-defined-custom-css';
+    const customStyleId = 'user-defined-custom-css';
 
-    // 跨窗口同步：把当前生效的 customCss 广播给不挂 Layout 的独立窗口（桌宠），
-    // 使其气泡/输入框 chrome 实时跟随氛围预设。这是 customCss 变化的单一汇聚点
-    // （apply/heal/clear 都经 setCustomCss 流到本 effect），空串也广播以便对端清除。
     broadcastCustomCssSync(customCss);
 
-    if (!customCss) {
-      document.getElementById(styleId)?.remove();
-      return;
-    }
+    const wrappedCss = customCss ? processCustomCss(customCss) : '';
 
-    const wrappedCss = processCustomCss(customCss);
+    const upsertStyle = (id: string, content: string): HTMLStyleElement => {
+      let styleEl = document.getElementById(id) as HTMLStyleElement | null;
+      if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = id;
+        styleEl.type = 'text/css';
+        document.head.appendChild(styleEl);
+      }
+      if (styleEl.textContent !== content) {
+        styleEl.textContent = content;
+      }
+      return styleEl;
+    };
 
-    const ensureStyleAtEnd = () => {
-      let styleEl = document.getElementById(styleId) as HTMLStyleElement | null;
+    const ensureInjectedStyles = () => {
+      let customEl: HTMLStyleElement | null = null;
+      if (customCss) {
+        customEl = upsertStyle(customStyleId, wrappedCss);
+      } else {
+        document.getElementById(customStyleId)?.remove();
+      }
 
-      if (styleEl && styleEl.textContent === wrappedCss && styleEl === document.head.lastElementChild) {
+      const guardEl = upsertStyle(SEND_BUTTON_GUARD_STYLE_ID, SEND_BUTTON_GUARD_CSS);
+
+      const guardIsLast = guardEl === document.head.lastElementChild;
+      const customBeforeGuard = !customEl || customEl.nextElementSibling === guardEl;
+      if (guardIsLast && customBeforeGuard) {
         return;
       }
 
-      styleEl?.remove();
-      styleEl = document.createElement('style');
-      styleEl.id = styleId;
-      styleEl.type = 'text/css';
-      styleEl.textContent = wrappedCss;
-      document.head.appendChild(styleEl);
+      if (customEl) {
+        guardEl.before(customEl);
+      }
+      if (guardEl !== document.head.lastElementChild) {
+        document.head.appendChild(guardEl);
+      }
     };
 
-    ensureStyleAtEnd();
+    ensureInjectedStyles();
 
     const observer = new MutationObserver((mutations) => {
-      const hasNewStyle = mutations.some((mutation) =>
-        Array.from(mutation.addedNodes).some((node) => node.nodeName === 'STYLE' || node.nodeName === 'LINK')
+      const touchedByOtherStyle = mutations.some((mutation) =>
+        Array.from(mutation.addedNodes).some((node) => {
+          if (node.nodeName !== 'STYLE' && node.nodeName !== 'LINK') {
+            return false;
+          }
+          const el = node as HTMLElement;
+          return el.id !== customStyleId && el.id !== SEND_BUTTON_GUARD_STYLE_ID;
+        })
       );
 
-      if (hasNewStyle) {
-        const element = document.getElementById(styleId);
-        if (element && element !== document.head.lastElementChild) {
-          ensureStyleAtEnd();
-        }
+      if (!touchedByOtherStyle) {
+        return;
+      }
+
+      const guardEl = document.getElementById(SEND_BUTTON_GUARD_STYLE_ID);
+      const customEl = document.getElementById(customStyleId);
+      const orderWrong =
+        !guardEl ||
+        guardEl !== document.head.lastElementChild ||
+        (customCss && (!customEl || customEl.nextElementSibling !== guardEl));
+
+      if (orderWrong) {
+        ensureInjectedStyles();
       }
     });
 
@@ -300,7 +330,8 @@ const Layout: React.FC<{
 
     return () => {
       observer.disconnect();
-      document.getElementById(styleId)?.remove();
+      document.getElementById(customStyleId)?.remove();
+      document.getElementById(SEND_BUTTON_GUARD_STYLE_ID)?.remove();
     };
   }, [customCss]);
 

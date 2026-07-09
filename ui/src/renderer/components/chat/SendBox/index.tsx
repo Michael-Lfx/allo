@@ -25,7 +25,7 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import { blurActiveElement, shouldBlockMobileInputFocus } from '@/renderer/utils/ui/focus';
 import { Button, Input, Message, Tag } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import { ArrowUp, CloseSmall, Lightning, Plus, Quote } from '@icon-park/react';
+import { CloseSmall, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
 import type { TFunction } from 'i18next';
 import { theme } from '@/platform';
@@ -43,7 +43,7 @@ import { useUploadState } from '@renderer/hooks/file/useUploadState';
 import { useAbortUploadsOnConversationChange } from '@renderer/hooks/file/useAbortUploadsOnConversationChange';
 import UploadProgressBar from '@renderer/components/media/UploadProgressBar';
 import { allSupportedExts } from '@renderer/services/FileService';
-import SpeechInputButton from '@/renderer/components/chat/SpeechInputButton';
+import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory, isCaretOnFirstLine } from '@/renderer/utils/chat/messageHistory';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
@@ -1406,77 +1406,29 @@ const SendBox: React.FC<{
 
   const hasDraftToSend = input.trim().length > 0 || domSnippets.length > 0;
 
-  // Calculate button disabled state
-  const isButtonDisabled = disabled || isUploading || (!input.trim() && domSnippets.length === 0);
+  const isProcessing = isLoading || loading;
+  const showStopOnly =
+    isProcessing &&
+    (!allowSendWhileLoading || compactActions || !hasDraftToSend || disabled || isUploading);
 
-  // Reusable send button component
-  const sendButton = (
-    <Button
-      shape='circle'
-      type='primary'
-      disabled={isButtonDisabled}
-      className='send-button-custom'
-      icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
-      onClick={() => {
-        sendMessageHandler();
-      }}
-      data-testid='sendbox-send-btn'
+  const composerSubmitCluster = (
+    <ComposerSubmitCluster
+      hasDraft={hasDraftToSend}
+      loading={isProcessing}
+      disabled={disabled}
+      isUploading={isUploading}
+      speechLocale={speechLocale}
+      onSend={sendMessageHandler}
+      onSpeechTranscript={handleSpeechTranscript}
+      showStop={showStopOnly}
+      onStop={stopHandler}
+      showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
+      steerAvailable={steerAvailable}
+      onSteer={steerMessageHandler}
+      speechHidden={isMobileCompact}
+      sendTestId='sendbox-send-btn'
     />
   );
-
-  const stopButton = (
-    <Button
-      shape='circle'
-      type='secondary'
-      className='bg-animate sendbox-stop-button'
-      icon={<div className='mx-auto size-12px bg-6'></div>}
-      onClick={stopHandler}
-    ></Button>
-  );
-
-  // Secondary "steer now" action — interjects the draft into the running turn
-  // instead of enqueuing it. Mirrors sendButton's visual language.
-  const steerButton = (
-    <Button
-      shape='circle'
-      type='primary'
-      disabled={isButtonDisabled}
-      className='send-button-custom sendbox-steer-button'
-      title={t('conversation.steer.button')}
-      icon={<Lightning theme='filled' size='14' fill='white' strokeWidth={5} />}
-      onClick={() => {
-        steerMessageHandler();
-      }}
-      data-testid='sendbox-steer-btn'
-    />
-  );
-
-  const renderActionButtons = () => {
-    if (allowSendWhileLoading && (isLoading || loading)) {
-      // Keep a single action slot while processing: show stop when the draft is empty,
-      // and only switch back to send once the user has prepared a queued message.
-      if (compactActions || !hasDraftToSend || disabled || isUploading) {
-        return stopButton;
-      }
-      // Opt-in: offer "steer now" alongside the (enqueue) send button when a
-      // consumer has wired it up and the affordance is available.
-      if (onSteer && steerAvailable) {
-        return (
-          <div className='flex items-center gap-2'>
-            {steerButton}
-            {sendButton}
-          </div>
-        );
-      }
-      return sendButton;
-    }
-
-    if (isLoading || loading) {
-      return stopButton;
-    }
-
-    return sendButton;
-  };
 
   const shouldUseHighlightOverlay = !isComposingState && allAtFileQueries.length > 0;
 
@@ -1484,7 +1436,7 @@ const SendBox: React.FC<{
     <Button
       shape='circle'
       type='secondary'
-      className='sendbox-mobile-plus-btn'
+      className='sendbox-composer-plus-btn sendbox-mobile-plus-btn'
       icon={<Plus theme='outline' size='16' />}
       onClick={onMobilePlusClick}
       data-testid='sendbox-mobile-plus-btn'
@@ -1496,13 +1448,6 @@ const SendBox: React.FC<{
   // tools/rightTools into the `+` launcher and skip the inline speech button.
   const renderedTools = isMobileCompact ? mobilePlusButton : tools;
   const renderedRightTools = isMobileCompact ? null : rightTools;
-  const renderedSpeechButton = isMobileCompact ? null : (
-    <SpeechInputButton
-      disabled={disabled || isLoading || loading || isUploading}
-      locale={speechLocale}
-      onTranscript={handleSpeechTranscript}
-    />
-  );
 
   const renderHighlightedInputValue = useCallback(() => {
     if (!input) {
@@ -1846,9 +1791,8 @@ const SendBox: React.FC<{
           </div>
           {isSingleLine && (
             <div className='flex items-center gap-2'>
-              {renderedSpeechButton}
               {sendButtonPrefix}
-              {renderActionButtons()}
+              {composerSubmitCluster}
             </div>
           )}
         </div>
@@ -1867,9 +1811,8 @@ const SendBox: React.FC<{
             </div>
             <div className='sendbox-actions flex items-center gap-2'>
               {renderedRightTools}
-              {renderedSpeechButton}
               {sendButtonPrefix}
-              {renderActionButtons()}
+              {composerSubmitCluster}
             </div>
           </div>
         )}

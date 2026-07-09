@@ -195,11 +195,11 @@ const ScheduledTasksPage: React.FC = () => {
                   key={job.id}
                   className={classNames(
                     'group flex cursor-pointer flex-col border border-solid border-[var(--color-border-2)] bg-fill-1 transition-colors duration-200 hover:border-[var(--color-border-3)] hover:shadow-sm',
-                    isMobile ? 'rounded-12px px-16px py-16px' : 'rounded-12px px-20px py-18px'
+                    isMobile ? 'rounded-12px px-14px py-12px' : 'rounded-12px px-16px py-14px'
                   )}
                   onClick={() => handleGoToDetail(job)}
                 >
-                  <div className='mb-12px flex items-center justify-between gap-8px'>
+                  <div className='mb-8px flex items-center justify-between gap-8px'>
                     {/* Name truncates on its own; #N sits outside the truncating span so it never gets clipped. */}
                     <span className='mr-8px min-w-0 flex-1 flex items-center gap-6px'>
                       <span
@@ -218,17 +218,14 @@ const ScheduledTasksPage: React.FC = () => {
                   </div>
 
                   <div
-                    className={classNames(
-                      'min-w-0 break-words text-t-secondary',
-                      isMobile ? 'text-13px leading-20px' : 'text-14px leading-22px'
-                    )}
+                    className='min-w-0 truncate text-13px leading-20px text-t-secondary'
                     title={formatSchedule(job, t)}
                   >
                     {formatSchedule(job, t)}
                   </div>
 
                   <div
-                    className='mt-16px min-w-0 break-words text-t-secondary text-13px leading-20px'
+                    className='mt-6px min-w-0 truncate text-t-secondary text-12px leading-18px'
                     title={
                       job.state.next_run_at_ms ? `${t('cron.nextRun')} ${formatNextRun(job.state.next_run_at_ms)}` : '-'
                     }
@@ -236,7 +233,7 @@ const ScheduledTasksPage: React.FC = () => {
                     {job.state.next_run_at_ms ? `${t('cron.nextRun')} ${formatNextRun(job.state.next_run_at_ms)}` : '-'}
                   </div>
 
-                  <div className='mt-14px flex items-center justify-between gap-10px'>
+                  <div className='mt-10px flex items-center justify-between gap-10px'>
                     <div className='min-w-0 flex items-center gap-6px text-12px leading-18px text-t-secondary'>
                       {agentMeta.name ? (
                         <Tooltip content={agentMeta.name}>

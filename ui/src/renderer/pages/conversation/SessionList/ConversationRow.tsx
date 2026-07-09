@@ -126,17 +126,17 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
     onOpenMenu(conversation);
   };
 
-  const renderCompletionUnreadDot = () => {
-    if (batchMode || !hasCompletionUnread || isGenerating) {
-      return null;
-    }
+  const showUnreadDot = !batchMode && hasCompletionUnread && !isGenerating;
+  const showAgeMeta = showSessionAge && !!ageLabel && !collapsed;
+  const showDesktopTrailingMeta = !collapsed && !isMobile && (showAgeMeta || showUnreadDot);
+  const showCompactUnreadDot = showUnreadDot && (collapsed || isMobile);
 
-    return (
-      <span className='absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-center group-hover:hidden'>
-        <span className='h-8px w-8px rounded-full bg-[var(--color-primary)] shadow-[0_0_0_2px_rgba(var(--primary-6),0.18)]' />
-      </span>
-    );
-  };
+  const unreadDot = (
+    <span
+      className='h-8px w-8px shrink-0 rounded-full bg-[var(--color-primary)] shadow-[0_0_0_2px_rgba(var(--primary-6),0.18)]'
+      aria-hidden
+    />
+  );
 
   const renderRow = () => (
       <div
@@ -193,18 +193,26 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             {conversation.name}
           </span>
         </FlexFullContainer>
-        {showSessionAge && ageLabel && !collapsed && (
+        {showDesktopTrailingMeta && (
           <span
-            className={classNames('shrink-0 w-40px text-right text-11px text-t-tertiary collapsed-hidden', {
-              'group-hover:hidden': !isMobile && !menuVisible,
-              hidden: isMobile || menuVisible,
+            className={classNames('flex shrink-0 items-center gap-6px', {
+              'group-hover:hidden': !menuVisible,
+              hidden: menuVisible,
             })}
           >
-            {ageLabel}
+            {showAgeMeta && (
+              <span className='w-40px text-right text-11px text-t-tertiary'>{ageLabel}</span>
+            )}
+            {showUnreadDot && unreadDot}
           </span>
         )}
 
-        {renderCompletionUnreadDot()}
+        {showCompactUnreadDot && (
+          <span className='absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-center group-hover:hidden'>
+            {unreadDot}
+          </span>
+        )}
+
         {!batchMode && (
           <div
             className={classNames(

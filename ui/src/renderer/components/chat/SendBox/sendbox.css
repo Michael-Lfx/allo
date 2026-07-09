@@ -1,12 +1,83 @@
 /* Sendbox component styles */
 
-/* Send button disabled state - override Arco Design default disabled styles */
+/* Composer send button — 26×26 circle (6px smaller than the 32px + pole). */
+.send-button-custom.arco-btn.arco-btn-shape-circle {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+}
+
+.sendbox-composer-plus-btn,
+.sendbox-composer-plus-btn.arco-btn,
+.sendbox-composer-plus-btn.arco-btn-secondary,
+.sendbox-mobile-plus-btn,
+.sendbox-mobile-plus-btn.arco-btn,
+.sendbox-mobile-plus-btn.arco-btn-secondary {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: var(--color-fill-2) !important;
+  color: var(--color-text-1) !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+}
+
+.sendbox-composer-plus-btn:hover,
+.sendbox-composer-plus-btn:active,
+.sendbox-composer-plus-btn:focus,
+.sendbox-composer-plus-btn:focus-visible,
+.sendbox-mobile-plus-btn:hover,
+.sendbox-mobile-plus-btn:active,
+.sendbox-mobile-plus-btn:focus,
+.sendbox-mobile-plus-btn:focus-visible {
+  background: var(--color-fill-3) !important;
+}
+
+/* Send button disabled state - override Arco Design default disabled styles.
+ * Also target `.arco-btn-disabled` — Arco adds the class alongside the native
+ * disabled attribute; the global rule lives in arco-override.css for surfaces
+ * that do not import this file (Guid / OrchestratorComposer). */
 .send-button-custom:disabled,
 .send-button-custom.arco-btn:disabled,
-.send-button-custom.arco-btn-primary:disabled {
+.send-button-custom.arco-btn-primary:disabled,
+.send-button-custom.arco-btn-secondary:disabled,
+.send-button-custom.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-icon-only.arco-btn-disabled,
+.send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-icon-only.arco-btn-disabled,
+.send-button-custom.arco-btn-secondary.arco-btn-icon-only:disabled {
+  background: #d3d4d9 !important;
   background-color: #d3d4d9 !important;
+  background-image: none !important;
   border-color: #d3d4d9 !important;
   opacity: 1 !important;
+}
+
+/* Stop: dark circle with light inner glyph (send uses primary like Guid). */
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: #2b2f36 !important;
+  background-image: none !important;
+  border-color: #2b2f36 !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: #1f2128 !important;
+  border-color: #1f2128 !important;
+}
+
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) .arco-icon,
+.send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) svg {
+  color: #fff !important;
+  fill: #fff !important;
 }
 
 /* Make arrow icon thicker */
@@ -15,17 +86,25 @@
   filter: drop-shadow(0 0 0.5px currentColor);
 }
 
-/* Dark mode: adjust send button brightness */
-[data-theme='dark'] .send-button-custom:not(:disabled) {
-  background-color: var(--aou-4) !important;
-  border-color: var(--aou-4) !important;
+[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: #52525b !important;
+  border-color: #52525b !important;
+}
+
+[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: #71717a !important;
+  border-color: #71717a !important;
 }
 
 [data-theme='dark'] .send-button-custom:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn:disabled,
-[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled {
-  background-color: color-mix(in srgb, var(--color-fill-4) 82%, var(--color-bg-2)) !important;
-  border-color: color-mix(in srgb, var(--color-fill-4) 88%, var(--color-bg-2)) !important;
+[data-theme='dark'] .send-button-custom.arco-btn-primary:disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-secondary:disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled,
+[data-theme='dark'] .send-button-custom.arco-btn-secondary.arco-btn-disabled {
+  background-color: color-mix(in srgb, var(--color-fill-4) 94%, var(--color-border-2)) !important;
+  border-color: color-mix(in srgb, var(--color-fill-4) 96%, var(--color-border-2)) !important;
 }
 
 /* Secondary "steer now" action — same circle/size as the send button but a
@@ -72,60 +151,16 @@
   box-shadow: none !important;
 }
 
-[data-theme='dark'] .sendbox-stop-button,
-[data-theme='dark'] .sendbox-stop-button.arco-btn,
-[data-theme='dark'] .sendbox-stop-button.arco-btn-secondary {
-  border: 1px solid color-mix(in srgb, var(--color-fill-4) 94%, var(--color-bg-2)) !important;
+.sendbox-stop-icon {
+  width: 10px;
+  height: 10px;
+  margin: 0 auto;
+  border-radius: 2px;
+  background-color: #fff !important;
 }
 
-.sendbox-stop-button.bg-animate,
-.sendbox-stop-button.arco-btn.bg-animate,
-.sendbox-stop-button.arco-btn-secondary.bg-animate {
-  animation: sendbox-stop-breathe 1.4s ease-in-out infinite alternate;
-}
-
-[data-theme='dark'] .sendbox-stop-button.bg-animate,
-[data-theme='dark'] .sendbox-stop-button.arco-btn.bg-animate,
-[data-theme='dark'] .sendbox-stop-button.arco-btn-secondary.bg-animate {
-  animation: sendbox-stop-breathe-dark 1.4s ease-in-out infinite alternate;
-}
-
-.sendbox-stop-button.bg-animate .arco-icon,
-.sendbox-stop-button.bg-animate svg {
-  color: #fff !important;
-  fill: #fff !important;
-}
-
-@keyframes sendbox-stop-breathe {
-  0% {
-    background-color: var(--aou-2) !important;
-    border-color: var(--aou-2) !important;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--aou-6-brand) 0%, transparent);
-    transform: scale(1);
-  }
-
-  100% {
-    background-color: var(--aou-5) !important;
-    border-color: var(--aou-5) !important;
-    box-shadow: 0 0 0 8px color-mix(in srgb, var(--aou-6-brand) 22%, transparent);
-    transform: scale(1.08);
-  }
-}
-
-@keyframes sendbox-stop-breathe-dark {
-  0% {
-    background-color: var(--aou-2) !important;
-    border-color: var(--aou-2) !important;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--aou-5) 0%, transparent);
-    transform: scale(1);
-  }
-
-  100% {
-    background-color: var(--aou-5) !important;
-    border-color: var(--aou-5) !important;
-    box-shadow: 0 0 0 8px color-mix(in srgb, var(--aou-5) 28%, transparent);
-    transform: scale(1.08);
-  }
+[data-theme='dark'] .sendbox-stop-icon {
+  background-color: #fafafa !important;
 }
 
 /* Input placeholder color */
@@ -230,22 +265,57 @@
   box-shadow: 0 0 0 2px var(--color-bg-2);
 }
 
+/* The cluster may shrink so the recording feedback compresses first; the
+   circle buttons inside keep flex-shrink: 0 and never get clipped. */
+.composer-submit-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+/* While recording/transcribing (`.speech-input-control--active` present),
+   hide the toolbar icons so the waveform owns the row instead of squeezing
+   between the model/permission pills. Pure CSS show/hide via :has() —
+   the recording state already lives in the DOM as a class. */
+.sendbox-tools:has(~ .sendbox-actions .speech-input-control--active) {
+  display: none;
+}
+
+.sendbox-actions:has(.speech-input-control--active) > :not(.composer-submit-cluster) {
+  display: none;
+}
+
+/* Fixed height per variant so inserting the recording feedback never changes
+   the row height (feedback is capped to 100% of this height). It stays in
+   normal flow so it pushes siblings aside instead of overlapping them, and
+   shrinks (waveform clips) when the row runs out of space. */
 .speech-input-control {
   display: inline-flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  height: 26px;
+}
+
+.speech-input-control--inline {
+  height: 32px;
 }
 
 .speech-input-feedback {
-  height: 32px;
+  height: 100%;
   display: grid;
-  grid-template-columns: clamp(72px, 16vw, 136px) auto;
+  /* minmax(0, …) lets the waveform column collapse under pressure instead of
+     forcing the row to overflow and clip the buttons. The toolbar is hidden
+     while recording, so the waveform can afford a generous cap. */
+  grid-template-columns: minmax(0, clamp(64px, 24vw, 220px)) auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--color-text-2);
   min-width: 0;
+  flex: 0 1 auto;
   background: transparent;
   border: none;
   padding: 0;
@@ -262,8 +332,12 @@
   gap: 2px;
   min-width: 0;
   width: 100%;
-  height: 16px;
+  height: 14px;
   overflow: hidden;
+}
+
+.speech-input-control--inline .speech-input-feedback__waveform {
+  height: 16px;
 }
 
 .speech-input-feedback__bar {
@@ -284,13 +358,17 @@
 .speech-input-feedback__label {
   flex: 0 0 auto;
   font-size: 12px;
-  line-height: 16px;
+  line-height: 14px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   color: var(--color-text-2);
   text-align: right;
   min-width: 34px;
   padding-left: 2px;
+}
+
+.speech-input-control--inline .speech-input-feedback__label {
+  line-height: 16px;
 }
 
 .speech-input-button {
@@ -300,12 +378,29 @@
   padding: 0 !important;
   border: none !important;
   box-shadow: none !important;
-  background: transparent !important;
-  color: var(--color-text-3) !important;
   border-radius: 999px !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
+}
+
+/* Empty composer: black circle + white mic (matches send button). */
+.speech-input-button--filled {
+  width: 26px !important;
+  min-width: 26px !important;
+  height: 26px !important;
+  background: rgb(var(--primary-6)) !important;
+  color: #fff !important;
+}
+
+.speech-input-button--filled svg {
+  stroke: #fff;
+}
+
+/* With draft: gray line mic beside the send button. */
+.speech-input-button--inline {
+  background: transparent !important;
+  color: var(--color-text-3) !important;
 }
 
 .speech-input-button .arco-btn-icon,
@@ -340,9 +435,25 @@
 .speech-input-button:disabled:focus,
 .speech-input-button:disabled:focus-visible {
   opacity: 1 !important;
+  cursor: not-allowed !important;
+}
+
+.speech-input-button--filled:disabled,
+.speech-input-button--filled:disabled:hover,
+.speech-input-button--filled:disabled:active,
+.speech-input-button--filled:disabled:focus,
+.speech-input-button--filled:disabled:focus-visible {
+  background: #d3d4d9 !important;
+  color: #fff !important;
+}
+
+.speech-input-button--inline:disabled,
+.speech-input-button--inline:disabled:hover,
+.speech-input-button--inline:disabled:active,
+.speech-input-button--inline:disabled:focus,
+.speech-input-button--inline:disabled:focus-visible {
   background: transparent !important;
   color: var(--color-text-3) !important;
-  cursor: not-allowed !important;
 }
 
 .speech-input-button--processing svg {
@@ -355,14 +466,32 @@
   margin: 0 auto;
 }
 
+.speech-input-button--inline:hover,
+.speech-input-button--inline:active,
+.speech-input-button--inline:focus,
+.speech-input-button--inline:focus-visible {
+  border: none !important;
+  box-shadow: none !important;
+  background: color-mix(in srgb, var(--color-fill-2) 78%, transparent) !important;
+  color: var(--color-text-1) !important;
+}
+
+.speech-input-button--filled:hover:not(:disabled),
+.speech-input-button--filled:active:not(:disabled),
+.speech-input-button--filled:focus:not(:disabled),
+.speech-input-button--filled:focus-visible:not(:disabled) {
+  border: none !important;
+  box-shadow: none !important;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 88%, #000) !important;
+  color: #fff !important;
+}
+
 .speech-input-button:hover,
 .speech-input-button:active,
 .speech-input-button:focus,
 .speech-input-button:focus-visible {
   border: none !important;
   box-shadow: none !important;
-  background: color-mix(in srgb, var(--color-fill-2) 78%, transparent) !important;
-  color: var(--color-text-1) !important;
 }
 
 .speech-input-button--listening,
@@ -409,6 +538,16 @@
 /* Allow sendbox tools area to shrink so the send button stays visible */
 .sendbox-tools {
   min-width: 0;
+}
+
+/* Keep the action row height stable when the toolbar collapses during voice
+   recording: the pills are 28px tall while the recording cluster alone is
+   only 26px, which would otherwise nudge the row by 2px. margin-left: auto
+   keeps the cluster pinned right when it becomes the row's only child
+   (justify-between would otherwise drop a lone child to the left edge). */
+.sendbox-actions {
+  min-height: 28px;
+  margin-left: auto;
 }
 
 /* Circle / icon-only buttons must not shrink */
@@ -502,26 +641,11 @@
 }
 
 /* Mobile compact: `+` launcher button replaces inline tools when the
- * action sheet pattern is active. Sized to match the send button so the
- * left/right poles feel balanced. */
+ * action sheet pattern is active. Shares `.sendbox-composer-plus-btn` sizing. */
 .sendbox-mobile-plus-btn,
 .sendbox-mobile-plus-btn.arco-btn,
 .sendbox-mobile-plus-btn.arco-btn-secondary {
-  width: 32px !important;
-  height: 32px !important;
-  min-width: 32px !important;
-  padding: 0 !important;
-  border: none !important;
-  background: var(--color-fill-2) !important;
-  color: var(--color-text-1) !important;
   flex-shrink: 0 !important;
-}
-
-.sendbox-mobile-plus-btn:hover,
-.sendbox-mobile-plus-btn:active,
-.sendbox-mobile-plus-btn:focus,
-.sendbox-mobile-plus-btn:focus-visible {
-  background: var(--color-fill-3) !important;
 }
 
 .sendbox-tools-mobile-compact {

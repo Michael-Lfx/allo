@@ -152,6 +152,29 @@ async fn speech_to_text(
         (status, Json(body))
     })?;
 
+    // Prefer claw cloud ASR when the user has a valid server session.
+    match crate::stt_claw::transcribe_via_claw(
+        &state.data_dir,
+        fields.file_data.clone(),
+        &fields.file_name,
+        &fields.mime_type,
+        fields.language_hint.as_deref(),
+    )
+    .await
+    {
+        Ok(result) => {
+            let body = serde_json::json!({
+                "success": true,
+                "data": result,
+            });
+            return Ok((StatusCode::OK, Json(body)));
+        }
+        Err(crate::error::SttError::ClawNotConfigured) => {
+            // Fall through to user-configured STT providers.
+        }
+        Err(e) => return Err(stt_error_response(&e)),
+    }
+
     let prefs = state
         .client_pref_service
         .get_preferences(Some(&["speechToText"]))
@@ -228,6 +251,7 @@ mod tests {
             shell_service: Arc::new(ShellService::new(Arc::new(NoopSystemOpener))),
             stt_service: Arc::new(SttService::new(reqwest::Client::new())),
             client_pref_service,
+            data_dir: std::env::temp_dir(),
         }
     }
 
@@ -350,5 +374,85 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn speech_to_text_claw_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-asr-flash","name":"Qwen3 ASR Flash"}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"output":{"choices":[{"message":{"content":[{"text":"你好世界"}]}}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let config_yaml = format!(
+            "server:\n  enabled: true\n  base_url: {}\n  channel: flowy\n  app: flowymes\n",
+            mock.uri()
+        );
+        std::fs::write(tmp.path().join("config.yaml"), config_yaml).expect("write config");
+
+        unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-asr-route") };
+
+        let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
+        let repo = Arc::new(nomifun_db::SqliteClientPreferenceRepository::new(pool));
+        let state = ShellRouterState {
+            shell_service: Arc::new(crate::shell::ShellService::new(Arc::new(
+                crate::opener::NoopSystemOpener,
+            ))),
+            stt_service: Arc::new(crate::stt::SttService::new(reqwest::Client::new())),
+            client_pref_service: nomifun_system::ClientPrefService::new(repo),
+            data_dir: tmp.path().to_path_buf(),
+        };
+        let app = shell_routes(state);
+
+        let boundary = "----TestBoundary7MA4YWxkTrZu0gW";
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"test.webm\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: audio/webm\r\n\r\n");
+        body.extend_from_slice(&[1, 2, 3, 4]);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"fileName\"\r\n\r\n");
+        body.extend_from_slice(b"test.webm\r\n");
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"mimeType\"\r\n\r\n");
+        body.extend_from_slice(b"audio/webm\r\n");
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"languageHint\"\r\n\r\n");
+        body.extend_from_slice(b"zh-CN\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/stt")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"]["text"], "你好世界");
+        assert_eq!(json["data"]["provider"], "claw");
     }
 }
