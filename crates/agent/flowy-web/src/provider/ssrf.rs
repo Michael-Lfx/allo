@@ -9,10 +9,23 @@ const BLOCKED_HOSTS: &[&str] = &[
 ];
 
 /// Parse, scheme-check, and DNS-validate a URL before HTTP extract.
+///
+/// Thin wrapper over [`resolve_extract_url`] that discards the pinned addrs
+/// (kept for callers that only need the validated [`Url`]).
 pub async fn validate_extract_url(raw: &str, allow_private: bool) -> Result<Url, WebError> {
-    let url = parse_extract_url(raw)?;
-    resolve_validated(&url, allow_private).await?;
+    let (url, _addrs) = resolve_extract_url(raw, allow_private).await?;
     Ok(url)
+}
+
+/// Parse + SSRF-validate a URL and return the resolved socket addresses for
+/// connection pinning (`ClientBuilder::resolve_to_addrs`).
+pub async fn resolve_extract_url(
+    raw: &str,
+    allow_private: bool,
+) -> Result<(Url, Vec<SocketAddr>), WebError> {
+    let url = parse_extract_url(raw)?;
+    let addrs = resolve_validated(&url, allow_private).await?;
+    Ok((url, addrs))
 }
 
 fn parse_extract_url(raw: &str) -> Result<Url, WebError> {
@@ -21,7 +34,7 @@ fn parse_extract_url(raw: &str) -> Result<Url, WebError> {
     check_scheme(url)
 }
 
-fn check_scheme(url: Url) -> Result<Url, WebError> {
+pub(crate) fn check_scheme(url: Url) -> Result<Url, WebError> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(WebError::InvalidArgument(format!(
             "only http(s) URLs are supported (got scheme: {})",
@@ -34,7 +47,10 @@ fn check_scheme(url: Url) -> Result<Url, WebError> {
     Ok(url)
 }
 
-async fn resolve_validated(url: &Url, allow_private: bool) -> Result<Vec<SocketAddr>, WebError> {
+pub(crate) async fn resolve_validated(
+    url: &Url,
+    allow_private: bool,
+) -> Result<Vec<SocketAddr>, WebError> {
     let host = url
         .host_str()
         .ok_or_else(|| WebError::InvalidArgument("URL has no host".into()))?;

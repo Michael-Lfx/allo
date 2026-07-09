@@ -2841,6 +2841,7 @@ name = "flowy-web"
 version = "0.2.13"
 dependencies = [
  "async-trait",
+ "futures-util",
  "htmd",
  "nomi-protocol",
  "nomi-tools",
