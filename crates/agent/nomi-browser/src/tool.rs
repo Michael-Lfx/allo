@@ -98,8 +98,10 @@ pub const OUT_OF_BAND_CONFIRMED_KEY: &str = "__out_of_band_confirmed";
 const ACT_TIMEOUT: Duration = Duration::from_secs(45);
 
 const DESCRIPTION: &str = "Drive a managed Chromium browser via the Chrome DevTools Protocol \
-(in-process, self-hosted — no external browser, no Playwright/Node). Use this to open web pages, \
-read their structure, and interact with them.\n\n\
+(in-process, self-hosted — no external browser, no Playwright/Node). For open-web facts, news, \
+or reading public pages, prefer `web_search` then `web_extract`. Use Browser only when you must \
+interact (click, login, fill forms) or the page cannot be fetched as static content. Use this to \
+open web pages, read their structure, and interact with them.\n\n\
 THE CORE LOOP: `navigate` → `observe` → act by `ref` → `observe` again to verify. Every \
 interactive action targets an element by its `[ref=f<seq>e<n>]` from the most recent `observe`; a \
 ref goes stale after any navigation or page change, so re-`observe` for fresh refs.\n\n\
