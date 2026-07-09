@@ -131,24 +131,10 @@ pub fn should_supersede_preview(preview: &ToolCallEventData, canonical: &ToolCal
     if !is_canonical_executable_tool_call(canonical) {
         return false;
     }
-    is_client_generated_call_id(&preview.call_id) || is_partial_preview_args(&preview.args, &preview.name, &canonical.args)
+    is_superseding_preview_args(&preview.args, &preview.name, &canonical.args)
 }
 
-/// A running tool call that carries enough args to execute (not a stream preview).
-pub fn is_canonical_executable_tool_call(data: &ToolCallEventData) -> bool {
-    if data.status != ToolCallStatus::Running {
-        return false;
-    }
-    has_executable_tool_args(&data.name, &data.args)
-}
-
-fn is_client_generated_call_id(call_id: &str) -> bool {
-    let id = call_id.strip_prefix("nomi-").unwrap_or(call_id);
-    // Text/recovered progress uses `call_{uuid}`; provider-native ids are ULIDs (`019…`).
-    id.starts_with("call_") && !id.get(5..).is_some_and(|s| s.starts_with("019"))
-}
-
-fn is_partial_preview_args(preview_args: &Value, tool_name: &str, canonical_args: &Value) -> bool {
+fn is_superseding_preview_args(preview_args: &Value, tool_name: &str, canonical_args: &Value) -> bool {
     if preview_args.is_null() {
         return true;
     }
@@ -174,7 +160,17 @@ fn is_partial_preview_args(preview_args: &Value, tool_name: &str, canonical_args
             return true;
         }
     }
-    false
+    preview_obj
+        .iter()
+        .all(|(key, preview_val)| canonical_obj.get(key).is_none_or(|canon_val| preview_val == canon_val))
+}
+
+/// A running tool call that carries enough args to execute (not a stream preview).
+pub fn is_canonical_executable_tool_call(data: &ToolCallEventData) -> bool {
+    if data.status != ToolCallStatus::Running {
+        return false;
+    }
+    has_executable_tool_args(&data.name, &data.args)
 }
 
 fn has_executable_tool_args(tool_name: &str, args: &Value) -> bool {
@@ -265,6 +261,29 @@ mod supersede_tests {
             status: ToolCallStatus::Completed,
             input: Some(json!({"path": "/tmp/a.txt"})),
             output: Some("ok".into()),
+            description: None,
+        };
+        assert!(!should_supersede_preview(&preview, &canonical));
+    }
+
+    #[test]
+    fn does_not_supersede_same_name_different_invocation() {
+        let preview = ToolCallEventData {
+            call_id: "nomi-call_fbb31e380c974b268f4561c1".into(),
+            name: "Read".into(),
+            args: json!({"path": "/tmp/a.txt"}),
+            status: ToolCallStatus::Running,
+            input: Some(json!({"path": "/tmp/a.txt"})),
+            output: None,
+            description: None,
+        };
+        let canonical = ToolCallEventData {
+            call_id: "nomi-call_019f4065a9857932ac6fa5c9c44e1c77".into(),
+            name: "Read".into(),
+            args: json!({"path": "/tmp/b.txt"}),
+            status: ToolCallStatus::Running,
+            input: Some(json!({"path": "/tmp/b.txt"})),
+            output: None,
             description: None,
         };
         assert!(!should_supersede_preview(&preview, &canonical));

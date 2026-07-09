@@ -15,8 +15,10 @@ import { isDesktopShell } from '@/renderer/utils/platform';
 import type { AvailableAgent } from '../types';
 import type { Assistant } from '@/common/types/agent/assistantTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
+import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
+import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { Button, Checkbox, Dropdown, Menu, Message, Tooltip } from '@arco-design/web-react';
-import { ArrowUp, Plus, Robot, Shield, UploadOne } from '@icon-park/react';
+import { Plus, Shield, UploadOne } from '@icon-park/react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
@@ -60,8 +62,10 @@ type GuidActionRowProps = {
 
   // Send button
   loading: boolean;
-  isButtonDisabled: boolean;
-  speechInputNode?: React.ReactNode;
+  hasDraft: boolean;
+  speechLocale?: string;
+  onSpeechTranscript: (text: string) => void;
+  autoWorkDraft?: AutoWorkDraftValue;
   onSend: () => void;
   /** When true the primary button starts an AutoWork session (no chat send):
    * it shows a robot icon + "Start AutoWork" tooltip. Disabled/onClick are
@@ -92,8 +96,10 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onToggleMcpServer,
   hidePresetTag = false,
   loading,
-  isButtonDisabled,
-  speechInputNode,
+  hasDraft,
+  speechLocale,
+  onSpeechTranscript,
+  autoWorkDraft,
   onSend,
   autoWorkMode = false,
 }) => {
@@ -297,28 +303,16 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           </div>
         )}
 
-        {speechInputNode}
-        <Tooltip
-          content={t('requirements.autowork.startSession')}
-          disabled={!autoWorkMode}
-        >
-          <Button
-            shape='circle'
-            type='primary'
-            loading={loading}
-            disabled={isButtonDisabled}
-            className='send-button-custom'
-            icon={
-              autoWorkMode ? (
-                <Robot theme='filled' size='14' fill='white' strokeWidth={5} />
-              ) : (
-                <ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />
-              )
-            }
-            onClick={onSend}
-            data-testid='guid-send-btn'
-          />
-        </Tooltip>
+        <ComposerSubmitCluster
+          hasDraft={hasDraft}
+          loading={loading}
+          autoWorkMode={autoWorkMode}
+          autoWorkDraft={autoWorkDraft}
+          speechLocale={speechLocale}
+          onSend={onSend}
+          onSpeechTranscript={onSpeechTranscript}
+          sendTestId='guid-send-btn'
+        />
       </div>
     </div>
   );

@@ -84,7 +84,7 @@ import type {
   ResolveModelsResponse,
   UpdateProviderRequest,
 } from '../types/provider/providerApi';
-import type { SpeechToTextRequest, SpeechToTextResult } from '../types/provider/speech';
+import { buildSpeechToTextFormData, type SpeechToTextRequest, type SpeechToTextResult } from '../types/provider/speech';
 import type {
   TAdjustRunRequest,
   TCreateAdhocRun,
@@ -119,6 +119,7 @@ import { fromApiConversation, fromApiPaginatedConversations, toApiModelOptional 
 import {
   httpDelete,
   httpGet,
+  httpMultipartPost,
   httpPatch,
   httpPost,
   httpPut,
@@ -782,7 +783,10 @@ export const fs = {
 // ---------------------------------------------------------------------------
 
 export const speechToText = {
-  transcribe: httpPost<SpeechToTextResult, SpeechToTextRequest>('/api/stt'),
+  transcribe: httpMultipartPost<SpeechToTextResult, SpeechToTextRequest>(
+    '/api/stt',
+    ({ blob, languageHint }) => buildSpeechToTextFormData(blob, languageHint)
+  ),
 };
 
 // ---------------------------------------------------------------------------

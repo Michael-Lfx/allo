@@ -4,9 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { configService } from '@/common/config/configService';
 import { Message, Button, Tooltip } from '@arco-design/web-react';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   useSpeechInput,
@@ -16,6 +15,9 @@ import {
 
 type SpeechInputButtonProps = {
   disabled?: boolean;
+  hidden?: boolean;
+  /** `filled` = black circle (empty composer); `inline` = gray icon beside send */
+  variant?: 'filled' | 'inline';
   locale?: string;
   onTranscript: (transcript: string) => void;
 };
@@ -35,8 +37,6 @@ const SpeechStopIcon = () => (
 );
 
 const SpeechLoaderIcon = () => <span className='speech-loader-spinner' aria-hidden='true' />;
-
-const SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT = 'nomifun:speech-to-text-config-changed';
 
 const getAvailabilityMessageKey = (availability: SpeechInputAvailability) => {
   switch (availability) {
@@ -95,11 +95,15 @@ const getTooltipKey = (availability: SpeechInputAvailability, isListening: boole
   return getAvailabilityMessageKey(availability);
 };
 
-const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({ disabled, locale, onTranscript }) => {
+const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
+  disabled,
+  hidden,
+  variant = 'filled',
+  locale,
+  onTranscript,
+}) => {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [isSpeechToTextEnabled, setIsSpeechToTextEnabled] = useState(false);
-  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const {
     availability,
     clearError,
@@ -125,41 +129,6 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({ disabled, locale,
     }
     return [0.08, 0.12, 0.1, 0.16, 0.09, 0.14];
   }, [recordingLevels]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const syncSpeechToTextEnabled = async () => {
-      try {
-        const config = configService.get('tools.speechToText');
-        if (cancelled) {
-          return;
-        }
-        setIsSpeechToTextEnabled(Boolean(config?.enabled));
-      } catch {
-        if (cancelled) {
-          return;
-        }
-        setIsSpeechToTextEnabled(false);
-      } finally {
-        if (!cancelled) {
-          setIsConfigLoaded(true);
-        }
-      }
-    };
-
-    const handleConfigChanged = () => {
-      void syncSpeechToTextEnabled();
-    };
-
-    void syncSpeechToTextEnabled();
-    window.addEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, handleConfigChanged);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, handleConfigChanged);
-    };
-  }, []);
 
   useEffect(() => {
     if (!errorCode) {
@@ -209,7 +178,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({ disabled, locale,
     void transcribeFile(file);
   };
 
-  if (!isConfigLoaded || !isSpeechToTextEnabled) {
+  if (hidden) {
     return null;
   }
 
@@ -227,7 +196,9 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({ disabled, locale,
         className='hidden'
         onChange={handleFileChange}
       />
-      <div className={`speech-input-control ${showSpeechFeedback ? 'speech-input-control--active' : ''}`}>
+      <div
+        className={`speech-input-control speech-input-control--${variant} ${showSpeechFeedback ? 'speech-input-control--active' : ''}`}
+      >
         {showSpeechFeedback && (
           <div
             className={`speech-input-feedback ${isProcessing ? 'speech-input-feedback--processing' : ''}`}
@@ -258,7 +229,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({ disabled, locale,
             type='text'
             size='small'
             shape='circle'
-            className={`speech-input-button ${isRecording ? 'speech-input-button--listening' : ''} ${isProcessing ? 'speech-input-button--processing' : ''}`}
+            className={`speech-input-button speech-input-button--${variant} ${isRecording ? 'speech-input-button--listening' : ''} ${isProcessing ? 'speech-input-button--processing' : ''}`}
             disabled={disabled || isProcessing}
             onClick={handleClick}
             aria-label={ariaLabel}

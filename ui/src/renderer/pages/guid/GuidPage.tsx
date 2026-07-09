@@ -32,7 +32,8 @@ import KnowledgeControl from '@/renderer/pages/conversation/components/Knowledge
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { findAssistantById, parseCustomAssistantId } from './hooks/agentSelectionUtils';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
-import { autoWorkStartDisabled, isAutoWorkEntry } from './hooks/autoWorkEntry';
+import { isAutoWorkEntry } from './hooks/autoWorkEntry';
+import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useGuidInput } from './hooks/useGuidInput';
 import { useGuidMention } from './hooks/useGuidMention';
 import { useGuidModelSelection } from './hooks/useGuidModelSelection';
@@ -664,6 +665,7 @@ const GuidPage: React.FC = () => {
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
   const isAutoWorkMode = isAutoWorkEntry(advancedConfig.autoWork);
+  const hasDraft = guidInput.input.trim().length > 0;
   const actionRowNode = (
     <GuidActionRow
       files={guidInput.files}
@@ -691,11 +693,12 @@ const GuidPage: React.FC = () => {
       hidePresetTag
       loading={guidInput.loading}
       autoWorkMode={isAutoWorkMode}
-      isButtonDisabled={
-        isAutoWorkMode
-          ? autoWorkStartDisabled(guidInput.loading, advancedConfig.autoWork)
-          : send.isButtonDisabled
-      }
+      autoWorkDraft={advancedConfig.autoWork}
+      hasDraft={hasDraft}
+      speechLocale={i18n.language}
+      onSpeechTranscript={(transcript) => {
+        guidInput.setInput(appendSpeechTranscript(guidInput.input, transcript));
+      }}
       onSend={send.sendMessageHandler}
     />
   );

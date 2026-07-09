@@ -49,6 +49,9 @@ pub enum SttError {
     #[error("Deepgram STT is not configured: missing API key")]
     DeepgramNotConfigured,
 
+    #[error("Claw STT is not available: not logged in or no ASR models")]
+    ClawNotConfigured,
+
     #[error("STT request failed: {0}")]
     RequestFailed(String),
 
@@ -62,6 +65,7 @@ impl SttError {
             Self::Disabled => "STT_DISABLED",
             Self::OpenaiNotConfigured => "STT_OPENAI_NOT_CONFIGURED",
             Self::DeepgramNotConfigured => "STT_DEEPGRAM_NOT_CONFIGURED",
+            Self::ClawNotConfigured => "STT_CLAW_NOT_CONFIGURED",
             Self::RequestFailed(_) => "STT_REQUEST_FAILED",
             Self::Unknown(_) => "STT_UNKNOWN",
         }
@@ -69,7 +73,9 @@ impl SttError {
 
     pub fn status_code(&self) -> u16 {
         match self {
-            Self::Disabled | Self::OpenaiNotConfigured | Self::DeepgramNotConfigured => 400,
+            Self::Disabled | Self::OpenaiNotConfigured | Self::DeepgramNotConfigured | Self::ClawNotConfigured => {
+                400
+            }
             Self::RequestFailed(_) => 502,
             Self::Unknown(_) => 500,
         }
@@ -79,9 +85,8 @@ impl SttError {
 impl From<SttError> for AppError {
     fn from(err: SttError) -> Self {
         match &err {
-            SttError::Disabled | SttError::OpenaiNotConfigured | SttError::DeepgramNotConfigured => {
-                AppError::BadRequest(err.to_string())
-            }
+            SttError::Disabled | SttError::OpenaiNotConfigured | SttError::DeepgramNotConfigured
+            | SttError::ClawNotConfigured => AppError::BadRequest(err.to_string()),
             SttError::RequestFailed(_) => AppError::BadGateway(err.to_string()),
             SttError::Unknown(_) => AppError::Internal(err.to_string()),
         }

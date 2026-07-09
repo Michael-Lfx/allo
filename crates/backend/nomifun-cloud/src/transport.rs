@@ -179,6 +179,34 @@ impl HttpTransport {
     ) -> Result<Response, ServerClientError> {
         self.request(Method::POST, path, session, Some(body)).await
     }
+
+    pub async fn post_multipart(
+        &self,
+        path: &str,
+        session: Option<&ServerSession>,
+        form: reqwest::multipart::Form,
+    ) -> Result<Response, ServerClientError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let url = self.resolve_url(path);
+        let bearer = match session {
+            Some(s) => s.access_token().await?,
+            None => None,
+        };
+        let headers = self.build_headers(bearer.as_deref(), Some(&request_id), false)?;
+
+        debug!(method = "POST", %url, request_id = %request_id, "server http multipart request");
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers.clone())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| ServerClientError::Http(e.to_string()))?;
+
+        Ok(response)
+    }
 }
 
 #[cfg(test)]

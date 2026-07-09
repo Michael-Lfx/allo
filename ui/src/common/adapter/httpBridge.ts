@@ -117,13 +117,13 @@ function isWebUiBrowserMode(): boolean {
 /**
  * Build the auth/CSRF headers every backend request must carry.
  *
- * Single source of truth shared by `httpRequest` (fetch/JSON) and the multipart
- * upload `XMLHttpRequest` in `FileService`. The desktop shell's `fetch`
- * interceptor (`apps/desktop/src/main.rs`) only patches `window.fetch`, so a raw
- * XHR escapes it — without applying these headers itself the upload reaches the
- * `TrustLocalToken`-guarded `/api/fs/upload` with no `x-nomi-local-trust` and is
- * rejected 403. In WebUI browser mode the same XHR also needs the CSRF header on
- * state-changing requests.
+ * Single source of truth shared by `httpRequest` (fetch/JSON), `httpMultipartRequest`
+ * (fetch/FormData, e.g. `/api/stt`), and the multipart upload `XMLHttpRequest` in
+ * `FileService`. The desktop shell's `fetch` interceptor (`apps/desktop/src/main.rs`)
+ * only patches `window.fetch`, so a raw XHR escapes it — without applying these
+ * headers itself the upload reaches the `TrustLocalToken`-guarded `/api/fs/upload`
+ * with no `x-nomi-local-trust` and is rejected 403. In WebUI browser mode the same
+ * XHR also needs the CSRF header on state-changing requests.
  *
  * @param method HTTP method — decides whether the CSRF (mutating) header applies.
  */
@@ -512,6 +512,84 @@ export async function httpRequest<T>(
   return json as T;
 }
 
+/**
+ * POST multipart/form-data to the backend. Mirrors [`httpRequest`] auth, timeout,
+ * error, and `{ data }` unwrapping semantics but sends a `FormData` body without
+ * setting `Content-Type` (the browser supplies the boundary).
+ */
+export async function httpMultipartRequest<T>(
+  path: string,
+  formData: FormData,
+  options?: HttpRequestOptions
+): Promise<T> {
+  const url = `${getBaseUrl()}${path}`;
+  const headers: Record<string, string> = {};
+  Object.assign(headers, buildBackendAuthHeaders('POST'));
+
+  const isNoisyPath = NOISY_HTTP_FRAGMENTS.some((frag) => path.includes(frag));
+  if (isDebugEnabled('debug:http') && !isNoisyPath) {
+    console.debug(`[httpBridge] POST ${path} (multipart)`);
+  }
+
+  const controller = options?.timeoutMs != null ? new AbortController() : undefined;
+  const timeoutHandle =
+    controller && options?.timeoutMs != null
+      ? setTimeout(() => controller.abort(), options.timeoutMs)
+      : undefined;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+      signal: controller?.signal,
+    });
+  } catch (e) {
+    if (controller?.signal.aborted) {
+      throw new BackendRequestError(
+        'timeout',
+        `Backend POST ${path} timed out after ${options?.timeoutMs}ms — the backend may be busy or unreachable`
+      );
+    }
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new BackendRequestError('network', `Backend POST ${path} failed: backend unreachable (${detail})`);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    let errorBody: unknown;
+    try {
+      errorBody = rawText ? JSON.parse(rawText) : '';
+    } catch {
+      errorBody = rawText;
+    }
+    if (options?.silentStatuses?.includes(response.status)) {
+      console.debug(`[httpBridge] POST ${path} → ${response.status} (silenced)`, errorBody);
+    } else {
+      console.error(`[httpBridge] POST ${path} → ${response.status}`, errorBody);
+    }
+    throw new BackendHttpError({ method: 'POST', path, status: response.status, body: errorBody });
+  }
+
+  if (isDebugEnabled('debug:http') && !isNoisyPath) {
+    console.debug(`[httpBridge] POST ${path} → ${response.status} OK`);
+  }
+
+  const contentType = response.headers.get('Content-Type');
+  if (!contentType?.includes('application/json')) {
+    return undefined as T;
+  }
+
+  const json = await response.json();
+  if (json && typeof json === 'object' && 'data' in json) {
+    return json.data as T;
+  }
+  return json as T;
+}
+
 // ---------------------------------------------------------------------------
 // Provider factories (same shape as bridge.buildProvider)
 // ---------------------------------------------------------------------------
@@ -557,6 +635,20 @@ export function httpPost<Data, Params = undefined>(
       const resolvedPath = typeof path === 'function' ? path(params!) : path;
       const body = mapBody ? mapBody(params!) : params;
       return httpRequest<Data>('POST', resolvedPath, body);
+    }) as ProviderLike<Data, Params>['invoke'],
+  };
+}
+
+export function httpMultipartPost<Data, Params = undefined>(
+  path: string | ((params: Params) => string),
+  mapFormData: (params: Params) => FormData,
+  options?: HttpRequestOptions
+): ProviderLike<Data, Params> {
+  return {
+    provider: () => {},
+    invoke: (async (params?: Params) => {
+      const resolvedPath = typeof path === 'function' ? path(params!) : path;
+      return httpMultipartRequest<Data>(resolvedPath, mapFormData(params!), options);
     }) as ProviderLike<Data, Params>['invoke'],
   };
 }

@@ -1818,6 +1818,7 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
         ))),
         stt_service: Arc::new(nomifun_shell::SttService::new_dynamic()),
         client_pref_service,
+        data_dir: services.data_dir.clone(),
     }
 }
 

@@ -1542,6 +1542,10 @@ button.guidResourceCard:focus-visible {
   width: 100%;
   gap: 8px;
   margin-top: auto;
+  /* The 32px "+" button normally sets the row height. Keep that height when
+     the toolbar is hidden during voice recording (cluster alone is 26px),
+     otherwise the composer jumps by ~6px when recording starts/stops. */
+  min-height: 32px;
 }
 
 .actionTools {
@@ -1632,6 +1636,17 @@ button.guidResourceCard:focus-visible {
   flex-shrink: 0;
   margin-left: auto;
   min-width: 0;
+}
+
+/* While recording/transcribing, hide the toolbar icons (attach button, model /
+   permission pills, preset tag) so the speech waveform owns the row. Mirrors
+   the .sendbox-tools/.sendbox-actions rules in sendbox.css. */
+.actionRow:has(:global(.speech-input-control--active)) .actionTools {
+  display: none;
+}
+
+.actionSubmit:has(:global(.speech-input-control--active)) > :not(:global(.composer-submit-cluster)) {
+  display: none;
 }
 
 /* Guid send button mirrors sendbox.css — keep only actionSubmit scoping for load order. */
