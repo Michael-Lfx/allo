@@ -4,7 +4,6 @@
 /build.noindex/
 .cargo/config.local.toml
 Cargo.lock.bak
-
 # Packaging / runtime artifacts
 /dist/
 # Legacy dev data dirs from before all hosts shared one per-user default
@@ -59,6 +58,8 @@ Thumbs.db
 
 # Claude Code 会话产物（临时 worktree、本地设置），不入库
 .claude/
+# Qoder 会话产物（临时 worktree、本地设置），不入库
+/.qoder/
 
 # Local git worktrees (superpowers / agent isolation)
 .worktrees/
