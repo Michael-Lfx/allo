@@ -40,7 +40,13 @@ const PoiSettings: React.FC = () => {
         ipcBridge.poi.status.invoke(),
         ipcBridge.poi.listTopics.invoke(),
       ]);
-      setSettings(s);
+      setSettings({
+        ...s,
+        autoExtractEnabled: s.autoExtractEnabled ?? true,
+        autoExtractMinTurns: s.autoExtractMinTurns ?? 4,
+        autoExtractMinUserChars: s.autoExtractMinUserChars ?? 200,
+        autoExtractIdleSecs: s.autoExtractIdleSecs ?? 300,
+      });
       setStatus(st);
       setTopics(list.topics);
     } catch (e) {
@@ -183,6 +189,53 @@ const PoiSettings: React.FC = () => {
                 onChange={(v) => setSettings({ ...settings, perTurnPersist: v })}
               />
             </div>
+
+            <Divider className='!my-4px' />
+
+            <Typography.Text className='text-t-primary text-14px font-500'>
+              {t('poi.settings.autoExtractSection')}
+            </Typography.Text>
+            <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
+              {t('poi.settings.autoExtractHint')}
+            </Typography.Paragraph>
+
+            <div className='flex items-center justify-between'>
+              <span className='text-t-primary text-14px'>{t('poi.settings.autoExtractEnabled')}</span>
+              <Switch
+                checked={settings.autoExtractEnabled}
+                onChange={(v) => setSettings({ ...settings, autoExtractEnabled: v })}
+              />
+            </div>
+
+            {settings.autoExtractEnabled && (
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-12px'>
+                <div className='flex flex-col gap-6px'>
+                  <span className='text-t-secondary text-13px'>{t('poi.settings.autoExtractMinTurns')}</span>
+                  <InputNumber
+                    min={1}
+                    value={settings.autoExtractMinTurns}
+                    onChange={(v) => setSettings({ ...settings, autoExtractMinTurns: Number(v) })}
+                  />
+                </div>
+                <div className='flex flex-col gap-6px'>
+                  <span className='text-t-secondary text-13px'>{t('poi.settings.autoExtractMinUserChars')}</span>
+                  <InputNumber
+                    min={1}
+                    value={settings.autoExtractMinUserChars}
+                    onChange={(v) => setSettings({ ...settings, autoExtractMinUserChars: Number(v) })}
+                  />
+                </div>
+                <div className='flex flex-col gap-6px md:col-span-2'>
+                  <span className='text-t-secondary text-13px'>{t('poi.settings.autoExtractIdleSecs')}</span>
+                  <InputNumber
+                    min={30}
+                    value={settings.autoExtractIdleSecs}
+                    onChange={(v) => setSettings({ ...settings, autoExtractIdleSecs: Number(v) })}
+                  />
+                  <span className='text-12px text-t-tertiary'>{t('poi.settings.autoExtractIdleSecsHint')}</span>
+                </div>
+              </div>
+            )}
 
             <div>
               <Button type='primary' loading={saving} onClick={saveSettings}>

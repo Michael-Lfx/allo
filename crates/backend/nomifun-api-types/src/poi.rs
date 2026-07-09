@@ -75,6 +75,10 @@ pub struct PoiSettingsResponse {
     pub promote_min_evidence: u32,
     pub promote_min_confidence: f64,
     pub min_turn_chars: u32,
+    pub auto_extract_enabled: bool,
+    pub auto_extract_min_turns: u32,
+    pub auto_extract_min_user_chars: usize,
+    pub auto_extract_idle_secs: u64,
 }
 
 /// Partial update for `PATCH /api/poi/settings`.
@@ -95,6 +99,10 @@ pub struct UpdatePoiSettingsRequest {
     pub promote_min_evidence: Option<u32>,
     pub promote_min_confidence: Option<f64>,
     pub min_turn_chars: Option<u32>,
+    pub auto_extract_enabled: Option<bool>,
+    pub auto_extract_min_turns: Option<u32>,
+    pub auto_extract_min_user_chars: Option<usize>,
+    pub auto_extract_idle_secs: Option<u64>,
 }
 
 impl UpdatePoiSettingsRequest {
@@ -113,5 +121,9 @@ impl UpdatePoiSettingsRequest {
             && self.promote_min_evidence.is_none()
             && self.promote_min_confidence.is_none()
             && self.min_turn_chars.is_none()
+            && self.auto_extract_enabled.is_none()
+            && self.auto_extract_min_turns.is_none()
+            && self.auto_extract_min_user_chars.is_none()
+            && self.auto_extract_idle_secs.is_none()
     }
 }

@@ -77,6 +77,8 @@ impl InsightsService {
         Ok(InsightsContributionStatusResponse {
             enabled: cfg.enabled,
             on_session_end: cfg.on_session_end,
+            auto_extract_enabled: cfg.auto_extract_enabled,
+            auto_extract_idle_secs: cfg.auto_extract_idle_secs,
             min_evidence_tier: cfg.min_evidence_tier.clone(),
             require_skill_binding: cfg.require_skill_binding,
             min_work_turns: cfg.min_work_turns,
@@ -104,6 +106,12 @@ impl InsightsService {
             }
             if let Some(on_session_end) = req.on_session_end {
                 contribution.on_session_end = on_session_end;
+            }
+            if let Some(auto_extract_enabled) = req.auto_extract_enabled {
+                contribution.auto_extract_enabled = auto_extract_enabled;
+            }
+            if let Some(auto_extract_idle_secs) = req.auto_extract_idle_secs {
+                contribution.auto_extract_idle_secs = auto_extract_idle_secs;
             }
             if let Some(redacted_body) = req.redacted_body {
                 contribution.redacted_body = redacted_body;

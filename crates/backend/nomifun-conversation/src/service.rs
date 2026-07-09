@@ -316,10 +316,54 @@ impl ConversationService {
         self.session_lifecycle.read().ok().and_then(|g| g.clone())
     }
 
-    fn touch_session_lifecycle(&self, conversation_id: &str) {
-        if let Some(coordinator) = self.session_lifecycle_coordinator() {
-            coordinator.touch_session(conversation_id);
-        }
+    async fn on_user_message_lifecycle(
+        &self,
+        conversation_id: &str,
+        conv_id: i64,
+        user_text: &str,
+    ) {
+        let Some(coordinator) = self.session_lifecycle_coordinator() else {
+            return;
+        };
+        let message_count = match self
+            .conversation_repo
+            .get_messages(conv_id, 1, 5000, SortOrder::Asc)
+            .await
+        {
+            Ok(page) => page.items.len(),
+            Err(err) => {
+                warn!(
+                    conversation_id,
+                    error = %ErrorChain(&err),
+                    "session_lifecycle: failed to count messages for proactive extraction"
+                );
+                return;
+            }
+        };
+        coordinator
+            .on_user_message(conversation_id, user_text, message_count)
+            .await;
+    }
+
+    /// Load conversation messages for proactive POI / insights extraction.
+    pub async fn load_extraction_messages(
+        &self,
+        conversation_id: &str,
+    ) -> Option<Vec<serde_json::Value>> {
+        let conv_id = parse_conv_id(conversation_id).ok()?;
+        let page = self
+            .conversation_repo
+            .get_messages(conv_id, 1, 5000, SortOrder::Asc)
+            .await
+            .ok()?;
+        Some(rows_to_session_end_messages(&page.items))
+    }
+
+    /// Non-hidden message count for threshold checks (background idle scanner).
+    pub async fn extraction_message_count(&self, conversation_id: &str) -> Option<usize> {
+        self.load_extraction_messages(conversation_id)
+            .await
+            .map(|msgs| msgs.len())
     }
 
     async fn end_session_lifecycle(
@@ -1788,7 +1832,8 @@ impl ConversationService {
 
         info!(msg_id = %user_msg_id, "User message persisted");
 
-        self.touch_session_lifecycle(conversation_id);
+        self.on_user_message_lifecycle(conversation_id, parse_conv_id(conversation_id)?, &req.content)
+            .await;
 
         // Companion wire markers (see `companion_context_from_extra`): stamped on
         // every broadcast of this turn so the companion collector can classify the

@@ -15,6 +15,12 @@
     "enabled": "Enable contribution",
     "serverManagedHint": "Ingest endpoint and auth token are managed automatically by your Flowy cloud account.",
     "onSessionEnd": "Enqueue on session end",
+    "autoExtractSection": "Proactive extraction",
+    "autoExtractHint": "Build and enqueue work packages during conversations when thresholds are met — no need to wait for session end.",
+    "autoExtractEnabled": "Enable proactive extraction",
+    "autoExtractIdleSecs": "Idle timeout (seconds)",
+    "autoExtractIdleSecsHint": "Also enqueue after this many seconds without new messages (e.g. 300 = 5 minutes).",
+    "minWorkTurnsHint": "Turn threshold uses min_work_turns from config (currently {{count}} turns).",
     "redactedBody": "Include redacted skill body",
     "saved": "Insights settings saved"
   },

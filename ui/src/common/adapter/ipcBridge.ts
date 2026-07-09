@@ -4072,6 +4072,10 @@ export interface IPoiSettings {
   promoteMinEvidence: number;
   promoteMinConfidence: number;
   minTurnChars: number;
+  autoExtractEnabled: boolean;
+  autoExtractMinTurns: number;
+  autoExtractMinUserChars: number;
+  autoExtractIdleSecs: number;
 }
 
 export type IUpdatePoiSettings = Partial<IPoiSettings>;
@@ -4099,6 +4103,8 @@ export const poi = {
 export interface IInsightsContributionStatus {
   enabled: boolean;
   on_session_end: boolean;
+  auto_extract_enabled: boolean;
+  auto_extract_idle_secs: number;
   min_evidence_tier: string;
   require_skill_binding: boolean;
   min_work_turns: number;
@@ -4118,6 +4124,8 @@ export interface IUpdateInsightsContribution {
   endpoint?: string;
   auth_token?: string;
   on_session_end?: boolean;
+  auto_extract_enabled?: boolean;
+  auto_extract_idle_secs?: number;
   redacted_body?: boolean;
 }
 

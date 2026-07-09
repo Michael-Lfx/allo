@@ -6,7 +6,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Descriptions, Message, Modal, Switch, Typography } from '@arco-design/web-react';
+import { Button, Descriptions, InputNumber, Message, Modal, Switch, Typography } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import type { IInsightsContributionStatus } from '@/common/adapter/ipcBridge';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
@@ -16,6 +16,8 @@ const InsightsSettings: React.FC = () => {
   const [status, setStatus] = useState<IInsightsContributionStatus | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [onSessionEnd, setOnSessionEnd] = useState(true);
+  const [autoExtractEnabled, setAutoExtractEnabled] = useState(true);
+  const [autoExtractIdleSecs, setAutoExtractIdleSecs] = useState(300);
   const [redactedBody, setRedactedBody] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -28,6 +30,8 @@ const InsightsSettings: React.FC = () => {
       setStatus(s);
       setEnabled(s.enabled);
       setOnSessionEnd(s.on_session_end);
+      setAutoExtractEnabled(s.auto_extract_enabled ?? true);
+      setAutoExtractIdleSecs(s.auto_extract_idle_secs ?? 300);
       setRedactedBody(s.redacted_body);
     } catch (e) {
       Message.error(String(e));
@@ -46,6 +50,8 @@ const InsightsSettings: React.FC = () => {
       const saved = await ipcBridge.insights.updateContribution.invoke({
         enabled,
         on_session_end: onSessionEnd,
+        auto_extract_enabled: autoExtractEnabled,
+        auto_extract_idle_secs: autoExtractIdleSecs,
         redacted_body: redactedBody,
       });
       setStatus(saved);
@@ -135,6 +141,36 @@ const InsightsSettings: React.FC = () => {
             <span className='text-t-primary text-14px'>{t('insights.settings.onSessionEnd')}</span>
             <Switch checked={onSessionEnd} onChange={setOnSessionEnd} />
           </div>
+
+          <Typography.Text className='text-t-primary text-14px font-500 mt-4px'>
+            {t('insights.settings.autoExtractSection')}
+          </Typography.Text>
+          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
+            {t('insights.settings.autoExtractHint')}
+          </Typography.Paragraph>
+
+          <div className='flex items-center justify-between'>
+            <span className='text-t-primary text-14px'>{t('insights.settings.autoExtractEnabled')}</span>
+            <Switch checked={autoExtractEnabled} onChange={setAutoExtractEnabled} />
+          </div>
+
+          {autoExtractEnabled && (
+            <div className='flex flex-col gap-6px max-w-320px'>
+              <span className='text-t-secondary text-13px'>{t('insights.settings.autoExtractIdleSecs')}</span>
+              <InputNumber
+                min={30}
+                value={autoExtractIdleSecs}
+                onChange={(v) => setAutoExtractIdleSecs(Number(v))}
+              />
+              <span className='text-12px text-t-tertiary'>{t('insights.settings.autoExtractIdleSecsHint')}</span>
+              {status && (
+                <span className='text-12px text-t-tertiary'>
+                  {t('insights.settings.minWorkTurnsHint', { count: status.min_work_turns })}
+                </span>
+              )}
+            </div>
+          )}
+
           <div className='flex items-center justify-between'>
             <span className='text-t-primary text-14px'>{t('insights.settings.redactedBody')}</span>
             <Switch checked={redactedBody} onChange={setRedactedBody} />

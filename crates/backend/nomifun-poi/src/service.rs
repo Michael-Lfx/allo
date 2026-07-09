@@ -190,6 +190,10 @@ fn settings_from_config(config: &InterestConfig) -> PoiSettingsResponse {
         promote_min_evidence: config.promote_min_evidence,
         promote_min_confidence: config.promote_min_confidence,
         min_turn_chars: config.min_turn_chars,
+        auto_extract_enabled: config.auto_extract_enabled,
+        auto_extract_min_turns: config.auto_extract_min_turns,
+        auto_extract_min_user_chars: config.auto_extract_min_user_chars,
+        auto_extract_idle_secs: config.auto_extract_idle_secs,
     }
 }
 
@@ -235,5 +239,17 @@ fn apply_settings_patch(config: &mut InterestConfig, req: &UpdatePoiSettingsRequ
     }
     if let Some(v) = req.min_turn_chars {
         config.min_turn_chars = v;
+    }
+    if let Some(v) = req.auto_extract_enabled {
+        config.auto_extract_enabled = v;
+    }
+    if let Some(v) = req.auto_extract_min_turns {
+        config.auto_extract_min_turns = v;
+    }
+    if let Some(v) = req.auto_extract_min_user_chars {
+        config.auto_extract_min_user_chars = v;
+    }
+    if let Some(v) = req.auto_extract_idle_secs {
+        config.auto_extract_idle_secs = v;
     }
 }

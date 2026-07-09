@@ -18,6 +18,13 @@
     "llmOnSessionEnd": "LLM extract on session end",
     "perTurnBuffer": "Per-turn buffer",
     "perTurnPersist": "Per-turn persist",
+    "autoExtractSection": "Proactive extraction",
+    "autoExtractHint": "Extract interest topics automatically during conversations when thresholds are met — no manual clear or delete required.",
+    "autoExtractEnabled": "Enable proactive extraction",
+    "autoExtractMinTurns": "Minimum user turns",
+    "autoExtractMinUserChars": "Minimum user characters",
+    "autoExtractIdleSecs": "Idle timeout (seconds)",
+    "autoExtractIdleSecsHint": "Also extract after this many seconds without new messages (e.g. 300 = 5 minutes).",
     "saved": "POI settings saved"
   },
   "topics": {

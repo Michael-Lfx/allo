@@ -10,6 +10,8 @@ pub mod capability;
 pub mod cc_switch;
 pub mod factory;
 pub(crate) mod idle_scanner;
+pub mod auxiliary_provider;
+pub mod extraction_scanner;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
@@ -46,9 +48,11 @@ pub use capability::skill_manager::{
     prepare_first_message_with_skills_index,
 };
 pub use capability::{
-    PostTurnHook, PreTurnHook, SessionEndContext, SessionEndHook, SessionEndReason,
-    SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
+    ExtractionTrigger, PostTurnHook, PreTurnHook, ProactiveSessionExtractor, SessionEndContext,
+    SessionEndHook, SessionEndReason, SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
 };
+pub use auxiliary_provider::AuxiliaryClientFactory;
+pub use extraction_scanner::start_session_extraction_scanner;
 pub use manager::acp::PoiPrefetchHook;
 pub use factory::provider_config::{
     one_shot_completion, resolve_provider_config, streaming_completion, streaming_completion_kinded,
