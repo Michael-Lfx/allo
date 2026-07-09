@@ -5082,6 +5082,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "dirs 6.0.0",
+ "flowy-web",
  "futures",
  "glob",
  "is-terminal",

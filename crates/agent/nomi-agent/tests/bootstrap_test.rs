@@ -58,7 +58,16 @@ async fn bootstrap_registers_all_expected_tools() {
 
     let names = result.engine.tool_names();
 
-    for expected in &["Read", "Write", "Edit", "Bash", "Grep", "Glob"] {
+    for expected in &[
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Grep",
+        "Glob",
+        "web_search",
+        "web_extract",
+    ] {
         assert!(
             names.iter().any(|n| n == expected),
             "missing built-in tool: {expected}"
@@ -77,6 +86,19 @@ async fn bootstrap_registers_all_expected_tools() {
         names.iter().any(|n| n == "ToolSearch"),
         "ToolSearchTool should be registered"
     );
+}
+
+#[tokio::test]
+async fn bootstrap_web_tools_gated_off_when_disabled() {
+    let mut config = minimal_config();
+    config.tools.web.enabled = false;
+    let result = AgentBootstrap::new(config, "/tmp/test-workspace", null_output())
+        .build()
+        .await
+        .unwrap();
+    let names = result.engine.tool_names();
+    assert!(!names.iter().any(|n| n == "web_search"));
+    assert!(!names.iter().any(|n| n == "web_extract"));
 }
 
 #[tokio::test]

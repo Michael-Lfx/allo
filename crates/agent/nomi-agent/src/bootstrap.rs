@@ -514,6 +514,14 @@ impl AgentBootstrap {
         registry.register(Box::new(nomi_tools::glob::GlobTool::new(
             cwd_path.to_path_buf(),
         )));
+        // Web search/extract (keyless DuckDuckGo HTML scrape + SSRF-guarded HTTP
+        // fetch → markdown). Default on; gated by `tools.web.enabled`.
+        if self.config.tools.web.enabled {
+            let search = Arc::new(flowy_web::provider::DuckDuckGoSearchProvider::new());
+            let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
+            registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
+            registry.register(Box::new(flowy_web::tools::WebExtractTool::new(extract)));
+        }
 
         let builtin_names: Vec<String> = registry.tool_names();
 
