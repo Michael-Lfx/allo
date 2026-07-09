@@ -13,7 +13,7 @@ use nomifun_extension::constants::SKILL_MANIFEST_FILE;
 use nomifun_extension::skill_service::{self, SkillDraftInput, SkillPaths, SkillScope};
 use tokio::sync::Mutex;
 
-use crate::collector::{SharedConfig, read_events_since};
+use crate::collector::{CollectedEvent, SharedConfig, read_events_since};
 use crate::events::CompanionEventEmitter;
 use crate::evolution::miner::{mine_patterns, mine_reflection_candidates, MinedPattern};
 use crate::evolution::prompt::{self, DraftOutput};
@@ -141,6 +141,28 @@ impl EvolutionEngine {
             }
         }
 
+        // Skill promotion pass (optimization 4): promote high-usage, high-strength
+        // mined companion skills to Shared scope so they become available to all
+        // conversations. Runs every tick after decay; fire-and-forget, never emit_error.
+        if let Ok(promotable) = self.store.list_promotable_skills().await {
+            for (companion_id, skill_name) in promotable {
+                let from = SkillScope::Companion(companion_id.clone());
+                let to = SkillScope::Shared;
+                match skill_service::copy_skill(&self.skill_paths, &from, &to, &skill_name).await {
+                    Ok(()) => {
+                        if let Err(e) = self.store.mark_skill_scope_shared(&companion_id, &skill_name).await {
+                            tracing::warn!(error = %e, skill = %skill_name, "promotion DB update failed");
+                        } else {
+                            tracing::info!(skill = %skill_name, companion = %companion_id, "skill promoted to Shared scope");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, skill = %skill_name, "promotion file copy failed; skill may already be shared");
+                    }
+                }
+            }
+        }
+
         let (model, min_count, min_distinct, reflect_enabled, auto_activate, auto_threshold) = {
             let cfg = self.config.read().await;
             // One model for the whole flywheel: fall back to the learn model when no
@@ -215,7 +237,7 @@ impl EvolutionEngine {
                 break;
             }
             match self
-                .process_candidate(&p, &owner, &model.provider_id, &model.model, min_distinct, auto_activate, auto_threshold)
+                .process_candidate(&p, &owner, &model.provider_id, &model.model, min_distinct, auto_activate, auto_threshold, &events)
                 .await
             {
                 Ok(true) => run.drafts_created += 1,
@@ -255,6 +277,7 @@ impl EvolutionEngine {
         min_distinct: usize,
         auto_activate: bool,
         auto_threshold: f64,
+        events: &[CollectedEvent],
     ) -> Result<bool, AppError> {
         // Skip rejected (negative-sample) or already-drafted signatures.
         if self.store.is_signature_rejected(&p.signature).await.unwrap_or(false) {
@@ -352,7 +375,14 @@ impl EvolutionEngine {
             paths: None,
             body: draft.body.clone(),
         };
-        let confidence = ((p.distinct_sessions as f64) / ((min_distinct + 2) as f64)).clamp(0.3, 0.95);
+        let confidence = {
+            let base = ((p.distinct_sessions as f64) / ((min_distinct + 2) as f64)).clamp(0.3, 0.95);
+            // Optimization 3: apply verdict-based confidence boost from resolution
+            // signals in collected_events. If resolution events are present for the
+            // pattern's originating sessions, adjust confidence accordingly.
+            let boost = verdict_confidence_boost(&events, &p.example_event_ids);
+            (base * boost).clamp(0.1, 0.99)
+        };
         // High-confidence auto-activation only when the user opted in AND confidence clears
         // the bar (repetition-derived; single-session reflections never reach it).
         let auto = auto_activate && confidence >= auto_threshold;
@@ -496,6 +526,68 @@ impl EvolutionEngine {
         }
         self.emitter.emit_skill_drafted(owner, &name);
         Ok(Some(name))
+    }
+}
+
+/// Verdict-based confidence boost for skill mining (optimization 3).
+///
+/// Resolution signals from session-end analysis adjust how confidently a mined
+/// pattern is turned into a skill suggestion:
+/// - `solved_confirmed` sessions had explicit positive feedback → boost (×1.5)
+/// - `solved_inferred` sessions had tool success without corrections → neutral (×1.0)
+/// - `failed` sessions with correction loops → strongly suppress (×0.3) — the user
+///   had to fix things, so the tool pattern may be error-prone
+/// - `failed` sessions without corrections → suppress (×0.5)
+/// - unknown / no resolution data → neutral (×1.0)
+fn confidence_boost(verdict: &str, correction_loops: u32) -> f64 {
+    match verdict {
+        "solved_confirmed" => 1.5,
+        "solved_inferred" => 1.0,
+        "failed" if correction_loops > 0 => 0.3,
+        "failed" => 0.5,
+        _ => 1.0,
+    }
+}
+
+/// Scan collected_events for `conversation_lifecycle.resolution` events that match
+/// any of the pattern's example session IDs, and return the average confidence
+/// boost across all matching verdicts. Returns 1.0 (neutral) when no resolution
+/// events are found — graceful degradation when the resolution pipeline hasn't
+/// written events yet.
+fn verdict_confidence_boost(events: &[CollectedEvent], example_event_ids: &[String]) -> f64 {
+    // Extract conversation IDs from the pattern's example event IDs.
+    // Event IDs are formatted as "{conversation_id}::{event_id}" (collector convention).
+    let conv_ids: Vec<&str> = example_event_ids
+        .iter()
+        .filter_map(|id| id.split("::").next())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if conv_ids.is_empty() {
+        return 1.0;
+    }
+
+    let mut boosts = Vec::new();
+    for event in events {
+        if event.source != "conversation_lifecycle" || event.name != "resolution" {
+            continue;
+        }
+        let event_conv = event.data.get("conversation_id").and_then(|v| v.as_str()).unwrap_or("");
+        if !conv_ids.iter().any(|c| *c == event_conv) {
+            continue;
+        }
+        let verdict = event.data.get("verdict").and_then(|v| v.as_str()).unwrap_or("");
+        let correction_loops = event
+            .data
+            .get("correction_loops")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        boosts.push(confidence_boost(verdict, correction_loops));
+    }
+
+    if boosts.is_empty() {
+        1.0
+    } else {
+        boosts.iter().sum::<f64>() / boosts.len() as f64
     }
 }
 

@@ -26,6 +26,9 @@ pub struct TurnContext<'a> {
     pub conversation_id: &'a str,
     pub session_id: &'a str,
     pub user_prompt: &'a str,
+    /// Whether this turn was initiated by a human (vs cron/autowork/idmm).
+    /// Used by `PostTurnReviewHook` to skip non-human turns (optimization 2).
+    pub origin_is_human: bool,
 }
 
 pub struct SessionEndContext {
@@ -45,6 +48,15 @@ pub trait PostTurnHook: Send + Sync {
     async fn on_post_turn(&self, ctx: &TurnContext<'_>, reply: &str) -> String;
 }
 
+/// Per-turn background review hook (optimization 2). Fired after each human-origin
+/// turn to asynchronously evaluate whether memories or skills should be updated —
+/// a lighter, more timely counterpart to the session-end distillation pipeline.
+/// Implementations MUST be fire-and-forget (never block the conversation loop).
+#[async_trait::async_trait]
+pub trait PostTurnReviewHook: Send + Sync {
+    async fn on_post_turn_review(&self, ctx: &TurnContext<'_>, reply: &str, messages: &[serde_json::Value]);
+}
+
 #[async_trait::async_trait]
 pub trait SessionEndHook: Send + Sync {
     async fn on_session_end(&self, ctx: &SessionEndContext);
@@ -53,6 +65,7 @@ pub trait SessionEndHook: Send + Sync {
 pub struct SessionLifecycleCoordinator {
     pre_turn: Vec<Arc<dyn PreTurnHook>>,
     post_turn: Vec<Arc<dyn PostTurnHook>>,
+    post_turn_review: Vec<Arc<dyn PostTurnReviewHook>>,
     session_end: Vec<Arc<dyn SessionEndHook>>,
     insights_data_dir: Option<PathBuf>,
     extractor: Option<Arc<ProactiveSessionExtractor>>,
@@ -61,6 +74,7 @@ pub struct SessionLifecycleCoordinator {
 pub struct SessionLifecycleCoordinatorBuilder {
     pre_turn: Vec<Arc<dyn PreTurnHook>>,
     post_turn: Vec<Arc<dyn PostTurnHook>>,
+    post_turn_review: Vec<Arc<dyn PostTurnReviewHook>>,
     session_end: Vec<Arc<dyn SessionEndHook>>,
     insights_data_dir: Option<PathBuf>,
     extractor: Option<Arc<ProactiveSessionExtractor>>,
@@ -71,6 +85,7 @@ impl SessionLifecycleCoordinator {
         SessionLifecycleCoordinatorBuilder {
             pre_turn: Vec::new(),
             post_turn: Vec::new(),
+            post_turn_review: Vec::new(),
             session_end: Vec::new(),
             insights_data_dir: None,
             extractor: None,
@@ -119,6 +134,32 @@ impl SessionLifecycleCoordinator {
         current
     }
 
+    /// Fire all post-turn review hooks (optimization 2). Each hook is spawned
+    /// asynchronously — this method returns immediately and never blocks the
+    /// conversation loop. Only called for human-origin turns.
+    pub fn run_post_turn_review(&self, ctx: &TurnContext<'_>, reply: &str, messages: &[serde_json::Value]) {
+        if !ctx.origin_is_human {
+            return;
+        }
+        for hook in &self.post_turn_review {
+            let ctx_conv = ctx.conversation_id.to_string();
+            let ctx_session = ctx.session_id.to_string();
+            let ctx_prompt = ctx.user_prompt.to_string();
+            let reply = reply.to_string();
+            let messages = messages.to_vec();
+            let hook = hook.clone();
+            tokio::spawn(async move {
+                let review_ctx = TurnContext {
+                    conversation_id: &ctx_conv,
+                    session_id: &ctx_session,
+                    user_prompt: &ctx_prompt,
+                    origin_is_human: true,
+                };
+                hook.on_post_turn_review(&review_ctx, &reply, &messages).await;
+            });
+        }
+    }
+
     pub async fn run_session_end(&self, ctx: &SessionEndContext) {
         for hook in &self.session_end {
             hook.on_session_end(ctx).await;
@@ -160,6 +201,11 @@ impl SessionLifecycleCoordinatorBuilder {
         self
     }
 
+    pub fn post_turn_review(mut self, hook: Arc<dyn PostTurnReviewHook>) -> Self {
+        self.post_turn_review.push(hook);
+        self
+    }
+
     pub fn session_end(mut self, hook: Arc<dyn SessionEndHook>) -> Self {
         self.session_end.push(hook);
         self
@@ -179,6 +225,7 @@ impl SessionLifecycleCoordinatorBuilder {
         SessionLifecycleCoordinator {
             pre_turn: self.pre_turn,
             post_turn: self.post_turn,
+            post_turn_review: self.post_turn_review,
             session_end: self.session_end,
             insights_data_dir: self.insights_data_dir,
             extractor: self.extractor,

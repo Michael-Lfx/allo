@@ -72,6 +72,36 @@ pub struct McpConfig {
     pub servers: HashMap<String, McpServerConfig>,
 }
 
+/// Post-session memory distillation settings (spec-G / optimization 5).
+///
+/// Migrated from the `NOMIFUN_MEMORY_DISTILL` env-var gate to a first-class
+/// config section so the feature is on by default and user-controllable via
+/// System Settings. The env var is still honoured as an override for backward
+/// compatibility.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// Whether post-session memory distillation is enabled (default ON).
+    pub distill_enabled: bool,
+    /// Token ceiling for the distillation completion.
+    pub distill_max_tokens: u32,
+    /// Optional dedicated provider for distillation (empty = use the session provider).
+    pub distill_provider_id: String,
+    /// Optional dedicated model for distillation (empty = use the session model).
+    pub distill_model: String,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            distill_enabled: true,
+            distill_max_tokens: 2048,
+            distill_provider_id: String::new(),
+            distill_model: String::new(),
+        }
+    }
+}
+
 /// Top-level config file structure
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ConfigFile {
@@ -111,6 +141,9 @@ pub struct ConfigFile {
 
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -474,6 +507,7 @@ pub struct Config {
     pub vertex: Option<VertexConfig>,
     pub mcp: McpConfig,
     pub logging: LoggingConfig,
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -618,6 +652,7 @@ impl Config {
             vertex: merged.vertex,
             mcp: merged.mcp,
             logging: merged.logging,
+            memory: merged.memory,
         })
     }
 }
@@ -1008,6 +1043,27 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
 
     let logging = LoggingConfig::merge(global.logging, project.logging);
 
+    // Memory: project overrides global for distill_enabled / distill_max_tokens;
+    // non-empty provider/model in project wins, else global.
+    let memory = MemoryConfig {
+        distill_enabled: global.memory.distill_enabled && project.memory.distill_enabled,
+        distill_max_tokens: if project.memory.distill_max_tokens != MemoryConfig::default().distill_max_tokens {
+            project.memory.distill_max_tokens
+        } else {
+            global.memory.distill_max_tokens
+        },
+        distill_provider_id: if !project.memory.distill_provider_id.is_empty() {
+            project.memory.distill_provider_id
+        } else {
+            global.memory.distill_provider_id.clone()
+        },
+        distill_model: if !project.memory.distill_model.is_empty() {
+            project.memory.distill_model
+        } else {
+            global.memory.distill_model.clone()
+        },
+    };
+
     ConfigFile {
         default,
         providers,
@@ -1023,6 +1079,7 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
         auth,
         mcp,
         logging,
+        memory,
     }
 }
 

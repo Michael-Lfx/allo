@@ -569,6 +569,10 @@ pub(super) async fn build(
     if let Some(make_sink) = deps.cron_sink_factory.as_ref() {
         agent.register_cron_sink(make_sink(&conv_id_for_cron)).await;
     }
+    // Per-turn background review (optimization 2): register the default
+    // lightweight reviewer for non-companion sessions where distill is enabled.
+    // Fire-and-forget — never blocks the conversation loop.
+    agent.register_default_post_turn_review();
     Ok(AgentInstance::Nomi(Arc::new(agent)))
 }
 

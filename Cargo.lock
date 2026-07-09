@@ -5906,6 +5906,7 @@ dependencies = [
  "nomifun-conversation",
  "nomifun-db",
  "nomifun-extension",
+ "nomifun-insights",
  "nomifun-realtime",
  "reqwest 0.12.28",
  "serde",

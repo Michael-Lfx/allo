@@ -1955,6 +1955,15 @@ impl CompanionStore {
         Ok(rows.iter().map(row_to_skill).collect())
     }
 
+    /// List all skills across all companions (optimization 8: analytics).
+    pub async fn list_all_skills(&self) -> Result<Vec<CompanionSkill>, AppError> {
+        let rows = sqlx::query("SELECT * FROM companion_skills ORDER BY strength DESC")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.iter().map(row_to_skill).collect())
+    }
+
     pub async fn get_skill(&self, companion_id: &str, name: &str) -> Result<Option<CompanionSkill>, AppError> {
         let row = sqlx::query("SELECT * FROM companion_skills WHERE scope_companion_id = ? AND skill_name = ?")
             .bind(companion_id)
@@ -2142,6 +2151,46 @@ impl CompanionStore {
             .execute(&self.pool)
             .await
             .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// List mined, active, companion-scoped skills that meet the promotion
+    /// threshold (usage_count >= 5 AND strength >= 0.8). These are candidates
+    /// for promotion to Shared scope so they become available to all
+    /// conversations, not just the companion (optimization 4).
+    pub async fn list_promotable_skills(&self) -> Result<Vec<(String, String)>, AppError> {
+        let rows = sqlx::query(
+            "SELECT scope_companion_id, skill_name FROM companion_skills \
+             WHERE status = 'active' AND source = 'mined' AND scope_kind = 'companion' \
+             AND usage_count >= 5 AND strength >= 0.8",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get::<String, _>("scope_companion_id"), r.get::<String, _>("skill_name")))
+            .collect())
+    }
+
+    /// Mark a skill as promoted to Shared scope: update scope_kind to 'user'
+    /// and clear scope_companion_id. Called after the on-disk SKILL.md has been
+    /// copied to the shared directory.
+    pub async fn mark_skill_scope_shared(
+        &self,
+        companion_id: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE companion_skills SET scope_kind = 'user', scope_companion_id = '', updated_at = ? \
+             WHERE scope_companion_id = ? AND skill_name = ?",
+        )
+        .bind(now_ms())
+        .bind(companion_id)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(())
     }
 

@@ -264,9 +264,30 @@ impl Learner {
                 }
                 continue;
             }
+            // Optimization 9: when a create_skill suggestion carries
+            // knowledge_base content, embed it in the action JSON so the
+            // service layer can create a KB page when the user accepts.
+            let action = if s.kind == "create_skill" && s.knowledge_base.is_some() {
+                let mut action = s.action.clone().unwrap_or_else(|| serde_json::json!({}));
+                if let Some(obj) = action.as_object_mut() {
+                    obj.insert(
+                        "knowledge_base".to_string(),
+                        serde_json::Value::String(s.knowledge_base.clone().unwrap_or_default()),
+                    );
+                    if !obj.contains_key("type") {
+                        obj.insert("type".to_string(), serde_json::Value::String("navigate".to_string()));
+                    }
+                    if !obj.contains_key("to") {
+                        obj.insert("to".to_string(), serde_json::Value::String("/nomi?tab=skills".to_string()));
+                    }
+                }
+                Some(action)
+            } else {
+                s.action.clone()
+            };
             let created = self
                 .store
-                .insert_suggestion(&s.kind, &s.title, &s.body, s.action.as_ref())
+                .insert_suggestion(&s.kind, &s.title, &s.body, action.as_ref())
                 .await?;
             run.suggestions_added += 1;
             self.emitter.emit_suggestion_created(&target, &created);

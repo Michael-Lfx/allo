@@ -167,6 +167,11 @@ pub struct ResolutionPayload {
     pub objective_check_band: Option<String>,
     pub signal_codes: Vec<String>,
     pub recovery_attempted: bool,
+    /// Number of user correction loops detected in the session (optimization 3).
+    /// Used by the EvolutionEngine to adjust mining confidence: sessions with
+    /// correction loops get lower confidence (the user had to fix things).
+    #[serde(default)]
+    pub correction_loops: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

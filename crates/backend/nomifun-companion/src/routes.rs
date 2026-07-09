@@ -66,6 +66,9 @@ pub fn companion_routes(state: CompanionRouterState) -> Router {
         .route("/api/companion/learn/run", post(run_learn))
         .route("/api/companion/learn/runs", get(list_learn_runs))
         .route("/api/companion/events/stats", get(event_stats))
+        .route("/api/companion/events/source-recommendations", get(source_recommendations))
+        .route("/api/companion/companions/{companion_id}/learning-graph", get(learning_graph))
+        .route("/api/companion/analytics/local", get(local_analytics))
         .route("/api/companion/events/recent", get(recent_events))
         .route("/api/companion/events", delete(clear_events))
         .route("/api/companion/consent", post(apply_consent))
@@ -437,6 +440,28 @@ async fn event_stats(
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<SourceStats>>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.event_stats())))
+}
+
+async fn source_recommendations(
+    State(state): State<CompanionRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::collector::SourceRecommendation>>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.collector_source_stats().await)))
+}
+
+async fn learning_graph(
+    State(state): State<CompanionRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(companion_id): Path<String>,
+) -> Result<Json<ApiResponse<crate::service::LearningGraph>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.learning_graph(&companion_id).await?)))
+}
+
+async fn local_analytics(
+    State(state): State<CompanionRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<nomifun_insights::LocalAnalytics>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.local_analytics().await?)))
 }
 
 async fn recent_events(

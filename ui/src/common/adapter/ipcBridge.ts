@@ -3105,6 +3105,72 @@ export interface ICompanionSourceStats {
   total: number;
 }
 
+/** Collector source recommendation (optimization 10). */
+export interface ICompanionSourceRecommendation {
+  source: string;
+  today_count: number;
+  total_count: number;
+  event_types: string[];
+  recommendation: string;
+  reason: string;
+}
+
+/** Learning graph node (optimization 7). */
+export interface ICompanionLearningGraphNode {
+  id: string;
+  label: string;
+  node_type: string;
+  status: string;
+  kind: string;
+  strength: number;
+  usage_count: number;
+  importance: number;
+}
+
+/** Learning graph edge (optimization 7). */
+export interface ICompanionLearningGraphEdge {
+  source: string;
+  target: string;
+  edge_type: string;
+}
+
+/** Learning graph (optimization 7). */
+export interface ICompanionLearningGraph {
+  nodes: ICompanionLearningGraphNode[];
+  edges: ICompanionLearningGraphEdge[];
+}
+
+/** Local analytics (optimization 8). */
+export interface ILocalAnalytics {
+  conversations: {
+    total_conversations: number;
+    active_conversations_7d: number;
+    total_messages: number;
+    messages_7d: number;
+  };
+  skills: {
+    by_status: { active: number; draft: number; archived: number };
+    by_source: { mined: number; manual: number; imported: number };
+    top_by_usage: { name: string; usage_count: number; strength: number }[];
+    avg_strength: number;
+    avg_confidence: number;
+  };
+  memories: {
+    total_active: number;
+    by_kind: { profile: number; preference: number; knowledge: number; episode: number; task: number; affective: number };
+    avg_importance: number;
+    avg_strength: number;
+    pinned: number;
+  };
+  learning: {
+    total_runs: number;
+    runs_7d: number;
+    total_memories_added: number;
+    total_suggestions_added: number;
+  };
+  generated_at: number;
+}
+
 /** One archived session-window day-digest (伙伴会话归档回看). */
 export interface ICompanionDayDigest {
   id: string;
@@ -3389,6 +3455,14 @@ export const companion = {
     (p) => `/api/companion/learn/runs${p?.limit ? `?limit=${p.limit}` : ''}`
   ),
   eventStats: httpGet<ICompanionSourceStats[], void>('/api/companion/events/stats'),
+  /** Collector source smart recommendations (optimization 10). */
+  sourceRecommendations: httpGet<ICompanionSourceRecommendation[], void>('/api/companion/events/source-recommendations'),
+  /** Learning graph for a companion (optimization 7). */
+  learningGraph: httpGet<ICompanionLearningGraph, { companion_id: string }>(
+    (p) => `/api/companion/companions/${p.companion_id}/learning-graph`
+  ),
+  /** Local usage analytics (optimization 8). */
+  localAnalytics: httpGet<ILocalAnalytics, void>('/api/companion/analytics/local'),
   recentEvents: httpGet<ICompanionCollectedEvent[], { limit?: number }>(
     (p) => `/api/companion/events/recent${p?.limit ? `?limit=${p.limit}` : ''}`
   ),

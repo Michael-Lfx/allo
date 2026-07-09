@@ -35,7 +35,13 @@ pub const DRAFT_SYSTEM: &str = "你是技能起草器。用户反复做某套多
 只输出一个 JSON 对象,不要任何解释、不要代码围栏。字段:\n\
 {\"name\":\"kebab-case 短名\",\"description\":\"一句话说明这个技能做什么(必填,非空)\",\
 \"when_to_use\":\"什么情况下该用它(一句话)\",\"body\":\"## 步骤\\n1. ...\\n2. ... 的 markdown 操作手册\"}\n\
-要求:name 只含小写字母数字和连字符;description 必须非空;body 给出可照做的步骤。";
+要求:name 只含小写字母数字和连字符;description 必须非空;body 给出可照做的步骤。\n\
+技能目录下有三个子目录可供引用:\n\
+- references/: 放参考文档、配置示例、URL 链接等(只读参考)\n\
+- templates/: 放代码模板、文件骨架等(可直接复制使用)\n\
+- scripts/: 放辅助脚本(可执行)\n\
+在 body 中如需引用,用相对路径如 `references/api-spec.md` 或 `templates/component.tsx`。\n\
+不要在 body 中内联大段代码或文档——放到对应子目录的文件中,body 只写步骤和引用路径。";
 
 /// 评审器 system：判断草稿是否一个足够通用、可复用的好技能。
 pub const CRITIC_SYSTEM: &str = "你是技能评审器。判断给定技能草稿是否一个足够通用、可复用、安全的好技能。\

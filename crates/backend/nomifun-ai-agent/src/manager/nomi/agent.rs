@@ -29,6 +29,8 @@ use tracing::{debug, error, info};
 use crate::agent_runtime::AgentRuntime;
 use crate::capability::backend_output_sink::BackendOutputSink;
 use crate::capability::backend_protocol_sink::BackendProtocolSink;
+use crate::capability::session_lifecycle::{PostTurnReviewHook, TurnContext};
+use crate::capability::turn_review::LightweightTurnReviewer;
 use crate::protocol::events::{AgentStreamEvent, TurnCompletedEventData, TurnStopReason};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::{NomiResolvedConfig, SendMessageData};
@@ -72,6 +74,10 @@ pub struct NomiAgentManager {
     /// When set, each user message is augmented with auto-retrieved KB hits
     /// (proactive RAG) keyed on the message text. `(retrieval sink, bound kb_ids)`.
     knowledge_auto_rag: Option<(Arc<dyn nomi_agent::knowledge_tools::KnowledgeRetrievalSink>, Vec<String>)>,
+    /// Per-turn background review hooks (optimization 2). Each hook is fired
+    /// asynchronously after a human-origin turn completes — fire-and-forget,
+    /// never blocks the conversation loop.
+    post_turn_review: std::sync::RwLock<Vec<Arc<dyn PostTurnReviewHook>>>,
 }
 
 impl Drop for NomiAgentManager {
@@ -579,7 +585,34 @@ impl NomiAgentManager {
             distill_cfg,
             knowledge_prelude: std::sync::Mutex::new(knowledge_prelude),
             knowledge_auto_rag,
+            post_turn_review: std::sync::RwLock::new(Vec::new()),
         })
+    }
+
+    /// Register a per-turn background review hook (optimization 2).
+    /// The hook is fired asynchronously after each human-origin turn —
+    /// fire-and-forget, never blocks the conversation loop.
+    /// Registration typically happens in the factory before the first turn.
+    pub fn register_post_turn_review(&self, hook: Arc<dyn PostTurnReviewHook>) {
+        if let Ok(mut hooks) = self.post_turn_review.write() {
+            hooks.push(hook);
+        }
+    }
+
+    /// Register the default `LightweightTurnReviewer` (optimization 2) when
+    /// distill is enabled and this session is eligible (non-companion).
+    /// Uses the same config and memory directory as the full distill path.
+    pub fn register_default_post_turn_review(&self) {
+        if !super::distill::distill_enabled(&self.distill_cfg) {
+            return;
+        }
+        if let Some(dir) = self.distill_dir.clone() {
+            let reviewer = Arc::new(LightweightTurnReviewer::new(
+                self.distill_cfg.clone(),
+                dir,
+            ));
+            self.register_post_turn_review(reviewer);
+        }
     }
 
     fn request_stop(&self, reason: Option<AgentKillReason>, operation: &'static str) {
@@ -848,16 +881,55 @@ impl crate::agent_task::IAgentTask for NomiAgentManager {
                     .map(str::trim)
                     .unwrap_or("")
                     .is_empty();
+                // Capture the transcript once for both distill and per-turn review.
+                let review_transcript = if origin_is_human {
+                    Some(engine.messages_transcript())
+                } else {
+                    None
+                };
                 if origin_is_human
-                    && super::distill::distill_enabled()
+                    && super::distill::distill_enabled(&self.distill_cfg)
                     && let Some(dir) = self.distill_dir.clone()
                 {
-                    let transcript = engine.messages_transcript();
+                    let transcript = review_transcript.clone().unwrap_or_default();
                     drop(engine); // release the engine lock before the LLM call
                     let cfg = self.distill_cfg.clone();
                     tokio::spawn(async move {
                         super::distill::run_distill(cfg, dir, transcript).await;
                     });
+                }
+
+                // —— Per-turn background review (optimization 2) ——
+                // Fire-and-forget: spawn each review hook asynchronously. Only
+                // for human-origin turns (same gate as distill). Never blocks
+                // the reply and never surfaces errors.
+                if origin_is_human
+                    && let Some(transcript) = review_transcript
+                {
+                    let hooks = self
+                        .post_turn_review
+                        .read()
+                        .ok()
+                        .map(|h| h.clone())
+                        .unwrap_or_default();
+                    if !hooks.is_empty() {
+                        let conv_id = self.runtime.conversation_id().to_string();
+                        let user_prompt = data.content.clone();
+                        for hook in hooks {
+                            let conv_id = conv_id.clone();
+                            let user_prompt = user_prompt.clone();
+                            let transcript = transcript.clone();
+                            tokio::spawn(async move {
+                                let ctx = TurnContext {
+                                    conversation_id: &conv_id,
+                                    session_id: &conv_id,
+                                    user_prompt: &user_prompt,
+                                    origin_is_human: true,
+                                };
+                                hook.on_post_turn_review(&ctx, &transcript, &[]).await;
+                            });
+                        }
+                    }
                 }
 
                 self.runtime.emit_finish_with_reason(None, Some(stop_reason));
@@ -1278,6 +1350,7 @@ mod tests {
             distill_cfg: Arc::new(config),
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
+            post_turn_review: std::sync::RwLock::new(Vec::new()),
         }
     }
 

@@ -85,7 +85,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
 
     if signals.user_turns < 2 {
         codes.push("insufficient_turns".to_string());
-        return resolution_payload("abandoned", "low", "D", "unknown", None, codes, false);
+        return resolution_payload("abandoned", "low", "D", "unknown", None, codes, false, signals.correction_loops);
     }
 
     if signals.explicit_negative {
@@ -102,6 +102,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
             objective,
             codes,
             signals.skill_patched,
+            signals.correction_loops,
         );
     }
 
@@ -128,6 +129,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
             objective,
             codes,
             false,
+            signals.correction_loops,
         );
     }
 
@@ -141,6 +143,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
             Some("fail".to_string()),
             codes,
             signals.skill_patched,
+            signals.correction_loops,
         );
     }
 
@@ -160,6 +163,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
             Some("pass".to_string()),
             codes,
             signals.skill_patched,
+            signals.correction_loops,
         );
     }
 
@@ -173,6 +177,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
             objective_band(signals),
             codes,
             signals.skill_patched,
+            signals.correction_loops,
         );
     }
 
@@ -201,6 +206,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
             Some("not_applicable".to_string()),
             codes,
             signals.skill_patched,
+            signals.correction_loops,
         );
     }
 
@@ -213,6 +219,7 @@ pub fn fuse_verdict(signals: &SessionSignals) -> ResolutionPayload {
         Some("not_applicable".to_string()),
         codes,
         false,
+        signals.correction_loops,
     )
 }
 
@@ -309,6 +316,7 @@ fn merge_payloads(rules: &ResolutionPayload, llm: &ResolutionPayload) -> Resolut
             .or_else(|| rules.objective_check_band.clone()),
         signal_codes,
         recovery_attempted: rules.recovery_attempted || llm.recovery_attempted,
+        correction_loops: rules.correction_loops.max(llm.correction_loops),
     }
 }
 
@@ -416,6 +424,7 @@ fn resolution_payload(
     objective_check_band: Option<String>,
     signal_codes: Vec<String>,
     recovery_attempted: bool,
+    correction_loops: u32,
 ) -> ResolutionPayload {
     ResolutionPayload {
         verdict: verdict.to_string(),
@@ -425,6 +434,7 @@ fn resolution_payload(
         objective_check_band,
         signal_codes,
         recovery_attempted,
+        correction_loops,
     }
 }
 
@@ -554,6 +564,7 @@ mod tests {
             objective_check_band: Some("not_applicable".to_string()),
             signal_codes: vec!["closure_without_followup".to_string()],
             recovery_attempted: false,
+            correction_loops: 0,
         };
         let merged = merge_resolution_hybrid(&signals, &rules, Some(&llm));
         assert_eq!(merged.evidence_tier, "B");

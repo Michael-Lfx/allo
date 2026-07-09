@@ -594,6 +594,108 @@ pub fn clear_events(companion_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Optimization 10: per-source effectiveness statistics with recommendation.
+/// Returned by the companion service's collector stats API.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SourceRecommendation {
+    /// Source name (e.g. "companion_dialogues", "tool_calls").
+    pub source: String,
+    /// Events collected today.
+    pub today_count: u64,
+    /// Total events collected (all time).
+    pub total_count: u64,
+    /// Distinct event names within this source (e.g. "tool.call").
+    pub event_types: Vec<String>,
+    /// Recommendation: "enable" (high value), "maintain" (steady),
+    /// "review" (low signal — consider disabling if noise is a concern).
+    pub recommendation: String,
+    /// Human-readable reason for the recommendation.
+    pub reason: String,
+}
+
+/// Optimization 10: compute per-source effectiveness stats and recommendations.
+/// Reads all collected events and produces a recommendation for each source.
+///
+/// Recommendation logic:
+/// - **enable**: source has > 100 total events and > 5 today — actively producing signal.
+/// - **maintain**: source has > 10 total events — steady but not high-volume.
+/// - **review**: source has ≤ 10 total events — low signal; may be noisy or rarely triggered.
+/// - **inactive**: source has 0 events — not collecting anything.
+pub fn compute_source_recommendations(companion_dir: &Path) -> Vec<SourceRecommendation> {
+    let stats = event_stats(companion_dir);
+    // Collect distinct event names per source from recent events.
+    let recent = read_recent_events(companion_dir, 500);
+    let mut event_types: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
+    for e in &recent {
+        event_types
+            .entry(e.source.clone())
+            .or_default()
+            .insert(e.name.clone());
+    }
+    // Known sources (even if no events, show them as inactive).
+    let known_sources = [
+        "companion_dialogues",
+        "chat_user_messages",
+        "tool_calls",
+        "chat_assistant_replies",
+        "requirements",
+        "cron_runs",
+        "conversation_lifecycle",
+        "terminal_sessions",
+    ];
+    let mut out: Vec<SourceRecommendation> = Vec::new();
+    for source in known_sources {
+        let (today, total) = stats.get(source).copied().unwrap_or((0, 0));
+        let types: Vec<String> = event_types
+            .get(source)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        let (rec, reason) = if total == 0 {
+            ("inactive", "No events collected — source may be disabled or never triggered.")
+        } else if total > 100 && today > 5 {
+            ("enable", "High signal source — actively producing valuable events.")
+        } else if total > 10 {
+            ("maintain", "Steady source — keep enabled for continuous signal.")
+        } else {
+            ("review", "Low signal — consider reviewing if this source adds noise without value.")
+        };
+        out.push(SourceRecommendation {
+            source: source.to_string(),
+            today_count: today,
+            total_count: total,
+            event_types: types,
+            recommendation: rec.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+    // Include any unknown sources that have events.
+    for (source, (today, total)) in &stats {
+        if known_sources.contains(&source.as_str()) {
+            continue;
+        }
+        let types: Vec<String> = event_types
+            .get(source)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        let (rec, reason) = if *total > 100 && *today > 5 {
+            ("enable", "High signal custom source.")
+        } else if *total > 10 {
+            ("maintain", "Steady custom source.")
+        } else {
+            ("review", "Low signal custom source.")
+        };
+        out.push(SourceRecommendation {
+            source: source.clone(),
+            today_count: *today,
+            total_count: *total,
+            event_types: types,
+            recommendation: rec.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

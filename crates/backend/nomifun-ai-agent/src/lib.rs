@@ -48,8 +48,9 @@ pub use capability::skill_manager::{
     prepare_first_message_with_skills_index,
 };
 pub use capability::{
-    ExtractionTrigger, PostTurnHook, PreTurnHook, ProactiveSessionExtractor, SessionEndContext,
-    SessionEndHook, SessionEndReason, SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
+    ExtractionTrigger, LightweightTurnReviewer, PostTurnHook, PostTurnReviewHook, PreTurnHook,
+    ProactiveSessionExtractor, SessionEndContext, SessionEndHook, SessionEndReason,
+    SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
 };
 pub use auxiliary_provider::AuxiliaryClientFactory;
 pub use extraction_scanner::start_session_extraction_scanner;
