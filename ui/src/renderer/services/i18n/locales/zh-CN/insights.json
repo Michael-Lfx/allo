@@ -15,6 +15,12 @@
     "enabled": "启用贡献",
     "serverManagedHint": "上报端点与认证令牌由 Flowy 云账号自动管理，无需手动填写。",
     "onSessionEnd": "会话结束时入队",
+    "autoExtractSection": "主动提取",
+    "autoExtractHint": "对话进行中按阈值自动构建并入队工作包，无需等待会话结束。",
+    "autoExtractEnabled": "启用主动提取",
+    "autoExtractIdleSecs": "空闲超时（秒）",
+    "autoExtractIdleSecsHint": "会话无新消息后，超过该时间也会尝试入队（例如 300 = 5 分钟）。",
+    "minWorkTurnsHint": "轮次阈值沿用配置 min_work_turns（当前 {{count}} 轮）。",
     "redactedBody": "包含脱敏技能正文",
     "saved": "洞察设置已保存"
   },

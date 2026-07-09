@@ -60,6 +60,22 @@ pub struct InterestConfig {
     /// Minimum user message length (chars) before rule extraction runs.
     #[serde(default = "default_interest_min_turn_chars")]
     pub min_turn_chars: u32,
+
+    /// Auto-extract POI when conversation thresholds are met (not only explicit session end).
+    #[serde(default = "default_interest_auto_extract_enabled")]
+    pub auto_extract_enabled: bool,
+
+    /// Minimum user turns since last extraction before auto-trigger.
+    #[serde(default = "default_interest_auto_extract_min_turns")]
+    pub auto_extract_min_turns: u32,
+
+    /// Minimum user message characters accumulated since last extraction.
+    #[serde(default = "default_interest_auto_extract_min_user_chars")]
+    pub auto_extract_min_user_chars: usize,
+
+    /// Idle seconds before the background scanner triggers extraction.
+    #[serde(default = "default_interest_auto_extract_idle_secs")]
+    pub auto_extract_idle_secs: u64,
 }
 
 fn default_interest_enabled() -> bool {
@@ -118,6 +134,22 @@ fn default_interest_min_turn_chars() -> u32 {
     12
 }
 
+fn default_interest_auto_extract_enabled() -> bool {
+    true
+}
+
+fn default_interest_auto_extract_min_turns() -> u32 {
+    4
+}
+
+fn default_interest_auto_extract_min_user_chars() -> usize {
+    200
+}
+
+fn default_interest_auto_extract_idle_secs() -> u64 {
+    300
+}
+
 impl Default for InterestConfig {
     fn default() -> Self {
         Self {
@@ -135,6 +167,10 @@ impl Default for InterestConfig {
             promote_min_evidence: default_interest_promote_min_evidence(),
             promote_min_confidence: default_interest_promote_min_confidence(),
             min_turn_chars: default_interest_min_turn_chars(),
+            auto_extract_enabled: default_interest_auto_extract_enabled(),
+            auto_extract_min_turns: default_interest_auto_extract_min_turns(),
+            auto_extract_min_user_chars: default_interest_auto_extract_min_user_chars(),
+            auto_extract_idle_secs: default_interest_auto_extract_idle_secs(),
         }
     }
 }
@@ -150,8 +186,13 @@ impl InterestConfig {
     pub fn uses_rules(&self) -> bool {
         matches!(
             self.extract_mode.trim().to_ascii_lowercase().as_str(),
-            "rules" | "hybrid"
+            "rules" | "keywords" | "hybrid"
         )
+    }
+
+    /// Whether proactive threshold-based extraction is active for POI.
+    pub fn proactive_extraction_enabled(&self) -> bool {
+        self.enabled && self.auto_extract_enabled
     }
 
     /// Whether session-end cloud LLM extraction is allowed.

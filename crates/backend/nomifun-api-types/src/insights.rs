@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub struct InsightsContributionStatusResponse {
     pub enabled: bool,
     pub on_session_end: bool,
+    pub auto_extract_enabled: bool,
+    pub auto_extract_idle_secs: u64,
     pub min_evidence_tier: String,
     pub require_skill_binding: bool,
     pub min_work_turns: u32,
@@ -30,6 +32,10 @@ pub struct UpdateInsightsContributionRequest {
     pub auth_token: Option<String>,
     #[serde(default)]
     pub on_session_end: Option<bool>,
+    #[serde(default)]
+    pub auto_extract_enabled: Option<bool>,
+    #[serde(default)]
+    pub auto_extract_idle_secs: Option<u64>,
     #[serde(default)]
     pub redacted_body: Option<bool>,
 }

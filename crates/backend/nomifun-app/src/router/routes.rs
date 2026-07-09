@@ -84,6 +84,26 @@ pub async fn create_router(services: &AppServices) -> Router {
         "startup: module states built"
     );
 
+    if let Some(lifecycle) = &states.conversation.session_lifecycle {
+        if let Some(extractor) = lifecycle.proactive_extractor() {
+            let conv = states.conversation.service.clone();
+            let message_counts = std::sync::Arc::new(move |session_id: String| {
+                let svc = conv.clone();
+                Box::pin(async move { svc.extraction_message_count(&session_id).await })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = Option<usize>> + Send>,
+                    >
+            });
+            let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            nomifun_ai_agent::start_session_extraction_scanner(
+                extractor,
+                message_counts,
+                shutdown_rx,
+                None,
+            );
+        }
+    }
+
     nomifun_cloud::start_cloud_telemetry(services.cloud_service.clone());
 
     // Wire the Desktop Gateway MCP deps now that the module services exist.

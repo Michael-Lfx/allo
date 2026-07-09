@@ -7,10 +7,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nomi_config::InterestConfig;
-use nomi_insights_core::{spawn_session_end_pipeline, touch_active_session};
+use nomi_insights_core::touch_active_session;
 use nomifun_insights::InsightsService;
 use nomifun_poi::PoiService;
+
+use super::proactive_extraction::{MessageLoader, ProactiveSessionExtractor};
+use crate::auxiliary_provider::AuxiliaryClientFactory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEndReason {
@@ -53,6 +55,7 @@ pub struct SessionLifecycleCoordinator {
     post_turn: Vec<Arc<dyn PostTurnHook>>,
     session_end: Vec<Arc<dyn SessionEndHook>>,
     insights_data_dir: Option<PathBuf>,
+    extractor: Option<Arc<ProactiveSessionExtractor>>,
 }
 
 pub struct SessionLifecycleCoordinatorBuilder {
@@ -60,6 +63,7 @@ pub struct SessionLifecycleCoordinatorBuilder {
     post_turn: Vec<Arc<dyn PostTurnHook>>,
     session_end: Vec<Arc<dyn SessionEndHook>>,
     insights_data_dir: Option<PathBuf>,
+    extractor: Option<Arc<ProactiveSessionExtractor>>,
 }
 
 impl SessionLifecycleCoordinator {
@@ -69,6 +73,7 @@ impl SessionLifecycleCoordinator {
             post_turn: Vec::new(),
             session_end: Vec::new(),
             insights_data_dir: None,
+            extractor: None,
         }
     }
 
@@ -76,14 +81,26 @@ impl SessionLifecycleCoordinator {
     pub fn from_poi_and_insights(
         poi_service: Arc<PoiService>,
         insights_service: Arc<InsightsService>,
+        auxiliary_factory: Option<Arc<AuxiliaryClientFactory>>,
+        message_loader: MessageLoader,
     ) -> Self {
+        let extractor = Arc::new(
+            ProactiveSessionExtractor::new(
+                poi_service.clone(),
+                insights_service.clone(),
+                auxiliary_factory,
+            )
+            .with_message_loader(message_loader),
+        );
         Self::builder()
             .insights_data_dir(insights_service.data_dir().to_path_buf())
-            .session_end(Arc::new(WorkSessionEndHook::new(
-                poi_service,
-                insights_service,
-            )))
+            .extractor(extractor.clone())
+            .session_end(Arc::new(WorkSessionEndHook::new(extractor)))
             .build()
+    }
+
+    pub fn proactive_extractor(&self) -> Option<Arc<ProactiveSessionExtractor>> {
+        self.extractor.clone()
     }
 
     pub async fn run_pre_turn(&self, ctx: &TurnContext<'_>, prompt: String) -> String {
@@ -105,6 +122,21 @@ impl SessionLifecycleCoordinator {
     pub async fn run_session_end(&self, ctx: &SessionEndContext) {
         for hook in &self.session_end {
             hook.on_session_end(ctx).await;
+        }
+    }
+
+    /// Touch active session + record user message for threshold-based extraction.
+    pub async fn on_user_message(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        message_count: usize,
+    ) {
+        self.touch_session(session_id);
+        if let Some(extractor) = &self.extractor {
+            extractor
+                .on_user_message(session_id, user_text, message_count)
+                .await;
         }
     }
 
@@ -137,71 +169,38 @@ impl SessionLifecycleCoordinatorBuilder {
         self
     }
 
+    pub fn extractor(mut self, extractor: Arc<ProactiveSessionExtractor>) -> Self {
+        self.extractor = Some(extractor);
+        self
+    }
+
     pub fn build(self) -> SessionLifecycleCoordinator {
         SessionLifecycleCoordinator {
             pre_turn: self.pre_turn,
             post_turn: self.post_turn,
             session_end: self.session_end,
             insights_data_dir: self.insights_data_dir,
+            extractor: self.extractor,
         }
     }
 }
 
-/// Session-end hook: POI ingest (interest.db) + insights work packages.
+/// Session-end hook: final POI / insights flush via the proactive extractor.
 pub struct WorkSessionEndHook {
-    poi_service: Arc<PoiService>,
-    insights_service: Arc<InsightsService>,
+    extractor: Arc<ProactiveSessionExtractor>,
 }
 
 impl WorkSessionEndHook {
-    pub fn new(poi_service: Arc<PoiService>, insights_service: Arc<InsightsService>) -> Self {
-        Self {
-            poi_service,
-            insights_service,
-        }
+    pub fn new(extractor: Arc<ProactiveSessionExtractor>) -> Self {
+        Self { extractor }
     }
 }
 
 #[async_trait::async_trait]
 impl SessionEndHook for WorkSessionEndHook {
     async fn on_session_end(&self, ctx: &SessionEndContext) {
-        let interest_cfg = self.poi_service.interest_config();
-        let insights_cfg = self.insights_service.contribution_config().await;
-        if !interest_cfg.enabled && !insights_cfg.enabled {
-            return;
-        }
-
-        let poi_data_dir = self.poi_service.data_dir().to_path_buf();
-        let insights_data_dir = self.insights_service.data_dir().to_path_buf();
-        let session_id = ctx.session_id.clone();
-        let messages = ctx.messages.clone();
-
-        if interest_cfg.enabled {
-            let mut insights_off = insights_cfg.clone();
-            insights_off.enabled = false;
-            spawn_session_end_pipeline(
-                poi_data_dir,
-                interest_cfg,
-                insights_off,
-                session_id.clone(),
-                messages.clone(),
-                Vec::new(),
-                None,
-            );
-        }
-
-        if insights_cfg.enabled {
-            let mut interest_off = InterestConfig::default();
-            interest_off.enabled = false;
-            spawn_session_end_pipeline(
-                insights_data_dir,
-                interest_off,
-                insights_cfg,
-                session_id,
-                messages,
-                Vec::new(),
-                None,
-            );
-        }
+        self.extractor
+            .flush_on_session_end(&ctx.session_id, ctx.messages.clone())
+            .await;
     }
 }

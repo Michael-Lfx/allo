@@ -52,6 +52,14 @@ pub struct InsightsContributionConfig {
     #[serde(default = "default_min_work_turns")]
     pub min_work_turns: u32,
 
+    /// Auto-build work packages when conversation thresholds are met.
+    #[serde(default = "default_auto_extract_enabled")]
+    pub auto_extract_enabled: bool,
+
+    /// Idle seconds before the background scanner triggers insights extraction.
+    #[serde(default = "default_auto_extract_idle_secs")]
+    pub auto_extract_idle_secs: u64,
+
     /// Resolution labeling: `hybrid` (default), `llm`, or `rules`.
     #[serde(default = "default_resolution_mode")]
     pub resolution_mode: String,
@@ -113,6 +121,14 @@ fn default_min_work_turns() -> u32 {
     2
 }
 
+fn default_auto_extract_enabled() -> bool {
+    true
+}
+
+fn default_auto_extract_idle_secs() -> u64 {
+    300
+}
+
 fn default_resolution_mode() -> String {
     "hybrid".to_string()
 }
@@ -138,6 +154,8 @@ impl Default for InsightsContributionConfig {
             exclude_verdicts: default_exclude_verdicts(),
             require_skill_binding: default_require_skill_binding(),
             min_work_turns: default_min_work_turns(),
+            auto_extract_enabled: default_auto_extract_enabled(),
+            auto_extract_idle_secs: default_auto_extract_idle_secs(),
             resolution_mode: default_resolution_mode(),
             resolution_llm_on_session_end: default_resolution_llm_on_session_end(),
             skill_min_age_hours: default_skill_min_age_hours(),
@@ -164,6 +182,11 @@ impl InsightsContributionConfig {
 
     pub fn upload_ready(&self) -> bool {
         self.enabled && !self.endpoint.trim().is_empty() && self.effective_token().is_some()
+    }
+
+    /// Whether proactive threshold-based work package extraction is active.
+    pub fn proactive_extraction_enabled(&self) -> bool {
+        self.enabled && self.auto_extract_enabled
     }
 
     fn tier_rank(tier: &str) -> u8 {

@@ -430,15 +430,32 @@ pub fn build_conversation_state(
         conversation_service.with_delete_hook(cron_service.clone());
         conversation_service.with_cron_service(Some(cron_service));
     }
-    conversation_service.with_session_lifecycle(Arc::new(
+    let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
+    let provider_repo = Arc::new(SqliteProviderRepository::new(services.database.pool().clone()));
+    let auxiliary_factory = Arc::new(nomifun_ai_agent::AuxiliaryClientFactory::new(
+        provider_repo,
+        encryption_key,
+        services.data_dir.clone(),
+    ));
+    let conv_for_loader = conversation_service.clone();
+    let message_loader: nomifun_ai_agent::capability::MessageLoader =
+        Arc::new(move |session_id: String| {
+            let svc = conv_for_loader.clone();
+            Box::pin(async move { svc.load_extraction_messages(&session_id).await })
+        });
+    let session_lifecycle = Arc::new(
         nomifun_ai_agent::capability::SessionLifecycleCoordinator::from_poi_and_insights(
             services.poi_service.clone(),
             services.insights_service.clone(),
+            Some(auxiliary_factory),
+            message_loader,
         ),
-    ));
+    );
+    conversation_service.with_session_lifecycle(session_lifecycle.clone());
     ConversationRouterState {
         service: conversation_service,
         task_manager: services.worker_task_manager.clone(),
+        session_lifecycle: Some(session_lifecycle),
     }
 }
 

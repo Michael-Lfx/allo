@@ -18,6 +18,13 @@
     "llmOnSessionEnd": "会话结束时 LLM 提取",
     "perTurnBuffer": "每轮缓冲",
     "perTurnPersist": "每轮持久化",
+    "autoExtractSection": "主动提取",
+    "autoExtractHint": "对话进行中按阈值自动提取兴趣主题，无需手动清空或删除会话。",
+    "autoExtractEnabled": "启用主动提取",
+    "autoExtractMinTurns": "最少用户轮次",
+    "autoExtractMinUserChars": "最少用户字符数",
+    "autoExtractIdleSecs": "空闲超时（秒）",
+    "autoExtractIdleSecsHint": "会话无新消息后，超过该时间也会触发提取（例如 300 = 5 分钟）。",
     "saved": "POI 设置已保存"
   },
   "topics": {
