@@ -1963,13 +1963,11 @@ button.guidResourceCard:focus-visible {
   }
 }
 
-/* 移动端容器滚动支持 */
+/* 首页只保留对话一屏，禁止纵向滚动露出下方内容 */
 .guidContainer {
   height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   position: relative;
-  -webkit-overflow-scrolling: touch;
 }
 
 .guidPrimaryStage {

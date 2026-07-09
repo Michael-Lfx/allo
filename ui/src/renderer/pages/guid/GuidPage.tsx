@@ -18,7 +18,6 @@ import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
 import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerEntryStrip';
 import GuidAssistantEditorHost from './components/GuidAssistantEditorHost';
 import GuidActionRow from './components/GuidActionRow';
-import GuidCompanionPosterPreview from './components/GuidCompanionPosterPreview';
 import GuidInputCard from './components/GuidInputCard';
 import GuidClusterApprovalSelector from './components/GuidClusterApprovalSelector';
 import type { GuidClusterApprovalMode } from './components/GuidClusterApprovalSelector';
@@ -808,10 +807,6 @@ const GuidPage: React.FC = () => {
               onRegisterOpenDetails={handleRegisterOpenDetails}
             />
           </div>
-        </div>
-
-        <div className={styles.guidDiscoveryArea}>
-          <GuidCompanionPosterPreview />
         </div>
 
         {/* SummonDrawer (right-side) */}
