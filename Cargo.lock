@@ -2837,6 +2837,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowy-web"
+version = "0.2.13"
+dependencies = [
+ "async-trait",
+ "htmd",
+ "nomi-protocol",
+ "nomi-tools",
+ "nomi-types",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
