@@ -18,10 +18,14 @@ anyhow.workspace     = true
 thiserror.workspace  = true
 dirs.workspace       = true
 chrono.workspace     = true
-reqwest.workspace    = true
+reqwest = { workspace = true, features = ["stream"] }
+futures.workspace    = true
 glob.workspace       = true
 tokio.workspace      = true
 which.workspace      = true
+zip.workspace        = true
+tar.workspace        = true
+xz2.workspace        = true
 
 tracing.workspace            = true
 tracing-appender.workspace   = true

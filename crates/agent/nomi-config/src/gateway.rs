@@ -90,3 +90,16 @@ pub fn env_var_enabled(name: &str) -> bool {
         })
         .unwrap_or(false)
 }
+
+/// Like [`env_var_enabled`], but defaults to `true` when the variable is unset.
+pub fn env_var_enabled_default_true(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}

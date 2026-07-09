@@ -1,4 +1,4 @@
-//! Download remote media and persist under `~/.hermes/media/generated/`.
+//! Download remote media and persist under `~/.nomifun/media/generated/`.
 
 use std::path::PathBuf;
 

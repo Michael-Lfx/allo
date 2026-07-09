@@ -106,13 +106,13 @@ impl MediaGenerationBackend for ComfyUiMediaBackend {
 
     async fn generate_image(&self, _request: MediaImageRequest) -> Result<String, ToolError> {
         Err(ToolError::ExecutionFailed(
-            "ComfyUI media backend is not wired in hermes-media-workflows — use the comfyui skill or set media.provider=flowy".into(),
+            "ComfyUI media backend is not wired in nomi-media — use the comfyui skill or set media.provider=flowy".into(),
         ))
     }
 
     async fn generate_video(&self, _request: VideoGenerateRequest) -> Result<String, ToolError> {
         Err(ToolError::ExecutionFailed(
-            "ComfyUI media backend is not wired in hermes-media-workflows — use the comfyui skill or set media.provider=flowy".into(),
+            "ComfyUI media backend is not wired in nomi-media — use the comfyui skill or set media.provider=flowy".into(),
         ))
     }
 }

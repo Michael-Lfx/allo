@@ -137,6 +137,8 @@ zip = "2"
 # Node portable-runtime archive extraction (provisioner): tar.gz on unix/macos.
 flate2 = "1"
 tar = "0.4"
+# ffmpeg managed install (linux static builds are tar.xz).
+xz2 = "0.1"
 git2 = { version = "0.20", default-features = false }
 mime_guess = "2"
 rust-embed = "8"

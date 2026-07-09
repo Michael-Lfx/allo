@@ -164,7 +164,7 @@ impl FlowyMediaServices {
                 return Ok(resolved);
             }
             return Err(nomi_types::ToolError::ExecutionFailed(format!(
-                "configured {kind} model '{configured}' not found in server catalog — run `hermes media models pick {kind}`"
+                "configured {kind} model '{configured}' not found in server catalog — check Flowy media model settings"
             )));
         }
 
@@ -191,7 +191,7 @@ impl FlowyMediaServices {
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| {
                 nomi_types::ToolError::ExecutionFailed(
-                    "not logged in — run `hermes server login` first".into(),
+                    "not logged in — sign in via Settings → Cloud Account first".into(),
                 )
             })
     }

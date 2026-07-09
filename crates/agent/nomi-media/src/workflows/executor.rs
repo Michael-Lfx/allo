@@ -1,6 +1,7 @@
 //! DAG workflow executor.
 
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -38,6 +39,38 @@ pub struct WorkflowExecutor {
     store: Arc<WorkflowRunStore>,
     control: WorkflowRunControl,
     max_retries: u32,
+}
+
+struct RunInterruptGuard {
+    store: Arc<WorkflowRunStore>,
+    run_id: String,
+    finished: Cell<bool>,
+}
+
+impl Drop for RunInterruptGuard {
+    fn drop(&mut self) {
+        if self.finished.get() {
+            return;
+        }
+        let Some(mut record) = self.store.get(&self.run_id) else {
+            return;
+        };
+        if record.status != WorkflowRunStatus::Running {
+            return;
+        }
+        let interrupted = read_long_video_checkpoint(&long_video_work_dir(&self.run_id))
+            .is_some_and(|cp| !cp.is_complete());
+        if !interrupted {
+            return;
+        }
+        record.status = WorkflowRunStatus::Failed;
+        record.error = Some(
+            "workflow interrupted before long video finished — resume with media_workflow_run(resume_run_id)"
+                .into(),
+        );
+        record.current_step = None;
+        self.store.save(&record);
+    }
 }
 
 impl WorkflowExecutor {
@@ -116,7 +149,11 @@ impl WorkflowExecutor {
             return Ok(record);
         }
         if record.status == WorkflowRunStatus::Running
-            && !crate::long_video_active::record_is_resumable(&record, None)
+            && !crate::long_video_active::record_is_resumable(
+                &record,
+                None,
+                self.control.contains(run_id),
+            )
         {
             return Err(ToolError::ExecutionFailed(format!(
                 "workflow run {run_id} is still running"
@@ -147,6 +184,26 @@ impl WorkflowExecutor {
     }
 
     async fn execute_workflow_steps(
+        &self,
+        run_id: &str,
+        def: &WorkflowDefinition,
+        record: &mut WorkflowRunRecord,
+        start_idx: usize,
+        restoring: bool,
+    ) -> Result<WorkflowRunRecord, ToolError> {
+        let interrupt_guard = RunInterruptGuard {
+            store: Arc::clone(&self.store),
+            run_id: run_id.to_string(),
+            finished: Cell::new(false),
+        };
+        let result = self
+            .execute_workflow_steps_inner(run_id, def, record, start_idx, restoring)
+            .await;
+        interrupt_guard.finished.set(true);
+        result
+    }
+
+    async fn execute_workflow_steps_inner(
         &self,
         run_id: &str,
         def: &WorkflowDefinition,
@@ -473,6 +530,40 @@ impl WorkflowExecutor {
         }))
     }
 
+    async fn run_video_step_with_retry(
+        &self,
+        run_id: &str,
+        input: &Value,
+    ) -> Result<Value, ToolError> {
+        let mut last_err = None;
+        for attempt in 0..self.max_retries {
+            if self.control.is_cancelled(run_id) {
+                return Err(ToolError::ExecutionFailed("workflow cancelled".into()));
+            }
+            match self.run_video_step(run_id, input).await {
+                Ok(v) => return Ok(v),
+                Err(err) => {
+                    let retryable = is_retryable_error(&err);
+                    tracing::warn!(
+                        run_id = %run_id,
+                        attempt = attempt + 1,
+                        retryable,
+                        error = %err,
+                        "video segment generation failed"
+                    );
+                    last_err = Some(err);
+                    if !retryable || attempt + 1 >= self.max_retries {
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(attempt))).await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            ToolError::ExecutionFailed("video segment failed without error".into())
+        }))
+    }
+
     async fn run_long_video_step(
         &self,
         run_id: &str,
@@ -614,9 +705,9 @@ impl WorkflowExecutor {
                             "long video continuation missing last-frame chain image".into(),
                         ));
                     }
-                    if let Some(anchor) = anchor_image_url.clone() {
-                        obj.insert("reference_image_urls".into(), json!([anchor]));
-                    }
+                    // Seedance forbids mixing first_frame chain with reference_image.
+                    // Character continuity relies on the chained last-frame + prompt.
+                    obj.remove("reference_image_urls");
                 } else if let Some(url) = chain_image_url.clone() {
                     obj.insert("image_url".into(), json!(url));
                 } else {
@@ -625,7 +716,7 @@ impl WorkflowExecutor {
                 obj.insert("model".into(), json!(model));
             }
 
-            let seg_out = match self.run_video_step(run_id, &seg_input).await {
+            let seg_out = match self.run_video_step_with_retry(run_id, &seg_input).await {
                 Ok(out) => out,
                 Err(err) => {
                     let checkpoint = snapshot_long_video_checkpoint(
@@ -1363,6 +1454,9 @@ mod tests {
 
     #[test]
     fn retryable_errors_detected() {
+        assert!(is_retryable_error(&ToolError::ExecutionFailed(
+            "API error 502: Video generation service is temporarily unavailable".into()
+        )));
         assert!(is_retryable_error(&ToolError::ExecutionFailed(
             "HTTP 503 temporarily unavailable".into()
         )));

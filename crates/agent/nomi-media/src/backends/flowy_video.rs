@@ -90,43 +90,8 @@ impl FlowyVideoGenBackend {
         };
         let resolution = normalize_video_resolution(&model, resolution_input);
 
-        let mut images = Vec::new();
-        if let Some(raw_url) = request
-            .image_url
-            .as_deref()
-            .filter(|u| !u.trim().is_empty())
-        {
-            let url = match normalize_video_first_frame_url(raw_url) {
-                Ok(normalized) => normalized,
-                Err(err) => {
-                    tracing::warn!(error = %err, "invalid first_frame image_url for video task");
-                    return Err(err);
-                }
-            };
-            images.push(VideoContentImage {
-                url,
-                role: "first_frame".into(),
-            });
-        }
-        if let Some(url) = request
-            .last_frame_url
-            .as_deref()
-            .filter(|u| !u.trim().is_empty())
-        {
-            images.push(VideoContentImage {
-                url: url.to_string(),
-                role: "last_frame".into(),
-            });
-        }
-        for url in &request.reference_image_urls {
-            if url.trim().is_empty() {
-                continue;
-            }
-            images.push(VideoContentImage {
-                url: url.clone(),
-                role: "reference_image".into(),
-            });
-        }
+        let images = build_seedance_video_images(&request)?;
+        let uses_frame_roles = seedance_uses_frame_roles(&images);
 
         let params = VideoCreateParams {
             model: model.clone(),
@@ -139,8 +104,16 @@ impl FlowyVideoGenBackend {
             watermark: false,
             generate_audio: request.generate_audio.or(request.audio),
             images,
-            reference_video_url: request.reference_video_url.clone(),
-            reference_audio_url: request.reference_audio_url.clone(),
+            reference_video_url: if uses_frame_roles {
+                None
+            } else {
+                request.reference_video_url.clone()
+            },
+            reference_audio_url: if uses_frame_roles {
+                None
+            } else {
+                request.reference_audio_url.clone()
+            },
         };
 
         let body = FlowyApiClient::build_video_create_params(params);
@@ -233,5 +206,111 @@ impl FlowyVideoGenBackend {
             MediaProvenance::for_api_call(request.prompt, request.negative_prompt, None, None),
             persist_warning.as_deref(),
         ))
+    }
+}
+
+/// Seedance rejects mixing first/last frame roles with reference_* media in one request.
+fn build_seedance_video_images(
+    request: &VideoGenerateRequest,
+) -> Result<Vec<VideoContentImage>, ToolError> {
+    let mut images = Vec::new();
+    if let Some(raw_url) = request
+        .image_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+    {
+        let url = match normalize_video_first_frame_url(raw_url) {
+            Ok(normalized) => normalized,
+            Err(err) => {
+                tracing::warn!(error = %err, "invalid first_frame image_url for video task");
+                return Err(err);
+            }
+        };
+        images.push(VideoContentImage {
+            url,
+            role: "first_frame".into(),
+        });
+    }
+    if let Some(url) = request
+        .last_frame_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+    {
+        images.push(VideoContentImage {
+            url: url.to_string(),
+            role: "last_frame".into(),
+        });
+    }
+
+    if seedance_uses_frame_roles(&images) {
+        if !request.reference_image_urls.is_empty() {
+            tracing::debug!(
+                reference_count = request.reference_image_urls.len(),
+                "omitting reference_image_urls: Seedance forbids mixing with first/last frame"
+            );
+        }
+        return Ok(images);
+    }
+
+    for url in &request.reference_image_urls {
+        if url.trim().is_empty() {
+            continue;
+        }
+        images.push(VideoContentImage {
+            url: url.clone(),
+            role: "reference_image".into(),
+        });
+    }
+    Ok(images)
+}
+
+fn seedance_uses_frame_roles(images: &[VideoContentImage]) -> bool {
+    images.iter().any(|img| {
+        matches!(img.role.as_str(), "first_frame" | "last_frame")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomi_tools::tools::video::VideoGenerateRequest;
+
+    fn sample_request() -> VideoGenerateRequest {
+        VideoGenerateRequest {
+            prompt: "test".into(),
+            model: None,
+            model_explicit: false,
+            image_url: None,
+            reference_image_urls: vec![],
+            duration: Some(10),
+            aspect_ratio: "16:9".into(),
+            resolution: "720p".into(),
+            negative_prompt: None,
+            seed: None,
+            last_frame_url: None,
+            reference_video_url: None,
+            reference_audio_url: None,
+            generate_audio: None,
+            audio: None,
+        }
+    }
+
+    #[test]
+    fn frame_roles_exclude_reference_images() {
+        let mut req = sample_request();
+        req.image_url = Some("https://example.com/chain.jpg".into());
+        req.reference_image_urls = vec!["https://example.com/anchor.jpg".into()];
+        let images = build_seedance_video_images(&req).expect("images");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].role, "first_frame");
+    }
+
+    #[test]
+    fn reference_images_allowed_without_frame_roles() {
+        let mut req = sample_request();
+        req.reference_image_urls = vec!["https://example.com/ref.jpg".into()];
+        let images = build_seedance_video_images(&req).expect("images");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].role, "reference_image");
     }
 }
