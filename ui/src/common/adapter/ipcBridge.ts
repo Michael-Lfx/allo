@@ -13,6 +13,7 @@
  */
 
 import type { IConfirmation } from '@/common/chat/chatLib';
+import { bridge } from '@/platform';
 import {
   noopEmitter,
   shellEmitter,
@@ -585,7 +586,7 @@ export const application = {
 // `recommendedAsset` is intentionally absent) — routes the download through
 // `autoUpdate.download`. The modal is shell-gated (About entry + startup check
 // only render under `isDesktopShell()`), and `shellProvider` additionally guards
-// each call with `isTauri()`, so the WebUI browser degrades to the safe fallback.
+// each call with `isTauriRuntime()`, so the WebUI browser degrades to the safe fallback.
 
 /** Releases page shown in the modal's "go to release" affordance. */
 const GITHUB_RELEASES_PAGE = 'https://github.com/nomifun/nomifun-tauri/releases/latest';
@@ -661,7 +662,7 @@ export const starOffice = {
 export const dialog = {
   showOpen: shellProvider<string[] | undefined, ShellOpenDialogOptions | void>(
     (opts) => tauriOpenDialog(opts || undefined),
-    undefined
+    (opts) => bridge.invoke<string[] | undefined>('show-open', opts || undefined)
   ),
 };
 
@@ -721,6 +722,8 @@ export const fs = {
     Array<{
       name: string;
       description: string;
+      name_i18n?: Record<string, string>;
+      description_i18n?: Record<string, string>;
       location: string;
       relative_location?: string;
       is_custom: boolean;
@@ -730,9 +733,10 @@ export const fs = {
     }>,
     void
   >('/api/skills'),
-  listBuiltinAutoSkills: httpGet<Array<{ name: string; description: string; location: string }>, void>(
-    '/api/skills/builtin-auto'
-  ),
+  listBuiltinAutoSkills: httpGet<
+    Array<{ name: string; description: string; name_i18n?: Record<string, string>; description_i18n?: Record<string, string>; location: string }>,
+    void
+  >('/api/skills/builtin-auto'),
   materializeSkillsForAgent: httpPost<
     { skills: Array<{ name: string; source_path: string }> },
     { conversation_id: number; skills: string[] }
