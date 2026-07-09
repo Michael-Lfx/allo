@@ -31,7 +31,6 @@ interface Props {
 const CompanionModelControl: React.FC<Props> = ({ companion }) => {
   const { t } = useTranslation();
   const { profile, patchCompanion } = companion;
-  const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
   const { getAvailableModels } = useModelProviderList();
   const { data: rawProviders } = useProvidersQuery();
 
@@ -134,34 +133,7 @@ const CompanionModelControl: React.FC<Props> = ({ companion }) => {
         <span className='text-11px leading-tight' style={{ color: 'rgb(var(--warning-6))' }}>
           {hint}
         </span>
-      </Tooltip>
-      <Select
-        size='mini'
-        style={{ width: 148 }}
-        placeholder={t('nomi.chat.modelProvider')}
-        value={profile.model.provider_id || undefined}
-        onChange={(provider_id: string) => void patchCompanion({ model: { provider_id, model: '' } })}
-      >
-        {providers.map((p) => (
-          <Select.Option key={p.id} value={p.id}>
-            {p.name}
-          </Select.Option>
-        ))}
-      </Select>
-      <Select
-        size='mini'
-        style={{ width: 176 }}
-        placeholder={t('nomi.chat.modelName')}
-        value={profile.model.model || undefined}
-        disabled={!currentProvider}
-        onChange={(model: string) => void patchCompanion({ model: { model } })}
-      >
-        {(currentProvider ? getAvailableModels(currentProvider) : []).map((m) => (
-          <Select.Option key={m} value={m}>
-            {formatModelLabel(currentProvider, m)}
-          </Select.Option>
-        ))}
-      </Select>
+      )}
     </div>
   );
 };
