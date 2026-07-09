@@ -64,7 +64,7 @@ use nomifun_webhook::WebhookRouterState;
 
 use nomifun_secret::SecretRouterState;
 
-use crate::services::AppServices;
+use crate::{derive_encryption_key, services::AppServices};
 
 /// All module-level router states bundled into a single struct.
 ///
