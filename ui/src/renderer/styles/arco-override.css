@@ -43,14 +43,43 @@ body {
   }
 }
 
-.arco-btn-primary.arco-btn-disabled:not(.send-button-custom) {
-  background-color: var(--aou-2) !important;
-  border-color: var(--aou-2) !important;
+.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(
+    .arco-btn-status-success
+  ) {
+  color: var(--button-primary-text, #ffffff) !important;
+}
+
+.arco-btn-primary.arco-btn-disabled:not(.send-button-custom):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(
+    .arco-btn-status-success
+  ),
+.arco-btn-primary[disabled]:not(.send-button-custom):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success),
+.arco-btn-primary:disabled:not(.send-button-custom):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
+  background-color: var(--button-primary-disabled-bg, var(--color-fill-2)) !important;
+  background-image: none !important;
+  border-color: var(--button-primary-disabled-border, var(--color-border-2)) !important;
+  color: var(--button-primary-disabled-text, var(--color-text-3)) !important;
+  opacity: 1 !important;
+  text-shadow: none !important;
+}
+
+body[arco-theme='dark']
+  .arco-btn-primary.arco-btn-disabled:not(.send-button-custom):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(
+    .arco-btn-status-success
+  ),
+body[arco-theme='dark']
+  .arco-btn-primary[disabled]:not(.send-button-custom):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(
+    .arco-btn-status-success
+  ),
+body[arco-theme='dark']
+  .arco-btn-primary:disabled:not(.send-button-custom):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(
+    .arco-btn-status-success
+  ) {
+  background-color: var(--button-primary-disabled-bg, var(--color-fill-3)) !important;
 }
 
 /* Send button — Guid / OrchestratorComposer use `.send-button-custom` but do not
  * import sendbox.css (only SendBox does). Without this, disabled falls through to
- * the generic primary-disabled wash above (--aou-2), which is too light for the
+ * the generic primary-disabled wash above, which is too light for the
  * white ArrowUp icon and makes the affordance nearly invisible on new-chat surfaces. */
 .send-button-custom.arco-btn-primary.arco-btn-disabled,
 .send-button-custom.arco-btn-primary:disabled,

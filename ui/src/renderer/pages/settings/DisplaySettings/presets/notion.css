@@ -137,6 +137,10 @@ body {
   --color-secondary-hover: #e3e2e0;
   --color-secondary-active: #dbdad8;
   --color-secondary-disabled: #f7f6f3;
+  --button-primary-text: #ffffff;
+  --button-primary-disabled-bg: var(--color-fill-2);
+  --button-primary-disabled-border: var(--color-border-2);
+  --button-primary-disabled-text: var(--color-text-3);
 
   /* Misc */
   --color-tooltip-bg: #37352f;
@@ -288,6 +292,10 @@ body {
   --color-secondary-hover: #353535;
   --color-secondary-active: #3b3b3b;
   --color-secondary-disabled: #252525;
+  --button-primary-text: #ffffff;
+  --button-primary-disabled-bg: var(--color-fill-3);
+  --button-primary-disabled-border: var(--color-border-3);
+  --button-primary-disabled-text: var(--color-text-2);
 
   /* Misc */
   --color-tooltip-bg: #e6e6e6;
@@ -308,6 +316,12 @@ body {
 
 .arco-btn-secondary {
   border-color: var(--border-light);
+}
+
+.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(
+    .arco-btn-status-success
+  ) {
+  color: var(--button-primary-text);
 }
 
 .arco-input {
