@@ -14,6 +14,7 @@ nomifun-ai-agent.workspace = true
 nomifun-extension.workspace = true
 nomifun-auth.workspace = true
 nomifun-conversation.workspace = true
+nomifun-insights.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

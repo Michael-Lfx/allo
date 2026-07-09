@@ -99,6 +99,36 @@ pub trait CompanionCleanupHook: Send + Sync {
     async fn on_companion_model_changed(&self, _companion_id: &str) {}
 }
 
+// ----- Learning graph (optimization 7) -----
+
+/// A node in the learning graph — represents a skill, memory, or suggestion.
+#[derive(Debug, serde::Serialize)]
+pub struct LearningGraphNode {
+    pub id: String,
+    pub label: String,
+    pub node_type: String, // "skill" | "memory" | "suggestion"
+    pub status: String,
+    pub kind: String,      // skill source / memory kind / suggestion kind
+    pub strength: f64,
+    pub usage_count: i64,
+    pub importance: f64,
+}
+
+/// An edge in the learning graph — connects two related nodes.
+#[derive(Debug, serde::Serialize)]
+pub struct LearningGraphEdge {
+    pub source: String,
+    pub target: String,
+    pub edge_type: String, // "reinforces" | "supersedes" | "suggests" | "provenance"
+}
+
+/// The complete learning graph for a companion.
+#[derive(Debug, serde::Serialize)]
+pub struct LearningGraph {
+    pub nodes: Vec<LearningGraphNode>,
+    pub edges: Vec<LearningGraphEdge>,
+}
+
 pub struct CompanionService {
     /// Shared multi-companion home (`{data_dir}/companion/shared`): config + events + db.
     shared_dir: PathBuf,
@@ -1003,6 +1033,207 @@ impl CompanionService {
         self.store.list_suggestions(status, limit).await
     }
 
+    // ----- collector source recommendations (optimization 10) -----
+
+    /// Per-source effectiveness statistics and smart recommendations.
+    /// Reads collected events and returns a recommendation for each source
+    /// (enable / maintain / review / inactive) with counts and event types.
+    pub async fn collector_source_stats(&self) -> Vec<crate::collector::SourceRecommendation> {
+        crate::collector::compute_source_recommendations(&self.shared_dir)
+    }
+
+    // ----- learning graph (optimization 7) -----
+
+    /// Build a learning graph for a companion: nodes = skills + memories +
+    /// suggestions, edges = reinforcement / supersede / provenance / suggest
+    /// relationships. Used by the UI's force-directed graph visualization.
+    pub async fn learning_graph(&self, companion_id: &str) -> Result<LearningGraph, AppError> {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+
+        // Skill nodes
+        let skills = self.store.list_skills(companion_id, true).await.unwrap_or_default();
+        for s in &skills {
+            nodes.push(LearningGraphNode {
+                id: format!("skill:{}", s.skill_name),
+                label: s.skill_name.clone(),
+                node_type: "skill".into(),
+                status: s.status.clone(),
+                kind: s.source.clone(),
+                strength: s.strength,
+                usage_count: s.usage_count,
+                importance: s.confidence,
+            });
+            // Provenance edges: skill → memory (each provenance entry)
+            for p in &s.provenance {
+                edges.push(LearningGraphEdge {
+                    source: p.clone(),
+                    target: format!("skill:{}", s.skill_name),
+                    edge_type: "provenance".into(),
+                });
+            }
+        }
+
+        // Memory nodes
+        let memories = self.store
+            .list_memories(&MemoryFilter {
+                limit: 200,
+                ..Default::default()
+            })
+            .await?;
+        for m in &memories {
+            nodes.push(LearningGraphNode {
+                id: m.id.clone(),
+                label: m.content.chars().take(60).collect(),
+                node_type: "memory".into(),
+                status: m.status.clone(),
+                kind: m.kind.clone(),
+                strength: m.strength,
+                usage_count: 0,
+                importance: m.importance,
+            });
+        }
+
+        // Suggestion nodes
+        let suggestions = self.store.list_suggestions(None, 50).await.unwrap_or_default();
+        for s in &suggestions {
+            nodes.push(LearningGraphNode {
+                id: format!("suggestion:{}", s.id),
+                label: s.title.clone(),
+                node_type: "suggestion".into(),
+                status: s.status.clone(),
+                kind: s.kind.clone(),
+                strength: 0.0,
+                usage_count: 0,
+                importance: 0.0,
+            });
+            // Suggests edge: create_skill suggestion → skill
+            if s.kind == "create_skill" {
+                if let Some(action) = &s.action {
+                    if let Some(name) = action.get("name").and_then(|v| v.as_str()) {
+                        edges.push(LearningGraphEdge {
+                            source: format!("suggestion:{}", s.id),
+                            target: format!("skill:{}", name),
+                            edge_type: "suggests".into(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(LearningGraph { nodes, edges })
+    }
+
+    // ----- local analytics (optimization 8) -----
+
+    /// Aggregate local usage analytics from companion skills, memories, and
+    /// learning runs. Returns a snapshot for the analytics dashboard.
+    pub async fn local_analytics(&self) -> Result<nomifun_insights::LocalAnalytics, AppError> {
+        use nomifun_insights::local_analytics::*;
+
+        // Skills
+        let all_skills = self.store.list_all_skills().await.unwrap_or_default();
+        let active_skills: Vec<_> = all_skills.iter().filter(|s| s.status == "active").collect();
+        let mut by_status = SkillStatusCounts::default();
+        let mut by_source = SkillSourceCounts::default();
+        for s in &all_skills {
+            match s.status.as_str() {
+                "active" => by_status.active += 1,
+                "draft" => by_status.draft += 1,
+                "archived" => by_status.archived += 1,
+                _ => {}
+            }
+            match s.source.as_str() {
+                "mined" => by_source.mined += 1,
+                "manual" => by_source.manual += 1,
+                _ => by_source.imported += 1,
+            }
+        }
+        let avg_strength = if active_skills.is_empty() {
+            0.0
+        } else {
+            active_skills.iter().map(|s| s.strength).sum::<f64>() / active_skills.len() as f64
+        };
+        let avg_confidence = if active_skills.is_empty() {
+            0.0
+        } else {
+            active_skills.iter().map(|s| s.confidence).sum::<f64>() / active_skills.len() as f64
+        };
+        let mut top_by_usage: Vec<SkillUsageEntry> = all_skills
+            .iter()
+            .map(|s| SkillUsageEntry {
+                name: s.skill_name.clone(),
+                usage_count: s.usage_count,
+                strength: s.strength,
+            })
+            .collect();
+        top_by_usage.sort_by(|a, b| b.usage_count.cmp(&a.usage_count));
+        top_by_usage.truncate(5);
+
+        // Memories
+        let memories = self.store
+            .list_memories(&MemoryFilter {
+                status: Some("active".into()),
+                limit: 500,
+                ..Default::default()
+            })
+            .await?;
+        let mut by_kind = MemoryKindCounts::default();
+        let mut pinned = 0u64;
+        let mut total_importance = 0.0;
+        let mut total_strength = 0.0;
+        for m in &memories {
+            match m.kind.as_str() {
+                "profile" => by_kind.profile += 1,
+                "preference" => by_kind.preference += 1,
+                "knowledge" => by_kind.knowledge += 1,
+                "episode" => by_kind.episode += 1,
+                "task" => by_kind.task += 1,
+                "affective" => by_kind.affective += 1,
+                _ => {}
+            }
+            if m.pinned { pinned += 1; }
+            total_importance += m.importance;
+            total_strength += m.strength;
+        }
+        let total_active = memories.len() as u64;
+        let avg_importance = if total_active == 0 { 0.0 } else { total_importance / total_active as f64 };
+        let avg_strength_mem = if total_active == 0 { 0.0 } else { total_strength / total_active as f64 };
+
+        // Learning runs
+        let runs = self.store.list_learn_runs(50).await.unwrap_or_default();
+        let total_runs = runs.len() as u64;
+        let seven_days_ago = nomifun_common::now_ms() - 7 * 24 * 60 * 60 * 1000;
+        let runs_7d = runs.iter().filter(|r| r.started_at >= seven_days_ago).count() as u64;
+        let total_memories_added = runs.iter().map(|r| r.memories_added).sum::<i64>() as u64;
+        let total_suggestions_added = runs.iter().map(|r| r.suggestions_added).sum::<i64>() as u64;
+
+        Ok(LocalAnalytics {
+            conversations: ConversationAnalytics::default(), // populated by app assembly with conversation store
+            skills: SkillAnalytics {
+                by_status,
+                by_source,
+                top_by_usage,
+                avg_strength,
+                avg_confidence,
+            },
+            memories: MemoryAnalytics {
+                total_active,
+                by_kind,
+                avg_importance,
+                avg_strength: avg_strength_mem,
+                pinned,
+            },
+            learning: LearningAnalytics {
+                total_runs,
+                runs_7d,
+                total_memories_added,
+                total_suggestions_added,
+            },
+            generated_at: nomifun_common::now_ms(),
+        })
+    }
+
     pub async fn decide_suggestion(&self, id: &str, accept: bool) -> Result<CompanionSuggestion, AppError> {
         let (decided, newly) = self.store.decide_suggestion(id, accept).await?;
         // Gate side effects on `newly`: deciding is idempotent, so a stale
@@ -1054,7 +1285,37 @@ impl CompanionService {
         }
         // Delegate to the single idempotent skill-decide path (also used by the
         // Skills-tab review UI). draft→active promote + emit happen there.
-        self.decide_companion_skill(companion_id, name, true, None).await.map(|_| ())
+        self.decide_companion_skill(companion_id, name, true, None).await.map(|_| ())?;
+
+        // Optimization 9: if the suggestion carries knowledge_base content,
+        // write it to the skill's references/ directory as a markdown file.
+        // This bridges the companion system → the normal-dialog knowledge
+        // system: both can now access the same domain knowledge.
+        if let Some(kb_content) = action.get("knowledge_base").and_then(|v| v.as_str()) {
+            if !kb_content.trim().is_empty() {
+                let scope = if companion_id.is_empty() {
+                    nomifun_extension::skill_service::SkillScope::Shared
+                } else {
+                    nomifun_extension::skill_service::SkillScope::Companion(companion_id.to_owned())
+                };
+                if let Ok(skill_dir) = nomifun_extension::skill_service::skill_dir_for(
+                    &self.skill_paths,
+                    &scope,
+                    name,
+                    false,
+                ) {
+                    let refs_dir = skill_dir.join("references");
+                    let _ = tokio::fs::create_dir_all(&refs_dir).await;
+                    let kb_path = refs_dir.join("knowledge-base.md");
+                    if let Err(e) = tokio::fs::write(&kb_path, kb_content).await {
+                        tracing::warn!(error = %e, skill = name, "failed to write knowledge_base reference");
+                    } else {
+                        tracing::info!(skill = name, path = %kb_path.display(), "knowledge_base reference written");
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Rejecting a create_skill suggestion → delegate to the single idempotent skill-decide

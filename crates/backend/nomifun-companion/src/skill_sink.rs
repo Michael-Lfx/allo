@@ -65,16 +65,48 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
             if let Ok(dir) = skill_service::skill_dir_for(&self.skill_paths, &SkillScope::Companion(owner.clone()), name, false) {
                 if let Ok(body) = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await {
                     let _ = self.store.record_skill_usage(&owner, name, nomifun_common::now_ms()).await;
-                    return Some(body);
+                    return Some(append_support_files(&dir, &body));
                 }
             }
         }
         if let Ok(dir) = skill_service::skill_dir_for(&self.skill_paths, &SkillScope::Shared, name, false) {
             if let Ok(body) = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await {
                 let _ = self.store.record_skill_usage("", name, nomifun_common::now_ms()).await;
-                return Some(body);
+                return Some(append_support_files(&dir, &body));
             }
         }
         None
     }
+}
+
+/// Optimization 6: append support file listings from `references/`, `templates/`,
+/// and `scripts/` subdirectories to the skill body. This gives the agent context
+/// about what supporting files exist without inlining their full content — the
+/// agent can then read specific files on demand.
+fn append_support_files(skill_dir: &std::path::Path, body: &str) -> String {
+    let mut out = body.to_string();
+    for sub in &["references", "templates", "scripts"] {
+        let sub_dir = skill_dir.join(sub);
+        if let Ok(entries) = std::fs::read_dir(&sub_dir) {
+            let mut files: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name == ".gitkeep" || name.starts_with('.') {
+                        None
+                    } else {
+                        Some(format!("{sub}/{name}"))
+                    }
+                })
+                .collect();
+            if !files.is_empty() {
+                files.sort();
+                out.push_str(&format!("\n\n## {}\n", sub));
+                for f in &files {
+                    out.push_str(&format!("- `{f}`\n"));
+                }
+            }
+        }
+    }
+    out
 }

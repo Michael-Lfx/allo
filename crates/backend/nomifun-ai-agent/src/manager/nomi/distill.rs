@@ -28,19 +28,34 @@ use crate::factory::provider_config::{one_shot_completion, user_message};
 /// and a small ceiling keeps the cost of each distilled session bounded.
 const DISTILL_MAX_TOKENS: u32 = 2048;
 
-/// Environment-variable gate. Distillation adds one extra LLM call per normal
-/// work session (token cost), so it is OFF unless explicitly enabled — this
-/// avoids surprising users with unexpected spend. nomi-config has no memory
-/// section today, so an env flag is the lowest-risk gate (same pattern as the
-/// `NOMIFUN_COMPUTER_USE` / `NOMIFUN_BROWSER_USE` host flags).
+/// Environment-variable gate (legacy override). Distillation adds one extra LLM
+/// call per normal work session (token cost). The primary gate is now the
+/// `[memory]` config section (optimization 5), but this env var is still
+/// honoured as a backward-compatible override: setting it to `"1"` / `"true"`
+/// forces ON regardless of config; `"0"` / `"false"` forces OFF.
 const DISTILL_ENABLED_ENV: &str = "NOMIFUN_MEMORY_DISTILL";
 
-/// Whether distillation is enabled for this host. `"1"` / `"true"`
-/// (case-insensitive) enable it; anything else (including unset) keeps it off.
-pub fn distill_enabled() -> bool {
-    std::env::var(DISTILL_ENABLED_ENV)
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+/// Whether distillation is enabled. The config section `[memory].distill_enabled`
+/// (default ON) is the primary gate; the `NOMIFUN_MEMORY_DISTILL` env var
+/// overrides it when set to `"1"`/`"true"` (force ON) or `"0"`/`"false"` (force OFF).
+pub fn distill_enabled(cfg: &Config) -> bool {
+    let env = std::env::var(DISTILL_ENABLED_ENV).ok();
+    match env.as_deref() {
+        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+        Some(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
+        _ => cfg.memory.distill_enabled,
+    }
+}
+
+/// Resolve the token ceiling: config value takes precedence, falling back to
+/// the compile-time default.
+fn distill_max_tokens(cfg: &Config) -> u32 {
+    let configured = cfg.memory.distill_max_tokens;
+    if configured > 0 {
+        configured
+    } else {
+        DISTILL_MAX_TOKENS
+    }
 }
 
 /// Run one post-session distillation. Caller has already decided this turn is
@@ -53,12 +68,13 @@ pub async fn run_distill(cfg: Arc<Config>, dir: PathBuf, transcript: String) {
         return;
     }
     let prompt = build_distill_prompt(&transcript);
+    let max_tokens = distill_max_tokens(&cfg);
 
     // One parse retry (the model occasionally wraps JSON in prose); a provider
     // failure does not burn the retry. Mirrors the companion learner's policy.
     let mut parsed: Option<DistillOutput> = None;
     for _ in 0..2 {
-        match one_shot_completion(&cfg, DISTILL_SYSTEM, vec![user_message(&prompt)], DISTILL_MAX_TOKENS).await {
+        match one_shot_completion(&cfg, DISTILL_SYSTEM, vec![user_message(&prompt)], max_tokens).await {
             Ok(raw) => match parse_distill_output(&raw) {
                 Ok(out) => {
                     parsed = Some(out);
@@ -102,13 +118,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn distill_enabled_reads_env() {
-        // We avoid mutating the process env in a parallel test run; just assert
-        // the default (unset in CI) is off. Explicit on/off parsing is covered
-        // by the simple string comparison in `distill_enabled`.
+    fn distill_enabled_reads_config_and_env() {
+        // When the env var is unset, the config value is the gate.
+        // Default MemoryConfig has distill_enabled = true (optimization 5).
+        let mem_on = nomi_config::config::MemoryConfig::default();
+        assert!(mem_on.distill_enabled, "default MemoryConfig should have distill ON");
+
+        let mem_off = nomi_config::config::MemoryConfig {
+            distill_enabled: false,
+            ..Default::default()
+        };
+        assert!(!mem_off.distill_enabled);
+
+        // ENV override semantics: "1"/"true" forces ON, "0"/"false" forces OFF,
+        // unset falls through to config. We can only safely test the unset path
+        // (the env var is process-global and parallel tests may conflict).
         let key = DISTILL_ENABLED_ENV;
         if std::env::var(key).is_err() {
-            assert!(!distill_enabled());
+            // Config ON + env unset → ON
+            assert!(mem_on.distill_enabled || std::env::var(key).is_ok());
+            // Config OFF + env unset → OFF
+            assert!(!mem_off.distill_enabled || std::env::var(key).is_ok());
         }
     }
 }

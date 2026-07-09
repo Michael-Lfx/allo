@@ -13,10 +13,12 @@ pub mod prompt_pipeline;
 pub mod proactive_extraction;
 pub mod session_lifecycle;
 pub(crate) mod skill_manager;
+pub mod turn_review;
 
 pub use prompt_pipeline::{PostRecvHook, PreSendHook, PromptCtx, PromptPipeline};
 pub use session_lifecycle::{
-    PostTurnHook, PreTurnHook, SessionEndContext, SessionEndHook, SessionEndReason,
-    SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
+    PostTurnHook, PostTurnReviewHook, PreTurnHook, SessionEndContext, SessionEndHook,
+    SessionEndReason, SessionLifecycleCoordinator, TurnContext, WorkSessionEndHook,
 };
 pub use proactive_extraction::{ExtractionTrigger, MessageLoader, ProactiveSessionExtractor};
+pub use turn_review::LightweightTurnReviewer;

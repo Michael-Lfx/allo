@@ -141,7 +141,10 @@ pub async fn infer_resolution_from_transcript_llm(
         Ok(resp) => {
             let text = resp.text().unwrap_or_default();
             match parse_llm_resolution_json(&text) {
-                Some(payload) => {
+                Some(mut payload) => {
+                    // LLM doesn't see correction_loops directly; inherit from signals
+                    // so the EvolutionEngine can apply verdict-based confidence boost.
+                    payload.correction_loops = signals.correction_loops;
                     debug!(
                         verdict = %payload.verdict,
                         evidence_tier = %payload.evidence_tier,
@@ -199,6 +202,7 @@ fn parse_llm_resolution_json(text: &str) -> Option<ResolutionPayload> {
         objective_check_band,
         signal_codes,
         recovery_attempted: raw.recovery_attempted,
+        correction_loops: 0,
     })
 }
 

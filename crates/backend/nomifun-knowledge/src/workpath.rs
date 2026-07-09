@@ -61,6 +61,25 @@ pub fn session_workpath_key(workspace: &Path, managed_root: &Path) -> String {
     workpath_key(&workspace.to_string_lossy())
 }
 
+/// Optimization 9: bind a knowledge base to a workpath scope so KBs created
+/// from companion suggestions are accessible from the normal-dialog system.
+///
+/// Returns the binding key `(WORKPATH_BINDING_KIND, workpath_key)` that the
+/// knowledge service uses to look up which KBs are mounted for a given
+/// workspace. The caller (app assembly) persists this binding via the
+/// knowledge service's mount API.
+///
+/// When `workspace` is empty or under `managed_root`, the binding targets
+/// [`DEFAULT_WORKPATH_KEY`] — making the KB available to all default-workspace
+/// sessions (the common case for companion-originated suggestions).
+pub fn knowledge_workpath_binding(
+    workspace: &Path,
+    managed_root: &Path,
+) -> (&'static str, String) {
+    let key = session_workpath_key(workspace, managed_root);
+    (WORKPATH_BINDING_KIND, key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +120,22 @@ mod tests {
         assert_eq!(session_workpath_key(Path::new("/Users/a/proj/"), root), "/Users/a/proj");
         // 空 root 不能把所有路径都吸成默认。
         assert_eq!(session_workpath_key(Path::new("/Users/a/proj"), Path::new("")), "/Users/a/proj");
+    }
+
+    #[test]
+    fn knowledge_workpath_binding_returns_correct_kind_and_key() {
+        let root = Path::new("/data");
+        // Temporary workspace → default key.
+        let (kind, key) = knowledge_workpath_binding(Path::new("/data/conversations/tmp"), root);
+        assert_eq!(kind, WORKPATH_BINDING_KIND);
+        assert_eq!(key, DEFAULT_WORKPATH_KEY);
+        // User workspace → normalized path key.
+        let (kind, key) = knowledge_workpath_binding(Path::new("/Users/a/proj/"), root);
+        assert_eq!(kind, WORKPATH_BINDING_KIND);
+        assert_eq!(key, "/Users/a/proj");
+        // Empty workspace → default key.
+        let (kind, key) = knowledge_workpath_binding(Path::new(""), root);
+        assert_eq!(kind, WORKPATH_BINDING_KIND);
+        assert_eq!(key, DEFAULT_WORKPATH_KEY);
     }
 }

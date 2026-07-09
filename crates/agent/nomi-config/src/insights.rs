@@ -83,6 +83,13 @@ pub struct InsightsContributionConfig {
         alias = "installation_token"
     )]
     pub auth_token: Option<String>,
+
+    /// Opt-in (default off): mine tool-call patterns from normal conversations at
+    /// session end and broadcast skill suggestions (optimization 1). When enabled,
+    /// the session-end pipeline extracts repeated tool-call sequences and emits
+    /// them as skill candidates, bridging the normal-dialog → evolution gap.
+    #[serde(default)]
+    pub skill_mining_enabled: bool,
 }
 
 fn default_upload_interests() -> bool {
@@ -161,6 +168,7 @@ impl Default for InsightsContributionConfig {
             skill_min_age_hours: default_skill_min_age_hours(),
             upload_skills_refresh: default_upload_skills_refresh(),
             auth_token: None,
+            skill_mining_enabled: false,
         }
     }
 }

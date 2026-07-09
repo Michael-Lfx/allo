@@ -32,6 +32,12 @@ pub struct LearnedSuggestion {
     pub body: String,
     #[serde(default)]
     pub action: Option<serde_json::Value>,
+    /// Optimization 9: when `kind == "create_skill"`, optionally carry
+    /// knowledge-base content (markdown) to bridge the companion system →
+    /// the normal-dialog knowledge system. The service layer can create a
+    /// KB page from this field so both systems share the same domain knowledge.
+    #[serde(default)]
+    pub knowledge_base: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +74,9 @@ pub const LEARN_SYSTEM: &str = r#"你是这台电脑上所有电子伙伴共享�
 10. 不要产出与"已有建议"列表语义相同或高度相似的建议。
 
 只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码围栏：
-{"memories":[{"kind":"...","content":"...","tags":["..."],"importance":0.0~1.0}],"reinforce_ids":[],"supersede_ids":[],"suggestions":[{"kind":"...","title":"...","body":"...","action":null}],"mood":"content","diary":"..."}"#;
+{"memories":[{"kind":"...","content":"...","tags":["..."],"importance":0.0~1.0}],"reinforce_ids":[],"supersede_ids":[],"suggestions":[{"kind":"...","title":"...","body":"...","action":null,"knowledge_base":null}],"mood":"content","diary":"..."}
+
+当 kind=create_skill 时，可在 knowledge_base 字段填写该技能相关的领域知识（markdown 格式），用于在知识库中创建对应页面，使普通对话也能访问这些知识。"#;
 
 /// Build the learn user prompt from existing memories, pending (status='new')
 /// suggestions and new events. Feeding the pending suggestions back lets the

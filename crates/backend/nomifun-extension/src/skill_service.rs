@@ -242,6 +242,12 @@ pub async fn create_skill(
     tokio::fs::create_dir_all(&dir).await?;
     let content = build_skill_md(input);
     tokio::fs::write(dir.join(SKILL_MANIFEST_FILE), content).await?;
+    // Optimization 6: create support file subdirectories so the skill can
+    // reference external files (reference docs, code templates, helper scripts).
+    // These are created empty — the skill body or downstream tools populate them.
+    for sub in &["references", "templates", "scripts"] {
+        tokio::fs::create_dir_all(dir.join(sub)).await?;
+    }
     debug!(skill = %input.name, dir = %dir.display(), draft, "companion skill created");
     Ok(dir)
 }

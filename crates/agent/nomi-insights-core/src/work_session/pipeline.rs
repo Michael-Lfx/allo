@@ -58,6 +58,31 @@ pub fn spawn_session_end_pipeline(
             return;
         }
 
+        // Optimization 1: skill mining for normal conversations. When enabled,
+        // extract the tool-call sequence from this session and log it as a skill
+        // candidate. This bridges the normal-dialog → evolution gap: normal
+        // conversations can now directly produce skill suggestions, not just
+        // serve as a data source for the companion system.
+        if insights_cfg.skill_mining_enabled {
+            if let Some(candidate) = mine_session_tools(&messages, &session_id) {
+                info!(
+                    session_id = %session_id,
+                    tool_count = candidate.tool_sequence.len(),
+                    tools = ?candidate.tool_sequence,
+                    "work_session: skill mining detected a candidate tool pattern"
+                );
+                append_audit_event(
+                    &data_dir,
+                    "skill_mining_candidate",
+                    &format!(
+                        "session_id={session_id} tools={:?} steps={}",
+                        candidate.tool_sequence,
+                        candidate.tool_sequence.len()
+                    ),
+                );
+            }
+        }
+
         let packages = build_work_packages(
             &data_dir,
             &insights_cfg,
@@ -328,4 +353,57 @@ fn resolve_bound_skill_dir(
 
 pub fn touch_active_session(data_dir: &PathBuf, session_id: &str) {
     set_active_session(data_dir, session_id);
+}
+
+/// A tool-call pattern mined from a single session's messages (optimization 1).
+#[derive(Debug)]
+pub struct MinedSessionTools {
+    /// Ordered sequence of tool names invoked in the session.
+    pub tool_sequence: Vec<String>,
+    /// The session these tools were mined from.
+    pub session_id: String,
+}
+
+/// Extract the tool-call sequence from a session's messages and return it as a
+/// mining candidate if the sequence is long enough to suggest a reusable
+/// pattern (≥ 4 distinct tool calls). This is the normal-dialog counterpart of
+/// the companion EvolutionEngine's `miner.rs` — it lets regular conversations
+/// produce skill suggestions, not just feed data to the companion system.
+///
+/// Only tool **names** are extracted (never arguments) — the same privacy
+/// red line as the collector's `tool_calls` source.
+pub fn mine_session_tools(
+    messages: &[serde_json::Value],
+    session_id: &str,
+) -> Option<MinedSessionTools> {
+    let mut tool_sequence: Vec<String> = Vec::new();
+    for msg in messages {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "assistant" {
+            continue;
+        }
+        let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for tc in tool_calls {
+            if let Some(name) = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                // Deduplicate consecutive same-tool calls (e.g. multiple Read calls).
+                if tool_sequence.last().is_none_or(|last: &String| last != name) {
+                    tool_sequence.push(name.to_string());
+                }
+            }
+        }
+    }
+    // Require at least 4 steps to be worth suggesting as a skill.
+    if tool_sequence.len() < 4 {
+        return None;
+    }
+    Some(MinedSessionTools {
+        tool_sequence,
+        session_id: session_id.to_string(),
+    })
 }
