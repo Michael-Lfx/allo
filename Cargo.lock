@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Flowy"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -5093,7 +5093,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-auxiliary"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "nomi-types",
@@ -5238,7 +5238,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-insights-core"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "chrono",
  "hex",
@@ -5280,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-media"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-poi"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "chrono",
  "hex",
@@ -5686,7 +5686,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cloud"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5857,32 +5857,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nomifun-desktop"
-version = "0.2.13"
-dependencies = [
- "anyhow",
- "clap",
- "junction",
- "keepawake",
- "nomifun-app",
- "nomifun-runtime",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "nomifun-extension"
 version = "0.2.13"
 dependencies = [
@@ -6007,7 +5981,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-insights"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6083,7 +6057,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-media"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6160,7 +6134,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-poi"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "axum",
  "nomi-config",
