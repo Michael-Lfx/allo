@@ -15,6 +15,53 @@ describe('normalizeToolCall', () => {
 
     expect(result).toBeUndefined();
   });
+
+  it('maps canceled tool_call status to canceled (not failed)', () => {
+    const result = normalizeToolCall({
+      type: 'tool_call',
+      content: {
+        call_id: 'tc-browser',
+        name: 'Browser',
+        status: 'canceled',
+        args: { action: 'navigate', url: 'https://example.com' },
+        output: 'The turn ended before this tool completed: end_turn',
+      },
+    } as any);
+
+    expect(result?.status).toBe('canceled');
+  });
+
+  it('remaps historical end_turn error tool_calls to canceled', () => {
+    // Older rows persisted status=error for turn-interrupted tools. UI must not
+    // show 「运行失败 Browser」 for that soft close.
+    const result = normalizeToolCall({
+      type: 'tool_call',
+      content: {
+        call_id: 'tc-browser-old',
+        name: 'Browser',
+        status: 'error',
+        args: { url: 'https://www.bing.com/search?q=beijing' },
+        output: 'The turn ended before this tool completed: end_turn',
+      },
+    } as any);
+
+    expect(result?.status).toBe('canceled');
+  });
+
+  it('keeps real Browser navigation failures as error', () => {
+    const result = normalizeToolCall({
+      type: 'tool_call',
+      content: {
+        call_id: 'tc-browser-real',
+        name: 'Browser',
+        status: 'error',
+        args: { action: 'click', ref: 'f0e17' },
+        output: 'Browser action failed: cdp error -32000: Cannot find context with specified id',
+      },
+    } as any);
+
+    expect(result?.status).toBe('error');
+  });
 });
 
 describe('normalizeAcpToolCall', () => {

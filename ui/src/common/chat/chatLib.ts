@@ -222,7 +222,7 @@ export type IMessageToolCall = IMessage<
     name: string;
     args: Record<string, any>;
     error?: string;
-    status?: 'running' | 'completed' | 'error';
+    status?: 'running' | 'completed' | 'error' | 'canceled';
     input?: Record<string, any>;
     output?: string;
     description?: string;

@@ -230,12 +230,23 @@ export function normalizeAcpToolCall(message: IMessageAcpToolCall): NormalizedTo
 
 // ===== tool_call → NormalizedToolCall =====
 
-function normalizeToolCallStatus(status?: unknown): NormalizedToolStatus {
+/** Soft close when the turn ended before the tool finished (not a tool fault). */
+function isTurnInterruptedToolOutput(output?: string): boolean {
+  return typeof output === 'string' && output.startsWith('The turn ended before this tool completed:');
+}
+
+function normalizeToolCallStatus(status?: unknown, output?: string): NormalizedToolStatus {
+  // Historical rows persisted end_turn/cancel closes as status=error.
+  if (status === 'error' && isTurnInterruptedToolOutput(output)) {
+    return 'canceled';
+  }
   switch (status) {
     case 'completed':
       return 'completed';
     case 'error':
       return 'error';
+    case 'canceled':
+      return 'canceled';
     case 'running':
       return 'running';
     default:
@@ -256,7 +267,7 @@ export function normalizeToolCall(message: IMessageToolCall): NormalizedToolCall
   return {
     key: toDisplayText(call_id),
     name: toDisplayText(name, 'Tool'),
-    status: normalizeToolCallStatus(status),
+    status: normalizeToolCallStatus(status, output),
     description: description ? formatValue(description) : undefined,
     input: displayInput,
     output: output ? toDisplayText(output) : undefined,
@@ -287,7 +298,7 @@ export function hasRunningToolMessages(messages: ToolMessage[]): boolean {
       return m.content?.update && normalizeAcpStatus(m.content.update.status) === 'running';
     }
     if (m.type === 'tool_call') {
-      return normalizeToolCallStatus(m.content?.status) === 'running';
+      return normalizeToolCallStatus(m.content?.status, m.content?.output) === 'running';
     }
     return false;
   });
