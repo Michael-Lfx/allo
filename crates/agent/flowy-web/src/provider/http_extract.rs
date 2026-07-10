@@ -1,16 +1,21 @@
 //! HTTP extract provider — fetch URL, convert HTML to markdown.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use url::Url;
 
+use crate::provider::article::{ArticleExtractor, DomSmoothieExtractor};
 use crate::provider::html_md::{html_to_markdown, truncate_chars};
 use crate::provider::ssrf::{check_scheme, resolve_extract_url, resolve_validated};
 use crate::provider::ExtractProvider;
-use crate::types::{ExtractRequest, ExtractedPage, WebError, EXTRACT_CHAR_LIMIT, EXTRACTOR_FULLPAGE};
+use crate::types::{
+    ExtractRequest, ExtractedPage, WebError, EXTRACT_CHAR_LIMIT, EXTRACTOR_FULLPAGE,
+    EXTRACTOR_READABILITY, MIN_ARTICLE_CHARS,
+};
 
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(20);
 const EXTRACT_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -21,6 +26,7 @@ pub struct HttpExtractProvider {
     timeout: Duration,
     max_bytes: usize,
     allow_private: bool,
+    article: Arc<dyn ArticleExtractor>,
 }
 
 impl Default for HttpExtractProvider {
@@ -29,6 +35,7 @@ impl Default for HttpExtractProvider {
             timeout: EXTRACT_TIMEOUT,
             max_bytes: EXTRACT_MAX_BYTES,
             allow_private: false,
+            article: Arc::new(DomSmoothieExtractor::new()),
         }
     }
 }
@@ -42,6 +49,11 @@ impl HttpExtractProvider {
     /// servers bind to loopback).
     pub fn allow_private_for_tests(mut self) -> Self {
         self.allow_private = true;
+        self
+    }
+
+    pub fn with_article_extractor(mut self, article: Arc<dyn ArticleExtractor>) -> Self {
+        self.article = article;
         self
     }
 
@@ -138,7 +150,27 @@ impl ExtractProvider for HttpExtractProvider {
 
     async fn extract(&self, req: ExtractRequest) -> Result<ExtractedPage, WebError> {
         let (final_url, html) = self.fetch_html(&req.url).await?;
-        let (title, markdown) = html_to_markdown(&html);
+        let url_str = final_url.as_str();
+
+        let article = self.article.extract_article(&html, Some(url_str));
+        let (raw_html, extractor, title_hint) = match article {
+            Some(a) => (a.html, EXTRACTOR_READABILITY, a.title),
+            None => (html.clone(), EXTRACTOR_FULLPAGE, None),
+        };
+        let (title, markdown) = html_to_markdown(&raw_html);
+        let title = title_hint.or(title);
+        if extractor == EXTRACTOR_READABILITY && markdown.chars().count() < MIN_ARTICLE_CHARS {
+            let (title, markdown) = html_to_markdown(&html);
+            let (markdown, truncated) = truncate_chars(&markdown, EXTRACT_CHAR_LIMIT);
+            return Ok(ExtractedPage {
+                url: final_url.to_string(),
+                title,
+                markdown,
+                truncated,
+                provider: self.name().to_owned(),
+                extractor: EXTRACTOR_FULLPAGE.to_owned(),
+            });
+        }
         let (markdown, truncated) = truncate_chars(&markdown, EXTRACT_CHAR_LIMIT);
         Ok(ExtractedPage {
             url: final_url.to_string(),
@@ -146,7 +178,7 @@ impl ExtractProvider for HttpExtractProvider {
             markdown,
             truncated,
             provider: self.name().to_owned(),
-            extractor: EXTRACTOR_FULLPAGE.to_owned(),
+            extractor: extractor.to_owned(),
         })
     }
 }
@@ -154,7 +186,9 @@ impl ExtractProvider for HttpExtractProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{WebError, EXTRACT_CHAR_LIMIT};
+    use crate::types::{
+        WebError, EXTRACT_CHAR_LIMIT, EXTRACTOR_FULLPAGE, EXTRACTOR_READABILITY,
+    };
 
     #[tokio::test]
     async fn extracts_public_page_via_mock() {
@@ -179,6 +213,52 @@ mod tests {
         assert!(page.markdown.contains("Hello world"));
         assert!(!page.truncated);
         assert_eq!(page.provider, "http");
+        assert!(
+            page.extractor == EXTRACTOR_READABILITY || page.extractor == EXTRACTOR_FULLPAGE
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_uses_readability_on_chrome_heavy_page() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+                include_str!("../../tests/fixtures/article_with_chrome.html"),
+                "text/html",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let page = provider
+            .extract(ExtractRequest { url: server.uri() })
+            .await
+            .unwrap();
+        assert_eq!(page.extractor, EXTRACTOR_READABILITY);
+        assert!(
+            page.markdown.to_lowercase().contains("tail numbers")
+                || page.markdown.to_lowercase().contains("fifth ring")
+        );
+        assert!(!page.markdown.to_lowercase().contains("buy insurance now"));
+    }
+
+    #[tokio::test]
+    async fn extract_falls_back_to_fullpage_when_article_too_thin() {
+        let server = wiremock::MockServer::start().await;
+        // Tiny body: readability may return None or < 400 chars after md → fullpage
+        let body = "<html><head><title>X</title></head><body><p>Hi</p></body></html>";
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(body, "text/html"))
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let page = provider
+            .extract(ExtractRequest { url: server.uri() })
+            .await
+            .unwrap();
+        assert_eq!(page.extractor, EXTRACTOR_FULLPAGE);
+        assert!(page.markdown.to_lowercase().contains("hi"));
     }
 
     #[tokio::test]
@@ -200,6 +280,9 @@ mod tests {
             .unwrap();
         assert!(page.truncated);
         assert!(page.markdown.chars().count() <= EXTRACT_CHAR_LIMIT);
+        assert!(
+            page.extractor == EXTRACTOR_READABILITY || page.extractor == EXTRACTOR_FULLPAGE
+        );
     }
 
     #[tokio::test]

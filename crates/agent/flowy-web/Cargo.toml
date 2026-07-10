@@ -17,7 +17,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"], default-features = false }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream", "gzip", "deflate"], default-features = false }
 futures-util.workspace = true
 htmd.workspace = true
 url.workspace = true
