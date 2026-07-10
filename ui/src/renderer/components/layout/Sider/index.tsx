@@ -15,7 +15,7 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge';
 import {
-  SiderAssetLibraryEntry,
+  // SiderAssetLibraryEntry, // TODO: 暂时隐藏资产库，后续开放时取消注释
   SiderAssistantSkillsEntry,
   SiderConversationEntry,
   SiderKnowledgeEntry,
@@ -27,7 +27,7 @@ import {
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderSectionHeader,
-  SiderWorkshopEntry,
+  // SiderWorkshopEntry, // TODO: 暂时隐藏创意工坊，后续开放时取消注释
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
 
@@ -90,9 +90,9 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleScheduledClick = () => navTo('/scheduled');
   const handleRequirementsClick = () => navTo('/requirements');
   const handleKnowledgeClick = () => navTo('/knowledge');
-  const handleAssetLibraryClick = () => navTo('/assets');
+  // const handleAssetLibraryClick = () => navTo('/assets'); // TODO: 暂时隐藏资产库
   const handleNomiClick = () => navTo('/nomi');
-  const handleWorkshopClick = () => navTo('/workshop');
+  // const handleWorkshopClick = () => navTo('/workshop'); // TODO: 暂时隐藏创意工坊
   const handlePublicServiceClick = () => navTo('/public-companions');
   const handleAssistantSkillsClick = () => navTo('/assistants?tab=assistants');
   const handleMcpClick = () => navTo('/mcp');
@@ -184,7 +184,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleNomiClick}
             />
-            {/* Creative Workshop (创意工坊) — infinite-canvas AI creation surface */}
+            {/* TODO: 暂时隐藏创意工坊，后续开放时取消注释
             <SiderWorkshopEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/workshop')}
@@ -192,6 +192,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleWorkshopClick}
             />
+            */}
             {/* 对外服务 — public-facing customer-service agents (对外伙伴), a domain
                 fully separate from the desktop-companion group above. */}
             <SiderSectionHeader label={t('common.siderSection.publicService')} collapsed={collapsed} />
@@ -213,7 +214,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onClick={handleKnowledgeClick}
               dot={pendingInboxCount > 0}
             />
-            {/* Asset library — unified management of creative-workshop assets */}
+            {/* TODO: 暂时隐藏资产库，后续开放时取消注释
             <SiderAssetLibraryEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/assets')}
@@ -221,6 +222,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleAssetLibraryClick}
             />
+            */}
             {/* 自动化 — automation platforms */}
             <SiderSectionHeader label={t('common.siderSection.automation')} collapsed={collapsed} />
             {/* Scheduled tasks */}
