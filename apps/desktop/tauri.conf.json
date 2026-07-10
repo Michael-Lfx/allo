@@ -41,9 +41,9 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/Michael-Lfx/allo/releases/latest/download/latest.json"
+        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYzQUEyNzJFNjBBQTc5NTIKUldSU2VhcGdMaWVxODRRbUdXczZodEJZOE1Ja2Zta011eWUxUko2SG5XclVaSUdtaWNobXJNemEK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2MDA1ODFFQzhGREU0NDcKUldSSDVQM0lIbGdBaG9mODBDT2hvMjlrOEJPSFhPQzg2RDRDMzBHSVVOcWtOQ20yVGgyYmt5WHoK"
     }
   }
 }

@@ -69,6 +69,47 @@ try {
   rmSync(testDir, { recursive: true, force: true });
 }
 
+// ── ModelScope URL generation ───────────────────────────────────────────────
+{
+  const msTestDir = join(root, 'build.noindex', 'make-latest-json-ms-test');
+  const msTargetDir = join(msTestDir, 'target');
+  const msOutPath = join(msTestDir, 'latest.json');
+
+  rmSync(msTestDir, { recursive: true, force: true });
+  mkdirSync(msTestDir, { recursive: true });
+
+  const winDir = join(msTargetDir, 'x86_64-pc-windows-msvc', 'release', 'bundle', 'nsis');
+  const winArtifact = join(winDir, `Flowy_${version}_x64-setup.exe`);
+  writeArtifactWithSig(winArtifact, 'fake', 'sig');
+
+  const scriptPath = join(root, 'scripts', 'make-latest-json.mjs');
+  const msResult = spawnSync(
+    'bun',
+    [
+      scriptPath,
+      '--out',
+      msOutPath,
+      '--host',
+      'modelscope',
+      '--ms-repo',
+      'flowy2025/flowyaipc',
+      '--ms-prefix',
+      'allo',
+      '--target-dir',
+      msTargetDir,
+    ],
+    { cwd: root, encoding: 'utf8' },
+  );
+  assert.equal(msResult.status, 0, msResult.stderr || msResult.stdout);
+
+  const msManifest = JSON.parse(readFileSync(msOutPath, 'utf8'));
+  assert.equal(
+    msManifest.platforms['windows-x86_64'].url,
+    `https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/v${version}/Flowy_${version}_x64-setup.exe`,
+  );
+  rmSync(msTestDir, { recursive: true, force: true });
+}
+
 function writeArtifactWithSig(path, artifactContent, signatureContent) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, artifactContent);

@@ -1,0 +1,68 @@
+# Upload signed Tauri updater artifacts to ModelScope (flowy2025/flowyaipc/allo/).
+#
+# Prerequisites:
+#   - GitHub secret MODELSCOPE_TOKEN
+#   - Per-platform build jobs produce dist/desktop/ with signed updater packages + latest.json
+#     (bun run make:latest --host modelscope --channel alpha --collect on each platform, merged)
+#
+# Trigger manually or on version tags after matrix builds complete.
+
+name: Release ModelScope
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.2.15 or v0.2.15)'
+        required: true
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  modelscope-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "version_tag=v${V#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: allo-updater-*
+          path: dist/desktop
+          merge-multiple: true
+
+      - name: Verify latest.json
+        run: |
+          test -f dist/desktop/latest.json || {
+            echo "ERROR: dist/desktop/latest.json missing — run make:latest --host modelscope --collect in build jobs"
+            exit 1
+          }
+          python3 -m json.tool dist/desktop/latest.json > /dev/null
+
+      - name: Upload to ModelScope
+        env:
+          MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+        run: |
+          if [ -z "$MODELSCOPE_TOKEN" ]; then
+            echo "MODELSCOPE_TOKEN not configured — skipping upload"
+            exit 0
+          fi
+          pip install modelscope
+          python3 scripts/upload-modelscope-release.py \
+            --repo flowy2025/flowyaipc \
+            --prefix allo \
+            --channel alpha \
+            --dist-dir dist/desktop/

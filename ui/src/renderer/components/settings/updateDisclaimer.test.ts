@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('update disclaimer', () => {
-  test('keeps the requested nonprofit data-loss disclaimer fixed in Chinese', () => {
+  test('keeps the requested nonprofit data-loss disclaimer fixed in Chinese locale file', () => {
     const zhUpdate = JSON.parse(readSource(new URL('../../services/i18n/locales/zh-CN/update.json', import.meta.url)));
 
     expect(zhUpdate.disclaimer).toBe(
@@ -18,11 +18,10 @@ describe('update disclaimer', () => {
     );
   });
 
-  test('renders the disclaimer once in the update modal bottom chrome', () => {
+  test('does not render the disclaimer in the update modal', () => {
     const updateModalSource = readSource(new URL('./UpdateModal.tsx', import.meta.url));
-    const renderDisclaimerCalls = updateModalSource.match(/renderDisclaimer\(/g) ?? [];
 
-    expect(renderDisclaimerCalls).toHaveLength(1);
-    expect(/renderDisclaimer\(\s*'shrink-0 border-t/.test(updateModalSource)).toBe(true);
+    expect(updateModalSource.includes('renderDisclaimer')).toBe(false);
+    expect(updateModalSource.includes('update.disclaimer')).toBe(false);
   });
 });

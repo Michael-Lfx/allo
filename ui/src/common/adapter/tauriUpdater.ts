@@ -83,9 +83,18 @@ async function runCheck(): Promise<TauriUpdateInfo | null> {
     }
     pendingUpdate = null;
   }
-  const update = (await check()) as TauriUpdate | null;
-  pendingUpdate = update;
-  return update ? infoFromHandle(update) : null;
+  try {
+    const update = (await check()) as TauriUpdate | null;
+    pendingUpdate = update;
+    return update ? infoFromHandle(update) : null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message);
+  }
+}
+
+async function runCheckSafe(): Promise<TauriUpdateInfo | null> {
+  return runCheck();
 }
 
 /**
@@ -107,7 +116,7 @@ export async function tauriUpdateCheck(force = false): Promise<TauriUpdateInfo |
     } catch {
       /* the prior check's failure is its caller's problem — we start fresh */
     }
-    return runCheck();
+    return runCheckSafe();
   })();
   checkPromise = run;
   // Identity-guarded clear: only drop the memo if it is still THIS run, so a late

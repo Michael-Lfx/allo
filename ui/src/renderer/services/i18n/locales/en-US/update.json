@@ -5,11 +5,12 @@
   "upToDateTitle": "You're up to date",
   "currentVersion": "Current version: {{version}}",
   "availableTitle": "Update available",
-  "downloadSourceHint": "This update downloads installers from GitHub Releases.",
+  "downloadSourceHint": "This update downloads signed installers from ModelScope.",
   "baiduMirrorHint": "If downloads are slow in mainland China, use the",
   "baiduMirrorLink": "Baidu Netdisk mirror",
   "productWebsiteHint": "Product website:",
   "productWebsiteLink": "Product website",
+  "nativeCheckFailed": "Could not reach the update server. Check your network and try again.",
   "disclaimer": "Disclaimer: This is a free, nonprofit, open-source project. The project authors are not responsible for any user data loss or damage caused by version updates. Please upgrade with care.",
   "releaseFeedUnavailable": "Could not load a valid update feed. You can retry, or check Releases, Baidu Netdisk, and the product website manually.",
   "noReleaseNotes": "No release notes provided.",
@@ -29,5 +30,6 @@
   "autoUpdateMode": "Auto-update mode",
   "showInFolder": "Show in folder",
   "openFile": "Open file",
-  "errorTitle": "Update failed"
+  "errorTitle": "Update failed",
+  "titlebarUpdateAvailable": "Version {{version}} available — click to update"
 }

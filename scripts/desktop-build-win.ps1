@@ -52,6 +52,10 @@ $Conf      = 'apps/desktop/tauri.conf.json'
 $WinConf   = 'apps/desktop/tauri.win.conf.json'   # 把 bundle.targets 锁成单一 NSIS
 $Dist      = Join-Path $Root 'dist/desktop'
 
+# Windows schannel revocation checks fail with CRYPT_E_REVOCATION_OFFLINE when the
+# OCSP/CRL server is unreachable. Belt-and-suspenders alongside .cargo/config.toml.
+$env:CARGO_HTTP_CHECK_REVOKE = 'false'
+
 # 当前机器架构 -> 原生 triple
 $hostArch = $env:PROCESSOR_ARCHITECTURE
 switch ($hostArch) {

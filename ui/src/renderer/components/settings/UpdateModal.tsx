@@ -13,6 +13,7 @@ import MarkdownView from '@/renderer/components/Markdown';
 import type { UpdateDownloadProgressEvent, UpdateReleaseInfo, AutoUpdateStatus } from '@/common/update/updateTypes';
 import { useTranslation } from 'react-i18next';
 import { getUpdateErrorMessageKey } from './updateErrorMessage';
+import { isDesktopShell } from '@/renderer/utils/platform';
 
 type UpdateStatus = 'checking' | 'upToDate' | 'available' | 'downloading' | 'downloaded' | 'success' | 'error';
 
@@ -24,6 +25,8 @@ const GITHUB_RELEASES_PAGE = 'https://github.com/nomifun/nomifun-tauri/releases/
 
 const UpdateModal: React.FC = () => {
   const { t } = useTranslation();
+  /** Bundled Tauri shell — in-app OTA via ModelScope + tauri-plugin-updater only. */
+  const isNativeUpdater = isDesktopShell();
   const [visible, setVisible] = useState(false);
   const [status, setStatus] = useState<UpdateStatus>('checking');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -75,7 +78,41 @@ const UpdateModal: React.FC = () => {
   const checkForUpdates = async () => {
     setStatus('checking');
     try {
-      // Try auto-update (electron-updater) first
+      if (isNativeUpdater) {
+        const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
+        if (!res?.success) {
+          throw new Error(res.msg || t('update.nativeCheckFailed'));
+        }
+
+        const detail = await ipcBridge.update.check.invoke({ includePrerelease });
+        setCurrentVersion(detail.data?.currentVersion || '');
+
+        if (res.data?.updateInfo) {
+          setAutoUpdateAvailable(true);
+          setAutoUpdateInfo({
+            version: res.data.updateInfo.version,
+            releaseNotes: res.data.updateInfo.releaseNotes,
+          });
+          if (detail.data?.latest) {
+            setUpdateInfo(detail.data.latest);
+          }
+          setStatus('available');
+          return;
+        }
+
+        if (!detail?.success) {
+          throw new Error(detail.msg || t('update.nativeCheckFailed'));
+        }
+
+        if (detail.data && !detail.data.updateAvailable) {
+          setStatus('upToDate');
+          return;
+        }
+
+        throw new Error(t('update.nativeCheckFailed'));
+      }
+
+      // WebUI / legacy manual download path (GitHub assets + optional mirrors).
       let autoUpdateOk = false;
       try {
         const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
@@ -127,10 +164,14 @@ const UpdateModal: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Update check failed:', err);
-      const errorMessageKey = getUpdateErrorMessageKey(msg);
-      setErrorMsg(errorMessageKey === 'update.releaseFeedUnavailable' ? t(errorMessageKey) : msg || t(errorMessageKey));
-      if (errorMessageKey === 'update.releaseFeedUnavailable') {
-        setReleasePageUrl((url) => url || GITHUB_RELEASES_PAGE);
+      if (isNativeUpdater) {
+        setErrorMsg(t('update.nativeCheckFailed'));
+      } else {
+        const errorMessageKey = getUpdateErrorMessageKey(msg);
+        setErrorMsg(errorMessageKey === 'update.releaseFeedUnavailable' ? t(errorMessageKey) : msg || t(errorMessageKey));
+        if (errorMessageKey === 'update.releaseFeedUnavailable') {
+          setReleasePageUrl((url) => url || GITHUB_RELEASES_PAGE);
+        }
       }
       setStatus('error');
     }
@@ -140,6 +181,17 @@ const UpdateModal: React.FC = () => {
     if (!updateInfo && !autoUpdateAvailable) return;
     setStatus('downloading');
     try {
+      if (isNativeUpdater) {
+        if (!autoUpdateAvailable) {
+          throw new Error(t('update.noCompatibleAssetManual'));
+        }
+        const res = await ipcBridge.autoUpdate.download.invoke();
+        if (!res?.success) {
+          throw new Error(res?.msg || t('update.downloadStartFailed'));
+        }
+        return;
+      }
+
       // Prefer the manual path so the URL is the CDN-rewritten asset.url.
       // Fall back to electron-updater (GitHub) only when the GitHub API manual check failed
       // but the yml-based auto-update check succeeded — a rare edge case.
@@ -308,20 +360,57 @@ const UpdateModal: React.FC = () => {
     });
   };
 
-  const renderDisclaimer = (className = '') => (
-    <div className={`text-12px leading-18px text-[rgb(var(--warning-6))] ${className}`}>{t('update.disclaimer')}</div>
-  );
+  const renderBaiduManualDownloadButton = (className = '') => {
+    if (isNativeUpdater) return null;
+    return (
+      <Button
+        size='small'
+        onClick={openBaiduReleaseMirror}
+        icon={<Download size='14' />}
+        className={`!px-16px ${className}`}
+      >
+        {t('settings.baiduManualDownload')}
+      </Button>
+    );
+  };
 
-  const renderBaiduManualDownloadButton = (className = '') => (
-    <Button
-      size='small'
-      onClick={openBaiduReleaseMirror}
-      icon={<Download size='14' />}
-      className={`!px-16px ${className}`}
-    >
-      {t('settings.baiduManualDownload')}
-    </Button>
-  );
+  const renderManualDownloadHints = () => {
+    if (isNativeUpdater) {
+      return (
+        <div className='mx-24px mt-12px px-12px py-10px rounded-8px border border-solid border-[rgba(var(--primary-6),0.16)] bg-[rgba(var(--primary-6),0.06)] text-12px leading-18px text-t-secondary'>
+          {t('update.downloadSourceHint')}
+        </div>
+      );
+    }
+
+    return (
+      <div className='mx-24px mt-12px px-12px py-10px rounded-8px border border-solid border-[rgba(var(--primary-6),0.16)] bg-[rgba(var(--primary-6),0.06)] text-12px leading-18px text-t-secondary'>
+        <div>{t('update.downloadSourceHint')}</div>
+        <div className='mt-4px'>
+          {t('update.baiduMirrorHint')}{' '}
+          <button
+            type='button'
+            onClick={openBaiduReleaseMirror}
+            title={BAIDU_RELEASE_MIRROR_URL}
+            className='cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
+          >
+            {t('update.baiduMirrorLink')}
+          </button>
+        </div>
+        <div className='mt-4px'>
+          {t('update.productWebsiteHint')}{' '}
+          <button
+            type='button'
+            onClick={openProductWebsite}
+            title={PRODUCT_WEBSITE_URL}
+            className='cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
+          >
+            {PRODUCT_WEBSITE_URL}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const renderContent = () => {
     switch (status) {
@@ -371,13 +460,13 @@ const UpdateModal: React.FC = () => {
                 </div>
               </div>
               <div className='flex flex-wrap items-center justify-end gap-8px'>
-                {!hasCompatibleManualAsset && !autoUpdateAvailable && releasePageUrl ? (
-                  <Button type='primary' size='small' onClick={openReleasePage} className='!px-16px'>
-                    {t('update.goToRelease')}
-                  </Button>
-                ) : autoUpdateAvailable ? (
+                {isNativeUpdater || autoUpdateAvailable ? (
                   <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
                     {t('update.downloadAndInstall')}
+                  </Button>
+                ) : !hasCompatibleManualAsset && releasePageUrl ? (
+                  <Button type='primary' size='small' onClick={openReleasePage} className='!px-16px'>
+                    {t('update.goToRelease')}
                   </Button>
                 ) : (
                   <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
@@ -388,37 +477,13 @@ const UpdateModal: React.FC = () => {
               </div>
             </div>
 
-            {!hasCompatibleManualAsset && !autoUpdateAvailable && (
+            {!isNativeUpdater && !hasCompatibleManualAsset && !autoUpdateAvailable && (
               <div className='mx-24px mt-12px px-12px py-10px text-12px rounded-8px bg-[rgb(var(--warning-6))]/10 text-[rgb(var(--warning-6))]'>
                 {t('update.noCompatibleAssetManual')}
               </div>
             )}
 
-            <div className='mx-24px mt-12px px-12px py-10px rounded-8px border border-solid border-[rgba(var(--primary-6),0.16)] bg-[rgba(var(--primary-6),0.06)] text-12px leading-18px text-t-secondary'>
-              <div>{t('update.downloadSourceHint')}</div>
-              <div className='mt-4px'>
-                {t('update.baiduMirrorHint')}{' '}
-                <button
-                  type='button'
-                  onClick={openBaiduReleaseMirror}
-                  title={BAIDU_RELEASE_MIRROR_URL}
-                  className='cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
-                >
-                  {t('update.baiduMirrorLink')}
-                </button>
-              </div>
-              <div className='mt-4px'>
-                {t('update.productWebsiteHint')}{' '}
-                <button
-                  type='button'
-                  onClick={openProductWebsite}
-                  title={PRODUCT_WEBSITE_URL}
-                  className='cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
-                >
-                  {PRODUCT_WEBSITE_URL}
-                </button>
-              </div>
-            </div>
+            {renderManualDownloadHints()}
 
             {/* Release notes content */}
             <div className='flex-1 min-h-0 overflow-y-auto px-24px py-16px custom-scrollbar'>
@@ -519,13 +584,17 @@ const UpdateModal: React.FC = () => {
               <Button size='small' onClick={checkForUpdates} icon={<Refresh size='14' />} className='!px-16px'>
                 {t('common.retry')}
               </Button>
-              <Button type='primary' size='small' onClick={openReleasePage} className='!px-16px'>
-                {t('update.goToRelease')}
-              </Button>
-              {renderBaiduManualDownloadButton()}
-              <Button size='small' onClick={openProductWebsite} className='!px-16px'>
-                {t('update.productWebsiteLink')}
-              </Button>
+              {!isNativeUpdater && (
+                <>
+                  <Button type='primary' size='small' onClick={openReleasePage} className='!px-16px'>
+                    {t('update.goToRelease')}
+                  </Button>
+                  {renderBaiduManualDownloadButton()}
+                  <Button size='small' onClick={openProductWebsite} className='!px-16px'>
+                    {t('update.productWebsiteLink')}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         );
@@ -550,9 +619,6 @@ const UpdateModal: React.FC = () => {
     >
       <div className='flex flex-col h-full w-full'>
         <div className='min-h-0 flex-1'>{renderContent()}</div>
-        {renderDisclaimer(
-          'shrink-0 border-t border-solid border-[rgba(var(--warning-6),0.18)] bg-fill-1/60 px-20px py-10px text-center'
-        )}
       </div>
     </NomiModal>
   );
