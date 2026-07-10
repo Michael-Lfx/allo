@@ -272,7 +272,22 @@ body[arco-theme='dark'] .arco-modal-confirm-icon {
 
 /* Sider footer popovers: WebUI and theme controls need a softer shell than Arco's default card. */
 .sider-soft-popover {
-  --sider-popover-radius: 16px;
+  --sider-popover-radius: 12px;
+}
+
+.sider-user-menu-popover .arco-popover-content,
+.sider-user-menu-popover .arco-popover-inner,
+.sider-user-menu-popover .arco-popover-inner-content,
+.sider-user-skin-popover .arco-popover-content,
+.sider-user-skin-popover .arco-popover-inner,
+.sider-user-skin-popover .arco-popover-inner-content {
+  padding: 0 !important;
+}
+
+.sider-user-menu-popover {
+  --sider-popover-radius: 10px;
+  /* Keep the menu clear of the window/sider left edge */
+  margin-left: 20px !important;
 }
 
 .sider-soft-popover .arco-popover-content {

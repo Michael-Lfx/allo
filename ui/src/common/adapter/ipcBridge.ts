@@ -4252,6 +4252,10 @@ export interface ICloudWhoami {
   username?: string;
   email?: string;
   serverBaseUrl?: string;
+  /** Display label, e.g. "Free Plan" / "Pro Plan". */
+  plan?: string;
+  /** Raw plan code, e.g. "FreePlan". */
+  planCode?: string;
 }
 
 export interface ICloudDeviceActivationStatus {

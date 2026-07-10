@@ -4,11 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { Suspense, useCallback, useEffect, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -22,7 +23,6 @@ import {
   SiderMcpEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
-  SiderOpenCapabilitiesEntry,
   SiderPublicServiceEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
@@ -59,12 +59,22 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { count: pendingInboxCount } = useKnowledgeInboxPending();
 
   const navigate = useNavigate();
-  const { logout, status } = useAuth();
+  const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
+  const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const isSettings = pathname.startsWith('/settings');
   const lastNonSettingsPathRef = useRef('/guid');
-  // Logout is a WebUI-only affordance: the bundled desktop shell (Electron or
-  // Tauri) is single-user with no auth, so there is nothing to log out of.
-  const showLogout = !isDesktopShell() && status === 'authenticated';
+  const isDesktop = isDesktopShell();
+  // WebUI: local admin session logout. Desktop: cloud account logout (local auth is always on).
+  const showLocalLogout = !isDesktop && localStatus === 'authenticated';
+  const showCloudLogout = isDesktop && cloudStatus === 'authenticated';
+  const showLogout = showLocalLogout || showCloudLogout;
+  const userLabel = useMemo(() => {
+    if (showCloudLogout) {
+      return whoami?.email ?? whoami?.username ?? '';
+    }
+    return localUser?.username ?? whoami?.email ?? whoami?.username ?? '';
+  }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
+  const planLabel = whoami?.plan ?? '';
 
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
@@ -96,7 +106,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handlePublicServiceClick = () => navTo('/public-companions');
   const handleAssistantSkillsClick = () => navTo('/assistants?tab=assistants');
   const handleMcpClick = () => navTo('/mcp');
-  const handleOpenCapabilitiesClick = () => navTo('/open-capabilities');
 
   const handleSettingsClick = () => {
     cleanupSiderTooltips();
@@ -120,7 +129,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     cleanupSiderTooltips();
     blurActiveElement();
     try {
-      await logout();
+      if (showCloudLogout) {
+        await cloudLogout();
+      } else {
+        await localLogout();
+      }
     } catch (error) {
       console.error('Logout failed:', error);
       return; // logout 失败时不执行后续操作
@@ -128,7 +141,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     if (onSessionClick) {
       onSessionClick();
     }
-  }, [logout, onSessionClick]);
+  }, [cloudLogout, localLogout, onSessionClick, showCloudLogout]);
 
   useEffect(() => {
     if (!showLogout) return;
@@ -264,8 +277,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       </div>
       {/* Bottom pinned group (设置) — Model & Agent and Open Capabilities sit directly above Settings */}
       <div className='shrink-0 mt-auto pt-8px flex flex-col gap-2px border-t border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-b-0'>
-        {/* 设置 — section label; the enclosing border-t already separates this region when collapsed */}
-        <SiderSectionHeader label={t('common.siderSection.settings')} collapsed={collapsed} collapsedRule={false} />
         {!SERVER_MANAGED_MODELS && (
           <SiderModelHubEntry
             isMobile={isMobile}
@@ -275,21 +286,16 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
             onClick={() => navTo('/models')}
           />
         )}
-        <SiderOpenCapabilitiesEntry
-          isMobile={isMobile}
-          isActive={pathname.startsWith('/open-capabilities')}
-          collapsed={collapsed}
-          siderTooltipProps={siderTooltipProps}
-          onClick={handleOpenCapabilitiesClick}
-        />
         <SiderFooter
           isMobile={isMobile}
           isSettings={isSettings}
           collapsed={collapsed}
           siderTooltipProps={siderTooltipProps}
-          onSettingsClick={handleSettingsClick}
+          userLabel={userLabel}
+          planLabel={planLabel}
           showLogout={showLogout}
-          onLogoutClick={handleLogout}
+          onLogout={handleLogout}
+          onSettingsClick={handleSettingsClick}
         />
       </div>
     </div>

@@ -184,7 +184,7 @@ const MCP_DOMAIN_OPTIONS: McpDomainOption[] = [
 const normalizeMcpDomains = (domains: string[]): string[] =>
   MCP_DOMAIN_OPTIONS.map((option) => option.id).filter((id) => domains.includes(id));
 
-const OpenCapabilitiesPage: React.FC = () => {
+const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ variant = 'hub' }) => {
   const { t } = useTranslation();
   const { accessUrls, lifecycleSupported, status } = useWebuiServer();
   const [cwd, setCwd] = useState('');
@@ -233,14 +233,7 @@ const OpenCapabilitiesPage: React.FC = () => {
     });
   };
 
-  return (
-    <HubPageShell
-      title={t('settings.openCapabilities.title', { defaultValue: '远程&开放能力' })}
-      subtitle={t('settings.openCapabilities.subtitle', {
-        defaultValue: '分开管理 WebUI 访问入口，以及 Flowy Remote MCP / REST 对外开放能力。',
-      })}
-      maxWidthClass='md:max-w-1180px'
-    >
+  const tabs = (
       <Tabs
         activeTab={activeOpenCapabilityTab}
         onChange={(key) => setActiveOpenCapabilityTab(key as OpenCapabilityTab)}
@@ -431,6 +424,21 @@ const OpenCapabilitiesPage: React.FC = () => {
           </div>
         </Tabs.TabPane>
       </Tabs>
+  );
+
+  if (variant === 'settings') {
+    return tabs;
+  }
+
+  return (
+    <HubPageShell
+      title={t('settings.openCapabilities.title', { defaultValue: '远程&开放能力' })}
+      subtitle={t('settings.openCapabilities.subtitle', {
+        defaultValue: '分开管理 WebUI 访问入口，以及 Flowy Remote MCP / REST 对外开放能力。',
+      })}
+      maxWidthClass='md:max-w-1180px'
+    >
+      {tabs}
     </HubPageShell>
   );
 };

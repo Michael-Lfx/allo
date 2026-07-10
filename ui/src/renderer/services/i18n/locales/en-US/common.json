@@ -81,6 +81,13 @@
   "tray.checkUpdate": "Check Update",
   "tray.recentChats": "Recent Chats",
   "tray.untitled": "Untitled",
+  "userMenu": {
+    "creditsBalance": "Credits",
+    "changeSkin": "Appearance",
+    "logout": "Sign out",
+    "loadingCredits": "Loading…",
+    "creditsUnavailable": "—"
+  },
   "backendStartup": {
     "incompatibleRuntime": {
       "title": "This system is not supported by the bundled backend",

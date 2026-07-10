@@ -81,6 +81,13 @@
   "tray.checkUpdate": "检查更新",
   "tray.recentChats": "最近对话",
   "tray.untitled": "未命名",
+  "userMenu": {
+    "creditsBalance": "积分余额",
+    "changeSkin": "换肤",
+    "logout": "退出登录",
+    "loadingCredits": "加载中…",
+    "creditsUnavailable": "—"
+  },
   "backendStartup": {
     "incompatibleRuntime": {
       "title": "当前系统不支持内置后端",

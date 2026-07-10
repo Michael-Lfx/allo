@@ -190,6 +190,8 @@ impl CloudService {
                     username: None,
                     email: None,
                     server_base_url: None,
+                    plan: None,
+                    plan_code: None,
                 });
             }
             Err(e) => return Err(AppError::Internal(e.to_string())),
@@ -200,6 +202,14 @@ impl CloudService {
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let authenticated = status.is_logged_in();
         let profile = status.cached_profile;
+        let plan = profile
+            .as_ref()
+            .and_then(|p| p.current_plan.as_ref())
+            .and_then(|p| p.display_label());
+        let plan_code = profile
+            .as_ref()
+            .and_then(|p| p.current_plan.as_ref())
+            .and_then(|p| p.code.clone().or_else(|| p.name_en.clone()));
         Ok(nomifun_api_types::CloudWhoamiResponse {
             authenticated,
             user_id: profile.as_ref().map(|p| p.id.to_string()),
@@ -210,6 +220,8 @@ impl CloudService {
             } else {
                 Some(cfg.server.base_url.clone())
             },
+            plan,
+            plan_code,
         })
     }
 

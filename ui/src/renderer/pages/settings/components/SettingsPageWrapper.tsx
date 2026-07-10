@@ -105,6 +105,12 @@ export function getBuiltinSettingsNavItems(
       icon: <Pic theme='outline' size='16' />,
       path: 'media',
     },
+    'open-capabilities': {
+      id: 'open-capabilities',
+      label: t('settings.openCapabilities.railTitle', { defaultValue: '远程&开放能力' }),
+      icon: <LinkCloud theme='outline' size='16' />,
+      path: 'open-capabilities',
+    },
     'cloud-login': {
       id: 'cloud-login',
       label: t('settings.cloudLoginNav'),

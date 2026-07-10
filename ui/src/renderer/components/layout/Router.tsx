@@ -11,7 +11,6 @@ const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const AssistantSettings = React.lazy(() => import('@renderer/pages/settings/AssistantSettings'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
-const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
 const ExtensionSettingsPage = React.lazy(() => import('@renderer/pages/settings/ExtensionSettingsPage'));
 const LoginPage = React.lazy(() => import('@renderer/pages/login'));
@@ -39,6 +38,7 @@ const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSetting
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
 const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
 const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
+const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 
 const withRouteFallback = (Component: React.LazyExoticComponent<React.ComponentType>) => (
@@ -196,7 +196,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/models' element={<Navigate to='/guid' replace />} />
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
-          <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
+          <Route path='/open-capabilities' element={<Navigate to='/settings/open-capabilities' replace />} />
           {/* Assistants — relocated out of Settings into a top-level homepage destination */}
           <Route path='/assistants' element={withRouteFallback(AssistantSettings)} />
           {/* Session section — the secondary sidebar (ContentSider) persists across these routes */}
@@ -217,9 +217,9 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/agent' element={<Navigate to='/guid' replace />} />
           <Route path='/settings/capabilities' element={<Navigate to='/assistants?tab=skills' replace />} />
           <Route path='/settings/skills-hub' element={<Navigate to='/assistants?tab=skills' replace />} />
-          <Route path='/settings/tools' element={<Navigate to='/open-capabilities' replace />} />
+          <Route path='/settings/tools' element={<Navigate to='/settings/open-capabilities' replace />} />
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
-          <Route path='/settings/webui' element={<Navigate to='/open-capabilities' replace />} />
+          <Route path='/settings/webui' element={<Navigate to='/settings/open-capabilities' replace />} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/agent-runtime' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/browser-use' element={withRouteFallback(SystemSettings)} />
@@ -227,6 +227,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />
           <Route path='/settings/insights' element={withRouteFallback(InsightsSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
+          <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
           <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/ext/:tabId' element={withRouteFallback(ExtensionSettingsPage)} />

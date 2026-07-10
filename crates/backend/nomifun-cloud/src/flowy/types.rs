@@ -1,7 +1,6 @@
 //! Flowy API request/response types.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SendEmailCodeRequest {
@@ -75,7 +74,77 @@ pub struct UserMe {
     #[serde(default)]
     pub app_flowymes: Option<i32>,
     #[serde(default)]
-    pub current_plan: Option<Value>,
+    pub current_plan: Option<UserCurrentPlan>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserCurrentPlan {
+    #[serde(default)]
+    pub plan_id: Option<i64>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub name_en: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub plan_period: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub start_at: Option<String>,
+    #[serde(default)]
+    pub end_at: Option<String>,
+}
+
+impl UserCurrentPlan {
+    /// Display label for UI, e.g. "Free" / "Pro" / "Ultra" (no "Plan" suffix).
+    pub fn display_label(&self) -> Option<String> {
+        let raw = self
+            .name
+            .as_deref()
+            .or(self.name_en.as_deref())
+            .or(self.code.as_deref())?
+            .trim();
+        if raw.is_empty() {
+            return None;
+        }
+        Some(format_plan_tier(&strip_plan_suffix(raw)))
+    }
+}
+
+/// Remove trailing "Plan" / " plan" (English) without mutating unrelated text.
+fn strip_plan_suffix(raw: &str) -> String {
+    let mut value = raw.trim().to_string();
+    loop {
+        let lower = value.to_lowercase();
+        let next = if lower.ends_with(" plan") {
+            value[..value.len().saturating_sub(5)].trim().to_string()
+        } else if lower.ends_with("plan") && value.chars().count() > 4 {
+            value[..value.len().saturating_sub(4)].trim().to_string()
+        } else {
+            break value;
+        };
+        if next.is_empty() {
+            break raw.trim().to_string();
+        }
+        value = next;
+    }
+}
+
+/// Normalize known subscription tiers; leave other labels (e.g. Chinese) unchanged.
+fn format_plan_tier(raw: &str) -> String {
+    match raw.to_ascii_lowercase().as_str() {
+        "free" => "Free".to_string(),
+        "pro" => "Pro".to_string(),
+        "ultra" | "max" => "Ultra".to_string(),
+        other => other.to_string(),
+    }
 }
 
 impl UserMe {
@@ -302,4 +371,39 @@ pub struct ChatSessionReportRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatSessionReportResponse {
     pub stored: bool,
+}
+
+#[cfg(test)]
+mod plan_label_tests {
+    use super::{format_plan_tier, strip_plan_suffix, UserCurrentPlan};
+
+    #[test]
+    fn strip_plan_suffix_removes_english_plan() {
+        assert_eq!(strip_plan_suffix("FreePlan"), "Free");
+        assert_eq!(strip_plan_suffix("Pro Plan"), "Pro");
+        assert_eq!(strip_plan_suffix("Ultra"), "Ultra");
+    }
+
+    #[test]
+    fn strip_plan_suffix_keeps_chinese_unchanged() {
+        assert_eq!(strip_plan_suffix("专业版"), "专业版");
+        assert_eq!(strip_plan_suffix("免费版 Plan"), "免费版");
+    }
+
+    #[test]
+    fn format_plan_tier_normalizes_known_tiers() {
+        assert_eq!(format_plan_tier("free"), "Free");
+        assert_eq!(format_plan_tier("Pro"), "Pro");
+        assert_eq!(format_plan_tier("ULTRA"), "Ultra");
+    }
+
+    #[test]
+    fn display_label_from_profile_fields() {
+        let plan = UserCurrentPlan {
+            code: Some("FreePlan".into()),
+            name: Some("Free".into()),
+            ..Default::default()
+        };
+        assert_eq!(plan.display_label().as_deref(), Some("Free"));
+    }
 }

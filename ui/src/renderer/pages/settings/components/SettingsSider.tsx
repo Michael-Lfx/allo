@@ -36,6 +36,7 @@ export const BUILTIN_TAB_IDS = [
   'poi',
   'insights',
   'media',
+  'open-capabilities',
   'cloud-login',
   'about',
 ] as const;
@@ -140,6 +141,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.mediaNav'),
         icon: <Pic />,
         path: 'media',
+      },
+      'open-capabilities': {
+        id: 'open-capabilities',
+        label: t('settings.openCapabilities.railTitle', { defaultValue: '远程&开放能力' }),
+        icon: <LinkCloud />,
+        path: 'open-capabilities',
       },
       'cloud-login': {
         id: 'cloud-login',

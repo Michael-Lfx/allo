@@ -72,6 +72,12 @@ pub struct CloudWhoamiResponse {
     pub username: Option<String>,
     pub email: Option<String>,
     pub server_base_url: Option<String>,
+    /// Subscription plan display label, e.g. "Free" / "Pro" / "Ultra".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// Raw plan code from server, e.g. "FreePlan" / "ProPlan".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
