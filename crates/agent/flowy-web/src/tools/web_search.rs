@@ -27,9 +27,10 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the open web for current facts, news, limits, and other public information. \
-         Prefer this before Browser for lookup tasks. After you have promising URLs, use \
-         web_extract to read full page content."
+        "Search the open web for current facts, news, traffic limits, weather, and other public \
+         information. Prefer this before Browser. If search snippets already answer the question, \
+         do not call web_extract. Only use web_extract when you need the page body beyond \
+         snippets."
     }
 
     fn input_schema(&self) -> JsonSchema {

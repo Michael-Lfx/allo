@@ -27,8 +27,9 @@ impl Tool for WebExtractTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch and extract readable markdown from public web page URLs. Use when you already \
-         have URLs (e.g. from web_search). Do not use Browser just to read public pages."
+        "Fetch public URLs and return readable markdown of the main article body (boilerplate \
+         stripped when possible, truncated for context). Use when you already have URLs and \
+         snippets from web_search are not enough. Do not use Browser just to read public pages."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -95,11 +96,12 @@ impl Tool for WebExtractTool {
                         ""
                     };
                     sections.push(format!(
-                        "### URL {} — ok\nurl: {}\ntitle: {}\nprovider: {}{}\n\n{}",
+                        "### URL {} — ok\nurl: {}\ntitle: {}\nprovider: {}\nextractor: {}{}\n\n{}",
                         i + 1,
                         page.url,
                         title,
                         page.provider,
+                        page.extractor,
                         truncated,
                         page.markdown
                     ));
@@ -142,7 +144,9 @@ mod tests {
     use nomi_tools::Tool;
 
     use crate::provider::ExtractProvider;
-    use crate::types::{ExtractRequest, ExtractedPage, EXTRACTOR_FULLPAGE, MAX_EXTRACT_URLS, WebError};
+    use crate::types::{
+        ExtractRequest, ExtractedPage, EXTRACTOR_READABILITY, MAX_EXTRACT_URLS, WebError,
+    };
 
     use super::WebExtractTool;
 
@@ -166,7 +170,7 @@ mod tests {
                 markdown: format!("Body for {}", req.url),
                 truncated: false,
                 provider: "mock".into(),
-                extractor: EXTRACTOR_FULLPAGE.to_owned(),
+                extractor: EXTRACTOR_READABILITY.to_owned(),
             })
         }
     }
@@ -224,6 +228,22 @@ mod tests {
             r.content
         );
         assert!(r.content.contains("https://example.com/bad"));
+    }
+
+    #[tokio::test]
+    async fn web_extract_tool_includes_extractor_label() {
+        let tool = WebExtractTool::new(Arc::new(MockExtract {
+            fail_urls: vec![],
+        }));
+        let r = tool
+            .execute(json!({"urls":["https://example.com/a"]}))
+            .await;
+        assert!(!r.is_error);
+        assert!(
+            r.content.contains("extractor: readability"),
+            "{}",
+            r.content
+        );
     }
 
     #[tokio::test]
