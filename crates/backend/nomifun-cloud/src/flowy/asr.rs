@@ -126,6 +126,20 @@ fn resolve_asr_model_id(model: &str) -> String {
         .unwrap_or_else(|| trimmed.to_owned())
 }
 
+fn empty_asr_transcript_error() -> ServerClientError {
+    ServerClientError::InvalidResponse("ASR returned empty transcript".into())
+}
+
+fn classify_transcription_result(
+    result: Result<String, ServerClientError>,
+) -> Result<Option<String>, ServerClientError> {
+    match result {
+        Ok(text) if !text.trim().is_empty() => Ok(Some(text)),
+        Ok(_) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 impl FlowyApiClient {
     /// List ASR models from `GET /model/availableListClaw?category=7`.
     ///
@@ -204,32 +218,14 @@ impl FlowyApiClient {
             resolve_asr_model_id(&entry.tb_model_name()),
             resolve_asr_model_id(&entry.api_model_id()),
         ];
-        let mut last_error: Option<ServerClientError> = None;
+        let mut last_error =
+            ServerClientError::InvalidResponse("ASR transcription failed".into());
 
         for model in model_candidates {
             match self
-                .post_audio_transcription_json(
+                .transcribe_audio_with_model(
                     session,
                     &audio_data,
-                    mime_type,
-                    language_hint,
-                    &model,
-                )
-                .await
-            {
-                Ok(text) if !text.trim().is_empty() => return Ok(text),
-                Ok(_) => {
-                    last_error = Some(ServerClientError::InvalidResponse(
-                        "ASR returned empty transcript".into(),
-                    ));
-                }
-                Err(err) => last_error = Some(err),
-            }
-
-            match self
-                .post_audio_transcription_multipart(
-                    session,
-                    audio_data.clone(),
                     file_name,
                     mime_type,
                     language_hint,
@@ -237,19 +233,63 @@ impl FlowyApiClient {
                 )
                 .await
             {
-                Ok(text) if !text.trim().is_empty() => return Ok(text),
-                Ok(_) => {
-                    last_error = Some(ServerClientError::InvalidResponse(
-                        "ASR returned empty transcript".into(),
-                    ));
-                }
-                Err(err) => last_error = Some(err),
+                Ok(text) => return Ok(text),
+                Err(err) => last_error = err,
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
-            ServerClientError::InvalidResponse("ASR transcription failed".into())
-        }))
+        Err(last_error)
+    }
+
+    async fn transcribe_audio_with_model(
+        &self,
+        session: &ServerSession,
+        audio_data: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        language_hint: Option<&str>,
+        model: &str,
+    ) -> Result<String, ServerClientError> {
+        match classify_transcription_result(
+            self.post_audio_transcription_json(session, audio_data, mime_type, language_hint, model)
+                .await,
+        ) {
+            Ok(Some(text)) => return Ok(text),
+            Ok(None) => {}
+            Err(json_err) => {
+                return match classify_transcription_result(
+                    self.post_audio_transcription_multipart(
+                        session,
+                        audio_data.to_vec(),
+                        file_name,
+                        mime_type,
+                        language_hint,
+                        model,
+                    )
+                    .await,
+                ) {
+                    Ok(Some(text)) => Ok(text),
+                    Ok(None) => Err(json_err),
+                    Err(err) => Err(err),
+                };
+            }
+        }
+
+        match classify_transcription_result(
+            self.post_audio_transcription_multipart(
+                session,
+                audio_data.to_vec(),
+                file_name,
+                mime_type,
+                language_hint,
+                model,
+            )
+            .await,
+        ) {
+            Ok(Some(text)) => Ok(text),
+            Ok(None) => Err(empty_asr_transcript_error()),
+            Err(err) => Err(err),
+        }
     }
 
     async fn post_audio_transcription_json(
