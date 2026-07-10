@@ -2,6 +2,10 @@
 # upstream crates.io index/CDN. Source replacement is transparent: package
 # identities and Cargo.lock entries remain crates-io, so existing target/ build
 # artifacts stay valid and are not rebuilt. Safe to remove if building elsewhere.
+include = [
+    { path = "config.local.toml", optional = true },
+]
+
 [source.crates-io]
 replace-with = "rsproxy-sparse"
 

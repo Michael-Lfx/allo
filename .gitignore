@@ -2,6 +2,7 @@
 /target/
 **/target/
 /build.noindex/
+.cargo/config.local.toml
 Cargo.lock.bak
 
 # Packaging / runtime artifacts

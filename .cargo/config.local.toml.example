@@ -1,0 +1,10 @@
+# Optional local Cargo overrides — copy to config.local.toml (gitignored).
+#
+# sccache: rustc-wrapper + incremental=false must be used together — rustc's
+# incremental mode marks every compile as non-cacheable. Install: cargo install sccache
+[build]
+rustc-wrapper = "sccache"
+incremental = false
+
+[env]
+CARGO_INCREMENTAL = "0"
