@@ -885,7 +885,7 @@ git commit -m "feat(agent): register web_search and web_extract when tools.web.e
 - Modify: `crates/agent/nomi-browser/src/tool.rs` (`DESCRIPTION` const ~line 100)
 - Modify: `crates/agent/nomi-agent/src/context.rs` (`browser_preset`)
 - Modify: `crates/backend/nomifun-app/assets/builtin-assistants/rules/cowork.zh-CN.md` (section 9)
-- Modify: matching `cowork.en-US.md` if it has a WebSearch section
+- Modify: `cowork.en-US.md`, `cowork.ru-RU.md`（对应 WebSearch 节）
 
 - [ ] **Step 1: Update Browser DESCRIPTION**
 
