@@ -1,0 +1,7 @@
+# Alpha channel pointer — updated by scripts/upload-modelscope-release.py on each release.
+# Clients read allo/channels/alpha/latest.json (Tauri updater manifest), not this file directly.
+version: "0.0.0"
+channel: alpha
+pub_date: ""
+manifest: channels/alpha/latest.json
+notes: ""

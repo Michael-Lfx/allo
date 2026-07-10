@@ -7,11 +7,6 @@
       "desktop": {
         "schemes": ["nomifun-dev"]
       }
-    },
-    "updater": {
-      "endpoints": [
-        "http://127.0.0.1:59999/nomifun-dev-channel-has-no-update-feed/latest.json"
-      ]
     }
   }
 }

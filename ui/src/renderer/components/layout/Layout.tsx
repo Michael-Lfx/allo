@@ -10,6 +10,7 @@ import type { ICssTheme } from '@/common/config/storage';
 import appLogo from '@renderer/assets/logo.svg';
 import PwaPullToRefresh from '@/renderer/components/layout/PwaPullToRefresh';
 import Titlebar from '@/renderer/components/layout/Titlebar';
+import { UPDATE_AVAILABLE_EVENT } from '@/renderer/components/layout/Titlebar/TitlebarUpdateButton';
 import { Layout as ArcoLayout } from '@arco-design/web-react';
 import classNames from 'classnames';
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -449,6 +450,9 @@ const Layout: React.FC<{
       try {
         const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
         if (!cancelled && res?.success && res.data?.updateInfo) {
+          window.dispatchEvent(
+            new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
+          );
           window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'startup' } }));
         }
       } catch {

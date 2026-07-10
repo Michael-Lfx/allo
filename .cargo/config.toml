@@ -11,6 +11,12 @@ registry = "sparse+https://rsproxy.cn/index/"
 [net]
 git-fetch-with-cli = true
 
+# Windows schannel tries OCSP/CRL revocation checks by default. On networks where
+# the revocation server is unreachable (common behind corp firewalls / offline
+# checks), cargo fails with CRYPT_E_REVOCATION_OFFLINE when fetching crates.
+[http]
+check-revoke = false
+
 # Use the toolchain-bundled LLD linker on Windows MSVC — linking dominates
 # incremental build time in this 27-crate workspace and LLD is several times
 # faster than link.exe. rust-lld.exe ships with every rustup toolchain, so

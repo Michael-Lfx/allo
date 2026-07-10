@@ -6,6 +6,8 @@
  *   bun run make:latest --version 0.1.11        # 显式指定版本（默认读单一真源）
  *   bun run make:latest --notes "修复若干问题"    # 指定发布说明（默认读 CHANGELOG / 兜底）
  *   bun run make:latest --repo owner/name       # 指定 GitHub 仓库（默认 nomifun/nomifun-tauri）
+ *   bun run make:latest --host modelscope       # URL 指向 ModelScope（flowy2025/flowyaipc/allo/）
+ *   bun run make:latest --host modelscope --channel alpha --collect
  *   bun run make:latest --collect               # 额外把产物 + .sig 拷到 dist/desktop/ 便于上传
  *
  * 背景：Tauri 自动更新靠一个 latest.json 清单，按 `<系统>-<芯片>` 列出每个平台的下载
@@ -28,6 +30,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_OUT = join(ROOT, 'apps/desktop/updater/latest.json');
 const DEFAULT_REPO = 'nomifun/nomifun-tauri';
+const DEFAULT_MS_REPO = 'flowy2025/flowyaipc';
+const DEFAULT_MS_PREFIX = 'allo';
+const DEFAULT_MS_CHANNEL = 'alpha';
 const ALL_KEYS = ['windows-x86_64', 'windows-aarch64', 'darwin-x86_64', 'darwin-aarch64', 'linux-x86_64', 'linux-aarch64'];
 
 const rel = (p) => (p.startsWith(ROOT) ? p.slice(ROOT.length + 1) : p);
@@ -41,6 +46,10 @@ function flag(name, fallback = undefined) {
   return next && !next.startsWith('--') ? next : true;
 }
 
+const host = flag('host', 'github');
+const msRepo = flag('ms-repo', DEFAULT_MS_REPO);
+const msPrefix = flag('ms-prefix', DEFAULT_MS_PREFIX);
+const msChannel = flag('channel', DEFAULT_MS_CHANNEL);
 const repo = flag('repo', DEFAULT_REPO);
 const out = flag('out', DEFAULT_OUT);
 const collect = flag('collect', false) === true;
@@ -115,6 +124,15 @@ function platformKeysFor(triple) {
 }
 
 // 默认（无 --target）构建落在 target/release/bundle，其 triple = 本机 host triple。
+function artifactDownloadUrl(name) {
+  if (host === 'modelscope') {
+    const versionTag = version.startsWith('v') ? version : `v${version}`;
+    const filePath = `${msPrefix}/${versionTag}/${name}`;
+    return `https://modelscope.cn/api/v1/models/${msRepo}/repo?Revision=master&FilePath=${filePath}`;
+  }
+  return `https://github.com/${repo}/releases/download/v${version}/${name}`;
+}
+
 function hostTriple() {
   const arch = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : process.arch;
   if (process.platform === 'darwin') return `${arch}-apple-darwin`;
@@ -210,7 +228,7 @@ for (const { dir, triple } of bundleDirs) {
   for (const { artifact, sig } of findSigs(dir)) {
     const name = basename(artifact);
     const signature = readFileSync(sig, 'utf8').trim();
-    const url = `https://github.com/${repo}/releases/download/v${version}/${name}`;
+    const url = artifactDownloadUrl(name);
     for (const key of keys) {
       collectCandidate(key, { url, signature, artifact, sig });
     }
@@ -240,7 +258,12 @@ if (existsSync(out)) {
       if (!notes && typeof prev.notes === 'string' && prev.notes.trim()) notes = prev.notes.trim();
       for (const [k, v] of Object.entries(prev.platforms || {})) {
         const placeholder = !v?.signature || v.signature.includes('<<') || String(v.url).includes('REPLACE-WITH');
-        if (!placeholder) manifest.platforms[k] = v;
+        if (placeholder) continue;
+        // When targeting ModelScope, do not carry over GitHub-only entries from an old template.
+        if (host === 'modelscope' && !String(v.url).includes('modelscope.cn')) continue;
+        // When targeting GitHub, do not carry over ModelScope-only entries.
+        if (host === 'github' && String(v.url).includes('modelscope.cn')) continue;
+        manifest.platforms[k] = v;
       }
     } else if (prev.version) {
       console.warn(`  ! 既有 latest.json 版本 ${prev.version} ≠ 本次 ${version}，丢弃旧平台条目，重建清单。`);
@@ -267,7 +290,11 @@ if (collect) {
 const line = '━'.repeat(66);
 console.log(line);
 console.log(`✓ latest.json 已写入: ${rel(out)}`);
-console.log(`  版本: ${version}    仓库: ${repo}`);
+const hostLabel =
+  host === 'modelscope'
+    ? `ModelScope ${msRepo}/${msPrefix} (channel ${msChannel})`
+    : `GitHub ${repo}`;
+console.log(`  版本: ${version}    托管: ${hostLabel}`);
 console.log('  平台条目:');
 for (const key of ALL_KEYS) {
   const here = foundKeys.includes(key);
@@ -275,7 +302,11 @@ for (const key of ALL_KEYS) {
   console.log(`    ${key.padEnd(16)} ${mark}`);
 }
 console.log('');
-console.log(`  待上传到 GitHub Release（tag v${version}）的本机产物:`);
+const uploadHint =
+  host === 'modelscope'
+    ? `待上传到 ModelScope（python scripts/upload-modelscope-release.py --dist-dir dist/desktop/ --channel ${msChannel}）的本机产物:`
+    : `待上传到 GitHub Release（tag v${version}）的本机产物:`;
+console.log(`  ${uploadHint}`);
 for (const f of uploads) console.log(`    ${rel(f)}`);
 console.log(`    ${rel(out)}`);
 if (collect) console.log(`  已拷贝到: ${rel(distDir)}/`);

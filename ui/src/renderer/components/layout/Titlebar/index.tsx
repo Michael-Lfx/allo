@@ -8,6 +8,7 @@ import { ipcBridge } from '@/common';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import MobileConversationBrand from './MobileConversationBrand';
 import TitlebarLanguageMenu from './TitlebarLanguageMenu';
+import TitlebarUpdateButton from './TitlebarUpdateButton';
 import WindowControls from '../WindowControls';
 import { WORKSPACE_STATE_EVENT, dispatchWorkspaceToggleEvent } from '@renderer/utils/workspace/workspaceEvents';
 import type { WorkspaceStateDetail } from '@renderer/utils/workspace/workspaceEvents';
@@ -395,6 +396,11 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
       </div>
       <div ref={toolbarRef} className='app-titlebar__toolbar'>
         {layout?.isMobile && <div id='app-titlebar-actions-slot' className='app-titlebar__actions-slot' />}
+        <TitlebarUpdateButton
+          iconSize={iconSize}
+          strokeWidth={desktopIconStroke}
+          className={classNames(layout?.isMobile && 'app-titlebar__button--mobile')}
+        />
         {showWorkspaceButton && (
           renderIconButton({
             tooltip: workspaceTooltip,

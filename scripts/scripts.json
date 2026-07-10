@@ -20,6 +20,7 @@
     "build:signed":  { "group": "build", "desc": "打桌面包并签名+公证（仅 macOS）" },
     "build:updater": { "group": "build", "desc": "打桌面包并产出自更新 .sig 制品" },
     "make:latest":   { "group": "build", "desc": "扫描本机更新产物，生成/合并自动更新清单 latest.json" },
+    "upload:modelscope": { "group": "build", "desc": "上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN）" },
     "release:mac":   { "group": "build", "desc": "一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },
     "release:win":   { "group": "build", "desc": "一键 Windows 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },
     "release:linux": { "group": "build", "desc": "一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },

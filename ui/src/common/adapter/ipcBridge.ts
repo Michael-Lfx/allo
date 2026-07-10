@@ -589,31 +589,33 @@ export const application = {
 // only render under `isDesktopShell()`), and `shellProvider` additionally guards
 // each call with `isTauriRuntime()`, so the WebUI browser degrades to the safe fallback.
 
-/** Releases page shown in the modal's "go to release" affordance. */
+/** Releases page shown in the modal's manual-download fallback (WebUI only). */
 const GITHUB_RELEASES_PAGE = 'https://github.com/nomifun/nomifun-tauri/releases/latest';
+const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo';
 
 export const update = {
   open: noopEmitter<{ source?: 'menu' | 'about' }>(),
   check: shellProvider<IBridgeResponse<UpdateCheckResult>, UpdateCheckRequest>(async () => {
-    // Reuses the check started by autoUpdate.check (the modal calls that first),
-    // so this is the SAME round-trip, not a second network call.
-    const currentVersion = await tauriUpdateCurrentVersion();
-    const info = await tauriUpdateCheck(false);
-    if (!info) {
-      return { success: true, data: { currentVersion, updateAvailable: false } };
+    try {
+      const currentVersion = await tauriUpdateCurrentVersion();
+      const info = await tauriUpdateCheck(false);
+      if (!info) {
+        return { success: true, data: { currentVersion, updateAvailable: false } };
+      }
+      const latest: UpdateReleaseInfo = {
+        tagName: `v${info.version}`,
+        version: info.version,
+        body: info.releaseNotes,
+        htmlUrl: MODELSCOPE_RELEASE_PAGE,
+        prerelease: false,
+        draft: false,
+        assets: [],
+      };
+      return { success: true, data: { currentVersion, updateAvailable: true, latest } };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, msg };
     }
-    const latest: UpdateReleaseInfo = {
-      tagName: `v${info.version}`,
-      version: info.version,
-      body: info.releaseNotes,
-      htmlUrl: GITHUB_RELEASES_PAGE,
-      prerelease: false,
-      draft: false,
-      assets: [],
-      // recommendedAsset intentionally omitted: the plugin handles download +
-      // install, so the modal routes through the autoUpdate.* channels below.
-    };
-    return { success: true, data: { currentVersion, updateAvailable: true, latest } };
   }, { success: false, msg: 'Updater is unavailable outside the desktop shell' }),
   // Unused under Tauri (no recommendedAsset → the modal never takes the manual
   // download path); kept for API compatibility with the modal's manual branch.
@@ -629,14 +631,17 @@ export const autoUpdate = {
     IBridgeResponse<{ updateInfo?: { version: string; releaseDate?: string; releaseNotes?: string } }>,
     { includePrerelease?: boolean }
   >(async () => {
-    // `force` so each modal open / retry performs a fresh check; update.check
-    // (called right after) then reuses this same in-flight result.
-    const info = await tauriUpdateCheck(true);
-    if (!info) return { success: true, data: {} };
-    return {
-      success: true,
-      data: { updateInfo: { version: info.version, releaseDate: info.releaseDate, releaseNotes: info.releaseNotes } },
-    };
+    try {
+      const info = await tauriUpdateCheck(true);
+      if (!info) return { success: true, data: {} };
+      return {
+        success: true,
+        data: { updateInfo: { version: info.version, releaseDate: info.releaseDate, releaseNotes: info.releaseNotes } },
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, msg };
+    }
   }, { success: false }),
   download: shellProvider<IBridgeResponse, void>(async () => {
     await tauriUpdateDownload((s) => autoUpdateStatusEmitter.emit(s));
