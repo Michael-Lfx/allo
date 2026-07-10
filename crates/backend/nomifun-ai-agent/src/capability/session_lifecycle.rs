@@ -131,11 +131,12 @@ impl SessionLifecycleCoordinator {
         session_id: &str,
         user_text: &str,
         message_count: usize,
+        session_llm_model: Option<&str>,
     ) {
         self.touch_session(session_id);
         if let Some(extractor) = &self.extractor {
             extractor
-                .on_user_message(session_id, user_text, message_count)
+                .on_user_message(session_id, user_text, message_count, session_llm_model)
                 .await;
         }
     }

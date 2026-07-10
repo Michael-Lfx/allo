@@ -89,6 +89,30 @@ fn parse_provider_with_model_loose(raw: &str) -> Option<ProviderWithModel> {
     })
 }
 
+/// Flowy cloud model selected on a conversation row, if any.
+///
+/// Returns `None` when the conversation uses another provider or has no model.
+pub fn flowy_cloud_model_from_conversation_row(row: &ConversationRow) -> Option<String> {
+    const FLOWY_CLOUD: &str = "flowy-cloud";
+    let pm = provider_model_from_conversation_row(row);
+    if pm.provider_id != FLOWY_CLOUD {
+        return None;
+    }
+    pm.use_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let m = pm.model.trim();
+            if m.is_empty() {
+                None
+            } else {
+                Some(m.to_owned())
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +230,22 @@ mod tests {
         // The vendor-label fallback must not leak in.
         assert_ne!(canonical_resolved.provider_id, "nomi");
         assert_ne!(legacy_resolved.provider_id, "nomi");
+    }
+
+    #[test]
+    fn flowy_cloud_model_prefers_use_model() {
+        let json = r#"{"provider_id":"flowy-cloud","model":"default","use_model":"AIPC-glm-4.7"}"#;
+        let row = row_with_model(Some(json));
+        assert_eq!(
+            flowy_cloud_model_from_conversation_row(&row).as_deref(),
+            Some("AIPC-glm-4.7")
+        );
+    }
+
+    #[test]
+    fn flowy_cloud_model_ignored_for_other_providers() {
+        let json = r#"{"provider_id":"openai","model":"gpt-4"}"#;
+        let row = row_with_model(Some(json));
+        assert!(flowy_cloud_model_from_conversation_row(&row).is_none());
     }
 }

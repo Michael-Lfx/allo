@@ -321,6 +321,7 @@ impl ConversationService {
         conversation_id: &str,
         conv_id: i64,
         user_text: &str,
+        conversation_row: &nomifun_db::models::ConversationRow,
     ) {
         let Some(coordinator) = self.session_lifecycle_coordinator() else {
             return;
@@ -340,8 +341,15 @@ impl ConversationService {
                 return;
             }
         };
+        let session_llm_model =
+            crate::task_options::flowy_cloud_model_from_conversation_row(conversation_row);
         coordinator
-            .on_user_message(conversation_id, user_text, message_count)
+            .on_user_message(
+                conversation_id,
+                user_text,
+                message_count,
+                session_llm_model.as_deref(),
+            )
             .await;
     }
 
@@ -1832,7 +1840,7 @@ impl ConversationService {
 
         info!(msg_id = %user_msg_id, "User message persisted");
 
-        self.on_user_message_lifecycle(conversation_id, parse_conv_id(conversation_id)?, &req.content)
+        self.on_user_message_lifecycle(conversation_id, parse_conv_id(conversation_id)?, &req.content, &row)
             .await;
 
         // Companion wire markers (see `companion_context_from_extra`): stamped on

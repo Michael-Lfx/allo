@@ -1,24 +1,32 @@
 //! Provider-backed [`AuxiliaryClient`] for POI / insights background LLM tasks.
 //!
-//! Mirrors the layering of [`crate::knowledge_completer::LiveKnowledgeCompleter`]:
-//! resolve a default provider/model, then run one-shot completions.
+//! Background auxiliary LLM (POI extraction, insights resolution) is restricted
+//! to the built-in **`flowy-cloud`** provider. Transient upstream faults are
+//! retried with bounded backoff.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use nomi_auxiliary::{AuxiliaryClient, AuxiliaryClientBuilder, ChatLlmProvider};
+use nomi_config::InterestConfig;
 use nomi_types::message::{Message, Role};
 use nomifun_common::AppError;
 use nomifun_db::IProviderRepository;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::factory::provider_config::{one_shot_completion_no_thinking, resolve_provider_config, user_message};
-use crate::knowledge_completer::resolve_default_model;
+use crate::knowledge_completer::first_enabled_model;
+
+/// Built-in Flowy cloud provider — the only LLM source for auxiliary tasks.
+pub const FLOWY_CLOUD_PROVIDER_ID: &str = "flowy-cloud";
 
 const AUXILIARY_MAX_TOKENS: u32 = 4096;
+const AUXILIARY_MAX_ATTEMPTS: u32 = 3;
+const AUXILIARY_RETRY_BASE_DELAY_MS: u64 = 1_000;
 
-/// Builds an [`AuxiliaryClient`] from the first enabled provider/model.
+/// Builds an [`AuxiliaryClient`] backed exclusively by `flowy-cloud`.
 #[derive(Clone)]
 pub struct AuxiliaryClientFactory {
     pub provider_repo: Arc<dyn IProviderRepository>,
@@ -39,14 +47,25 @@ impl AuxiliaryClientFactory {
         }
     }
 
-    /// Resolve the default provider/model and build an auxiliary client.
+    /// Resolve the enabled `flowy-cloud` model and build an auxiliary client.
     pub async fn build_client(&self) -> Result<Arc<AuxiliaryClient>, AppError> {
-        let (provider_id, model) = resolve_default_model(&self.provider_repo).await.ok_or_else(|| {
-            AppError::Conflict(
-                "auxiliary LLM unavailable: no enabled provider/model is configured".into(),
-            )
-        })?;
-        let provider = Arc::new(ProviderBackedAuxiliaryLlm {
+        self.build_client_with_model(None).await
+    }
+
+    /// Build an auxiliary client using an explicit flowy-cloud model when provided.
+    pub async fn build_client_with_model(
+        &self,
+        model_override: Option<&str>,
+    ) -> Result<Arc<AuxiliaryClient>, AppError> {
+        let (provider_id, model) = resolve_auxiliary_model(&self.provider_repo, model_override)
+            .await
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "auxiliary LLM unavailable: flowy-cloud provider is not enabled or has no model"
+                        .into(),
+                )
+            })?;
+        let provider = Arc::new(FlowyCloudAuxiliaryLlm {
             factory: self.clone(),
             provider_id: provider_id.clone(),
             model: model.clone(),
@@ -62,14 +81,14 @@ impl AuxiliaryClientFactory {
 }
 
 #[derive(Clone)]
-struct ProviderBackedAuxiliaryLlm {
+struct FlowyCloudAuxiliaryLlm {
     factory: AuxiliaryClientFactory,
     provider_id: String,
     model: String,
 }
 
 #[async_trait]
-impl ChatLlmProvider for ProviderBackedAuxiliaryLlm {
+impl ChatLlmProvider for FlowyCloudAuxiliaryLlm {
     async fn chat_completion(
         &self,
         messages: &[Message],
@@ -78,21 +97,150 @@ impl ChatLlmProvider for ProviderBackedAuxiliaryLlm {
         model: Option<&str>,
     ) -> Result<String, String> {
         let (system, user) = split_system_user(messages)?;
-        let model = model.filter(|m| !m.is_empty()).unwrap_or(self.model.as_str());
-        let cfg = resolve_provider_config(
-            &self.factory.provider_repo,
-            &self.factory.encryption_key,
-            &self.provider_id,
-            model,
-            &self.factory.workspace,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let model = model
+            .filter(|m| !m.is_empty())
+            .unwrap_or(self.model.as_str());
         let max = max_tokens.unwrap_or(AUXILIARY_MAX_TOKENS);
-        one_shot_completion_no_thinking(&cfg, &system, vec![user_message(&user)], max)
+
+        let mut last_err = String::new();
+        for attempt in 0..AUXILIARY_MAX_ATTEMPTS {
+            match completion_for_provider(
+                &self.factory,
+                &system,
+                &user,
+                &self.provider_id,
+                model,
+                max,
+            )
             .await
-            .map_err(|e| e.to_string())
+            {
+                Ok(text) if !text.trim().is_empty() => {
+                    if attempt > 0 {
+                        debug!(
+                            provider = %self.provider_id,
+                            model = %model,
+                            attempt = attempt + 1,
+                            "auxiliary LLM succeeded after retry"
+                        );
+                    }
+                    return Ok(text);
+                }
+                Ok(_) => {
+                    last_err = format!("{}/{}: empty response", self.provider_id, model);
+                }
+                Err(err) => {
+                    last_err = err.clone();
+                }
+            }
+
+            let retryable = is_retryable_auxiliary_err(&last_err);
+            let has_more = attempt + 1 < AUXILIARY_MAX_ATTEMPTS;
+            if !retryable || !has_more {
+                break;
+            }
+            let delay_ms = AUXILIARY_RETRY_BASE_DELAY_MS.saturating_mul(attempt as u64 + 1);
+            warn!(
+                provider = %self.provider_id,
+                model = %model,
+                attempt = attempt + 1,
+                max_attempts = AUXILIARY_MAX_ATTEMPTS,
+                delay_ms,
+                error = %last_err,
+                "auxiliary LLM attempt failed — retrying"
+            );
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        Err(format!(
+            "LLM error on provider {}: {}",
+            self.provider_id, last_err
+        ))
     }
+}
+
+async fn resolve_flowy_cloud_model(
+    provider_repo: &Arc<dyn IProviderRepository>,
+) -> Option<(String, String)> {
+    resolve_auxiliary_model(provider_repo, None).await
+}
+
+async fn resolve_auxiliary_model(
+    provider_repo: &Arc<dyn IProviderRepository>,
+    model_override: Option<&str>,
+) -> Option<(String, String)> {
+    let row = provider_repo
+        .find_by_id(FLOWY_CLOUD_PROVIDER_ID)
+        .await
+        .ok()??;
+    if !row.enabled {
+        return None;
+    }
+    if let Some(model) = model_override.map(str::trim).filter(|m| !m.is_empty()) {
+        return Some((FLOWY_CLOUD_PROVIDER_ID.to_string(), model.to_string()));
+    }
+    first_enabled_model(&row.models, row.model_enabled.as_deref())
+        .map(|model| (FLOWY_CLOUD_PROVIDER_ID.to_string(), model))
+}
+
+/// Resolve the flowy-cloud model for POI LLM extraction.
+///
+/// Priority: POI setting → active conversation model → first enabled cloud model.
+pub async fn resolve_poi_llm_model(
+    interest_cfg: &InterestConfig,
+    session_model: Option<&str>,
+    provider_repo: &Arc<dyn IProviderRepository>,
+) -> Option<String> {
+    if let Some(model) = interest_cfg
+        .llm_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(model.to_string());
+    }
+    if let Some(model) = session_model.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(model.to_string());
+    }
+    resolve_flowy_cloud_model(provider_repo)
+        .await
+        .map(|(_, model)| model)
+}
+
+fn is_retryable_auxiliary_err(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+        || lower.contains("bad gateway")
+        || lower.contains("all channel models failed")
+        || lower.contains("rate limit")
+        || lower.contains("timeout")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("upstream")
+}
+
+async fn completion_for_provider(
+    factory: &AuxiliaryClientFactory,
+    system: &str,
+    user: &str,
+    provider_id: &str,
+    model: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let cfg = resolve_provider_config(
+        &factory.provider_repo,
+        &factory.encryption_key,
+        provider_id,
+        model,
+        &factory.workspace,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    one_shot_completion_no_thinking(&cfg, system, vec![user_message(user)], max_tokens)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn split_system_user(messages: &[Message]) -> Result<(String, String), String> {
@@ -142,5 +290,40 @@ pub async fn try_build_auxiliary_client(
             debug!(error = %err, "auxiliary client unavailable for session extraction");
             None
         }
+    }
+}
+
+/// Best-effort auxiliary client for POI extraction with resolved model priority.
+pub async fn try_build_auxiliary_client_for_poi(
+    factory: &AuxiliaryClientFactory,
+    interest_cfg: &InterestConfig,
+    session_model: Option<&str>,
+) -> Option<Arc<AuxiliaryClient>> {
+    let model = resolve_poi_llm_model(interest_cfg, session_model, &factory.provider_repo).await;
+    match factory.build_client_with_model(model.as_deref()).await {
+        Ok(client) => Some(client),
+        Err(err) => {
+            debug!(
+                error = %err,
+                model = model.as_deref().unwrap_or("default"),
+                "auxiliary client unavailable for POI extraction"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_errors_include_cloud_gateway_failures() {
+        assert!(is_retryable_auxiliary_err(
+            "Bad gateway: LLM provider error: API error 500: All channel models failed"
+        ));
+        assert!(is_retryable_auxiliary_err("HTTP 502 Bad Gateway"));
+        assert!(!is_retryable_auxiliary_err("Provider 'openai' not found"));
+        assert!(!is_retryable_auxiliary_err("invalid api key"));
     }
 }

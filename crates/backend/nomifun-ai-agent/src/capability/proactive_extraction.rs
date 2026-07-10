@@ -16,7 +16,9 @@ use nomifun_poi::PoiService;
 use serde_json::Value;
 use tracing::info;
 
-use crate::auxiliary_provider::{try_build_auxiliary_client, AuxiliaryClientFactory};
+use crate::auxiliary_provider::{
+    resolve_poi_llm_model, try_build_auxiliary_client_for_poi, AuxiliaryClientFactory,
+};
 
 pub type MessageLoader = Arc<
     dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<Vec<Value>>> + Send>> + Send + Sync,
@@ -37,6 +39,8 @@ struct ActiveSessionState {
     last_activity_ms: i64,
     message_count_at_last_flush: usize,
     flush_in_progress: bool,
+    /// Latest flowy-cloud model from the active conversation, if any.
+    session_llm_model: Option<String>,
 }
 
 /// Tracks per-conversation extraction progress and spawns pipelines.
@@ -74,6 +78,7 @@ impl ProactiveSessionExtractor {
         session_id: &str,
         user_text: &str,
         message_count: usize,
+        session_llm_model: Option<&str>,
     ) {
         if !self.proactive_enabled().await {
             return;
@@ -87,6 +92,9 @@ impl ProactiveSessionExtractor {
             let mut sessions = self.sessions.write().expect("session extraction lock");
             let state = sessions.entry(session_id.to_owned()).or_default();
             state.last_activity_ms = now;
+            if let Some(model) = session_llm_model.map(str::trim).filter(|s| !s.is_empty()) {
+                state.session_llm_model = Some(model.to_owned());
+            }
 
             if interest_cfg.proactive_extraction_enabled() {
                 state.poi_buffer.absorb_turn(user_text, &interest_cfg);
@@ -232,8 +240,34 @@ impl ProactiveSessionExtractor {
                 .unwrap_or_default()
         };
 
+        let session_llm_model = {
+            let sessions = self.sessions.read().expect("session extraction lock");
+            sessions
+                .get(session_id)
+                .and_then(|s| s.session_llm_model.clone())
+        };
+
         let auxiliary = match &self.auxiliary_factory {
-            Some(factory) => try_build_auxiliary_client(factory).await,
+            Some(factory) => {
+                try_build_auxiliary_client_for_poi(
+                    factory,
+                    &interest_cfg,
+                    session_llm_model.as_deref(),
+                )
+                .await
+            }
+            None => None,
+        };
+
+        let resolved_llm_model = match &self.auxiliary_factory {
+            Some(factory) => {
+                resolve_poi_llm_model(
+                    &interest_cfg,
+                    session_llm_model.as_deref(),
+                    &factory.provider_repo,
+                )
+                .await
+            }
             None => None,
         };
 
@@ -246,6 +280,7 @@ impl ProactiveSessionExtractor {
             interest_enabled = interest_cfg.enabled,
             insights_enabled = insights_cfg.enabled,
             auxiliary = auxiliary.is_some(),
+            llm_model = resolved_llm_model.as_deref().unwrap_or("default"),
             "session_extraction: proactive flush"
         );
 

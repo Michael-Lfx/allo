@@ -4076,6 +4076,8 @@ export interface IPoiSettings {
   autoExtractMinTurns: number;
   autoExtractMinUserChars: number;
   autoExtractIdleSecs: number;
+  /** Fixed flowy-cloud model id, or null/empty to follow the active conversation. */
+  llmModel?: string | null;
 }
 
 export type IUpdatePoiSettings = Partial<IPoiSettings>;

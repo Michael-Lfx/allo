@@ -79,6 +79,8 @@ pub struct PoiSettingsResponse {
     pub auto_extract_min_turns: u32,
     pub auto_extract_min_user_chars: usize,
     pub auto_extract_idle_secs: u64,
+    /// Fixed flowy-cloud model id, or `null` to follow the active conversation model.
+    pub llm_model: Option<String>,
 }
 
 /// Partial update for `PATCH /api/poi/settings`.
@@ -103,6 +105,7 @@ pub struct UpdatePoiSettingsRequest {
     pub auto_extract_min_turns: Option<u32>,
     pub auto_extract_min_user_chars: Option<usize>,
     pub auto_extract_idle_secs: Option<u64>,
+    pub llm_model: Option<String>,
 }
 
 impl UpdatePoiSettingsRequest {
@@ -125,5 +128,6 @@ impl UpdatePoiSettingsRequest {
             && self.auto_extract_min_turns.is_none()
             && self.auto_extract_min_user_chars.is_none()
             && self.auto_extract_idle_secs.is_none()
+            && self.llm_model.is_none()
     }
 }
