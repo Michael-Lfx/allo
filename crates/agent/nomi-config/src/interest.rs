@@ -76,6 +76,11 @@ pub struct InterestConfig {
     /// Idle seconds before the background scanner triggers extraction.
     #[serde(default = "default_interest_auto_extract_idle_secs")]
     pub auto_extract_idle_secs: u64,
+
+    /// Fixed flowy-cloud model for POI LLM extraction. When `None`, follow the
+    /// active conversation model (if flowy-cloud), else the first enabled cloud model.
+    #[serde(default)]
+    pub llm_model: Option<String>,
 }
 
 fn default_interest_enabled() -> bool {
@@ -171,6 +176,7 @@ impl Default for InterestConfig {
             auto_extract_min_turns: default_interest_auto_extract_min_turns(),
             auto_extract_min_user_chars: default_interest_auto_extract_min_user_chars(),
             auto_extract_idle_secs: default_interest_auto_extract_idle_secs(),
+            llm_model: None,
         }
     }
 }

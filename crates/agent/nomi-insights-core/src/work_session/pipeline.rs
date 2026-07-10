@@ -100,11 +100,14 @@ async fn run_poi_ingest(
     let transcript_chars = transcript.chars().count();
     let mut all_signals = buffered;
     let buffered_n = all_signals.len();
+    let mut llm_attempted = false;
+    let signals_before_llm = all_signals.len();
     if config.session_end_llm_enabled() {
         if let Some(aux) = auxiliary {
             if transcript_chars == 0 {
                 warn!("interest: session-end LLM skipped — empty user transcript");
             } else {
+                llm_attempted = true;
                 let existing_labels = store.top_labels_for_llm(5).unwrap_or_default();
                 let llm_signals =
                     extract_signals_from_transcript_llm(aux, &transcript, &existing_labels).await;
@@ -119,6 +122,7 @@ async fn run_poi_ingest(
             warn!("interest: session-end LLM enabled but auxiliary client unavailable");
         }
     }
+    let llm_produced = all_signals.len() > signals_before_llm;
     if config.uses_rules() {
         let rules = extract_signals_from_messages(messages);
         let rules_n = rules.len();
@@ -126,6 +130,18 @@ async fn run_poi_ingest(
         info!(
             transcript_chars,
             buffered_n, rules_n, "interest: session-end rule supplement"
+        );
+    } else if llm_attempted && !llm_produced && transcript_chars > 0 {
+        warn!(
+            transcript_chars,
+            "interest: LLM extraction produced no signals — falling back to rules"
+        );
+        let rules = extract_signals_from_messages(messages);
+        let rules_n = rules.len();
+        all_signals.extend(rules);
+        info!(
+            transcript_chars,
+            buffered_n, rules_n, "interest: session-end rule fallback after LLM miss"
         );
     }
     let pre_filter_n = all_signals.len();

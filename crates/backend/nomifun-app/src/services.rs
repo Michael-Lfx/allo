@@ -674,7 +674,7 @@ impl AppServices {
         // lack one (multimodal model hub). Best-effort: never blocks boot on error.
         reconcile_model_profiles(&provider_repo_for_services, &model_profile_repo).await;
         let poi_service = Arc::new(
-            nomifun_poi::PoiService::open(data_dir.join("poi"), nomi_config::InterestConfig::default())
+            nomifun_poi::PoiService::new(data_dir.join("poi"))
                 .map_err(|e| anyhow::anyhow!("Failed to open POI service: {e}"))?,
         );
         let insights_service = Arc::new(

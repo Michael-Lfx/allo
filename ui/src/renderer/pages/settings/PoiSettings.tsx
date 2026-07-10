@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
@@ -19,13 +19,18 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
+import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/config/constants';
 import type { IPoiSettings, IPoiStatusResponse, IPoiTopic } from '@/common/adapter/ipcBridge';
+import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
+
+const FOLLOW_SESSION_MODEL = '';
 
 const TOPIC_STATUSES = ['candidate', 'active', 'rejected'] as const;
 
 const PoiSettings: React.FC = () => {
   const { t } = useTranslation();
+  const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
   const [settings, setSettings] = useState<IPoiSettings | null>(null);
   const [status, setStatus] = useState<IPoiStatusResponse | null>(null);
   const [topics, setTopics] = useState<IPoiTopic[]>([]);
@@ -59,6 +64,33 @@ const PoiSettings: React.FC = () => {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const flowyCloudProvider = useMemo(
+    () => providers.find((p) => p.id === FLOWY_BUILTIN_PROVIDER_ID),
+    [providers]
+  );
+
+  const llmModelOptions = useMemo(() => {
+    const options = [
+      {
+        label: t('poi.settings.llmModelFollowSession'),
+        value: FOLLOW_SESSION_MODEL,
+      },
+    ];
+    if (!flowyCloudProvider) {
+      return options;
+    }
+    for (const model of getAvailableModels(flowyCloudProvider)) {
+      options.push({
+        label: formatModelLabel(flowyCloudProvider, model),
+        value: model,
+      });
+    }
+    return options;
+  }, [flowyCloudProvider, formatModelLabel, getAvailableModels, t]);
+
+  const usesLlmExtract =
+    settings?.extractMode === 'llm' || settings?.extractMode === 'hybrid';
 
   const saveSettings = async () => {
     if (!settings) return;
@@ -175,6 +207,24 @@ const PoiSettings: React.FC = () => {
                 onChange={(v) => setSettings({ ...settings, llmOnSessionEnd: v })}
               />
             </div>
+
+            {usesLlmExtract && (
+              <div className='flex flex-col gap-6px'>
+                <span className='text-t-secondary text-13px'>{t('poi.settings.llmModel')}</span>
+                <Select
+                  value={settings.llmModel?.trim() ? settings.llmModel : FOLLOW_SESSION_MODEL}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      llmModel: v === FOLLOW_SESSION_MODEL ? '' : v,
+                    })
+                  }
+                  options={llmModelOptions}
+                />
+                <span className='text-12px text-t-tertiary'>{t('poi.settings.llmModelHint')}</span>
+              </div>
+            )}
+
             <div className='flex items-center justify-between'>
               <span className='text-t-primary text-14px'>{t('poi.settings.perTurnBuffer')}</span>
               <Switch
