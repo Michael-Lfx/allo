@@ -90,6 +90,8 @@ const getProcessEndAt = (entry: TurnDisclosureInputItem): number => entry.proces
  * Turn-level banner state (「处理失败 / 已处理 / …」).
  *
  * Failure is answer-scoped, not tool-scoped:
+ * - While the turn is still open, the banner stays 「处理中」even if tools
+ *   failed mid-turn — intermediate errors stay on process rows only.
  * - 「处理失败」only when the turn closed without a final assistant reply AND
  *   there is failure evidence (Error stream / model fault / hard interrupt).
  * - Intermediate tool errors (Bash path miss, Read miss, …) stay visible on
@@ -105,7 +107,9 @@ const resolveDisclosureState = (
   if (states.includes('waiting')) return 'waiting';
   if (states.includes('running')) return 'running';
   if (states.includes('canceled')) return 'canceled';
-  if (!options.hasFinalAssistant && states.includes('failed')) return 'failed';
+  // Live turns must not flash 「处理失败」between tool retries; only a closed
+  // turn without a final answer may surface failure on the banner.
+  if (options.isClosed && !options.hasFinalAssistant && states.includes('failed')) return 'failed';
   return 'completed';
 };
 

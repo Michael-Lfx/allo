@@ -101,11 +101,11 @@
 - 将 HTML 转换为 markdown
 - 包含 15 分钟缓存
 
-### 9. WebSearch
+### 9. web_search / web_extract
 
-搜索网络以获取最新信息。
-
-- 回答后必须包含带有 URL 的 "Sources:" 部分
+- 查公开事实、新闻、限号等：先 `web_search`，需要正文再用 `web_extract`
+- 需要点击、登录、填表时才用 `Browser`
+- 回答后尽量附带 Sources（含 URL）
 
 ### 10. TodoWrite - 任务管理
 

@@ -223,7 +223,7 @@ impl BackendOutputSink {
                 call_id: active.call_id,
                 name: active.name,
                 args: active.args,
-                status: ToolCallStatus::Error,
+                status: ToolCallStatus::Canceled,
                 input: active.input,
                 output: Some(output.clone()),
                 description: None,
@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_active_tool_calls_emits_error_for_running_tools() {
+    fn fail_active_tool_calls_emits_canceled_for_running_tools() {
         let (sink, mut rx) = make_sink();
         sink.emit_tool_call("call_computer_1", "Computer", r#"{"action":"observe"}"#);
         let _ = rx.try_recv().unwrap();
@@ -671,10 +671,10 @@ mod tests {
         match rx.try_recv().unwrap() {
             AgentStreamEvent::ToolCall(data) => {
                 assert_eq!(data.name, "Computer");
-                assert_eq!(data.status, ToolCallStatus::Error);
+                assert_eq!(data.status, ToolCallStatus::Canceled);
                 assert_eq!(data.output.as_deref(), Some("upstream provider fault"));
             }
-            other => panic!("Expected ToolCall error, got {:?}", other),
+            other => panic!("Expected ToolCall canceled, got {:?}", other),
         }
     }
 

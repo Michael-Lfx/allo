@@ -754,7 +754,9 @@ impl StreamRelay {
                                         );
                                     }
                                 }
-                                ToolCallStatus::Completed | ToolCallStatus::Error => {
+                                ToolCallStatus::Completed
+                                | ToolCallStatus::Error
+                                | ToolCallStatus::Canceled => {
                                     active_tool_calls.remove(&data.call_id);
                                 }
                             }
@@ -1343,7 +1345,7 @@ impl StreamRelay {
 
         let status = match data.status {
             ToolCallStatus::Running => "work",
-            ToolCallStatus::Completed => "finish",
+            ToolCallStatus::Completed | ToolCallStatus::Canceled => "finish",
             ToolCallStatus::Error => "error",
         };
         let content = serde_json::to_string(data).unwrap_or_default();
@@ -1453,7 +1455,7 @@ impl StreamRelay {
             .is_some_and(|data| {
                 matches!(
                     data.status,
-                    ToolCallStatus::Completed | ToolCallStatus::Error
+                    ToolCallStatus::Completed | ToolCallStatus::Error | ToolCallStatus::Canceled
                 )
             })
     }
@@ -1556,7 +1558,7 @@ impl StreamRelay {
 
         let output = format!("The turn ended before this tool completed: {reason}");
         let drained: Vec<(String, ToolCallEventData)> = active_tool_calls.drain().collect();
-        let mut failed = Vec::new();
+        let mut canceled = Vec::new();
         for (call_id, mut data) in drained {
             if self.tool_call_already_settled(&call_id).await {
                 debug!(
@@ -1566,12 +1568,13 @@ impl StreamRelay {
                 );
                 continue;
             }
-            data.status = ToolCallStatus::Error;
+            // Turn closed before the tool finished — cancel, don't paint as tool failure.
+            data.status = ToolCallStatus::Canceled;
             data.output = Some(output.clone());
-            failed.push(data);
+            canceled.push(data);
         }
 
-        for data in failed {
+        for data in canceled {
             let event = AgentStreamEvent::ToolCall(data);
             self.forward_to_websocket(&event);
             if let AgentStreamEvent::ToolCall(data) = &event {
@@ -1685,9 +1688,12 @@ impl StreamRelay {
     /// Persist a tool_group event (array of tool summaries).
     #[tracing::instrument(skip_all)]
     async fn persist_tool_group(&self, entries: &[nomifun_ai_agent::protocol::events::tool_call::ToolGroupEntry]) {
-        let all_done = entries
-            .iter()
-            .all(|e| matches!(e.status, ToolCallStatus::Completed | ToolCallStatus::Error));
+        let all_done = entries.iter().all(|e| {
+            matches!(
+                e.status,
+                ToolCallStatus::Completed | ToolCallStatus::Error | ToolCallStatus::Canceled
+            )
+        });
         let status = if all_done { "finish" } else { "work" };
         let content = serde_json::to_string(entries).unwrap_or_default();
 
@@ -2202,7 +2208,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_marks_active_tool_call_error_when_turn_hits_max_tokens() {
+    async fn run_marks_active_tool_call_canceled_when_turn_hits_max_tokens() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
         use nomifun_ai_agent::protocol::events::TurnStopReason;
 
@@ -2244,11 +2250,62 @@ mod tests {
         let (_, update) = updates
             .iter()
             .find(|(id, _)| id == "tc-write")
-            .expect("active tool call should be marked failed when the turn is truncated");
-        assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("error")));
+            .expect("active tool call should be marked canceled when the turn is truncated");
+        assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
-        assert_eq!(content["status"], "error");
+        assert_eq!(content["status"], "canceled");
         assert_eq!(content["output"], "The turn ended before this tool completed: max_tokens");
+    }
+
+    #[tokio::test]
+    async fn run_marks_active_tool_call_canceled_when_turn_ends_normally() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+        use nomifun_ai_agent::protocol::events::TurnStopReason;
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-browser".into(),
+            name: "Browser".into(),
+            args: json!({"action": "navigate", "url": "https://example.com"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: Some(json!({"action": "navigate", "url": "https://example.com"})),
+            output: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::EndTurn),
+        }))
+        .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let updates = repo.take_updates();
+        let (_, update) = updates
+            .iter()
+            .find(|(id, _)| id == "tc-browser")
+            .expect("active Browser call should be marked canceled on end_turn");
+        assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
+        let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
+        assert_eq!(content["status"], "canceled");
+        assert_eq!(content["output"], "The turn ended before this tool completed: end_turn");
+        assert_ne!(content["status"], "error", "end_turn must not paint Browser as运行失败");
     }
 
     #[test]

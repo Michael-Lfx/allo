@@ -194,6 +194,8 @@ pub struct ToolsConfig {
     pub computer: ComputerConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub web: WebConfig,
     /// Dark-launch (default off): back the `Bash` tool with a long-lived shell
     /// session so `cd`/`export` persist across calls. Unix-only; ignored on
     /// Windows. Staged rollout per the overhaul design (§3.3 / §3.6 灰度).
@@ -259,6 +261,7 @@ impl Default for ToolsConfig {
             max_recent_images: default_max_recent_images(),
             computer: ComputerConfig::default(),
             browser: BrowserConfig::default(),
+            web: WebConfig::default(),
             persistent_shell: false,
             write_root: String::new(),
             lsp_servers: Vec::new(),
@@ -375,6 +378,20 @@ impl Default for BrowserConfig {
             unrestricted_approval: false,
             source: default_browser_source(),
         }
+    }
+}
+
+/// Web search/extract tool settings.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebConfig {
+    /// Register `web_search` / `web_extract`. Default true (keyless providers).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -847,6 +864,10 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             global.tools.browser.source
         },
     };
+    let web = WebConfig {
+        // 任一层显式关闭即关闭（默认皆 true，行为不变）。
+        enabled: global.tools.web.enabled && project.tools.web.enabled,
+    };
     let max_recent_images = if project.tools.max_recent_images != default_max_recent_images() {
         project.tools.max_recent_images
     } else {
@@ -863,6 +884,7 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             max_recent_images,
             computer,
             browser,
+            web,
             persistent_shell: global.tools.persistent_shell || project.tools.persistent_shell,
             write_root: if !project.tools.write_root.is_empty() {
                 project.tools.write_root
@@ -893,6 +915,7 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             max_recent_images,
             computer,
             browser,
+            web,
             persistent_shell: global.tools.persistent_shell || project.tools.persistent_shell,
             write_root: if !project.tools.write_root.is_empty() {
                 project.tools.write_root
@@ -2247,9 +2270,17 @@ max_tokens = 1234
         let t = ToolsConfig::default();
         assert!(t.in_process_spawn, "默认必须保留进程内 Spawn（CLI 零回归）");
         assert!(t.builtin_allowlist.is_empty(), "默认不限制工具");
+        assert!(t.web.enabled, "默认启用 web 搜索/提取工具");
         // serde 缺字段也回落默认（旧 config 文件零回归）。
         let de: ToolsConfig = serde_json::from_str("{}").unwrap();
         assert!(de.in_process_spawn);
         assert!(de.builtin_allowlist.is_empty());
+        assert!(de.web.enabled);
+    }
+
+    #[test]
+    fn web_config_defaults_when_absent_from_toml() {
+        let config: ConfigFile = toml::from_str("[tools]\nauto_approve = false\n").unwrap();
+        assert!(config.tools.web.enabled);
     }
 }

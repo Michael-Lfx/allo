@@ -1,0 +1,28 @@
+[package]
+name = "flowy-web"
+description = "Keyless web_search / web_extract tools with pluggable providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-types.workspace = true
+nomi-protocol.workspace = true
+nomi-tools.workspace = true
+
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream", "gzip", "deflate"], default-features = false }
+futures-util.workspace = true
+htmd.workspace = true
+url.workspace = true
+dom_smoothie = "0.18"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+wiremock.workspace = true

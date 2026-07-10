@@ -136,10 +136,10 @@ title and pops a blocking \"Windows cannot find\" dialog that hangs the command.
 /// `config.tools.browser.enabled` is true (threaded in as `browser_enabled`).
 #[cfg(feature = "browser-use")]
 fn browser_preset() -> &'static str {
-    "[Browsing the web] Use the `Browser` tool directly when a page must be opened, \
-rendered, inspected, or operated. Do not ask the user for permission to browse. Prefer local \
-context or knowledge tools when they already answer the task, and after each Browser navigation \
-or interaction run `observe` for fresh refs before acting again."
+    "[Browsing the web] Prefer `web_search` then `web_extract` for public information. \
+Use the `Browser` tool when a page must be opened, rendered, inspected, or operated \
+interactively. Do not ask the user for permission to browse. After each Browser \
+navigation or interaction run `observe` for fresh refs before acting again."
 }
 
 /// Build the **cache-stable** system prompt from config and environment.

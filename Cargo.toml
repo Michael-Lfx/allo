@@ -70,6 +70,7 @@ nomi-computer = { path = "crates/agent/nomi-computer" }
 nomi-a11y = { path = "crates/agent/nomi-a11y" }
 nomi-browser-engine = { path = "crates/agent/nomi-browser-engine" }
 nomi-browser = { path = "crates/agent/nomi-browser" }
+flowy-web = { path = "crates/agent/flowy-web" }
 
 # --- Core framework ---
 tokio = { version = "1", features = ["full"] }

@@ -268,6 +268,39 @@ describe('buildTurnDisclosureItems', () => {
     expect(disclosure.processItemStates.tool).toBe('failed');
   });
 
+  test('keeps the live turn banner running after intermediate tool failures', () => {
+    // While the turn is still open, intermediate Browser/Bash errors must not
+    // flip the banner to 「处理失败」— only the closed turn may show failure.
+    const result = buildTurnDisclosureItems([
+      item('user', 'user', { createdAt: 1000 }),
+      item('tool', 'process', { createdAt: 2000, processState: 'failed' }),
+    ]);
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('running');
+    expect(disclosure.running).toBe(true);
+    expect(disclosure.defaultCollapsed).toBe(false);
+    expect(disclosure.processItemStates.tool).toBe('failed');
+  });
+
+  test('keeps the live turn banner running when a failed tool is followed by a completed one', () => {
+    const result = buildTurnDisclosureItems([
+      item('user', 'user', { createdAt: 1000 }),
+      item('failed-tool', 'process', { createdAt: 2000, processState: 'failed' }),
+      item('ok-tool', 'process', { createdAt: 3000, processState: 'completed' }),
+    ]);
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('running');
+    expect(disclosure.running).toBe(true);
+    expect(disclosure.processItemStates['failed-tool']).toBe('failed');
+    expect(disclosure.processItemStates['ok-tool']).toBe('completed');
+  });
+
   test('fails the turn banner when the turn closed with failure evidence and no final answer', () => {
     const result = buildTurnDisclosureItems(
       [

@@ -56,5 +56,8 @@ Thumbs.db
 # Claude Code 会话产物（临时 worktree、本地设置），不入库
 .claude/
 
+# Local git worktrees (superpowers / agent isolation)
+.worktrees/
+
 # Visual brainstorming companion (transient mockups)
 .superpowers/

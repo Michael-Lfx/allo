@@ -110,6 +110,9 @@ pub enum ToolCallStatus {
     Running,
     Completed,
     Error,
+    /// Turn closed (end_turn / cancel / truncate) before the tool finished.
+    /// Not a tool execution failure — UI should show canceled, not failed.
+    Canceled,
 }
 
 /// A single entry in a `ToolGroup` event.
