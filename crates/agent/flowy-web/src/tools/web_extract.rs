@@ -142,7 +142,7 @@ mod tests {
     use nomi_tools::Tool;
 
     use crate::provider::ExtractProvider;
-    use crate::types::{ExtractRequest, ExtractedPage, MAX_EXTRACT_URLS, WebError};
+    use crate::types::{ExtractRequest, ExtractedPage, EXTRACTOR_FULLPAGE, MAX_EXTRACT_URLS, WebError};
 
     use super::WebExtractTool;
 
@@ -166,6 +166,7 @@ mod tests {
                 markdown: format!("Body for {}", req.url),
                 truncated: false,
                 provider: "mock".into(),
+                extractor: EXTRACTOR_FULLPAGE.to_owned(),
             })
         }
     }

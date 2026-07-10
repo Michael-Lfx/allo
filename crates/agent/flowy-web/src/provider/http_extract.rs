@@ -10,7 +10,7 @@ use url::Url;
 use crate::provider::html_md::{html_to_markdown, truncate_chars};
 use crate::provider::ssrf::{check_scheme, resolve_extract_url, resolve_validated};
 use crate::provider::ExtractProvider;
-use crate::types::{ExtractRequest, ExtractedPage, WebError, EXTRACT_CHAR_LIMIT};
+use crate::types::{ExtractRequest, ExtractedPage, WebError, EXTRACT_CHAR_LIMIT, EXTRACTOR_FULLPAGE};
 
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(20);
 const EXTRACT_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -146,6 +146,7 @@ impl ExtractProvider for HttpExtractProvider {
             markdown,
             truncated,
             provider: self.name().to_owned(),
+            extractor: EXTRACTOR_FULLPAGE.to_owned(),
         })
     }
 }
