@@ -21,6 +21,7 @@ reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"], defau
 futures-util.workspace = true
 htmd.workspace = true
 url.workspace = true
+dom_smoothie = "0.18"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
