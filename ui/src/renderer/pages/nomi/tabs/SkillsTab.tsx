@@ -1,22 +1,36 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Empty, Input, Message, Modal, Pagination, Popconfirm, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import {
+  Button,
+  Checkbox,
+  Empty,
+  Input,
+  Message,
+  Modal,
+  Pagination,
+  Popconfirm,
+  Select,
+  Spin,
+  Tag,
+  Tooltip,
+} from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import type { ICompanionSkill } from '@/common/adapter/ipcBridge';
 import type { useCompanion } from '../useNomi';
-import {
-  parseConversationId,
-  type CompanionId,
-  type CompanionSkillId,
-} from '@/common/types/ids';
+import { toggleCompanionSkill } from './companionSkillConfig';
 
 interface Props {
   companion: ReturnType<typeof useCompanion>;
 }
 
 const STATUS_COLORS: Record<string, string> = { draft: 'orange', active: 'green', archived: 'gray' };
+type CatalogSkill = Awaited<ReturnType<typeof ipcBridge.fs.listAvailableSkills.invoke>>[number];
 
 /**
  * 伙伴「技能」Tab —— 看得见 + 能编辑（design §8）。
@@ -25,7 +39,12 @@ const STATUS_COLORS: Record<string, string> = { draft: 'orange', active: 'green'
  */
 const SkillsTab: React.FC<Props> = ({ companion }) => {
   const { t } = useTranslation();
-  const companionId = companion.profile?.companion_id;
+  const companionId = companion.profile?.id ?? '';
+  const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
+  const [autoNames, setAutoNames] = useState<Set<string>>(new Set());
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [savingConfig, setSavingConfig] = useState(false);
   const [skills, setSkills] = useState<ICompanionSkill[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
@@ -35,7 +54,6 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
 
   // In-app SKILL.md editor (Modal).
   const [editName, setEditName] = useState<string | null>(null);
-  const [editSkillId, setEditSkillId] = useState<CompanionSkillId | null>(null);
   const [editContent, setEditContent] = useState('');
   const [editDraft, setEditDraft] = useState('');
   const [editMode, setEditMode] = useState(false);
@@ -45,14 +63,81 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
   // Learn-by-demonstration + gift (T2-B / T3).
   const [teachOpen, setTeachOpen] = useState(false);
   const [teachConv, setTeachConv] = useState('');
-  const [giftFor, setGiftFor] = useState<{
-    companion_skill_id: CompanionSkillId;
-    skill_name: string;
-  } | null>(null);
-  const [giftTarget, setGiftTarget] = useState<CompanionId | null>(null);
-  const [others, setOthers] = useState<{ companion_id: CompanionId; name: string }[]>([]);
+  const [giftFor, setGiftFor] = useState<string | null>(null);
+  const [giftTarget, setGiftTarget] = useState('');
+  const [others, setOthers] = useState<{ id: string; name: string }[]>([]);
 
   const refreshSeq = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCatalogLoading(true);
+    Promise.all([ipcBridge.fs.listAvailableSkills.invoke(), ipcBridge.fs.listBuiltinAutoSkills.invoke()])
+      .then(([available, auto]) => {
+        if (cancelled) return;
+        setCatalog(available);
+        setAutoNames(new Set(auto.map((item) => item.name)));
+      })
+      .catch((e) => {
+        if (!cancelled) Message.error(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companionId]);
+
+  const configuredEnabled = companion.profile?.skills?.enabled ?? [];
+  const configuredDisabledAuto = companion.profile?.skills?.disabled_auto ?? [];
+  const configuredEnabledSet = new Set(configuredEnabled);
+  const configuredDisabledAutoSet = new Set(configuredDisabledAuto);
+  const missingConfiguredNames = [...new Set([...configuredEnabled, ...configuredDisabledAuto])];
+  const missingConfigured: CatalogSkill[] = missingConfiguredNames
+    .filter((name) => !catalog.some((skill) => skill.name === name))
+    .map((name) => ({
+      name,
+      description: t('nomi.skills.configMissingHint', {
+        defaultValue: '这个 Skill 当前未安装；重新安装后会自动恢复。',
+      }),
+      location: '',
+      is_custom: false,
+      source: 'custom',
+    }));
+  const filteredCatalog = [...missingConfigured, ...catalog].filter((skill) => {
+    const query = catalogQuery.trim().toLocaleLowerCase();
+    return !query || skill.name.toLocaleLowerCase().includes(query) || skill.description.toLocaleLowerCase().includes(query);
+  });
+
+  const skillChecked = useCallback(
+    (name: string) =>
+      autoNames.has(name) || configuredDisabledAutoSet.has(name)
+        ? !configuredDisabledAutoSet.has(name)
+        : configuredEnabledSet.has(name),
+    [autoNames, configuredDisabledAutoSet, configuredEnabledSet]
+  );
+
+  const toggleConfiguredSkill = useCallback(
+    async (name: string, checked: boolean) => {
+      if (!companion.profile) return;
+      const skills = toggleCompanionSkill(companion.profile.skills, autoNames, name, checked);
+      setSavingConfig(true);
+      try {
+        await companion.patchCompanion({ skills });
+        Message.success(
+          t('nomi.skills.configSaved', {
+            defaultValue: '技能配置已保存，将在下一条消息生效',
+          })
+        );
+      } catch (e) {
+        Message.error(String(e));
+      } finally {
+        setSavingConfig(false);
+      }
+    },
+    [autoNames, companion, t]
+  );
 
   const refresh = useCallback(async () => {
     if (!companionId) {
@@ -117,13 +202,8 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
 
   const decide = useCallback(
     async (s: ICompanionSkill, accept: boolean) => {
-      if (!companionId) return;
       try {
-        await ipcBridge.companion.decideSkill.invoke({
-          companion_id: companionId,
-          companion_skill_id: s.companion_skill_id,
-          accept,
-        });
+        await ipcBridge.companion.decideSkill.invoke({ companion_id: companionId, name: s.skill_name, accept });
         void refresh();
       } catch (e) {
         Message.error(String(e));
@@ -133,33 +213,13 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
     [companionId, refresh]
   );
 
-  const archive = useCallback(
-    async (s: ICompanionSkill) => {
-      if (!companionId) return;
-      try {
-        await ipcBridge.companion.archiveSkill.invoke({ companion_id: companionId, name: s.skill_name });
-        Message.success(t('nomi.skills.archivedOk', { defaultValue: '已归档' }));
-        void refresh();
-      } catch (e) {
-        Message.error(String(e));
-        void refresh();
-      }
-    },
-    [companionId, refresh, t]
-  );
-
   const openEditor = useCallback(
     async (s: ICompanionSkill) => {
-      if (!companionId) return;
       setEditName(s.skill_name);
-      setEditSkillId(s.companion_skill_id);
       setEditMode(false);
       setEditLoading(true);
       try {
-        const res = await ipcBridge.companion.getSkillContent.invoke({
-          companion_id: companionId,
-          companion_skill_id: s.companion_skill_id,
-        });
+        const res = await ipcBridge.companion.getSkillContent.invoke({ companion_id: companionId, name: s.skill_name });
         setEditContent(res.content);
         setEditDraft(res.content);
       } catch (e) {
@@ -174,14 +234,10 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
   );
 
   const save = useCallback(async () => {
-    if (!companionId || !editSkillId) return;
+    if (!editName) return;
     setSaving(true);
     try {
-      await ipcBridge.companion.writeSkillContent.invoke({
-        companion_id: companionId,
-        companion_skill_id: editSkillId,
-        content: editDraft,
-      });
+      await ipcBridge.companion.writeSkillContent.invoke({ companion_id: companionId, name: editName, content: editDraft });
       setEditContent(editDraft);
       setEditMode(false);
       Message.success(t('nomi.skills.saveOk', { defaultValue: '已保存' }));
@@ -192,7 +248,7 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
     } finally {
       setSaving(false);
     }
-  }, [companionId, editDraft, editSkillId, refresh, t]);
+  }, [companionId, editName, editDraft, refresh, t]);
 
   const statusLabel = (status: string): string => {
     const key = `nomi.skills.status${status.charAt(0).toUpperCase()}${status.slice(1)}`;
@@ -200,11 +256,11 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
   };
 
   const teach = useCallback(async () => {
-    if (!companionId || !teachConv.trim()) return;
+    if (!teachConv.trim()) return;
     try {
       const name = await ipcBridge.companion.draftFromSession.invoke({
         companion_id: companionId,
-        conversation_id: parseConversationId(teachConv.trim()),
+        conversation_id: teachConv.trim(),
       });
       setTeachOpen(false);
       setTeachConv('');
@@ -220,19 +276,12 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
   }, [companionId, teachConv, refresh, t]);
 
   const openGift = useCallback(
-    async (skill: ICompanionSkill) => {
-      setGiftFor({
-        companion_skill_id: skill.companion_skill_id,
-        skill_name: skill.skill_name,
-      });
-      setGiftTarget(null);
+    async (name: string) => {
+      setGiftFor(name);
+      setGiftTarget('');
       try {
         const roster = await ipcBridge.companion.listCompanions.invoke();
-        setOthers(
-          roster
-            .filter((c) => c.companion_id !== companionId)
-            .map((c) => ({ companion_id: c.companion_id, name: c.name }))
-        );
+        setOthers(roster.filter((c) => c.id !== companionId).map((c) => ({ id: c.id, name: c.name })));
       } catch {
         setOthers([]);
       }
@@ -241,13 +290,9 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
   );
 
   const gift = useCallback(async () => {
-    if (!companionId || !giftFor || !giftTarget) return;
+    if (!giftFor || !giftTarget) return;
     try {
-      await ipcBridge.companion.giftSkill.invoke({
-        companion_id: companionId,
-        companion_skill_id: giftFor.companion_skill_id,
-        to_companion_id: giftTarget,
-      });
+      await ipcBridge.companion.giftSkill.invoke({ companion_id: companionId, name: giftFor, to_companion_id: giftTarget });
       setGiftFor(null);
       Message.success(t('nomi.skills.giftedOk', { defaultValue: '已赠送给对方' }));
     } catch (e) {
@@ -268,6 +313,80 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
 
   return (
     <div className='flex flex-col gap-12px py-8px'>
+      <section className='flex flex-col gap-8px bg-fill-1 rd-12px p-12px'>
+        <div className='flex items-start justify-between gap-12px'>
+          <div>
+            <div className='text-14px font-600 text-t-primary'>
+              {t('nomi.skills.configuredTitle', { defaultValue: '已配置能力' })}
+            </div>
+            <div className='mt-2px text-12px text-t-secondary'>
+              {t('nomi.skills.configuredHint', {
+                defaultValue: '从全局 Skill 库授予这个伙伴能力；伙伴自己学习的专精技能在下方管理。',
+              })}
+            </div>
+          </div>
+          {savingConfig && <Spin size={16} />}
+        </div>
+        <Input.Search
+          allowClear
+          value={catalogQuery}
+          onChange={setCatalogQuery}
+          placeholder={t('nomi.skills.configSearch', { defaultValue: '搜索 Skill' })}
+        />
+        {catalogLoading ? (
+          <div className='flex justify-center py-20px'>
+            <Spin />
+          </div>
+        ) : filteredCatalog.length === 0 ? (
+          <Empty description={t('nomi.skills.configEmpty', { defaultValue: '没有可配置的 Skill' })} />
+        ) : (
+          <div className='grid grid-cols-1 xl:grid-cols-2 gap-8px'>
+            {filteredCatalog.map((skill) => {
+              const isAuto = autoNames.has(skill.name) || configuredDisabledAutoSet.has(skill.name);
+              return (
+                <div
+                  key={skill.name}
+                  className='flex items-start gap-9px rd-10px bg-fill-2 px-10px py-9px'
+                >
+                  <Checkbox
+                    className='mt-1px'
+                    checked={skillChecked(skill.name)}
+                    disabled={savingConfig}
+                    onChange={(checked) => void toggleConfiguredSkill(skill.name, checked)}
+                  />
+                  <div className='min-w-0 flex-1'>
+                    <div className='flex items-center gap-6px flex-wrap'>
+                      <span className='text-13px font-600 text-t-primary break-all'>{skill.name}</span>
+                      <Tag size='small' color={isAuto ? 'arcoblue' : 'gray'}>
+                        {isAuto
+                          ? t('nomi.skills.configDefault', { defaultValue: '默认能力' })
+                          : t('nomi.skills.configOptional', { defaultValue: '额外能力' })}
+                      </Tag>
+                      <Tag size='small'>{skill.source}</Tag>
+                      {!skill.location && (
+                        <Tag size='small' color='red'>
+                          {t('nomi.skills.configMissing', { defaultValue: '未安装' })}
+                        </Tag>
+                      )}
+                    </div>
+                    {skill.description && (
+                      <div className='mt-3px text-12px leading-18px text-t-secondary line-clamp-2'>
+                        {skill.description}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <div className='pt-4px'>
+        <div className='text-14px font-600 text-t-primary'>
+          {t('nomi.skills.learnedTitle', { defaultValue: '伙伴专精' })}
+        </div>
+      </div>
       <div className='flex gap-8px items-center flex-wrap'>
         <Select
           style={{ width: 130 }}
@@ -297,7 +416,7 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
         <div className='flex flex-col gap-8px transition-opacity duration-150' style={{ opacity: loading ? 0.6 : 1 }}>
           {skills.map((s) => (
             <div
-              key={s.companion_skill_id}
+              key={`${s.scope_companion_id}/${s.skill_name}`}
               className='flex items-start gap-10px bg-fill-2 rd-10px px-12px py-10px'
             >
               <Tag color={STATUS_COLORS[s.status] ?? 'gray'}>{statusLabel(s.status)}</Tag>
@@ -315,11 +434,10 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
                   <span>
                     {t('nomi.skills.strength', { defaultValue: '强度' })} {(s.strength * 100).toFixed(0)}%
                   </span>
-                  {s.provenance_event_ids.length > 0 && (
-                    <Tooltip content={s.provenance_event_ids.join(', ')}>
+                  {s.provenance.length > 0 && (
+                    <Tooltip content={s.provenance.join(', ')}>
                       <span>
-                        {t('nomi.skills.provenance', { defaultValue: '来源' })}{' '}
-                        {s.provenance_event_ids.length}
+                        {t('nomi.skills.provenance', { defaultValue: '来源' })} {s.provenance.length}
                       </span>
                     </Tooltip>
                   )}
@@ -330,19 +448,9 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
                   {t('nomi.skills.view', { defaultValue: '查看' })}
                 </Button>
                 {s.status === 'active' && (
-                  <>
-                    <Button size='mini' onClick={() => void openGift(s)}>
-                      {t('nomi.skills.gift', { defaultValue: '赠送' })}
-                    </Button>
-                    <Popconfirm
-                      title={t('nomi.skills.archiveConfirm', {
-                        defaultValue: '归档这个技能？归档后伴侣不再自动用它，你可在“已归档”里找回。',
-                      })}
-                      onOk={() => void archive(s)}
-                    >
-                      <Button size='mini'>{t('nomi.skills.archive', { defaultValue: '归档' })}</Button>
-                    </Popconfirm>
-                  </>
+                  <Button size='mini' onClick={() => void openGift(s.skill_name)}>
+                    {t('nomi.skills.gift', { defaultValue: '赠送' })}
+                  </Button>
                 )}
                 {s.status === 'draft' && (
                   <>
@@ -381,10 +489,7 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
       <Modal
         title={editName ?? ''}
         visible={editName !== null}
-        onCancel={() => {
-          setEditName(null);
-          setEditSkillId(null);
-        }}
+        onCancel={() => setEditName(null)}
         style={{ width: 720 }}
         footer={
           editMode ? (
@@ -403,14 +508,7 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
             </div>
           ) : (
             <div className='flex justify-end gap-8px'>
-              <Button
-                onClick={() => {
-                  setEditName(null);
-                  setEditSkillId(null);
-                }}
-              >
-                {t('nomi.skills.close', { defaultValue: '关闭' })}
-              </Button>
+              <Button onClick={() => setEditName(null)}>{t('nomi.skills.close', { defaultValue: '关闭' })}</Button>
               <Button type='primary' onClick={() => setEditMode(true)}>
                 {t('nomi.skills.edit', { defaultValue: '编辑' })}
               </Button>
@@ -471,7 +569,7 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
             placeholder={t('nomi.skills.giftPick', { defaultValue: '选择接收的伙伴' })}
           >
             {others.map((c) => (
-              <Select.Option key={c.companion_id} value={c.companion_id}>
+              <Select.Option key={c.id} value={c.id}>
                 {c.name}
               </Select.Option>
             ))}
