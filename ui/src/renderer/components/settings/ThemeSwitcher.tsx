@@ -27,7 +27,7 @@ export const ThemeSwitcher = () => {
 
   return (
     <div
-      className='relative inline-grid grid-cols-2 p-6px rd-full border border-solid border-[var(--color-border-2)] bg-1 w-full max-w-240px md:w-auto md:min-w-216px'
+      className='relative inline-grid grid-cols-2 p-6px rd-full border border-solid border-[var(--color-border-2)] bg-1 w-full min-w-0'
       role='radiogroup'
       aria-label={t('settings.theme')}
     >
@@ -54,7 +54,7 @@ export const ThemeSwitcher = () => {
             type='button'
             role='radio'
             aria-checked={isActive}
-            className='relative z-1 h-33px min-w-0 px-10px md:px-12px rd-full text-13px font-500 inline-flex items-center justify-center gap-6px transition-all duration-180 active:scale-[0.985] disabled:cursor-not-allowed'
+            className='relative z-1 h-33px min-w-0 px-8px rd-full text-12px font-500 inline-flex items-center justify-center gap-6px transition-all duration-180 active:scale-[0.985] disabled:cursor-not-allowed'
             style={{
               color: isActive
                 ? theme === 'dark'

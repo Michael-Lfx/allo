@@ -70,66 +70,59 @@ const FontSizeControl: React.FC = () => {
   const isResetDisabled = Math.abs(fontScale - FONT_SCALE_DEFAULT) < RESET_THRESHOLD;
 
   return (
-    <div className='flex flex-col gap-2 w-full md:max-w-620px'>
-      <div className='flex items-center flex-wrap gap-x-12px gap-y-10px w-full'>
-        <div className='flex items-center gap-8px flex-1 min-w-240px'>
-          <Button
-            size='mini'
-            type='secondary'
-            shape='circle'
-            className='w-28px h-28px !min-w-28px flex items-center justify-center p-0'
-            onClick={() => handleStep(-FONT_SCALE_STEP)}
-            disabled={fontScale <= FONT_SCALE_MIN + EPSILON}
-          >
-            -
-          </Button>
-          {/* 滑杆覆盖 80%-130% 区间，随值写入配置 / Slider covers 80%-130% range and persists value */}
-          <Slider
-            className='flex-1 min-w-180px font-scale-slider p-0 m-0'
-            showTicks
-            min={FONT_SCALE_MIN}
-            max={FONT_SCALE_MAX}
-            step={FONT_SCALE_STEP}
-            value={fontScale}
-            onChange={handleSliderChange}
-            marks={defaultMarks}
-          />
-          <Button
-            size='mini'
-            type='secondary'
-            shape='circle'
-            className='w-28px h-28px !min-w-28px flex items-center justify-center p-0'
-            onClick={() => handleStep(FONT_SCALE_STEP)}
-            disabled={fontScale >= FONT_SCALE_MAX - EPSILON}
-          >
-            +
-          </Button>
-        </div>
-        <div className='flex items-center gap-10px ml-auto'>
-          <span
-            className='text-13px text-t-primary text-right min-w-56px'
-            style={{ fontVariantNumeric: 'tabular-nums' }}
-          >
-            {formattedValue}
-          </span>
-          <Button
-            size='small'
-            type='text'
-            className='px-4px h-28px'
-            onClick={handleReset}
-            disabled={isResetDisabled}
-            style={{
-              color: isResetDisabled
-                ? theme === 'dark'
-                  ? 'rgba(230, 232, 236, 0.62)'
-                  : 'rgba(78, 89, 105, 0.72)'
-                : 'rgb(var(--primary-6))',
-              opacity: 1,
-            }}
-          >
-            {t('settings.fontSizeReset')}
-          </Button>
-        </div>
+    <div className='flex flex-col gap-8px w-full min-w-0'>
+      <div className='flex items-center gap-6px w-full min-w-0'>
+        <Button
+          size='mini'
+          type='secondary'
+          shape='circle'
+          className='w-24px h-24px !min-w-24px shrink-0 flex items-center justify-center p-0'
+          onClick={() => handleStep(-FONT_SCALE_STEP)}
+          disabled={fontScale <= FONT_SCALE_MIN + EPSILON}
+        >
+          -
+        </Button>
+        {/* 滑杆覆盖 80%-130% 区间，随值写入配置 / Slider covers 80%-130% range and persists value */}
+        <Slider
+          className='flex-1 min-w-0 font-scale-slider p-0 m-0'
+          showTicks
+          min={FONT_SCALE_MIN}
+          max={FONT_SCALE_MAX}
+          step={FONT_SCALE_STEP}
+          value={fontScale}
+          onChange={handleSliderChange}
+          marks={defaultMarks}
+        />
+        <Button
+          size='mini'
+          type='secondary'
+          shape='circle'
+          className='w-24px h-24px !min-w-24px shrink-0 flex items-center justify-center p-0'
+          onClick={() => handleStep(FONT_SCALE_STEP)}
+          disabled={fontScale >= FONT_SCALE_MAX - EPSILON}
+        >
+          +
+        </Button>
+      </div>
+      <div className='flex items-center justify-between gap-8px w-full min-w-0'>
+        <span className='text-12px text-t-primary tabular-nums shrink-0'>{formattedValue}</span>
+        <Button
+          size='mini'
+          type='text'
+          className='!px-0 !h-auto min-w-0 text-12px'
+          onClick={handleReset}
+          disabled={isResetDisabled}
+          style={{
+            color: isResetDisabled
+              ? theme === 'dark'
+                ? 'rgba(230, 232, 236, 0.62)'
+                : 'rgba(78, 89, 105, 0.72)'
+              : 'rgb(var(--primary-6))',
+            opacity: 1,
+          }}
+        >
+          {t('settings.fontSizeReset')}
+        </Button>
       </div>
     </div>
   );

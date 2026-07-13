@@ -76,20 +76,20 @@ const SiderThemePanel: React.FC<SiderThemePanelProps> = ({ className, onBeforeOp
 
   return (
     <>
-      <div className={classNames('w-full flex flex-col gap-10px p-8px', className)}>
-        <div className='flex flex-col gap-4px'>
-          <div className='text-11px font-500 text-t-tertiary px-2px'>{t('settings.theme')}</div>
+      <div className={classNames('w-full min-w-0 flex flex-col gap-10px p-10px box-border overflow-hidden', className)}>
+        <div className='flex flex-col gap-4px min-w-0'>
+          <div className='text-11px font-500 text-t-tertiary'>{t('settings.theme')}</div>
           <ThemeSwitcher />
         </div>
 
-        <div className='flex flex-col gap-4px'>
-          <div className='text-11px font-500 text-t-tertiary px-2px'>{t('settings.fontSize')}</div>
+        <div className='flex flex-col gap-4px min-w-0'>
+          <div className='text-11px font-500 text-t-tertiary'>{t('settings.fontSize')}</div>
           <FontSizeControl />
         </div>
 
-        <div className='flex flex-col gap-4px'>
-          <div className='text-11px font-500 text-t-tertiary px-2px'>{t('settings.cssTheme.selectOrCustomize')}</div>
-          <div className='flex flex-col gap-1px max-h-180px overflow-y-auto -mx-2px px-2px'>
+        <div className='flex flex-col gap-4px min-w-0'>
+          <div className='text-11px font-500 text-t-tertiary'>{t('settings.cssTheme.selectOrCustomize')}</div>
+          <div className='flex flex-col gap-1px max-h-180px overflow-y-auto min-w-0'>
             {themes.map((theme) => {
               const active = activeThemeId === theme.id;
               const accent = pickAccent(theme.css || '');

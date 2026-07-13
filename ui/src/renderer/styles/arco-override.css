@@ -280,8 +280,18 @@ body[arco-theme='dark'] .arco-modal-confirm-icon {
 .sider-user-menu-popover .arco-popover-inner-content,
 .sider-user-skin-popover .arco-popover-content,
 .sider-user-skin-popover .arco-popover-inner,
-.sider-user-skin-popover .arco-popover-inner-content {
+.sider-user-skin-popover .arco-popover-inner-content,
+.sider-theme-popover .arco-popover-content,
+.sider-theme-popover .arco-popover-inner,
+.sider-theme-popover .arco-popover-inner-content {
   padding: 0 !important;
+}
+
+.sider-user-skin-popover .arco-popover-content,
+.sider-theme-popover .arco-popover-content {
+  width: 280px;
+  max-width: 280px;
+  box-sizing: border-box;
 }
 
 .sider-user-menu-popover {
