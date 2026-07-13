@@ -364,7 +364,10 @@ impl EvolutionEngine {
                     }
                 }
             }
-            // merge attempt failed softly → fall through to normal create.
+            // merge attempt failed softly → skip creation, don't duplicate.
+            // The merge will be retried on the next evolution tick.
+            tracing::info!(name = %name, "process_candidate: merge failed, skipping new skill creation to avoid duplicate");
+            return Ok(false);
         }
 
         let input = SkillDraftInput {
@@ -427,7 +430,10 @@ impl EvolutionEngine {
             });
             let title = format!("我学会了一个新技能：{name}");
             let body = format!("你做过「{}」这套操作，我把它固化成了技能，采纳后我就能自动帮你做。", draft.description);
-            if let Ok(created) = self.store.insert_suggestion("create_skill", &title, &body, Some(&action)).await {
+            // Dedup: if a similar pending suggestion exists, touch it instead of duplicating.
+            if let Ok(Some(existing_id)) = self.store.find_similar_suggestion("create_skill", &title, &body).await {
+                let _ = self.store.touch_suggestion(&existing_id).await;
+            } else if let Ok(created) = self.store.insert_suggestion("create_skill", &title, &body, Some(&action)).await {
                 self.emitter.emit_suggestion_created(&owner, &created);
             }
             self.emitter.emit_skill_drafted(owner, &name);
@@ -485,6 +491,19 @@ impl EvolutionEngine {
         let name = sanitize_skill_name(&draft.name);
         if name.is_empty() {
             return Ok(None);
+        }
+        // Dedup: if a similar active/draft skill already exists, skip (don't duplicate).
+        if let Ok(Some(existing)) = self.store.find_similar_skill(owner, &name).await {
+            tracing::info!(new_name = %name, existing = %existing, "draft_from_episode skipped: similar skill exists");
+            return Ok(Some(existing));
+        }
+        // Dedup: if a similar pending suggestion exists, touch it instead of duplicating.
+        let sug_title = format!("我学会了你示范的技能：{name}");
+        let sug_body = format!("照你示范的「{}」整理成了技能，采纳后我就能复用。", draft.description);
+        if let Ok(Some(existing_id)) = self.store.find_similar_suggestion("create_skill", &sug_title, &sug_body).await {
+            let _ = self.store.touch_suggestion(&existing_id).await;
+            tracing::info!(name = %name, "draft_from_episode skipped: similar pending suggestion exists");
+            return Ok(Some(name));
         }
         let input = SkillDraftInput {
             name: name.clone(),
