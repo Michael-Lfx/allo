@@ -66,7 +66,7 @@ pub enum ProfileSource {
     Inferred,
     /// Explicitly set by the user in the UI (authoritative).
     User,
-    /// Populated from a managed catalog (e.g. local AI).
+    /// Populated from models.dev registry (or other managed catalog).
     Catalog,
 }
 

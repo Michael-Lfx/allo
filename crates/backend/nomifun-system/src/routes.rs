@@ -4,20 +4,23 @@ use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use nomifun_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, FetchModelsAnonymousRequest,
-    FetchModelsRequest, FetchModelsResponse, ModelProfile, ModelProfileKeyRequest,
-    ModelProfileUpsertRequest, ProtocolDetectionResponse, ProviderResponse, ResolveModelsRequest,
-    ResolveModelsResponse, SystemInfoResponse, SystemSettingsResponse, UpdateCheckRequest,
-    UpdateCheckResult, UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
-    UpdateWorkDirRequest,
+    FetchModelsRequest, FetchModelsResponse, ModelInfo, ModelProfile, ModelProfileKeyRequest,
+    ModelProfileUpsertRequest, ModelsDevLookupQuery, ModelsDevLookupResponse, ModelsDevRefreshRequest,
+    ModelsDevSearchQuery, ModelsDevSearchResponse, ModelsDevStatusResponse, ProtocolDetectionResponse,
+    ProviderResponse, ResolveModelsRequest, ResolveModelsResponse, SystemInfoResponse, SystemSettingsResponse,
+    UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest, UpdateProviderRequest,
+    UpdateSettingsRequest, UpdateWorkDirRequest,
 };
 use nomifun_common::AppError;
 
 use crate::client_pref::ClientPrefService;
 use crate::model_fetcher::ModelFetchService;
 use crate::model_profile::ModelProfileService;
+use crate::models_catalog::ModelsCatalogService;
 use crate::protocol::ProtocolDetectionService;
 use crate::provider::ProviderService;
 use crate::settings::SettingsService;
@@ -31,6 +34,7 @@ pub struct SystemRouterState {
     pub provider_service: ProviderService,
     pub model_fetch_service: ModelFetchService,
     pub model_profile_service: ModelProfileService,
+    pub models_catalog_service: Arc<ModelsCatalogService>,
     pub protocol_detection_service: ProtocolDetectionService,
     pub version_check_service: VersionCheckService,
     /// Data directory root — used to arm a factory reset (write the marker that
@@ -77,6 +81,10 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/model-profiles", get(list_model_profiles).post(upsert_model_profile))
         .route("/api/model-profiles/delete", post(delete_model_profile))
         .route("/api/model-profiles/resolve", post(resolve_model_profiles))
+        .route("/api/models-dev/status", get(models_dev_status))
+        .route("/api/models-dev/refresh", post(models_dev_refresh))
+        .route("/api/models-dev/lookup", get(models_dev_lookup))
+        .route("/api/models-dev/search", get(models_dev_search))
         .route("/api/system/info", get(get_system_info))
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/factory-reset", post(factory_reset))
@@ -189,6 +197,34 @@ async fn fetch_models(
 ) -> Result<Json<ApiResponse<FetchModelsResponse>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     let result = state.model_fetch_service.fetch_models(&id, &req).await?;
+
+    // Best-effort: upgrade inferred→catalog profiles for the fetched models.
+    let model_ids: Vec<String> = result
+        .models
+        .iter()
+        .map(|m| match m {
+            ModelInfo::Id(id) => id.clone(),
+            ModelInfo::Named { id, .. } => id.clone(),
+        })
+        .collect();
+    if let Ok(Some(provider)) = state.provider_service.get(&id).await {
+        let catalog = state.models_catalog_service.clone();
+        let provider_id = id.clone();
+        let platform = provider.platform.clone();
+        tokio::spawn(async move {
+            let n = catalog
+                .reconcile_provider_models(&provider_id, &platform, &model_ids)
+                .await;
+            if n > 0 {
+                tracing::info!(
+                    provider_id = %provider_id,
+                    upserted = n,
+                    "models-dev catalog reconcile after fetch_models"
+                );
+            }
+        });
+    }
+
     Ok(Json(ApiResponse::ok(result)))
 }
 
@@ -254,6 +290,49 @@ async fn resolve_model_profiles(
     let profiles = state.model_profile_service.list().await?;
     let models = nomifun_api_types::resolve_models(&providers, &profiles, req.task, &req.required_traits);
     Ok(Json(ApiResponse::ok(ResolveModelsResponse { models })))
+}
+
+// ===========================================================================
+// models.dev catalog handlers
+// ===========================================================================
+
+async fn models_dev_status(
+    State(state): State<SystemRouterState>,
+) -> Json<ApiResponse<ModelsDevStatusResponse>> {
+    Json(ApiResponse::ok(state.models_catalog_service.status()))
+}
+
+async fn models_dev_refresh(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<ModelsDevRefreshRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<ModelsDevStatusResponse>>, AppError> {
+    let force = body
+        .map(|Json(req)| req.force)
+        .unwrap_or(false);
+    let status = state.models_catalog_service.refresh(force).await;
+    Ok(Json(ApiResponse::ok(status)))
+}
+
+async fn models_dev_lookup(
+    State(state): State<SystemRouterState>,
+    Query(query): Query<ModelsDevLookupQuery>,
+) -> Json<ApiResponse<ModelsDevLookupResponse>> {
+    Json(ApiResponse::ok(
+        state
+            .models_catalog_service
+            .lookup(&query.platform, &query.model),
+    ))
+}
+
+async fn models_dev_search(
+    State(state): State<SystemRouterState>,
+    Query(query): Query<ModelsDevSearchQuery>,
+) -> Json<ApiResponse<ModelsDevSearchResponse>> {
+    Json(ApiResponse::ok(state.models_catalog_service.search(
+        &query.q,
+        query.platform.as_deref(),
+        query.limit,
+    )))
 }
 
 // ===========================================================================

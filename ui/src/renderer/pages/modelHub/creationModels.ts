@@ -21,7 +21,7 @@
  * + `model` straight into a `POST /api/creation/tasks` body.
  */
 
-import type { IProvider, ModelProfile, ModelTask } from '@/common/config/storage';
+import type { IProvider, ModelProfile, ModelTask, ProfileSource } from '@/common/config/storage';
 import { hasSpecificModelCapability } from '@/common/utils/modelCapabilities';
 
 /** The two Creative-Workshop generation capabilities. */
@@ -93,29 +93,53 @@ type ProfileCapabilityIndex = Map<string, CreationCapability[]>;
 const profileKey = (providerId: string, model: string): string => JSON.stringify([providerId, model]);
 
 /**
- * Index the authoritative per-model profiles by `(providerId, model)`, keeping
- * only `source === 'user'` rows: those are the explicit signal the user gave in
- * the model config UI (`ModelProfile.tasks`, written via
- * `ipcBridge.modelProfile.upsert`) and therefore override the name heuristic.
- * Other sources (`inferred` / `catalog`) are skipped so auto-seeded profiles
- * never silently change the legacy behavior. Returns `undefined` when nothing
- * authoritative exists, letting callers cheaply skip the lookup.
+ * Index profiles by (providerId, model). Precedence when duplicates:
+ * user > catalog > inferred. User and catalog both override the name heuristic.
+ * Inferred is indexed too so it can override heuristic when present.
  */
-const buildUserProfileIndex = (profiles: ModelProfile[] | undefined): ProfileCapabilityIndex | undefined => {
+const sourceRank = (source: ProfileSource | undefined): number => {
+  switch (source) {
+    case 'user':
+      return 3;
+    case 'catalog':
+      return 2;
+    case 'inferred':
+      return 1;
+    case undefined:
+      return 0;
+    default: {
+      const _exhaustive: never = source;
+      return _exhaustive;
+    }
+  }
+};
+
+const buildAuthoritativeProfileIndex = (profiles: ModelProfile[] | undefined): ProfileCapabilityIndex | undefined => {
   if (!profiles || profiles.length === 0) return undefined;
-  const index: ProfileCapabilityIndex = new Map();
+  const best = new Map<string, ModelProfile>();
   for (const profile of profiles) {
-    if (profile.source !== 'user') continue;
-    index.set(profileKey(profile.provider_id, profile.model), profileCreationCapabilities(profile));
+    const key = profileKey(profile.provider_id, profile.model);
+    const prev = best.get(key);
+    if (!prev || sourceRank(profile.source) > sourceRank(prev.source)) {
+      best.set(key, profile);
+    }
+  }
+  const index: ProfileCapabilityIndex = new Map();
+  for (const [key, profile] of best) {
+    // Only user/catalog are authoritative for creation caps (override heuristic).
+    // Inferred alone should NOT override heuristic (preserve legacy).
+    if (profile.source === 'user' || profile.source === 'catalog') {
+      index.set(key, profileCreationCapabilities(profile));
+    }
   }
   return index.size > 0 ? index : undefined;
 };
 
 /**
  * Resolve whether a specific model has a creation capability. Precedence:
- *   1. authoritative per-model user profile (`profileCaps`) — sole authority
- *      when present, both positively (task present → capable) and negatively
- *      (absent → not capable);
+ *   1. authoritative per-model profile (`profileCaps`) — user > catalog;
+ *      sole authority when present, both positively (task present → capable)
+ *      and negatively (absent → not capable);
  *   2. provider-level user override (`capabilities` + `is_user_selected`);
  *   3. the model-name heuristic.
  */
@@ -145,14 +169,14 @@ export const resolveModelCreationCapabilities = (
  * @param providers raw provider list (from `useProvidersQuery()`)
  * @param filter    optionally restrict to a single capability
  * @param profiles  authoritative per-model profiles (from `useModelProfiles()`);
- *                  user-set entries override the name heuristic per model
+ *                  user > catalog entries override the name heuristic per model
  */
 export const getCreationModels = (
   providers: IProvider[] | undefined,
   filter?: CreationCapability,
   profiles?: ModelProfile[]
 ): CreationModelEntry[] => {
-  const profileIndex = buildUserProfileIndex(profiles);
+  const profileIndex = buildAuthoritativeProfileIndex(profiles);
   const out: CreationModelEntry[] = [];
   for (const provider of providers ?? []) {
     if (provider.enabled === false) continue;

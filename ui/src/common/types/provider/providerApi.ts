@@ -160,3 +160,42 @@ export interface ResolveModelsRequest {
 export interface ResolveModelsResponse {
   models: CatalogModelRef[];
 }
+
+// ---------------------------------------------------------------------------
+// models.dev registry — mirror crates/backend models-dev API
+// ---------------------------------------------------------------------------
+
+export interface ModelsDevStatusResponse {
+  populated: boolean;
+  cache_age_secs?: number | null;
+  last_error?: string | null;
+  provider_count: number;
+  model_count: number;
+  cache_path: string;
+}
+
+export interface ModelsDevLookupResponse {
+  found: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  cost_input?: number | null;
+  cost_output?: number | null;
+  family?: string | null;
+  status: string;
+  models_dev_provider?: string | null;
+}
+
+export interface ModelsDevSearchHit {
+  platform: string;
+  model_id: string;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  context_window?: number | null;
+}
+
+export interface ModelsDevSearchResponse {
+  hits: ModelsDevSearchHit[];
+}

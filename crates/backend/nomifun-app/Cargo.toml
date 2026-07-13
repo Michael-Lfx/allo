@@ -86,6 +86,7 @@ nomifun-terminal.workspace = true
 nomifun-assistant.workspace = true
 nomifun-runtime.workspace = true
 nomifun-net.workspace = true
+nomifun-models-dev.workspace = true
 axum.workspace = true
 dirs.workspace = true
 # OS-level advisory lock for the exclusive per-data-dir server lock

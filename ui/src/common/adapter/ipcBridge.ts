@@ -78,6 +78,9 @@ import type {
   FetchModelsResponse,
   ModelProfileKeyRequest,
   ModelProfileUpsertRequest,
+  ModelsDevLookupResponse,
+  ModelsDevSearchResponse,
+  ModelsDevStatusResponse,
   ProviderHealthCheckRequest,
   ProviderHealthCheckResponse,
   ResolveModelsRequest,
@@ -939,6 +942,27 @@ export const modelProfile = {
   upsert: httpPost<ModelProfile, ModelProfileUpsertRequest>('/api/model-profiles'),
   remove: httpPost<void, ModelProfileKeyRequest>('/api/model-profiles/delete'),
   resolve: httpPost<ResolveModelsResponse, ResolveModelsRequest>('/api/model-profiles/resolve'),
+};
+
+// ---------------------------------------------------------------------------
+// models.dev registry — routed to /api/models-dev/*
+// ---------------------------------------------------------------------------
+
+export const modelsDev = {
+  status: httpGet<ModelsDevStatusResponse, void>('/api/models-dev/status'),
+  refresh: httpPost<ModelsDevStatusResponse, { force?: boolean }>('/api/models-dev/refresh', (p) => ({
+    force: p?.force ?? false,
+  })),
+  lookup: httpGet<ModelsDevLookupResponse, { platform: string; model: string }>(
+    (p) =>
+      `/api/models-dev/lookup?platform=${encodeURIComponent(p.platform)}&model=${encodeURIComponent(p.model)}`
+  ),
+  search: httpGet<ModelsDevSearchResponse, { q: string; platform?: string; limit?: number }>((p) => {
+    const qs = new URLSearchParams({ q: p.q });
+    if (p.platform) qs.set('platform', p.platform);
+    if (p.limit != null) qs.set('limit', String(p.limit));
+    return `/api/models-dev/search?${qs}`;
+  }),
 };
 
 // ---------------------------------------------------------------------------

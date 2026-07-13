@@ -39,6 +39,14 @@ impl ProviderService {
         rows.into_iter().map(|row| self.row_to_response(row)).collect()
     }
 
+    /// Load one provider by id (masked API key), or `None` if missing.
+    pub async fn get(&self, id: &str) -> Result<Option<ProviderResponse>, AppError> {
+        match self.repo.find_by_id(id).await? {
+            Some(row) => Ok(Some(self.row_to_response(row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Create a new provider. The API key is encrypted before storage.
     ///
     /// If `req.id` is `Some`, the caller-supplied id is used (after validation);

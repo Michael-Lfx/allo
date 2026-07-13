@@ -49,6 +49,7 @@ nomifun-media = { path = "crates/backend/nomifun-media" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
+nomifun-models-dev = { path = "crates/shared/nomifun-models-dev" }
 nomi-redact = { path = "crates/shared/nomi-redact" }
 
 # --- Internal crates: agent (from nomifun-agent-rs, now local) ---
@@ -123,6 +124,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 prost = "0.13"
 semver = "1"
 dirs = "6"
+strsim = "0.11"
 regex = "1"
 sys-locale = "0.3"
 fuzzy-matcher = "0.3"

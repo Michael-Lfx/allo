@@ -2209,7 +2209,7 @@ fn resolve_member(members: &[FleetMember], member_index: Option<usize>) -> Optio
 /// behavior, zero regression) UNLESS the name implies a modality (Phase 2): a
 /// vision model name still yields a profile so the Router's `needs_vision` hard
 /// filter admits it. `strengths`/`tools` stay at the baseline (empty / false);
-/// only `modalities` (from [`infer_model_modalities`](nomifun_api_types::infer_model_modalities))
+/// only `modalities` (from [`resolve_model_modalities`](nomifun_api_types::resolve_model_modalities))
 /// and the reasoning/cost tiers are populated — the tool hard filter is unchanged
 /// (a bare member stays tool-neutral exactly as before).
 fn infer_model_capability(model: &str) -> Option<CapabilityProfile> {
@@ -2222,10 +2222,10 @@ fn infer_model_capability(model: &str) -> Option<CapabilityProfile> {
     const LIGHT: &[&str] = &["haiku", "mini", "flash", "lite", "nano", "-small", "-8b", "phi-"];
     let strong = STRONG.iter().any(|k| m.contains(k));
     let light = LIGHT.iter().any(|k| m.contains(k));
-    // Per-model modalities inferred from the NAME (Phase 2: activates the Router's
-    // `needs_vision` hard filter). A vision model name carries "vision" even when
-    // the STRONG/LIGHT tier signal is ambiguous, so vision routing still works.
-    let modalities = nomifun_api_types::infer_model_modalities(model);
+    // Per-model modalities: models.dev registry (when warm) → name heuristic.
+    // A vision model name carries "vision" even when the STRONG/LIGHT tier signal
+    // is ambiguous, so vision routing still works.
+    let modalities = resolve_modalities_with_catalog(model);
     // Only commit tiers when the strong/light signal is unambiguous; a name hitting
     // both (or neither) gets neutral tiers. When there is NEITHER a tier signal NOR
     // a modality, stay None → baseline (zero regression).
@@ -2248,6 +2248,15 @@ fn infer_model_capability(model: &str) -> Option<CapabilityProfile> {
         cost_tier: cost_tier.to_string(),
         speed_tier: speed_tier.to_string(),
     })
+}
+
+/// Vision modalities: warm models.dev registry → name heuristic.
+fn resolve_modalities_with_catalog(model: &str) -> Vec<String> {
+    if let Some(true) = nomifun_models_dev::catalog_vision_hint(nomifun_models_dev::default_client(), model)
+    {
+        return vec!["vision".to_string()];
+    }
+    nomifun_api_types::resolve_model_modalities(model, None)
 }
 
 /// Synthesize the ad-hoc fleet members for a [`ModelRange`]. Each `provider+model`
@@ -4145,7 +4154,7 @@ mod tests {
     }
 
     // Phase 2: `infer_model_capability` populates `modalities` from the model NAME
-    // (via `nomifun_api_types::infer_model_modalities`), so the Router's
+    // (via `nomifun_api_types::resolve_model_modalities`), so the Router's
     // `needs_vision` hard filter has a real signal. A vision-capable name gets a
     // profile carrying the "vision" modality; a plain light model gets a profile
     // WITHOUT it.

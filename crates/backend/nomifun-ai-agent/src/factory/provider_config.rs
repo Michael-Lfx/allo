@@ -86,7 +86,15 @@ pub(crate) async fn resolve_provider_fields(
         base_url,
         compat_overrides,
         bedrock_config,
-        context_limit: resolve_model_context_limit(row.context_limit, row.model_context_limits.as_deref(), model),
+        context_limit: {
+            let catalog_context = catalog_context_window(&row.platform, model);
+            resolve_model_context_limit(
+                row.context_limit,
+                row.model_context_limits.as_deref(),
+                model,
+                catalog_context,
+            )
+        },
     })
 }
 
@@ -138,12 +146,26 @@ fn resolve_model_context_limit(
     provider_context_limit: Option<i64>,
     model_context_limits: Option<&str>,
     model: &str,
+    catalog_context: Option<i64>,
 ) -> Option<i64> {
     let per_model = model_context_limits
         .and_then(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).ok())
         .and_then(|map| map.get(model).and_then(serde_json::Value::as_i64));
 
-    per_model.filter(|value| *value > 0).or(provider_context_limit)
+    per_model
+        .filter(|value| *value > 0)
+        .or(catalog_context.filter(|v| *v > 0))
+        .or(provider_context_limit.filter(|v| *v > 0))
+}
+
+/// models.dev catalog context when the user has not set a per-model limit.
+fn catalog_context_window(platform: &str, model: &str) -> Option<i64> {
+    nomifun_models_dev::resolve_catalog_capabilities(
+        nomifun_models_dev::default_client(),
+        platform,
+        model,
+    )
+    .and_then(|c| c.context_window.map(|v| v as i64))
 }
 
 /// Resolve a provider DB row into a base `Config` suitable for LLM calls.
@@ -602,16 +624,24 @@ mod tests {
         let per_model = r#"{"model-a":32000,"model-b":128000}"#;
 
         assert_eq!(
-            resolve_model_context_limit(Some(200_000), Some(per_model), "model-b"),
+            resolve_model_context_limit(Some(200_000), Some(per_model), "model-b", Some(64_000)),
             Some(128_000)
         );
         assert_eq!(
-            resolve_model_context_limit(Some(200_000), Some(per_model), "missing"),
+            resolve_model_context_limit(Some(200_000), Some(per_model), "missing", Some(64_000)),
+            Some(64_000)
+        );
+        assert_eq!(
+            resolve_model_context_limit(Some(200_000), Some(per_model), "missing", None),
             Some(200_000)
         );
         assert_eq!(
-            resolve_model_context_limit(None, Some(per_model), "model-a"),
+            resolve_model_context_limit(None, Some(per_model), "model-a", None),
             Some(32_000)
+        );
+        assert_eq!(
+            resolve_model_context_limit(Some(200_000), None, "any", Some(64_000)),
+            Some(64_000)
         );
     }
 

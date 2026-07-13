@@ -26,6 +26,7 @@ mod media;
 pub mod model_capability;
 pub mod model_catalog;
 pub mod model_task;
+mod models_dev;
 mod office;
 mod orchestrator;
 mod poi;
@@ -165,6 +166,12 @@ pub use model_catalog::{resolve_models, CatalogModelRef, ResolveModelsRequest, R
 pub use model_task::{
     derive_tasks_and_traits, ModelProfile, ModelProfileKeyRequest, ModelProfileUpsertRequest,
     ModelTask, ModelTrait, ProfileSource,
+};
+pub use models_dev::{
+    ModelsDevLookupQuery, ModelsDevLookupResponse, ModelsDevRefreshRequest, ModelsDevSearchHit,
+    ModelsDevSearchQuery, ModelsDevSearchResponse, ModelsDevStatusResponse, build_catalog_params,
+    catalog_context_from_params, catalog_to_tasks_traits, resolve_effective_tasks_traits,
+    resolve_model_modalities,
 };
 pub use office::{
     CellCoord, CellRange, ConversionResultDto, ConversionTarget, DetectStarOfficeRequest,

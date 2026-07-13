@@ -17,6 +17,7 @@ nomifun-api-types.workspace = true
 nomifun-poi.workspace = true
 nomifun-insights.workspace = true
 nomifun-net.workspace = true
+nomifun-models-dev.workspace = true
 reqwest.workspace = true
 axum.workspace = true
 base64.workspace = true

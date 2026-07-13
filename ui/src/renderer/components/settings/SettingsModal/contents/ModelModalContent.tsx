@@ -292,6 +292,9 @@ const ModelModalityEditor: React.FC<{
   );
   const hasUserSelection =
     profile?.source === 'user' && ((profile.tasks?.length ?? 0) > 0 || (profile.traits?.length ?? 0) > 0);
+  const hasCatalogSelection =
+    profile?.source === 'catalog' && ((profile.tasks?.length ?? 0) > 0 || (profile.traits?.length ?? 0) > 0);
+  const hasSelection = hasUserSelection || hasCatalogSelection;
 
   const handleVisibleChange = (visible: boolean) => {
     if (visible) {
@@ -365,7 +368,7 @@ const ModelModalityEditor: React.FC<{
       <Tooltip content={t('settings.editModelModality', { defaultValue: '编辑模型类别' })}>
         <Button
           size='mini'
-          className={`model-provider-action-btn !w-24px !h-24px !min-w-24px shrink-0 ${hasUserSelection ? 'text-[rgb(var(--primary-6))] hover:text-[rgb(var(--primary-5))]' : 'text-t-secondary hover:text-t-primary'}`}
+          className={`model-provider-action-btn !w-24px !h-24px !min-w-24px shrink-0 ${hasSelection ? 'text-[rgb(var(--primary-6))] hover:text-[rgb(var(--primary-5))]' : 'text-t-secondary hover:text-t-primary'}`}
           icon={<TagOne theme='outline' size='14' />}
           onClick={(e) => e.stopPropagation()}
         />

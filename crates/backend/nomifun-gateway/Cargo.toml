@@ -21,6 +21,7 @@ computer-use = ["dep:nomi-computer", "dep:nomi-types", "dep:nomi-config", "dep:n
 [dependencies]
 nomifun-common.workspace = true
 nomifun-api-types.workspace = true
+nomifun-models-dev.workspace = true
 nomifun-conversation.workspace = true
 nomifun-cron.workspace = true
 nomifun-requirement.workspace = true

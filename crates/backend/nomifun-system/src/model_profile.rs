@@ -73,7 +73,7 @@ fn source_to_str(source: ProfileSource) -> &'static str {
     }
 }
 
-fn source_from_str(s: &str) -> ProfileSource {
+pub(crate) fn source_from_str(s: &str) -> ProfileSource {
     match s {
         "user" => ProfileSource::User,
         "catalog" => ProfileSource::Catalog,

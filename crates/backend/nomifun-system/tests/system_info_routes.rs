@@ -30,6 +30,28 @@ use nomifun_system::{
 
 const TEST_KEY: [u8; 32] = [0x42; 32];
 
+fn test_models_catalog(db: &nomifun_db::Database) -> Arc<nomifun_system::ModelsCatalogService> {
+    let profile_repo: Arc<dyn nomifun_db::IModelProfileRepository> =
+        Arc::new(nomifun_db::SqliteModelProfileRepository::new(db.pool().clone()));
+    let provider_repo: Arc<dyn nomifun_db::IProviderRepository> =
+        Arc::new(nomifun_db::SqliteProviderRepository::new(db.pool().clone()));
+    let cache = std::env::temp_dir().join(format!(
+        "models-dev-test-{}-{}.json",
+        std::process::id(),
+        nomifun_common::now_ms()
+    ));
+    let client = Arc::new(nomifun_models_dev::ModelsDevClient::new(
+        "http://invalid.invalid/",
+        cache,
+        None,
+    ));
+    Arc::new(nomifun_system::ModelsCatalogService::new(
+        client,
+        profile_repo,
+        provider_repo,
+    ))
+}
+
 fn test_http_client() -> reqwest::Client {
     reqwest::Client::builder().no_proxy().build().unwrap()
 }
@@ -45,6 +67,7 @@ fn build_state(db: &nomifun_db::Database, version_check_service: VersionCheckSer
         model_profile_service: nomifun_system::ModelProfileService::new(std::sync::Arc::new(
             nomifun_db::SqliteModelProfileRepository::new(db.pool().clone()),
         )),
+        models_catalog_service: test_models_catalog(db),
         protocol_detection_service: ProtocolDetectionService::new(http_client),
         version_check_service,
         data_dir: std::env::temp_dir(),

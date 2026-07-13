@@ -35,6 +35,14 @@ describe('model profile editing helpers', () => {
     expect(visibleModelTaskBadges(user)).toEqual(['image_generation', 'video_generation']);
   });
 
+  test('shows catalog task badges as read-only without making them editable', () => {
+    const catalog = profile('catalog', ['chat', 'image_generation'], ['vision_input']);
+
+    expect(editableModelTasks(catalog)).toEqual([]);
+    expect(editableModelTraits(catalog)).toEqual([]);
+    expect(visibleModelTaskBadges(catalog)).toEqual(['image_generation']);
+  });
+
   test('persists an empty user profile instead of falling back to a default task', () => {
     expect(buildModelProfileUpsertRequest('prov_1', 'happyhorse-1.0', [], [])).toEqual({
       provider_id: 'prov_1',

@@ -39,9 +39,10 @@ fn matches(tasks: &[ModelTask], traits: &[ModelTrait], task: ModelTask, required
 }
 
 /// Resolve all enabled models across enabled providers that support `task` and
-/// carry every trait in `required_traits`. Authoritative profiles win; a model
-/// with no stored profile falls back to the name/platform heuristic so results
-/// are never silently empty before backfill completes.
+/// carry every trait in `required_traits`. Authoritative profiles win
+/// ([`ProfileSource::User`] / [`ProfileSource::Catalog`] from models.dev
+/// reconcile); a model with no stored profile falls back to the name/platform
+/// heuristic so results are never silently empty before backfill completes.
 pub fn resolve_models(
     providers: &[ProviderResponse],
     profiles: &[ModelProfile],

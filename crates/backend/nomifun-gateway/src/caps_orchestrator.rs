@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use nomifun_api_types::{
     CapabilityProfile, CreateAdhocRunRequest, FleetMember, ModelRange, ModelRef, PlannedTask,
-    RunDetail, derive_capability, infer_model_modalities,
+    RunDetail, derive_capability,
 };
 use nomifun_common::{ProviderWithModel, generate_prefixed_id};
 use schemars::JsonSchema;
@@ -891,7 +891,7 @@ fn derive_role_member(a: &AssistantData, provider_id: String, model: String) -> 
         a.description.as_deref(),
         !a.enabled_skills.is_empty(),
     );
-    for md in infer_model_modalities(&model) {
+    for md in resolve_modalities_with_catalog(&model) {
         if !profile.modalities.contains(&md) {
             profile.modalities.push(md);
         }
@@ -911,6 +911,16 @@ fn derive_role_member(a: &AssistantData, provider_id: String, model: String) -> 
         enabled_skills: a.enabled_skills.clone(),
         disabled_builtin_skills: a.disabled_builtin_skills.clone(),
     }
+}
+
+/// Vision modalities: warm models.dev registry → name heuristic.
+fn resolve_modalities_with_catalog(model: &str) -> Vec<String> {
+    if let Some(true) =
+        nomifun_models_dev::catalog_vision_hint(nomifun_models_dev::default_client(), model)
+    {
+        return vec!["vision".to_string()];
+    }
+    nomifun_api_types::resolve_model_modalities(model, None)
 }
 
 /// Pure core: turn the ENABLED assistants into enriched role members, skipping
@@ -976,7 +986,7 @@ async fn build_assistant_members(
                 // `needs_vision` hard filter has a real signal instead of `None`.
                 capability_profile: Some(CapabilityProfile {
                     strengths: Vec::new(),
-                    modalities: infer_model_modalities(model),
+                    modalities: resolve_modalities_with_catalog(model),
                     tools: false,
                     reasoning: "medium".to_string(),
                     cost_tier: "standard".to_string(),

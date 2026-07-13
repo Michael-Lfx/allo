@@ -9,6 +9,7 @@ nomifun-common.workspace = true
 nomifun-db.workspace = true
 nomifun-net.workspace = true
 nomifun-api-types.workspace = true
+nomifun-models-dev.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 serde.workspace = true
@@ -26,3 +27,4 @@ tower = { workspace = true }
 http-body-util.workspace = true
 reqwest.workspace = true
 wiremock = "0.6"
+tempfile = "3"

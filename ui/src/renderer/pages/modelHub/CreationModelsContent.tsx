@@ -7,13 +7,14 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import classNames from 'classnames';
-import { Tag, Tooltip } from '@arco-design/web-react';
-import { MagicWand, Pic, Platte, VideoTwo } from '@icon-park/react';
+import { Button, Tag, Tooltip } from '@arco-design/web-react';
+import { MagicWand, Pic, Platte, Refresh, VideoTwo } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { IProvider, ModelCapability } from '@/common/config/storage';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelProfiles } from '@/renderer/hooks/agent/useModelProfiles';
+import { useModelsDevStatus } from '@/renderer/hooks/agent/useModelsDevStatus';
 import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import SegmentedTabs, { type SegmentedTabItem } from '@/renderer/components/base/SegmentedTabs';
 import { useSettingsViewMode } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
@@ -50,9 +51,24 @@ const CreationModelsContent: React.FC = () => {
   const viewMode = useSettingsViewMode();
   const isPageMode = viewMode === 'page';
   const { data, mutate } = useProvidersQuery();
-  const { profiles } = useModelProfiles();
+  const { profiles, mutate: mutateProfiles } = useModelProfiles();
+  const { status: modelsDevStatus, refresh: refreshModelsDev, isLoading: modelsDevLoading } = useModelsDevStatus();
   const [message, messageContext] = useArcoMessage();
   const [filter, setFilter] = useState<Filter>('all');
+  const [refreshingCatalog, setRefreshingCatalog] = useState(false);
+
+  const handleRefreshCatalog = async () => {
+    setRefreshingCatalog(true);
+    try {
+      await refreshModelsDev(true);
+      await mutateProfiles();
+    } catch (error) {
+      console.error('Failed to refresh models.dev catalog:', error);
+      message.error(t('settings.saveModelConfigFailed'));
+    } finally {
+      setRefreshingCatalog(false);
+    }
+  };
 
   const capabilityLabel = (cap: CreationCapability): string =>
     cap === 'image_generation'
@@ -136,6 +152,31 @@ const CreationModelsContent: React.FC = () => {
           }}
         >
           {t('settings.modelHub.creation.note')}
+        </div>
+        <div className='flex items-center justify-between gap-8px flex-wrap'>
+          <div className='flex items-center gap-8px min-w-0 text-12px text-t-secondary'>
+            <span>
+              模型目录:{' '}
+              {modelsDevStatus?.populated
+                ? `${modelsDevStatus.model_count} 模型`
+                : modelsDevLoading
+                  ? '同步中…'
+                  : '未同步'}
+            </span>
+            {modelsDevStatus?.last_error ? (
+              <span className='text-t-tertiary truncate' title={modelsDevStatus.last_error}>
+                {modelsDevStatus.last_error}
+              </span>
+            ) : null}
+          </div>
+          <Button
+            size='mini'
+            icon={<Refresh theme='outline' size='12' fill='currentColor' />}
+            loading={refreshingCatalog}
+            onClick={() => void handleRefreshCatalog()}
+          >
+            刷新目录
+          </Button>
         </div>
         <SegmentedTabs items={filterItems} activeKey={filter} onChange={(k) => setFilter(k as Filter)} size='sm' />
       </div>

@@ -5629,6 +5629,7 @@ dependencies = [
  "nomifun-insights",
  "nomifun-knowledge",
  "nomifun-mcp",
+ "nomifun-models-dev",
  "nomifun-net",
  "nomifun-poi",
  "nomifun-realtime",
@@ -5707,6 +5708,7 @@ dependencies = [
  "nomifun-knowledge",
  "nomifun-mcp",
  "nomifun-media",
+ "nomifun-models-dev",
  "nomifun-net",
  "nomifun-office",
  "nomifun-orchestrator",
@@ -6094,6 +6096,7 @@ dependencies = [
  "nomifun-idmm",
  "nomifun-knowledge",
  "nomifun-mcp",
+ "nomifun-models-dev",
  "nomifun-orchestrator",
  "nomifun-requirement",
  "nomifun-secret",
@@ -6225,6 +6228,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomifun-models-dev"
+version = "0.2.14"
+dependencies = [
+ "dirs 6.0.0",
+ "nomifun-net",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "strsim",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nomifun-net"
 version = "0.2.14"
 dependencies = [
@@ -6274,6 +6293,7 @@ dependencies = [
  "nomifun-conversation",
  "nomifun-db",
  "nomifun-file",
+ "nomifun-models-dev",
  "nomifun-realtime",
  "serde",
  "serde_json",
@@ -6462,11 +6482,13 @@ dependencies = [
  "nomifun-auth",
  "nomifun-common",
  "nomifun-db",
+ "nomifun-models-dev",
  "nomifun-net",
  "reqwest 0.12.28",
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower",
  "tracing",

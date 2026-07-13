@@ -40,6 +40,8 @@ pub struct AppServices {
     pub provider_repo: Arc<dyn IProviderRepository>,
     /// Authoritative per-model capability profiles (multimodal model hub).
     pub model_profile_repo: Arc<dyn IModelProfileRepository>,
+    /// models.dev catalog: status / lookup / search / profile reconcile.
+    pub models_catalog: Arc<nomifun_system::ModelsCatalogService>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -673,6 +675,33 @@ impl AppServices {
         // Seed authoritative capability profiles for any provider models that
         // lack one (multimodal model hub). Best-effort: never blocks boot on error.
         reconcile_model_profiles(&provider_repo_for_services, &model_profile_repo).await;
+
+        // Single process-wide registry client (shared with ai-agent context lookup).
+        let models_catalog = Arc::new(nomifun_system::ModelsCatalogService::new(
+            nomifun_models_dev::shared_client(),
+            model_profile_repo.clone(),
+            provider_repo_for_services.clone(),
+        ));
+        // Background: warm models.dev + upgrade inferred→catalog. Never block boot.
+        let catalog = models_catalog.clone();
+        tokio::spawn(async move {
+            let _ = catalog.refresh(false).await;
+            let n = catalog.reconcile_all().await;
+            if n > 0 {
+                tracing::info!("models-dev catalog reconcile: upserted {n} profile(s)");
+            }
+        });
+        let catalog2 = models_catalog.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await; // skip immediate
+            loop {
+                interval.tick().await;
+                let _ = catalog2.refresh(false).await;
+                let _ = catalog2.reconcile_all().await;
+            }
+        });
+
         let poi_service = Arc::new(
             nomifun_poi::PoiService::new(data_dir.join("poi"))
                 .map_err(|e| anyhow::anyhow!("Failed to open POI service: {e}"))?,
@@ -788,6 +817,7 @@ impl AppServices {
             companion_token_validator,
             provider_repo: provider_repo_for_services,
             model_profile_repo: model_profile_repo.clone(),
+            models_catalog,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),

@@ -23,8 +23,11 @@ export const editableModelTraits = (profile?: ModelProfile): ModelTrait[] => {
   return profile.traits ?? [];
 };
 
-export const visibleModelTaskBadges = (profile?: ModelProfile): ModelTask[] =>
-  editableModelTasks(profile).filter((task) => task !== 'chat');
+/** Display badges for user and catalog profiles; inferred stays hidden. */
+export const visibleModelTaskBadges = (profile?: ModelProfile): ModelTask[] => {
+  if (profile?.source !== 'user' && profile?.source !== 'catalog') return [];
+  return (profile.tasks ?? []).filter((task) => task !== 'chat');
+};
 
 export const buildModelProfileUpsertRequest = (
   providerId: string,
