@@ -338,6 +338,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         public_agent: services.public_agent_service.clone(),
         client_prefs: client_pref_repo,
         fleet_repo,
+        conversation_repo: services.conversation_repo.clone(),
     });
 
     SystemRouterState {
@@ -350,6 +351,11 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
             services.model_profile_repo.clone(),
         ),
         models_catalog_service: services.models_catalog.clone(),
+        managed_model_service: Some(services.managed_model_service.clone()),
+        local_model_service: None,
+        image_model_service: None,
+        asr_model_service: None,
+        lazy_local_model_runtime: Some(services.lazy_local_model_runtime.clone()),
         protocol_detection_service: ProtocolDetectionService::new_dynamic(),
         version_check_service: VersionCheckService::new_dynamic(env!("CARGO_PKG_VERSION").to_owned()),
         data_dir: services.data_dir.clone(),
@@ -1831,8 +1837,9 @@ pub fn build_office_state(services: &AppServices) -> OfficeRouterState {
 /// Build the default `ShellRouterState` from application services.
 pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
     let pool = services.database.pool().clone();
-    let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool));
+    let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool.clone()));
     let client_pref_service = ClientPrefService::new(client_pref_repo);
+    let provider_repo = Arc::new(SqliteProviderRepository::new(pool));
 
     ShellRouterState {
         shell_service: Arc::new(nomifun_shell::ShellService::new(Arc::new(
@@ -1841,6 +1848,8 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
         stt_service: Arc::new(nomifun_shell::SttService::new_dynamic()),
         client_pref_service,
         data_dir: services.data_dir.clone(),
+        provider_service: Some(ProviderService::new(provider_repo, services.encryption_key)),
+        lazy_local_model_runtime: Some(services.lazy_local_model_runtime.clone()),
     }
 }
 

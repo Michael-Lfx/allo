@@ -208,8 +208,7 @@ impl McpConfigService {
     }
 
     /// Persist the latest connection test result for an existing MCP server.
-    pub async fn persist_test_result(&self, id: &str, result: &McpConnectionTestResult) -> Result<(), McpError> {
-        let id = parse_server_id(id)?;
+    pub async fn persist_test_result(&self, id: i64, result: &McpConnectionTestResult) -> Result<(), McpError> {
         let status = if result.success { "connected" } else { "error" };
         let last_connected = if result.success { Some(now_ms()) } else { None };
         let tools_json = result.tools.as_ref().map(serde_json::to_string).transpose()?;
@@ -268,10 +267,9 @@ impl McpConfigService {
     }
 }
 
-/// Parses a wire-level MCP server id (the host-local integer primary key,
-/// carried as a string in URL paths and the connection-test request) into an
-/// `i64`. A non-numeric id can never match a stored row, so it is reported as
-/// `NotFound` rather than a parse error.
+/// Parses a host-local MCP server primary key carried as a URL path string into
+/// an `i64`. A non-numeric id can never match a stored row, so it is reported
+/// as `NotFound` rather than a parse error.
 fn parse_server_id(id: &str) -> Result<i64, McpError> {
     id.parse::<i64>().map_err(|_| McpError::NotFound(id.to_owned()))
 }
@@ -1165,7 +1163,7 @@ mod tests {
             www_authenticate: None,
         };
 
-        svc.persist_test_result(&created.id.to_string(), &result).await.unwrap();
+        svc.persist_test_result(created.id, &result).await.unwrap();
 
         let updated = svc.get_server(&created.id.to_string()).await.unwrap();
         assert_eq!(updated.last_test_status, nomifun_common::McpServerStatus::Connected);
@@ -1192,7 +1190,7 @@ mod tests {
             auth_method: None,
             www_authenticate: None,
         };
-        svc.persist_test_result(&created.id.to_string(), &success).await.unwrap();
+        svc.persist_test_result(created.id, &success).await.unwrap();
 
         let failure = McpConnectionTestResult {
             success: false,
@@ -1204,7 +1202,7 @@ mod tests {
             auth_method: None,
             www_authenticate: None,
         };
-        svc.persist_test_result(&created.id.to_string(), &failure).await.unwrap();
+        svc.persist_test_result(created.id, &failure).await.unwrap();
 
         let updated = svc.get_server(&created.id.to_string()).await.unwrap();
         assert_eq!(updated.last_test_status, nomifun_common::McpServerStatus::Error);

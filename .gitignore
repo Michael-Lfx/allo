@@ -1,6 +1,8 @@
 # Rust
 /target/
 **/target/
+# Task-scoped Cargo target dirs from local test/debug runs
+/build-task*/
 /build.noindex/
 .cargo/config.local.toml
 Cargo.lock.bak
@@ -66,3 +68,6 @@ Thumbs.db
 
 # Visual brainstorming companion (transient mockups)
 .superpowers/
+
+# Isolated Codex development worktrees
+.worktrees/

@@ -23,6 +23,11 @@ import { useNotificationClick } from '@renderer/hooks/system/useNotificationClic
 import { useDirectorySelection } from '@renderer/hooks/file/useDirectorySelection';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
 import { SEND_BUTTON_GUARD_CSS, SEND_BUTTON_GUARD_STYLE_ID } from '@renderer/utils/theme/sendButtonGuardCss';
+import {
+  ensureThemeControlContract,
+  removeThemeControlContract,
+  THEME_CONTROL_CONTRACT_STYLE_ID,
+} from '@renderer/utils/theme/themeControlContract';
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
@@ -252,7 +257,7 @@ const Layout: React.FC<{
     void loadAndHealCustomCss();
   }, [location.pathname, location.search, location.hash, loadAndHealCustomCss]);
 
-  // 注入自定义 CSS + send-button guard（单一 observer，避免两个 style 标签互相抢 last 导致内存暴涨）
+  // 注入自定义 CSS + theme control + send-button guard（单一 observer，避免多个 style 标签互相抢 last 导致内存暴涨）
   useEffect(() => {
     const customStyleId = 'user-defined-custom-css';
 
@@ -282,16 +287,16 @@ const Layout: React.FC<{
         document.getElementById(customStyleId)?.remove();
       }
 
+      ensureThemeControlContract();
+      const controlEl = document.getElementById(THEME_CONTROL_CONTRACT_STYLE_ID);
       const guardEl = upsertStyle(SEND_BUTTON_GUARD_STYLE_ID, SEND_BUTTON_GUARD_CSS);
 
-      const guardIsLast = guardEl === document.head.lastElementChild;
-      const customBeforeGuard = !customEl || customEl.nextElementSibling === guardEl;
-      if (guardIsLast && customBeforeGuard) {
-        return;
+      // Order: customCss → theme control → send-button guard (last wins for send button).
+      if (customEl && controlEl && customEl.nextElementSibling !== controlEl) {
+        controlEl.before(customEl);
       }
-
-      if (customEl) {
-        guardEl.before(customEl);
+      if (controlEl && controlEl.nextElementSibling !== guardEl) {
+        guardEl.before(controlEl);
       }
       if (guardEl !== document.head.lastElementChild) {
         document.head.appendChild(guardEl);
@@ -307,7 +312,11 @@ const Layout: React.FC<{
             return false;
           }
           const el = node as HTMLElement;
-          return el.id !== customStyleId && el.id !== SEND_BUTTON_GUARD_STYLE_ID;
+          return (
+            el.id !== customStyleId &&
+            el.id !== SEND_BUTTON_GUARD_STYLE_ID &&
+            el.id !== THEME_CONTROL_CONTRACT_STYLE_ID
+          );
         })
       );
 
@@ -316,11 +325,14 @@ const Layout: React.FC<{
       }
 
       const guardEl = document.getElementById(SEND_BUTTON_GUARD_STYLE_ID);
+      const controlEl = document.getElementById(THEME_CONTROL_CONTRACT_STYLE_ID);
       const customEl = document.getElementById(customStyleId);
       const orderWrong =
         !guardEl ||
+        !controlEl ||
         guardEl !== document.head.lastElementChild ||
-        (customCss && (!customEl || customEl.nextElementSibling !== guardEl));
+        controlEl.nextElementSibling !== guardEl ||
+        (customCss && (!customEl || customEl.nextElementSibling !== controlEl));
 
       if (orderWrong) {
         ensureInjectedStyles();
@@ -333,6 +345,7 @@ const Layout: React.FC<{
       observer.disconnect();
       document.getElementById(customStyleId)?.remove();
       document.getElementById(SEND_BUTTON_GUARD_STYLE_ID)?.remove();
+      removeThemeControlContract();
     };
   }, [customCss]);
 

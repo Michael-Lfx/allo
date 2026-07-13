@@ -72,6 +72,11 @@ pub(crate) async fn resolve_provider_fields(
     if provider_id == "flowy-cloud" {
         compat_overrides.mirror_bearer_header = Some("token".to_string());
     }
+    if row.platform == "nomifun-free-model"
+        && model.trim().eq_ignore_ascii_case("deepseek-v4-flash-free")
+    {
+        compat_overrides.require_reasoning_content = Some(true);
+    }
 
     let bedrock_config = if row.platform == "bedrock" {
         resolve_bedrock_config(row.bedrock_config.as_deref())
@@ -212,6 +217,9 @@ pub async fn resolve_provider_config(
     }
     if let Some(header) = fields.compat_overrides.mirror_bearer_header.clone() {
         config.compat.mirror_bearer_header = Some(header);
+    }
+    if let Some(required) = fields.compat_overrides.require_reasoning_content {
+        config.compat.require_reasoning_content = Some(required);
     }
     // NB: compat_overrides.supports_image is intentionally NOT applied here —
     // this one-shot path (IDMM sidecar) builds text-only messages, so image

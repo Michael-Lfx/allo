@@ -14,6 +14,7 @@
 
 import type { IConfirmation } from '@/common/chat/chatLib';
 import { bridge } from '@/platform';
+import type { McpConnectionTestRequest } from './mcpRequest';
 import {
   noopEmitter,
   shellEmitter,
@@ -87,6 +88,32 @@ import type {
   ResolveModelsResponse,
   UpdateProviderRequest,
 } from '../types/provider/providerApi';
+import type {
+  CheckManagedModelHealthRequest,
+  ManagedModel,
+  ManagedModelHealthBatchResult,
+  ManagedModelHealthResult,
+  ManagedModelServiceStatus,
+  SetManagedModelEnabledRequest,
+  SetManagedModelServiceEnabledRequest,
+} from '../types/provider/managedModelService';
+import type {
+  LocalModelCatalogEntry,
+  LocalModelIdRequest,
+  LocalModelServiceStatus,
+  SetLocalModelActiveRequest,
+} from '../types/provider/localModelService';
+import type {
+  ImageModelCatalogEntry,
+  ImageModelIdRequest,
+  ImageModelServiceStatus,
+} from '../types/provider/imageModelService';
+import type {
+  AsrModelCatalogEntry,
+  AsrModelIdRequest,
+  AsrModelServiceStatus,
+  SetAsrModelActiveRequest,
+} from '../types/provider/asrModelService';
 import { buildSpeechToTextFormData, type SpeechToTextRequest, type SpeechToTextResult } from '../types/provider/speech';
 import type {
   TAdjustRunRequest,
@@ -934,6 +961,88 @@ export const mode = {
 };
 
 // ---------------------------------------------------------------------------
+// NomiFun-managed model services — stable provider layer for free/local models
+// ---------------------------------------------------------------------------
+
+export const managedModelService = {
+  free: {
+    status: httpGet<ManagedModelServiceStatus, void>('/api/model-services/free/status'),
+    models: httpGet<ManagedModel[], void>('/api/model-services/free/models'),
+    refresh: httpPost<ManagedModelServiceStatus, void>('/api/model-services/free/refresh'),
+    setEnabled: httpPost<ManagedModelServiceStatus, SetManagedModelServiceEnabledRequest>(
+      '/api/model-services/free/activate'
+    ),
+    setModelEnabled: httpPatch<ManagedModelServiceStatus, SetManagedModelEnabledRequest>(
+      (p) => `/api/model-services/free/models/${encodeURIComponent(p.id)}`,
+      (p) => ({ enabled: p.enabled })
+    ),
+    healthSnapshot: httpGet<ManagedModelHealthResult[], void>('/api/model-services/free/health'),
+    checkHealth: httpPost<ManagedModelHealthBatchResult, void>('/api/model-services/free/health'),
+    checkModelHealth: httpPost<ManagedModelHealthResult, CheckManagedModelHealthRequest>(
+      (p) => `/api/model-services/free/models/${encodeURIComponent(p.id)}/health`,
+      () => undefined
+    ),
+  },
+  local: {
+    catalog: httpGet<LocalModelCatalogEntry[], void>('/api/model-services/local/catalog'),
+    status: httpGet<LocalModelServiceStatus, void>('/api/model-services/local/status'),
+    install: httpPost<LocalModelServiceStatus, LocalModelIdRequest>(
+      (p) => `/api/model-services/local/models/${encodeURIComponent(p.id)}/install`,
+      () => undefined
+    ),
+    cancel: httpPost<LocalModelServiceStatus, LocalModelIdRequest>(
+      (p) => `/api/model-services/local/models/${encodeURIComponent(p.id)}/cancel`,
+      () => undefined
+    ),
+    remove: httpDelete<LocalModelServiceStatus, LocalModelIdRequest>((p) =>
+      `/api/model-services/local/models/${encodeURIComponent(p.id)}`
+    ),
+    setActive: httpPost<LocalModelServiceStatus, SetLocalModelActiveRequest>(
+      (p) => `/api/model-services/local/models/${encodeURIComponent(p.id)}/activate`,
+      (p) => ({ enabled: p.enabled })
+    ),
+    image: {
+      catalog: httpGet<ImageModelCatalogEntry[], void>('/api/model-services/local/image/catalog'),
+      status: httpGet<ImageModelServiceStatus, void>('/api/model-services/local/image/status'),
+      install: httpPost<ImageModelServiceStatus, ImageModelIdRequest>(
+        (p) => `/api/model-services/local/image/models/${encodeURIComponent(p.id)}/install`,
+        () => undefined
+      ),
+      pause: httpPost<ImageModelServiceStatus, ImageModelIdRequest>(
+        (p) => `/api/model-services/local/image/models/${encodeURIComponent(p.id)}/pause`,
+        () => undefined
+      ),
+      resume: httpPost<ImageModelServiceStatus, ImageModelIdRequest>(
+        (p) => `/api/model-services/local/image/models/${encodeURIComponent(p.id)}/resume`,
+        () => undefined
+      ),
+      remove: httpDelete<ImageModelServiceStatus, ImageModelIdRequest>((p) =>
+        `/api/model-services/local/image/models/${encodeURIComponent(p.id)}`
+      ),
+    },
+    asr: {
+      catalog: httpGet<AsrModelCatalogEntry[], void>('/api/model-services/local/asr/catalog'),
+      status: httpGet<AsrModelServiceStatus, void>('/api/model-services/local/asr/status'),
+      install: httpPost<AsrModelServiceStatus, AsrModelIdRequest>(
+        (p) => `/api/model-services/local/asr/models/${encodeURIComponent(p.id)}/install`,
+        () => undefined
+      ),
+      cancel: httpPost<AsrModelServiceStatus, AsrModelIdRequest>(
+        (p) => `/api/model-services/local/asr/models/${encodeURIComponent(p.id)}/cancel`,
+        () => undefined
+      ),
+      remove: httpDelete<AsrModelServiceStatus, AsrModelIdRequest>((p) =>
+        `/api/model-services/local/asr/models/${encodeURIComponent(p.id)}`
+      ),
+      setActive: httpPost<AsrModelServiceStatus, SetAsrModelActiveRequest>(
+        (p) => `/api/model-services/local/asr/models/${encodeURIComponent(p.id)}/activate`,
+        (p) => ({ enabled: p.enabled })
+      ),
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Model profiles (multimodal model hub) — routed to /api/model-profiles/*
 // ---------------------------------------------------------------------------
 
@@ -1115,7 +1224,7 @@ export const mcpService = {
       wwwAuthenticate?: string;
       www_authenticate?: string;
     },
-    IMcpServer
+    McpConnectionTestRequest
   >('/api/mcp/test-connection'),
   checkOAuthStatus: httpPost<{ authenticated: boolean }, { server_url: string }>('/api/mcp/oauth/check-status'),
   loginMcpOAuth: httpPost<{ success: boolean; error?: string }, { server_url: string }>('/api/mcp/oauth/login'),
@@ -3044,6 +3153,11 @@ export interface ICompanionMemory {
   scope_companion_id: string;
 }
 
+export interface ICompanionMemoryPage {
+  items: ICompanionMemory[];
+  total: number;
+}
+
 export interface ICompanionSuggestion {
   id: string;
   kind: string;
@@ -3053,6 +3167,11 @@ export interface ICompanionSuggestion {
   status: 'new' | 'accepted' | 'dismissed';
   created_at: number;
   decided_at?: number | null;
+}
+
+export interface ICompanionSuggestionPage {
+  items: ICompanionSuggestion[];
+  total: number;
 }
 
 /** A companion's self-evolved skill (registry row + SKILL.md description). snake_case = Rust JSON 1:1. */
@@ -3072,6 +3191,11 @@ export interface ICompanionSkill {
   created_at: number;
   updated_at: number;
   description: string; // from SKILL.md frontmatter (CompanionSkillView)
+}
+
+export interface ICompanionSkillPage {
+  items: ICompanionSkill[];
+  total: number;
 }
 
 export interface ICompanionSkillContent {
@@ -3390,7 +3514,7 @@ export interface ICompanionDeletedEvent {
 
 export const companion = {
   listMemories: httpGet<
-    ICompanionMemory[],
+    ICompanionMemoryPage,
     { kind?: string; q?: string; status?: string; scope_companion_id?: string; limit?: number; offset?: number }
   >((p) => {
     const params = new URLSearchParams();
@@ -3420,10 +3544,11 @@ export const companion = {
     })
   ),
   deleteMemory: httpDelete<void, { id: string }>((p) => `/api/companion/memories/${p.id}`),
-  listSuggestions: httpGet<ICompanionSuggestion[], { status?: string; limit?: number }>((p) => {
+  listSuggestions: httpGet<ICompanionSuggestionPage, { status?: string; limit?: number; offset?: number }>((p) => {
     const params = new URLSearchParams();
     if (p?.status) params.set('status', p.status);
     if (p?.limit) params.set('limit', String(p.limit));
+    if (p?.offset) params.set('offset', String(p.offset));
     const qs = params.toString();
     return `/api/companion/suggestions${qs ? `?${qs}` : ''}`;
   }),
@@ -3432,10 +3557,18 @@ export const companion = {
     (p) => ({ accept: p.accept })
   ),
   // ── Self-evolved skills (P2: see + edit). Keyed by companion_id + skill_name (no standalone id). ──
-  listSkills: httpGet<ICompanionSkill[], { companion_id: string; include_shared?: boolean }>(
-    (p) =>
-      `/api/companion/companions/${p.companion_id}/skills${p.include_shared === false ? '?include_shared=false' : ''}`
-  ),
+  listSkills: httpGet<
+    ICompanionSkillPage,
+    { companion_id: string; include_shared?: boolean; status?: string; limit?: number; offset?: number }
+  >((p) => {
+    const params = new URLSearchParams();
+    if (p.include_shared === false) params.set('include_shared', 'false');
+    if (p.status) params.set('status', p.status);
+    if (p.limit) params.set('limit', String(p.limit));
+    if (p.offset) params.set('offset', String(p.offset));
+    const qs = params.toString();
+    return `/api/companion/companions/${p.companion_id}/skills${qs ? `?${qs}` : ''}`;
+  }),
   getSkillContent: httpGet<ICompanionSkillContent, { companion_id: string; name: string }>(
     (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}`,
     { silentStatuses: [404] }

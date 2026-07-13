@@ -790,6 +790,17 @@ function ensureWs(): void {
       };
       const eventName = msg.name ?? msg.event;
       const payload = msg.data ?? msg.payload;
+      if (eventName === 'ping') {
+        if (current.readyState === WebSocket.OPEN) {
+          current.send(
+            JSON.stringify({
+              name: 'pong',
+              data: { timestamp: Date.now() },
+            })
+          );
+        }
+        return;
+      }
       if (isDebugEnabled('debug:ws') && eventName && !NOISY_WS_EVENTS.has(eventName)) {
         console.debug('[WS:msg]', eventName, JSON.stringify(payload).slice(0, 200));
       }
@@ -812,11 +823,12 @@ function ensureWs(): void {
 }
 
 function scheduleWsReconnect(): void {
-  if (wsReconnectTimer) return;
+  if (wsReconnectTimer || wsListeners.size === 0) return;
   const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempt), 30000);
   wsReconnectAttempt++;
   wsReconnectTimer = setTimeout(() => {
     wsReconnectTimer = null;
+    if (wsListeners.size === 0) return;
     ensureWs();
   }, delay);
 }
@@ -833,14 +845,25 @@ type EmitterLike<Params> = {
 export function wsEmitter<Params = undefined>(eventName: string): EmitterLike<Params> {
   return {
     on: (callback: (params: Params) => void) => {
-      ensureWs();
       if (!wsListeners.has(eventName)) {
         wsListeners.set(eventName, new Set());
       }
       const cb = callback as WsCallback;
       wsListeners.get(eventName)!.add(cb);
+      ensureWs();
       return () => {
-        wsListeners.get(eventName)?.delete(cb);
+        const listeners = wsListeners.get(eventName);
+        listeners?.delete(cb);
+        if (listeners?.size === 0) {
+          wsListeners.delete(eventName);
+        }
+        if (wsListeners.size === 0) {
+          if (wsReconnectTimer) {
+            clearTimeout(wsReconnectTimer);
+            wsReconnectTimer = null;
+          }
+          wsReconnectAttempt = 0;
+        }
       };
     },
     emit: (() => {}) as EmitterLike<Params>['emit'],

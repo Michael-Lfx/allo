@@ -69,6 +69,10 @@ pub struct ProviderCompat {
 
     /// Duplicate the Bearer token into an additional request header (Flowy server uses `token`).
     pub mirror_bearer_header: Option<String>,
+
+    /// Require a non-empty `reasoning_content` field on assistant history
+    /// messages. Used only by gateways that explicitly enforce this extension.
+    pub require_reasoning_content: Option<bool>,
 }
 
 impl ProviderCompat {
@@ -134,6 +138,9 @@ impl ProviderCompat {
             effort_levels: user.effort_levels.or(defaults.effort_levels),
             supports_image: user.supports_image.or(defaults.supports_image),
             mirror_bearer_header: user.mirror_bearer_header.or(defaults.mirror_bearer_header),
+            require_reasoning_content: user
+                .require_reasoning_content
+                .or(defaults.require_reasoning_content),
         }
     }
 
@@ -187,6 +194,10 @@ impl ProviderCompat {
     /// 是否支持图片输入。**默认 true**——只有被显式标记不支持时才 false。
     pub fn supports_image(&self) -> bool {
         self.supports_image.unwrap_or(true)
+    }
+
+    pub fn require_reasoning_content(&self) -> bool {
+        self.require_reasoning_content.unwrap_or(false)
     }
 }
 

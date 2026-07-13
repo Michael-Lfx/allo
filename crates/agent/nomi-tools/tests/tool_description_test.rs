@@ -18,11 +18,22 @@ fn test_cwd() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn bash_tool() -> BashTool {
+    let cwd = test_cwd();
+    BashTool::new(
+        nomi_execution::ProcessSupervisor::new(
+            nomi_execution::SupervisorConfig::default(),
+        ),
+        cwd.clone(),
+        nomi_execution::CapabilityPolicy::local_owner(cwd),
+    )
+}
+
 // --- TC-4.2-01: Bash tool description contains key guidance ---
 
 #[test]
 fn bash_description_references_dedicated_tools() {
-    let tool = BashTool::new(test_cwd());
+    let tool = bash_tool();
     let desc = tool.description();
     assert!(
         desc.contains("Glob"),
@@ -43,8 +54,31 @@ fn bash_description_references_dedicated_tools() {
 }
 
 #[test]
+fn bash_description_routes_file_listing_to_glob() {
+    let tool = bash_tool();
+    let desc = tool.description();
+    let lower = desc.to_lowercase();
+    assert!(
+        lower.contains("file listing") || lower.contains("list files"),
+        "Bash description should cover directory file listing, got: {desc}"
+    );
+    assert!(
+        lower.contains("every operating system") || lower.contains("os-agnostic"),
+        "Bash description should make file listing OS-agnostic, got: {desc}"
+    );
+    assert!(
+        desc.contains("Glob"),
+        "Bash description should route file listing to Glob"
+    );
+    assert!(
+        lower.contains("get-childitem") && lower.contains("ls") && lower.contains("dir"),
+        "Bash description should discourage shell listing commands, got: {desc}"
+    );
+}
+
+#[test]
 fn bash_description_contains_timeout_info() {
-    let tool = BashTool::new(test_cwd());
+    let tool = bash_tool();
     let desc = tool.description();
     assert!(
         desc.contains("120") || desc.to_lowercase().contains("timeout"),
@@ -54,11 +88,25 @@ fn bash_description_contains_timeout_info() {
 
 #[test]
 fn bash_description_contains_parallel_guidance() {
-    let tool = BashTool::new(test_cwd());
+    let tool = bash_tool();
     let desc = tool.description();
     assert!(
         desc.contains("parallel") || desc.contains("&&"),
         "Bash description should contain parallel command guidance"
+    );
+}
+
+#[test]
+fn bash_description_avoids_fragile_inline_browser_test_harnesses() {
+    let tool = bash_tool();
+    let desc = tool.description();
+    assert!(
+        desc.contains("Browser") && desc.contains("node -e"),
+        "Bash description should direct browser validation away from inline node -e mocks"
+    );
+    assert!(
+        desc.contains("temporary script") && desc.contains("Write"),
+        "Bash description should recommend a file-based script for multiline code"
     );
 }
 
@@ -181,6 +229,29 @@ fn glob_description_mentions_sort_order() {
     );
 }
 
+#[test]
+fn glob_description_covers_directory_listing() {
+    let tool = GlobTool::new(test_cwd());
+    let desc = tool.description();
+    let lower = desc.to_lowercase();
+    assert!(
+        lower.contains("list files"),
+        "Glob description should explicitly support listing files, got: {desc}"
+    );
+    assert!(
+        lower.contains("os-agnostic") || lower.contains("every operating system"),
+        "Glob description should present directory listing as OS-agnostic, got: {desc}"
+    );
+    assert!(
+        lower.contains("current directory") || lower.contains("current working directory"),
+        "Glob description should mention current-directory listing, got: {desc}"
+    );
+    assert!(
+        desc.contains("\"*\"") && desc.contains("\"**/*\""),
+        "Glob description should teach top-level and recursive listing patterns, got: {desc}"
+    );
+}
+
 // --- TC-4.2-06: Grep tool description contains mandatory usage rule ---
 
 #[test]
@@ -234,7 +305,7 @@ fn grep_description_does_not_say_at_most_matches() {
 #[test]
 fn tool_def_description_matches_tool_instance() {
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(BashTool::new(test_cwd())));
+    registry.register(Box::new(bash_tool()));
     registry.register(Box::new(ReadTool::new(None, None)));
     registry.register(Box::new(EditTool::new(None)));
     registry.register(Box::new(WriteTool::new(None)));

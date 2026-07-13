@@ -4,14 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { ipcBridge } from '@/common';
 import { Message, Button, Tooltip } from '@arco-design/web-react';
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   useSpeechInput,
   type SpeechInputAvailability,
   type SpeechInputErrorCode,
 } from '@/renderer/hooks/system/useSpeechInput';
+import { LOCAL_ASR_STATUS_CHANGED_EVENT } from '@/renderer/services/localAsrEvents';
+import {
+  getSpeechToTextConfig,
+  SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT,
+} from '@/renderer/services/speechToTextConfig';
+import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 
 type SpeechInputButtonProps = {
   disabled?: boolean;
@@ -53,6 +60,8 @@ const getErrorMessageKey = (errorCode: SpeechInputErrorCode) => {
   switch (errorCode) {
     case 'audio-capture':
       return 'conversation.chat.speech.audioCaptureError';
+    case 'audio-normalization':
+      return 'conversation.chat.speech.audioNormalizationError';
     case 'empty-transcript':
       return 'conversation.chat.speech.emptyTranscript';
     case 'file-too-large':
@@ -104,6 +113,9 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
 }) => {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isSpeechInputEnabled, setIsSpeechInputEnabled] = useState(false);
+  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
+  const { data: providers } = useProvidersQuery();
   const {
     availability,
     clearError,
@@ -129,6 +141,73 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     }
     return [0.08, 0.12, 0.1, 0.16, 0.09, 0.14];
   }, [recordingLevels]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncSpeechToTextEnabled = async () => {
+      const config = getSpeechToTextConfig();
+      const selectedCloudProvider = config.provider_id
+        ? providers?.find((provider) => provider.id === config.provider_id)
+        : undefined;
+      const referencedCloudModelIsReady = Boolean(
+        selectedCloudProvider &&
+          selectedCloudProvider.enabled !== false &&
+          selectedCloudProvider.api_key.trim() &&
+          config.model &&
+          selectedCloudProvider.models.includes(config.model) &&
+          selectedCloudProvider.model_enabled?.[config.model] !== false
+      );
+      const legacyCloudConfigIsReady = Boolean(
+        !config.provider_id &&
+          (config.provider === 'openai'
+            ? config.openai?.api_key.trim()
+            : config.provider === 'deepgram'
+              ? config.deepgram?.api_key.trim()
+              : false)
+      );
+      const cloudEnabled = Boolean(
+        config.enabled &&
+          config.provider !== 'local' &&
+          (referencedCloudModelIsReady || legacyCloudConfigIsReady)
+      );
+      let localEnabled = false;
+      if (config?.enabled && config.provider === 'local') {
+        try {
+          const status = await ipcBridge.managedModelService.local.asr.status.invoke();
+          localEnabled = Boolean(
+            status.enabled &&
+              status.ready &&
+              status.activeModelId &&
+              config.model === status.activeModelId
+          );
+        } catch {
+          // Local ASR is optional. A failed status probe must not hide a
+          // configured cloud speech provider.
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+      setIsSpeechInputEnabled(cloudEnabled || localEnabled);
+      setIsConfigLoaded(true);
+    };
+
+    const handleConfigChanged = () => {
+      void syncSpeechToTextEnabled();
+    };
+
+    void syncSpeechToTextEnabled();
+    window.addEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, handleConfigChanged);
+    window.addEventListener(LOCAL_ASR_STATUS_CHANGED_EVENT, handleConfigChanged);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, handleConfigChanged);
+      window.removeEventListener(LOCAL_ASR_STATUS_CHANGED_EVENT, handleConfigChanged);
+    };
+  }, [providers]);
 
   useEffect(() => {
     if (!errorCode) {
@@ -178,7 +257,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     void transcribeFile(file);
   };
 
-  if (hidden) {
+  if (hidden || !isConfigLoaded || !isSpeechInputEnabled) {
     return null;
   }
 

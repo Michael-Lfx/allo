@@ -26,6 +26,7 @@ type AssistantTagPickerProps = {
   localeKey: string;
   readOnly: boolean;
   commitOnBlur?: boolean;
+  showAddHint?: boolean;
 };
 
 export type AssistantTagPickerHandle = {
@@ -34,7 +35,7 @@ export type AssistantTagPickerHandle = {
 };
 
 const AssistantTagPicker = forwardRef<AssistantTagPickerHandle, AssistantTagPickerProps>(function AssistantTagPicker(
-  { dimension, label, tags, value, onChange, onCreateTag, localeKey, readOnly, commitOnBlur = false },
+  { dimension, label, tags, value, onChange, onCreateTag, localeKey, readOnly, commitOnBlur = false, showAddHint = false },
   ref
 ) {
   const { t } = useTranslation();
@@ -138,7 +139,7 @@ const AssistantTagPicker = forwardRef<AssistantTagPickerHandle, AssistantTagPick
                 'border border-solid transition-all duration-150 whitespace-nowrap',
                 readOnly ? 'cursor-default' : 'cursor-pointer',
                 active
-                  ? 'bg-[var(--color-primary-light-1)] text-[rgb(var(--primary-6))] border-[var(--color-primary-light-3)] font-medium'
+                  ? 'bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)] border-[var(--control-selected-bg)] font-medium'
                   : 'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border-[var(--color-border-2)] ' +
                     (readOnly ? '' : 'hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)]'),
               ].join(' ')}
@@ -150,37 +151,44 @@ const AssistantTagPicker = forwardRef<AssistantTagPickerHandle, AssistantTagPick
 
         {!readOnly &&
           (adding ? (
-            <div className='inline-flex items-center gap-6px' onBlur={handleAddBlur}>
-              <Input
-                size='small'
-                autoFocus
-                value={draft}
-                onChange={setDraftValue}
-                onPressEnter={() => {
-                  void submitNew().catch((error) => {
-                    console.error('Failed to create tag from picker:', error);
-                  });
-                }}
-                disabled={creating}
-                placeholder={t('settings.assistantTagAddPlaceholder', { defaultValue: 'New tag…' })}
-                className='!w-128px !rounded-[16px]'
-              />
-              <div
-                role='button'
-                tabIndex={0}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  resetPendingTag();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+            <div className='inline-flex flex-col gap-2px'>
+              <div className='inline-flex items-center gap-6px' onBlur={handleAddBlur}>
+                <Input
+                  size='small'
+                  autoFocus
+                  value={draft}
+                  onChange={setDraftValue}
+                  onPressEnter={() => {
+                    void submitNew().catch((error) => {
+                      console.error('Failed to create tag from picker:', error);
+                    });
+                  }}
+                  disabled={creating}
+                  placeholder={t('settings.assistantTagAddPlaceholder', { defaultValue: 'New tag…' })}
+                  className='!w-128px !rounded-[16px]'
+                />
+                <div
+                  role='button'
+                  tabIndex={0}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
                     resetPendingTag();
-                  }
-                }}
-                className='flex items-center justify-center w-20px h-20px rounded-full cursor-pointer text-[var(--color-text-3)] hover:bg-[var(--color-fill-2)] transition-colors'
-              >
-                <Close theme='outline' size={13} strokeWidth={3} />
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      resetPendingTag();
+                    }
+                  }}
+                  className='flex items-center justify-center w-20px h-20px rounded-full cursor-pointer text-[var(--color-text-3)] hover:bg-[var(--color-fill-2)] transition-colors'
+                >
+                  <Close theme='outline' size={13} strokeWidth={3} />
+                </div>
               </div>
+              {showAddHint && (
+                <span className='text-11px leading-16px text-[var(--color-text-3)] whitespace-nowrap'>
+                  {t('settings.assistantTagAddHint', { defaultValue: 'Press Enter to finish adding' })}
+                </span>
+              )}
             </div>
           ) : (
             <div

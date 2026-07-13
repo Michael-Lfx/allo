@@ -56,6 +56,8 @@ pub struct NomiCompatOverrides {
     pub supports_image: Option<bool>,
     /// Duplicate Bearer into this header (Flowy Cloud).
     pub mirror_bearer_header: Option<String>,
+    /// Some(true) = gateway requires assistant reasoning_content placeholders.
+    pub require_reasoning_content: Option<bool>,
 }
 
 /// Fully resolved Nomi configuration passed to the agent manager.

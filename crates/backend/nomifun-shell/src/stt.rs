@@ -43,6 +43,7 @@ impl SttService {
 
         let client = self.client();
         match config.provider {
+            SpeechToTextProvider::Local => Err(SttError::LocalNotConfigured),
             SpeechToTextProvider::Openai => {
                 let openai_config = config.openai.as_ref().ok_or(SttError::OpenaiNotConfigured)?;
                 stt_openai::transcribe(
@@ -73,6 +74,9 @@ mod tests {
         SpeechToTextConfig {
             enabled: false,
             provider: SpeechToTextProvider::Openai,
+            provider_id: None,
+            model: None,
+            language: None,
             auto_send: None,
             openai: None,
             deepgram: None,
@@ -83,6 +87,9 @@ mod tests {
         SpeechToTextConfig {
             enabled: true,
             provider: SpeechToTextProvider::Openai,
+            provider_id: None,
+            model: None,
+            language: None,
             auto_send: None,
             openai: Some(OpenAISpeechToTextConfig {
                 api_key: api_key.to_owned(),
@@ -100,6 +107,9 @@ mod tests {
         SpeechToTextConfig {
             enabled: true,
             provider: SpeechToTextProvider::Deepgram,
+            provider_id: None,
+            model: None,
+            language: None,
             auto_send: None,
             openai: None,
             deepgram: Some(DeepgramSpeechToTextConfig {
@@ -124,11 +134,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_provider_requires_the_local_asr_route() {
+        let svc = SttService::new(Client::new());
+        let config = SpeechToTextConfig {
+            enabled: true,
+            provider: SpeechToTextProvider::Local,
+            provider_id: None,
+            model: None,
+            language: None,
+            auto_send: None,
+            openai: None,
+            deepgram: None,
+        };
+        let result = svc
+            .transcribe(vec![0u8; 10], "test.wav", "audio/wav", None, &config)
+            .await;
+        assert!(matches!(result, Err(SttError::LocalNotConfigured)));
+    }
+
+    #[tokio::test]
     async fn openai_provider_missing_config_returns_not_configured() {
         let svc = SttService::new(Client::new());
         let config = SpeechToTextConfig {
             enabled: true,
             provider: SpeechToTextProvider::Openai,
+            provider_id: None,
+            model: None,
+            language: None,
             auto_send: None,
             openai: None,
             deepgram: None,
@@ -145,6 +177,9 @@ mod tests {
         let config = SpeechToTextConfig {
             enabled: true,
             provider: SpeechToTextProvider::Deepgram,
+            provider_id: None,
+            model: None,
+            language: None,
             auto_send: None,
             openai: None,
             deepgram: None,

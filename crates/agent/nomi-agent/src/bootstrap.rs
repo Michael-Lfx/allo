@@ -440,7 +440,7 @@ impl AgentBootstrap {
         ));
         registry.register(Box::new(
             nomi_tools::apply_patch::ApplyPatchTool::new(file_cache)
-                .with_write_root(write_root)
+                .with_write_root(write_root.clone())
                 .with_cwd(Some(cwd_path.to_path_buf())),
         ));
         // Experimental `Lsp` code-navigation tool: registered only when at least
@@ -468,46 +468,30 @@ impl AgentBootstrap {
         if let Some(mem_dir) = memory_dir.clone() {
             registry.register(Box::new(crate::memory_tools::RememberTool::new(mem_dir)));
         }
-        // Bash registration, precedence: Seatbelt sandbox (macOS, opt-in) >
-        // persistent shell (Unix, opt-in) > stateless one-shot. The sandbox wins
-        // so no unconfined path coexists with it.
-        #[cfg(target_os = "macos")]
-        let bash_sandbox_on = self.config.tools.bash_sandbox;
-        #[cfg(not(target_os = "macos"))]
-        let bash_sandbox_on = false;
-
-        if bash_sandbox_on {
-            #[cfg(target_os = "macos")]
-            {
-                if self.config.tools.persistent_shell {
-                    tracing::warn!(
-                        target: "nomi_agent",
-                        "bash_sandbox enabled — persistent_shell is disabled under the sandbox so no unconfined shell path coexists"
-                    );
+        let process_supervisor =
+            nomi_execution::ProcessSupervisor::new(nomi_execution::SupervisorConfig::default());
+        let execution_capability = nomi_execution::CapabilityPolicy {
+            cwd_roots: vec![cwd_path.to_path_buf()],
+            sandbox: if self.config.tools.bash_sandbox {
+                nomi_execution::SandboxPolicy::MacSeatbelt {
+                    write_roots: vec![cwd_path.to_path_buf()],
                 }
-                registry.register(Box::new(
-                    nomi_tools::bash::BashTool::new(cwd_path.to_path_buf())
-                        .with_sandbox(Some(vec![cwd_path.to_path_buf()])),
-                ));
-            }
-        } else {
-            #[cfg(unix)]
-            if self.config.tools.persistent_shell {
-                let shell = std::sync::Arc::new(nomi_tools::persistent_shell::PersistentShell::new(
-                    cwd_path.to_string_lossy().into_owned(),
-                ));
-                registry.register(Box::new(nomi_tools::bash::BashTool::with_persistent_shell(
-                    cwd_path.to_path_buf(),
-                    shell,
-                )));
             } else {
-                registry.register(Box::new(nomi_tools::bash::BashTool::new(cwd_path.to_path_buf())));
-            }
-            #[cfg(not(unix))]
-            registry.register(Box::new(nomi_tools::bash::BashTool::new(
-                cwd_path.to_path_buf(),
-            )));
+                nomi_execution::SandboxPolicy::UnrestrictedLocalOwner
+            },
+            allow_hand_off: false,
+        };
+        if self.config.tools.persistent_shell {
+            tracing::warn!(
+                target: "nomi_agent",
+                "tools.persistent_shell is ignored; Bash now always uses supervised one-shot execution"
+            );
         }
+        registry.register(Box::new(nomi_tools::bash::BashTool::new(
+            Arc::clone(&process_supervisor),
+            cwd_path.to_path_buf(),
+            execution_capability.clone(),
+        )));
         registry.register(Box::new(nomi_tools::grep::GrepTool::new(
             cwd_path.to_path_buf(),
         )));
@@ -522,6 +506,22 @@ impl AgentBootstrap {
             registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
             registry.register(Box::new(flowy_web::tools::WebExtractTool::new(extract)));
         }
+
+        // Legacy interactive schemas share the same supervisor as Bash. The
+        // ProcessStore is only a numeric-id adapter; it owns no OS process.
+        // Register these before the builtin-name snapshot so an MCP tool with
+        // the same name is namespaced instead of shadowing the native tool.
+        let process_store = Arc::new(nomi_tools::process_store::ProcessStore::new());
+        registry.register(Box::new(nomi_tools::exec_command::ExecCommandTool::new(
+            Arc::clone(&process_supervisor),
+            Arc::clone(&process_store),
+            cwd_path.to_path_buf(),
+            execution_capability.clone(),
+        )));
+        registry.register(Box::new(nomi_tools::write_stdin::WriteStdinTool::new(
+            Arc::clone(&process_supervisor),
+            Arc::clone(&process_store),
+        )));
 
         let builtin_names: Vec<String> = registry.tool_names();
 
@@ -558,14 +558,35 @@ impl AgentBootstrap {
         )
         .await;
 
+        let agents_snapshot = crate::agents_md::resolve_agents_md(
+            cwd_path,
+            &self.config.project_instructions,
+        );
+        for file in &agents_snapshot.files {
+            tracing::debug!(
+                target: "nomi_agent",
+                path = %file.path.display(),
+                scope = if file.is_global { "user" } else { "project" },
+                "agent bootstrap: loaded instruction file"
+            );
+        }
+        for diagnostic in &agents_snapshot.diagnostics {
+            tracing::warn!(
+                target: "nomi_agent",
+                message = %diagnostic.message(),
+                "agent bootstrap: instruction diagnostic"
+            );
+        }
+
         let mut prompt_cache = crate::context::SystemPromptCache::new();
+        prompt_cache.set_agents_md(agents_snapshot.formatted);
         let system_prompt = crate::context::build_system_prompt(
             &mut prompt_cache,
             self.config.system_prompt.as_deref(),
             cwd,
             &self.config.model,
             &skills,
-            None,
+            Some(self.config.compact.context_window),
             memory_dir.as_deref(),
             self.config.compact.toon,
             self.config.tools.browser.enabled,
@@ -593,6 +614,11 @@ impl AgentBootstrap {
                     provider.clone(),
                     self.config.clone(),
                     cwd_path.to_path_buf(),
+                )
+                .with_execution_policy(
+                    execution_capability.clone(),
+                    write_root.clone(),
+                    self.config.tools.builtin_allowlist.clone(),
                 )
                 .with_token_budget(
                     self.config
@@ -750,20 +776,6 @@ impl AgentBootstrap {
             );
         }
 
-        // Interactive PTY tools: exec_command + write_stdin share one
-        // ProcessStore (session-level, alive for the engine's lifetime via the
-        // tools held in the ToolRegistry). Same stateful-tool pattern as
-        // SpawnTool/BrowserTool. The store's Drop SIGKILLs any lingering PTY
-        // process groups when the engine (and its registry) is torn down.
-        let process_store = Arc::new(nomi_tools::process_store::ProcessStore::new());
-        registry.register(Box::new(nomi_tools::exec_command::ExecCommandTool::new(
-            Arc::clone(&process_store),
-            cwd_path.to_path_buf(),
-        )));
-        registry.register(Box::new(nomi_tools::write_stdin::WriteStdinTool::new(
-            Arc::clone(&process_store),
-        )));
-
         // codex-style stateless todo checklist tool. Always registered (not
         // deferred), surfaced to the frontend via the Plan event bridge.
         registry.register(Box::new(nomi_tools::update_plan::UpdatePlanTool::new()));
@@ -797,6 +809,7 @@ impl AgentBootstrap {
             )
         };
         engine.set_plan_active_flag(plan_active_flag);
+        engine.set_process_supervisor(Arc::clone(&process_supervisor));
         if let Some(spec) = self.goal {
             engine.set_goal(spec.objective, spec.max_auto_continuations);
         }

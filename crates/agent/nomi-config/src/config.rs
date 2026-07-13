@@ -102,9 +102,69 @@ impl Default for MemoryConfig {
     }
 }
 
+const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
+
+/// File-layer representation for Codex-compatible project instruction keys.
+///
+/// Every field is optional so a project `.nomi.toml` can distinguish an
+/// omitted value from an explicit empty list or zero-byte limit.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProjectInstructionsConfigFile {
+    pub project_doc_fallback_filenames: Option<Vec<String>>,
+    pub project_doc_max_bytes: Option<usize>,
+    pub project_root_markers: Option<Vec<String>>,
+}
+
+impl ProjectInstructionsConfigFile {
+    pub fn merge(global: Self, project: Self) -> Self {
+        Self {
+            project_doc_fallback_filenames: project
+                .project_doc_fallback_filenames
+                .or(global.project_doc_fallback_filenames),
+            project_doc_max_bytes: project
+                .project_doc_max_bytes
+                .or(global.project_doc_max_bytes),
+            project_root_markers: project
+                .project_root_markers
+                .or(global.project_root_markers),
+        }
+    }
+
+    pub fn resolve(self) -> ProjectInstructionsConfig {
+        ProjectInstructionsConfig {
+            project_doc_fallback_filenames: self
+                .project_doc_fallback_filenames
+                .unwrap_or_default(),
+            project_doc_max_bytes: self
+                .project_doc_max_bytes
+                .unwrap_or(DEFAULT_PROJECT_DOC_MAX_BYTES),
+            project_root_markers: self
+                .project_root_markers
+                .unwrap_or_else(|| vec![".git".to_owned()]),
+        }
+    }
+}
+
+/// Resolved settings used by the Nomi Agent instruction resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectInstructionsConfig {
+    pub project_doc_fallback_filenames: Vec<String>,
+    pub project_doc_max_bytes: usize,
+    pub project_root_markers: Vec<String>,
+}
+
+impl Default for ProjectInstructionsConfig {
+    fn default() -> Self {
+        ProjectInstructionsConfigFile::default().resolve()
+    }
+}
+
 /// Top-level config file structure
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ConfigFile {
+    #[serde(flatten)]
+    pub project_instructions: ProjectInstructionsConfigFile,
+
     #[serde(default)]
     pub default: DefaultConfig,
 
@@ -219,8 +279,9 @@ pub struct ToolsConfig {
     /// Skill-level deny/allow rules. Merged by concatenation across global + project configs.
     #[serde(default)]
     pub skills: SkillsPermissionConfig,
-    /// How many recent image-bearing tool results keep their images in
-    /// history. Older images are stripped (text kept) to bound token use.
+    /// How many individual recent tool-result images remain in history.
+    /// Older/excess attachments are stripped (text kept), and the engine also
+    /// enforces the supported-provider ceiling of 20 images per request.
     #[serde(default = "default_max_recent_images")]
     pub max_recent_images: usize,
     #[serde(default)]
@@ -229,9 +290,8 @@ pub struct ToolsConfig {
     pub browser: BrowserConfig,
     #[serde(default)]
     pub web: WebConfig,
-    /// Dark-launch (default off): back the `Bash` tool with a long-lived shell
-    /// session so `cd`/`export` persist across calls. Unix-only; ignored on
-    /// Windows. Staged rollout per the overhaul design (§3.3 / §3.6 灰度).
+    /// Deprecated compatibility input. Supervised one-shot execution ignores
+    /// this setting on every platform and emits a warning when it is enabled.
     #[serde(default)]
     pub persistent_shell: bool,
     /// Opt-in (default empty = off): restrict Write/Edit/ApplyPatch to writes
@@ -250,9 +310,9 @@ pub struct ToolsConfig {
     /// runaway multi-agent spend (§3.4 shared token budget).
     #[serde(default)]
     pub subagent_token_budget: Option<u64>,
-    /// Opt-in (default off, macOS only): run `Bash` commands under a Seatbelt
-    /// write-containment sandbox (writes allowed only to the workspace + temp).
-    /// OS-enforced over arbitrary subprocesses; ignored on non-macOS (§3.6).
+    /// Opt-in (default off): request macOS Seatbelt write containment for Bash
+    /// and child-agent execution. The request fails closed on unsupported
+    /// platforms rather than silently running unrestricted (§3.6).
     #[serde(default)]
     pub bash_sandbox: bool,
     /// Opt-in (default off): wind the engine down COOPERATIVELY on stop —
@@ -494,6 +554,7 @@ pub struct Config {
     pub max_tokens: u32,
     pub max_turns: Option<usize>,
     pub system_prompt: Option<String>,
+    pub project_instructions: ProjectInstructionsConfig,
     pub thinking: Option<ThinkingConfig>,
     pub prompt_caching: bool,
     pub compat: ProviderCompat,
@@ -599,6 +660,7 @@ impl Config {
             .system_prompt
             .clone()
             .or(merged.default.system_prompt.clone());
+        let project_instructions = merged.project_instructions.clone().resolve();
 
         // 6. Resolve API key: CLI > config file > env var
         let api_key = resolve_api_key(
@@ -639,6 +701,7 @@ impl Config {
             max_tokens,
             max_turns,
             system_prompt,
+            project_instructions,
             thinking: None,
             prompt_caching,
             compat,
@@ -817,6 +880,11 @@ fn load_config_file(path: &Path) -> ConfigFile {
 
 /// Merge two config files. Project overrides global.
 fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
+    let project_instructions = ProjectInstructionsConfigFile::merge(
+        global.project_instructions,
+        project.project_instructions,
+    );
+
     let default = DefaultConfig {
         provider: if project.default.provider != default_provider() {
             project.default.provider
@@ -1065,6 +1133,7 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
     };
 
     ConfigFile {
+        project_instructions,
         default,
         providers,
         profiles,
@@ -1541,6 +1610,55 @@ mod tests {
         assert!(merged.default.model.is_none());
         assert!(merged.providers.is_empty());
         assert!(merged.profiles.is_empty());
+    }
+
+    #[test]
+    fn project_instruction_defaults_match_codex() {
+        let resolved = ProjectInstructionsConfigFile::default().resolve();
+
+        assert!(resolved.project_doc_fallback_filenames.is_empty());
+        assert_eq!(resolved.project_doc_max_bytes, 32 * 1024);
+        assert_eq!(resolved.project_root_markers, vec![".git"]);
+    }
+
+    #[test]
+    fn project_instruction_project_layer_can_clear_global_values() {
+        let global = ProjectInstructionsConfigFile {
+            project_doc_fallback_filenames: Some(vec!["TEAM.md".into()]),
+            project_doc_max_bytes: Some(65_536),
+            project_root_markers: Some(vec![".git".into(), ".hg".into()]),
+        };
+        let project = ProjectInstructionsConfigFile {
+            project_doc_fallback_filenames: Some(Vec::new()),
+            project_doc_max_bytes: Some(0),
+            project_root_markers: Some(Vec::new()),
+        };
+
+        let resolved = ProjectInstructionsConfigFile::merge(global, project).resolve();
+
+        assert!(resolved.project_doc_fallback_filenames.is_empty());
+        assert_eq!(resolved.project_doc_max_bytes, 0);
+        assert!(resolved.project_root_markers.is_empty());
+    }
+
+    #[test]
+    fn project_instruction_keys_deserialize_at_top_level() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+project_doc_max_bytes = 65536
+project_root_markers = [".git", ".hg"]
+"#,
+        )
+        .unwrap();
+
+        let resolved = config.project_instructions.resolve();
+        assert_eq!(
+            resolved.project_doc_fallback_filenames,
+            vec!["TEAM_GUIDE.md", ".agents.md"]
+        );
+        assert_eq!(resolved.project_doc_max_bytes, 65_536);
+        assert_eq!(resolved.project_root_markers, vec![".git", ".hg"]);
     }
 
     // -------------------------------------------------------------------------
@@ -2280,6 +2398,10 @@ enabled = false
         std::fs::write(
             &project_toml,
             r#"
+project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+project_doc_max_bytes = 65536
+project_root_markers = [".git", ".hg"]
+
 [default]
 max_tokens = 1234
 "#,
@@ -2301,6 +2423,15 @@ max_tokens = 1234
 
         let config = Config::resolve(&cli_args).unwrap();
         assert_eq!(config.max_tokens, 1234);
+        assert_eq!(
+            config.project_instructions.project_doc_fallback_filenames,
+            vec!["TEAM_GUIDE.md", ".agents.md"]
+        );
+        assert_eq!(config.project_instructions.project_doc_max_bytes, 65_536);
+        assert_eq!(
+            config.project_instructions.project_root_markers,
+            vec![".git", ".hg"]
+        );
     }
 
     #[test]

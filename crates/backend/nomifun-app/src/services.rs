@@ -21,7 +21,7 @@ use nomifun_db::{
     IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
     SqliteModelProfileRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteTerminalRepository, SqliteUserRepository, UpsertModelProfileParams,
+    SqliteTerminalRepository, SqliteUserRepository,
 };
 use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
 use nomifun_terminal::{TerminalEventEmitter, TerminalLifecycleServer, TerminalService};
@@ -38,6 +38,16 @@ pub struct AppServices {
     pub companion_token_validator: Arc<CompanionTokenValidator>,
     /// Provider repository (exposed for the mint-time model-availability guard).
     pub provider_repo: Arc<dyn IProviderRepository>,
+    /// Unified loopback model supply (`nomifun-free-model` today, with the
+    /// `nomifun-local-model` contract reserved for a future local runtime).
+    pub managed_model_service: Arc<nomifun_system::ManagedModelService>,
+    /// Keeps the authenticated loopback OpenAI-compatible listener alive.
+    pub(crate) _managed_model_server: nomifun_system::ManagedModelServer,
+    /// Initializes all local-model control planes and the loopback facade only
+    /// after the first explicit install/enable/resume action.
+    pub lazy_local_model_runtime: Arc<nomifun_system::LazyLocalModelRuntime>,
+    /// Keeps the immediate + periodic managed catalog refresh loop alive.
+    pub(crate) _managed_model_refresh_task: nomifun_system::ManagedModelRefreshTask,
     /// Authoritative per-model capability profiles (multimodal model hub).
     pub model_profile_repo: Arc<dyn IModelProfileRepository>,
     /// models.dev catalog: status / lookup / search / profile reconcile.
@@ -209,8 +219,91 @@ impl AppServices {
 
         let remote_agent_repo = Arc::new(SqliteRemoteAgentRepository::new(database.pool().clone()));
         let provider_repo = Arc::new(SqliteProviderRepository::new(database.pool().clone()));
+        // Start the stable managed-model loopback supply and provision its
+        // provider projection before any model-profile reconciliation or agent
+        // factory construction. A seed catalog makes a fresh install usable
+        // without blocking boot on third-party discovery.
+        let (managed_model_service, managed_model_server) =
+            nomifun_system::start_and_provision_free_model_with_preferences(
+                provider_repo.clone(),
+                Some(Arc::new(nomifun_db::SqliteClientPreferenceRepository::new(
+                    database.pool().clone(),
+                ))),
+                encryption_key,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to provision NomiFun free model service: {e}"))?;
         let model_profile_repo: Arc<dyn IModelProfileRepository> =
             Arc::new(SqliteModelProfileRepository::new(database.pool().clone()));
+        let lazy_local_model_runtime = nomifun_system::LazyLocalModelRuntime::new(
+            &data_dir,
+            provider_repo.clone(),
+            model_profile_repo.clone(),
+            encryption_key,
+        );
+        // A reserved provider row is the durable opt-in marker. Fresh installs
+        // have no row and remain completely cold; existing local-model users
+        // regain their installed/active state and loopback endpoint at boot.
+        if provider_repo
+            .find_by_id(nomifun_system::LOCAL_MODEL_PROVIDER_ID)
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to inspect local-model opt-in state: {error}"))?
+            .is_some()
+            && let Err(error) = lazy_local_model_runtime.start().await
+        {
+            tracing::warn!(error = %error, "Previously enabled local model service is unavailable");
+            if let Err(disable_error) =
+                nomifun_system::disable_local_model_provider(provider_repo.clone()).await
+            {
+                tracing::warn!(
+                    error = %disable_error,
+                    "Could not disable stale local-model provider projection"
+                );
+            }
+        }
+        // Local ASR owns an independent lazy cell and state file. Restore it
+        // without starting the text/image services or loopback provider.
+        if let Err(error) = lazy_local_model_runtime.restore_asr_if_opted_in().await {
+            tracing::warn!(error = %error, "Previously enabled local ASR service is unavailable");
+        }
+        // Refresh immediately, then about every six hours with jitter. Failed
+        // attempts retain the current catalog and use capped exponential
+        // backoff. Successful refreshes atomically seed profiles for any newly
+        // discovered models without overwriting concurrent user edits.
+        let managed_model_refresh_task = {
+            let profile_repo = model_profile_repo.clone();
+            nomifun_system::ManagedModelRefreshTask::start_with_success_hook(
+                managed_model_service.clone(),
+                move |status| {
+                    let profile_repo = profile_repo.clone();
+                    async move {
+                        let models = status
+                            .models
+                            .iter()
+                            .map(|model| model.id.as_str())
+                            .collect::<Vec<_>>();
+                        match nomifun_system::seed_missing_inferred_profiles(
+                            profile_repo.as_ref(),
+                            nomifun_system::FREE_MODEL_PROVIDER_ID,
+                            nomifun_system::FREE_MODEL_PROVIDER_ID,
+                            &models,
+                        )
+                        .await
+                        {
+                            Ok(seeded) if seeded > 0 => tracing::info!(
+                                seeded,
+                                "Managed free-model refresh seeded inferred model profiles"
+                            ),
+                            Ok(_) => {}
+                            Err(error) => tracing::warn!(
+                                error = %error,
+                                "Managed free-model profile reconciliation failed"
+                            ),
+                        }
+                    }
+                },
+            )
+        };
         // User-configured MCP servers — injected into ACP `session/new`
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
@@ -627,6 +720,10 @@ impl AppServices {
             data_dir.clone(),
             Arc::new(nomifun_db::SqliteWorkshopRepository::new(database.pool().clone())),
         ));
+        let creation_adapters = nomifun_creation::default_adapters_with_local_image(
+            creation_http.clone(),
+            lazy_local_model_runtime.creation_backend(),
+        );
         let creation_service = nomifun_creation::CreationService::builder(Arc::new(
             nomifun_db::SqliteCreationTaskRepository::new(database.pool().clone()),
         ))
@@ -637,7 +734,7 @@ impl AppServices {
         )
         .with_asset_source(creation_asset_bridge.clone())
         .with_asset_sink(creation_asset_bridge)
-        .with_providers(nomifun_creation::default_adapters(creation_http))
+        .with_providers(creation_adapters)
         .build();
 
         // Headless seed: bind a Remote access token to the default companion so an
@@ -816,6 +913,10 @@ impl AppServices {
             companion_token_repo,
             companion_token_validator,
             provider_repo: provider_repo_for_services,
+            managed_model_service,
+            _managed_model_server: managed_model_server,
+            lazy_local_model_runtime,
+            _managed_model_refresh_task: managed_model_refresh_task,
             model_profile_repo: model_profile_repo.clone(),
             models_catalog,
             cookie_config: Arc::new(CookieConfig::from_env()),
@@ -873,39 +974,23 @@ async fn reconcile_model_profiles(
             return;
         }
     };
-    let existing = model_profile_repo.list().await.unwrap_or_default();
-    let has_profile = |provider_id: &str, model: &str| {
-        existing
-            .iter()
-            .any(|r| r.provider_id == provider_id && r.model == model)
-    };
-
     let mut seeded = 0usize;
     for provider in &providers {
         let models: Vec<String> = serde_json::from_str(&provider.models).unwrap_or_default();
-        for model in models {
-            if has_profile(&provider.id, &model) {
-                continue;
-            }
-            let (tasks, traits) =
-                nomifun_api_types::derive_tasks_and_traits(&provider.platform, &model);
-            let tasks_json = serde_json::to_string(&tasks).unwrap_or_else(|_| "[]".to_string());
-            let traits_json = serde_json::to_string(&traits).unwrap_or_else(|_| "[]".to_string());
-            if let Err(e) = model_profile_repo
-                .upsert(&UpsertModelProfileParams {
-                    provider_id: &provider.id,
-                    model: &model,
-                    tasks: &tasks_json,
-                    traits: &traits_json,
-                    params: "{}",
-                    source: "inferred",
-                })
-                .await
-            {
-                tracing::warn!("model-profile reconcile: upsert {}/{} failed: {e}", provider.id, model);
-            } else {
-                seeded += 1;
-            }
+        match nomifun_system::seed_missing_inferred_profiles(
+            model_profile_repo.as_ref(),
+            &provider.id,
+            &provider.platform,
+            &models,
+        )
+        .await
+        {
+            Ok(count) => seeded += count,
+            Err(error) => tracing::warn!(
+                provider_id = %provider.id,
+                error = %error,
+                "model-profile reconcile failed"
+            ),
         }
     }
     if seeded > 0 {
@@ -941,6 +1026,22 @@ mod tests {
         // User repo should have system user
         let has_users = services.user_repo.has_users().await.unwrap();
         assert!(!has_users); // system user has empty password → not counted
+
+        // Fresh boot does not initialize local AI, create its provider, or
+        // start the loopback facade.
+        assert!(!services.lazy_local_model_runtime.is_started());
+        let local_provider = services
+            .provider_repo
+            .find_by_id(nomifun_system::LOCAL_MODEL_PROVIDER_ID)
+            .await
+            .unwrap();
+        assert!(local_provider.is_none());
+        let local_profiles = services
+            .model_profile_repo
+            .list_for_provider(nomifun_system::LOCAL_MODEL_PROVIDER_ID)
+            .await
+            .unwrap();
+        assert!(local_profiles.is_empty());
 
         services.database.close().await;
     }

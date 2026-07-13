@@ -141,9 +141,13 @@ small operation, then observe again.
 
 - Screenshots are downsampled to a maximum long edge of
   `max_screenshot_edge` pixels, with coordinates mapped back to real screen
-  coordinates.
-- The conversation keeps only the most recent `max_recent_images` image-bearing
-  tool results to avoid unbounded token growth.
+  coordinates. The final PNG is also capped at 5 MiB; high-entropy frames are
+  downscaled again and coordinate geometry follows the exact image sent.
+- The conversation keeps only the most recent `max_recent_images` individual
+  tool-result images, with a provider-compatible ceiling of 20 per request and
+  a cumulative encoded-payload budget. Excess attachments are stripped while
+  their text and an omission note remain. Provider errors also remove replayed
+  screenshots before the conversation is persisted for recovery.
 - OpenAI-compatible tool messages cannot carry images directly; image data is
   sent as a following user message with a source call id. Anthropic, Bedrock,
   and Vertex use native image blocks where supported.

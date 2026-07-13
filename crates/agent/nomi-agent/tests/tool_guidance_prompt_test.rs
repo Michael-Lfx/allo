@@ -104,6 +104,44 @@ fn tc_4_3_02_bash_prohibition_list() {
     );
 }
 
+#[test]
+fn tool_guidance_routes_directory_listing_to_glob() {
+    let result = build_system_prompt(
+        &mut SystemPromptCache::new(),
+        None,
+        "/tmp",
+        "test-model",
+        &[],
+        None,
+        None,
+        false,
+        false,
+        false, // browser_enabled
+    );
+    let lower = result.to_lowercase();
+
+    assert!(
+        lower.contains("file listing") || lower.contains("list files"),
+        "tool guidance should explicitly cover directory file listing"
+    );
+    assert!(
+        lower.contains("every operating system") || lower.contains("os-agnostic"),
+        "tool guidance should make directory listing OS-agnostic"
+    );
+    assert!(
+        result.contains("Glob"),
+        "tool guidance should route directory listing to Glob"
+    );
+    assert!(
+        lower.contains("get-childitem") && lower.contains("ls") && lower.contains("dir"),
+        "tool guidance should discourage shell listing commands"
+    );
+    assert!(
+        result.contains("\"*\"") && result.contains("\"**/*\""),
+        "tool guidance should teach top-level and recursive Glob listing patterns"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // TC-4.3-03: Parallel call guidance
 // ---------------------------------------------------------------------------
@@ -153,6 +191,36 @@ fn tc_4_3_03b_failure_checkpoint_guidance() {
         result.contains("generous explicit timeout") && result.contains("exec_command/write_stdin"),
         "tool guidance should steer long-running commands toward larger timeouts or polling"
     );
+}
+
+#[test]
+fn tool_call_efficiency_guidance_routes_batches_without_removing_checkpoints() {
+    let result = build_system_prompt(
+        &mut SystemPromptCache::new(),
+        None,
+        "/tmp",
+        "test-model",
+        &[],
+        None,
+        None,
+        false,
+        false,
+        false,
+    );
+
+    for required in [
+        "file_paths",
+        "ApplyPatch",
+        "deterministic",
+        "exec_command script mode",
+        "intermediate result",
+        "meaningful milestone",
+    ] {
+        assert!(result.contains(required), "missing efficiency rule: {required}");
+    }
+    assert!(result.contains("does not reduce the number of tool calls"));
+    assert!(result.contains("Do not repeat"));
+    assert!(result.contains("individual tool call"));
 }
 
 // ---------------------------------------------------------------------------
@@ -310,9 +378,11 @@ fn tc_4_3_07_all_sections_coexist() {
     .unwrap();
 
     let skills = vec![make_skill("coexist-skill", "Coexist test")];
+    let mut cache = SystemPromptCache::new();
+    cache.set_agents_md(fs::read_to_string(cwd.join("AGENTS.md")).unwrap());
 
     let result = build_system_prompt(
-        &mut SystemPromptCache::new(),
+        &mut cache,
         Some("CUSTOM_COEXIST"),
         &cwd.to_string_lossy(),
         "test-model",

@@ -11,12 +11,14 @@ import {
   isAuthExpiredHttpError,
   isBackendHttpError,
   isHandledAuthExpiredHttpError,
+  wsEmitter,
 } from './httpBridge';
 
 const realFetch = globalThis.fetch;
 
 const realWindow = (globalThis as { window?: Window }).window;
 const realDocument = (globalThis as { document?: Document }).document;
+const realWebSocket = globalThis.WebSocket;
 
 function installBrowserGlobals(windowPatch: Partial<Window> & { __backendPort?: number; __nomiLocalTrust?: string }) {
   (globalThis as { window?: unknown }).window = {
@@ -37,6 +39,14 @@ function restoreBrowserGlobals() {
     delete (globalThis as { document?: Document }).document;
   } else {
     (globalThis as { document?: Document }).document = realDocument;
+  }
+}
+
+function restoreWebSocketGlobal() {
+  if (realWebSocket === undefined) {
+    delete (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+  } else {
+    globalThis.WebSocket = realWebSocket;
   }
 }
 
@@ -166,6 +176,262 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
       expect(location.hash).toBe('');
     } finally {
       globalThis.fetch = realFetch;
+      restoreBrowserGlobals();
+    }
+  });
+});
+
+describe('httpBridge WebSocket heartbeat', () => {
+  test('handles application heartbeat internally', () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const scheduledReconnects: Array<() => void> = [];
+    class FakeWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      static readonly instances: FakeWebSocket[] = [];
+
+      readyState = FakeWebSocket.OPEN;
+      readonly sent: string[] = [];
+      private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+      constructor(..._args: unknown[]) {
+        FakeWebSocket.instances.push(this);
+      }
+
+      addEventListener(type: string, listener: (event: unknown) => void) {
+        const listeners = this.listeners.get(type) ?? [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      send(data: string) {
+        this.sent.push(data);
+      }
+
+      close() {
+        this.readyState = FakeWebSocket.CLOSED;
+      }
+
+      dispatch(type: string, event: unknown) {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener(event);
+        }
+      }
+    }
+
+    installBrowserGlobals({
+      location: {
+        protocol: 'http:',
+        host: 'localhost:25808',
+        pathname: '/sessions',
+        hash: '',
+      } as Location,
+    });
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    globalThis.setTimeout = ((callback: () => void) => {
+      scheduledReconnects.push(callback);
+      return scheduledReconnects.length as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+
+    let unsubscribe = () => {};
+    let socket: FakeWebSocket | undefined;
+    try {
+      const dispatched: unknown[] = [];
+      unsubscribe = wsEmitter<unknown>('ping').on((payload) => dispatched.push(payload));
+      socket = FakeWebSocket.instances[0];
+      if (!socket) throw new Error('httpBridge did not create a WebSocket');
+
+      socket.dispatch('message', {
+        data: JSON.stringify({ name: 'ping', data: { timestamp: 123 } }),
+      });
+
+      expect(socket.sent.length).toBe(1);
+      const pong = JSON.parse(socket.sent[0]) as { name: string; data: { timestamp: unknown } };
+      expect(pong.name).toBe('pong');
+      expect(typeof pong.data.timestamp).toBe('number');
+      expect(dispatched.length).toBe(0);
+
+      unsubscribe();
+      unsubscribe = () => {};
+      socket.dispatch('close', { code: 1000, reason: 'test cleanup' });
+      expect(scheduledReconnects.length).toBe(0);
+    } finally {
+      unsubscribe();
+      socket?.close();
+      globalThis.setTimeout = realSetTimeout;
+      restoreWebSocketGlobal();
+      restoreBrowserGlobals();
+    }
+  });
+
+  test('retries when the initial WebSocket constructor throws', () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const realConsoleError = console.error;
+    const scheduledReconnects: Array<() => void> = [];
+
+    class ThrowOnceWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      static attempts = 0;
+      static readonly instances: ThrowOnceWebSocket[] = [];
+
+      readyState = ThrowOnceWebSocket.OPEN;
+      private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+      constructor(..._args: unknown[]) {
+        ThrowOnceWebSocket.attempts += 1;
+        if (ThrowOnceWebSocket.attempts === 1) {
+          throw new Error('constructor failed');
+        }
+        ThrowOnceWebSocket.instances.push(this);
+      }
+
+      addEventListener(type: string, listener: (event: unknown) => void) {
+        const listeners = this.listeners.get(type) ?? [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      send(_data: string) {}
+
+      close() {
+        this.readyState = ThrowOnceWebSocket.CLOSED;
+      }
+
+      dispatch(type: string, event: unknown) {
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
+      }
+    }
+
+    installBrowserGlobals({
+      location: {
+        protocol: 'http:',
+        host: 'localhost:25808',
+        pathname: '/sessions',
+        hash: '',
+      } as Location,
+    });
+    globalThis.WebSocket = ThrowOnceWebSocket as unknown as typeof WebSocket;
+    globalThis.setTimeout = ((callback: () => void) => {
+      scheduledReconnects.push(callback);
+      return scheduledReconnects.length as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    console.error = () => {};
+
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = wsEmitter<unknown>('message.stream').on(() => {});
+      expect(scheduledReconnects.length).toBe(1);
+
+      scheduledReconnects[0]?.();
+      expect(ThrowOnceWebSocket.attempts).toBe(2);
+      expect(ThrowOnceWebSocket.instances.length).toBe(1);
+    } finally {
+      unsubscribe();
+      for (const socket of ThrowOnceWebSocket.instances) {
+        socket.dispatch('close', { code: 1000, reason: 'test cleanup' });
+        socket.close();
+      }
+      globalThis.setTimeout = realSetTimeout;
+      console.error = realConsoleError;
+      restoreWebSocketGlobal();
+      restoreBrowserGlobals();
+    }
+  });
+
+  test('cancels a queued reconnect when the final listener unsubscribes', () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const scheduledReconnects: Array<() => void> = [];
+    const scheduledDelays: number[] = [];
+    const clearedHandles: unknown[] = [];
+
+    class RecordingWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      static readonly instances: RecordingWebSocket[] = [];
+
+      readyState = RecordingWebSocket.OPEN;
+      private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+      constructor(..._args: unknown[]) {
+        RecordingWebSocket.instances.push(this);
+      }
+
+      addEventListener(type: string, listener: (event: unknown) => void) {
+        const listeners = this.listeners.get(type) ?? [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      send(_data: string) {}
+
+      close() {
+        this.readyState = RecordingWebSocket.CLOSED;
+      }
+
+      dispatch(type: string, event: unknown) {
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
+      }
+    }
+
+    installBrowserGlobals({
+      location: {
+        protocol: 'http:',
+        host: 'localhost:25808',
+        pathname: '/sessions',
+        hash: '',
+      } as Location,
+    });
+    globalThis.WebSocket = RecordingWebSocket as unknown as typeof WebSocket;
+    globalThis.setTimeout = ((callback: () => void, delay?: number) => {
+      scheduledReconnects.push(callback);
+      scheduledDelays.push(delay ?? 0);
+      return scheduledReconnects.length as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle: unknown) => {
+      clearedHandles.push(handle);
+    }) as typeof clearTimeout;
+
+    let unsubscribe = () => {};
+    let unsubscribeAgain = () => {};
+    try {
+      unsubscribe = wsEmitter<unknown>('turn.completed').on(() => {});
+      const socket = RecordingWebSocket.instances[0];
+      if (!socket) throw new Error('httpBridge did not create a WebSocket');
+
+      socket.dispatch('close', { code: 1006, reason: 'network lost' });
+      expect(scheduledReconnects.length).toBe(1);
+
+      unsubscribe();
+      unsubscribe = () => {};
+      expect(clearedHandles.length).toBe(1);
+
+      scheduledReconnects[0]?.();
+      expect(RecordingWebSocket.instances.length).toBe(1);
+
+      unsubscribeAgain = wsEmitter<unknown>('turn.completed').on(() => {});
+      const replacement = RecordingWebSocket.instances[1];
+      if (!replacement) throw new Error('httpBridge did not start a fresh WebSocket lifecycle');
+      replacement.dispatch('close', { code: 1006, reason: 'network lost again' });
+      expect(scheduledDelays.at(-1)).toBe(1000);
+    } finally {
+      unsubscribe();
+      unsubscribeAgain();
+      scheduledReconnects[0]?.();
+      for (const socket of RecordingWebSocket.instances) {
+        socket.dispatch('close', { code: 1000, reason: 'test cleanup' });
+        socket.close();
+      }
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+      restoreWebSocketGlobal();
       restoreBrowserGlobals();
     }
   });

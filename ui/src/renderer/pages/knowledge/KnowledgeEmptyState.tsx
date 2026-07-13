@@ -88,7 +88,7 @@ const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onI
     <div className='flex w-full flex-col items-center gap-32px px-16px py-56px'>
       {/* Hero icon + headline */}
       <div className='flex flex-col items-center gap-12px text-center'>
-        <div className='flex size-72px items-center justify-center rounded-full bg-[var(--color-primary-light-1)] text-[rgb(var(--primary-6))]'>
+        <div className='flex size-72px items-center justify-center rounded-full bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)]'>
           <BookOne theme='outline' size='36' fill='currentColor' />
         </div>
         <h2 className='m-0 text-22px font-bold text-[var(--color-text-1)]'>
@@ -109,7 +109,7 @@ const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onI
             className='flex flex-1 flex-col rounded-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-20px'
           >
             <div className='grid grid-cols-[28px_minmax(0,1fr)] gap-x-10px gap-y-8px'>
-              <span className='col-start-1 row-start-1 flex size-28px shrink-0 items-center justify-center self-center rounded-8px bg-[var(--color-primary-light-1)] text-[rgb(var(--primary-6))] text-12px font-bold leading-none'>
+              <span className='col-start-1 row-start-1 flex size-28px shrink-0 items-center justify-center self-center rounded-8px bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)] text-12px font-bold leading-none'>
                 {s.num}
               </span>
               <div className='col-start-2 row-start-1 flex min-h-28px min-w-0 items-center gap-10px'>

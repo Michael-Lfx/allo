@@ -6,8 +6,6 @@ use nomi_skills::prompt::format_skills_within_budget;
 use nomi_skills::types::SkillMetadata;
 use nomi_types::message::{ContentBlock, Message, Role};
 
-use crate::agents_md;
-
 /// Session-scoped cache for system prompt sections.
 ///
 /// Each section (intro, tool guidance, AGENTS.md, memory, skills) is cached
@@ -51,6 +49,12 @@ impl SystemPromptCache {
         self.sections.clear();
         self.joined = None;
     }
+
+    /// Install the immutable AGENTS.md snapshot resolved by session bootstrap.
+    pub fn set_agents_md(&mut self, instructions: String) {
+        self.sections.insert("agents_md", instructions);
+        self.joined = None;
+    }
 }
 
 impl Default for SystemPromptCache {
@@ -71,24 +75,37 @@ fn tool_usage_guidance() -> String {
 # Using your tools
  - Do NOT use Bash when a dedicated tool is available. Using dedicated tools \
 allows the user to better understand and review your work:
-   - File search: Glob (not find or ls)
+   - File listing/search: Glob on every operating system (not shell-specific listing commands such as ls, dir, Get-ChildItem, or find). When asked what files are in the current directory or workspace, use Glob with \"*\" for top-level files or \"**/*\" recursively before saying there are no files.
    - Content search: Grep (not grep or rg)
    - Read files: Read (not cat, head, or tail)
    - Edit files: Edit (not sed or awk)
    - Write files: Write (not echo redirection or cat with heredoc)
  - You can call multiple tools in a single response. If there are no \
-dependencies between them, make all independent calls in parallel. \
-However, if one call depends on a previous result, run them sequentially.
+dependencies between them, make all independent, concurrency-safe calls in parallel. \
+This reduces model round trips and latency, but it does not reduce the number of tool calls. \
+If one call depends on a previous result or changes shared state, run them sequentially. \
+Do not repeat an unchanged file read, identical search query, or state check when the result \
+already in context is sufficient.
+ - When several already-known files need the same slice, use one Read call with file_paths \
+instead of separate Read calls or a shell reader. This preserves the native read-before-edit cache.
  - Prefer Edit over Write for modifying existing files — Edit sends only \
 the diff, which is easier to review.
  - Always Read a file before editing it.
+ - When ApplyPatch is available, prefer one ApplyPatch call when one logical edit spans multiple files.
+ - When exec_command script mode is available, use it for a deterministic, homogeneous, local, non-interactive batch \
+that needs no intermediate result, approval, or model decision. A script must validate \
+preconditions, stop with a non-zero exit on dependent-operation failure, bound its output, and \
+print a concise summary. Keep separate calls for state-dependent work and for browser, UI, MCP, \
+external-system, destructive, or approval-sensitive actions. Never use a script to bypass a \
+dedicated tool or read-before-edit protection.
  - Some tools are deferred — only their names are visible. Before calling \
 a deferred tool, use ToolSearch to load its full schema first.
- - For non-trivial multi-step work, keep update_plan synchronized with actual \
-progress: after finishing a step, call update_plan with the full snapshot before \
-starting the next. Do not skip ahead in the visible checklist. Before the final \
-response for code, file, data, or user-visible changes, run verification, include \
-it in the plan if a plan exists, and send a final all-completed update_plan snapshot.
+ - When update_plan is available, use it for non-trivial multi-step work and synchronize it at each meaningful milestone, \
+not after each individual tool call or internal sub-step. Use a few user-relevant phases. At a \
+milestone transition, send one full snapshot that marks the previous milestone completed and the \
+next in_progress. Do not send an unchanged snapshot. Before the final response for code, file, \
+data, or user-visible changes, run verification, include it in the plan if a plan exists, and send \
+a final all-completed update_plan snapshot.
  - After changing code, verify before reporting done: run the project's build \
 and tests (or the narrowest command that exercises your change) with Bash, and \
 fix what you broke. Don't claim something works that you haven't run.",
@@ -98,7 +115,7 @@ fix what you broke. Don't claim something works that you haven't run.",
 dependent follow-up steps after a failure until you inspect the result and decide whether to \
 retry, increase the timeout, change strategy, or verify the required state another way. \
 For installs, dependency downloads, builds, migrations, servers, and other long-running \
-commands, choose a generous explicit timeout or use exec_command/write_stdin so you can poll \
+commands, choose a generous explicit timeout or, when available, use exec_command/write_stdin so you can poll \
 without killing the process.",
     );
     // Windows-only: launching GUI apps/URLs via `cmd /c start` is unreliable — the
@@ -108,8 +125,8 @@ without killing the process.",
     #[cfg(target_os = "windows")]
     {
         s.push_str(
-            "\n - On Windows, the Bash and exec_command tools run commands through PowerShell, \
-not cmd.exe or Unix bash. Use PowerShell syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
+            "\n - On Windows, the Bash and exec_command tools run commands through PowerShell \
+when shell-only work is necessary. They do not use cmd.exe or Unix bash. Use PowerShell syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
 `$env:NAME`, and `;` for sequential commands. If cmd.exe syntax is truly required, wrap it \
 explicitly as `cmd /C \"...\"`.",
         );
@@ -229,12 +246,10 @@ pub fn build_system_prompt(
         parts.push(custom_cached.clone());
     }
 
-    // Section: AGENTS.md (session permanent, hierarchical)
-    let agents_section = cache.sections.entry("agents_md").or_insert_with(|| {
-        let files = agents_md::collect_agents_md(cwd);
-        agents_md::format_agents_md_section(&files)
-    });
-    if !agents_section.is_empty() {
+    // Section: AGENTS.md (session permanent, resolved once by bootstrap)
+    if let Some(agents_section) = cache.sections.get("agents_md")
+        && !agents_section.is_empty()
+    {
         parts.push(agents_section.clone());
     }
 
@@ -754,8 +769,14 @@ mod tests {
         std::fs::write(cwd.join("AGENTS.md"), "AGENTS_CONTENT_HERE").unwrap();
         std::fs::write(cwd.join("CLAUDE.md"), "CLAUDE_CONTENT_HERE").unwrap();
 
+        let snapshot = crate::agents_md::resolve_agents_md(
+            cwd,
+            &nomi_config::config::ProjectInstructionsConfig::default(),
+        );
+        let mut cache = SystemPromptCache::new();
+        cache.set_agents_md(snapshot.formatted);
         let result = build_system_prompt(
-            &mut SystemPromptCache::new(),
+            &mut cache,
             None,
             &cwd.to_string_lossy(),
             "test-model",
@@ -812,6 +833,31 @@ mod tests {
             !result.contains("(project instructions)"),
             "no project instructions should be injected"
         );
+    }
+
+    #[test]
+    fn pre_resolved_agents_are_composed_after_custom_prompt_before_environment() {
+        let mut cache = SystemPromptCache::new();
+        cache.set_agents_md("PRE_RESOLVED_PROJECT_RULE".to_owned());
+
+        let result = build_system_prompt(
+            &mut cache,
+            Some("CUSTOM_PROMPT_MARKER"),
+            "/workspace/project",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+        );
+
+        let custom = result.find("CUSTOM_PROMPT_MARKER").unwrap();
+        let agents = result.find("PRE_RESOLVED_PROJECT_RULE").unwrap();
+        let environment = result.find("Working directory:").unwrap();
+        assert!(custom < agents);
+        assert!(agents < environment);
     }
 
     // --- Memory integration tests ---
@@ -933,8 +979,14 @@ mod tests {
 
         let skills = vec![make_test_skill("test-skill", "A skill", false, false)];
 
+        let snapshot = crate::agents_md::resolve_agents_md(
+            cwd,
+            &nomi_config::config::ProjectInstructionsConfig::default(),
+        );
+        let mut cache = SystemPromptCache::new();
+        cache.set_agents_md(snapshot.formatted);
         let result = build_system_prompt(
-            &mut SystemPromptCache::new(),
+            &mut cache,
             None,
             &cwd.to_string_lossy(),
             "test-model",
