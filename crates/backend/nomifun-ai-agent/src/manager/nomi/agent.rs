@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use nomi_agent::bootstrap::AgentBootstrap;
 use nomi_agent::companion_tools::{
-    CompanionMemorySink, CompanionSkillContributor, CompanionSkillSink, CompanionSkillTool, ListRecentEventsTool,
-    RecallMemoriesTool, SaveMemoryTool,
+    CompanionMemorySink, CompanionSkillContributor, CompanionSkillSink, CompanionSkillTool, CreateCompanionSkillTool,
+    ListRecentEventsTool, RecallMemoriesTool, SaveMemoryTool,
 };
 use nomi_agent::engine::AgentEngine;
 use nomi_agent::knowledge_tools::{KnowledgeReadTool, KnowledgeSearchTool, KnowledgeWriteTool};
@@ -345,6 +345,7 @@ impl NomiAgentManager {
         // the tool + the per-turn skill ContextContributor happens after build().
         if companion_skill_sink.is_some() {
             config.tools.allow_list.push("companion_skill".to_owned());
+            config.tools.allow_list.push("create_companion_skill".to_owned());
         }
 
         // The native knowledge_write (回血) tool writes only into the user's own
@@ -469,8 +470,11 @@ impl NomiAgentManager {
             engine
                 .registry_mut()
                 .register(Box::new(CompanionSkillTool::new(skill_sink.clone())));
+            engine
+                .registry_mut()
+                .register(Box::new(CreateCompanionSkillTool::new(skill_sink.clone())));
             engine.register_context_contributor(Arc::new(CompanionSkillContributor::new(skill_sink)));
-            debug!(conversation_id = %conversation_id, "Registered companion skill tool + contributor");
+            debug!(conversation_id = %conversation_id, "Registered companion skill tool + create tool + contributor");
         }
         // Capture a handle for proactive RAG before the sink/ids are consumed
         // by tool registration below (only when bound bases make search valid).

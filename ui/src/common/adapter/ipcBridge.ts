@@ -4193,6 +4193,7 @@ export interface IInsightsContributionStatus {
   on_session_end: boolean;
   auto_extract_enabled: boolean;
   auto_extract_idle_secs: number;
+  skill_mining_enabled: boolean;
   min_evidence_tier: string;
   require_skill_binding: boolean;
   min_work_turns: number;
@@ -4214,6 +4215,7 @@ export interface IUpdateInsightsContribution {
   on_session_end?: boolean;
   auto_extract_enabled?: boolean;
   auto_extract_idle_secs?: number;
+  skill_mining_enabled?: boolean;
   redacted_body?: boolean;
 }
 

@@ -18,6 +18,7 @@ const InsightsSettings: React.FC = () => {
   const [onSessionEnd, setOnSessionEnd] = useState(true);
   const [autoExtractEnabled, setAutoExtractEnabled] = useState(true);
   const [autoExtractIdleSecs, setAutoExtractIdleSecs] = useState(300);
+  const [skillMiningEnabled, setSkillMiningEnabled] = useState(false);
   const [redactedBody, setRedactedBody] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -32,6 +33,7 @@ const InsightsSettings: React.FC = () => {
       setOnSessionEnd(s.on_session_end);
       setAutoExtractEnabled(s.auto_extract_enabled ?? true);
       setAutoExtractIdleSecs(s.auto_extract_idle_secs ?? 300);
+      setSkillMiningEnabled(s.skill_mining_enabled ?? false);
       setRedactedBody(s.redacted_body);
     } catch (e) {
       Message.error(String(e));
@@ -52,6 +54,7 @@ const InsightsSettings: React.FC = () => {
         on_session_end: onSessionEnd,
         auto_extract_enabled: autoExtractEnabled,
         auto_extract_idle_secs: autoExtractIdleSecs,
+        skill_mining_enabled: skillMiningEnabled,
         redacted_body: redactedBody,
       });
       setStatus(saved);
@@ -170,6 +173,14 @@ const InsightsSettings: React.FC = () => {
               )}
             </div>
           )}
+
+          <div className='flex items-center justify-between'>
+            <span className='text-t-primary text-14px'>{t('insights.settings.skillMiningEnabled', { defaultValue: '技能挖矿' })}</span>
+            <Switch checked={skillMiningEnabled} onChange={setSkillMiningEnabled} />
+          </div>
+          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
+            {t('insights.settings.skillMiningHint', { defaultValue: '开启后，普通对话中的工具调用模式将被自动提取为技能建议。' })}
+          </Typography.Paragraph>
 
           <div className='flex items-center justify-between'>
             <span className='text-t-primary text-14px'>{t('insights.settings.redactedBody')}</span>

@@ -1121,7 +1121,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
         assert!(
             result.contains("update_plan"),

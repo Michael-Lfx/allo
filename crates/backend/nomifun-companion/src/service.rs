@@ -352,6 +352,7 @@ impl CompanionService {
             store: self.store.clone(),
             config: self.config.clone(),
             skill_paths: self.skill_paths.clone(),
+            emitter: self.emitter.clone(),
         })
     }
 

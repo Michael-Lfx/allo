@@ -8,7 +8,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Message, Popconfirm, Spin, Switch, Tag } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
-import type { ICompanionCollectConfig, ICompanionCollectedEvent, ICompanionSourceStats } from '@/common/adapter/ipcBridge';
+import type { ICompanionCollectConfig, ICompanionCollectedEvent, ICompanionSourceStats, ICompanionSourceRecommendation } from '@/common/adapter/ipcBridge';
 import type { useCompanionShared } from '../useNomi';
 
 const SOURCES: { key: keyof ICompanionCollectConfig; sensitivity: 'low' | 'medium' | 'high' }[] = [
@@ -31,6 +31,7 @@ const CollectTab: React.FC<Props> = ({ shared }) => {
   const { t } = useTranslation();
   const { sharedConfig, patchSharedConfig } = shared;
   const [stats, setStats] = useState<ICompanionSourceStats[]>([]);
+  const [recommendations, setRecommendations] = useState<ICompanionSourceRecommendation[]>([]);
   const [rawEvents, setRawEvents] = useState<ICompanionCollectedEvent[] | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -38,6 +39,10 @@ const CollectTab: React.FC<Props> = ({ shared }) => {
     void ipcBridge.companion.eventStats
       .invoke()
       .then(setStats)
+      .catch(() => {});
+    void ipcBridge.companion.sourceRecommendations
+      .invoke()
+      .then(setRecommendations)
       .catch(() => {});
   };
 
@@ -111,6 +116,31 @@ const CollectTab: React.FC<Props> = ({ shared }) => {
           );
         })}
       </div>
+
+      {/* Collector source smart recommendations (optimization 10) */}
+      {recommendations.length > 0 && (
+        <div className='flex flex-col gap-6px bg-fill-1 rd-10px px-12px py-10px'>
+          <span className='text-13px text-t-secondary font-500'>
+            {t('nomi.collect.recommendations', { defaultValue: '采集源推荐' })}
+          </span>
+          {recommendations.map((rec) => {
+            const color = rec.recommendation === 'enable' ? 'green' : rec.recommendation === 'review' ? 'orange' : 'gray';
+            const label = rec.recommendation === 'enable'
+              ? t('nomi.collect.recEnable', { defaultValue: '建议开启' })
+              : rec.recommendation === 'review'
+                ? t('nomi.collect.recReview', { defaultValue: '建议复查' })
+                : t('nomi.collect.recMaintain', { defaultValue: '维持现状' });
+            return (
+              <div key={rec.source} className='flex items-start gap-8px text-12px'>
+                <Tag size='small' color={color}>{label}</Tag>
+                <span className='text-t-primary shrink-0'>{rec.source}</span>
+                <span className='text-t-tertiary'>{rec.reason}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className='flex items-center gap-12px flex-wrap'>
         <Popconfirm
           title={t('nomi.collect.disableAllConfirm', {

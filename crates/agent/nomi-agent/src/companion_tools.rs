@@ -280,6 +280,16 @@ pub trait CompanionSkillSink: Send + Sync {
     async fn active_skills(&self) -> Vec<SkillListing>;
     /// The SKILL.md body of a named active skill, or `None` if unknown.
     async fn load_skill_body(&self, name: &str) -> Option<String>;
+    /// Partner LLM proactively creates a skill draft. The program controls all
+    /// writes (file path, DB status, suggestion card). Returns a confirmation
+    /// message for the LLM.
+    async fn create_skill_draft(
+        &self,
+        name: &str,
+        description: &str,
+        when_to_use: &str,
+        body: &str,
+    ) -> Result<String, String>;
 }
 
 /// `companion_skill` — invoke a learned skill by name to fetch its playbook.
@@ -380,6 +390,101 @@ impl crate::context_contributor::ContextContributor for CompanionSkillContributo
     }
 }
 
+/// `create_companion_skill` — partner LLM proactively creates a skill draft from
+/// conversation experience. The skill is created in `draft` status and must be
+/// accepted by the user before it becomes active.
+pub struct CreateCompanionSkillTool {
+    sink: Arc<dyn CompanionSkillSink>,
+}
+
+impl CreateCompanionSkillTool {
+    pub fn new(sink: Arc<dyn CompanionSkillSink>) -> Self {
+        Self { sink }
+    }
+}
+
+#[async_trait]
+impl Tool for CreateCompanionSkillTool {
+    fn name(&self) -> &str {
+        "create_companion_skill"
+    }
+
+    fn description(&self) -> &str {
+        "将你刚才对话中总结的经验或流程沉淀成一个可复用的技能草案。\
+         技能创建后处于待审阅状态，主人确认后才会激活。\
+         name 用英文短横线命名（如 market-safari）；\
+         description 一句话说明技能用途；\
+         when_to_use 描述适用场景；\
+         body 是技能的操作步骤正文（Markdown）。"
+    }
+
+    fn input_schema(&self) -> JsonSchema {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "技能名（英文、短横线分隔，如 market-safari）"},
+                "description": {"type": "string", "description": "一句话说明技能用途"},
+                "when_to_use": {"type": "string", "description": "什么场景下应该使用这个技能"},
+                "body": {"type": "string", "description": "技能正文（Markdown 格式的操作步骤）"}
+            },
+            "required": ["name", "description", "body"]
+        })
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        false
+    }
+
+    async fn execute(&self, input: Value) -> ToolResult {
+        let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let description = input.get("description").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let when_to_use = input.get("when_to_use").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let body = input.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
+
+        if name.is_empty() {
+            return ToolResult {
+                content: "name 不能为空".into(),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
+        if description.is_empty() {
+            return ToolResult {
+                content: "description 不能为空".into(),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
+        if body.is_empty() {
+            return ToolResult {
+                content: "body 不能为空".into(),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
+        match self
+            .sink
+            .create_skill_draft(name, description, when_to_use, body)
+            .await
+        {
+            Ok(msg) => ToolResult {
+                content: msg,
+                is_error: false,
+                images: Vec::new(),
+            },
+            Err(e) => ToolResult {
+                content: e,
+                is_error: true,
+                images: Vec::new(),
+            },
+        }
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Info
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +558,7 @@ mod tests {
 
     struct FakeSkillSink {
         skills: Vec<SkillListing>,
+        drafts: Mutex<Vec<(String, String, String, String)>>,
     }
     #[async_trait]
     impl CompanionSkillSink for FakeSkillSink {
@@ -462,11 +568,26 @@ mod tests {
         async fn load_skill_body(&self, name: &str) -> Option<String> {
             self.skills.iter().find(|s| s.name == name).map(|s| format!("# {}\nbody", s.name))
         }
+        async fn create_skill_draft(
+            &self,
+            name: &str,
+            description: &str,
+            when_to_use: &str,
+            body: &str,
+        ) -> Result<String, String> {
+            self.drafts.lock().unwrap().push((
+                name.into(),
+                description.into(),
+                when_to_use.into(),
+                body.into(),
+            ));
+            Ok(format!("技能「{name}」已创建为草案，等待主人审阅。"))
+        }
     }
 
     #[tokio::test]
     async fn skill_contributor_is_noop_when_empty() {
-        let sink = Arc::new(FakeSkillSink { skills: vec![] });
+        let sink = Arc::new(FakeSkillSink { skills: vec![], drafts: Mutex::new(vec![]) });
         let c = CompanionSkillContributor::new(sink);
         assert!(c.pre_turn_context().await.is_none());
     }
@@ -475,6 +596,7 @@ mod tests {
     async fn skill_contributor_lists_when_to_use() {
         let sink = Arc::new(FakeSkillSink {
             skills: vec![SkillListing { name: "weekly-report".into(), when_to_use: "周五出周报".into() }],
+            drafts: Mutex::new(vec![]),
         });
         let c = CompanionSkillContributor::new(sink);
         let out = c.pre_turn_context().await.unwrap();
@@ -487,6 +609,7 @@ mod tests {
     async fn skill_tool_returns_body_or_error() {
         let sink = Arc::new(FakeSkillSink {
             skills: vec![SkillListing { name: "fmt".into(), when_to_use: "x".into() }],
+            drafts: Mutex::new(vec![]),
         });
         let tool = CompanionSkillTool::new(sink);
         assert!(tool.execute(json!({})).await.is_error);
@@ -494,5 +617,53 @@ mod tests {
         assert!(!ok.is_error);
         assert!(ok.content.contains("fmt"));
         assert!(tool.execute(json!({"skill": "nope"})).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn create_skill_validates_required_fields() {
+        let sink = Arc::new(FakeSkillSink {
+            skills: vec![],
+            drafts: Mutex::new(vec![]),
+        });
+        let tool = CreateCompanionSkillTool::new(sink.clone());
+        // Missing name
+        assert!(tool.execute(json!({"description": "d", "body": "b"})).await.is_error);
+        // Missing description
+        assert!(tool.execute(json!({"name": "x", "body": "b"})).await.is_error);
+        // Missing body
+        assert!(tool.execute(json!({"name": "x", "description": "d"})).await.is_error);
+        // Empty strings
+        assert!(tool.execute(json!({"name": "", "description": "d", "body": "b"})).await.is_error);
+        assert!(tool.execute(json!({"name": "x", "description": "", "body": "b"})).await.is_error);
+        assert!(tool.execute(json!({"name": "x", "description": "d", "body": ""})).await.is_error);
+        // Nothing was recorded
+        assert!(sink.drafts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_skill_returns_confirmation() {
+        let sink = Arc::new(FakeSkillSink {
+            skills: vec![],
+            drafts: Mutex::new(vec![]),
+        });
+        let tool = CreateCompanionSkillTool::new(sink.clone());
+        let ok = tool
+            .execute(json!({
+                "name": "market-safari",
+                "description": "市场分析",
+                "when_to_use": "分析大盘时",
+                "body": "# 步骤\n1. 确认日期"
+            }))
+            .await;
+        assert!(!ok.is_error);
+        assert!(ok.content.contains("market-safari"));
+        assert!(ok.content.contains("草案"));
+        // The sink received the parameters
+        let drafts = sink.drafts.lock().unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].0, "market-safari");
+        assert_eq!(drafts[0].1, "市场分析");
+        assert_eq!(drafts[0].2, "分析大盘时");
+        assert!(drafts[0].3.contains("步骤"));
     }
 }

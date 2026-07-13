@@ -8,6 +8,7 @@ pub struct InsightsContributionStatusResponse {
     pub on_session_end: bool,
     pub auto_extract_enabled: bool,
     pub auto_extract_idle_secs: u64,
+    pub skill_mining_enabled: bool,
     pub min_evidence_tier: String,
     pub require_skill_binding: bool,
     pub min_work_turns: u32,
@@ -36,6 +37,8 @@ pub struct UpdateInsightsContributionRequest {
     pub auto_extract_enabled: Option<bool>,
     #[serde(default)]
     pub auto_extract_idle_secs: Option<u64>,
+    #[serde(default)]
+    pub skill_mining_enabled: Option<bool>,
     #[serde(default)]
     pub redacted_body: Option<bool>,
 }

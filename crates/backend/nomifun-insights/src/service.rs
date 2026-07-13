@@ -79,6 +79,7 @@ impl InsightsService {
             on_session_end: cfg.on_session_end,
             auto_extract_enabled: cfg.auto_extract_enabled,
             auto_extract_idle_secs: cfg.auto_extract_idle_secs,
+            skill_mining_enabled: cfg.skill_mining_enabled,
             min_evidence_tier: cfg.min_evidence_tier.clone(),
             require_skill_binding: cfg.require_skill_binding,
             min_work_turns: cfg.min_work_turns,
@@ -112,6 +113,9 @@ impl InsightsService {
             }
             if let Some(auto_extract_idle_secs) = req.auto_extract_idle_secs {
                 contribution.auto_extract_idle_secs = auto_extract_idle_secs;
+            }
+            if let Some(skill_mining_enabled) = req.skill_mining_enabled {
+                contribution.skill_mining_enabled = skill_mining_enabled;
             }
             if let Some(redacted_body) = req.redacted_body {
                 contribution.redacted_body = redacted_body;
