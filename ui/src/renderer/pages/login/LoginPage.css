@@ -141,22 +141,23 @@ body.login-page-active {
   display: flex;
   justify-content: center;
   margin-bottom: 18px;
+  animation: login-pulse 3s infinite;
 }
 
 .login-page__logo svg,
 .login-page__logo img {
-  width: 64px;
-  height: 64px;
-  animation: login-pulse 3s infinite;
+  display: block;
 }
 
 @keyframes login-pulse {
   0%,
   100% {
-    transform: scale(1);
+    opacity: 1;
+    filter: drop-shadow(0 0 0 rgba(15, 23, 42, 0));
   }
   50% {
-    transform: scale(1.05);
+    opacity: 1;
+    filter: drop-shadow(0 6px 16px rgba(15, 23, 42, 0.18));
   }
 }
 
