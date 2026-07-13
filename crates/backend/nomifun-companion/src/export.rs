@@ -887,7 +887,10 @@ mod tests {
             .patch(
                 &created.id,
                 serde_json::json!({
-                    "persona": {"preset": "sassy", "custom": "喜欢用颜文字"},
+                    "persona": {
+                        "selected": "sassy",
+                        "customs": [{"id": "emoji", "title": "颜文字", "body": "喜欢用颜文字"}]
+                    },
                     "model": {"provider_id": "prov_x", "model": "claude-fable-5"},
                     "appearance": {"companion_enabled": true, "companion_x": 7, "quiet_start": "22:00", "quiet_end": "08:00"}
                 }),

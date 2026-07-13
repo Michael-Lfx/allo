@@ -43,7 +43,7 @@ struct CompanionUpdateParams {
     /// The companion id to update (from nomi_companion_list).
     id: String,
     /// RFC 7396 merge-patch object. Valid top-level keys: "name" (string),
-    /// "character" (string), "persona" (object with "preset"/"custom"),
+    /// "character" (string), "persona" (object with "selected"/"customs"),
     /// "model" (object with "provider_id"/"model"),
     /// "appearance" (object — companion window config).
     /// Only provided keys are changed; omitted keys are untouched.

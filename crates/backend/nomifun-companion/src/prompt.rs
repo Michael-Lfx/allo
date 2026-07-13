@@ -221,6 +221,21 @@ pub(crate) fn persona_flavor(preset: &str) -> &'static str {
     }
 }
 
+/// Resolve the persona flavor text for a companion profile: built-in presets
+/// use the fixed one-liners above; a selected custom persona uses its `body`.
+pub(crate) fn resolve_persona_flavor(persona: &crate::config::PersonaConfig) -> &str {
+    if crate::config::PersonaConfig::is_builtin(&persona.selected) {
+        return persona_flavor(&persona.selected);
+    }
+    persona
+        .customs
+        .iter()
+        .find(|c| c.id == persona.selected)
+        .map(|c| c.body.as_str())
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| persona_flavor("lively"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

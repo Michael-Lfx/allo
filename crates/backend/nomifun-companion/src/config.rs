@@ -131,22 +131,150 @@ impl Default for AppearanceConfig {
     }
 }
 
-/// Persona settings injected into the chat/learn system prompts.
+/// Stable id used when migrating the legacy free-text `custom` field into
+/// [`PersonaConfig::customs`], so re-reading an already-migrated file does not
+/// duplicate the entry.
+pub const LEGACY_CUSTOM_PERSONA_ID: &str = "legacy-custom";
+
+/// Built-in persona keys (also the only values that use [`crate::prompt::persona_flavor`]).
+pub const BUILTIN_PERSONA_KEYS: &[&str] = &["lively", "calm", "sassy"];
+
+/// Soft caps for user-authored custom personas (enforced on patch).
+pub const MAX_CUSTOM_PERSONAS: usize = 10;
+pub const MAX_CUSTOM_PERSONA_TITLE_CHARS: usize = 20;
+pub const MAX_CUSTOM_PERSONA_BODY_CHARS: usize = 2000;
+
+/// One user-authored persona: a chip label (`title`) plus the flavor text
+/// injected into the system prompt (`body`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+pub struct CustomPersona {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// Persona settings injected into the chat/learn system prompts.
+///
+/// `selected` is either a built-in key (`lively` / `calm` / `sassy`) or the
+/// `id` of an entry in `customs`. Legacy JSON with `preset` + `custom` is
+/// accepted on read and rewritten in the new shape on the next save.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PersonaConfig {
-    /// One of `lively` | `calm` | `sassy`.
-    pub preset: String,
-    /// Free-form extra persona instructions appended by the user.
-    pub custom: String,
+    /// `lively` | `calm` | `sassy` | custom persona id.
+    pub selected: String,
+    pub customs: Vec<CustomPersona>,
 }
 
 impl Default for PersonaConfig {
     fn default() -> Self {
         Self {
-            preset: "lively".into(),
-            custom: String::new(),
+            selected: "lively".into(),
+            customs: Vec::new(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PersonaConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            selected: Option<String>,
+            /// Legacy field (pre multi-custom-persona).
+            #[serde(default)]
+            preset: Option<String>,
+            /// Legacy free-text supplement; migrated into `customs`.
+            #[serde(default)]
+            custom: Option<String>,
+            #[serde(default)]
+            customs: Vec<CustomPersona>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let selected = raw
+            .selected
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| raw.preset.filter(|s| !s.trim().is_empty()))
+            .unwrap_or_else(|| "lively".into());
+
+        let mut customs = raw.customs;
+        if let Some(legacy) = raw.custom {
+            let body = legacy.trim();
+            if !body.is_empty() && !customs.iter().any(|c| c.id == LEGACY_CUSTOM_PERSONA_ID) {
+                customs.insert(
+                    0,
+                    CustomPersona {
+                        id: LEGACY_CUSTOM_PERSONA_ID.into(),
+                        title: "我的设定".into(),
+                        body: body.to_owned(),
+                    },
+                );
+            }
+        }
+
+        Ok(Self { selected, customs }.normalized())
+    }
+}
+
+impl PersonaConfig {
+    /// Whether `key` is one of the three built-in persona presets.
+    pub fn is_builtin(key: &str) -> bool {
+        BUILTIN_PERSONA_KEYS.contains(&key)
+    }
+
+    /// Fall back `selected` to `lively` when it points at neither a built-in
+    /// nor an existing custom id. Does not mutate customs.
+    pub fn normalized(mut self) -> Self {
+        self.normalize_selected();
+        self
+    }
+
+    pub fn normalize_selected(&mut self) {
+        let ok = Self::is_builtin(&self.selected) || self.customs.iter().any(|c| c.id == self.selected);
+        if !ok {
+            self.selected = "lively".into();
+        }
+    }
+
+    /// Validate customs for a user patch (length / empties / caps). Callers
+    /// should also run [`Self::normalize_selected`] after a successful check.
+    pub fn validate_for_save(&self) -> Result<(), String> {
+        if self.customs.len() > MAX_CUSTOM_PERSONAS {
+            return Err(format!(
+                "at most {MAX_CUSTOM_PERSONAS} custom personas are allowed"
+            ));
+        }
+        for (i, c) in self.customs.iter().enumerate() {
+            if c.id.trim().is_empty() {
+                return Err(format!("customs[{i}].id must not be empty"));
+            }
+            let title = c.title.trim();
+            if title.is_empty() {
+                return Err(format!("customs[{i}].title must not be empty"));
+            }
+            if title.chars().count() > MAX_CUSTOM_PERSONA_TITLE_CHARS {
+                return Err(format!(
+                    "customs[{i}].title must be at most {MAX_CUSTOM_PERSONA_TITLE_CHARS} characters"
+                ));
+            }
+            let body = c.body.trim();
+            if body.is_empty() {
+                return Err(format!("customs[{i}].body must not be empty"));
+            }
+            if body.chars().count() > MAX_CUSTOM_PERSONA_BODY_CHARS {
+                return Err(format!(
+                    "customs[{i}].body must be at most {MAX_CUSTOM_PERSONA_BODY_CHARS} characters"
+                ));
+            }
+        }
+        // Duplicate ids would make selection ambiguous.
+        let mut seen = std::collections::HashSet::new();
+        for c in &self.customs {
+            if !seen.insert(c.id.as_str()) {
+                return Err(format!("duplicate custom persona id '{}'", c.id));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -239,5 +367,64 @@ mod tests {
         // companion_dialogues is excluded from the work-event onboarding hint.
         assert!(CollectConfig::default().companion_dialogues);
         assert!(!CollectConfig::default().any_enabled());
+    }
+
+    #[test]
+    fn legacy_persona_json_migrates_preset_and_custom() {
+        let persona: PersonaConfig = serde_json::from_str(
+            r#"{"preset":"calm","custom":"多用颜文字"}"#,
+        )
+        .unwrap();
+        assert_eq!(persona.selected, "calm");
+        assert_eq!(persona.customs.len(), 1);
+        assert_eq!(persona.customs[0].id, LEGACY_CUSTOM_PERSONA_ID);
+        assert_eq!(persona.customs[0].title, "我的设定");
+        assert_eq!(persona.customs[0].body, "多用颜文字");
+
+        // Re-serializing must not emit the legacy keys.
+        let v = serde_json::to_value(&persona).unwrap();
+        assert!(v.get("preset").is_none());
+        assert!(v.get("custom").is_none());
+        assert_eq!(v["selected"], "calm");
+    }
+
+    #[test]
+    fn legacy_custom_does_not_duplicate_on_remigrate() {
+        let persona: PersonaConfig = serde_json::from_str(
+            r#"{
+                "selected":"calm",
+                "custom":"多用颜文字",
+                "customs":[{"id":"legacy-custom","title":"我的设定","body":"多用颜文字"}]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(persona.customs.len(), 1);
+    }
+
+    #[test]
+    fn unknown_selected_falls_back_to_lively() {
+        let persona: PersonaConfig =
+            serde_json::from_str(r#"{"selected":"missing-id","customs":[]}"#).unwrap();
+        assert_eq!(persona.selected, "lively");
+    }
+
+    #[test]
+    fn validate_rejects_too_many_and_empty_fields() {
+        let mut persona = PersonaConfig::default();
+        persona.customs = (0..MAX_CUSTOM_PERSONAS + 1)
+            .map(|i| CustomPersona {
+                id: format!("c{i}"),
+                title: format!("t{i}"),
+                body: "body".into(),
+            })
+            .collect();
+        assert!(persona.validate_for_save().is_err());
+
+        persona.customs = vec![CustomPersona {
+            id: "c1".into(),
+            title: "  ".into(),
+            body: "body".into(),
+        }];
+        assert!(persona.validate_for_save().is_err());
     }
 }

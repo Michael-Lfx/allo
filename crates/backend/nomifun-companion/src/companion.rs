@@ -95,7 +95,7 @@ pub async fn build_companion_system_prompt(
     } else {
         memories
     };
-    let flavor = crate::prompt::persona_flavor(&profile.persona.preset);
+    let flavor = crate::prompt::resolve_persona_flavor(&profile.persona);
     // NOTE: the persona prompt deliberately does NOT pin a reply language. The
     // companion must answer in the app's UI language, which is decided live at
     // agent-build time and appended as a final directive in
@@ -131,9 +131,6 @@ pub async fn build_companion_system_prompt(
             "\n\n你还是整台 Nomi 桌面的总管家：用 nomi_* 工具可以查看/操作所有会话、定时任务、长期记忆和需求平台。\
              删除类操作先向主人复述目标确认后再执行。",
         );
-    }
-    if !profile.persona.custom.trim().is_empty() {
-        system.push_str(&format!("\n主人对你的额外设定：{}", profile.persona.custom.trim()));
     }
     system.push_str(
         "\n\n## 知识沉淀技巧\n\
@@ -1021,19 +1018,24 @@ mod tests {
             .unwrap();
         let mut profile = CompanionProfileConfig::new("毛球", "ink");
         profile.persona = PersonaConfig {
-            preset: "calm".into(),
-            custom: "叫主人「老大」".into(),
+            selected: "custom_boss".into(),
+            customs: vec![crate::config::CustomPersona {
+                id: "custom_boss".into(),
+                title: "老大厨".into(),
+                body: "叫主人「老大」，语气干练直接。".into(),
+            }],
         };
         let prompt = build_companion_system_prompt(&store, &profile, None, false).await;
         assert!(prompt.contains("你是 毛球"));
         assert!(!prompt.contains("你是 nomi"));
-        assert!(prompt.contains("沉稳温柔"));
-        assert!(prompt.contains("老大"));
-        // The owner-custom persona block must precede the knowledge-curation
+        assert!(prompt.contains("叫主人「老大」"));
+        assert!(!prompt.contains("沉稳温柔"), "custom persona must not stack a builtin flavor");
+        assert!(!prompt.contains("主人对你的额外设定"), "legacy supplement phrasing removed");
+        // The custom persona body must precede the knowledge-curation
         // section — otherwise the custom text hangs under that heading.
         assert!(
             prompt.find("老大").unwrap() < prompt.find("## 知识沉淀技巧").unwrap(),
-            "persona custom must come before the knowledge-curation section"
+            "persona body must come before the knowledge-curation section"
         );
         assert!(prompt.contains("主人喜欢中文回复"));
         assert!(prompt.contains("save_memory"));

@@ -298,6 +298,11 @@ impl CompanionRegistry {
         merged.created_at = current.created_at;
         merged.name = validate_name(&merged.name)?;
         merged
+            .persona
+            .validate_for_save()
+            .map_err(AppError::BadRequest)?;
+        merged.persona.normalize_selected();
+        merged
             .save(&self.companions_dir.join(&merged.id))
             .map_err(|e| AppError::Internal(format!("save companion profile: {e}")))?;
         companions.insert(merged.id.clone(), merged.clone());

@@ -484,8 +484,9 @@ mod tests {
         assert_eq!(profile.seq, None);
         assert_eq!(profile.name, "Nomi");
         assert_eq!(profile.character, "ink");
-        assert_eq!(profile.persona.preset, "calm");
-        assert_eq!(profile.persona.custom, "多用颜文字");
+        assert_eq!(profile.persona.selected, "calm");
+        assert_eq!(profile.persona.customs.len(), 1);
+        assert_eq!(profile.persona.customs[0].body, "多用颜文字");
         assert_eq!(profile.model.provider_id, "prov_x");
         assert!(profile.appearance.companion_enabled);
         assert_eq!(profile.appearance.companion_x, Some(12));

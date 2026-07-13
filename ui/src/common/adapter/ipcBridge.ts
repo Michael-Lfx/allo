@@ -3136,10 +3136,17 @@ export interface ICompanionThread {
 
 // ── Multi-companion (spec docs/superpowers/specs/2026-06-11-unified-memory-knowledge-design.md §4.3/§4.7/§4.8) ──
 
-/** Persona of one companion (same shape as the legacy single-companion config persona). */
+/** One user-authored companion persona (chip title + prompt body). */
+export interface ICustomPersona {
+  id: string;
+  title: string;
+  body: string;
+}
+
+/** Persona of one companion: built-in key or a custom persona id. */
 export interface ICompanionPersona {
-  preset: string;
-  custom: string;
+  selected: string;
+  customs: ICustomPersona[];
 }
 
 /** Model reference (provider + model id) as stored in companion configs. */

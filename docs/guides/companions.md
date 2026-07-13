@@ -40,8 +40,9 @@ global lives in the **shared-domain** tabs:
    carries a "default" badge). The default companion is the fallback whenever
    a channel has no explicit binding (see the channels section below).
 3. In a companion's **Settings** tab you can rename it at any time (takes
-   effect immediately), swap the character, tune the persona (preset or
-   custom), **pick a chat model just for this companion**, and toggle the
+   effect immediately), swap the character, tune the persona (built-in Lively /
+   Calm / Sassy, or create multiple custom personas with a title and personality
+   text), **pick a chat model just for this companion**, and toggle the
    desktop companion plus its quiet hours.
 4. **Deleting a companion** cascades: its companion conversations, runtime
    state (XP, …), and `('companion', companionId)` knowledge bindings are removed
