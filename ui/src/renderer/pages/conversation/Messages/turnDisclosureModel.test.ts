@@ -352,6 +352,62 @@ describe('buildTurnDisclosureItems', () => {
     expect(disclosure.state).toBe('canceled');
   });
 
+  test('keeps a canceled closed turn and its execution interval', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('tool', 'process', {
+          createdAt: 5200,
+          processStartedAt: 1200,
+          processEndedAt: 5200,
+          processState: 'canceled',
+        }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('canceled');
+    expect(disclosure.running).toBe(false);
+    expect(disclosure.startAt).toBe(1200);
+    expect(disclosure.endAt).toBe(5200);
+    expect(disclosure.processItemStates).toEqual({ tool: 'canceled' });
+  });
+
+  test('lets a final cancellation override an earlier failed process item', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('failed-tool', 'process', {
+          createdAt: 2800,
+          processStartedAt: 1200,
+          processEndedAt: 2800,
+          processState: 'failed',
+        }),
+        item('canceled-tool', 'process', {
+          createdAt: 6200,
+          processStartedAt: 3000,
+          processEndedAt: 6200,
+          processState: 'canceled',
+        }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('canceled');
+    expect(disclosure.startAt).toBe(1200);
+    expect(disclosure.endAt).toBe(6200);
+    expect(disclosure.processItemStates).toEqual({
+      'failed-tool': 'failed',
+      'canceled-tool': 'canceled',
+    });
+  });
+
   test('keeps a completed process-only tail inside the live disclosure until the request closes', () => {
     const result = buildTurnDisclosureItems([
       item('user', 'user', { createdAt: 1000 }),
