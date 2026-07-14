@@ -36,4 +36,13 @@ describe('SummonDrawer selection visual language', () => {
   test('does not add a redundant left selection rail to selected Skill cards', () => {
     expect(css.includes('.drawerCardSelected::before')).toBe(false);
   });
+
+  test('keeps selected Skill cards readable on hover', () => {
+    const start = css.indexOf('.drawerCardSelected:hover,');
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf('\n}', start));
+    expect(block.includes('var(--skill-selection-bg)')).toBe(true);
+    expect(block.includes('var(--skill-selection-fg)')).toBe(true);
+    expect(block.includes('var(--drawer-panel-hover-bg)')).toBe(false);
+  });
 });

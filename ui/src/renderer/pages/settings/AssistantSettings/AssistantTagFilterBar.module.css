@@ -99,6 +99,15 @@
   box-shadow: none;
 }
 
+.drawerFilterChipActive:hover,
+.drawerFilterChipActive:focus-visible {
+  color: var(--skill-selection-fg);
+  border-color: var(--skill-selection-fg);
+  background: var(--skill-selection-bg);
+  box-shadow: none;
+  outline: none;
+}
+
 .drawerManageChip {
   display: inline-flex;
   align-items: center;

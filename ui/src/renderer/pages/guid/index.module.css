@@ -1098,6 +1098,14 @@ button.guidResourceCard:focus-visible {
   box-shadow: none;
 }
 
+.drawerSegmentActive:hover,
+.drawerSegmentActive:focus-visible {
+  color: var(--skill-selection-fg);
+  background: var(--skill-selection-bg);
+  box-shadow: none;
+  outline: none;
+}
+
 .drawerCloseButton {
   width: 36px;
   height: 36px;
@@ -1253,6 +1261,21 @@ button.guidResourceCard:focus-visible {
   border-color: var(--skill-selection-fg);
   background: var(--skill-selection-bg);
   box-shadow: none;
+}
+
+.drawerCardSelected:hover,
+.drawerCardSelected:focus-visible {
+  color: var(--skill-selection-fg);
+  border-color: var(--skill-selection-fg);
+  background: var(--skill-selection-bg);
+  box-shadow: none;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.drawerCardSelected:hover::before,
+.drawerCardSelected:focus-visible::before {
+  background: transparent;
 }
 
 .drawerCardStatus {
