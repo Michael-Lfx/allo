@@ -32,7 +32,7 @@ const UpdateBadge: React.FC = () => (
 /**
  * Desktop-only titlebar entry for in-app updates.
  *
- * - Silent check on mount (badge only — does not auto-open the modal).
+ * - Silent check on mount; the icon is shown only when a newer version exists.
  * - Listens for startup check results from Layout.
  * - Click opens UpdateModal via the existing custom event.
  */
@@ -60,7 +60,9 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
         setLatestVersion(null);
       }
     } catch {
-      /* offline / endpoint unreachable — keep icon, no badge */
+      /* offline / endpoint unreachable — hide icon until a check succeeds */
+      setHasUpdate(false);
+      setLatestVersion(null);
     }
   }, []);
 
@@ -87,11 +89,9 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
     window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'titlebar' } }));
   }, []);
 
-  if (!isDesktopShell()) return null;
+  if (!isDesktopShell() || !hasUpdate) return null;
 
-  const tooltip = hasUpdate
-    ? t('update.titlebarUpdateAvailable', { version: latestVersion ?? '' })
-    : t('settings.checkForUpdates');
+  const tooltip = t('update.titlebarUpdateAvailable', { version: latestVersion ?? '' });
 
   return (
     <InstantHoverTooltip content={tooltip} position='bottom'>
@@ -102,7 +102,7 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
         aria-label={tooltip}
       >
         <Download theme='outline' size={iconSize} fill='currentColor' strokeWidth={strokeWidth} />
-        {hasUpdate && <UpdateBadge />}
+        <UpdateBadge />
       </button>
     </InstantHoverTooltip>
   );

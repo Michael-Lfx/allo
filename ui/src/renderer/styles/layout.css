@@ -168,6 +168,15 @@
   top: 96px !important;
 }
 
+/* Instant hover tooltips (titlebar / sider icon buttons) mount on document.body
+   so they sit above the chat header row. Keep the surface fully opaque — theme
+   --color-tooltip-bg can be translucent (e.g. frosted-glass), which would let
+   header pills bleed through when the tooltip drops below the titlebar. */
+.instant-hover-tooltip {
+  isolation: isolate;
+  background-color: #1f2329;
+}
+
 /* Default background for select and input components */
 .arco-select-view,
 .arco-select-addbefore,
