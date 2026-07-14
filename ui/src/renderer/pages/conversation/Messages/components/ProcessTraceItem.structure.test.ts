@@ -74,4 +74,9 @@ describe('ProcessTraceItem Codex-style execution rows', () => {
     expect(source.includes('const state = stateOverride ?? getProcessItemState(item);')).toBe(true);
     expect(source.includes('stateOverride={stateOverride}')).toBe(true);
   });
+
+  test('passes soft-closed process state into MessageThinking so stale thinking stops showing as live', () => {
+    expect(source.includes('forceDone={state !== \'running\' && state !== \'waiting\'}')).toBe(true);
+  });
 });
+

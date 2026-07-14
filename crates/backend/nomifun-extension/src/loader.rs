@@ -107,7 +107,28 @@ fn resolve_scan_paths_inner(
         push(default_data.join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
     }
 
+    for (path, source) in legacy_extension_scan_paths() {
+        push(path, source);
+    }
+
     paths
+}
+
+fn legacy_extension_scan_paths() -> Vec<(PathBuf, ExtensionSource)> {
+    let mut legacy = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        legacy.push((
+            home.join(".nomifun").join(EXTENSIONS_DIR_NAME),
+            ExtensionSource::Appdata,
+        ));
+    }
+    if let Some(data_local) = dirs::data_local_dir() {
+        legacy.push((
+            data_local.join("nomifun").join(EXTENSIONS_DIR_NAME),
+            ExtensionSource::Appdata,
+        ));
+    }
+    legacy
 }
 
 fn derive_legacy_appdata_extensions_dir(data_dir: &Path) -> Option<PathBuf> {
@@ -693,6 +714,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_scan_paths_no_env_includes_legacy_extension_dirs() {
+        let paths = resolve_scan_paths_inner(None, false, None);
+        if let Some(home) = dirs::home_dir() {
+            let legacy_home = home.join(".nomifun").join(EXTENSIONS_DIR_NAME);
+            assert!(
+                paths.iter().any(|sp| sp.path == legacy_home && sp.source == ExtensionSource::Appdata),
+                "expected legacy home extensions path {legacy_home:?}, got {paths:?}"
+            );
+        }
+        if let Some(data_local) = dirs::data_local_dir() {
+            let legacy_appdata = data_local.join("nomifun").join(EXTENSIONS_DIR_NAME);
+            assert!(
+                paths.iter().any(|sp| sp.path == legacy_appdata && sp.source == ExtensionSource::Appdata),
+                "expected legacy appdata extensions path {legacy_appdata:?}, got {paths:?}"
+            );
+        }
+    }
+
+    #[test]
     fn resolve_scan_paths_e2e_no_env_returns_empty() {
         let paths = resolve_scan_paths_inner(None, true, None);
         assert!(paths.is_empty());
@@ -722,8 +762,15 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
 
         let paths = resolve_scan_paths_inner(None, false, Some(&data_dir));
-        assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].path, data_dir.join(EXTENSIONS_DIR_NAME));
         assert_eq!(paths[0].source, ExtensionSource::Local);
+        assert!(
+            paths.len() >= 1,
+            "expected at least the local extensions dir, got {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|sp| sp.source == ExtensionSource::Appdata),
+            "expected legacy extension scan paths to remain available, got {paths:?}"
+        );
     }
 }

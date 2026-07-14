@@ -328,6 +328,36 @@ const formatToolReceiptPart = (
       return part.state === 'running'
         ? t('messages.processReceipt.searchingCode', { defaultValue: 'Searching code' })
         : t('messages.processReceipt.searchedCode', { defaultValue: 'Searched code' });
+    case 'web_search':
+      if (displayTarget) {
+        return part.state === 'running'
+          ? t('messages.processReceipt.searchingWebTarget', {
+              target: displayTarget,
+              defaultValue: 'Searching web: {{target}}',
+            })
+          : t('messages.processReceipt.searchedWebTarget', {
+              target: displayTarget,
+              defaultValue: 'Searched web: {{target}}',
+            });
+      }
+      return part.state === 'running'
+        ? t('messages.processReceipt.searchingWeb', { defaultValue: 'Searching web' })
+        : t('messages.processReceipt.searchedWeb', { defaultValue: 'Searched web' });
+    case 'web_extract':
+      if (displayTarget) {
+        return part.state === 'running'
+          ? t('messages.processReceipt.extractingWebTarget', {
+              target: displayTarget,
+              defaultValue: 'Extracting web page: {{target}}',
+            })
+          : t('messages.processReceipt.extractedWebTarget', {
+              target: displayTarget,
+              defaultValue: 'Extracted web page: {{target}}',
+            });
+      }
+      return part.state === 'running'
+        ? t('messages.processReceipt.extractingWeb', { defaultValue: 'Extracting web page' })
+        : t('messages.processReceipt.extractedWeb', { defaultValue: 'Extracted web page' });
     case 'list_files':
       return part.state === 'running'
         ? t('messages.processReceipt.listingFiles', { defaultValue: 'Listing files' })
@@ -570,8 +600,15 @@ const renderProcessTraceItem = (
   />
 );
 
-const isCompletedThinkingProcessItem = (item: IRenderableItem): boolean =>
-  'type' in item && item.type === 'thinking' && item.content.status === 'done';
+const isExpandableThinkingProcessItem = (
+  item: IRenderableItem,
+  state: TurnDisclosureProcessState
+): boolean => {
+  if (!('type' in item) || item.type !== 'thinking') return false;
+  // Soft-closed turns remapped running thinking → completed in processItemStates
+  // even when the persisted message status never flipped to done.
+  return item.content.status === 'done' || (state !== 'running' && state !== 'waiting');
+};
 
 const getProcessItemLayoutKind = (item: IRenderableItem): string => {
   if ('type' in item && item.type === 'text') return 'text';
@@ -1081,7 +1118,9 @@ const MessageList: React.FC<{
         getProcessItemKey={getProcessedItemAnchorId}
         getProcessItemState={getDisclosureProcessItemState}
         getProcessItemLayoutKind={getProcessItemLayoutKind}
-        getProcessItemCanExpandAll={isCompletedThinkingProcessItem}
+        getProcessItemCanExpandAll={(processItem) =>
+          isExpandableThinkingProcessItem(processItem, getDisclosureProcessItemState(processItem))
+        }
       />
     );
   };

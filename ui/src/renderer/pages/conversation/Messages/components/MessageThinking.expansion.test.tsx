@@ -13,6 +13,11 @@ describe('MessageThinking expansion', () => {
     expect(source.includes('setExpanded(false)')).toBe(false);
   });
 
+  test('treats soft-closed process thinking as done even when message status stays thinking', () => {
+    expect(source.includes('forceDone?: boolean')).toBe(true);
+    expect(source.includes('const isDone = status === \'done\' || forceDone')).toBe(true);
+  });
+
   test('supports a neutral process timeline variant', () => {
     expect(source.includes("variant = 'standalone'")).toBe(true);
     expect(source.includes('styles.containerProcess')).toBe(true);

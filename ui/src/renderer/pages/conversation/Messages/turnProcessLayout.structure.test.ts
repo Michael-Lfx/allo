@@ -78,7 +78,7 @@ describe('turn process disclosure content layout', () => {
     );
     expect(cssSource.includes('.turn-process-disclosure__header-actions')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure__toggle')).toBe(true);
-    expect(messageListSource.includes('getProcessItemCanExpandAll={isCompletedThinkingProcessItem}')).toBe(true);
+    expect(messageListSource.includes('isExpandableThinkingProcessItem(processItem, getDisclosureProcessItemState(processItem))')).toBe(true);
     expect(disclosureSource.includes('expanded: expandAllProcessItemKeys.has(itemKey)')).toBe(true);
     expect(messageListSource.includes('expansionControls')).toBe(true);
   });

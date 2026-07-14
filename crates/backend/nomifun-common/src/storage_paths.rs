@@ -135,10 +135,10 @@ pub fn resolve_database_path(data_dir: &Path) -> PathBuf {
         tracing::warn!(
             data_dir = %data_dir.display(),
             error = %err,
-            "failed to rename legacy nomifun-backend.db family; continuing with flowy-backend.db path"
+            "failed to rename legacy nomifun-backend.db family; using existing database file if present"
         );
     }
-    database_path(data_dir)
+    existing_database_file(data_dir).unwrap_or_else(|| database_path(data_dir))
 }
 
 /// The data-dir leaf for the active build channel: `Nomi` on stable, `Nomi-dev`
@@ -234,5 +234,34 @@ mod tests {
         assert!(path.exists());
         assert!(!legacy.exists());
         assert!(tmp.path().join(DATABASE_WAL_FILE).exists());
+    }
+
+    #[test]
+    fn resolve_database_path_falls_back_to_legacy_when_rename_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let legacy = legacy_database_path(tmp.path());
+        std::fs::write(&legacy, b"db").unwrap();
+
+        // Hold the legacy db exclusively on Windows so the rename in
+        // ensure_database_filename_migrated fails while flowy-backend.db is absent.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _held = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(&legacy)
+                .unwrap();
+            let path = resolve_database_path(tmp.path());
+            assert_eq!(path, legacy);
+            assert!(legacy.exists());
+            assert!(!database_path(tmp.path()).exists());
+        }
+
+        #[cfg(not(windows))]
+        {
+            eprintln!("skipping rename-failure fallback test on non-Windows platforms");
+        }
     }
 }

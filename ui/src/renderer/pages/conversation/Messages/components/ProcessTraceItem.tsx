@@ -171,6 +171,54 @@ const formatToolReceiptDetailLabel = (
       : t('messages.processReceipt.searchedCode', { defaultValue: 'Searched code' });
   }
 
+  if (row.action === 'web_search') {
+    const fallbackTarget = t('tools.webSearch.displayName', { defaultValue: 'Web Search' });
+    if (row.state === 'failed' || row.state === 'canceled') {
+      return t(`messages.toolSummary.${row.state}`, {
+        target: row.target ?? fallbackTarget,
+        defaultValue: defaultToolSummaryByState[row.state],
+      });
+    }
+    if (row.target) {
+      return row.state === 'running'
+        ? t('messages.processReceipt.searchingWebTarget', {
+            target: row.target,
+            defaultValue: 'Searching web: {{target}}',
+          })
+        : t('messages.processReceipt.searchedWebTarget', {
+            target: row.target,
+            defaultValue: 'Searched web: {{target}}',
+          });
+    }
+    return row.state === 'running'
+      ? t('messages.processReceipt.searchingWeb', { defaultValue: 'Searching web' })
+      : t('messages.processReceipt.searchedWeb', { defaultValue: 'Searched web' });
+  }
+
+  if (row.action === 'web_extract') {
+    const fallbackTarget = t('tools.webExtract.displayName', { defaultValue: 'Web Extract' });
+    if (row.state === 'failed' || row.state === 'canceled') {
+      return t(`messages.toolSummary.${row.state}`, {
+        target: row.target ?? fallbackTarget,
+        defaultValue: defaultToolSummaryByState[row.state],
+      });
+    }
+    if (row.target) {
+      return row.state === 'running'
+        ? t('messages.processReceipt.extractingWebTarget', {
+            target: row.target,
+            defaultValue: 'Extracting web page: {{target}}',
+          })
+        : t('messages.processReceipt.extractedWebTarget', {
+            target: row.target,
+            defaultValue: 'Extracted web page: {{target}}',
+          });
+    }
+    return row.state === 'running'
+      ? t('messages.processReceipt.extractingWeb', { defaultValue: 'Extracting web page' })
+      : t('messages.processReceipt.extractedWeb', { defaultValue: 'Extracted web page' });
+  }
+
   if (row.action === 'list_files') {
     return row.target
       ? t('messages.processReceipt.listedTarget', {
@@ -213,7 +261,9 @@ const formatToolReceiptDetailLabel = (
     );
   }
 
-  return joinCompactText([row.title, displayTarget]);
+  return displayTarget && displayTarget !== row.title
+    ? joinCompactText([row.title, displayTarget])
+    : displayTarget ?? row.title;
 };
 
 const formatFileChangeStats = (file: FileChangeInfo): string =>
@@ -645,6 +695,7 @@ const ProcessTraceItem: React.FC<{
         <MessageThinking
           message={item}
           variant='process'
+          forceDone={state !== 'running' && state !== 'waiting'}
           expanded={thinkingExpansion?.expanded}
           onExpandedChange={thinkingExpansion?.onExpandedChange}
         />

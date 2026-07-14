@@ -63,5 +63,7 @@ services:
 
 volumes:
   flowy-data:
+    # Preserve existing deployments that used the pre-rebrand volume name.
+    name: nomifun-data
   # caddy-data:
   # caddy-config:

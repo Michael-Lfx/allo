@@ -11,9 +11,9 @@
 //! `nomifun-companion/src/migrate.rs`, hardened with a cross-process lock and a
 //! live-writer probe:
 //!
-//! 1. **Gate** — skip when `NOMIFUN_DATA_DIR` is set (checked by the caller in
-//!    [`effective_data_dir`]), when the new root already has a database, or
-//!    when the legacy root has no database (a cleaned temp dir must be
+//! 1. **Gate** — skip when `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` is set (checked
+//!    by the caller in [`effective_data_dir`]), when the new root already has a
+//!    database, or when the legacy root has no database (a cleaned temp dir must be
 //!    tolerated, it is the whole point of this exercise). The gate keys on
 //!    the **`.db` only**: a relocation marker in the new root *without* the
 //!    database is the signature of a commit that was interrupted between the
@@ -135,8 +135,8 @@ pub enum RelocateOutcome {
 }
 
 /// Whether legacy-temp relocation should run at all. Skipped when the data dir
-/// is explicitly overridden (`NOMIFUN_DATA_DIR`) OR when this is a non-stable
-/// channel: dev/beta/canary run from an isolated sibling dir
+/// is explicitly overridden (`FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR`) OR when this
+/// is a non-stable channel: dev/beta/canary run from an isolated sibling dir
 /// (`…/Flowy/Nomi-dev`) and must NOT adopt the legacy temp-rooted *stable*
 /// install, which would cross-contaminate the very state we isolated. Pure, for
 /// unit testing (the live channel is compile-time, so the predicate is tested
@@ -153,7 +153,7 @@ pub fn effective_data_dir(default_dir: PathBuf) -> PathBuf {
     // Skip relocation entirely under an explicit data-dir override or a
     // non-stable channel — either way the legacy stable install must not be
     // adopted into this root.
-    let env_override = std::env::var_os("NOMIFUN_DATA_DIR").is_some();
+    let env_override = nomifun_common::storage_paths::resolve_data_dir_from_env().is_some();
     if !should_relocate(env_override, nomifun_app::channel::is_stable()) {
         return default_dir;
     }
@@ -1037,13 +1037,19 @@ mod tests {
 
     #[test]
     fn env_override_skips_relocation_entirely() {
-        // Only this test touches the env var, and only effective_data_dir
-        // reads it — safe under the parallel test runner.
+        // Only this test touches the env vars, and only effective_data_dir
+        // reads them — safe under the parallel test runner.
         // SAFETY: no other thread in this test binary mutates the env.
         unsafe { std::env::set_var("NOMIFUN_DATA_DIR", r"X:\custom-root") };
         let dir = PathBuf::from(r"X:\custom-root\Nomi");
         let resolved = effective_data_dir(dir.clone());
         unsafe { std::env::remove_var("NOMIFUN_DATA_DIR") };
         assert_eq!(resolved, dir);
+
+        unsafe { std::env::set_var("FLOWY_DATA_DIR", r"Y:\flowy-root") };
+        let flowy_dir = PathBuf::from(r"Y:\flowy-root\Nomi");
+        let flowy_resolved = effective_data_dir(flowy_dir.clone());
+        unsafe { std::env::remove_var("FLOWY_DATA_DIR") };
+        assert_eq!(flowy_resolved, flowy_dir);
     }
 }

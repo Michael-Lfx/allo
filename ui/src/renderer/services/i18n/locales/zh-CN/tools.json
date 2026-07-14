@@ -16,6 +16,10 @@
     "displayName": "网页搜索",
     "description": "搜索网页内容"
   },
+  "webExtract": {
+    "displayName": "网页提取",
+    "description": "提取网页正文"
+  },
   "mcp": {
     "generic": {
       "displayName": "MCP工具: {{toolName}}",

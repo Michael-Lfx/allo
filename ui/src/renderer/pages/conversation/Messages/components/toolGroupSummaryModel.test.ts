@@ -109,6 +109,41 @@ describe('buildToolReceiptSummaryParts', () => {
     ]);
   });
 
+  test('classifies web_search and web_extract separately from code search', () => {
+    const parts = buildToolReceiptSummaryParts(
+      [
+        tool({
+          key: 'search',
+          name: 'web_search',
+          input: '{"query":"北京天气"}',
+          status: 'completed',
+        }),
+        tool({
+          key: 'extract',
+          name: 'web_extract',
+          input: '{"urls":["https://example.com/weather"]}',
+          status: 'running',
+        }),
+      ],
+      'running'
+    );
+
+    expect(parts).toEqual([
+      {
+        action: 'web_search',
+        count: 1,
+        state: 'completed',
+        target: '北京天气',
+      },
+      {
+        action: 'web_extract',
+        count: 1,
+        state: 'running',
+        target: 'https://example.com/weather',
+      },
+    ]);
+  });
+
   test('keeps completed read status separate from a running command in the same receipt', () => {
     const parts = buildToolReceiptSummaryParts(
       [

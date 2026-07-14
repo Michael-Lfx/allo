@@ -16,6 +16,10 @@
     "displayName": "Web Search",
     "description": "Search web content"
   },
+  "webExtract": {
+    "displayName": "Web Extract",
+    "description": "Extract web page content"
+  },
   "mcp": {
     "generic": {
       "displayName": "MCP Tool: {{toolName}}",

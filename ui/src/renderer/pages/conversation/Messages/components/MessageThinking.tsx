@@ -17,6 +17,8 @@ interface MessageThinkingProps {
   variant?: 'standalone' | 'process';
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  /** Soft-closed by the turn disclosure even if the message status never flipped to done. */
+  forceDone?: boolean;
 }
 
 const MessageThinking: React.FC<MessageThinkingProps> = ({
@@ -24,6 +26,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   variant = 'standalone',
   expanded,
   onExpandedChange,
+  forceDone = false,
 }) => {
   const { t } = useTranslation();
   const isProcessVariant = variant === 'process';
@@ -40,7 +43,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
 
   const { status, subject } = message.content;
   const text = toDisplayText(message.content.content);
-  const isDone = status === 'done';
+  const isDone = status === 'done' || forceDone;
   const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);
   const [internalExpanded, setInternalExpanded] = useState(() => defaultExpanded);
   const resolvedExpanded = expanded ?? internalExpanded;

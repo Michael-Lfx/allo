@@ -209,6 +209,27 @@ describe('buildTurnDisclosureItems', () => {
     expect(disclosure.processItemStates).toEqual({ tool: 'completed' });
   });
 
+  test('soft-closes stale running thinking after a closed turn has a final answer', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('thinking', 'process_content', { createdAt: 1500, processState: 'running' }),
+        item('tool', 'process', { createdAt: 2000, processState: 'completed' }),
+        item('final', 'assistant', { createdAt: 3000 }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result.find((entry) => entry.type === 'turn_disclosure');
+    expect(disclosure?.type).toBe('turn_disclosure');
+    if (disclosure?.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('completed');
+    expect(disclosure.processItemStates).toEqual({
+      thinking: 'completed',
+      tool: 'completed',
+    });
+  });
+
   test('keeps running assistant text visible after the live disclosure', () => {
     const result = buildTurnDisclosureItems([
       item('user', 'user', { createdAt: 1000 }),

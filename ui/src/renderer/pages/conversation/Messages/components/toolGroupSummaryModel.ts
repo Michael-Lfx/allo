@@ -18,6 +18,8 @@ export type ToolReceiptAction =
   | 'edit_files'
   | 'run_commands'
   | 'search_code'
+  | 'web_search'
+  | 'web_extract'
   | 'list_files'
   | 'load_tools'
   | 'generic';
@@ -49,6 +51,8 @@ const toolReceiptIconByAction: Record<ToolReceiptAction, ToolReceiptIcon> = {
   edit_files: 'edit',
   run_commands: 'tool',
   search_code: 'file',
+  web_search: 'tool',
+  web_extract: 'tool',
   list_files: 'file',
   load_tools: 'tool',
   generic: 'tool',
@@ -183,11 +187,45 @@ const getToolSearchText = (tool: NormalizedToolCall): string =>
 const getToolNameSearchText = (tool: NormalizedToolCall): string =>
   normalizeToolSearchText(`${compactToolText(tool.name)} ${tool.key ?? ''}`);
 
+const parseToolInputRecord = (tool: NormalizedToolCall): Record<string, unknown> | undefined => {
+  const sources = [tool.input, tool.description].filter((value): value is string => Boolean(value));
+  for (const source of sources) {
+    try {
+      const parsed = JSON.parse(source);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Plain-text tool descriptions are not JSON input payloads.
+    }
+  }
+  return undefined;
+};
+
+const getWebSearchTarget = (tool: NormalizedToolCall): string | undefined => {
+  const record = parseToolInputRecord(tool);
+  const query = record?.query;
+  return typeof query === 'string' && compactToolText(query) ? compactToolText(query) : undefined;
+};
+
+const getWebExtractTarget = (tool: NormalizedToolCall): string | undefined => {
+  const record = parseToolInputRecord(tool);
+  const urls = record?.urls;
+  if (!Array.isArray(urls)) return undefined;
+  const normalized = urls
+    .filter((url): url is string => typeof url === 'string' && compactToolText(url).length > 0)
+    .map((url) => compactToolText(url));
+  return normalized.length ? normalized.join(', ') : undefined;
+};
+
 const classifyToolForReceipt = (tool: NormalizedToolCall): ToolReceiptAction => {
   const text = getToolSearchText(tool);
   const nameText = getToolNameSearchText(tool);
+  const normalizedName = normalizeToolSearchText(compactToolText(tool.name));
 
-  if (normalizeToolSearchText(compactToolText(tool.name)) === 'update plan') return 'generic';
+  if (normalizedName === 'web search') return 'web_search';
+  if (normalizedName === 'web extract') return 'web_extract';
+  if (normalizedName === 'update plan') return 'generic';
   if (/\b(bash|shell|exec|execute|terminal|command|run)\b/.test(nameText)) return 'run_commands';
   if (/\b(grep|rg|search|find)\b/.test(text)) return 'search_code';
   if (/\b(glob|list|ls|directory|dir)\b/.test(text)) return 'list_files';
@@ -205,6 +243,12 @@ const getToolReceiptTarget = (tool: NormalizedToolCall, action: ToolReceiptActio
   if (action === 'read_files' || action === 'edit_files') {
     return getFileTarget(tool);
   }
+  if (action === 'web_search') {
+    return getWebSearchTarget(tool);
+  }
+  if (action === 'web_extract') {
+    return getWebExtractTarget(tool);
+  }
   if (action !== 'generic') return undefined;
   return formatToolTarget(tool);
 };
@@ -214,6 +258,8 @@ const getToolReceiptDetailTarget = (tool: NormalizedToolCall, action: ToolReceip
   const name = compactToolText(tool.name);
 
   if (action === 'generic') return formatToolTarget(tool);
+  if (action === 'web_search') return getWebSearchTarget(tool);
+  if (action === 'web_extract') return getWebExtractTarget(tool);
   if (action === 'read_files' || action === 'edit_files') return getFileTarget(tool);
   if (description && description !== name) return description;
   if (action === 'run_commands') return getCommandTarget(tool);
