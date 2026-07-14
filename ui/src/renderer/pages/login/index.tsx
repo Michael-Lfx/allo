@@ -1,10 +1,19 @@
+/**
+ * @license
+ * Copyright 2025-2026 Flowy (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import FlowyLogo from '@renderer/components/brand/FlowyLogo';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage } from '@/renderer/services/i18n';
 import { useNavigate } from 'react-router-dom';
+import { motion, useReducedMotion } from 'framer-motion';
+import { PreviewClose, PreviewOpen, Lock, User } from '@icon-park/react';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import { useAuth } from '../../hooks/context/AuthContext';
+import LanMesh from './LanMesh';
 import './LoginPage.css';
 
 type MessageState = {
@@ -34,6 +43,7 @@ const deobfuscate = (text: string): string => {
 const LoginPage: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const reduceMotion = useReducedMotion();
   const { status, login, setup, needsSetup } = useAuth();
 
   const [username, setUsername] = useState('');
@@ -190,177 +200,185 @@ const LoginPage: React.FC = () => {
     return <AppLoader />;
   }
 
+  const panelTitle = needsSetup ? t('login.setupTitle') : t('login.welcomeTitle');
+  const panelDesc = needsSetup ? t('login.setupSubtitle') : t('login.subtitle');
+
   return (
     <div className='login-page'>
-      {/* <div className='login-page__background' aria-hidden='true'>
-        <div className='login-page__background-circle login-page__background-circle--lg' />
-        <div className='login-page__background-circle login-page__background-circle--md' />
-        <div className='login-page__background-circle login-page__background-circle--sm' />
-      </div> */}
+      <motion.div
+        className='login-page__shell'
+        initial={reduceMotion ? false : { opacity: 0, scale: 0.97 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <aside className='login-page__brand'>
+          <LanMesh />
+          <div className='login-page__brand-content'>
+            <motion.div
+              className='login-page__brand-logo'
+              initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2, duration: 0.4 }}
+            >
+              <FlowyLogo size={36} title={t('login.brand')} />
+            </motion.div>
+            <motion.h2
+              className='login-page__brand-title'
+              initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3, duration: 0.4 }}
+            >
+              {t('login.brand')}
+            </motion.h2>
+          </div>
+        </aside>
 
-      <div className='login-page__card'>
-        <label className='login-page__lang-select-wrapper' htmlFor='lang-select'>
-          <select
-            id='lang-select'
-            className='login-page__lang-select'
-            value={i18n.language}
-            onChange={handleLanguageChange}
+        <section className='login-page__panel'>
+          <motion.div
+            className='login-page__panel-inner'
+            initial={reduceMotion ? false : { opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.12, duration: 0.4 }}
           >
-            {supportedLanguages.map((lang) => (
-              <option key={lang.code} value={lang.code}>
-                {lang.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className='login-page__header'>
-          <div className='login-page__logo'>
-            <FlowyLogo size={64} title={t('login.brand')} />
-          </div>
-          <h1 className='login-page__title'>{t('login.brand')}</h1>
-          <p className='login-page__subtitle'>
-            {needsSetup ? t('login.setupSubtitle') : t('login.subtitle')}
-          </p>
-        </div>
-
-        <form className='login-page__form' onSubmit={handleSubmit}>
-          <div className='login-page__form-item'>
-            <label className='login-page__label' htmlFor='username'>
-              {t('login.username')}
+            <label className='login-page__lang' htmlFor='lang-select'>
+              <span className='login-page__visually-hidden'>{t('login.languageToggle')}</span>
+              <select
+                id='lang-select'
+                className='login-page__lang-select'
+                value={i18n.language}
+                onChange={handleLanguageChange}
+              >
+                {supportedLanguages.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
             </label>
-            <div className='login-page__input-wrapper'>
-              <svg
-                className='login-page__input-icon'
-                viewBox='0 0 24 24'
-                fill='none'
-                stroke='currentColor'
-                strokeWidth='2'
-                aria-hidden='true'
+
+            <h1 className='login-page__panel-title'>{panelTitle}</h1>
+            <p className='login-page__panel-desc'>{panelDesc}</p>
+
+            <form className='login-page__form' onSubmit={handleSubmit}>
+              <div className='login-page__field'>
+                <label className='login-page__label' htmlFor='username'>
+                  {t('login.username')}
+                </label>
+                <div className='login-page__input-wrap'>
+                  <span className='login-page__input-icon' aria-hidden='true'>
+                    <User theme='outline' size={16} strokeWidth={3} />
+                  </span>
+                  <input
+                    ref={usernameRef}
+                    id='username'
+                    name='username'
+                    className='login-page__input'
+                    placeholder={t('login.usernamePlaceholder')}
+                    autoComplete='username'
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    aria-required='true'
+                  />
+                </div>
+              </div>
+
+              <div className='login-page__field'>
+                <label className='login-page__label' htmlFor='password'>
+                  {t('login.password')}
+                </label>
+                <div className='login-page__input-wrap'>
+                  <span className='login-page__input-icon' aria-hidden='true'>
+                    <Lock theme='outline' size={16} strokeWidth={3} />
+                  </span>
+                  <input
+                    ref={passwordRef}
+                    id='password'
+                    name='password'
+                    type={passwordVisible ? 'text' : 'password'}
+                    className='login-page__input'
+                    placeholder={t('login.passwordPlaceholder')}
+                    autoComplete={needsSetup ? 'new-password' : 'current-password'}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    aria-required='true'
+                  />
+                  <button
+                    type='button'
+                    className='login-page__toggle-password'
+                    onClick={() => setPasswordVisible((prev) => !prev)}
+                    aria-label={passwordVisible ? t('login.hidePassword') : t('login.showPassword')}
+                  >
+                    {passwordVisible ? (
+                      <PreviewClose theme='outline' size={16} strokeWidth={3} />
+                    ) : (
+                      <PreviewOpen theme='outline' size={16} strokeWidth={3} />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {!needsSetup && (
+                <div className='login-page__checkbox'>
+                  <input
+                    type='checkbox'
+                    id='remember-me'
+                    checked={rememberMe}
+                    onChange={(event) => setRememberMe(event.target.checked)}
+                  />
+                  <label htmlFor='remember-me'>{t('login.rememberMe')}</label>
+                </div>
+              )}
+
+              <motion.button
+                type='submit'
+                className='login-page__submit'
+                disabled={loading}
+                whileHover={loading || reduceMotion ? undefined : { y: -1 }}
+                whileTap={loading || reduceMotion ? undefined : { scale: 0.985 }}
               >
-                <path d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2' />
-                <circle cx='12' cy='7' r='4' />
-              </svg>
-              <input
-                ref={usernameRef}
-                id='username'
-                name='username'
-                className='login-page__input'
-                placeholder={t('login.usernamePlaceholder')}
-                autoComplete='username'
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                aria-required='true'
-              />
-            </div>
-          </div>
+                {loading && (
+                  <svg className='login-page__spinner' viewBox='0 0 24 24' width='18' height='18'>
+                    <circle
+                      cx='12'
+                      cy='12'
+                      r='10'
+                      stroke='currentColor'
+                      strokeWidth='3'
+                      fill='none'
+                      strokeDasharray='50'
+                      strokeDashoffset='25'
+                      strokeLinecap='round'
+                    />
+                  </svg>
+                )}
+                <span>
+                  {loading
+                    ? t('login.submitting')
+                    : needsSetup
+                      ? t('login.setupSubmit')
+                      : t('login.submit')}
+                </span>
+              </motion.button>
 
-          <div className='login-page__form-item'>
-            <label className='login-page__label' htmlFor='password'>
-              {t('login.password')}
-            </label>
-            <div className='login-page__input-wrapper'>
-              <svg
-                className='login-page__input-icon'
-                viewBox='0 0 24 24'
-                fill='none'
-                stroke='currentColor'
-                strokeWidth='2'
-                aria-hidden='true'
+              <div
+                role='alert'
+                aria-live='polite'
+                className={`login-page__message ${message ? `login-page__message--${message.type}` : 'login-page__message--empty'}`}
               >
-                <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
-                <path d='M7 11V7a5 5 0 0 1 10 0v4' />
-              </svg>
-              <input
-                ref={passwordRef}
-                id='password'
-                name='password'
-                type={passwordVisible ? 'text' : 'password'}
-                className='login-page__input'
-                placeholder={t('login.passwordPlaceholder')}
-                autoComplete={needsSetup ? 'new-password' : 'current-password'}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                aria-required='true'
-              />
-              <button
-                type='button'
-                className='login-page__toggle-password'
-                onClick={() => setPasswordVisible((prev) => !prev)}
-                aria-label={passwordVisible ? t('login.hidePassword') : t('login.showPassword')}
-              >
-                <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2'>
-                  {passwordVisible ? (
-                    <>
-                      <path d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24' />
-                      <line x1='1' y1='1' x2='23' y2='23' />
-                    </>
-                  ) : (
-                    <>
-                      <path d='M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z' />
-                      <circle cx='12' cy='12' r='3' />
-                    </>
-                  )}
-                </svg>
-              </button>
+                {message?.text ?? '\u00A0'}
+              </div>
+            </form>
+
+            <div className='login-page__footer'>
+              <span>{t('login.footerPrimary')}</span>
+              <span className='login-page__footer-divider' aria-hidden='true'>
+                ·
+              </span>
+              <span>{t('login.footerSecondary')}</span>
             </div>
-          </div>
-
-          {!needsSetup && (
-            <div className='login-page__checkbox'>
-              <input
-                type='checkbox'
-                id='remember-me'
-                checked={rememberMe}
-                onChange={(event) => setRememberMe(event.target.checked)}
-              />
-              <label htmlFor='remember-me'>{t('login.rememberMe')}</label>
-            </div>
-          )}
-
-          <button type='submit' className='login-page__submit' disabled={loading}>
-            {loading && (
-              <svg className='login-page__spinner' viewBox='0 0 24 24' width='18' height='18'>
-                <circle
-                  cx='12'
-                  cy='12'
-                  r='10'
-                  stroke='currentColor'
-                  strokeWidth='3'
-                  fill='none'
-                  strokeDasharray='50'
-                  strokeDashoffset='25'
-                  strokeLinecap='round'
-                />
-              </svg>
-            )}
-            <span>
-              {loading
-                ? t('login.submitting')
-                : needsSetup
-                  ? t('login.setupSubmit')
-                  : t('login.submit')}
-            </span>
-          </button>
-
-          <div
-            role='alert'
-            aria-live='polite'
-            className={`login-page__message ${message ? 'login-page__message--visible' : ''} ${message ? (message.type === 'success' ? 'login-page__message--success' : 'login-page__message--error') : ''}`}
-            hidden={!message}
-          >
-            {message?.text}
-          </div>
-        </form>
-
-        <div className='login-page__footer'>
-          <div className='login-page__footer-content'>
-            <span>{t('login.footerPrimary')}</span>
-            <span className='login-page__footer-divider'>•</span>
-            <span>{t('login.footerSecondary')}</span>
-          </div>
-        </div>
-      </div>
+          </motion.div>
+        </section>
+      </motion.div>
     </div>
   );
 };
