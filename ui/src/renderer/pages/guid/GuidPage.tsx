@@ -20,6 +20,7 @@ import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerE
 import GuidAssistantEditorHost from './components/GuidAssistantEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
+import PoiStarterChips from './components/PoiStarterChips';
 import GuidClusterApprovalSelector from './components/GuidClusterApprovalSelector';
 import type { GuidClusterApprovalMode } from './components/GuidClusterApprovalSelector';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
@@ -766,6 +767,11 @@ const GuidPage: React.FC = () => {
                 <p className='text-2xl font-semibold mb-0 text-0 text-center'>{welcomeTitle}</p>
               )}
             </div>
+
+            <PoiStarterChips
+              onSetInput={guidInput.setInput}
+              onFocusInput={guidInput.handleTextareaFocus}
+            />
 
             <GuidInputCard
               input={guidInput.input}

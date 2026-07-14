@@ -182,28 +182,47 @@ async fn resolve_auxiliary_model(
         .map(|model| (FLOWY_CLOUD_PROVIDER_ID.to_string(), model))
 }
 
-/// Resolve the flowy-cloud model for POI LLM extraction.
+/// Sentinel stored in `InterestConfig.llm_model` for “follow active session”.
+pub const POI_LLM_MODEL_FOLLOW_SESSION: &str = "__session__";
+
+/// Resolve the flowy-cloud model for POI LLM extraction / starter generation.
 ///
-/// Priority: POI setting → active conversation model → first enabled cloud model.
+/// - Explicit model id → that model  
+/// - `__session__` → active conversation model, else first enabled cloud model  
+/// - unset / empty → **first enabled cloud model** (product default), else session
 pub async fn resolve_poi_llm_model(
     interest_cfg: &InterestConfig,
     session_model: Option<&str>,
     provider_repo: &Arc<dyn IProviderRepository>,
 ) -> Option<String> {
-    if let Some(model) = interest_cfg
+    let configured = interest_cfg
         .llm_model
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+        .filter(|s| !s.is_empty());
+
+    if let Some(model) = configured {
+        if model == POI_LLM_MODEL_FOLLOW_SESSION {
+            if let Some(session) = session_model.map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(session.to_string());
+            }
+            return resolve_flowy_cloud_model(provider_repo)
+                .await
+                .map(|(_, model)| model);
+        }
         return Some(model.to_string());
     }
-    if let Some(model) = session_model.map(str::trim).filter(|s| !s.is_empty()) {
-        return Some(model.to_string());
-    }
-    resolve_flowy_cloud_model(provider_repo)
+
+    if let Some(model) = resolve_flowy_cloud_model(provider_repo)
         .await
         .map(|(_, model)| model)
+    {
+        return Some(model);
+    }
+    session_model
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 fn is_retryable_auxiliary_err(err: &str) -> bool {

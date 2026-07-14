@@ -60,6 +60,7 @@ impl<'a> PoiPipeline<'a> {
                     report.reinforced += 1;
                     if promoted {
                         report.promoted += 1;
+                        report.starter_topic_ids.push(topic_id);
                     }
                 }
                 CompareAction::MergeInto { topic_id } => {
@@ -72,16 +73,22 @@ impl<'a> PoiPipeline<'a> {
                     report.merged += 1;
                     if promoted {
                         report.promoted += 1;
+                        report.starter_topic_ids.push(topic_id);
                     }
                 }
                 CompareAction::Insert { status } => {
                     self.store.insert_topic(&signal, status)?;
                     report.inserted += 1;
+                    if status == TopicStatus::Active {
+                        report.starter_topic_ids.push(signal.id.clone());
+                    }
                 }
             }
         }
 
         self.store.enforce_max_topics()?;
+        report.starter_topic_ids.sort();
+        report.starter_topic_ids.dedup();
         Ok(report)
     }
 

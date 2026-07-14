@@ -1,4 +1,4 @@
-//! Business logic for POI topic list, pin, status, and settings.
+//! Business logic for POI topic list, pin, status, starters, and settings.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -6,13 +6,15 @@ use std::sync::{Arc, Mutex};
 use nomi_config::{
     GatewayConfig, InterestConfig, config_yaml_path, load_user_config_file, save_config_yaml,
 };
-use nomi_poi::{InterestStore, TopicStatus};
+use nomi_poi::{InterestStarter, InterestStore, TopicStatus};
 use nomifun_api_types::{
-    PoiSettingsResponse, PoiStatusResponse, PoiTopicListResponse, PoiTopicResponse,
-    UpdatePoiSettingsRequest,
+    PoiSettingsResponse, PoiStarterListQuery, PoiStarterListResponse, PoiStarterResponse,
+    PoiStatusResponse, PoiTopicListResponse, PoiTopicResponse, UpdatePoiSettingsRequest,
 };
 use nomifun_common::AppError;
 use tracing::info;
+
+use crate::preset_starters::{fetch_preset_starters, page_preset_starters};
 
 #[derive(Clone)]
 pub struct PoiService {
@@ -144,6 +146,73 @@ impl PoiService {
         self.with_store(|store| store.set_topic_status(topic_id, parsed))
     }
 
+    pub fn delete_topic(&self, topic_id: &str) -> Result<(), AppError> {
+        let ok = self.with_store(|store| store.delete_topic(topic_id))?;
+        if !ok {
+            return Err(AppError::NotFound(format!("POI topic not found: {topic_id}")));
+        }
+        Ok(())
+    }
+
+    fn server_base_url(&self) -> String {
+        self.gateway
+            .lock()
+            .map(|c| c.server.base_url.clone())
+            .unwrap_or_default()
+    }
+
+    /// Guid conversation starters: local POI store first; when the user has no
+    /// active POI topics, fall back to remote `GET /recommendedTopics`.
+    pub async fn list_starters(
+        &self,
+        query: PoiStarterListQuery,
+    ) -> Result<PoiStarterListResponse, AppError> {
+        let config = self.interest_config();
+        let default_page = config.starter_page_size.max(1);
+        let limit = query.limit.unwrap_or(default_page).clamp(1, 20) as usize;
+        let offset = query.offset.unwrap_or(0) as usize;
+        let seed = query.seed.unwrap_or(0);
+        let locale = query
+            .locale
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("zh-CN")
+            .to_string();
+
+        let (active_count, local_page, local_total) = self.with_store(|store| {
+            let active = store.count_active_topics()?;
+            let (page, total) = store.list_starters_page(limit, offset, seed)?;
+            Ok((active, page, total))
+        })?;
+
+        if local_total > 0 || active_count > 0 {
+            let has_more = offset + local_page.len() < local_total;
+            return Ok(PoiStarterListResponse {
+                starters: local_page.into_iter().map(starter_to_dto).collect(),
+                total: local_total as u32,
+                has_more,
+                source: "local".to_string(),
+            });
+        }
+
+        let base_url = self.server_base_url();
+        let presets = fetch_preset_starters(&base_url, &locale)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "poi: preset starters fetch failed");
+                Vec::new()
+            });
+        let (page, total) = page_preset_starters(presets, limit, offset, seed);
+        let has_more = offset + page.len() < total;
+        Ok(PoiStarterListResponse {
+            starters: page,
+            total: total as u32,
+            has_more,
+            source: "preset".to_string(),
+        })
+    }
+
     pub fn get_settings(&self) -> Result<PoiSettingsResponse, AppError> {
         Ok(settings_from_config(&self.interest_config()))
     }
@@ -185,19 +254,9 @@ impl PoiService {
     }
 
     pub fn clear_topics(&self) -> Result<(), AppError> {
-        let path = self.db_path();
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| AppError::Internal(format!("clear interest store: {e}")))?;
-        }
-        let config = self.interest_config();
-        let store = InterestStore::open(&path, config)
-            .map_err(|e| AppError::Internal(format!("reopen interest store: {e}")))?;
-        *self
-            .store
-            .lock()
-            .map_err(|e| AppError::Internal(format!("interest store lock: {e}")))? = store;
-        Ok(())
+        // Clear via SQL on the live connection. Deleting interest.db while the
+        // store still holds an open SQLite handle fails on Windows (os error 32).
+        self.with_store(|store| store.clear_all())
     }
 }
 
@@ -211,6 +270,17 @@ fn config_root_for_data_dir(data_dir: &Path) -> PathBuf {
 fn load_gateway_for_data_dir(data_dir: &Path) -> Result<GatewayConfig, AppError> {
     let path = config_yaml_path(Some(&config_root_for_data_dir(data_dir)));
     load_user_config_file(&path).map_err(|e| AppError::Internal(e))
+}
+
+fn starter_to_dto(starter: InterestStarter) -> PoiStarterResponse {
+    PoiStarterResponse {
+        id: starter.id,
+        topic_id: starter.topic_id,
+        topic_label: starter.topic_label,
+        text: starter.text,
+        locale: starter.locale,
+        source: starter.source,
+    }
 }
 
 fn settings_from_config(config: &InterestConfig) -> PoiSettingsResponse {
@@ -234,6 +304,10 @@ fn settings_from_config(config: &InterestConfig) -> PoiSettingsResponse {
         auto_extract_min_user_chars: config.auto_extract_min_user_chars,
         auto_extract_idle_secs: config.auto_extract_idle_secs,
         llm_model: config.llm_model.clone(),
+        starter_enabled: config.starter_enabled,
+        starters_per_topic: config.starters_per_topic,
+        max_starters_global: config.max_starters_global,
+        starter_page_size: config.starter_page_size,
     }
 }
 
@@ -294,11 +368,25 @@ fn apply_settings_patch(config: &mut InterestConfig, req: &UpdatePoiSettingsRequ
     }
     if let Some(v) = &req.llm_model {
         let trimmed = v.trim();
+        // Empty clears the pin (resolve falls back to first available cloud model).
+        // `__session__` means follow the active conversation model.
         config.llm_model = if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_owned())
         };
+    }
+    if let Some(v) = req.starter_enabled {
+        config.starter_enabled = v;
+    }
+    if let Some(v) = req.starters_per_topic {
+        config.starters_per_topic = v.max(1);
+    }
+    if let Some(v) = req.max_starters_global {
+        config.max_starters_global = v.max(8);
+    }
+    if let Some(v) = req.starter_page_size {
+        config.starter_page_size = v.clamp(1, 12);
     }
 }
 

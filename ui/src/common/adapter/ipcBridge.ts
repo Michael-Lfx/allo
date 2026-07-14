@@ -4319,15 +4319,57 @@ export interface IPoiSettings {
   autoExtractMinTurns: number;
   autoExtractMinUserChars: number;
   autoExtractIdleSecs: number;
-  /** Fixed flowy-cloud model id, or null/empty to follow the active conversation. */
+  /** Fixed flowy-cloud model id, or null/empty to use the first available cloud model. */
   llmModel?: string | null;
+  starterEnabled?: boolean;
+  startersPerTopic?: number;
+  maxStartersGlobal?: number;
+  starterPageSize?: number;
+}
+
+export interface IPoiStarter {
+  id: string;
+  topicId: string;
+  topicLabel: string;
+  text: string;
+  locale: string;
+  source: string;
+}
+
+export interface IPoiStarterListParams {
+  limit?: number;
+  offset?: number;
+  seed?: number;
+  locale?: string;
+}
+
+export interface IPoiStarterListResponse {
+  starters: IPoiStarter[];
+  total: number;
+  hasMore: boolean;
+  /** `local` from user POI store, or `preset` from remote curated defaults. */
+  source: string;
 }
 
 export type IUpdatePoiSettings = Partial<IPoiSettings>;
 
+function buildPoiStartersPath(params?: IPoiStarterListParams): string {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set('limit', String(params.limit));
+  if (params?.offset != null) qs.set('offset', String(params.offset));
+  if (params?.seed != null) qs.set('seed', String(params.seed));
+  if (params?.locale) qs.set('locale', params.locale);
+  const query = qs.toString();
+  return query ? `/api/poi/starters?${query}` : '/api/poi/starters';
+}
+
 export const poi = {
   listTopics: httpGet<IPoiTopicListResponse, void>('/api/poi/topics'),
   clearTopics: httpDelete<void, void>('/api/poi/topics'),
+  deleteTopic: httpDelete<void, { id: string }>((p) => `/api/poi/topics/${encodeURIComponent(p.id)}`),
+  listStarters: httpGet<IPoiStarterListResponse, IPoiStarterListParams | void>(
+    (p) => buildPoiStartersPath(p ?? undefined)
+  ),
   status: httpGet<IPoiStatusResponse, void>('/api/poi/status'),
   getSettings: httpGet<IPoiSettings, void>('/api/poi/settings'),
   updateSettings: httpPatch<IPoiSettings, IUpdatePoiSettings>('/api/poi/settings'),

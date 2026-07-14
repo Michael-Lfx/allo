@@ -288,6 +288,54 @@
   line-height: 20px;
 }
 
+.poiStarterSection {
+  width: 100%;
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.poiStarterHeader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.poiStarterChips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 720px;
+}
+
+.poiStarterChip {
+  max-width: 280px;
+  text-align: center;
+  line-height: 1.35;
+}
+
+.poiStarterRefresh {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  padding: 0 2px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.poiStarterRefresh:hover {
+  color: var(--color-text-1);
+}
+
 .assistantPromptAgentSwitcher {
   display: inline-flex;
   align-items: center;

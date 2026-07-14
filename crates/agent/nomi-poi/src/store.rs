@@ -6,13 +6,15 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use nomi_config::InterestConfig;
-use crate::persist_policy::is_persistable_local_poi;
 use rusqlite::{Connection, params};
+use sha2::{Digest, Sha256};
+
+use crate::persist_policy::is_persistable_local_poi;
 
 use super::types::{SignalSource, TopicStatus};
 
 const ENTRY_DELIMITER: &str = "\n§\n";
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// A single interest topic row.
 #[derive(Debug, Clone)]
@@ -28,6 +30,18 @@ pub struct InterestTopic {
     pub source: SignalSource,
     pub confidence: f64,
     pub pinned: bool,
+}
+
+/// Short conversation starter tied to an interest topic.
+#[derive(Debug, Clone)]
+pub struct InterestStarter {
+    pub id: String,
+    pub topic_id: String,
+    pub topic_label: String,
+    pub text: String,
+    pub locale: String,
+    pub rank: i32,
+    pub source: String,
 }
 
 /// Incremental update from rules or LLM extraction.
@@ -79,6 +93,8 @@ impl InterestStore {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| e.to_string())?;
         let store = Self {
             conn: Mutex::new(conn),
             config,
@@ -109,8 +125,13 @@ impl InterestStore {
         let version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
-        if version < SCHEMA_VERSION {
+        if version < 2 {
             Self::migrate_v2_columns(&conn)?;
+        }
+        if version < 3 {
+            Self::migrate_v3_starters(&conn)?;
+        }
+        if version < SCHEMA_VERSION {
             conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])
                 .map_err(|e| e.to_string())?;
         }
@@ -156,6 +177,25 @@ impl InterestStore {
             )
             .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    fn migrate_v3_starters(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS starters (
+                id TEXT PRIMARY KEY,
+                topic_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                locale TEXT NOT NULL DEFAULT 'zh-CN',
+                rank INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'llm',
+                created_at TEXT NOT NULL,
+                UNIQUE(topic_id, text),
+                FOREIGN KEY(topic_id) REFERENCES topics(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_starters_topic ON starters(topic_id);",
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -445,7 +485,206 @@ impl InterestStore {
                 params![status.as_str(), Utc::now().to_rfc3339(), topic_id],
             )
             .map_err(|e| e.to_string())?;
+        if updated > 0 && status == TopicStatus::Rejected {
+            conn.execute("DELETE FROM starters WHERE topic_id = ?1", params![topic_id])
+                .map_err(|e| e.to_string())?;
+        }
         Ok(updated > 0)
+    }
+
+    /// Physically delete a topic and cascade-remove its starters.
+    pub fn delete_topic(&self, topic_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let deleted = conn
+            .execute("DELETE FROM topics WHERE id = ?1", params![topic_id])
+            .map_err(|e| e.to_string())?;
+        Ok(deleted > 0)
+    }
+
+    /// Wipe all topics and starters in-place (safe on Windows while the DB is open).
+    pub fn clear_all(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // Delete topics first; FK CASCADE also clears starters when enabled.
+        // Explicit starters wipe keeps behavior correct if foreign_keys was off
+        // for any prior connection.
+        conn.execute_batch(
+            "DELETE FROM starters;
+             DELETE FROM topics;",
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_topic(&self, topic_id: &str) -> Result<Option<InterestTopic>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, label, summary, weight, last_seen_at, evidence_count, tags,
+                        status, source, confidence, pinned
+                 FROM topics WHERE id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![topic_id], |row| {
+                let status_raw: String = row.get(7)?;
+                let source_raw: String = row.get(8)?;
+                Ok(InterestTopic {
+                    id: row.get(0)?,
+                    label: row.get(1)?,
+                    summary: row.get(2)?,
+                    weight: row.get(3)?,
+                    last_seen_at: parse_rfc3339(row.get::<_, String>(4)?),
+                    evidence_count: row.get::<_, i64>(5)? as u32,
+                    tags: parse_tags(row.get::<_, String>(6)?),
+                    status: TopicStatus::parse(&status_raw),
+                    source: parse_source(&source_raw),
+                    confidence: row.get(9)?,
+                    pinned: row.get::<_, i64>(10)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows.next().transpose().map_err(|e| e.to_string())?)
+    }
+
+    pub fn count_active_topics(&self) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM topics WHERE status = 'active' OR pinned = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(count as u32)
+    }
+
+    pub fn count_starters_for_topic(&self, topic_id: &str) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM starters WHERE topic_id = ?1",
+                params![topic_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(count as u32)
+    }
+
+    pub fn count_starters_global(&self) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM starters", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(count as u32)
+    }
+
+    pub fn replace_starters_for_topic(
+        &self,
+        topic_id: &str,
+        texts: &[(String, String)],
+        source: &str,
+    ) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM starters WHERE topic_id = ?1", params![topic_id])
+            .map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let mut written = 0usize;
+        for (rank, (text, locale)) in texts.iter().enumerate() {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let id = starter_id(topic_id, trimmed);
+            match conn.execute(
+                "INSERT OR IGNORE INTO starters (id, topic_id, text, locale, rank, source, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    topic_id,
+                    trimmed,
+                    locale,
+                    rank as i32,
+                    source,
+                    now
+                ],
+            ) {
+                Ok(n) => written += n as usize,
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        Ok(written)
+    }
+
+    pub fn delete_starters_for_topic(&self, topic_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM starters WHERE topic_id = ?1", params![topic_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// List starters for active/pinned topics.
+    /// Primary order: pinned + POI weight. When `seed != 0`, reshuffle within the
+    /// same weight bucket so “换一批” keeps high-weight interests first.
+    pub fn list_starters_page(
+        &self,
+        limit: usize,
+        offset: usize,
+        seed: u64,
+    ) -> Result<(Vec<InterestStarter>, usize), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.id, s.topic_id, t.label, s.text, s.locale, s.rank, s.source, t.weight, t.pinned
+                 FROM starters s
+                 INNER JOIN topics t ON t.id = s.topic_id
+                 WHERE t.status = 'active' OR t.pinned = 1
+                 ORDER BY t.pinned DESC, t.weight DESC, s.rank ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    InterestStarter {
+                        id: row.get(0)?,
+                        topic_id: row.get(1)?,
+                        topic_label: row.get(2)?,
+                        text: row.get(3)?,
+                        locale: row.get(4)?,
+                        rank: row.get(5)?,
+                        source: row.get(6)?,
+                    },
+                    row.get::<_, f64>(7)?,
+                    row.get::<_, i64>(8)? != 0,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let total = rows.len();
+        let mut ranked = rows;
+        if seed != 0 {
+            ranked.sort_by(|a, b| {
+                let (sa, wa, pa) = (&a.0, a.1, a.2);
+                let (sb, wb, pb) = (&b.0, b.1, b.2);
+                pb.cmp(&pa)
+                    .then_with(|| {
+                        wb.partial_cmp(&wa).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| {
+                        let ha = starter_shuffle_key(seed, &sa.id);
+                        let hb = starter_shuffle_key(seed, &sb.id);
+                        ha.cmp(&hb).then_with(|| sa.id.cmp(&sb.id))
+                    })
+            });
+        }
+        let page = ranked
+            .into_iter()
+            .skip(offset)
+            .take(limit.max(1))
+            .map(|(s, _, _)| s)
+            .collect();
+        Ok((page, total))
     }
 
     pub fn pin_topic(&self, topic_id: &str) -> Result<bool, String> {
@@ -531,6 +770,23 @@ impl InterestStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     }
+}
+
+fn starter_id(topic_id: &str, text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(topic_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(text.trim().as_bytes());
+    let digest = hex::encode(hasher.finalize());
+    format!("starter:{}", &digest[..16])
+}
+
+fn starter_shuffle_key(seed: u64, starter_id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut hasher);
+    starter_id.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn parse_source(raw: &str) -> SignalSource {
@@ -659,5 +915,100 @@ mod tests {
         let block = store.render_snapshot_block();
         assert!(block.is_some());
         assert!(block.unwrap().contains("rust"));
+    }
+
+    #[test]
+    fn starters_cascade_on_topic_delete_and_reject() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("interest.db");
+        let config = InterestConfig::default();
+        let store = InterestStore::open(&db, config).unwrap();
+        store
+            .insert_topic(
+                &InterestSignal::new(
+                    "interest:篮球".to_string(),
+                    "打篮球".to_string(),
+                    "喜欢篮球训练".to_string(),
+                    0.4,
+                    vec![],
+                    SignalSource::Declared,
+                ),
+                TopicStatus::Active,
+            )
+            .unwrap();
+        store
+            .replace_starters_for_topic(
+                "interest:篮球",
+                &[
+                    ("帮我安排本周篮球训练".to_string(), "zh-CN".to_string()),
+                    ("分析一下投篮姿势要点".to_string(), "zh-CN".to_string()),
+                ],
+                "llm",
+            )
+            .unwrap();
+        let (page, total) = store.list_starters_page(10, 0, 0).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(page.len(), 2);
+
+        store
+            .set_topic_status("interest:篮球", TopicStatus::Rejected)
+            .unwrap();
+        let (_, total_after_reject) = store.list_starters_page(10, 0, 0).unwrap();
+        assert_eq!(total_after_reject, 0);
+
+        store
+            .insert_topic(
+                &InterestSignal::new(
+                    "interest:吃鱼".to_string(),
+                    "吃鱼".to_string(),
+                    "喜欢吃鱼".to_string(),
+                    0.4,
+                    vec![],
+                    SignalSource::Declared,
+                ),
+                TopicStatus::Active,
+            )
+            .unwrap();
+        store
+            .replace_starters_for_topic(
+                "interest:吃鱼",
+                &[("推荐几道清蒸鱼菜谱".to_string(), "zh-CN".to_string())],
+                "llm",
+            )
+            .unwrap();
+        assert!(store.delete_topic("interest:吃鱼").unwrap());
+        let (_, total_after_delete) = store.list_starters_page(10, 0, 0).unwrap();
+        assert_eq!(total_after_delete, 0);
+    }
+
+    #[test]
+    fn clear_all_wipes_topics_and_starters_in_place() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("interest.db");
+        let store = InterestStore::open(&db, InterestConfig::default()).unwrap();
+        store
+            .insert_topic(
+                &InterestSignal::new(
+                    "interest:clear".to_string(),
+                    "清理测试".to_string(),
+                    "summary".to_string(),
+                    0.4,
+                    vec![],
+                    SignalSource::Declared,
+                ),
+                TopicStatus::Active,
+            )
+            .unwrap();
+        store
+            .replace_starters_for_topic(
+                "interest:clear",
+                &[("帮我写一个清理检查清单".to_string(), "zh-CN".to_string())],
+                "llm",
+            )
+            .unwrap();
+        store.clear_all().unwrap();
+        assert_eq!(store.list_for_cli(true).unwrap().len(), 0);
+        assert_eq!(store.count_starters_global().unwrap(), 0);
+        assert!(db.exists());
     }
 }

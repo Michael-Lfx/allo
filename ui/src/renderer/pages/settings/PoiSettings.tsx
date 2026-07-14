@@ -24,7 +24,8 @@ import type { IPoiSettings, IPoiStatusResponse, IPoiTopic } from '@/common/adapt
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
-const FOLLOW_SESSION_MODEL = '';
+/** Must match `POI_LLM_MODEL_FOLLOW_SESSION` in the Rust auxiliary provider. */
+const FOLLOW_SESSION_MODEL = '__session__';
 
 const TOPIC_STATUSES = ['candidate', 'active', 'rejected'] as const;
 
@@ -47,10 +48,12 @@ const PoiSettings: React.FC = () => {
       ]);
       setSettings({
         ...s,
+        extractMode: s.extractMode || 'llm',
         autoExtractEnabled: s.autoExtractEnabled ?? true,
-        autoExtractMinTurns: s.autoExtractMinTurns ?? 4,
-        autoExtractMinUserChars: s.autoExtractMinUserChars ?? 200,
-        autoExtractIdleSecs: s.autoExtractIdleSecs ?? 300,
+        autoExtractMinTurns: s.autoExtractMinTurns ?? 3,
+        autoExtractMinUserChars: s.autoExtractMinUserChars ?? 50,
+        autoExtractIdleSecs: s.autoExtractIdleSecs ?? 500,
+        starterEnabled: s.starterEnabled ?? true,
       });
       setStatus(st);
       setTopics(list.topics);
@@ -70,6 +73,13 @@ const PoiSettings: React.FC = () => {
     [providers]
   );
 
+  const availableCloudModels = useMemo(() => {
+    if (!flowyCloudProvider) return [] as string[];
+    return getAvailableModels(flowyCloudProvider);
+  }, [flowyCloudProvider, getAvailableModels]);
+
+  const firstAvailableModel = availableCloudModels[0] ?? '';
+
   const llmModelOptions = useMemo(() => {
     const options = [
       {
@@ -80,23 +90,37 @@ const PoiSettings: React.FC = () => {
     if (!flowyCloudProvider) {
       return options;
     }
-    for (const model of getAvailableModels(flowyCloudProvider)) {
+    for (const model of availableCloudModels) {
       options.push({
         label: formatModelLabel(flowyCloudProvider, model),
         value: model,
       });
     }
     return options;
-  }, [flowyCloudProvider, formatModelLabel, getAvailableModels, t]);
+  }, [availableCloudModels, flowyCloudProvider, formatModelLabel, t]);
 
   const usesLlmExtract =
     settings?.extractMode === 'llm' || settings?.extractMode === 'hybrid';
+
+  /** Unset config displays the first available model (product default). */
+  const llmSelectValue = useMemo(() => {
+    const trimmed = settings?.llmModel?.trim();
+    if (trimmed === FOLLOW_SESSION_MODEL) return FOLLOW_SESSION_MODEL;
+    if (trimmed) return trimmed;
+    if (firstAvailableModel) return firstAvailableModel;
+    return FOLLOW_SESSION_MODEL;
+  }, [firstAvailableModel, settings?.llmModel]);
 
   const saveSettings = async () => {
     if (!settings) return;
     setSaving(true);
     try {
-      const saved = await ipcBridge.poi.updateSettings.invoke(settings);
+      const llmModel =
+        settings.llmModel?.trim() || firstAvailableModel || null;
+      const saved = await ipcBridge.poi.updateSettings.invoke({
+        ...settings,
+        llmModel,
+      });
       setSettings(saved);
       Message.success(t('poi.settings.saved'));
       void refresh();
@@ -133,6 +157,22 @@ const PoiSettings: React.FC = () => {
         await ipcBridge.poi.clearTopics.invoke();
         Message.success(t('poi.topics.cleared'));
         void refresh();
+      },
+    });
+  };
+
+  const handleDeleteTopic = (topic: IPoiTopic) => {
+    Modal.confirm({
+      title: t('poi.topics.deleteConfirmTitle'),
+      content: t('poi.topics.deleteConfirmContent'),
+      onOk: async () => {
+        try {
+          await ipcBridge.poi.deleteTopic.invoke({ id: topic.id });
+          Message.success(t('poi.topics.deleted'));
+          void refresh();
+        } catch (e) {
+          Message.error(String(e));
+        }
       },
     });
   };
@@ -212,11 +252,11 @@ const PoiSettings: React.FC = () => {
               <div className='flex flex-col gap-6px'>
                 <span className='text-t-secondary text-13px'>{t('poi.settings.llmModel')}</span>
                 <Select
-                  value={settings.llmModel?.trim() ? settings.llmModel : FOLLOW_SESSION_MODEL}
+                  value={llmSelectValue}
                   onChange={(v) =>
                     setSettings({
                       ...settings,
-                      llmModel: v === FOLLOW_SESSION_MODEL ? '' : v,
+                      llmModel: v,
                     })
                   }
                   options={llmModelOptions}
@@ -350,6 +390,16 @@ const PoiSettings: React.FC = () => {
               width: 90,
               render: (_, row) => (
                 <Switch size='small' checked={row.pinned} onChange={() => handlePin(row)} />
+              ),
+            },
+            {
+              title: t('poi.topics.actions'),
+              dataIndex: 'id',
+              width: 90,
+              render: (_, row) => (
+                <Button size='mini' status='danger' type='text' onClick={() => handleDeleteTopic(row)}>
+                  {t('poi.topics.delete')}
+                </Button>
               ),
             },
           ]}

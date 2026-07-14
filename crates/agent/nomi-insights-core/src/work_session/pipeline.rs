@@ -8,7 +8,7 @@ use nomi_auxiliary::AuxiliaryClient;
 use nomi_poi::{
     InterestSignal, InterestStore, apply_signal_batch, extract_signals_from_messages,
     extract_signals_from_transcript_llm, filter_persistable_signals, filter_poi_signals,
-    format_user_transcript_for_llm,
+    format_user_transcript_for_llm, spawn_starters_for_topics,
 };
 use tracing::{info, warn};
 
@@ -190,12 +190,21 @@ async fn run_poi_ingest(
                     merged = report.merged,
                     promoted = report.promoted,
                     skipped = report.skipped,
+                    starter_topics = report.starter_topic_ids.len(),
                     "interest: session-end POI pipeline applied"
                 );
             } else {
                 info!(
                     skipped = report.skipped,
                     "interest: session-end POI pipeline — signals present but compare/update made no changes"
+                );
+            }
+            if !report.starter_topic_ids.is_empty() {
+                spawn_starters_for_topics(
+                    data_dir.clone(),
+                    config.clone(),
+                    report.starter_topic_ids,
+                    auxiliary.cloned(),
                 );
             }
         }

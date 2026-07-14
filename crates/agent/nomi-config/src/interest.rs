@@ -77,10 +77,27 @@ pub struct InterestConfig {
     #[serde(default = "default_interest_auto_extract_idle_secs")]
     pub auto_extract_idle_secs: u64,
 
-    /// Fixed flowy-cloud model for POI LLM extraction. When `None`, follow the
-    /// active conversation model (if flowy-cloud), else the first enabled cloud model.
+    /// Fixed flowy-cloud model for POI LLM extraction / starter generation.
+    /// When `None`, resolve to the first enabled cloud model (see
+    /// `resolve_poi_llm_model`), falling back to the active session model.
     #[serde(default)]
     pub llm_model: Option<String>,
+
+    /// Generate short conversation-starter prompts for new/promoted POI topics.
+    #[serde(default = "default_interest_starter_enabled")]
+    pub starter_enabled: bool,
+
+    /// Starters to generate and retain per active topic.
+    #[serde(default = "default_interest_starters_per_topic")]
+    pub starters_per_topic: u32,
+
+    /// Soft cap on total starters across all topics.
+    #[serde(default = "default_interest_max_starters_global")]
+    pub max_starters_global: u32,
+
+    /// Default page size for Guid “换一批” batches.
+    #[serde(default = "default_interest_starter_page_size")]
+    pub starter_page_size: u32,
 }
 
 fn default_interest_enabled() -> bool {
@@ -144,15 +161,31 @@ fn default_interest_auto_extract_enabled() -> bool {
 }
 
 fn default_interest_auto_extract_min_turns() -> u32 {
-    4
+    3
 }
 
 fn default_interest_auto_extract_min_user_chars() -> usize {
-    200
+    50
 }
 
 fn default_interest_auto_extract_idle_secs() -> u64 {
-    300
+    500
+}
+
+fn default_interest_starter_enabled() -> bool {
+    true
+}
+
+fn default_interest_starters_per_topic() -> u32 {
+    4
+}
+
+fn default_interest_max_starters_global() -> u32 {
+    80
+}
+
+fn default_interest_starter_page_size() -> u32 {
+    4
 }
 
 impl Default for InterestConfig {
@@ -177,6 +210,10 @@ impl Default for InterestConfig {
             auto_extract_min_user_chars: default_interest_auto_extract_min_user_chars(),
             auto_extract_idle_secs: default_interest_auto_extract_idle_secs(),
             llm_model: None,
+            starter_enabled: default_interest_starter_enabled(),
+            starters_per_topic: default_interest_starters_per_topic(),
+            max_starters_global: default_interest_max_starters_global(),
+            starter_page_size: default_interest_starter_page_size(),
         }
     }
 }
@@ -239,6 +276,13 @@ mod tests {
         assert!(!cfg.per_turn_persist);
         assert!(!cfg.uses_rules());
         assert!(cfg.uses_llm());
+        assert!(cfg.auto_extract_enabled);
+        assert_eq!(cfg.auto_extract_min_turns, 3);
+        assert_eq!(cfg.auto_extract_min_user_chars, 50);
+        assert_eq!(cfg.auto_extract_idle_secs, 500);
+        assert!(cfg.starter_enabled);
+        assert_eq!(cfg.starters_per_topic, 4);
+        assert_eq!(cfg.starter_page_size, 4);
     }
 
     #[test]
