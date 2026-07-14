@@ -14,6 +14,7 @@ use super::extract::{
 use super::llm::extract_signals_from_transcript_llm;
 use super::pipeline::apply_signal_batch;
 use super::quality::filter_persistable_signals;
+use super::starters::spawn_starters_for_topics_with_store;
 use super::store::{InterestSignal, InterestStore};
 use super::types::ExtractOptions;
 
@@ -92,7 +93,7 @@ pub fn spawn_session_end_ingest(
         if all_signals.is_empty() {
             return;
         }
-        if let Ok(guard) = store.lock() {
+        let starter_ids = if let Ok(guard) = store.lock() {
             let _ = guard.apply_decay();
             match apply_signal_batch(&guard, &config, all_signals) {
                 Ok(report) => {
@@ -103,12 +104,27 @@ pub fn spawn_session_end_ingest(
                             merged = report.merged,
                             promoted = report.promoted,
                             skipped = report.skipped,
+                            starter_topics = report.starter_topic_ids.len(),
                             "interest: session-end POI pipeline applied"
                         );
                     }
+                    report.starter_topic_ids
                 }
-                Err(err) => tracing::warn!("interest: session-end pipeline failed: {err}"),
+                Err(err) => {
+                    tracing::warn!("interest: session-end pipeline failed: {err}");
+                    Vec::new()
+                }
             }
+        } else {
+            Vec::new()
+        };
+        if !starter_ids.is_empty() {
+            spawn_starters_for_topics_with_store(
+                Arc::clone(&store),
+                config,
+                starter_ids,
+                auxiliary,
+            );
         }
     });
 }

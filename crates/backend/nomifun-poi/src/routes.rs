@@ -2,12 +2,13 @@
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Extension, Json, Path, State};
-use axum::routing::{get, post, put};
+use axum::extract::{Extension, Json, Path, Query, State};
+use axum::routing::{delete, get, post, put};
 
 use nomifun_api_types::{
-    ApiResponse, PoiPinRequest, PoiSettingsResponse, PoiStatusResponse, PoiTopicListResponse,
-    PoiTopicResponse, PoiTopicStatusRequest, UpdatePoiSettingsRequest,
+    ApiResponse, PoiPinRequest, PoiSettingsResponse, PoiStarterListQuery, PoiStarterListResponse,
+    PoiStatusResponse, PoiTopicListResponse, PoiTopicResponse, PoiTopicStatusRequest,
+    UpdatePoiSettingsRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -17,6 +18,8 @@ use crate::state::PoiRouterState;
 pub fn poi_routes(state: PoiRouterState) -> Router {
     Router::new()
         .route("/api/poi/topics", get(list_topics).delete(clear_topics))
+        .route("/api/poi/topics/{id}", delete(delete_topic))
+        .route("/api/poi/starters", get(list_starters))
         .route("/api/poi/status", get(status))
         .route("/api/poi/settings", get(get_settings).patch(patch_settings))
         .route("/api/poi/topics/{id}/pin", post(pin_topic))
@@ -29,6 +32,16 @@ async fn list_topics(
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<PoiTopicListResponse>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.list_topics()?)))
+}
+
+async fn list_starters(
+    State(state): State<PoiRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<PoiStarterListQuery>,
+) -> Result<Json<ApiResponse<PoiStarterListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_starters(query).await?,
+    )))
 }
 
 async fn status(
@@ -92,6 +105,15 @@ async fn set_topic_status(
         .find(|t| t.id == id)
         .ok_or_else(|| AppError::NotFound(format!("POI topic not found: {id}")))?;
     Ok(Json(ApiResponse::ok(topic)))
+}
+
+async fn delete_topic(
+    State(state): State<PoiRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.delete_topic(&id)?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn clear_topics(

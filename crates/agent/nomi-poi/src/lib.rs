@@ -16,6 +16,7 @@ mod persist_policy;
 mod plugin;
 mod quality;
 mod session_buffer;
+mod starters;
 mod store;
 mod task_oriented;
 mod topic_id;
@@ -32,13 +33,16 @@ pub use ingest::{
     format_user_transcript_for_llm, ingest_user_message, is_poi_synthetic_user_text,
     spawn_session_end_ingest,
 };
-pub use llm::extract_signals_from_transcript_llm;
+pub use llm::{extract_signals_from_transcript_llm, generate_starters_for_topic_llm};
 pub use memory_plugin::MemoryProviderPlugin;
 pub use pipeline::{PoiPipeline, apply_signal_batch};
 pub use plugin::InterestMemoryPlugin;
 pub use quality::filter_persistable_signals;
 pub use session_buffer::SessionPoiBuffer;
-pub use store::{InterestSignal, InterestStore, InterestTopic, load_interest_snapshot};
+pub use starters::{spawn_starters_for_topics, spawn_starters_for_topics_with_store};
+pub use store::{
+    InterestSignal, InterestStarter, InterestStore, InterestTopic, load_interest_snapshot,
+};
 pub use task_oriented::has_task_or_domain_signal;
 pub use types::{ExtractOptions, PoiApplyReport, SignalSource, TopicStatus};
 

@@ -213,7 +213,8 @@ pub use orchestrator::{
 };
 pub use orchestrator::AdjustRunRequest;
 pub use poi::{
-    PoiPinRequest, PoiSettingsResponse, PoiStatusResponse, PoiTopicListResponse, PoiTopicResponse,
+    PoiPinRequest, PoiSettingsResponse, PoiStarterListQuery, PoiStarterListResponse,
+    PoiStarterResponse, PoiStatusResponse, PoiTopicListResponse, PoiTopicResponse,
     PoiTopicStatusRequest, UpdatePoiSettingsRequest,
 };
 pub use provider::{

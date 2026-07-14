@@ -112,4 +112,6 @@ pub struct PoiApplyReport {
     pub merged: u32,
     pub promoted: u32,
     pub skipped: u32,
+    /// Topic ids that became `active` (direct insert or promotion) and may need starters.
+    pub starter_topic_ids: Vec<String>,
 }

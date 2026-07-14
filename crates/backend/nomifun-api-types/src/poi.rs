@@ -17,6 +17,41 @@ pub struct PoiTopicResponse {
     pub last_seen_at: String,
 }
 
+/// Short conversation starter shown on the Guid page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoiStarterResponse {
+    pub id: String,
+    pub topic_id: String,
+    pub topic_label: String,
+    pub text: String,
+    pub locale: String,
+    pub source: String,
+}
+
+/// Query for `GET /api/poi/starters`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PoiStarterListQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    /// Deterministic shuffle seed for “换一批”.
+    pub seed: Option<u64>,
+    /// BCP-47 locale hint for remote preset starters (e.g. `zh-CN`).
+    pub locale: Option<String>,
+}
+
+/// Response for `GET /api/poi/starters`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoiStarterListResponse {
+    pub starters: Vec<PoiStarterResponse>,
+    pub total: u32,
+    pub has_more: bool,
+    /// `local` = from user POI store; `preset` = curated remote defaults.
+    pub source: String,
+}
+
 /// Response for `GET /api/poi/topics`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,8 +114,12 @@ pub struct PoiSettingsResponse {
     pub auto_extract_min_turns: u32,
     pub auto_extract_min_user_chars: usize,
     pub auto_extract_idle_secs: u64,
-    /// Fixed flowy-cloud model id, or `null` to follow the active conversation model.
+    /// Fixed flowy-cloud model id, or `null` to use the first available cloud model.
     pub llm_model: Option<String>,
+    pub starter_enabled: bool,
+    pub starters_per_topic: u32,
+    pub max_starters_global: u32,
+    pub starter_page_size: u32,
 }
 
 /// Partial update for `PATCH /api/poi/settings`.
@@ -106,6 +145,10 @@ pub struct UpdatePoiSettingsRequest {
     pub auto_extract_min_user_chars: Option<usize>,
     pub auto_extract_idle_secs: Option<u64>,
     pub llm_model: Option<String>,
+    pub starter_enabled: Option<bool>,
+    pub starters_per_topic: Option<u32>,
+    pub max_starters_global: Option<u32>,
+    pub starter_page_size: Option<u32>,
 }
 
 impl UpdatePoiSettingsRequest {
@@ -129,5 +172,9 @@ impl UpdatePoiSettingsRequest {
             && self.auto_extract_min_user_chars.is_none()
             && self.auto_extract_idle_secs.is_none()
             && self.llm_model.is_none()
+            && self.starter_enabled.is_none()
+            && self.starters_per_topic.is_none()
+            && self.max_starters_global.is_none()
+            && self.starter_page_size.is_none()
     }
 }
