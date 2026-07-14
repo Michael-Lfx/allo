@@ -35,10 +35,10 @@ const _pkg = (() => {
 
 export class NodePlatformServices implements IPlatformServices {
   paths = {
-    getDataDir: () => process.env.DATA_DIR ?? path.join(os.homedir(), '.nomifun-server'),
+    getDataDir: () => process.env.DATA_DIR ?? path.join(os.homedir(), '.flowy-server'),
     getTempDir: () => os.tmpdir(),
     getHomeDir: () => os.homedir(),
-    getLogsDir: () => process.env.LOGS_DIR ?? path.join(os.homedir(), '.nomifun-server', 'logs'),
+    getLogsDir: () => process.env.LOGS_DIR ?? path.join(os.homedir(), '.flowy-server', 'logs'),
     getAppPath: (): string | null => process.cwd(),
     isPackaged: () => process.env.IS_PACKAGED === 'true',
     getSystemPath: (_name: 'desktop' | 'home' | 'downloads'): string | null => null,

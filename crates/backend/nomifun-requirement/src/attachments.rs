@@ -51,7 +51,7 @@ impl AttachmentStore {
     pub fn new(data_dir: PathBuf, repo: Arc<dyn IAttachmentRepository>) -> Self {
         Self {
             data_dir,
-            upload_root: std::env::temp_dir().join("nomifun"),
+            upload_root: std::env::temp_dir().join(nomifun_common::storage_paths::TEMP_UPLOAD_SANDBOX),
             repo,
         }
     }

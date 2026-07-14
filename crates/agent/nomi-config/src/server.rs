@@ -27,7 +27,7 @@ impl ServerLoginMethod {
 }
 
 /// Top-level remote server settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// When true, Hermes uses the remote server for LLM calls (after login).
     #[serde(default)]
@@ -58,6 +58,21 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub llm: ServerLlmConfig,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            wechat_base_url: String::new(),
+            channel: default_channel(),
+            app: default_app(),
+            invite_code: String::new(),
+            auth: ServerAuthConfig::default(),
+            llm: ServerLlmConfig::default(),
+        }
+    }
 }
 
 impl ServerConfig {

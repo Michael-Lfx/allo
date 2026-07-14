@@ -1289,7 +1289,7 @@ mod tests {
 
         // 1) launch（headless）+ connect + 先 attach loop 后 enable_auto_attach。
         let chrome = crate::acquire::resolve_chrome_path(
-            &std::env::temp_dir().join("nomifun-browser-data"),
+            &std::env::temp_dir().join("flowy-browser-data"),
             None,
         )
         .await

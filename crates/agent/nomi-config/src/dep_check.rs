@@ -29,7 +29,7 @@ pub fn description(dep: RuntimeDep) -> &'static str {
         RuntimeDep::Node => "Node.js (required for browser tools and TUI)",
         RuntimeDep::Browser => "Browser engine (Chromium, for web browsing tools)",
         RuntimeDep::Ripgrep => "ripgrep (fast file search)",
-        RuntimeDep::Ffmpeg => "ffmpeg (TTS, long video concat — auto-installed to ~/.nomifun/bin)",
+        RuntimeDep::Ffmpeg => "ffmpeg (TTS, long video concat — auto-installed to Flowy/Nomi/bin)",
     }
 }
 

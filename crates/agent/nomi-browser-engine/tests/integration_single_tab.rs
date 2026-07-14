@@ -75,7 +75,7 @@ async fn chrome_self_exits_when_command_pipe_closes() {
     use std::time::Duration;
 
     let chrome = nomi_browser_engine::acquire::resolve_chrome_path(
-        &std::env::temp_dir().join("nomifun-browser-data"),
+        &std::env::temp_dir().join("flowy-browser-data"),
         None,
     )
     .await

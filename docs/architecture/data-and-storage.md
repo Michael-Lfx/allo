@@ -17,7 +17,7 @@ Inside the data directory:
 
 ```
 <data_dir>/
-├── nomifun-backend.db   SQLite database (sqlx)
+├── flowy-backend.db   SQLite database (sqlx)
 ├── server.lock          exclusive server-lock address file (the lock lives on
 │                        the open OS handle; a leftover file is harmless)
 ├── logs/                tracing-appender file output (rotated daily)
@@ -286,7 +286,7 @@ non-loopback bind address.
 
 ## Backups and reinstall
 
-- **Database** — copy `<data_dir>/nomifun-backend.db` (sqlx single-file SQLite).
+- **Database** — copy `<data_dir>/flowy-backend.db` (sqlx single-file SQLite). Legacy installs may still have `nomifun-backend.db` until the next boot renames it.
 - **Encryption key** — copy `<data_dir>/encryption_key` together with the
   database. Without this file, provider API keys, OAuth tokens, channel bot
   tokens, and other encrypted columns cannot be decrypted.

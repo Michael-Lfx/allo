@@ -22,8 +22,7 @@ pub struct ScanPath {
 ///
 /// Priority (highest first):
 /// 1. `$NOMIFUN_EXTENSIONS_PATH`
-/// 2. `~/.nomifun/extensions/` — legacy user data directory
-/// 3. Platform AppData directory
+/// 2. `<default_data_dir>/extensions` — shared Flowy/Nomi data root
 ///
 /// In E2E test mode (`NOMIFUN_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
@@ -95,24 +94,17 @@ fn resolve_scan_paths_inner(
         return paths;
     }
 
-    // 2. User data directory (desktop data dir or historical ~/.nomifun fallback).
+    // 2. User data directory (desktop data dir or shared Flowy/Nomi default).
     if let Some(data_dir) = explicit_data_dir {
         push(data_dir.join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
         if let Some(appdata_dir) = derive_legacy_appdata_extensions_dir(data_dir) {
             push(appdata_dir, ExtensionSource::Appdata);
         }
     } else {
-        if let Some(home) = dirs::home_dir() {
-            push(home.join(".nomifun").join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
-        }
-
-        // 3. AppData directory (platform-specific).
-        if let Some(data_dir) = dirs::data_dir() {
-            push(
-                data_dir.join("nomifun").join(EXTENSIONS_DIR_NAME),
-                ExtensionSource::Appdata,
-            );
-        }
+        let default_data = nomifun_common::storage_paths::default_data_dir(
+            &nomifun_common::channel::dir_suffix(),
+        );
+        push(default_data.join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
     }
 
     paths
@@ -690,13 +682,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_scan_paths_no_env_includes_platform_dirs() {
+    fn resolve_scan_paths_no_env_includes_flowy_default_dir() {
         let paths = resolve_scan_paths_inner(None, false, None);
-        // Should have at least one platform dir (home or appdata).
         assert!(
             paths
                 .iter()
-                .any(|sp| sp.source == ExtensionSource::Local || sp.source == ExtensionSource::Appdata)
+                .any(|sp| sp.source == ExtensionSource::Local && sp.path.ends_with("extensions")),
+            "expected default Flowy/Nomi extensions path, got {paths:?}"
         );
     }
 

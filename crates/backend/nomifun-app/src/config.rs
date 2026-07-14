@@ -34,7 +34,7 @@ impl AppConfig {
 
     /// Path to the SQLite database file.
     pub fn database_path(&self) -> PathBuf {
-        self.data_dir.join("nomifun-backend.db")
+        nomifun_common::storage_paths::resolve_database_path(&self.data_dir)
     }
 }
 
@@ -177,7 +177,7 @@ mod tests {
             data_dir: PathBuf::from("/tmp/nomifun"),
             ..Default::default()
         };
-        assert_eq!(config.database_path(), PathBuf::from("/tmp/nomifun/nomifun-backend.db"));
+        assert_eq!(config.database_path(), PathBuf::from("/tmp/nomifun/flowy-backend.db"));
     }
 
     #[test]

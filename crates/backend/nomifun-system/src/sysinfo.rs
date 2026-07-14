@@ -1,4 +1,5 @@
 use nomifun_api_types::SystemInfoResponse;
+use nomifun_common::storage_paths;
 
 /// Map Rust `std::env::consts::OS` to the Node.js-compatible platform name
 /// used by the API contract.
@@ -19,60 +20,59 @@ fn map_arch() -> &'static str {
     }
 }
 
-/// Resolve the cache directory for Nomi.
+fn env_path(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(v) = std::env::var(key)
+            && !v.is_empty()
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Resolve the cache directory for Flowy.
 ///
-/// Priority: `NOMIFUN_CACHE_DIR` env → `dirs::cache_dir()/nomifun`.
+/// Priority: `FLOWY_CACHE_DIR` / `NOMIFUN_CACHE_DIR` env →
+/// `{cache_dir}/Flowy/runtime`.
 fn resolve_cache_dir() -> String {
-    if let Ok(v) = std::env::var("NOMIFUN_CACHE_DIR")
-        && !v.is_empty()
-    {
+    if let Some(v) = env_path(&["FLOWY_CACHE_DIR", "NOMIFUN_CACHE_DIR"]) {
         return v;
     }
     dirs::cache_dir()
-        .map(|p| p.join("nomifun").to_string_lossy().into_owned())
+        .map(|p| {
+            p.join(storage_paths::DATA_VENDOR_DIR)
+                .join("runtime")
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_default()
 }
 
-/// Resolve the work (data) directory for Nomi.
+/// Resolve the work (data) directory for Flowy.
 ///
-/// Priority: `NOMIFUN_WORK_DIR` env → `dirs::data_dir()/nomifun`.
+/// Priority: `FLOWY_WORK_DIR` / `NOMIFUN_WORK_DIR` env → shared `Flowy/Nomi`
+/// default from [`storage_paths::default_data_dir`].
 fn resolve_work_dir() -> String {
-    if let Ok(v) = std::env::var("NOMIFUN_WORK_DIR")
-        && !v.is_empty()
-    {
+    if let Some(v) = env_path(&["FLOWY_WORK_DIR", "NOMIFUN_WORK_DIR"]) {
         return v;
     }
-    dirs::data_dir()
-        .map(|p| p.join("nomifun").to_string_lossy().into_owned())
-        .unwrap_or_default()
+    storage_paths::default_data_dir(&nomifun_common::channel::dir_suffix())
+        .to_string_lossy()
+        .into_owned()
 }
 
-/// Resolve the log directory for Nomi.
+/// Resolve the log directory for Flowy.
 ///
-/// Priority: `NOMIFUN_LOG_DIR` env →
-///   macOS: `~/Library/Logs/nomifun`
-///   Linux: `dirs::state_dir()/nomifun/logs` (XDG_STATE_HOME)
-///   Windows: `dirs::data_dir()/nomifun/logs`
+/// Priority: `FLOWY_LOG_DIR` / `NOMIFUN_LOG_DIR` env → `{data_dir}/logs`.
 fn resolve_log_dir() -> String {
-    if let Ok(v) = std::env::var("NOMIFUN_LOG_DIR")
-        && !v.is_empty()
-    {
+    if let Some(v) = env_path(&["FLOWY_LOG_DIR", "NOMIFUN_LOG_DIR"]) {
         return v;
     }
-    // macOS: ~/Library/Logs is the conventional log location
-    if cfg!(target_os = "macos")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join("Library/Logs/nomifun").to_string_lossy().into_owned();
-    }
-    // Linux: XDG state dir
-    if let Some(state) = dirs::state_dir() {
-        return state.join("nomifun/logs").to_string_lossy().into_owned();
-    }
-    // Fallback: data_dir/nomifun/logs
-    dirs::data_dir()
-        .map(|p| p.join("nomifun/logs").to_string_lossy().into_owned())
-        .unwrap_or_default()
+    storage_paths::default_data_dir(&nomifun_common::channel::dir_suffix())
+        .join("logs")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Build the system info response from the current runtime environment.
@@ -114,23 +114,32 @@ mod tests {
     }
 
     #[test]
-    fn test_env_override_cache_dir() {
-        // This test verifies the resolve logic reads env vars.
-        // We cannot reliably set env in parallel tests, so just verify
-        // the default path contains "nomifun".
+    fn default_cache_dir_uses_flowy_runtime() {
         let dir = resolve_cache_dir();
-        assert!(dir.contains("nomifun"), "cache_dir should contain 'nomifun': {dir}");
+        assert!(
+            dir.contains("Flowy") && dir.contains("runtime"),
+            "cache_dir should use Flowy/runtime fallback, got {dir}"
+        );
+        assert!(!dir.contains("nomifun"), "cache_dir should not contain nomifun: {dir}");
     }
 
     #[test]
-    fn test_env_override_work_dir() {
+    fn default_work_dir_uses_flowy_nomi() {
         let dir = resolve_work_dir();
-        assert!(dir.contains("nomifun"), "work_dir should contain 'nomifun': {dir}");
+        assert!(
+            dir.contains("Flowy") && dir.contains("Nomi"),
+            "work_dir should use Flowy/Nomi fallback, got {dir}"
+        );
+        assert!(!dir.contains("nomifun"), "work_dir should not contain nomifun: {dir}");
     }
 
     #[test]
-    fn test_env_override_log_dir() {
+    fn default_log_dir_uses_flowy_nomi_logs() {
         let dir = resolve_log_dir();
-        assert!(dir.contains("nomifun"), "log_dir should contain 'nomifun': {dir}");
+        assert!(
+            dir.contains("Flowy") && dir.ends_with("logs"),
+            "log_dir should use Flowy/Nomi/logs fallback, got {dir}"
+        );
+        assert!(!dir.contains("nomifun"), "log_dir should not contain nomifun: {dir}");
     }
 }

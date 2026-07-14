@@ -197,7 +197,7 @@ mod tests {
     use super::*;
 
     fn upload_scratch() -> tempfile::TempDir {
-        let root = std::env::temp_dir().join("nomifun");
+        let root = std::env::temp_dir().join("flowy");
         std::fs::create_dir_all(&root).unwrap();
         tempfile::Builder::new().prefix("figlib-test-").tempdir_in(root).unwrap()
     }

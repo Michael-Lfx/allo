@@ -373,7 +373,7 @@ fn pre_baseline_backup_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("nomifun-backend.db");
+        .unwrap_or(nomifun_common::storage_paths::DATABASE_FILE);
     let base = path.with_file_name(format!("{file_name}.pre-baseline.bak"));
     if !base.exists() {
         return base;
@@ -392,7 +392,7 @@ fn pre_baseline_backup_path(path: &Path) -> PathBuf {
 }
 
 /// `{file_name}{suffix}` next to `path` (SQLite sidecars append to the full
-/// file name: `nomifun-backend.db-wal`, `nomifun-backend.db-shm`).
+/// file name: `flowy-backend.db-wal`, `flowy-backend.db-shm`).
 fn sibling_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().map(|s| s.to_os_string()).unwrap_or_default();
     name.push(suffix);

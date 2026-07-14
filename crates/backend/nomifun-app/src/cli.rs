@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use nomifun_common::storage_paths;
 
 /// The default data directory shared by ALL hosts (desktop shell, `nomifun-web`,
 /// the `nomicore` bin): the per-user application-data dir joined with
@@ -19,18 +20,16 @@ use clap::{Parser, Subcommand};
 /// `dev:webui`, `desktop:dev`) and the installed desktop app all read and
 /// write the same state, so a feature configured once is testable everywhere
 /// and troubleshooting only ever has one directory to look at. The
-/// `NOMIFUN_DATA_DIR` env / `--data-dir` flag remain the escape hatch for an
-/// isolated sandbox. Concurrent use of one dir is prevented by the exclusive
-/// server lock (see `bootstrap::server_lock`).
+/// `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` env / `--data-dir` flag remain the
+/// escape hatch for an isolated sandbox. Concurrent use of one dir is prevented
+/// by the exclusive server lock (see `bootstrap::server_lock`).
 ///
-/// This is only the *unset* default — it does NOT consult `NOMIFUN_DATA_DIR`.
+/// This is only the *unset* default — it does NOT consult env vars.
 /// Env semantics stay host-specific: the desktop shell appends `/Nomi` to the
 /// env value, web/nomicore take it literally (clap `env` binding).
 pub fn default_data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .map(|dir| dir.join("Flowy"))
-        .unwrap_or_else(|| std::env::temp_dir().join("nomifun-data"))
-        .join(nomi_leaf(&nomifun_common::channel::dir_suffix()))
+    storage_paths::resolve_data_dir_from_env()
+        .unwrap_or_else(|| storage_paths::default_data_dir(&nomifun_common::channel::dir_suffix()))
 }
 
 /// The data-dir leaf for the active build channel: `Nomi` on stable, `Nomi-dev`
@@ -38,10 +37,10 @@ pub fn default_data_dir() -> PathBuf {
 /// leaf — NOT to the `Flowy` vendor segment — so a non-stable build lands in a
 /// sibling directory next to the production one (`…/Flowy/Nomi-dev`), keeping
 /// dev state fully isolated from the installed app. Pure, for unit testing;
-/// only `default_data_dir`'s unset default uses it (explicit `NOMIFUN_DATA_DIR`
-/// is taken verbatim by clap, channel-agnostic).
+/// only `default_data_dir`'s unset default uses it (explicit env is taken
+/// verbatim by clap, channel-agnostic).
 fn nomi_leaf(suffix: &str) -> String {
-    format!("Nomi{suffix}")
+    storage_paths::nomi_leaf(suffix)
 }
 
 /// Reject empty `--data-dir` / `NOMIFUN_DATA_DIR` values. clap's env binding
@@ -52,7 +51,7 @@ fn nomi_leaf(suffix: &str) -> String {
 pub fn parse_non_empty_path(s: &str) -> Result<PathBuf, String> {
     if s.trim().is_empty() {
         return Err(
-            "must not be empty (unset NOMIFUN_DATA_DIR instead of setting it to an empty string)"
+            "must not be empty (unset NOMIFUN_DATA_DIR / FLOWY_DATA_DIR instead of setting it to an empty string)"
                 .into(),
         );
     }
@@ -71,7 +70,9 @@ pub struct Cli {
     pub port: u16,
 
     /// Data directory for database and file storage.
-    #[arg(long, env = "NOMIFUN_DATA_DIR", default_value_os_t = default_data_dir(), value_parser = parse_non_empty_path)]
+    #[arg(long, default_value_os_t = default_data_dir(), value_parser = parse_non_empty_path)]
+    #[arg(long, env = "NOMIFUN_DATA_DIR")]
+    #[arg(long, env = "FLOWY_DATA_DIR")]
     pub data_dir: PathBuf,
 
     /// Working directory for conversation workspaces.

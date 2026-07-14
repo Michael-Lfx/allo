@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Top-level media generation configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaGenConfig {
     /// Primary provider: `flowy` (server) or `fal` (direct FAL_KEY).
     #[serde(default = "default_media_provider")]
@@ -17,6 +17,17 @@ pub struct MediaGenConfig {
 
     #[serde(default)]
     pub workflows: MediaWorkflowSettings,
+}
+
+impl Default for MediaGenConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_media_provider(),
+            image: ImageGenSettings::default(),
+            video: VideoGenSettings::default(),
+            workflows: MediaWorkflowSettings::default(),
+        }
+    }
 }
 
 fn default_media_provider() -> String {

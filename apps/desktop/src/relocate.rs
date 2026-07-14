@@ -65,6 +65,7 @@ use std::time::Duration;
 use nomifun_app::bootstrap::{
     BootNoteLevel, RELOCATED_DONE_MARKER, RELOCATED_FROM_MARKER, RelocationMarker, record_boot_note,
 };
+use nomifun_common::storage_paths::{self, LEGACY_DATABASE_MIGRATE_LOCK_FILE, LEGACY_DATABASE_PROBE_FILE};
 
 /// The main database; its presence defines "this root holds real data".
 const DB_FILE: &str = "nomifun-backend.db";
@@ -105,8 +106,10 @@ const EXCLUDED_ENTRIES: &[&str] = &[
     "browser-profile",             // legacy chromium profile (pre-Playwright-MCP);
                                    // no longer created — kept to relocate/clean
                                    // residue from upgraded installs
-    "nomifun-backend.db.migrate.lock", // advisory lock, must stay with its db
-    "nomifun-backend.db.probe",    // transient quiescence-probe residue
+    LEGACY_DATABASE_MIGRATE_LOCK_FILE, // advisory lock, must stay with its db
+    LEGACY_DATABASE_PROBE_FILE,        // transient quiescence-probe residue
+    storage_paths::DATABASE_MIGRATE_LOCK_FILE,
+    storage_paths::DATABASE_PROBE_FILE,
     "server.lock",                 // per-data-dir server lock: lives on the open
                                    // handle, not the file; copying it can hit the
                                    // holder's LockFileEx range on Windows
@@ -235,7 +238,7 @@ fn relocate_inner(old_root: &Path, new_root: &Path) -> std::io::Result<RelocateO
     // of an interrupted commit and are cleaned up below — treating them as
     // "target in use" would strand the user on a brand-new empty database
     // while their real data sits one rename short in the legacy dir.
-    if new_root.join(DB_FILE).exists() {
+    if storage_paths::database_exists(new_root) {
         return Ok(RelocateOutcome::SkippedTargetInUse);
     }
     // Crash residue of the quiescence probe counts as legacy data (the db is
@@ -364,7 +367,7 @@ fn relocate_inner(old_root: &Path, new_root: &Path) -> std::io::Result<RelocateO
 /// the `.db` rename anyway; this is defense in depth).
 fn cleanup_failed_relocation(new_root: &Path) {
     let _ = std::fs::remove_dir_all(new_root.join(STAGING_DIR_NAME));
-    if !new_root.join(DB_FILE).exists() {
+    if !storage_paths::database_exists(new_root) {
         let _ = std::fs::remove_file(new_root.join(RELOCATED_FROM_MARKER));
     }
 }

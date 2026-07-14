@@ -41,6 +41,7 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
     // or env reads; the only reader of NOMIFUN_LOG_DIR is sysinfo, much later.
     unsafe {
         std::env::set_var("NOMIFUN_LOG_DIR", &log_dir);
+        std::env::set_var("FLOWY_LOG_DIR", &log_dir);
     }
     let log_guard = init_tracing(&log_dir, cli.log_level.as_deref());
 
@@ -65,6 +66,20 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
     // SAFETY: called before any service initialization; no concurrent reads.
     unsafe {
         std::env::set_var("NOMIFUN_WORK_DIR", &work_dir);
+        std::env::set_var("FLOWY_WORK_DIR", &work_dir);
+    }
+
+    // Agent tooling (`nomi-config`, media workflows, ffmpeg install) reads
+    // `FLOWY_HOME` / `NOMIFUN_HOME`. Bind both to the backend data dir when
+    // unset so agent state lands under `Flowy/Nomi` instead of `~/.nomifun`.
+    // SAFETY: called before any service initialization; no concurrent reads.
+    unsafe {
+        if std::env::var("NOMIFUN_HOME").is_err() {
+            std::env::set_var("NOMIFUN_HOME", &cli.data_dir);
+        }
+        if std::env::var("FLOWY_HOME").is_err() {
+            std::env::set_var("FLOWY_HOME", &cli.data_dir);
+        }
     }
 
     // CLI-derived base policy: `--local` / `--insecure-no-auth` ⇒ NoAuth,
@@ -136,4 +151,53 @@ pub async fn init_data_layer(config: &AppConfig) -> Result<Database> {
     super::relocation::rewrite_relocated_paths(&database, &config.data_dir).await;
 
     Ok(database)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::cli::Cli;
+
+    fn minimal_cli(data_dir: PathBuf) -> Cli {
+        Cli {
+            data_dir,
+            work_dir: None,
+            log_dir: None,
+            host: "127.0.0.1".into(),
+            port: 25808,
+            app_version: "test".into(),
+            local: true,
+            log_level: None,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn init_environment_exports_flowy_and_nomifun_home() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path().join("flowy-nomi");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        unsafe {
+            std::env::remove_var("NOMIFUN_HOME");
+            std::env::remove_var("FLOWY_HOME");
+            std::env::remove_var("NOMIFUN_WORK_DIR");
+            std::env::remove_var("NOMIFUN_LOG_DIR");
+        }
+
+        let cli = minimal_cli(data_dir.clone());
+        let env = init_environment(&cli, "").expect("init_environment");
+        assert_eq!(env.config.data_dir, data_dir);
+
+        assert_eq!(
+            std::env::var("NOMIFUN_HOME").unwrap(),
+            data_dir.to_string_lossy()
+        );
+        assert_eq!(
+            std::env::var("FLOWY_HOME").unwrap(),
+            data_dir.to_string_lossy()
+        );
+    }
 }

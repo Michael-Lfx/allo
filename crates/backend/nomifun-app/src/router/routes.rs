@@ -585,7 +585,7 @@ pub fn create_router_with_all_state(
     let browser_login_authenticated = {
         let browser_data_dir = nomi_config::config::app_config_dir()
             .map(|d| d.join("browser-data"))
-            .unwrap_or_else(|| std::env::temp_dir().join("nomifun-browser-data"));
+            .unwrap_or_else(|| std::env::temp_dir().join(nomifun_common::storage_paths::TEMP_BROWSER_DATA));
         let login_state = crate::router::browser_login::BrowserLoginState::new(
             browser_data_dir,
             crate::commands::bundled_chrome_dir(),

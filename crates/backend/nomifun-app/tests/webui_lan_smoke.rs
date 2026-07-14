@@ -271,7 +271,7 @@ async fn webui_enable_preserves_user_set_username_and_reports_persisted_state() 
     // Simulate the user renaming the admin from the panel while WebUI is OFF:
     // this leaves `password_hash` empty. Open the SAME db file the server uses
     // (WAL allows a second connection) and rewrite the username directly.
-    let db_path = tmp.path().join("nomifun-backend.db");
+    let db_path = tmp.path().join(nomifun_common::storage_paths::DATABASE_FILE);
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
         .await
         .expect("open backend db");

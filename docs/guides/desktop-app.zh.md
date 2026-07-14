@@ -93,7 +93,7 @@ $ bun run build
 
 ```text
 ~/Library/Application Support/Flowy/Nomi/    # macOS（Windows/Linux 路径见上文）
-├── nomifun-backend.db        # SQLite 状态（会话、设置、session 等）
+├── flowy-backend.db        # SQLite 状态（会话、设置、session 等）
 ├── logs/                     # nomicore.log
 ├── companion/                # 伙伴 + 共享记忆中枢
 ├── knowledge/                # 受管理的知识库

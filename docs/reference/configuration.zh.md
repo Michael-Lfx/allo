@@ -22,7 +22,7 @@ Flowy 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 |---|---|---|---|
 | `--host` | `NOMIFUN_WEB_HOST` | `127.0.0.1` | 绑定的 IP。`0.0.0.0` 会接受 LAN/VPN/公网流量；大范围暴露前请先预置或完成首次设置。不解析主机名；非法输入将在启动阶段直接失败。 |
 | `--port` | `NOMIFUN_WEB_PORT` | `8787` | TCP 端口。在同一个 socket 上提供 API、`/ws` WebSocket 与 SPA。 |
-| `--data-dir` | `NOMIFUN_DATA_DIR` | 按用户的应用数据目录 | 后端数据目录（SQLite 数据库、智能体状态、日志、Bun 缓存）。默认是所有宿主共享的按用户位置——Windows 上是 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上是 `~/Library/Application Support/Flowy/Nomi`，Linux 上是 `$XDG_DATA_HOME/Flowy/Nomi`。可用本参数或 `NOMIFUN_DATA_DIR`（按字面值，不附加后缀）覆盖；生产环境请使用绝对路径。 |
+| `--data-dir` | `FLOWY_DATA_DIR`、`NOMIFUN_DATA_DIR` | 按用户的应用数据目录 | 后端数据目录（SQLite 数据库、智能体状态、日志、Bun 缓存）。默认是所有宿主共享的按用户位置——Windows 上是 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上是 `~/Library/Application Support/Flowy/Nomi`，Linux 上是 `$XDG_DATA_HOME/Flowy/Nomi`。可用本参数或 `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR`（按字面值，不附加后缀）覆盖；生产环境请使用绝对路径。 |
 | `--dist` | `NOMIFUN_WEB_DIST` | `../../ui/dist` | 已构建 SPA 所在目录。在仓库之外部署时务必显式指定。 |
 | `--admin-user` | `NOMIFUN_ADMIN_USERNAME` | `admin` | 预置首位管理员时使用的用户名。管理员存在后将被忽略。 |
 | `--admin-password` | `NOMIFUN_ADMIN_PASSWORD` | — | 在启动时预置首位管理员密码，跳过交互式设置。管理员存在后将被忽略。 |
@@ -70,7 +70,7 @@ Flowy 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 
 | 环境变量 | 读取方 | 作用 |
 |---|---|---|
-| `NOMIFUN_DATA_DIR` | 所有宿主 | 当宿主选择遵循该值时，作为后端数据目录的真值来源。桌面外壳会附加 `/Nomi`：设置该环境变量时目录为 `$NOMIFUN_DATA_DIR/Nomi`；未设置时目录为按用户的应用数据默认值（见[下文](#数据目录与工作目录的语义)）。独立 Web 宿主与 `nomicore` 二进制则按字面值将其作为 `--data-dir` 的默认值（不附加任何后缀）。 |
+| `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` | 所有宿主 | 当宿主选择遵循该值时，作为后端数据目录的真值来源。`FLOWY_DATA_DIR` 优先于 `NOMIFUN_DATA_DIR`。桌面外壳会附加 `/Nomi`：设置任一环境变量时目录为 `$FLOWY_DATA_DIR/Nomi`（或 `$NOMIFUN_DATA_DIR/Nomi`）；都未设置时目录为按用户的应用数据默认值（见[下文](#数据目录与工作目录的语义)）。独立 Web 宿主与 `nomicore` 二进制则按字面值将其作为 `--data-dir` 的默认值（不附加任何后缀）。 |
 | `NOMIFUN_WORK_DIR` | `nomicore` | `--work-dir`（按会话区分的工作区根）的回退值。 |
 | `JWT_SECRET` | `nomifun-app` | 用于签发会话 JWT 的密钥。解析顺序见 [鉴权密钥解析](#鉴权密钥解析)。 |
 | `NOMIFUN_HTTPS` | `nomifun-auth::CookieConfig` | 取真值时，会话与 CSRF cookie 会带上 `Secure` 标记和 `SameSite=Strict`。当应用通过 HTTPS 暴露（TLS 反向代理等）时请打开。默认 `false` → 不带 `Secure` 标记，`SameSite=Lax`。 |
@@ -101,7 +101,7 @@ Flowy 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 
 ## 数据目录与工作目录的语义
 
-- `data-dir` 存放 SQLite 数据库（`nomifun-backend.db*`）、各智能体状态、
+- `data-dir` 存放 SQLite 数据库（`flowy-backend.db*`，首次启动时会将旧版 `nomifun-backend.db*` 重命名）、各智能体状态、
   Bun 缓存、日志文件，以及任何嵌入式扩展数据。把它当成普通数据库来
   对待——做好备份、限制权限。两个同时运行的后端共享它的情况已被机制
   性地阻止（见下面的服务器锁）。

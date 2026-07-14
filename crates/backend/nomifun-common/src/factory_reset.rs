@@ -22,6 +22,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::storage_paths::{
+    DATABASE_FAMILY, DATABASE_MIGRATE_LOCK_FILE, DATABASE_PROBE_FILE, LEGACY_DATABASE_FAMILY,
+    LEGACY_DATABASE_MIGRATE_LOCK_FILE, LEGACY_DATABASE_PROBE_FILE,
+};
 use crate::timestamp::now_ms;
 
 /// Marker file under the data dir. Its presence means a reset is pending.
@@ -70,13 +74,18 @@ impl ResetMarker {
 /// holds that lock for its whole lifetime.
 ///
 /// Order matters for partial-failure safety: sidecars and the migrate lock are
-/// removed first and the main `.db` last, so a half-completed wipe never leaves
-/// a freshly created DB paired with a stale `-wal`/`-shm`.
+/// removed first and the main `.db` last.
 const DB_FAMILY: &[&str] = &[
-    "nomifun-backend.db-wal",
-    "nomifun-backend.db-shm",
-    "nomifun-backend.db.migrate.lock",
-    "nomifun-backend.db",
+    LEGACY_DATABASE_FAMILY[0],
+    LEGACY_DATABASE_FAMILY[1],
+    LEGACY_DATABASE_MIGRATE_LOCK_FILE,
+    LEGACY_DATABASE_PROBE_FILE,
+    LEGACY_DATABASE_FAMILY[3],
+    DATABASE_FAMILY[0],
+    DATABASE_FAMILY[1],
+    DATABASE_MIGRATE_LOCK_FILE,
+    DATABASE_PROBE_FILE,
+    DATABASE_FAMILY[3],
 ];
 
 /// Derived data directories (relative to data_dir) wiped on a `Full` reset.
@@ -226,6 +235,9 @@ fn is_retryable(e: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage_paths::{
+        DATABASE_FILE, DATABASE_MIGRATE_LOCK_FILE, DATABASE_SHM_FILE, DATABASE_WAL_FILE,
+    };
 
     fn touch(path: &Path) {
         std::fs::write(path, b"x").unwrap();
@@ -245,10 +257,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // DB family + sidecars.
-        touch(&dir.join("nomifun-backend.db"));
-        touch(&dir.join("nomifun-backend.db-wal"));
-        touch(&dir.join("nomifun-backend.db-shm"));
-        touch(&dir.join("nomifun-backend.db.migrate.lock"));
+        touch(&dir.join(DATABASE_FILE));
+        touch(&dir.join(DATABASE_WAL_FILE));
+        touch(&dir.join(DATABASE_SHM_FILE));
+        touch(&dir.join(DATABASE_MIGRATE_LOCK_FILE));
         // Derived data dirs.
         for d in ["conversations", "attachments", "knowledge", "companion", "cron", "browser-profile"] {
             std::fs::create_dir_all(dir.join(d)).unwrap();
@@ -289,10 +301,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nomifun-fr-bad-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(RESET_MARKER_FILE), b"not json").unwrap();
-        touch(&dir.join("nomifun-backend.db"));
+        touch(&dir.join(DATABASE_FILE));
 
         assert_eq!(apply_pending_reset(&dir, &dir).unwrap(), true);
-        assert!(!dir.join("nomifun-backend.db").exists());
+        assert!(!dir.join(DATABASE_FILE).exists());
         assert!(!dir.join(RESET_MARKER_FILE).exists());
 
         let _ = std::fs::remove_dir_all(&dir);

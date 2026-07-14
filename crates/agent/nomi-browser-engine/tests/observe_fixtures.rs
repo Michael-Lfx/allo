@@ -51,7 +51,7 @@ fn fixture_url() -> String {
 async fn observe_inject_contract_iframe() {
     // 1) resolve chrome（env NOMIFUN_CHROME_BINARY > 打包 > 数据目录 > 下载兜底）+ launch headless。
     let chrome = nomi_browser_engine::acquire::resolve_chrome_path(
-        &std::env::temp_dir().join("nomifun-browser-data"),
+        &std::env::temp_dir().join("flowy-browser-data"),
         None,
     )
     .await

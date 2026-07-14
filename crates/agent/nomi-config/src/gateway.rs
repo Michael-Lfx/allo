@@ -2,14 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
+use nomifun_common::storage_paths;
 use serde::{Deserialize, Serialize};
 
 use crate::insights::InsightsConfig;
 use crate::interest::InterestConfig;
 use crate::media::MediaGenConfig;
 use crate::server::ServerConfig;
-
-const PRIMARY_HOME_DIR: &str = ".nomifun";
 
 /// Top-level agent/gateway configuration persisted in `config.yaml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -30,21 +29,16 @@ pub struct GatewayConfig {
     pub interest: InterestConfig,
 }
 
-/// Resolve the agent data directory (`~/.nomifun` unless overridden).
+/// Resolve the agent data directory (backend `data_dir` / `Flowy/Nomi` unless overridden).
 pub fn data_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("NOMIFUN_HOME") {
-        let trimmed = home.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
+    if let Some(home) = storage_paths::resolve_home_from_env() {
+        return home;
     }
     default_data_dir()
 }
 
 pub fn default_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(PRIMARY_HOME_DIR)
+    storage_paths::default_data_dir("")
 }
 
 pub fn config_yaml_path(config_dir: Option<&Path>) -> PathBuf {
@@ -102,4 +96,20 @@ pub fn env_var_enabled_default_true(name: &str) -> bool {
             )
         })
         .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_data_dir_uses_flowy_nomi_not_dot_nomifun() {
+        let dir = default_data_dir();
+        let s = dir.to_string_lossy();
+        assert!(!s.contains(".nomifun"), "agent home must not default to ~/.nomifun, got {s}");
+        assert!(
+            dir.ends_with("Flowy/Nomi") || dir.ends_with("nomifun-data/Nomi"),
+            "expected Flowy/Nomi default, got {dir:?}"
+        );
+    }
 }

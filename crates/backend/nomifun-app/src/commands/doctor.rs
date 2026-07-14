@@ -32,7 +32,14 @@ pub async fn run_doctor(cli: &Cli, merged_path: &str) -> Result<ExitCode> {
 
     // Use the real on-disk DB so the report reflects the user's actual
     // catalog (including custom agents they've added via the UI).
-    let db_path = cli.data_dir.join("nomifun-backend.db");
+    let db_path = cli.data_dir.join(nomifun_common::storage_paths::DATABASE_FILE);
+    if !db_path.exists() {
+        let legacy = cli.data_dir.join(nomifun_common::storage_paths::LEGACY_DATABASE_FILE);
+        if legacy.exists() {
+            let _ = nomifun_common::storage_paths::ensure_database_filename_migrated(&cli.data_dir);
+        }
+    }
+    let db_path = nomifun_common::storage_paths::resolve_database_path(&cli.data_dir);
     let database = init_database(&db_path).await?;
 
     let repo: Arc<dyn IAgentMetadataRepository> = Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));

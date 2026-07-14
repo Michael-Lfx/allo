@@ -96,7 +96,7 @@ To start fresh, **quit the app** and delete that directory. To migrate, copy the
 
 ```text
 ~/Library/Application Support/Flowy/Nomi/    # macOS (see paths above for Windows/Linux)
-├── nomifun-backend.db        # SQLite state (conversations, settings, sessions, …)
+├── flowy-backend.db        # SQLite state (conversations, settings, sessions, …)
 ├── logs/                     # nomicore.log
 ├── companion/                # companions + the shared memory hub
 ├── knowledge/                # managed knowledge bases

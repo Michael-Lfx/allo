@@ -54,10 +54,11 @@ struct Args {
     /// `/var/lib/nomifun`) rely on that.
     #[arg(
         long,
-        env = "NOMIFUN_DATA_DIR",
         default_value_os_t = nomifun_app::cli::default_data_dir(),
         value_parser = nomifun_app::cli::parse_non_empty_path
     )]
+    #[arg(long, env = "NOMIFUN_DATA_DIR")]
+    #[arg(long, env = "FLOWY_DATA_DIR")]
     data_dir: PathBuf,
     /// Directory containing the built SPA (ui/dist).
     #[arg(long, env = "NOMIFUN_WEB_DIST", default_value = "../../ui/dist")]

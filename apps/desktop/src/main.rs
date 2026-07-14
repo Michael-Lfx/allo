@@ -127,8 +127,8 @@ fn resolve_webui_spa_dir(app: &tauri::App) -> Option<PathBuf> {
 
 /// Data root resolution, in priority order:
 ///
-/// 1. `NOMIFUN_DATA_DIR` env — explicit override; the shell appends `/Nomi`
-///    (semantics unchanged since the Electron era).
+/// 1. `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` env — explicit override; the shell
+///    appends `/Nomi` (semantics unchanged since the Electron era).
 /// 2. The shared per-host default from `nomifun_app::cli::default_data_dir()`:
 ///    `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application
 ///    Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` on Linux,
@@ -137,7 +137,7 @@ fn resolve_webui_spa_dir(app: &tauri::App) -> Option<PathBuf> {
 ///    `relocate.rs`). The web host and the `nomicore` bin resolve to the SAME
 ///    directory, so dev loops and the installed app share one state.
 fn default_data_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("NOMIFUN_DATA_DIR") {
+    if let Some(dir) = nomifun_common::storage_paths::resolve_data_dir_from_env() {
         return PathBuf::from(dir).join("Nomi");
     }
     nomifun_app::cli::default_data_dir()

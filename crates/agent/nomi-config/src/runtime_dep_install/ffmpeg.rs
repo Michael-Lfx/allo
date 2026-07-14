@@ -1,4 +1,4 @@
-//! Download ffmpeg into `~/.nomifun/bin` for long-video concat.
+//! Download ffmpeg into `{data_dir}/bin` for long-video concat.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -125,7 +125,7 @@ fn binary_name() -> &'static str {
     }
 }
 
-/// Download ffmpeg release build into `$NOMIFUN_HOME/bin/ffmpeg[.exe]`.
+/// Download ffmpeg release build into `{data_dir}/bin/ffmpeg[.exe]`.
 pub async fn ensure_ffmpeg(quiet: bool) -> Result<PathBuf, FfmpegInstallError> {
     let home = data_dir();
     let dest = managed_ffmpeg_path(&home);

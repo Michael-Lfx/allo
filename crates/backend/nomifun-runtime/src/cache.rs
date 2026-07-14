@@ -37,9 +37,9 @@ pub fn init(data_dir: impl AsRef<Path>) {
 /// 1. Path supplied via [`init`] (`{data_dir}/runtime`) when the backend
 ///    started with `--data-dir`.
 /// 2. Platform cache dir (via `dirs::cache_dir()`):
-///    - macOS:   `~/Library/Caches/nomifun/runtime`
-///    - Linux:   `$XDG_CACHE_HOME/nomifun/runtime` (fallback `~/.cache/nomifun/runtime`)
-///    - Windows: `%LOCALAPPDATA%\nomifun\runtime`
+///    - macOS:   `~/Library/Caches/Flowy/runtime`
+///    - Linux:   `$XDG_CACHE_HOME/Flowy/runtime` (fallback `~/.cache/Flowy/runtime`)
+///    - Windows: `%LOCALAPPDATA%\Flowy\runtime`
 ///
 /// Returns `None` only when neither [`init`] has run nor a platform cache
 /// dir is determinable (exotic envs).
@@ -47,7 +47,7 @@ pub fn runtime_root() -> Option<PathBuf> {
     if let Some(p) = RUNTIME_ROOT_OVERRIDE.get() {
         return Some(p.clone());
     }
-    dirs::cache_dir().map(|d| d.join("nomifun").join("runtime"))
+    dirs::cache_dir().map(|d| d.join("Flowy").join("runtime"))
 }
 
 /// Per-version cache directory name: `bun-<version>-<sha12>`.
@@ -89,7 +89,7 @@ mod tests {
             .take(2)
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(tail, vec!["runtime".to_string(), "nomifun".to_string()]);
+        assert_eq!(tail, vec!["runtime".to_string(), "Flowy".to_string()]);
     }
 
     #[test]

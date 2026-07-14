@@ -158,7 +158,7 @@ pub async fn build_backend_for_fixture_with_downloads(
 /// 一个受控 page。会开一个**可见** chrome 窗口（需本机有显示器；本机 Windows 有）。
 pub async fn build_backend_for_fixture_headful(profile: &str) -> CdpBackend {
     let chrome = nomi_browser_engine::acquire::resolve_chrome_path(
-        &std::env::temp_dir().join("nomifun-browser-data"),
+        &std::env::temp_dir().join("flowy-browser-data"),
         None,
     )
     .await
@@ -197,7 +197,7 @@ pub async fn build_backend_for_fixture_headful_with_firewall(
     firewall: FirewallConfig,
 ) -> CdpBackend {
     let chrome = nomi_browser_engine::acquire::resolve_chrome_path(
-        &std::env::temp_dir().join("nomifun-browser-data"),
+        &std::env::temp_dir().join("flowy-browser-data"),
         None,
     )
     .await
@@ -227,7 +227,7 @@ pub async fn build_backend_for_fixture_headful_with_downloads(
     let _ = std::fs::remove_dir_all(&download_dir);
     std::fs::create_dir_all(&download_dir).expect("create download dir");
     let chrome = nomi_browser_engine::acquire::resolve_chrome_path(
-        &std::env::temp_dir().join("nomifun-browser-data"),
+        &std::env::temp_dir().join("flowy-browser-data"),
         None,
     )
     .await
@@ -271,7 +271,7 @@ async fn build_backend_for_fixture_inner(
     dns_resolver: Option<Arc<dyn HostResolver>>,
 ) -> CdpBackend {
     let chrome = nomi_browser_engine::acquire::resolve_chrome_path(
-        &std::env::temp_dir().join("nomifun-browser-data"),
+        &std::env::temp_dir().join("flowy-browser-data"),
         None,
     )
     .await

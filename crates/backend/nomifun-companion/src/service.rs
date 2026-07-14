@@ -2408,11 +2408,11 @@ mod tests {
         ]
     }
 
-    /// A unique scratch dir under the upload sandbox root (`{temp}/nomifun`) —
+    /// A unique scratch dir under the upload sandbox root (`{temp}/flowy`) —
     /// figure sources must canonicalize inside it (see
     /// [`crate::figure::validate_figure_source`]).
     fn upload_scratch() -> tempfile::TempDir {
-        let root = std::env::temp_dir().join("nomifun");
+        let root = std::env::temp_dir().join(nomifun_common::storage_paths::TEMP_UPLOAD_SANDBOX);
         std::fs::create_dir_all(&root).unwrap();
         tempfile::Builder::new().prefix("companionsvc-fig-").tempdir_in(root).unwrap()
     }

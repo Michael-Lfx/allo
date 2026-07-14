@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+nomifun-common.workspace = true
 nomi-types.workspace   = true
 nomi-compact.workspace = true
 

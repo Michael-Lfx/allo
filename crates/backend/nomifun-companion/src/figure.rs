@@ -34,7 +34,7 @@ pub const FIGURE_MAX_DIM: u32 = 4096;
 /// Only files inside this root may be ingested — `POST /api/fs/upload` lands
 /// here (the same constraint as requirement attachments).
 fn upload_root() -> std::path::PathBuf {
-    std::env::temp_dir().join("nomifun")
+    std::env::temp_dir().join(nomifun_common::storage_paths::TEMP_UPLOAD_SANDBOX)
 }
 
 /// True when `bytes` starts with a WebP (`RIFF????WEBP`) or PNG

@@ -95,7 +95,7 @@ use crate::launch::LaunchConfig;
 #[derive(Clone)]
 pub struct EngineConfig {
     /// 应用数据目录：下载兜底的 chrome 落点 + **专属** user-data-dir 的父目录。
-    /// 默认 `std::env::temp_dir()/nomifun-browser-data`。
+    /// 默认 `std::env::temp_dir()/flowy-browser-data`。
     pub data_dir: PathBuf,
     /// **显式 user-data-dir（并发隔离基石）**：`Some` → 引擎用它作 Chromium `--user-data-dir`；
     /// `None`（默认，向后兼容）→ 回退 `data_dir.join("profile")`（旧行为）。
@@ -198,7 +198,7 @@ impl std::fmt::Debug for EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            data_dir: std::env::temp_dir().join("nomifun-browser-data"),
+            data_dir: std::env::temp_dir().join(nomifun_common::storage_paths::TEMP_BROWSER_DATA),
             // 默认 None：回退 data_dir/profile（旧行为，零回归）。上层为并发隔离注入唯一目录。
             user_data_dir: None,
             // 默认 false：不删 profile（共享兜底目录 / 登录窗稳定目录需保留）。per-instance 注入 true。
@@ -381,7 +381,7 @@ mod tests {
         // 默认来源 = Managed（内置/下载 CfT 优先）= 现行为，零回归。
         assert_eq!(c.chrome_source, ChromeSource::Managed);
         assert!(c.bundled_dir.is_none());
-        assert!(c.data_dir.ends_with("nomifun-browser-data"));
+        assert!(c.data_dir.ends_with("flowy-browser-data"));
         // E4：无 per-pet 上下文时 workspace_dir 默认 None（兜底落 <data_dir>/downloads）。
         assert!(c.workspace_dir.is_none());
         // E3：evaluate 全权默认 OFF（default-deny）。

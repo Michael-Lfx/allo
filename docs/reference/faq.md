@@ -35,7 +35,7 @@ In the **data directory**. Its location depends on which host you are running:
 - **Web (`nomifun-web`)**: whatever you pass to `--data-dir` (or `NOMIFUN_DATA_DIR`), taken literally — no `/Nomi` suffix. With neither set it defaults to the **same per-user dir as the desktop app**, so a dev `bun run serve:web` and the installed app see one shared state.
 - **Docker**: the named volume defined in the compose file (`nomifun-data` mounted at `/data`).
 
-The data directory contains the SQLite database (`nomifun-backend.db*`), per-agent state, the Bun cache, log files, and any embedded extension data. Back it up like a database. Because every host defaults to the same directory, the backend guards it with an exclusive `server.lock` — a second backend instance on the same data dir fails fast instead of corrupting state.
+The data directory contains the SQLite database (`flowy-backend.db*`, legacy `nomifun-backend.db*` is renamed on first boot), per-agent state, the Bun cache, log files, and any embedded extension data. Back it up like a database. Because every host defaults to the same directory, the backend guards it with an exclusive `server.lock` — a second backend instance on the same data dir fails fast instead of corrupting state.
 
 For the full lifecycle and `work-dir` semantics, see [Configuration Reference](./configuration.md#data-directory-and-work-directory-semantics).
 

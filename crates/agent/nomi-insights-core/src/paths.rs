@@ -1,4 +1,4 @@
-//! Local paths under `$NOMIFUN_HOME/insights/`.
+//! Local paths under `{data_dir}/insights/`.
 
 use std::path::{Path, PathBuf};
 
