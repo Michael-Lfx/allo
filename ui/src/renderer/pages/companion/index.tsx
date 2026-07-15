@@ -916,8 +916,8 @@ const CompanionPage: React.FC = () => {
           setBubbleLoading(false);
           const browser = browserNarrationFor(message.data);
           const hint = browser
-            ? t(browser.key, { name: profileRef.current?.name || 'Nomi', ...browser.params })
-            : t('nomi.companion.usingTools', { name: profileRef.current?.name || 'Nomi' });
+            ? t(browser.key, { name: profileRef.current?.name || 'Flowy', ...browser.params })
+            : t('nomi.companion.usingTools', { name: profileRef.current?.name || 'Flowy' });
           setBubble((prev) => (prev && prev !== '…' ? prev : hint));
           armBubbleDismiss(STREAM_STALL_MS, () => endTurn(''));
           break;
@@ -1478,7 +1478,7 @@ const CompanionPage: React.FC = () => {
   );
 
   const openNativeContextMenu = useCallback(async () => {
-    const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || 'Nomi', t });
+    const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || 'Flowy', t });
     try {
       const [{ Menu }, { getCurrentWindow }] = await Promise.all([
         import('@tauri-apps/api/menu'),
@@ -1672,7 +1672,7 @@ const CompanionPage: React.FC = () => {
           <textarea
             className='nomi-companion-composer__input'
             value={composerText}
-            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Nomi' })}
+            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
             autoFocus
             onChange={(e) => setComposerText(e.target.value)}
             onFocus={onComposerFocus}
@@ -1732,7 +1732,7 @@ const CompanionPage: React.FC = () => {
         >
           <input
             value={input}
-            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Nomi' })}
+            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
             onChange={(e) => setInput(e.target.value)}
             onPaste={onComposerPaste}
             onKeyDown={(e) => {

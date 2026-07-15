@@ -186,7 +186,7 @@ const SkillMarketSettings: React.FC = () => {
                 </h2>
                 <p className='mt-8px mb-0 max-w-[680px] text-14px text-t-secondary leading-relaxed'>
                   {t('settings.skillsMarket.description', {
-                    defaultValue: '同步 ClawHub 与 SkillHub 最新榜单，选择技能后交给 Nomi 生成安装确认草稿。',
+                    defaultValue: '同步 ClawHub 与 SkillHub 最新榜单，选择技能后交给 Flowy 生成安装确认草稿。',
                   })}
                 </p>
               </div>

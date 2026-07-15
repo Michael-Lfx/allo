@@ -191,7 +191,7 @@ describe('composeMessageForTest', () => {
       msg_id: 'assistant-turn-1',
       type: 'agent_status',
       position: 'left',
-      content: { backend: 'nomi', status: 'preparing', agent_name: 'Nomi' },
+      content: { backend: 'nomi', status: 'preparing', agent_name: 'Flowy' },
     });
 
     const merged = composeMessageForTest(status, [text]);
@@ -207,12 +207,12 @@ describe('composeMessageForTest', () => {
       msg_id: 'assistant-turn-1',
       type: 'agent_status',
       position: 'left',
-      content: { backend: 'nomi', status: 'preparing', agent_name: 'Nomi' },
+      content: { backend: 'nomi', status: 'preparing', agent_name: 'Flowy' },
     });
     const updated = {
       ...status,
       created_at: 2000,
-      content: { backend: 'nomi', status: 'prepared', agent_name: 'Nomi' },
+      content: { backend: 'nomi', status: 'prepared', agent_name: 'Flowy' },
     } as TMessage;
 
     const merged = composeMessageForTest(updated, [status]);

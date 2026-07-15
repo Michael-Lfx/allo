@@ -124,7 +124,7 @@ export const translateMarketDescription = (
   if (tags.has('social')) return `${name} 用于社交媒体、内容发布或营销工作流。`;
   if (tags.has('setup')) return `${name} 用于工具配置、安装或初始化流程。`;
 
-  return `${name} 的市场榜单技能，可扩展 Nomi 的自动化能力。`;
+  return `${name} 的市场榜单技能，可扩展 Flowy 的自动化能力。`;
 };
 
 export const filterSkillMarketItems = (
