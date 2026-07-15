@@ -1,0 +1,45 @@
+.preset-store-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 分类导航 */
+.preset-store-panel__categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.preset-store-panel__category-btn {
+  background: var(--color-fill-2);
+  color: var(--color-text-2);
+  border: 1px solid transparent;
+  border-radius: 100px;
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.preset-store-panel__category-btn:hover {
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.06);
+}
+.preset-store-panel__category-btn.active {
+  background: rgb(var(--primary-6));
+  color: #fff;
+  border-color: rgb(var(--primary-6));
+}
+
+/* 模板网格 */
+.preset-store-panel__grid {
+  display: grid;
+  gap: 12px;
+}
+
+/* 空态 */
+.preset-store-panel__empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--color-text-3);
+  font-size: 14px;
+}

@@ -1548,6 +1548,26 @@
     "subtitle": "将 Agent、模型、Skill 与知识范围固化为可一键启动的复用配置。",
     "railTitle": "设定"
   },
+  "presetStore": {
+    "tabPresets": "设定",
+    "tabStore": "商店",
+    "category": {
+      "all": "全部",
+      "office": "办公",
+      "presentation": "演示",
+      "design": "设计",
+      "development": "开发",
+      "marketing": "营销",
+      "education": "教育"
+    },
+    "installs": "安装次",
+    "install": "安装",
+    "skills": "技能",
+    "instructions": "指令",
+    "noTemplates": "暂无模板",
+    "installSuccess": "「{{name}}」安装成功",
+    "installFailed": "「{{name}}」安装失败"
+  },
   "mcpHub": {
     "title": "MCP",
     "subtitle": "注册、导入并管理 MCP 服务器配置。",

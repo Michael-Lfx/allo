@@ -20,6 +20,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { Tabs } from '@arco-design/web-react';
+import PresetStorePanel from './store/PresetStorePanel';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
 import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
@@ -43,6 +45,10 @@ const PresetSettings: React.FC = () => {
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<"presets" | "store">(() => {
+    const tab = searchParams.get("tab");
+    return tab === "store" ? "store" : "presets";
+  });
   const navigationState = (location.state as PresetNavigationState | null) ?? null;
   const highlightId = searchParams.get('highlight');
 
@@ -131,8 +137,27 @@ const PresetSettings: React.FC = () => {
       maxWidthClass='md:max-w-1200px'
     >
       {messageContext}
-    <div className='flex flex-col h-full w-full'>
-      <NomiScrollArea className='flex-1 min-h-0 pb-16px scrollbar-hide' disableOverflow>
+      <div className='flex flex-col h-full w-full'>
+        <div className='mb-16px'>
+          <Tabs
+            activeTab={activeTab}
+            onChange={(key: string) => {
+              const next = key as "presets" | "store";
+              setActiveTab(next);
+              const sp = new URLSearchParams(searchParams);
+              sp.set("tab", next);
+              setSearchParams(sp, { replace: true });
+            }}
+            type='line'
+            className='[&>.arco-tabs-content]:pt-0 [&_.arco-tabs-nav]:!min-h-40px [&_.arco-tabs-nav-tab]:!py-8px [&_.arco-tabs-nav-tab]:!font-500 [&_.arco-tabs-nav-tab-active]:!font-500 [&_.arco-tabs-nav-tab]:!leading-22px'
+          >
+            <Tabs.TabPane key='presets' title={t('settings.presetStore.tabPresets')} />
+            <Tabs.TabPane key='store' title={t('settings.presetStore.tabStore')} />
+          </Tabs>
+        </div>
+        {activeTab === 'presets' ? (
+          <>
+            <NomiScrollArea className='flex-1 min-h-0 pb-16px scrollbar-hide' disableOverflow>
         <PresetListPanel
           presets={presets}
           localeKey={localeKey}
@@ -236,20 +261,29 @@ const PresetSettings: React.FC = () => {
           setSelectedSkills={editor.setSelectedSkills}
           message={message}
         />
-      </NomiScrollArea>
-
-      <TagManagementModal
-        visible={tagModalVisible}
-        onClose={() => setTagModalVisible(false)}
-        audienceTags={tags.audienceTags}
-        scenarioTags={tags.scenarioTags}
-        localeKey={localeKey}
-        onCreate={tags.createTag}
-        onRename={tags.renameTag}
-        onDelete={tags.deleteTag}
-        message={message}
-      />
-    </div>
+            </NomiScrollArea>
+          </>
+        ) : (
+          <div className='w-full pb-16px'>
+            <PresetStorePanel
+              onInstalled={() => {
+                void loadPresets();
+              }}
+            />
+          </div>
+        )}
+        <TagManagementModal
+          visible={tagModalVisible}
+          onClose={() => setTagModalVisible(false)}
+          audienceTags={tags.audienceTags}
+          scenarioTags={tags.scenarioTags}
+          localeKey={localeKey}
+          onCreate={tags.createTag}
+          onRename={tags.renameTag}
+          onDelete={tags.deleteTag}
+          message={message}
+        />
+      </div>
     </HubPageShell>
   );
 };

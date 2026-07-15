@@ -1547,6 +1547,26 @@
     "subtitle": "Save Agents, models, Skills and knowledge scope as reusable one-click configurations.",
     "railTitle": "Presets"
   },
+  "presetStore": {
+    "tabPresets": "Presets",
+    "tabStore": "Store",
+    "category": {
+      "all": "All",
+      "office": "Office",
+      "presentation": "Presentation",
+      "design": "Design",
+      "development": "Development",
+      "marketing": "Marketing",
+      "education": "Education"
+    },
+    "installs": "installs",
+    "install": "Install",
+    "skills": "Skills",
+    "instructions": "Instructions",
+    "noTemplates": "No templates available yet.",
+    "installSuccess": "\"{{name}}\" installed successfully",
+    "installFailed": "\"{{name}}\" installation failed"
+  },
   "mcpHub": {
     "title": "MCP",
     "subtitle": "Register, import, and manage MCP server configurations.",
