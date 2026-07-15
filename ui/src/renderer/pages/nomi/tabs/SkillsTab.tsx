@@ -125,6 +125,20 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
     [companionId, refresh]
   );
 
+  const archive = useCallback(
+    async (s: ICompanionSkill) => {
+      try {
+        await ipcBridge.companion.archiveSkill.invoke({ companion_id: companionId, name: s.skill_name });
+        Message.success(t('nomi.skills.archivedOk', { defaultValue: '已归档' }));
+        void refresh();
+      } catch (e) {
+        Message.error(String(e));
+        void refresh();
+      }
+    },
+    [companionId, refresh, t]
+  );
+
   const openEditor = useCallback(
     async (s: ICompanionSkill) => {
       if (!companionId) return;
@@ -287,9 +301,19 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
                   {t('nomi.skills.view', { defaultValue: '查看' })}
                 </Button>
                 {s.status === 'active' && (
-                  <Button size='mini' onClick={() => void openGift(s.skill_name)}>
-                    {t('nomi.skills.gift', { defaultValue: '赠送' })}
-                  </Button>
+                  <>
+                    <Button size='mini' onClick={() => void openGift(s.skill_name)}>
+                      {t('nomi.skills.gift', { defaultValue: '赠送' })}
+                    </Button>
+                    <Popconfirm
+                      title={t('nomi.skills.archiveConfirm', {
+                        defaultValue: '归档这个技能？归档后伴侣不再自动用它，你可在“已归档”里找回。',
+                      })}
+                      onOk={() => void archive(s)}
+                    >
+                      <Button size='mini'>{t('nomi.skills.archive', { defaultValue: '归档' })}</Button>
+                    </Popconfirm>
+                  </>
                 )}
                 {s.status === 'draft' && (
                   <>

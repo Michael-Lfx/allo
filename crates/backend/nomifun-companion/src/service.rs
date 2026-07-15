@@ -1578,6 +1578,25 @@ impl CompanionService {
         Ok(self.store.get_skill(companion_id, name).await?.unwrap_or(skill))
     }
 
+    /// Manually archive a skill — soft and reversible ("see + undo"): flips the registry row to
+    /// `archived` and leaves the on-disk SKILL.md intact (recoverable via the Archived filter).
+    /// Idempotent when already archived. Unlike rejecting a draft, this does NOT record reject
+    /// feedback or suppress the originating mined pattern — the user is tidying up an active skill,
+    /// not correcting a bad suggestion.
+    pub async fn archive_companion_skill(&self, companion_id: &str, name: &str) -> Result<CompanionSkill, AppError> {
+        let skill = self
+            .store
+            .get_skill(companion_id, name)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("skill {name} not found")))?;
+        if skill.status == "archived" {
+            return Ok(skill); // idempotent: already archived
+        }
+        self.store.set_skill_status(companion_id, name, "archived").await?;
+        self.emitter.emit_skill_archived(companion_id, name);
+        Ok(self.store.get_skill(companion_id, name).await?.unwrap_or(skill))
+    }
+
     /// Learn-by-demonstration (P5 T2-B): reconstruct a tool-name sequence from `conversation_id`'s
     /// collected tool-calls and draft a reviewable skill from it. Requires `collect.tool_calls` to
     /// have been on for that session. Returns the drafted skill name.

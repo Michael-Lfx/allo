@@ -4529,6 +4529,11 @@ export const companion = {
     ),
     fromApiCompanionSkill
   ),
+  /** Manually archive an active skill (soft, reversible — recoverable under the Archived filter). */
+  archiveSkill: httpPost<ICompanionSkill, { companion_id: CompanionId; name: string }>(
+    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}/archive`,
+    () => ({})
+  ),
   weeklyDigest: httpGet<ICompanionWeeklyDigest, { companion_id: CompanionId; days?: number }>(
     (p) => `/api/companion/companions/${p.companion_id}/weekly-digest${p.days ? `?days=${p.days}` : ''}`
   ),
