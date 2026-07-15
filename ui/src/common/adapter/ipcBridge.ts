@@ -3123,6 +3123,8 @@ export interface IAutoWorkState {
   run_state: AutoWorkRunState;
   current_requirement_id?: RequirementId;
   completed_count: number;
+  /** True when this enable call just auto-armed IDMM fault watch (rule_only). */
+  fault_watch_auto_armed?: boolean;
 }
 
 const fromApiRequirement = (requirement: IRequirement): IRequirement => ({

@@ -192,6 +192,11 @@ impl AutoWorkRunner {
             .map(|h| (h.progress.current(), h.progress.completed()))
     }
 
+    /// Optional IDMM seam for enable-time default fault-watch arming.
+    pub fn idmm_handle(&self) -> Option<Arc<dyn crate::hooks::IdmmHandle>> {
+        self.deps.idmm.clone()
+    }
+
     /// Start (or restart) the autowork loop for a target bound to `tag`.
     /// Stops after `max_requirements` completions when set.
     pub fn start(&self, kind: AutoWorkTargetKind, target_id: String, tag: String, max_requirements: Option<u32>) {
@@ -449,6 +454,7 @@ fn emit_autowork_progress(
         run_state: AutoWorkState::run_state(enabled, current_requirement_id.as_deref()),
         current_requirement_id,
         completed_count: progress.completed(),
+        fault_watch_auto_armed: false,
     });
 }
 

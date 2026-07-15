@@ -70,6 +70,7 @@ async fn build_state(deps: &GatewayDeps, kind: AutoWorkTargetKind, target_id: &s
         run_state,
         current_requirement_id,
         completed_count,
+        fault_watch_auto_armed: false,
     })
 }
 
@@ -112,17 +113,26 @@ async fn set(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: SetAutoworkParams) -> Va
         return json!({ "error": e.to_string() });
     }
 
+    let mut fault_watch_auto_armed = false;
     if p.enabled {
         if let Some(tag) = p.tag.clone() {
             deps.auto_work_runner
                 .start(kind, target_id.clone(), tag, p.max_requirements);
+            // Mirror REST: enable AutoWork also seeds rule-only fault watch
+            // when the target has no saved IDMM config.
+            if let Some(idmm) = deps.auto_work_runner.idmm_handle() {
+                fault_watch_auto_armed = idmm
+                    .ensure_default_fault_watch(kind, &target_id, &ctx.user_id)
+                    .await;
+            }
         }
     } else {
         deps.auto_work_runner.stop(kind, &target_id);
     }
 
     match build_state(&deps, kind, &target_id).await {
-        Ok(state) => {
+        Ok(mut state) => {
+            state.fault_watch_auto_armed = fault_watch_auto_armed;
             deps.requirement_service.emit_autowork_state(&state);
             ok(state)
         }

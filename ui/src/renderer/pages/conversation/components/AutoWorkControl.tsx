@@ -221,7 +221,11 @@ const AutoWorkControl: React.FC<AutoWorkControlProps> = ({ target, draft, disabl
     try {
       const s = await ipcBridge.requirements.setAutoWork.invoke({ kind, target_id: id, enabled: next, tag });
       setState(s);
-      Message.success(next ? t('requirements.autowork.enabledOk') : t('requirements.autowork.disabledOk'));
+      if (next && s.fault_watch_auto_armed) {
+        Message.success(t('requirements.autowork.enabledWithFaultWatch'));
+      } else {
+        Message.success(next ? t('requirements.autowork.enabledOk') : t('requirements.autowork.disabledOk'));
+      }
     } catch (e) {
       Message.error(String(e));
     }

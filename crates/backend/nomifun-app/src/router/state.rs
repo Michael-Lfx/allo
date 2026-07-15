@@ -928,7 +928,7 @@ pub fn build_requirement_state(services: &AppServices) -> (RequirementRouterStat
         conv_repo.clone(),
         terminal_driver.clone(),
     );
-    let idmm_handle: Arc<dyn nomifun_requirement::IdmmHandle> = Arc::new(idmm_state.service.manager().clone());
+    let idmm_handle: Arc<dyn nomifun_requirement::IdmmHandle> = idmm_state.service.clone();
 
     // NOTE: the ConversationSupervisionHook for user-driven chat turns is
     // registered in `build_module_states` on the ROUTE ConversationService
@@ -1085,9 +1085,10 @@ pub fn build_idmm_state(
         runtime_registry: services.agent_runtime_registry.clone(),
     });
 
+    let emitter = nomifun_idmm::IdmmEventEmitter::new(services.event_bus.clone());
     let loop_deps = Arc::new(nomifun_idmm::LoopDeps {
         sidecar: sidecar.clone(),
-        emitter: nomifun_idmm::IdmmEventEmitter::new(services.event_bus.clone()),
+        emitter: emitter.clone(),
         records: records.clone(),
     });
     let manager = IdmmManager::new(loop_deps, probe_deps.clone(), probe_deps.clone());
@@ -1097,6 +1098,7 @@ pub fn build_idmm_state(
         sidecar,
         manager,
         records.clone(),
+        emitter,
     ));
 
     // TTL janitor: IDMM records are deliberately disposable (per-target cap is

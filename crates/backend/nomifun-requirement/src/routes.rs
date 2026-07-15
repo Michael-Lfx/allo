@@ -263,6 +263,7 @@ async fn set_autowork(
         )
         .await?;
     // Start/stop the live loop.
+    let mut fault_watch_auto_armed = false;
     if req.enabled {
         if let Some(tag) = req.tag.clone() {
             // An explicit enable resumes a tag a prior failure left paused, so
@@ -276,11 +277,21 @@ async fn set_autowork(
             state
                 .auto_work_runner
                 .start(req.kind, req.target_id.clone(), tag, req.max_requirements);
+            // Unattended default: arm IDMM fault watch (rule_only) when this
+            // target has never saved an IDMM config. Opt-out: a saved config
+            // with fault off is respected. Best-effort — AutoWork still starts
+            // if IDMM is not wired.
+            if let Some(idmm) = state.auto_work_runner.idmm_handle() {
+                fault_watch_auto_armed = idmm
+                    .ensure_default_fault_watch(req.kind, &req.target_id, &user.id)
+                    .await;
+            }
         }
     } else {
         state.auto_work_runner.stop(req.kind, &req.target_id);
     }
-    let st = build_autowork_state(&state, req.kind, &req.target_id).await?;
+    let mut st = build_autowork_state(&state, req.kind, &req.target_id).await?;
+    st.fault_watch_auto_armed = fault_watch_auto_armed;
     state.requirement_service.emit_autowork_state(&st);
     Ok(Json(ApiResponse::ok(st)))
 }
@@ -346,5 +357,6 @@ async fn build_autowork_state(
         run_state,
         current_requirement_id,
         completed_count,
+        fault_watch_auto_armed: false,
     })
 }

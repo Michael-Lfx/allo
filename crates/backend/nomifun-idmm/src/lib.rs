@@ -4,9 +4,9 @@
 //!
 //! Layering: `signal`/`config`/`detector`/`prompt`/`util` are pure; `probe`
 //! abstracts the target; `sidecar` calls the backup model; `policy` is the
-//! escalation ladder; `supervisor` runs the per-session loop + `IdmmManager`
-//! (which implements `nomifun_requirement::IdmmHandle`); `service`/`state`/
-//! `routes` are the domain API surface.
+//! escalation ladder; `supervisor` runs the per-session loop + `IdmmManager`;
+//! `service` implements `nomifun_requirement::IdmmHandle` (persist + arm);
+//! `state`/`routes` are the domain API surface.
 
 pub mod config;
 pub mod detector;

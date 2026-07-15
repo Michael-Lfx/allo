@@ -9,12 +9,12 @@
 
 use nomifun_api_types::AutoWorkTargetKind;
 
-/// Implemented by `nomifun-idmm::IdmmManager`. AutoWork calls
-/// `ensure_supervising` at the top of each loop iteration so that, if the user
-/// enabled IDMM for this target, supervision is (idempotently) running while the
-/// turn executes. The implementation resolves the session owner and config
-/// internally; this call is cheap and a no-op when IDMM is disabled or already
-/// supervising the target.
+/// Implemented by `nomifun-idmm::IdmmService` (via the manager for live
+/// supervision + config persistence for the default-fault-watch path).
+/// AutoWork calls `ensure_supervising` while a turn runs so that, if the user
+/// enabled IDMM for this target, supervision is (idempotently) running.
+/// `ensure_default_fault_watch` is called when AutoWork is *enabled* so a fresh
+/// session gets rule-only fault recovery without a second toggle.
 #[async_trait::async_trait]
 pub trait IdmmHandle: Send + Sync {
     fn ensure_supervising(&self, kind: AutoWorkTargetKind, target_id: &str);
@@ -45,4 +45,20 @@ pub trait IdmmHandle: Send + Sync {
     /// a decision — then AutoWork keeps its legacy "a clean finish ends the turn"
     /// behavior.
     async fn has_pending_decision(&self, kind: AutoWorkTargetKind, target_id: &str, turn_text: &str) -> bool;
+
+    /// When AutoWork is enabled on a target, ensure the IDMM **fault watch** is
+    /// on at `rule_only` so unattended queues survive provider blips without a
+    /// second toggle. Returns `true` when this call newly armed the fault watch
+    /// (so the UI can toast). Returns `false` when already on, the user has a
+    /// saved config that left fault off (opt-out), or IDMM is unavailable.
+    /// Decision watch is never touched.
+    async fn ensure_default_fault_watch(
+        &self,
+        kind: AutoWorkTargetKind,
+        target_id: &str,
+        user_id: &str,
+    ) -> bool {
+        let _ = (kind, target_id, user_id);
+        false
+    }
 }

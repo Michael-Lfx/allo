@@ -11,13 +11,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomifun_ai_agent::runtime_registry::AgentRuntimeRegistry;
-use nomifun_api_types::{IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind, InterventionRecord};
+use nomifun_api_types::{
+    AutoWorkTargetKind, FaultWatchConfig, IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind,
+    InterventionRecord, WatchBase, WatchTier,
+};
 use nomifun_common::{AppError, ConversationId, IdmmInterventionId, TerminalId, UserId};
 use nomifun_conversation::ConversationService;
 use nomifun_db::models::IdmmInterventionRow;
 use nomifun_db::{IClientPreferenceRepository, IConversationRepository, IIdmmInterventionRepository};
+use nomifun_requirement::IdmmHandle;
 use nomifun_terminal::TerminalDriver;
+use tracing::warn;
 
+use crate::events::IdmmEventEmitter;
 use crate::probe::{ConversationProbe, SessionProbe, TerminalProbe};
 use crate::sidecar::{PREF_BACKUP_MODEL, PREF_BACKUP_PROVIDER, PREF_DEFAULT_STEERING, SidecarClient};
 use crate::supervisor::{ConfigReader, IdmmManager, ProbeFactory, build_state};
@@ -177,6 +183,9 @@ pub struct IdmmService {
     sidecar: Arc<SidecarClient>,
     manager: IdmmManager,
     records: Arc<dyn IIdmmInterventionRepository>,
+    /// Status WS emitter (same instance the supervisor uses). Used when AutoWork
+    /// auto-arms fault watch so the session-list capability icon lights up.
+    emitter: IdmmEventEmitter,
 }
 
 impl IdmmService {
@@ -186,6 +195,7 @@ impl IdmmService {
         sidecar: Arc<SidecarClient>,
         manager: IdmmManager,
         records: Arc<dyn IIdmmInterventionRepository>,
+        emitter: IdmmEventEmitter,
     ) -> Self {
         Self {
             probe_deps,
@@ -193,6 +203,7 @@ impl IdmmService {
             sidecar,
             manager,
             records,
+            emitter,
         }
     }
 
@@ -264,7 +275,80 @@ impl IdmmService {
         } else {
             self.manager.stop(kind, target_id);
         }
+        // Surface the new config to session-list / open controls immediately.
+        if let Ok(st) = self.build_state(user_id, kind, target_id).await {
+            self.emitter.emit_status_changed(user_id, &st);
+        }
         Ok(())
+    }
+
+    /// AutoWork enable path: turn on fault watch at `rule_only` when the target
+    /// has never saved IDMM config, or has config but fault is still off and
+    /// decision is also off (blank default). If the user previously saved a
+    /// config with fault off (opt-out) — i.e. any prior IDMM blob exists with
+    /// fault disabled — we do **not** re-force it on.
+    ///
+    /// More precisely:
+    /// - no persisted config → seed defaults with fault on, arm, return true
+    /// - persisted, fault already on → no-op, return false
+    /// - persisted, fault off → respect opt-out, return false
+    ///
+    /// Decision watch is never modified.
+    pub async fn ensure_default_fault_watch_for_autowork(
+        &self,
+        user_id: &str,
+        kind: IdmmTargetKind,
+        target_id: &str,
+    ) -> Result<bool, AppError> {
+        self.verify_target_owner(kind, target_id, user_id).await?;
+        let persisted = self.read_config_persisted_unchecked(kind, target_id).await?;
+        if let Some(cfg) = &persisted {
+            if cfg.fault_watch.base.enabled {
+                // Already armed — make sure the supervisor is live, but do not
+                // claim a "just auto-armed" toast.
+                self.manager.ensure(kind, target_id).await;
+                return Ok(false);
+            }
+            // User (or a prior explicit save) left fault off → opt-out.
+            return Ok(false);
+        }
+
+        let mut cfg = IdmmConfig::default();
+        cfg.fault_watch = FaultWatchConfig {
+            base: WatchBase {
+                enabled: true,
+                tier: WatchTier::RuleOnly,
+                ..WatchBase::default()
+            },
+            ..FaultWatchConfig::default()
+        };
+        // RuleOnly needs no backup model; validate is still the single gate.
+        let backup_resolvable = self.sidecar_backup_resolvable(kind, target_id, &cfg).await;
+        crate::config::validate(&cfg, backup_resolvable).map_err(AppError::BadRequest)?;
+
+        match kind {
+            IdmmTargetKind::Conversation => {
+                let blob = serde_json::to_value(&cfg).map_err(|e| AppError::Internal(e.to_string()))?;
+                self.probe_deps
+                    .conversation_service
+                    .update_extra(target_id, serde_json::json!({ "idmm": blob }))
+                    .await?;
+            }
+            IdmmTargetKind::Terminal => {
+                let s = serde_json::to_string(&cfg).map_err(|e| AppError::Internal(e.to_string()))?;
+                self.probe_deps
+                    .terminal_driver
+                    .write_idmm(validate_target_id(kind, target_id)?, Some(&s))
+                    .await
+                    .map_err(|e| AppError::Internal(format!("write_idmm failed: {e}")))?;
+            }
+        }
+
+        self.manager.ensure(kind, target_id).await;
+        if let Ok(st) = self.build_state(user_id, kind, target_id).await {
+            self.emitter.emit_status_changed(user_id, &st);
+        }
+        Ok(true)
     }
 
     /// Read the persisted per-session config. Returns `Ok(None)` when no
@@ -481,6 +565,55 @@ impl IdmmService {
         self.probe_deps
             .verify_target_owner(kind, target_id, user_id)
             .await
+    }
+}
+
+fn from_autowork_kind(kind: AutoWorkTargetKind) -> IdmmTargetKind {
+    match kind {
+        AutoWorkTargetKind::Conversation => IdmmTargetKind::Conversation,
+        AutoWorkTargetKind::Terminal => IdmmTargetKind::Terminal,
+    }
+}
+
+/// AutoWork → IDMM seam. Supervision methods delegate to `IdmmManager`; the
+/// default-fault-watch path uses this service so config is persisted + WS-emitted.
+#[async_trait]
+impl IdmmHandle for IdmmService {
+    fn ensure_supervising(&self, kind: AutoWorkTargetKind, target_id: &str) {
+        // Delegate to the manager's IdmmHandle impl (spawn ensure).
+        IdmmHandle::ensure_supervising(&self.manager, kind, target_id);
+    }
+
+    fn is_supervising(&self, kind: AutoWorkTargetKind, target_id: &str) -> bool {
+        self.manager
+            .is_supervising(from_autowork_kind(kind), target_id)
+    }
+
+    async fn has_pending_decision(&self, kind: AutoWorkTargetKind, target_id: &str, turn_text: &str) -> bool {
+        IdmmHandle::has_pending_decision(&self.manager, kind, target_id, turn_text).await
+    }
+
+    async fn ensure_default_fault_watch(
+        &self,
+        kind: AutoWorkTargetKind,
+        target_id: &str,
+        user_id: &str,
+    ) -> bool {
+        match self
+            .ensure_default_fault_watch_for_autowork(user_id, from_autowork_kind(kind), target_id)
+            .await
+        {
+            Ok(armed) => armed,
+            Err(error) => {
+                warn!(
+                    target_id,
+                    ?kind,
+                    %error,
+                    "AutoWork default fault-watch arm failed (non-fatal)"
+                );
+                false
+            }
+        }
     }
 }
 

@@ -357,6 +357,10 @@ pub struct AutoWorkState {
     )]
     pub current_requirement_id: Option<String>,
     pub completed_count: u32,
+    /// True when this enable call just auto-armed IDMM fault watch (rule_only).
+    /// Omitted/false on progress broadcasts and disable responses.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fault_watch_auto_armed: bool,
 }
 
 impl AutoWorkState {
