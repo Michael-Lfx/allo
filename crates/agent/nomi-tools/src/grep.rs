@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -8,6 +10,10 @@ use nomi_protocol::events::ToolCategory;
 use nomi_types::tool::{JsonSchema, ToolResult};
 
 use crate::Tool;
+
+/// Wall-clock cap for a single Grep invocation (ripgrep / fallback).
+/// Aligns with Cursor Shell's default foreground wait; Claude Code uses 20s for rg.
+const GREP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct GrepTool {
     cwd: PathBuf,
@@ -34,7 +40,9 @@ impl Tool for GrepTool {
          - Set context_lines (e.g. 2) to include surrounding lines for each match.\n\
          - Output is capped at 250 lines; when truncated, a notice reports the \
          true total so you can narrow the pattern or glob.\n\
-         - Set case_insensitive to true for case-insensitive search."
+         - Set case_insensitive to true for case-insensitive search.\n\
+         - Searches time out after 30 seconds; if that happens, narrow `path` or `glob` \
+         instead of retrying the same broad search."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -121,6 +129,41 @@ impl Tool for GrepTool {
 
 const GREP_MAX_LINES: usize = 250;
 
+fn timeout_result() -> ToolResult {
+    ToolResult {
+        content: format!(
+            "Grep timed out after {} seconds. The search may have matched files but did not \
+             complete in time. Narrow the `path` or `glob` and try again.",
+            GREP_TIMEOUT.as_secs()
+        ),
+        is_error: true,
+        images: Vec::new(),
+    }
+}
+
+enum TimedCommandError {
+    Io(std::io::Error),
+    TimedOut,
+}
+
+/// Spawn `cmd`, wait up to `timeout`, kill the child on cancel/timeout.
+async fn run_timed_command(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<std::process::Output, TimedCommandError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let child = cmd.spawn().map_err(TimedCommandError::Io)?;
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(TimedCommandError::Io(e)),
+        Err(_) => Err(TimedCommandError::TimedOut),
+    }
+}
+
 /// Cap grep output to `max_lines`, appending a truncation notice with the true
 /// total when exceeded — so the model knows results were cut and can narrow the
 /// search, instead of silently losing matches.
@@ -160,7 +203,13 @@ async fn try_ripgrep(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
-    let output = cmd.output().await?;
+    let output = match run_timed_command(cmd, GREP_TIMEOUT).await {
+        Ok(output) => output,
+        // Timeout is a completed tool error — do not fall back to findstr/grep
+        // (that would also hang on the same huge tree).
+        Err(TimedCommandError::TimedOut) => return Ok(timeout_result()),
+        Err(TimedCommandError::Io(e)) => return Err(e),
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -227,7 +276,7 @@ async fn try_grep(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
 
-    match cmd.output().await {
+    match run_timed_command(cmd, GREP_TIMEOUT).await {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.is_empty() {
@@ -244,7 +293,8 @@ async fn try_grep(
                 }
             }
         }
-        Err(e) => ToolResult {
+        Err(TimedCommandError::TimedOut) => timeout_result(),
+        Err(TimedCommandError::Io(e)) => ToolResult {
             content: format!("grep failed: {}", e),
             is_error: true,
             images: Vec::new(),
@@ -299,6 +349,38 @@ mod tests {
             result.content.contains("unique_grep_marker_xyz"),
             "should find pattern, got: {}",
             result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_command_times_out_and_kills_child() {
+        let cmd = if cfg!(windows) {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
+            #[cfg(windows)]
+            c.creation_flags(0x0800_0000);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+
+        let started = std::time::Instant::now();
+        let result = run_timed_command(cmd, Duration::from_millis(400)).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(TimedCommandError::TimedOut)),
+            "expected TimedOut, got {:?}",
+            result.err().map(|e| match e {
+                TimedCommandError::TimedOut => "TimedOut".to_string(),
+                TimedCommandError::Io(err) => format!("Io({err})"),
+            })
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout should fire quickly, took {elapsed:?}"
         );
     }
 }
