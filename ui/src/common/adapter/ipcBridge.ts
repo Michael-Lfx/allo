@@ -4230,6 +4230,8 @@ export interface ICompanionEvolveConfig {
   reflect_enabled: boolean;
   auto_activate: boolean;
   auto_threshold: number;
+  /** Periodically fold semantically-redundant existing skills into one (archives the rest). */
+  consolidate_enabled: boolean;
 }
 
 /** Shared session-window archiving settings (伙伴会话窗口归档). Default OFF (opt-in). */

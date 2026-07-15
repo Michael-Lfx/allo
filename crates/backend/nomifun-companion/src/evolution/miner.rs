@@ -11,8 +11,9 @@ use nomifun_common::ConversationId;
 use crate::collector::CollectedEvent;
 use crate::evolution::transcript::TranscriptAnchor;
 
-/// 窗口前后各保留的轮数(给 drafter 上下文);随锚带给重水合层。
-const ANCHOR_PAD_TURNS: usize = 2;
+/// 窗口前后各保留的轮数(给 drafter 上下文);随锚带给重水合层。取略宽的值,
+/// 好把一次多轮任务的"信息收集在前、验证收敛在后"也纳入起草视野。
+const ANCHOR_PAD_TURNS: usize = 6;
 
 /// 一个被挖出的、值得固化为技能的多步套路。
 #[derive(Debug, Clone, PartialEq)]

@@ -2220,6 +2220,8 @@ export type I18nKey =
   | 'nomi.domains.shared'
   | 'nomi.evolve.autoActivate'
   | 'nomi.evolve.autoActivateHint'
+  | 'nomi.evolve.consolidate'
+  | 'nomi.evolve.consolidateHint'
   | 'nomi.evolve.enabled'
   | 'nomi.evolve.hint'
   | 'nomi.evolve.interval'

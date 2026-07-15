@@ -2563,6 +2563,24 @@ impl CompanionStore {
         Ok(())
     }
 
+    /// Archive a skill as superseded by another (consolidation): set status='archived',
+    /// record `superseded_by = canonical`, and stamp updated_at. The on-disk SKILL.md is
+    /// left in place (restorable), mirroring the decay pass.
+    pub async fn supersede_skill(&self, companion_id: &str, name: &str, canonical: &str) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE companion_skills SET status = 'archived', superseded_by = ?, updated_at = ? \
+             WHERE scope_companion_id = ? AND skill_name = ?",
+        )
+        .bind(canonical)
+        .bind(now_ms())
+        .bind(companion_id)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     pub async fn record_skill_usage(
         &self,
         scope_companion_id: Option<&str>,

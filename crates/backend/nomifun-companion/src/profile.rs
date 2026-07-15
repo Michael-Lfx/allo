@@ -199,6 +199,10 @@ pub struct SharedEvolveConfig {
     pub skill_half_life_days: f64,
     /// Below this strength a mined skill is auto-archived (restorable; manual skills never decay).
     pub skill_archive_threshold: f64,
+    /// Periodically review ALL existing skills and fold semantically-redundant ones into a
+    /// single canonical skill (archiving the rest, `superseded_by` recorded). Off by default
+    /// (opt-in): it makes LLM calls and mutates/archives existing skills, so the user opts in.
+    pub consolidate_enabled: bool,
 }
 
 impl Default for SharedEvolveConfig {
@@ -214,6 +218,7 @@ impl Default for SharedEvolveConfig {
             auto_threshold: 0.85,
             skill_half_life_days: 45.0,
             skill_archive_threshold: 0.05,
+            consolidate_enabled: false,
         }
     }
 }
