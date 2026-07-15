@@ -107,15 +107,12 @@ const NomiSendBox: React.FC<{
    * companion chat, which runs in a fixed yolo mode with a locked model.
    */
   hideModeSelector?: boolean;
-  /**
-   * 会话内「协作模型」选择器节点，紧跟主模型选择器渲染。父组件构造并写回活跃会话的
-   * `extra.orchestrator_model_range`；锁定伙伴等表面（`hideModeSelector`）不传、不显示。
-   */
+  /** Conversation collaborator-model control, rendered after the main model. */
   collaboratorSelectorNode?: React.ReactNode;
   /**
    * Extra node(s) rendered in the right-tools group, after the collaborator
-   * selector and before the permission selector. Used by the orchestrator's
-   * node projection to fold a node's 预置要求 pill into the worker's own composer.
+   * selector and before the permission selector. A projected task uses this to
+   * surface its task-requirement control inside the participant conversation.
    */
   extraRightTools?: React.ReactNode;
 }> = ({
@@ -139,7 +136,7 @@ const NomiSendBox: React.FC<{
   const loadedMcpStatuses =
     conversationContext?.loadedMcpStatuses ??
     (conversationContext?.loadedMcpServers ?? []).map<IConversationMcpStatus>((name) => ({
-      id: 0,
+      id: `legacy:${name}`,
       name,
       status: 'loaded',
     }));
@@ -315,6 +312,26 @@ const NomiSendBox: React.FC<{
   useEffect(() => {
     if (!conversation_id || !current_model?.use_model) return;
 
+    const draftStorageKey = `nomi_draft_message_${conversation_id}`;
+    const draftProcessedKey = `nomi_draft_processed_${conversation_id}`;
+    if (!sessionStorage.getItem(draftProcessedKey)) {
+      const storedDraft = sessionStorage.getItem(draftStorageKey);
+      if (storedDraft) {
+        sessionStorage.setItem(draftProcessedKey, '1');
+        sessionStorage.removeItem(draftStorageKey);
+        try {
+          const { input } = JSON.parse(storedDraft) as { input?: unknown };
+          if (typeof input === 'string') {
+            setContent(input.slice(0, 6000));
+          }
+        } catch (error) {
+          console.error('[NomiSendBox] Failed to fill draft message:', error);
+          sessionStorage.removeItem(draftProcessedKey);
+        }
+        return;
+      }
+    }
+
     const storageKey = `nomi_initial_message_${conversation_id}`;
     const processedKey = `nomi_initial_processed_${conversation_id}`;
 
@@ -336,7 +353,7 @@ const NomiSendBox: React.FC<{
     };
 
     void processInitialMessage();
-  }, [conversation_id, current_model?.use_model, executeCommand]);
+  }, [conversation_id, current_model?.use_model, executeCommand, setContent]);
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);

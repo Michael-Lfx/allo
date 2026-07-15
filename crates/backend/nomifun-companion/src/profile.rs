@@ -96,6 +96,11 @@ pub struct CompanionProfileConfig {
     /// Per-companion companion-chat model (the shared learn loop has its own).
     pub model: ModelConfig,
     pub appearance: CompanionWindowConfig,
+    /// Frozen reusable configuration applied to this companion. Identity,
+    /// memories, evolved skills, window state and channel credentials remain
+    /// companion-owned; this snapshot only supplies execution preferences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<nomifun_api_types::ResolvedPresetSnapshot>,
     pub created_at: i64,
 }
 
@@ -114,6 +119,7 @@ impl CompanionProfileConfig {
             persona: PersonaConfig::default(),
             model: ModelConfig::default(),
             appearance: CompanionWindowConfig::default(),
+            applied_preset: None,
             created_at: now_ms(),
         }
     }
@@ -239,7 +245,7 @@ impl Default for SharedArchiveConfig {
 /// so nothing registry-owned (e.g. the companion-seq watermark, which lives in
 /// `companion/shared/companion_seq.json`) may be carried here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SharedCompanionConfig {
     pub collect: CollectConfig,
     pub learn: SharedLearnConfig,
@@ -247,13 +253,11 @@ pub struct SharedCompanionConfig {
     pub evolve: SharedEvolveConfig,
     #[serde(default)]
     pub archive: SharedArchiveConfig,
-    /// 智能编排（默认 OFF, opt-in）：开启后，本地伙伴会话获得"调度官"能力提示——
-    /// 遇到复杂/多步大任务时用 `nomi_run_create` 把活拆给隔离子 agent 并行处理，
-    /// 伙伴只负责调度与汇总，保持自己的对话上下文清爽（与会话归档协同：主线程只留
-    /// 总结、更易归档）。工具本身随桌面网关（desktopGateway）提供；远程 IM 会话不注入
-    /// （caps_orchestrator 对 Remote 硬拒）。
+    /// 智能协作（默认 OFF）：开启后，本地伙伴会话可通过
+    /// `nomi_delegate` 把复杂工作交给多个 Agent，并在当前会话汇总结果。
+    /// 能力由桌面网关的 Agent Execution 域提供，远程 IM 会话不注入。
     #[serde(default)]
-    pub smart_orchestration: bool,
+    pub smart_collaboration: bool,
     /// Which companion new/unattributed activity defaults to.
     pub default_companion_id: String,
     /// Opt-in (default None = off): when set to a directory path, companion
@@ -387,6 +391,14 @@ mod tests {
         let again = SharedCompanionConfig::load(dir.path());
         assert_eq!(again, cfg);
         assert!(again.learn.model.is_configured());
+    }
+
+    #[test]
+    fn shared_config_rejects_retired_smart_orchestration_key() {
+        let result = serde_json::from_value::<SharedCompanionConfig>(serde_json::json!({
+            "smart_orchestration": true
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

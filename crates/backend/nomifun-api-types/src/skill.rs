@@ -166,23 +166,23 @@ pub struct SkillPathsResponse {
 }
 
 // ---------------------------------------------------------------------------
-// D. Assistant rules & skills
+// D. Preset rules & skills
 // ---------------------------------------------------------------------------
 
-/// Request body for `POST /api/skills/assistant-rule/read` and
-/// `POST /api/skills/assistant-skill/read`.
+/// Request body for `POST /api/skills/preset-rule/read` and
+/// `POST /api/skills/preset-skill/read`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ReadAssistantRuleRequest {
-    pub assistant_id: String,
+pub struct ReadPresetRuleRequest {
+    pub preset_id: String,
     #[serde(default)]
     pub locale: Option<String>,
 }
 
-/// Request body for `POST /api/skills/assistant-rule/write` and
-/// `POST /api/skills/assistant-skill/write`.
+/// Request body for `POST /api/skills/preset-rule/write` and
+/// `POST /api/skills/preset-skill/write`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct WriteAssistantRuleRequest {
-    pub assistant_id: String,
+pub struct WritePresetRuleRequest {
+    pub preset_id: String,
     pub content: String,
     #[serde(default)]
     pub locale: Option<String>,
@@ -249,6 +249,50 @@ pub struct AddExternalPathRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoveExternalPathRequest {
     pub path: String,
+}
+
+// ---------------------------------------------------------------------------
+// F. Skill market ranking
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/skills/market/rankings/sync`.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+pub struct SkillMarketSyncRequest {
+    /// Optional source allow-list. Empty means all supported sources.
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
+
+/// Single entry scraped from a skill market ranking.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillMarketItemResponse {
+    /// Stable source-local id, e.g. `clawhub:owner/skill`.
+    pub id: String,
+    /// Source slug: `clawhub` or `skillhub`.
+    pub source: String,
+    pub rank: usize,
+    pub name: String,
+    pub description: String,
+    pub url: String,
+    /// Command shown to the user/Nomi. The backend only returns text; it never executes it.
+    pub install_command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audience_tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenario_tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<String>,
+}
+
+/// Response for `POST /api/skills/market/rankings/sync`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillMarketSyncResponse {
+    pub fetched_at: i64,
+    pub items: Vec<SkillMarketItemResponse>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
 }
 
 #[cfg(test)]
@@ -577,32 +621,32 @@ mod tests {
         assert!(json.get("builtinSkillsDir").is_none());
     }
 
-    // -- Assistant rules --
+    // -- Preset rules --
 
     #[test]
-    fn test_read_assistant_rule_request_with_locale() {
-        let raw = json!({"assistant_id": "abc123", "locale": "zh-CN"});
-        let req: ReadAssistantRuleRequest = serde_json::from_value(raw).unwrap();
-        assert_eq!(req.assistant_id, "abc123");
+    fn test_read_preset_rule_request_with_locale() {
+        let raw = json!({"preset_id": "abc123", "locale": "zh-CN"});
+        let req: ReadPresetRuleRequest = serde_json::from_value(raw).unwrap();
+        assert_eq!(req.preset_id, "abc123");
         assert_eq!(req.locale.as_deref(), Some("zh-CN"));
     }
 
     #[test]
-    fn test_read_assistant_rule_request_without_locale() {
-        let raw = json!({"assistant_id": "abc123"});
-        let req: ReadAssistantRuleRequest = serde_json::from_value(raw).unwrap();
+    fn test_read_preset_rule_request_without_locale() {
+        let raw = json!({"preset_id": "abc123"});
+        let req: ReadPresetRuleRequest = serde_json::from_value(raw).unwrap();
         assert!(req.locale.is_none());
     }
 
     #[test]
-    fn test_write_assistant_rule_request() {
+    fn test_write_preset_rule_request() {
         let raw = json!({
-            "assistant_id": "abc123",
+            "preset_id": "abc123",
             "content": "# Rules\nBe helpful.",
             "locale": "en-US"
         });
-        let req: WriteAssistantRuleRequest = serde_json::from_value(raw).unwrap();
-        assert_eq!(req.assistant_id, "abc123");
+        let req: WritePresetRuleRequest = serde_json::from_value(raw).unwrap();
+        assert_eq!(req.preset_id, "abc123");
         assert_eq!(req.content, "# Rules\nBe helpful.");
         assert_eq!(req.locale.as_deref(), Some("en-US"));
     }
@@ -634,5 +678,38 @@ mod tests {
         let raw = json!({"path": "/path/to/skills"});
         let req: RemoveExternalPathRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(req.path, "/path/to/skills");
+    }
+
+    #[test]
+    fn test_skill_market_sync_request_defaults_sources() {
+        let req: SkillMarketSyncRequest = serde_json::from_value(json!({})).unwrap();
+        assert!(req.sources.is_empty());
+    }
+
+    #[test]
+    fn test_skill_market_response_serializes_snake_case() {
+        let resp = SkillMarketSyncResponse {
+            fetched_at: 123,
+            items: vec![SkillMarketItemResponse {
+                id: "clawhub:owner/demo".into(),
+                source: "clawhub".into(),
+                rank: 1,
+                name: "demo".into(),
+                description: "Demo skill".into(),
+                url: "https://clawhub.ai/owner/skills/demo".into(),
+                install_command: "openclaw skills install @owner/demo".into(),
+                tags: vec!["coding".into()],
+                audience_tags: vec!["developer".into()],
+                scenario_tags: vec!["coding".into()],
+                stats: Some("1.2k installs".into()),
+            }],
+            errors: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["fetched_at"], 123);
+        assert!(json.get("fetchedAt").is_none());
+        assert_eq!(json["items"][0]["install_command"], "openclaw skills install @owner/demo");
+        assert!(json["items"][0].get("installCommand").is_none());
+        assert!(json.get("errors").is_none());
     }
 }

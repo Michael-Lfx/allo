@@ -21,7 +21,11 @@ import type { PendingConversation } from '@/renderer/pages/conversation/componen
 import { planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import type { AcpModelInfo, AvailableAgent, EffectiveAgentInfo } from '../types';
-import type { TModelRange } from '@/common/types/orchestrator/orchestratorTypes';
+import type {
+  TDecisionPolicy,
+  TDelegationPolicy,
+  TExecutionModelPool,
+} from '@/common/types/agentExecution/agentExecutionTypes';
 
 export type GuidSendDeps = {
   // Input state
@@ -48,17 +52,8 @@ export type GuidSendDeps = {
   // Agent helpers
   findAgentByKey: (key: string) => AvailableAgent | undefined;
   getEffectiveAgentType: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
+    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined,
   ) => EffectiveAgentInfo;
-  resolvePresetRulesAndSkills: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string; context?: string } | undefined
-  ) => Promise<{ rules?: string; skills?: string }>;
-  resolveEnabledSkills: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
-  ) => string[] | undefined;
-  resolveDisabledBuiltinSkills: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
-  ) => string[] | undefined;
   guidDisabledBuiltinSkills: string[] | undefined;
   guidEnabledSkills: string[] | undefined;
   availableMcpServers: IMcpServer[];
@@ -76,14 +71,12 @@ export type GuidSendDeps = {
    * "conversation N is already running". */
   autoWork: AutoWorkDraftValue;
 
-  /** 「agent 集群」模式（需求1）：composer 顶部 toggle 选中时为 true。仅 nomi
-   * 路径消费——落到会话 extra.agent_cluster_mode，后端工厂据此在常驻 subagent
-   * 提示之上追加 CLUSTER_MODE_HINT（必须刻意评估是否开集群、太简单先说明原因）。 */
-  clusterMode?: boolean;
-  /** Homepage cluster model pool: main model first, followed by collaborator models. */
-  orchestratorModelRange?: TModelRange;
-  /** Node-level approval mode for agent-cluster runs. */
-  orchestratorApprovalMode?: 'auto' | 'manual';
+  delegationPolicy: TDelegationPolicy;
+  executionModelPool?: TExecutionModelPool;
+  decisionPolicy: TDecisionPolicy;
+  /** Optional reusable collaboration input selected in the composer. It is an
+   * entry default only; the created Execution copies it and keeps no live FK. */
+  executionTemplateId?: string;
 
   // Mention state reset
   setMentionOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -133,9 +126,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     current_model,
     findAgentByKey,
     getEffectiveAgentType,
-    resolvePresetRulesAndSkills,
-    resolveEnabledSkills,
-    resolveDisabledBuiltinSkills,
     guidDisabledBuiltinSkills,
     guidEnabledSkills,
     availableMcpServers,
@@ -144,9 +134,10 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     isGoogleAuth,
     applyAdvancedConfig,
     autoWork,
-    clusterMode,
-    orchestratorModelRange,
-    orchestratorApprovalMode,
+    delegationPolicy,
+    executionModelPool,
+    decisionPolicy,
+    executionTemplateId,
     setMentionOpen,
     setMentionQuery,
     setMentionSelectorOpen,
@@ -173,24 +164,14 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     if (is_preset && !agentInfo) {
       return;
     }
-    const preset_assistant_id = is_preset ? agentInfo?.custom_agent_id : undefined;
+    const preset_id = is_preset ? agentInfo?.preset_id : undefined;
 
     const { agent_type: effectiveAgentType } = getEffectiveAgentType(agentInfo);
 
-    const { rules: preset_rules } = await resolvePresetRulesAndSkills(agentInfo);
-    // Guid page's per-conversation skill overrides take precedence over the
-    // assistant's saved defaults. The combined skills menu lets the user pick
-    // any custom skill — not just preset-declared ones — so for non-preset
-    // agents we still forward the user's selection (the backend accepts
-    // `preset_enabled_skills` regardless of `is_preset`).
-    const presetEnabledSkillsDefault = resolveEnabledSkills(agentInfo);
-    const enabled_skills = guidEnabledSkills ?? presetEnabledSkillsDefault;
-    const enabled_skills_to_send = is_preset
-      ? enabled_skills
-      : guidEnabledSkills?.length
-        ? guidEnabledSkills
-        : undefined;
-    const excludeBuiltinSkills = guidDisabledBuiltinSkills ?? resolveDisabledBuiltinSkills(agentInfo);
+    // Presets are resolved exclusively by the backend from `preset_id`.
+    // Guid-local skill controls remain valid only for bare Agent launches.
+    const enabled_skills_to_send = !is_preset && guidEnabledSkills?.length ? guidEnabledSkills : undefined;
+    const excludeBuiltinSkills = !is_preset ? guidDisabledBuiltinSkills : undefined;
     const selectedMcpServerIdSet = new Set(selectedMcpServerIds ?? []);
     const selectedUserMcpServerIds = availableMcpServers
       .filter((server) => selectedMcpServerIdSet.has(server.id) && server.builtin !== true)
@@ -211,12 +192,13 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         backend: openclawAgentInfo?.backend || 'openclaw-gateway',
         name: entryPlan.conversationName,
         agent_name: openclawAgentInfo?.name,
-        preset_assistant_id,
+        preset_id,
         workspace: finalWorkspace,
         model: current_model!,
         cli_path: openclawAgentInfo?.cli_path,
         custom_agent_id: openclawAgentInfo?.custom_agent_id,
         custom_workspace: isCustomWorkspace,
+        is_preset,
         extra: {
           default_files: files,
           runtime_validation: {
@@ -271,11 +253,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         backend: nanobotAgentInfo?.backend || 'nanobot',
         name: entryPlan.conversationName,
         agent_name: nanobotAgentInfo?.name,
-        preset_assistant_id,
+        preset_id,
         workspace: finalWorkspace,
         model: current_model!,
         custom_agent_id: nanobotAgentInfo?.custom_agent_id,
         custom_workspace: isCustomWorkspace,
+        is_preset,
         extra: {
           default_files: files,
           preset_enabled_skills: enabled_skills_to_send,
@@ -315,7 +298,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       return;
     }
 
-    // Nomi path (direct selection or preset assistant with nomi as main agent)
+    // Nomi path (direct selection or preset preset with nomi as main agent)
     if (selectedAgent === 'nomi' || (is_preset && finalEffectiveAgentType === 'nomi')) {
       if (!current_model) {
         Message.warning(t('conversation.noModelConfigured'));
@@ -327,25 +310,22 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           type: 'nomi',
           name: entryPlan.conversationName,
           model: current_model,
+          preset_id,
+          delegation_policy: delegationPolicy,
+          execution_model_pool: executionModelPool,
+          decision_policy: decisionPolicy,
+          execution_template_id: executionTemplateId,
           extra: {
             default_files: files,
             workspace: finalWorkspace,
             custom_workspace: isCustomWorkspace,
-            preset_rules: is_preset ? preset_rules : undefined,
             preset_enabled_skills: enabled_skills_to_send,
             exclude_auto_inject_skills: excludeBuiltinSkills,
             selected_mcp_server_ids: selectedUserMcpServerIds,
-            // nomi should consume the authoritative session snapshot, just
-            // like team MCP does, instead of reloading only user servers from
-            // the global MCP repository at runtime.
+            // Nomi consumes the authoritative session snapshot instead of
+            // reloading only user servers from the global MCP repository.
             selected_session_mcp_servers: selectedAllSessionMcpServers,
-            preset_assistant_id,
             session_mode: selectedMode,
-            // 「agent 集群」模式（需求1）：显式选中才落键；未选不写（旧会话/普通
-            // 会话 extra 零变化）。
-            agent_cluster_mode: clusterMode || undefined,
-            orchestrator_model_range: clusterMode ? orchestratorModelRange : undefined,
-            orchestrator_approval_mode: clusterMode ? orchestratorApprovalMode : undefined,
           },
         });
 
@@ -380,7 +360,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
     // Remaining agent path (ACP/remote/custom, including preset fallbacks)
     {
-      // Agent-type fallback only applies to preset assistants whose primary agent
+      // Agent-type fallback only applies to preset presets whose primary agent
       // was unavailable and got switched. For non-preset
       // agents (including extension-contributed ACP adapters with backend='custom'),
       // we must keep the original selectedAgent so the correct backend/cli_path is used.
@@ -407,21 +387,13 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // slot so it cannot discriminate between rows on its own.
         agent_id: acpAgentInfo?.id,
         agent_name: acpAgentInfo?.name,
-        preset_assistant_id,
+        preset_id,
         workspace: finalWorkspace,
         model: current_model!,
         cli_path: acpAgentInfo?.cli_path,
         custom_agent_id: acpAgentInfo?.custom_agent_id,
         custom_workspace: isCustomWorkspace,
         is_preset,
-        preset_agent_type: finalEffectiveAgentType,
-        preset_resources: is_preset
-          ? {
-              rules: preset_rules,
-              enabled_skills,
-              exclude_auto_inject_skills: excludeBuiltinSkills,
-            }
-          : undefined,
         session_mode: selectedMode,
         current_model_id: selectedAcpModel || currentAcpCachedModelInfo?.current_model_id || undefined,
         extra: {
@@ -429,9 +401,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           exclude_auto_inject_skills: excludeBuiltinSkills,
           selected_mcp_server_ids: selectedUserMcpServerIds,
           selected_session_mcp_servers: selectedSessionMcpServers,
-          // Non-preset agents still forward user-selected custom skills via the
-          // shared backend slot. For preset assistants this is already wired
-          // through `preset_resources.enabled_skills` above.
+          // Bare Agents may still carry a one-off skill selection.
           ...(is_preset ? {} : guidEnabledSkills?.length ? { preset_enabled_skills: guidEnabledSkills } : {}),
         },
       });
@@ -452,7 +422,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           files: files.length > 0 ? files : undefined,
         };
         if (entryPlan.sendInitialMessage) {
-          sessionStorage.setItem(`acp_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
+          const initialMessageKey =
+            agentConversationParams.type === 'remote'
+              ? `remote_initial_message_${conversation.id}`
+              : `acp_initial_message_${conversation.id}`;
+          sessionStorage.setItem(initialMessageKey, JSON.stringify(initialMessage));
         }
 
         seedConversationCache(conversation);
@@ -477,15 +451,16 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     current_model,
     findAgentByKey,
     getEffectiveAgentType,
-    resolvePresetRulesAndSkills,
-    resolveEnabledSkills,
-    resolveDisabledBuiltinSkills,
     guidDisabledBuiltinSkills,
     guidEnabledSkills,
     availableMcpServers,
     selectedMcpServerIds,
     applyAdvancedConfig,
     autoWork,
+    delegationPolicy,
+    executionModelPool,
+    decisionPolicy,
+    executionTemplateId,
     navigate,
     t,
   ]);

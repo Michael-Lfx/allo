@@ -42,6 +42,9 @@ jobs:
       - name: Check process runtime boundary
         run: bun run check:process-runtime-boundary
 
+      - name: Check Agent vocabulary
+        run: bun run check:agent-vocabulary
+
       - name: Check script registry
         run: bun run help --check
 
@@ -49,13 +52,17 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint Wave A crates
-        run: cargo clippy -p nomi-execution -p nomifun-runtime -p nomi-tools -p nomi-agent --all-targets --locked -- -D warnings
+        run: cargo clippy -p nomi-process-runtime -p nomifun-runtime -p nomi-tools -p nomi-agent --all-targets --locked -- -D warnings
 
-      - name: Test nomi-execution
-        run: cargo test -p nomi-execution --locked -- --test-threads=1
+      - name: Test nomi-process-runtime
+        run: cargo test -p nomi-process-runtime --locked -- --test-threads=1
 
       - name: Test nomi-tools
         run: cargo test -p nomi-tools --locked -- --test-threads=1
 
       - name: Test nomifun-runtime
         run: cargo test -p nomifun-runtime --locked -- --test-threads=1
+
+      - name: Test Windows knowledge broker security boundary
+        if: runner.os == 'Windows'
+        run: cargo test -p nomifun-knowledge --lib --locked windows_broker_ -- --test-threads=1

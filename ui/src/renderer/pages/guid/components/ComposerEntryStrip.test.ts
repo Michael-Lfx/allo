@@ -81,23 +81,15 @@ describe('Guid composer entry strip polish', () => {
     expect(css.includes('.entrySkillFooter')).toBe(false);
   });
 
-  test('agent 集群 toggle renders LEFT of 召唤助手 in the default state (需求1)', () => {
+  test('renders the shared collaboration policy before the preset picker', () => {
     const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
 
-    // The toggle exists, is optional (back-compat), and uses the active style
-    // when selected — no icon-park `as` alias (IconParkHOC babel plugin).
-    expect(source.includes('onToggleCluster?: () => void')).toBe(true);
-    expect(source.includes('guid.entry.cluster')).toBe(true);
-    expect(source.includes('aria-pressed={clusterActive}')).toBe(true);
-    expect(source.includes('clusterActive ? styles.entryButtonActive')).toBe(true);
-    expect(source.includes(' as EveryUser')).toBe(false);
-
-    // Source order inside the DEFAULT state: cluster toggle before 召唤助手.
+    expect(source.includes('collaborationPolicyNode?: React.ReactNode')).toBe(true);
     const defaultState = source.slice(source.indexOf('// --- Default state ---'));
-    const clusterPos = defaultState.indexOf('{clusterButton}');
-    const summonPos = defaultState.indexOf('onClick={onSummon}');
-    expect(clusterPos).toBeGreaterThan(-1);
-    expect(summonPos).toBeGreaterThan(-1);
-    expect(clusterPos).toBeLessThan(summonPos);
+    const policyPos = defaultState.indexOf('{collaborationPolicyNode}');
+    const presetPickerPos = defaultState.indexOf('onClick={onChoosePreset}');
+    expect(policyPos).toBeGreaterThan(-1);
+    expect(presetPickerPos).toBeGreaterThan(-1);
+    expect(policyPos).toBeLessThan(presetPickerPos);
   });
 });

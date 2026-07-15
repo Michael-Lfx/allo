@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use nomifun_ai_agent::agent_task::{AgentInstance, IAgentTask};
+use nomifun_ai_agent::runtime_handle::{AgentRuntimeHandle, AgentRuntimeControl};
 use nomifun_ai_agent::protocol::events::FinishEventData;
-use nomifun_ai_agent::types::{BuildTaskOptions, SendMessageData};
-use nomifun_ai_agent::{AgentSendError, AgentStreamEvent, IMockAgent, IWorkerTaskManager};
+use nomifun_ai_agent::types::{AgentRuntimeBuildOptions, SendMessageData};
+use nomifun_ai_agent::{AgentSendError, AgentStreamEvent, MockAgentRuntime, AgentRuntimeRegistry};
 use nomifun_api_types::WebSocketMessage;
 use nomifun_channel::channel_settings::ChannelSettingsService;
 use nomifun_channel::message_service::ChannelMessageService;
@@ -12,12 +12,13 @@ use nomifun_channel::types::PluginType;
 use nomifun_common::{AgentKillReason, AgentType, AppError, ConversationStatus, TimestampMs};
 use nomifun_conversation::ConversationService;
 use nomifun_conversation::skill_resolver::{ResolvedAgentSkill, SkillResolver};
-use nomifun_db::models::AssistantSessionRow;
+use nomifun_db::models::ChannelSessionRow;
 use nomifun_db::{
-    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteChannelRepository,
-    SqliteClientPreferenceRepository, SqliteConversationRepository, init_database_memory,
+    CreateProviderParams, IClientPreferenceRepository, IProviderRepository, SqliteAcpSessionRepository,
+    SqliteAgentMetadataRepository, SqliteChannelRepository, SqliteClientPreferenceRepository,
+    SqliteConversationRepository, SqliteProviderRepository, init_database_memory,
 };
-use nomifun_realtime::EventBroadcaster;
+use nomifun_realtime::UserEventSink;
 use tokio::sync::broadcast;
 
 struct TestBroadcaster {
@@ -32,8 +33,8 @@ impl TestBroadcaster {
     }
 }
 
-impl EventBroadcaster for TestBroadcaster {
-    fn broadcast(&self, event: WebSocketMessage<serde_json::Value>) {
+impl UserEventSink for TestBroadcaster {
+    fn send_to_user(&self, _user_id: &str, event: WebSocketMessage<serde_json::Value>) {
         self.events.lock().unwrap().push(event);
     }
 }
@@ -76,7 +77,7 @@ impl ScriptedAgent {
 }
 
 #[async_trait]
-impl IAgentTask for ScriptedAgent {
+impl AgentRuntimeControl for ScriptedAgent {
     fn agent_type(&self) -> AgentType {
         AgentType::Nomi
     }
@@ -115,13 +116,13 @@ impl IAgentTask for ScriptedAgent {
     }
 }
 
-impl IMockAgent for ScriptedAgent {}
+impl MockAgentRuntime for ScriptedAgent {}
 
-struct RecordingTaskManager {
-    agents: Mutex<std::collections::HashMap<String, AgentInstance>>,
+struct RecordingAgentRuntimeRegistry {
+    agents: Mutex<std::collections::HashMap<String, AgentRuntimeHandle>>,
 }
 
-impl RecordingTaskManager {
+impl RecordingAgentRuntimeRegistry {
     fn new() -> Self {
         Self {
             agents: Mutex::new(std::collections::HashMap::new()),
@@ -130,67 +131,113 @@ impl RecordingTaskManager {
 }
 
 #[async_trait]
-impl IWorkerTaskManager for RecordingTaskManager {
-    fn get_task(&self, conversation_id: &str) -> Option<AgentInstance> {
+impl AgentRuntimeRegistry for RecordingAgentRuntimeRegistry {
+    fn get_runtime(&self, conversation_id: &str) -> Option<AgentRuntimeHandle> {
         self.agents.lock().unwrap().get(conversation_id).cloned()
     }
 
-    async fn get_or_build_task(
+    async fn get_or_create_runtime(
         &self,
         conversation_id: &str,
-        _options: BuildTaskOptions,
-    ) -> Result<AgentInstance, AppError> {
+        _options: AgentRuntimeBuildOptions,
+    ) -> Result<AgentRuntimeHandle, AppError> {
         let mut agents = self.agents.lock().unwrap();
         if let Some(agent) = agents.get(conversation_id) {
             return Ok(agent.clone());
         }
 
-        let agent = AgentInstance::Mock(Arc::new(ScriptedAgent::new(conversation_id)));
+        let agent = AgentRuntimeHandle::Mock(Arc::new(ScriptedAgent::new(conversation_id)));
         agents.insert(conversation_id.to_owned(), agent.clone());
         Ok(agent)
     }
 
-    fn kill(&self, conversation_id: &str, _reason: Option<AgentKillReason>) -> Result<(), AppError> {
+    fn terminate(&self, conversation_id: &str, _reason: Option<AgentKillReason>) -> Result<(), AppError> {
         self.agents.lock().unwrap().remove(conversation_id);
         Ok(())
     }
 
-    fn kill_and_wait(
+    fn terminate_and_wait(
         &self,
         conversation_id: &str,
         reason: Option<AgentKillReason>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        let _ = self.kill(conversation_id, reason);
+        let _ = self.terminate(conversation_id, reason);
         Box::pin(std::future::ready(()))
     }
 
-    fn clear(&self) {
+    fn terminate_all(&self) {
         self.agents.lock().unwrap().clear();
     }
 
-    fn active_count(&self) -> usize {
+    fn active_runtime_count(&self) -> usize {
         self.agents.lock().unwrap().len()
     }
 
-    fn collect_idle(&self, _idle_threshold_ms: TimestampMs) -> Vec<String> {
+    fn collect_idle_runtimes(&self, _idle_threshold_ms: TimestampMs) -> Vec<String> {
         Vec::new()
     }
+}
+
+/// Seed every provider id used by this integration fixture and give each
+/// platform a valid default model. The database deliberately rejects dangling
+/// Conversation model authorities, so tests must model a real provider catalog.
+async fn seed_channel_models(pool: &nomifun_db::SqlitePool) {
+    let providers = SqliteProviderRepository::new(pool.clone());
+    for id in ["channel-test-provider", "p", "prov_pa"] {
+        providers
+            .create(CreateProviderParams {
+                id: Some(id),
+                platform: "openai",
+                name: "Channel test provider",
+                base_url: "https://example.invalid/v1",
+                api_key_encrypted: "test-only",
+                models: r#"["channel-test-model","m","pa-model-v1"]"#,
+                enabled: true,
+                capabilities: "[]",
+                context_limit: None,
+                model_context_limits: None,
+                model_protocols: None,
+                model_descriptions: None,
+                model_enabled: None,
+                model_health: None,
+                bedrock_config: None,
+                is_full_url: false,
+                sort_order: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let preferences = SqliteClientPreferenceRepository::new(pool.clone());
+    let model = r#"{"id":"channel-test-provider","use_model":"channel-test-model"}"#;
+    preferences
+        .upsert_batch(&[
+            ("channels.telegram.defaultModel", model),
+            ("channels.lark.defaultModel", model),
+            ("channels.dingtalk.defaultModel", model),
+            ("channels.weixin.defaultModel", model),
+        ])
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn send_to_agent_warms_cold_task_before_returning_stream_subscription() {
     let db = init_database_memory().await.unwrap();
     let pool = db.pool().clone();
+    seed_channel_models(&pool).await;
 
-    let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(RecordingAgentRuntimeRegistry::new());
     let conversation_svc = Arc::new(ConversationService::new(
+        Arc::<str>::from("system_default_user"),
         std::env::temp_dir(),
         Arc::new(TestBroadcaster::new()),
         Arc::new(NoopSkillResolver),
-        Arc::clone(&task_manager),
+        Arc::clone(&runtime_registry),
         Arc::new(SqliteConversationRepository::new(pool.clone())),
         Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
         Arc::new(SqliteAcpSessionRepository::new(pool.clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
     ));
 
     let settings = Arc::new(ChannelSettingsService::new(Arc::new(
@@ -198,13 +245,13 @@ async fn send_to_agent_warms_cold_task_before_returning_stream_subscription() {
     )));
     let message_svc = ChannelMessageService::new(
         conversation_svc,
-        Arc::clone(&task_manager),
+        Arc::clone(&runtime_registry),
         settings,
         Arc::new(SqliteChannelRepository::new(pool)),
         "system_default_user".to_owned(),
     );
 
-    let session = AssistantSessionRow {
+    let session = ChannelSessionRow {
         id: "session-1".to_owned(),
         user_id: "channel-user-1".to_owned(),
         agent_type: "nomi".to_owned(),
@@ -228,7 +275,7 @@ async fn send_to_agent_warms_cold_task_before_returning_stream_subscription() {
             result.stream_rx.is_some(),
             "channel relay must have an agent stream receiver after cold start for {platform:?}"
         );
-        assert!(task_manager.get_task(&result.conversation_id).is_some());
+        assert!(runtime_registry.get_runtime(&result.conversation_id).is_some());
     }
 }
 
@@ -241,18 +288,21 @@ struct TestStack {
     channel_repo: Arc<SqliteChannelRepository>,
 }
 
-fn build_stack(pool: nomifun_db::SqlitePool) -> TestStack {
-    let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(RecordingTaskManager::new());
+async fn build_stack(pool: nomifun_db::SqlitePool) -> TestStack {
+    seed_channel_models(&pool).await;
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(RecordingAgentRuntimeRegistry::new());
     let runtime = Arc::new(nomifun_conversation::runtime_state::ConversationRuntimeStateService::default());
     let conversation_svc = Arc::new(
         ConversationService::new(
+            Arc::<str>::from("system_default_user"),
             std::env::temp_dir(),
             Arc::new(TestBroadcaster::new()),
             Arc::new(NoopSkillResolver),
-            Arc::clone(&task_manager),
+            Arc::clone(&runtime_registry),
             Arc::new(SqliteConversationRepository::new(pool.clone())),
             Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
             Arc::new(SqliteAcpSessionRepository::new(pool.clone())),
+            Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
         )
         .with_runtime_state(Arc::clone(&runtime)),
     );
@@ -263,7 +313,7 @@ fn build_stack(pool: nomifun_db::SqlitePool) -> TestStack {
     let channel_repo = Arc::new(SqliteChannelRepository::new(pool));
     let message_svc = ChannelMessageService::new(
         Arc::clone(&conversation_svc),
-        Arc::clone(&task_manager),
+        Arc::clone(&runtime_registry),
         settings,
         channel_repo.clone(),
         "system_default_user".to_owned(),
@@ -277,8 +327,8 @@ fn build_stack(pool: nomifun_db::SqlitePool) -> TestStack {
     }
 }
 
-fn make_session(conversation_id: Option<i64>) -> AssistantSessionRow {
-    AssistantSessionRow {
+fn make_session(conversation_id: Option<i64>) -> ChannelSessionRow {
+    ChannelSessionRow {
         id: "session-1".to_owned(),
         user_id: "channel-user-1".to_owned(),
         agent_type: "nomi".to_owned(),
@@ -292,7 +342,7 @@ fn make_session(conversation_id: Option<i64>) -> AssistantSessionRow {
 }
 
 /// Waits for the background turn spawned by `send_message` to release its
-/// runtime claim so the next send doesn't hit the turn-conflict guard.
+/// Agent turn handle so the next send doesn't hit the turn-conflict guard.
 async fn wait_until_idle(svc: &Arc<ConversationService>, conversation_id: &str) {
     use nomifun_api_types::ConversationRuntimeStateKind;
     for _ in 0..500 {
@@ -308,7 +358,7 @@ async fn wait_until_idle(svc: &Arc<ConversationService>, conversation_id: &str) 
 #[tokio::test]
 async fn last_user_text_returns_latest_user_prompt() {
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
     // First prompt creates the conversation; second one is the newest.
     let session = make_session(None);
@@ -335,7 +385,7 @@ async fn last_user_text_returns_latest_user_prompt() {
 #[tokio::test]
 async fn last_user_text_none_for_unknown_conversation() {
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
     // Unknown conversation maps to a lookup error, not a silent None.
     let result = stack.message_svc.last_user_text("missing-conv").await;
@@ -343,9 +393,9 @@ async fn last_user_text_none_for_unknown_conversation() {
 }
 
 #[tokio::test]
-async fn is_conversation_busy_reflects_turn_claim() {
+async fn is_conversation_busy_reflects_active_turn_handle() {
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
     let session = make_session(None);
     let sent = stack
@@ -359,10 +409,10 @@ async fn is_conversation_busy_reflects_turn_claim() {
 
     // Claiming the turn is exactly what send_message does while a prompt is
     // in flight → the channel guard must report busy.
-    let _claim = stack.runtime.try_claim_turn(&sent.conversation_id).unwrap();
+    let _turn_handle = stack.runtime.try_acquire_turn(&sent.conversation_id).unwrap();
     assert!(stack.message_svc.is_conversation_busy(&sent.conversation_id).await);
 
-    drop(_claim);
+    drop(_turn_handle);
     assert!(!stack.message_svc.is_conversation_busy(&sent.conversation_id).await);
 }
 
@@ -371,7 +421,7 @@ async fn is_conversation_busy_reflects_turn_claim() {
 /// Profile stub: maps each companion id to a pre-seeded single-session
 /// conversation id (what `CompanionManager.create` would return in production),
 /// records every `ensure_companion_session` call, and uses `companion_y` as the
-/// legacy/default per-platform fallback. An empty `sessions` map models a
+/// per-platform binding. An empty `sessions` map models a
 /// companion with no chat model configured (ensure returns `None`).
 struct StubProfile {
     sessions: std::collections::HashMap<String, i64>,
@@ -388,11 +438,11 @@ impl StubProfile {
 }
 
 #[async_trait]
-impl nomifun_channel::message_service::MasterAgentProfile for StubProfile {
+impl nomifun_channel::message_service::ChannelAgentProfile for StubProfile {
     async fn companion_model(&self, _companion_id: &str) -> Option<nomifun_common::ProviderWithModel> {
         None
     }
-    async fn master_companion_id(&self, _platform: &str) -> Option<String> {
+    async fn channel_companion_id(&self, _platform: &str) -> Option<String> {
         Some("companion_y".to_owned())
     }
     async fn companion_exists(&self, _companion_id: &str) -> bool {
@@ -417,6 +467,12 @@ async fn seed_companion_session(svc: &Arc<ConversationService>, companion_id: &s
         }),
         source: None,
         channel_chat_id: None,
+        preset_id: None,
+        preset_overrides: None,
+        delegation_policy: Default::default(),
+        execution_model_pool: None,
+        decision_policy: Default::default(),
+        execution_template_id: None,
         extra: serde_json::json!({ "companionSession": true, "companionId": companion_id }),
     };
     svc.create("system_default_user", req).await.unwrap().id
@@ -445,11 +501,11 @@ async fn bind_channel_to_companion(repo: &Arc<SqliteChannelRepository>, channel_
 
 /// The channel row's own companion binding wins over the profile fallback, and
 /// either way the turn is routed INTO that companion's single session (not a
-/// freshly-minted channel-master conversation).
+/// freshly-minted channel conversation).
 #[tokio::test]
 async fn channel_companion_turn_routes_into_companion_single_session() {
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
     let conv_x = seed_companion_session(&stack.conversation_svc, "companion_x").await;
     let conv_y = seed_companion_session(&stack.conversation_svc, "companion_y").await;
@@ -457,14 +513,16 @@ async fn channel_companion_turn_routes_into_companion_single_session() {
         ("companion_x".to_owned(), conv_x),
         ("companion_y".to_owned(), conv_y),
     ]);
-    let message_svc = stack.message_svc.with_master_profile(Arc::new(StubProfile::new(sessions)));
+    let message_svc = stack
+        .message_svc
+        .with_channel_agent_profile(Arc::new(StubProfile::new(sessions)));
 
-    bind_channel_to_companion(&stack.channel_repo, "achn_test", "companion_x").await;
+    bind_channel_to_companion(&stack.channel_repo, "chn_test", "companion_x").await;
 
     // Bound channel → channel companion (companion_x) wins; the turn runs on
     // companion_x's single session conversation, NOT a new channel conversation.
     let mut bound = make_session(None);
-    bound.channel_id = Some("achn_test".to_owned());
+    bound.channel_id = Some("chn_test".to_owned());
     let sent = message_svc.send_to_agent(&bound, "hi", PluginType::Telegram).await.unwrap();
     assert_eq!(sent.conversation_id, conv_x.to_string());
     wait_until_idle(&stack.conversation_svc, &sent.conversation_id).await;
@@ -478,27 +536,29 @@ async fn channel_companion_turn_routes_into_companion_single_session() {
 }
 
 /// Two different IM chats bound to the SAME companion both land in that
-/// companion's ONE session — the unification guarantee. No standalone
-/// channel-master conversation is created for either.
+/// companion's ONE session — the unification guarantee. No separate channel
+/// conversation is created for either.
 #[tokio::test]
 async fn companion_im_turns_share_one_session() {
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
     let conv_x = seed_companion_session(&stack.conversation_svc, "companion_x").await;
     let sessions = std::collections::HashMap::from([("companion_x".to_owned(), conv_x)]);
-    let message_svc = stack.message_svc.with_master_profile(Arc::new(StubProfile::new(sessions)));
-    bind_channel_to_companion(&stack.channel_repo, "achn_test", "companion_x").await;
+    let message_svc = stack
+        .message_svc
+        .with_channel_agent_profile(Arc::new(StubProfile::new(sessions)));
+    bind_channel_to_companion(&stack.channel_repo, "chn_test", "companion_x").await;
 
     let mut chat_a = make_session(None);
-    chat_a.channel_id = Some("achn_test".to_owned());
+    chat_a.channel_id = Some("chn_test".to_owned());
     chat_a.chat_id = Some("chat-A".to_owned());
     let a = message_svc.send_to_agent(&chat_a, "hi from A", PluginType::Telegram).await.unwrap();
     wait_until_idle(&stack.conversation_svc, &a.conversation_id).await;
 
     let mut chat_b = make_session(None);
     chat_b.id = "session-b".to_owned();
-    chat_b.channel_id = Some("achn_test".to_owned());
+    chat_b.channel_id = Some("chn_test".to_owned());
     chat_b.chat_id = Some("chat-B".to_owned());
     let b = message_svc.send_to_agent(&chat_b, "hi from B", PluginType::Telegram).await.unwrap();
 
@@ -507,21 +567,21 @@ async fn companion_im_turns_share_one_session() {
 }
 
 /// A companion with no chat model (ensure returns None) refuses the turn with a
-/// distinct error instead of silently minting a leaking standalone conversation.
+/// distinct error instead of silently minting a separate channel conversation.
 #[tokio::test]
 async fn companion_without_model_refuses_turn() {
     use nomifun_channel::error::ChannelError;
 
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
     // Empty sessions map → ensure_companion_session returns None for every companion.
     let message_svc = stack
         .message_svc
-        .with_master_profile(Arc::new(StubProfile::new(std::collections::HashMap::new())));
-    bind_channel_to_companion(&stack.channel_repo, "achn_test", "companion_x").await;
+        .with_channel_agent_profile(Arc::new(StubProfile::new(std::collections::HashMap::new())));
+    bind_channel_to_companion(&stack.channel_repo, "chn_test", "companion_x").await;
 
     let mut bound = make_session(None);
-    bound.channel_id = Some("achn_test".to_owned());
+    bound.channel_id = Some("chn_test".to_owned());
     let err = message_svc
         .send_to_agent(&bound, "hi", PluginType::Telegram)
         .await
@@ -564,11 +624,11 @@ struct PublicStubProfile {
 }
 
 #[async_trait]
-impl nomifun_channel::message_service::MasterAgentProfile for PublicStubProfile {
+impl nomifun_channel::message_service::ChannelAgentProfile for PublicStubProfile {
     async fn companion_model(&self, _companion_id: &str) -> Option<nomifun_common::ProviderWithModel> {
         None
     }
-    async fn master_companion_id(&self, _platform: &str) -> Option<String> {
+    async fn channel_companion_id(&self, _platform: &str) -> Option<String> {
         // If the public-agent path ever fell through to the companion path, this
         // would host the turn — the tests assert that never happens.
         Some("companion_should_not_be_used".to_owned())
@@ -589,28 +649,30 @@ impl nomifun_channel::message_service::MasterAgentProfile for PublicStubProfile 
 
 /// (a) A public-agent-bound bot's turn builds an ISOLATED per-chat nomi
 /// conversation carrying `public_agent_id` + `channelPlatform` + the public
-/// agent's model, and NO `companionId` / `desktopGateway` (no gateway for public
-/// agents). The companion path is never taken.
+/// agent's model, and no `companionId`. The factory applies the public capability
+/// clamp; the companion path is never taken.
 #[tokio::test]
 async fn public_agent_bound_platform_builds_clamped_session() {
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
     // The routing reads the BOT ROW's public_agent_id (per-bot), via channel_id.
-    bind_channel_to_public_agent(&stack.channel_repo, "achn_pa", "pubagent_1").await;
+    bind_channel_to_public_agent(&stack.channel_repo, "chn_pa", "pubagent_1").await;
 
     let model = nomifun_common::ProviderWithModel {
         provider_id: "prov_pa".to_owned(),
         model: "pa-model".to_owned(),
         use_model: Some("pa-model-v1".to_owned()),
     };
-    let message_svc = stack.message_svc.with_master_profile(Arc::new(PublicStubProfile {
-        servable: true,
-        model: Some(model),
-    }));
+    let message_svc = stack
+        .message_svc
+        .with_channel_agent_profile(Arc::new(PublicStubProfile {
+            servable: true,
+            model: Some(model),
+        }));
 
     let mut session = make_session(None);
-    session.channel_id = Some("achn_pa".to_owned());
+    session.channel_id = Some("chn_pa".to_owned());
     let sent = message_svc
         .send_to_agent(&session, "你好", PluginType::Telegram)
         .await
@@ -630,10 +692,6 @@ async fn public_agent_bound_platform_builds_clamped_session() {
         conv.extra.get("companionId").is_none(),
         "public agent must not carry a companion"
     );
-    assert!(
-        conv.extra.get("desktopGateway").is_none(),
-        "public agent gets NO gateway"
-    );
     let m = conv.model.expect("public-agent conversation must carry a model");
     assert_eq!(m.provider_id, "prov_pa");
     assert_eq!(m.use_model.as_deref(), Some("pa-model-v1"));
@@ -647,18 +705,20 @@ async fn public_agent_bound_but_disabled_refuses_without_companion_fallthrough()
     use nomifun_channel::error::ChannelError;
 
     let db = init_database_memory().await.unwrap();
-    let stack = build_stack(db.pool().clone());
+    let stack = build_stack(db.pool().clone()).await;
 
-    bind_channel_to_public_agent(&stack.channel_repo, "achn_pa", "pubagent_1").await;
+    bind_channel_to_public_agent(&stack.channel_repo, "chn_pa", "pubagent_1").await;
 
     // servable = false models a disabled/deleted agent.
-    let message_svc = stack.message_svc.with_master_profile(Arc::new(PublicStubProfile {
-        servable: false,
-        model: None,
-    }));
+    let message_svc = stack
+        .message_svc
+        .with_channel_agent_profile(Arc::new(PublicStubProfile {
+            servable: false,
+            model: None,
+        }));
 
     let mut session = make_session(None);
-    session.channel_id = Some("achn_pa".to_owned());
+    session.channel_id = Some("chn_pa".to_owned());
     let err = message_svc
         .send_to_agent(&session, "你好", PluginType::Telegram)
         .await

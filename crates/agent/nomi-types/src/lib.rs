@@ -3,11 +3,11 @@
 
 pub mod agent_tool;
 pub mod compact;
+pub mod agent;
 pub mod file_state;
 pub mod llm;
 pub mod message;
 pub mod skill_types;
-pub mod spawner;
 pub mod tool;
 pub mod tool_progress;
 

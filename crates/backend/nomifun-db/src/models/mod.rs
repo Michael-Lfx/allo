@@ -1,6 +1,7 @@
 mod acp_session;
 mod agent_metadata;
-mod assistant;
+mod agent_execution;
+mod agent_execution_template;
 mod attachment;
 mod channel;
 mod client_preference;
@@ -16,8 +17,8 @@ mod mcp_server;
 mod message;
 mod model_profile;
 mod oauth_token;
-mod orchestrator;
 mod provider;
+mod preset;
 mod remote_agent;
 mod requirement;
 mod skill_tag;
@@ -30,17 +31,14 @@ mod workshop;
 
 pub use acp_session::AcpSessionRow;
 pub use agent_metadata::{AgentMetadataRow, UpdateAgentHandshakeParams, UpsertAgentMetadataParams};
-pub use assistant::{
-    AssistantOverrideRow, AssistantRow, AssistantTagRow, CreateAssistantParams,
-    CreateAssistantTagParams, UpdateAssistantParams, UpdateAssistantTagParams,
-    UpsertOverrideParams,
-};
+pub use agent_execution::*;
+pub use agent_execution_template::*;
 pub use attachment::AttachmentRow;
-pub use channel::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, PairingCodeRow};
+pub use channel::{ChannelSessionRow, ChannelUserRow, ChannelPluginRow, ChannelPairingCodeRow};
 pub use client_preference::ClientPreference;
 pub use companion_token::CompanionApiTokenRow;
 pub use connector_credential::ConnectorCredentialRow;
-pub use conversation::ConversationRow;
+pub use conversation::{ConversationDeliveryReceiptRow, ConversationRow};
 pub use conversation_artifact::ConversationArtifactRow;
 pub use cron_job::CronJobRow;
 pub use cron_job_run::CronJobRunRow;
@@ -53,11 +51,8 @@ pub use mcp_server::McpServerRow;
 pub use message::MessageRow;
 pub use model_profile::{ModelProfileRow, UpsertModelProfileParams};
 pub use oauth_token::OAuthTokenRow;
-pub use orchestrator::{
-    FleetMemberRow, FleetRow, OrchAssignmentRow, OrchRunRow, OrchRunTaskDepRow, OrchRunTaskRow,
-    OrchWorkspaceRow,
-};
 pub use provider::Provider;
+pub use preset::*;
 pub use remote_agent::RemoteAgentRow;
 pub use requirement::{RequirementRow, RequirementRowUpdate, RequirementTagRow};
 pub use skill_tag::{SkillTagRow, UpsertSkillTagParams};

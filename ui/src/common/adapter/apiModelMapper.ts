@@ -61,11 +61,18 @@ export type ApiConversationPinnedFields = {
   pinned_at?: number | null;
 };
 
+/** First-class Conversation collaboration authoring reference. It is never
+ * read from or mirrored into `extra`. */
+export type ApiConversationExecutionTemplateFields = {
+  execution_template_id?: string | null;
+};
+
 export function fromApiConversation<T>(raw: T): T {
   if (!raw || typeof raw !== 'object') return raw;
 
   const r = raw as T &
-    ApiConversationPinnedFields & {
+    ApiConversationPinnedFields &
+    ApiConversationExecutionTemplateFields & {
       model?: ApiProviderWithModel | null;
       extra?: Record<string, unknown> | null;
       /** Promoted to a top-level conversations column (was extra.cronJobId). */
@@ -88,6 +95,16 @@ export function fromApiConversation<T>(raw: T): T {
     extra = {
       ...extra,
       custom_workspace: workspace.length > 0 && !isTemporary,
+    };
+  }
+
+  // Remote-agent conversations use snake_case on the backend. Mirror the row
+  // id to the legacy camelCase key while older UI call sites are still being
+  // upgraded, so both fresh and existing conversations resolve their agent.
+  if (extra && typeof extra.remote_agent_id === 'number' && !('remoteAgentId' in extra)) {
+    extra = {
+      ...extra,
+      remoteAgentId: extra.remote_agent_id,
     };
   }
 

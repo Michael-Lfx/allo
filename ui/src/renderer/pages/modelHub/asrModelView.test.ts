@@ -23,8 +23,8 @@ describe('local ASR UI integration', () => {
     const guidPage = readSource(new URL('../guid/GuidPage.tsx', import.meta.url));
 
     expect(localModelsContent.includes('<AsrModelsPanel controller={asr} />')).toBe(true);
-    expect(guidPage.includes('speechInputNode=')).toBe(true);
-    expect(guidPage.includes('<SpeechInputButton')).toBe(true);
+    expect(guidPage.includes('speechLocale={i18n.language}')).toBe(true);
+    expect(guidPage.includes('onSpeechTranscript=')).toBe(true);
   });
 
   test('keeps simple ASR metadata directly visible without a details disclosure', () => {

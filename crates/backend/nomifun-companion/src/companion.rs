@@ -24,10 +24,6 @@ use crate::profile::CompanionProfileConfig;
 use crate::registry::CompanionRegistry;
 use crate::store::{CompanionThread, MEMORY_KINDS, MemoryFilter, MemoryScope, CompanionStore};
 
-/// All companion conversations are owned by the local default user (the
-/// desktop --local single-user model; same constant the cron executor uses).
-pub(crate) const COMPANION_USER_ID: &str = "system_default_user";
-
 /// Per-companion runtime-state key holding that companion's active companion thread.
 pub(crate) const ACTIVE_THREAD_KEY: &str = "companion_active_thread";
 
@@ -67,14 +63,14 @@ pub(crate) async fn set_active_thread_ptr(store: &CompanionStore, companion_id: 
 /// (level/mood) is described in relative terms and the model is pointed at
 /// `recall_memories` for anything newer than the snapshot.
 ///
-/// `channel_platform` flavors the prompt for remote (IM) master-agent
+/// `channel_platform` flavors the prompt for remote IM Channel Agent
 /// sessions: the companion acknowledges it is serving the owner through that
 /// platform and that it can drive the whole desktop via the `nomi_*` tools.
 pub async fn build_companion_system_prompt(
     store: &CompanionStore,
     profile: &CompanionProfileConfig,
     channel_platform: Option<&str>,
-    smart_orchestration: bool,
+    smart_collaboration: bool,
 ) -> String {
     let memories = store
         .memories_for_injection(&profile.id, MEMORY_PER_KIND, MEMORY_CHAR_BUDGET)
@@ -132,6 +128,15 @@ pub async fn build_companion_system_prompt(
              删除类操作先向主人复述目标确认后再执行。",
         );
     }
+    if let Some(snapshot) = profile.applied_preset.as_ref()
+        && !snapshot.instructions.trim().is_empty()
+    {
+        system.push_str(&format!(
+            "\n\n## 当前设定：{}\n{}",
+            snapshot.preset_name,
+            snapshot.instructions.trim()
+        ));
+    }
     system.push_str(
         "\n\n## 知识沉淀技巧\n\
          除了轻量的全局记忆，你还能把成体系的资料沉淀为知识库，让会话/终端长期受益：\n\
@@ -155,20 +160,19 @@ pub async fn build_companion_system_prompt(
              主人在终端页能实时看到你的输入与执行，放心大胆地用。",
         );
     }
-    // 智能编排能力提示（本地会话且开关开启时）：让伙伴把复杂大任务拆给隔离子 agent，
-    // 自己只调度+汇总，保持对话上下文清爽（与会话归档协同）。远程 IM 不注入（工具对 Remote 硬拒）。
-    if smart_orchestration && !remote {
+    // 智能协作提示只注入本地会话；远程 IM 不具备持久 Agent 委派权限。
+    if smart_collaboration && !remote {
         system.push_str(
-            "\n\n## 复杂任务：调度子 agent（智能编排）\n\
-             需要并行开几个子 agent 干活时，默认用 nomi_spawn(tasks)：不经规划直接并行开工，\
-             主人能在画布上实时看到每个子 agent 的状态与产出。只有当任务真正复杂、需要先拆成\
-             有依赖关系的任务图时，才用 nomi_run_create(goal) 交给编排引擎自动拆解并行、随即开跑。\
+            "\n\n## 复杂任务：Agent 协作\n\
+             统一用 nomi_delegate 委派：并行交给多个 Agent 时传 strategy=parallel 和 tasks，\
+             不经规划直接并行开工；任务真正复杂、需要有依赖关系的任务图时，传 strategy=planned 和 goal，\
+             交给执行引擎自动拆解并行。主人能在画布上实时看到每个协作 Agent 的状态与产出。\
              派发后直接告诉主人已在后台执行、进度见画布，然后正常继续——不必守着轮询：全部完成\
-             或失败时系统会自动把结果回执给你，届时你再向主人汇总产出；若失败，先 nomi_run_status \
-             看清哪个节点、原因(last_error)，再用 nomi_run_adjust 增量改编排或 nomi_task_config 换\
-             模型后 nomi_task_rerun 重跑失败节点，试过几种仍不成就如实问主人怎么办。这样你全程在场、\
-             不会像失联，重活也不会挤占你和主人的对话上下文。主人若中途问进度，才用 nomi_run_status 查一次。\
-             简单、单步、几句话能答的事，直接自己做，别为小事起编排。",
+             或失败时系统会自动把结果回执给你，届时你再向主人汇总产出；若失败，先用 nomi_execution_get \
+             看清哪个节点与 last_error，再用 nomi_execution_update 的 adjust/configure/retry 操作恢复。\
+             试过几种仍不成就如实问主人怎么办。这样你全程在场，重活也不会挤占你和主人的对话上下文。\
+             主人若中途问进度，才用 nomi_execution_get 查一次。\
+             简单、单步、几句话能答的事，直接自己做，别为小事创建持久执行。",
         );
     }
     if !memories.is_empty() {
@@ -463,11 +467,15 @@ mod workspace_apply_tests {
 /// Thread management over the real conversation domain. Every method is
 /// scoped to one companion — threads are owned, listed and activated per companion.
 pub struct CompanionThreads {
+    /// Canonical instance owner resolved from the user repository at startup.
+    /// Companion conversations are host-control-plane resources and must never
+    /// infer their owner from a username or a hard-coded database identifier.
+    pub authoritative_user_id: Arc<str>,
     pub store: CompanionStore,
     pub config: SharedConfig,
     pub registry: Arc<CompanionRegistry>,
     pub conversations: Arc<ConversationService>,
-    pub task_manager: Arc<dyn nomifun_ai_agent::IWorkerTaskManager>,
+    pub runtime_registry: Arc<dyn nomifun_ai_agent::AgentRuntimeRegistry>,
 }
 
 impl CompanionThreads {
@@ -485,7 +493,11 @@ impl CompanionThreads {
     /// 把某线程落盘工作区收敛到伙伴目标（seq+name）目录：统管首次创建、legacy 迁移、
     /// 改名跟随。幂等 + 尽力而为，绝不让调用方失败；被占用则保留旧路径下次再试。
     pub(crate) async fn reconcile_thread_workspace(&self, profile: &CompanionProfileConfig, conversation_id: &str) {
-        let resp = match self.conversations.get(COMPANION_USER_ID, conversation_id).await {
+        let resp = match self
+            .conversations
+            .get(self.authoritative_user_id.as_ref(), conversation_id)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, conversation_id, "fetch companion thread for workspace reconcile failed");
@@ -521,7 +533,11 @@ impl CompanionThreads {
     /// 空 → None；legacy `companions/{id}/workspace` → None（随 registry.remove 一并删）。
     /// 必须在删除会话「之前」读（删除会丢 extra）。
     async fn thread_workspace_under_tree(&self, conversation_id: &str) -> Option<std::path::PathBuf> {
-        let resp = self.conversations.get(COMPANION_USER_ID, conversation_id).await.ok()?;
+        let resp = self
+            .conversations
+            .get(self.authoritative_user_id.as_ref(), conversation_id)
+            .await
+            .ok()?;
         let ws = resp.extra.get("workspace").and_then(|v| v.as_str())?.trim().to_string();
         if ws.is_empty() {
             return None;
@@ -558,8 +574,8 @@ impl CompanionThreads {
         if !profile.model.is_configured() {
             return Err(AppError::BadRequest("companion model not configured".into()));
         }
-        let smart_orchestration = self.config.read().await.smart_orchestration;
-        let system_prompt = build_companion_system_prompt(&self.store, &profile, None, smart_orchestration).await;
+        let smart_collaboration = self.config.read().await.smart_collaboration;
+        let system_prompt = build_companion_system_prompt(&self.store, &profile, None, smart_collaboration).await;
         let title = title
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| format!("和 {} 聊天", profile.name));
@@ -587,27 +603,42 @@ impl CompanionThreads {
             }),
             source: None,
             channel_chat_id: None,
-            extra: serde_json::json!({
+            preset_id: None,
+            preset_overrides: None,
+            delegation_policy: Default::default(),
+            execution_model_pool: None,
+            decision_policy: Default::default(),
+            execution_template_id: None,
+            extra: {
+                let extra = serde_json::json!({
                 "companionSession": true,
                 "companionId": companion_id,
                 "system_prompt": system_prompt,
-                // The companion is the desktop's master agent: companion threads get
-                // the Desktop Gateway tools (nomi_* — sessions/cron/memory/
-                // requirements). Backend-set only; HTTP routes strip this key.
-                "desktopGateway": true,
+                // `build_companion_system_prompt` already includes the frozen
+                // preset instructions. Prevent the generic conversation path
+                // from appending the same block a second time.
+                "preset_instructions_embedded": true,
                 // Fixed private work folder (locked, browsable in the chat tab's file
                 // sidebar). Marks the conversation as a custom (non-temp) workspace, so
                 // no skill symlinks are wired — the companion uses gateway tools, not skills.
                 "workspace": workspace,
                 // No explicit session_mode here: the Nomi factory defaults every
-                // desktopGateway (companion-owned) session to "yolo" auto-approval
-                // (see factory/nomi.rs) — the companion chat has no interactive
+                // companion-owned session to "yolo" auto-approval (see
+                // factory/nomi.rs) — the companion chat has no interactive
                 // approval UI, so a tool call under Default mode would park forever
                 // (聊天永久「思考中」). The companion's prompt is what guards destructive
                 // ops (复述确认), not an approval gate.
-            }),
+                });
+                extra
+            },
         };
-        let created = self.conversations.create(COMPANION_USER_ID, req).await?;
+        let created = if let Some(snapshot) = profile.applied_preset.clone() {
+            self.conversations
+                .create_from_preset_snapshot(self.authoritative_user_id.as_ref(), req, snapshot)
+                .await?
+        } else {
+            self.conversations.create(self.authoritative_user_id.as_ref(), req).await?
+        };
         // The companion registry (CompanionStore) keys threads by the conversation id
         // as a string; the i64-keyed conversation row id is bridged here at the
         // boundary (Option A).
@@ -618,7 +649,10 @@ impl CompanionThreads {
         let thread = match self.store.insert_companion_thread(&created_id, companion_id, &title).await {
             Ok(thread) => thread,
             Err(e) => {
-                let _ = self.conversations.delete(COMPANION_USER_ID, &created_id).await;
+                let _ = self
+                    .conversations
+                    .delete(self.authoritative_user_id.as_ref(), &created_id)
+                    .await;
                 return Err(e);
             }
         };
@@ -634,7 +668,11 @@ impl CompanionThreads {
         let mut pruned = Vec::new();
         let mut removed_ids: Vec<String> = Vec::new();
         for t in threads.drain(..) {
-            match self.conversations.get(COMPANION_USER_ID, &t.conversation_id).await {
+            match self
+                .conversations
+                .get(self.authoritative_user_id.as_ref(), &t.conversation_id)
+                .await
+            {
                 // A companion session is valid only when it's a `nomi` conversation — the
                 // companion chat UI (ChatTab/CompanionConversation) renders nomi only.
                 Ok(resp) if resp.r#type == nomifun_common::AgentType::Nomi => pruned.push(t),
@@ -671,7 +709,11 @@ impl CompanionThreads {
         let workspace = self.thread_workspace_under_tree(conversation_id).await;
         // Conversation first (kills the running agent via delete hooks);
         // tolerate already-deleted rows.
-        match self.conversations.delete(COMPANION_USER_ID, conversation_id).await {
+        match self
+            .conversations
+            .delete(self.authoritative_user_id.as_ref(), conversation_id)
+            .await
+        {
             Ok(()) | Err(AppError::NotFound(_)) => {}
             Err(e) => return Err(e),
         }
@@ -703,7 +745,7 @@ impl CompanionThreads {
         self.assert_owned(companion_id, conversation_id).await?;
         self.conversations
             .update(
-                COMPANION_USER_ID,
+                self.authoritative_user_id.as_ref(),
                 conversation_id,
                 nomifun_api_types::UpdateConversationRequest {
                     name: None,
@@ -713,9 +755,53 @@ impl CompanionThreads {
                         model: model.model.clone(),
                         use_model: model.use_model.clone(),
                     }),
+                    delegation_policy: None,
+                    execution_model_pool: None,
+                    decision_policy: None,
+                    execution_template_id: None,
                     extra: None,
                 },
-                &self.task_manager,
+                &self.runtime_registry,
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// Replace only the reusable preset-derived portion of an existing
+    /// companion thread. The companion id, memory, history, workspace and
+    /// process-issued platform capability stays untouched.
+    pub async fn set_preset(
+        &self,
+        companion_id: &str,
+        conversation_id: &str,
+        system_prompt: String,
+        snapshot: &nomifun_api_types::ResolvedPresetSnapshot,
+    ) -> Result<(), AppError> {
+        self.assert_owned(companion_id, conversation_id).await?;
+        self.conversations
+            .update(
+                self.authoritative_user_id.as_ref(),
+                conversation_id,
+                nomifun_api_types::UpdateConversationRequest {
+                    name: None,
+                    pinned: None,
+                    model: None,
+                    delegation_policy: None,
+                    execution_model_pool: None,
+                    decision_policy: None,
+                    execution_template_id: None,
+                    extra: Some(serde_json::json!({
+                        "system_prompt": system_prompt,
+                        "preset_instructions_embedded": true,
+                        "preset_id": snapshot.preset_id.clone(),
+                        "preset_revision": snapshot.preset_revision,
+                        "preset_snapshot": snapshot,
+                        "skills": snapshot.included_skills.clone(),
+                        "exclude_auto_inject_skills": snapshot.excluded_auto_skills.clone(),
+                        "preset_knowledge_binding": true,
+                    })),
+                },
+                &self.runtime_registry,
             )
             .await
             .map(|_| ())
@@ -917,7 +1003,7 @@ mod tests {
         CompanionStoreSink {
             store,
             config: Arc::new(RwLock::new(config)),
-            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16))),
+            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16)), "owner-a"),
             companion_dir: dir.to_path_buf(),
         }
     }
@@ -1075,23 +1161,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn companion_system_prompt_smart_orchestration_nudge_local_only() {
+    async fn companion_system_prompt_smart_collaboration_nudge_local_only() {
         let store = CompanionStore::open_memory().await.unwrap();
         let profile = CompanionProfileConfig::new("毛球", "ink");
 
-        // Off → no orchestration nudge.
+        // Off → no collaboration nudge.
         let off = build_companion_system_prompt(&store, &profile, None, false).await;
-        assert!(!off.contains("调度子 agent"), "no nudge when smart-orchestration is off");
+        assert!(!off.contains("协作 Agent"), "no nudge when smart collaboration is off");
 
-        // On + local → nudge present, teaching nomi_run_create delegation.
+        // On + local → nudge present, teaching the unified delegation surface.
         let on = build_companion_system_prompt(&store, &profile, None, true).await;
-        assert!(on.contains("调度子 agent"), "local prompt must teach subagent delegation when enabled");
-        assert!(on.contains("nomi_run_create"));
-        assert!(on.contains("nomi_spawn"), "must teach the flat fan-out verb for independent small tasks");
+        assert!(on.contains("协作 Agent"), "local prompt must teach Agent delegation when enabled");
+        assert!(on.contains("nomi_delegate"));
+        assert!(on.contains("strategy=parallel"));
+        assert!(on.contains("strategy=planned"));
+        assert!(on.contains("nomi_execution_get"));
+        assert!(on.contains("nomi_execution_update"));
 
-        // On + remote → still no nudge (orchestration tools deny Remote).
+        // On + remote → still no nudge (collaboration tools deny Remote).
         let remote = build_companion_system_prompt(&store, &profile, Some("telegram"), true).await;
-        assert!(!remote.contains("调度子 agent"), "remote must never get the orchestration nudge");
+        assert!(!remote.contains("协作 Agent"), "remote must never get the collaboration nudge");
     }
 
     #[tokio::test]

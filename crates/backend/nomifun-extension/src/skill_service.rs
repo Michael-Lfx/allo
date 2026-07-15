@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 use crate::constants::{
-    ASSISTANT_RULES_DIR_NAME, ASSISTANT_SKILLS_DIR_NAME, BUILTIN_AUTO_SKILLS_SUBDIR,
+    PRESET_RULES_DIR_NAME, PRESET_SKILLS_DIR_NAME, BUILTIN_AUTO_SKILLS_SUBDIR,
     BUILTIN_RULES_DIR_NAME, COMMON_SKILL_DIRS, CRON_SKILLS_DIR_NAME, SKILL_MANIFEST_FILE,
     SKILLS_DIR_NAME,
 };
@@ -15,7 +15,7 @@ use crate::error::ExtensionError;
 
 /// Built-in skill corpus embedded into the binary at compile time.
 ///
-/// Mirrors the strategy used by `nomifun-assistant::builtin`: the corpus is
+/// Mirrors the strategy used by `nomifun-preset::builtin`: the corpus is
 /// authoritative at build time; an optional on-disk override
 /// (`NOMIFUN_BUILTIN_SKILLS_PATH`) is consulted at runtime for rapid
 /// iteration and E2E fixtures.
@@ -93,10 +93,10 @@ pub struct SkillPaths {
     pub builtin_skills_dir: PathBuf,
     /// Built-in rules directory (app bundle resource).
     pub builtin_rules_dir: PathBuf,
-    /// Assistant-level rules directory (~/.nomifun/assistant-rules/).
-    pub assistant_rules_dir: PathBuf,
-    /// Assistant-level skills directory (~/.nomifun/assistant-skills/).
-    pub assistant_skills_dir: PathBuf,
+    /// Preset-level rules directory (~/.nomifun/preset-rules/).
+    pub preset_rules_dir: PathBuf,
+    /// Preset-level skills directory (~/.nomifun/preset-skills/).
+    pub preset_skills_dir: PathBuf,
 }
 
 /// Resolve standard skill paths.
@@ -108,7 +108,7 @@ pub struct SkillPaths {
 /// unless redirected via [`BUILTIN_SKILLS_ENV_VAR`].
 ///
 /// `data_dir` is the user-level data root (e.g. `~/.nomifun/`) and
-/// determines where user skills, assistant resources, and the built-in
+/// determines where user skills, preset resources, and the built-in
 /// skills tree (`{data_dir}/builtin-skills/`) live. Per-conversation
 /// agent skills are no longer materialized on disk — see
 /// [`materialize_skills_for_agent`] for the symlink contract.
@@ -125,8 +125,8 @@ pub fn resolve_skill_paths(app_resource_dir: &Path, data_dir: &Path) -> SkillPat
         cron_skills_dir: data_dir.join(CRON_SKILLS_DIR_NAME),
         builtin_skills_dir,
         builtin_rules_dir: app_resource_dir.join(BUILTIN_RULES_DIR_NAME),
-        assistant_rules_dir: data_dir.join(ASSISTANT_RULES_DIR_NAME),
-        assistant_skills_dir: data_dir.join(ASSISTANT_SKILLS_DIR_NAME),
+        preset_rules_dir: data_dir.join(PRESET_RULES_DIR_NAME),
+        preset_skills_dir: data_dir.join(PRESET_SKILLS_DIR_NAME),
     }
 }
 
@@ -325,69 +325,69 @@ pub async fn read_builtin_skill(
 }
 
 // ---------------------------------------------------------------------------
-// B. Assistant-level CRUD
+// B. Preset-level CRUD
 // ---------------------------------------------------------------------------
 
-/// Read an assistant rule with locale fallback.
+/// Read an preset rule with locale fallback.
 ///
 /// Fallback order:
-/// 1. `{assistantId}.{locale}.md` (if locale provided)
-/// 2. `{assistantId}.md`
+/// 1. `{presetId}.{locale}.md` (if locale provided)
+/// 2. `{presetId}.md`
 /// 3. Empty string
-pub async fn read_assistant_rule(
+pub async fn read_preset_rule(
     paths: &SkillPaths,
-    assistant_id: &str,
+    preset_id: &str,
     locale: Option<&str>,
 ) -> Result<String, ExtensionError> {
-    read_assistant_resource(&paths.assistant_rules_dir, assistant_id, locale).await
+    read_preset_resource(&paths.preset_rules_dir, preset_id, locale).await
 }
 
-/// Write an assistant rule.
+/// Write an preset rule.
 ///
-/// Creates `{assistantId}.{locale}.md` or `{assistantId}.md` in the
-/// assistant rules directory.
-pub async fn write_assistant_rule(
+/// Creates `{presetId}.{locale}.md` or `{presetId}.md` in the
+/// preset rules directory.
+pub async fn write_preset_rule(
     paths: &SkillPaths,
-    assistant_id: &str,
+    preset_id: &str,
     content: &str,
     locale: Option<&str>,
 ) -> Result<bool, ExtensionError> {
-    write_assistant_resource(&paths.assistant_rules_dir, assistant_id, content, locale).await
+    write_preset_resource(&paths.preset_rules_dir, preset_id, content, locale).await
 }
 
-/// Delete all locale versions of an assistant rule.
-pub async fn delete_assistant_rule(
+/// Delete all locale versions of an preset rule.
+pub async fn delete_preset_rule(
     paths: &SkillPaths,
-    assistant_id: &str,
+    preset_id: &str,
 ) -> Result<bool, ExtensionError> {
-    delete_assistant_resource(&paths.assistant_rules_dir, assistant_id).await
+    delete_preset_resource(&paths.preset_rules_dir, preset_id).await
 }
 
-/// Read an assistant skill with locale fallback.
-pub async fn read_assistant_skill(
+/// Read an preset skill with locale fallback.
+pub async fn read_preset_skill(
     paths: &SkillPaths,
-    assistant_id: &str,
+    preset_id: &str,
     locale: Option<&str>,
 ) -> Result<String, ExtensionError> {
-    read_assistant_resource(&paths.assistant_skills_dir, assistant_id, locale).await
+    read_preset_resource(&paths.preset_skills_dir, preset_id, locale).await
 }
 
-/// Write an assistant skill.
-pub async fn write_assistant_skill(
+/// Write an preset skill.
+pub async fn write_preset_skill(
     paths: &SkillPaths,
-    assistant_id: &str,
+    preset_id: &str,
     content: &str,
     locale: Option<&str>,
 ) -> Result<bool, ExtensionError> {
-    write_assistant_resource(&paths.assistant_skills_dir, assistant_id, content, locale).await
+    write_preset_resource(&paths.preset_skills_dir, preset_id, content, locale).await
 }
 
-/// Delete all locale versions of an assistant skill.
-pub async fn delete_assistant_skill(
+/// Delete all locale versions of an preset skill.
+pub async fn delete_preset_skill(
     paths: &SkillPaths,
-    assistant_id: &str,
+    preset_id: &str,
 ) -> Result<bool, ExtensionError> {
-    delete_assistant_resource(&paths.assistant_skills_dir, assistant_id).await
+    delete_preset_resource(&paths.preset_skills_dir, preset_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +568,7 @@ pub struct BuiltinAutoSkillItem {
     pub location: String,
 }
 
-/// List built-in skills that are auto-injected into every assistant.
+/// List built-in skills that are auto-injected into every preset.
 ///
 /// Reads from `{paths.builtin_skills_dir}/auto-inject/`. A missing
 /// `auto-inject/` directory yields an empty list, matching the
@@ -725,6 +725,10 @@ pub async fn import_skill(paths: &SkillPaths, skill_path: &Path) -> Result<Strin
     let target_dir = paths.user_skills_dir.join(&name);
     tokio::fs::create_dir_all(&paths.user_skills_dir).await?;
 
+    // A same-name entry may be an imported directory link. Remove the entry
+    // itself before copying so a ZIP refresh cannot write through a Windows
+    // junction (or a Unix symlink) into the external source directory.
+    remove_path_entry(&target_dir).await?;
     copy_dir_recursive(skill_path, &target_dir).await?;
 
     debug!(skill = %name, target = %target_dir.display(), "skill imported (copy)");
@@ -744,14 +748,7 @@ pub async fn import_skill_with_symlink(
     let target_link = paths.user_skills_dir.join(&name);
     tokio::fs::create_dir_all(&paths.user_skills_dir).await?;
 
-    // Remove existing link/dir if present
-    if target_link.exists() {
-        if target_link.is_symlink() || target_link.is_file() {
-            tokio::fs::remove_file(&target_link).await?;
-        } else {
-            tokio::fs::remove_dir_all(&target_link).await?;
-        }
-    }
+    remove_path_entry(&target_link).await?;
 
     // Materialize the link, degrading to a recursive copy when the platform
     // symlink/junction primitive fails (non-NTFS removable media, UNC/network
@@ -932,14 +929,7 @@ pub async fn export_skill_with_symlink(
     let target_link = target_dir.join(&skill_name);
     tokio::fs::create_dir_all(target_dir).await?;
 
-    // Remove existing link if present
-    if target_link.exists() {
-        if target_link.is_symlink() || target_link.is_file() {
-            tokio::fs::remove_file(&target_link).await?;
-        } else {
-            tokio::fs::remove_dir_all(&target_link).await?;
-        }
-    }
+    remove_path_entry(&target_link).await?;
 
     create_symlink(skill_path, &target_link).await?;
 
@@ -962,7 +952,7 @@ pub async fn delete_skill(paths: &SkillPaths, skill_name: &str) -> Result<(), Ex
 
     let user_path = paths.user_skills_dir.join(skill_name);
 
-    if !user_path.exists() {
+    if !remove_path_entry(&user_path).await? {
         // Check if it exists as a built-in (disk override → filesystem,
         // otherwise embedded corpus).
         if builtin_skill_exists(paths, skill_name) {
@@ -971,21 +961,58 @@ pub async fn delete_skill(paths: &SkillPaths, skill_name: &str) -> Result<(), Ex
         return Err(ExtensionError::SkillNotFound(skill_name.to_string()));
     }
 
-    if user_path.is_symlink() || user_path.is_file() {
-        clear_readonly_for_deletion(&user_path)?;
-        tokio::fs::remove_file(&user_path).await?;
-    } else {
-        // ZIP imports may retain Windows read-only attributes, which makes
-        // remove_dir_all fail with Access Denied (os error 5).
-        clear_readonly_for_deletion(&user_path)?;
-        tokio::fs::remove_dir_all(&user_path).await?;
-    }
-
     debug!(skill = %skill_name, "skill deleted");
     Ok(())
 }
 
+/// Remove an entry without following a link outside the managed skills tree.
+///
+/// Windows directory junctions are reported as symlinks by
+/// [`std::fs::symlink_metadata`], but Windows rejects `DeleteFile` for them
+/// with `ERROR_ACCESS_DENIED` (os error 5). Try `remove_dir` for every link
+/// first: it removes directory links and junctions themselves, never their
+/// targets. A file link reports `NotADirectory`, so it is removed with
+/// `remove_file` instead. `symlink_metadata` also lets callers remove dangling
+/// links that `Path::exists` would otherwise hide.
+///
+/// Returns `false` only when no directory entry exists at `path`.
+async fn remove_path_entry(path: &Path) -> Result<bool, ExtensionError> {
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(ExtensionError::Io(error)),
+    };
+
+    if metadata.file_type().is_symlink() {
+        match tokio::fs::remove_dir(path).await {
+            Ok(()) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+                tokio::fs::remove_file(path).await?;
+                return Ok(true);
+            }
+            Err(error) => return Err(ExtensionError::Io(error)),
+        }
+    }
+
+    if metadata.is_dir() {
+        // ZIP imports may retain Windows read-only attributes, which makes
+        // remove_dir_all fail with Access Denied (os error 5).
+        clear_readonly_for_deletion(path)?;
+        tokio::fs::remove_dir_all(path).await?;
+    } else {
+        clear_readonly_for_deletion(path)?;
+        tokio::fs::remove_file(path).await?;
+    }
+
+    Ok(true)
+}
+
 /// Clear read-only attributes without following symlinks outside the skill.
+///
+/// Windows exposes a read-only file attribute that blocks recursive deletion.
+/// On Unix, `Permissions::set_readonly(false)` would broaden the file mode to
+/// world-writable, so no attribute rewrite is necessary or safe there.
+#[cfg(windows)]
 fn clear_readonly_for_deletion(path: &Path) -> std::io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
@@ -1001,6 +1028,11 @@ fn clear_readonly_for_deletion(path: &Path) -> std::io::Result<()> {
         permissions.set_readonly(false);
         std::fs::set_permissions(path, permissions)?;
     }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn clear_readonly_for_deletion(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -1329,13 +1361,13 @@ fn validate_builtin_skill_path(rel: &str) -> Result<(), ExtensionError> {
     Ok(())
 }
 
-/// Read an assistant resource (rule or skill) with locale fallback.
-async fn read_assistant_resource(
+/// Read an preset resource (rule or skill) with locale fallback.
+async fn read_preset_resource(
     dir: &Path,
-    assistant_id: &str,
+    preset_id: &str,
     locale: Option<&str>,
 ) -> Result<String, ExtensionError> {
-    validate_filename(assistant_id)?;
+    validate_filename(preset_id)?;
     if let Some(loc) = locale {
         validate_filename(loc)?;
     }
@@ -1344,14 +1376,14 @@ async fn read_assistant_resource(
     if let Some(loc) = locale
         && !loc.is_empty()
     {
-        let locale_file = dir.join(format!("{assistant_id}.{loc}.md"));
+        let locale_file = dir.join(format!("{preset_id}.{loc}.md"));
         if let Ok(content) = tokio::fs::read_to_string(&locale_file).await {
             return Ok(content);
         }
     }
 
     // 2. Try default file (no locale suffix)
-    let default_file = dir.join(format!("{assistant_id}.md"));
+    let default_file = dir.join(format!("{preset_id}.md"));
     match tokio::fs::read_to_string(&default_file).await {
         Ok(content) => Ok(content),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
@@ -1359,14 +1391,14 @@ async fn read_assistant_resource(
     }
 }
 
-/// Write an assistant resource file.
-async fn write_assistant_resource(
+/// Write an preset resource file.
+async fn write_preset_resource(
     dir: &Path,
-    assistant_id: &str,
+    preset_id: &str,
     content: &str,
     locale: Option<&str>,
 ) -> Result<bool, ExtensionError> {
-    validate_filename(assistant_id)?;
+    validate_filename(preset_id)?;
     if let Some(loc) = locale {
         validate_filename(loc)?;
     }
@@ -1374,19 +1406,19 @@ async fn write_assistant_resource(
     tokio::fs::create_dir_all(dir).await?;
 
     let filename = match locale {
-        Some(loc) if !loc.is_empty() => format!("{assistant_id}.{loc}.md"),
-        _ => format!("{assistant_id}.md"),
+        Some(loc) if !loc.is_empty() => format!("{preset_id}.{loc}.md"),
+        _ => format!("{preset_id}.md"),
     };
 
     let file_path = dir.join(filename);
     tokio::fs::write(&file_path, content).await?;
-    debug!(path = %file_path.display(), "assistant resource written");
+    debug!(path = %file_path.display(), "preset resource written");
     Ok(true)
 }
 
-/// Delete all files matching `{assistant_id}*.md` in a directory.
-async fn delete_assistant_resource(dir: &Path, assistant_id: &str) -> Result<bool, ExtensionError> {
-    validate_filename(assistant_id)?;
+/// Delete all files matching `{preset_id}*.md` in a directory.
+async fn delete_preset_resource(dir: &Path, preset_id: &str) -> Result<bool, ExtensionError> {
+    validate_filename(preset_id)?;
 
     let mut deleted_any = false;
 
@@ -1396,15 +1428,15 @@ async fn delete_assistant_resource(dir: &Path, assistant_id: &str) -> Result<boo
         Err(e) => return Err(ExtensionError::Io(e)),
     };
 
-    let prefix = format!("{assistant_id}.");
-    let exact = format!("{assistant_id}.md");
+    let prefix = format!("{preset_id}.");
+    let exact = format!("{preset_id}.md");
 
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name == exact || (name.starts_with(&prefix) && name.ends_with(".md")) {
             tokio::fs::remove_file(entry.path()).await?;
             deleted_any = true;
-            debug!(file = %name, "deleted assistant resource");
+            debug!(file = %name, "deleted preset resource");
         }
     }
 
@@ -1795,8 +1827,8 @@ mod tests {
             cron_skills_dir: tmp.path().join(CRON_SKILLS_DIR_NAME),
             builtin_skills_dir: tmp.path().join("builtin-skills"),
             builtin_rules_dir: tmp.path().join("rules"),
-            assistant_rules_dir: tmp.path().join("assistant-rules"),
-            assistant_skills_dir: tmp.path().join("assistant-skills"),
+            preset_rules_dir: tmp.path().join("preset-rules"),
+            preset_skills_dir: tmp.path().join("preset-skills"),
         }
     }
 
@@ -2057,8 +2089,8 @@ mod tests {
             cron_skills_dir: tmp.path().join(CRON_SKILLS_DIR_NAME),
             builtin_skills_dir: tmp.path().join(crate::constants::BUILTIN_SKILLS_DIR_NAME),
             builtin_rules_dir: rules_dir,
-            assistant_rules_dir: tmp.path().join(ASSISTANT_RULES_DIR_NAME),
-            assistant_skills_dir: tmp.path().join(ASSISTANT_SKILLS_DIR_NAME),
+            preset_rules_dir: tmp.path().join(PRESET_RULES_DIR_NAME),
+            preset_skills_dir: tmp.path().join(PRESET_SKILLS_DIR_NAME),
         };
 
         let content = read_builtin_rule(&paths, "code-review.md").await.unwrap();
@@ -2084,168 +2116,168 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Assistant CRUD
+    // Preset CRUD
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn assistant_rule_write_and_read() {
+    async fn preset_rule_write_and_read() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
 
-        write_assistant_rule(&paths, "abc123", "Be helpful.", None)
+        write_preset_rule(&paths, "abc123", "Be helpful.", None)
             .await
             .unwrap();
 
-        let content = read_assistant_rule(&paths, "abc123", None).await.unwrap();
+        let content = read_preset_rule(&paths, "abc123", None).await.unwrap();
         assert_eq!(content, "Be helpful.");
     }
 
     #[tokio::test]
-    async fn assistant_rule_locale_fallback() {
+    async fn preset_rule_locale_fallback() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
 
         // Write default (no locale)
-        write_assistant_rule(&paths, "abc123", "Default content", None)
+        write_preset_rule(&paths, "abc123", "Default content", None)
             .await
             .unwrap();
 
         // Write zh-CN locale
-        write_assistant_rule(&paths, "abc123", "中文内容", Some("zh-CN"))
+        write_preset_rule(&paths, "abc123", "中文内容", Some("zh-CN"))
             .await
             .unwrap();
 
         // Read with matching locale
-        let content = read_assistant_rule(&paths, "abc123", Some("zh-CN"))
+        let content = read_preset_rule(&paths, "abc123", Some("zh-CN"))
             .await
             .unwrap();
         assert_eq!(content, "中文内容");
 
         // Read with non-matching locale → falls back to default
-        let content = read_assistant_rule(&paths, "abc123", Some("en-US"))
+        let content = read_preset_rule(&paths, "abc123", Some("en-US"))
             .await
             .unwrap();
         assert_eq!(content, "Default content");
 
         // Read without locale → default
-        let content = read_assistant_rule(&paths, "abc123", None).await.unwrap();
+        let content = read_preset_rule(&paths, "abc123", None).await.unwrap();
         assert_eq!(content, "Default content");
     }
 
     #[tokio::test]
-    async fn assistant_rule_read_nonexistent() {
+    async fn preset_rule_read_nonexistent() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
 
-        let content = read_assistant_rule(&paths, "missing", None).await.unwrap();
+        let content = read_preset_rule(&paths, "missing", None).await.unwrap();
         assert!(content.is_empty());
     }
 
     #[tokio::test]
-    async fn assistant_rule_delete_all_locales() {
+    async fn preset_rule_delete_all_locales() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
 
-        write_assistant_rule(&paths, "abc123", "Default", None)
+        write_preset_rule(&paths, "abc123", "Default", None)
             .await
             .unwrap();
-        write_assistant_rule(&paths, "abc123", "Chinese", Some("zh-CN"))
+        write_preset_rule(&paths, "abc123", "Chinese", Some("zh-CN"))
             .await
             .unwrap();
-        write_assistant_rule(&paths, "abc123", "English", Some("en-US"))
+        write_preset_rule(&paths, "abc123", "English", Some("en-US"))
             .await
             .unwrap();
 
-        let deleted = delete_assistant_rule(&paths, "abc123").await.unwrap();
+        let deleted = delete_preset_rule(&paths, "abc123").await.unwrap();
         assert!(deleted);
 
         // Verify all files are gone
-        let content = read_assistant_rule(&paths, "abc123", None).await.unwrap();
+        let content = read_preset_rule(&paths, "abc123", None).await.unwrap();
         assert!(content.is_empty());
-        let content = read_assistant_rule(&paths, "abc123", Some("zh-CN"))
+        let content = read_preset_rule(&paths, "abc123", Some("zh-CN"))
             .await
             .unwrap();
         assert!(content.is_empty());
     }
 
     #[tokio::test]
-    async fn assistant_skill_write_and_read() {
+    async fn preset_skill_write_and_read() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
 
-        write_assistant_skill(&paths, "abc123", "Skill content", None)
+        write_preset_skill(&paths, "abc123", "Skill content", None)
             .await
             .unwrap();
 
-        let content = read_assistant_skill(&paths, "abc123", None).await.unwrap();
+        let content = read_preset_skill(&paths, "abc123", None).await.unwrap();
         assert_eq!(content, "Skill content");
     }
 
     // -----------------------------------------------------------------------
-    // Assistant CRUD — path traversal prevention
+    // Preset CRUD — path traversal prevention
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn read_assistant_rule_rejects_traversal_id() {
+    async fn read_preset_rule_rejects_traversal_id() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = read_assistant_rule(&paths, "../etc/passwd", None).await;
+        let result = read_preset_rule(&paths, "../etc/passwd", None).await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn read_assistant_rule_rejects_traversal_locale() {
+    async fn read_preset_rule_rejects_traversal_locale() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = read_assistant_rule(&paths, "valid-id", Some("../evil")).await;
+        let result = read_preset_rule(&paths, "valid-id", Some("../evil")).await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn write_assistant_rule_rejects_traversal_id() {
+    async fn write_preset_rule_rejects_traversal_id() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = write_assistant_rule(&paths, "../../escape", "content", None).await;
+        let result = write_preset_rule(&paths, "../../escape", "content", None).await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn write_assistant_rule_rejects_traversal_locale() {
+    async fn write_preset_rule_rejects_traversal_locale() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = write_assistant_rule(&paths, "valid-id", "content", Some("../bad")).await;
+        let result = write_preset_rule(&paths, "valid-id", "content", Some("../bad")).await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn delete_assistant_rule_rejects_traversal_id() {
+    async fn delete_preset_rule_rejects_traversal_id() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = delete_assistant_rule(&paths, "foo/bar").await;
+        let result = delete_preset_rule(&paths, "foo/bar").await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn read_assistant_skill_rejects_traversal_id() {
+    async fn read_preset_skill_rejects_traversal_id() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = read_assistant_skill(&paths, "..\\windows", None).await;
+        let result = read_preset_skill(&paths, "..\\windows", None).await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn write_assistant_skill_rejects_traversal_id() {
+    async fn write_preset_skill_rejects_traversal_id() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = write_assistant_skill(&paths, "../escape", "content", None).await;
+        let result = write_preset_skill(&paths, "../escape", "content", None).await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
     #[tokio::test]
-    async fn delete_assistant_skill_rejects_traversal_id() {
+    async fn delete_preset_skill_rejects_traversal_id() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
-        let result = delete_assistant_skill(&paths, "a/b").await;
+        let result = delete_preset_skill(&paths, "a/b").await;
         assert!(matches!(result, Err(ExtensionError::PathTraversal(_))));
     }
 
@@ -2587,6 +2619,45 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
+    async fn zip_import_replaces_existing_link_without_mutating_source() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let source_dir = tmp.path().join("external-skill");
+        let zip_path = tmp.path().join("replacement.zip");
+
+        create_skill_in_dir(tmp.path(), "external-skill", "External source skill");
+        std::fs::write(source_dir.join("source-only.txt"), "original").unwrap();
+        import_skill_with_symlink(&paths, &source_dir).await.unwrap();
+
+        write_test_zip(
+            &zip_path,
+            &[
+                (
+                    "bundle/external-skill/SKILL.md",
+                    "---\nname: external-skill\ndescription: Replacement skill\n---\nReplacement body",
+                ),
+                ("bundle/external-skill/replacement-only.txt", "replacement"),
+            ],
+        );
+
+        let names = import_skills_with_symlink(&paths, &zip_path).await.unwrap();
+
+        assert_eq!(names, vec!["external-skill"]);
+        let managed_skill = paths.user_skills_dir.join("external-skill");
+        assert!(!std::fs::symlink_metadata(&managed_skill)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(managed_skill.join("replacement-only.txt").exists());
+        assert!(!source_dir.join("replacement-only.txt").exists());
+        assert_eq!(std::fs::read_to_string(source_dir.join("source-only.txt")).unwrap(), "original");
+        assert!(std::fs::read_to_string(source_dir.join(SKILL_MANIFEST_FILE))
+            .unwrap()
+            .contains("External source skill"));
+    }
+
+    #[tokio::test]
     async fn import_skills_with_symlink_rejects_zip_slip_entries() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
@@ -2645,6 +2716,52 @@ mod tests {
         assert!(!paths.user_skills_dir.join("to-delete").exists());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_skill_removes_dangling_user_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let source_dir = tmp.path().join("external-skill");
+
+        create_skill_in_dir(tmp.path(), "external-skill", "External skill");
+        import_skill_with_symlink(&paths, &source_dir).await.unwrap();
+        std::fs::remove_dir_all(&source_dir).unwrap();
+
+        delete_skill(&paths, "external-skill").await.unwrap();
+
+        let link_path = paths.user_skills_dir.join("external-skill");
+        assert!(matches!(
+            std::fs::symlink_metadata(link_path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[serial]
+    async fn delete_skill_removes_imported_junction_without_deleting_source() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let source_dir = tmp.path().join("external-skill");
+
+        create_skill_in_dir(tmp.path(), "external-skill", "External skill");
+        import_skill_with_symlink(&paths, &source_dir).await.unwrap();
+
+        let link_path = paths.user_skills_dir.join("external-skill");
+        assert!(std::fs::symlink_metadata(&link_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        delete_skill(&paths, "external-skill").await.unwrap();
+
+        assert!(matches!(
+            std::fs::symlink_metadata(&link_path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(source_dir.join(SKILL_MANIFEST_FILE).exists());
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn delete_custom_skill_with_readonly_files_on_windows() {
@@ -2662,6 +2779,21 @@ mod tests {
 
         delete_skill(&paths, "readonly-skill").await.unwrap();
         assert!(!paths.user_skills_dir.join("readonly-skill").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_readonly_for_deletion_preserves_unix_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("readonly.txt");
+        std::fs::write(&file, "payload").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        clear_readonly_for_deletion(&file).unwrap();
+
+        assert_eq!(std::fs::metadata(file).unwrap().permissions().mode() & 0o777, 0o444);
     }
 
     #[tokio::test]
@@ -2769,8 +2901,8 @@ mod tests {
             cron_skills_dir: base.join(CRON_SKILLS_DIR_NAME),
             builtin_skills_dir: base.join(crate::constants::BUILTIN_SKILLS_DIR_NAME),
             builtin_rules_dir: base.join(BUILTIN_RULES_DIR_NAME),
-            assistant_rules_dir: base.join(ASSISTANT_RULES_DIR_NAME),
-            assistant_skills_dir: base.join(ASSISTANT_SKILLS_DIR_NAME),
+            preset_rules_dir: base.join(PRESET_RULES_DIR_NAME),
+            preset_skills_dir: base.join(PRESET_SKILLS_DIR_NAME),
         }
     }
 

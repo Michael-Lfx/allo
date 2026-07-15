@@ -7,14 +7,12 @@
 import { ipcBridge } from '@/common';
 import type { RemoteAgentConfig, RemoteAgentInput } from '@/common/types/agent/remoteAgentTypes';
 import EmojiPicker from '@/renderer/components/chat/EmojiPicker';
-import { openExternalUrl } from '@/renderer/utils/platform';
 import { useNomiQuickStart } from '@/renderer/hooks/agent/useNomiQuickStart';
 import {
   Avatar,
   Button,
   Form,
   Input,
-  Link,
   Message,
   Modal,
   Select,
@@ -33,7 +31,6 @@ const FormItem = Form.Item;
 
 const PAIRING_POLL_INTERVAL = 5_000;
 const PAIRING_TIMEOUT = 5 * 60 * 1000;
-const REMOTE_AGENT_GUIDE_URL = 'https://github.com/nomifun/nomifun-app/wiki/Remote-Agent-Guide-Chinese';
 
 type PairingState = 'idle' | 'handshaking' | 'pending' | 'timeout';
 
@@ -57,15 +54,9 @@ const statusColor = (status?: string): string => {
   }
 };
 
-const openRemoteAgentGuide = (): void => {
-  void openExternalUrl(REMOTE_AGENT_GUIDE_URL).catch(console.error);
-};
-
-/** Remote protocols Flowy can connect to — surfaced so users can discover them. */
+/** Remote protocols with a production-ready runtime adapter. */
 const REMOTE_PROTOCOLS: { key: string; label: string }[] = [
   { key: 'openclaw', label: 'OpenClaw' },
-  { key: 'zeroclaw', label: 'ZeroClaw' },
-  { key: 'acp', label: 'ACP' },
 ];
 
 const RemoteAgentFormModal: React.FC<{
@@ -84,7 +75,6 @@ const RemoteAgentFormModal: React.FC<{
   const [pairingTimeLeft, setPairingTimeLeft] = useState(0);
   const pollTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const countdownRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  const savedAgentIdRef = useRef<number>(undefined);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -147,41 +137,58 @@ const RemoteAgentFormModal: React.FC<{
       Message.warning(t('settings.remoteAgent.urlRequired'));
       return;
     }
+    if (
+      editAgent &&
+      (values.auth_type === 'bearer' || values.auth_type === 'password') &&
+      typeof values.auth_token === 'string' &&
+      values.auth_token.startsWith('***')
+    ) {
+      Message.warning(t('settings.remoteAgent.maskedCredentialTestHint'));
+      return;
+    }
     setTesting(true);
     try {
-      const result = await ipcBridge.remoteAgent.testConnection.invoke({
+      await ipcBridge.remoteAgent.testConnection.invoke({
         url: values.url,
         auth_type: values.auth_type || 'none',
         auth_token: values.auth_token,
         allow_insecure: values.allow_insecure,
       });
-      if (result.success) {
-        Message.success(t('settings.remoteAgent.testSuccess'));
-      } else {
-        Message.error(t('settings.remoteAgent.testFailed', { error: result.error }));
-      }
+      Message.success(t('settings.remoteAgent.testSuccess'));
     } catch (error) {
       Message.error(t('settings.remoteAgent.testError', { error: String(error) }));
     } finally {
       setTesting(false);
     }
-  }, [form, t]);
+  }, [editAgent, form, t]);
 
   const handleSave = useCallback(async () => {
+    let createdAgentId: number | undefined;
     try {
       const values = await form.validate();
       setSaving(true);
-      const payload: RemoteAgentInput = { ...values, protocol: activeProtocol as RemoteAgentInput['protocol'], avatar };
+      const payload: RemoteAgentInput = {
+        ...values,
+        protocol: activeProtocol as RemoteAgentInput['protocol'],
+        avatar,
+      };
 
       let agentId: number;
       if (editAgent) {
-        await ipcBridge.remoteAgent.update.invoke({ id: editAgent.id, updates: payload });
+        const updates: Partial<RemoteAgentInput> = { ...payload };
+        if (
+          typeof updates.auth_token === 'string' &&
+          (updates.auth_token === '***' || updates.auth_token.startsWith('***'))
+        ) {
+          delete updates.auth_token;
+        }
+        await ipcBridge.remoteAgent.update.invoke({ id: editAgent.id, updates });
         agentId = editAgent.id;
       } else {
         const created = await ipcBridge.remoteAgent.create.invoke(payload);
         agentId = created.id;
+        createdAgentId = created.id;
       }
-      savedAgentIdRef.current = agentId;
 
       // For openclaw protocol, perform full handshake
       if (activeProtocol === 'openclaw') {
@@ -189,26 +196,34 @@ const RemoteAgentFormModal: React.FC<{
         const result = await ipcBridge.remoteAgent.handshake.invoke({ id: agentId });
 
         if (result.status === 'ok') {
+          createdAgentId = undefined;
           Message.success(editAgent ? t('settings.remoteAgent.updated') : t('settings.remoteAgent.created'));
           onSaved();
           onClose();
         } else if (result.status === 'pending_approval') {
+          createdAgentId = undefined;
           startPairingPoll(agentId);
           onSaved(); // refresh list to show 'pending' status
         } else {
-          Message.warning(
-            `${editAgent ? t('settings.remoteAgent.updated') : t('settings.remoteAgent.created')} — ${result.error || 'Handshake failed'}`
-          );
-          onSaved();
-          onClose();
+          throw new Error(result.error || 'Handshake failed');
         }
       } else {
+        createdAgentId = undefined;
         Message.success(editAgent ? t('settings.remoteAgent.updated') : t('settings.remoteAgent.created'));
         onSaved();
         onClose();
       }
-    } catch {
-      // validation error or API error
+    } catch (error) {
+      if (createdAgentId != null) {
+        try {
+          await ipcBridge.remoteAgent.delete.invoke({ id: createdAgentId });
+        } catch (rollbackError) {
+          console.error('Failed to roll back remote-agent creation after handshake failure:', rollbackError);
+        }
+      }
+      if (error instanceof Error && error.message) {
+        Message.error(t('settings.remoteAgent.saveError', { error: error.message }));
+      }
     } finally {
       setSaving(false);
     }
@@ -316,10 +331,7 @@ const RemoteAgentFormModal: React.FC<{
         <div className='flex gap-10px rounded-12px border border-solid border-[rgba(var(--warning-6),0.14)] bg-[rgba(var(--warning-6),0.08)] px-16px py-12px'>
           <Attention theme='filled' size={16} className='mt-2px shrink-0 text-[rgb(var(--warning-6))]' />
           <div className='min-w-0 text-13px leading-20px text-t-secondary'>
-            <span>{t('settings.agentManagement.remoteAgentsDescription')} </span>
-            <Link className='text-13px leading-20px' onClick={openRemoteAgentGuide}>
-              {t('settings.remoteAgent.guideAction')}
-            </Link>
+            <span>{t('settings.agentManagement.remoteAgentsDescription')}</span>
           </div>
         </div>
 
@@ -359,22 +371,43 @@ const RemoteAgentFormModal: React.FC<{
             <Input placeholder='wss://example.com/gateway' />
           </FormItem>
 
-          <FormItem label={t('settings.remoteAgent.auth_type')} field='auth_type' rules={[{ required: true }]}>
+          <FormItem label={t('settings.remoteAgent.authType')} field='auth_type' rules={[{ required: true }]}>
             <Select>
               <Select.Option value='none'>{t('settings.remoteAgent.authNone')}</Select.Option>
               <Select.Option value='bearer'>{t('settings.remoteAgent.authBearer')}</Select.Option>
+              <Select.Option value='password'>
+                {t('settings.remoteAgent.authPassword', { defaultValue: 'Password' })}
+              </Select.Option>
             </Select>
           </FormItem>
 
           <Form.Item shouldUpdate noStyle>
             {(values: Record<string, unknown>) =>
-              values.auth_type === 'bearer' ? (
+              values.auth_type === 'bearer' || values.auth_type === 'password' ? (
                 <FormItem
-                  label={t('settings.remoteAgent.auth_token')}
+                  label={t(
+                    values.auth_type === 'password'
+                      ? 'settings.remoteAgent.authPassword'
+                      : 'settings.remoteAgent.authToken'
+                  )}
                   field='auth_token'
-                  rules={[{ required: true, message: t('settings.remoteAgent.tokenRequired') }]}
+                  rules={[
+                    {
+                      required: true,
+                      message:
+                        values.auth_type === 'password'
+                          ? t('settings.remoteAgent.passwordRequired')
+                          : t('settings.remoteAgent.tokenRequired'),
+                    },
+                  ]}
                 >
-                  <Input.Password placeholder={t('settings.remoteAgent.tokenPlaceholder')} />
+                  <Input.Password
+                    placeholder={
+                      values.auth_type === 'password'
+                        ? t('settings.remoteAgent.passwordPlaceholder')
+                        : t('settings.remoteAgent.tokenPlaceholder')
+                    }
+                  />
                 </FormItem>
               ) : null
             }
@@ -384,7 +417,7 @@ const RemoteAgentFormModal: React.FC<{
             {(values: Record<string, unknown>) =>
               typeof values.url === 'string' && values.url.startsWith('wss://') ? (
                 <FormItem
-                  label={t('settings.remoteAgent.allow_insecure')}
+                  label={t('settings.remoteAgent.allowInsecure')}
                   field='allow_insecure'
                   triggerPropName='checked'
                   extra={
@@ -473,9 +506,6 @@ const RemoteAgentManagement: React.FC = () => {
           <Typography.Text type='secondary' className='text-12px leading-18px text-t-secondary'>
             {t('settings.agentManagement.remoteAgentsDescription')}
           </Typography.Text>
-          <Link className='text-12px leading-18px' onClick={openRemoteAgentGuide}>
-            {t('settings.remoteAgent.guideAction')}
-          </Link>
         </div>
         <Button
           type='outline'
@@ -546,12 +576,19 @@ const RemoteAgentManagement: React.FC = () => {
                 {agent.url}
               </Typography.Text>
 
+              {agent.protocol !== 'openclaw' && (
+                <Typography.Text type='warning' className='mb-10px block text-center text-11px'>
+                  {t('settings.remoteAgent.legacyUnsupported')}
+                </Typography.Text>
+              )}
+
               <div className='mt-auto grid grid-cols-2 gap-8px'>
                 <Button
                   size='small'
                   type='secondary'
                   icon={<Edit theme='outline' size='14' />}
                   className={remoteActionButtonClassName}
+                  disabled={agent.protocol !== 'openclaw'}
                   onClick={() => handleEdit(agent)}
                 >
                   {t('common.edit', { defaultValue: 'Edit' })}
@@ -604,18 +641,22 @@ const RemoteAgentManagement: React.FC = () => {
                 >
                   {t('settings.agentManagement.remoteOneClickSetup')}
                 </Button>
-                <Button
-                  size='small'
-                  type='text'
-                  onClick={openRemoteAgentGuide}
-                  className='!w-full !justify-center !rounded-10px !text-12px'
-                >
-                  {t('settings.agentManagement.remoteManualGuide')}
-                </Button>
               </div>
             </div>
           ))}
         </div>
+      </div>
+
+      <div className='mx-16px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-14px py-12px'>
+        <Typography.Text className='block text-12px font-medium text-t-secondary'>
+          {t('settings.remoteAgent.hermesLocalTitle', { defaultValue: 'Hermes support' })}
+        </Typography.Text>
+        <Typography.Text className='mt-4px block text-11px leading-17px text-t-tertiary'>
+          {t('settings.remoteAgent.hermesLocalHint', {
+            defaultValue:
+              'Hermes is supported locally through the standard `hermes acp` CLI. Its separate remote JSON-RPC gateway is not ACP-over-WebSocket and requires a dedicated adapter.',
+          })}
+        </Typography.Text>
       </div>
 
       <RemoteAgentFormModal

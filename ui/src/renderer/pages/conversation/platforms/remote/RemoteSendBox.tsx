@@ -6,7 +6,6 @@
 
 import { ipcBridge } from '@/common';
 import type { TMessage } from '@/common/chat/chatLib';
-import { transformMessage } from '@/common/chat/chatLib';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
 import SendBox from '@/renderer/components/chat/SendBox';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
@@ -157,35 +156,21 @@ const RemoteSendBox: React.FC<{ conversation_id: number }> = ({ conversation_id 
             setAiProcessing(true);
             aiProcessingRef.current = true;
           }
-          const transformedMessage = transformMessage(message);
-          if (transformedMessage) {
-            addOrUpdateMessage(transformedMessage);
-          }
           break;
         }
-        case 'agent_status': {
-          const transformedMessage = transformMessage(message);
-          if (transformedMessage) {
-            addOrUpdateMessage(transformedMessage);
-          }
+        default:
           break;
-        }
-        default: {
-          const transformedMessage = transformMessage(message);
-          if (transformedMessage) {
-            addOrUpdateMessage(transformedMessage);
-          }
-        }
       }
     });
-  }, [conversation_id, addOrUpdateMessage]);
+  }, [conversation_id]);
 
   useEffect(() => {
     void getConversationOrNull(conversation_id).then(async (res) => {
       if (res?.extra?.workspace) setWorkspacePath(res.extra.workspace);
-      const extra = res?.extra as { remoteAgentId?: number } | undefined;
-      if (extra?.remoteAgentId != null) {
-        const agent = await ipcBridge.remoteAgent.get.invoke({ id: extra.remoteAgentId });
+      const extra = res?.extra as { remote_agent_id?: number; remoteAgentId?: number } | undefined;
+      const remoteAgentId = extra?.remote_agent_id ?? extra?.remoteAgentId;
+      if (remoteAgentId != null) {
+        const agent = await ipcBridge.remoteAgent.get.invoke({ id: remoteAgentId });
         if (agent?.name) setAgentName(agent.name);
       }
     });

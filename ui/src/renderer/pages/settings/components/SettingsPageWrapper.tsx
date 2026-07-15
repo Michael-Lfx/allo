@@ -30,12 +30,6 @@ export function getBuiltinSettingsNavItems(
 ): NavItem[] {
   const builtinMap: Record<string, NavItem> = {
     model: { id: 'model', label: t('settings.model'), icon: <LinkCloud theme='outline' size='16' />, path: 'model' },
-    assistants: {
-      id: 'assistants',
-      label: t('settings.assistants', { defaultValue: 'Assistants' }),
-      icon: <Robot theme='outline' size='16' />,
-      path: 'assistants',
-    },
     agent: {
       id: 'agent',
       label: t('settings.agents', { defaultValue: 'Agents' }),
@@ -71,7 +65,7 @@ export function getBuiltinSettingsNavItems(
     system: { id: 'system', label: t('settings.system'), icon: <System theme='outline' size='16' />, path: 'system' },
     'agent-runtime': {
       id: 'agent-runtime',
-      label: t('settings.agentRuntime'),
+      label: t('settings.agentLimits'),
       icon: <Speed theme='outline' size='16' />,
       path: 'agent-runtime',
     },

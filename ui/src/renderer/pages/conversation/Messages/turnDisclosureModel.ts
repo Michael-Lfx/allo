@@ -73,10 +73,10 @@ const getProcessState = (entry: TurnDisclosureInputItem): TurnDisclosureProcessS
 
 const getEffectiveProcessState = (
   entry: TurnDisclosureInputItem,
-  options: { isClosed: boolean; hasFinalAssistant: boolean }
+  options: { isClosed: boolean }
 ): TurnDisclosureProcessState => {
   const state = getProcessState(entry);
-  if (options.isClosed && options.hasFinalAssistant && (state === 'running' || state === 'waiting')) {
+  if (options.isClosed && (state === 'running' || state === 'waiting')) {
     return 'completed';
   }
   return state;

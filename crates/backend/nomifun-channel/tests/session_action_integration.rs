@@ -1,15 +1,15 @@
 //! Black-box integration tests for SessionManager and ActionExecutor.
 //!
-//! Uses real SQLite (in-memory) and mock EventBroadcaster.
+//! Uses real SQLite (in-memory) and a mock owner-scoped event sink.
 //! Covers test-plan items: GS-1, GS-2, PC-1..PC-3, RU-3.
 
 use std::sync::{Arc, Mutex};
 
 use nomifun_api_types::WebSocketMessage;
 use nomifun_common::{generate_id, now_ms};
-use nomifun_db::models::{AssistantUserRow, ChannelPluginRow};
+use nomifun_db::models::{ChannelUserRow, ChannelPluginRow};
 use nomifun_db::{IChannelRepository, SqliteChannelRepository, init_database_memory};
-use nomifun_realtime::EventBroadcaster;
+use nomifun_realtime::UserEventSink;
 
 use nomifun_channel::action::{ActionExecutor, MessageResult};
 use nomifun_channel::channel_settings::ChannelSettingsService;
@@ -34,8 +34,8 @@ impl MockBroadcaster {
     }
 }
 
-impl EventBroadcaster for MockBroadcaster {
-    fn broadcast(&self, event: WebSocketMessage<serde_json::Value>) {
+impl UserEventSink for MockBroadcaster {
+    fn send_to_user(&self, _user_id: &str, event: WebSocketMessage<serde_json::Value>) {
         self.events.lock().unwrap().push(event);
     }
 }
@@ -48,19 +48,23 @@ async fn setup() -> (
 ) {
     let db = init_database_memory().await.unwrap();
     let repo: Arc<dyn IChannelRepository> = Arc::new(SqliteChannelRepository::new(db.pool().clone()));
-    let bc: Arc<dyn EventBroadcaster> = Arc::new(MockBroadcaster::new());
+    let bc: Arc<dyn UserEventSink> = Arc::new(MockBroadcaster::new());
 
     let session_mgr = SessionManager::new(repo.clone());
-    let pairing = PairingService::new(repo.clone(), bc);
-    let pairing_arc = Arc::new(PairingService::new(repo.clone(), Arc::new(MockBroadcaster::new())));
+    let pairing = PairingService::new(repo.clone(), bc, "owner-a");
+    let pairing_arc = Arc::new(PairingService::new(
+        repo.clone(),
+        Arc::new(MockBroadcaster::new()),
+        "owner-a",
+    ));
     let session_mgr_arc = Arc::new(SessionManager::new(repo.clone()));
     let pref_repo: Arc<dyn nomifun_db::IClientPreferenceRepository> =
         Arc::new(nomifun_db::SqliteClientPreferenceRepository::new(db.pool().clone()));
     let settings = Arc::new(ChannelSettingsService::new(pref_repo));
     let executor = ActionExecutor::new(pairing_arc, session_mgr_arc, settings, "gemini");
 
-    // Every test message arrives through the "tg-1" channel. assistant_sessions
-    // now has an FK channel_id → assistant_plugins(id), so the plugin row must
+    // Every test message arrives through the "tg-1" channel. channel_sessions
+    // now has an FK channel_id → channel_plugins(id), so the plugin row must
     // exist before any session is created. bot_key=None avoids the
     // UNIQUE(type, bot_key) index.
     repo.upsert_plugin(&ChannelPluginRow {
@@ -85,10 +89,10 @@ async fn setup() -> (
     (session_mgr, executor, pairing, repo)
 }
 
-/// Create an assistant_users record (required for FK on sessions).
+/// Create a channel_users record (required for FK on sessions).
 async fn create_user(repo: &Arc<dyn IChannelRepository>, platform_user_id: &str, platform_type: &str) -> String {
     let user_id = generate_id();
-    let row = AssistantUserRow {
+    let row = ChannelUserRow {
         id: user_id.clone(),
         platform_user_id: platform_user_id.to_owned(),
         platform_type: platform_type.to_owned(),

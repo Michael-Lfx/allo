@@ -19,6 +19,8 @@ const STATUS_COLOR: Record<string, string> = {
   model_unconfigured: 'orange',
 };
 
+const COMPANION_SWITCH_PROPS = { size: 'small' as const, className: 'compact-dark-switch' };
+
 interface Props {
   shared: ReturnType<typeof useCompanionShared>;
 }
@@ -79,6 +81,7 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
         <div className='flex items-center gap-8px'>
           <span className='text-13px text-t-secondary'>{t('nomi.learn.enabled')}</span>
           <Switch
+            {...COMPANION_SWITCH_PROPS}
             checked={sharedConfig.learn.enabled}
             onChange={(checked) => void patchSharedConfig({ learn: { enabled: checked } })}
           />
@@ -154,6 +157,7 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
           <div className='flex items-center gap-8px'>
             <span className='text-13px text-t-secondary'>{t('nomi.evolve.enabled', { defaultValue: '开启技能进化' })}</span>
             <Switch
+              {...COMPANION_SWITCH_PROPS}
               checked={sharedConfig.evolve.enabled}
               onChange={(checked) => void patchSharedConfig({ evolve: { enabled: checked } })}
             />
@@ -161,6 +165,7 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
           <div className='flex items-center gap-8px'>
             <span className='text-13px text-t-secondary'>{t('nomi.evolve.reflect', { defaultValue: '任务后反思' })}</span>
             <Switch
+              {...COMPANION_SWITCH_PROPS}
               checked={sharedConfig.evolve.reflect_enabled}
               onChange={(checked) => void patchSharedConfig({ evolve: { reflect_enabled: checked } })}
             />
@@ -171,6 +176,7 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
           <div className='flex items-center gap-8px'>
             <span className='text-13px text-t-secondary'>{t('nomi.evolve.autoActivate', { defaultValue: '高置信自动生效' })}</span>
             <Switch
+              {...COMPANION_SWITCH_PROPS}
               checked={sharedConfig.evolve.auto_activate}
               onChange={(checked) => void patchSharedConfig({ evolve: { auto_activate: checked } })}
             />
@@ -212,6 +218,7 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
           <div className='flex items-center gap-8px'>
             <span className='text-13px text-t-secondary'>{t('nomi.archive.enabled')}</span>
             <Switch
+              {...COMPANION_SWITCH_PROPS}
               checked={sharedConfig.archive?.enabled ?? false}
               onChange={(checked) => void patchSharedConfig({ archive: { enabled: checked } })}
             />
@@ -230,18 +237,19 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
         </div>
       </div>
 
-      {/* Smart orchestration — companion delegates complex tasks to isolated sub-agents. */}
+      {/* Smart collaboration lets a companion delegate complex work to isolated collaborators. */}
       <div className='flex items-start gap-16px bg-fill-2 rd-10px px-14px py-12px'>
         <div className='w-200px shrink-0'>
-          <div className='text-14px text-t-primary font-500'>{t('nomi.orchestration.title')}</div>
-          <div className='text-12px text-t-tertiary mt-2px'>{t('nomi.orchestration.hint')}</div>
+          <div className='text-14px text-t-primary font-500'>{t('nomi.collaboration.title')}</div>
+          <div className='text-12px text-t-tertiary mt-2px'>{t('nomi.collaboration.hint')}</div>
         </div>
         <div className='flex-1 min-w-0 flex flex-col gap-10px'>
           <div className='flex items-center gap-8px'>
-            <span className='text-13px text-t-secondary'>{t('nomi.orchestration.enabled')}</span>
+            <span className='text-13px text-t-secondary'>{t('nomi.collaboration.enabled')}</span>
             <Switch
-              checked={sharedConfig.smart_orchestration ?? false}
-              onChange={(checked) => void patchSharedConfig({ smart_orchestration: checked })}
+              {...COMPANION_SWITCH_PROPS}
+              checked={sharedConfig.smart_collaboration ?? false}
+              onChange={(checked) => void patchSharedConfig({ smart_collaboration: checked })}
             />
           </div>
         </div>

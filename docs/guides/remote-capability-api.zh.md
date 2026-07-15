@@ -1,6 +1,6 @@
 # Remote 能力 API（外部伙伴 / MCP 接入指南）
 
-Flowy 把整个平台的能力（agent / browser / computer / 知识库 / 文件 / 以及平台控制）通过一个**网络可达、伙伴访问令牌鉴权的 MCP 端点**暴露出来。任何 MCP 客户端（Claude Code、Cursor、自研 LLM agent）填一个 URL + 一枚访问令牌，就能像"桌面伙伴"一样驱动平台——这就是"**外部伙伴**"。每枚令牌**绑定到一个具体伙伴**：持令牌调用即以该伙伴的身份运行，继承它的 profile 模型 / 人格 / 知识库，互不串扰。
+Flowy 把适合远程使用的平台能力（browser / computer / 知识库 / 文件 / 会话及平台控制）通过一个**网络可达、伙伴访问令牌鉴权的 MCP 与 REST 入口**暴露出来。任何 MCP 客户端（Claude Code、Cursor、自研 LLM agent）填一个 URL + 一枚访问令牌，就能以"**外部伙伴**"身份调用这些能力。每枚令牌**绑定到一个具体伙伴**：持令牌调用即以该伙伴的身份运行，继承它的 profile 模型 / 人格 / 知识库，互不串扰。
 
 > 📋 **可复制的对接示例**（MCP 客户端 / curl / Python / CLI / 自动化 / OpenAPI codegen / LLM 框架）见 **`remote-capability-api-examples.zh.md`**。
 
@@ -34,7 +34,7 @@ Flowy 把整个平台的能力（agent / browser / computer / 知识库 / 文件
 # 铸造（返回明文一次，并绑定到该伙伴）
 curl -X POST http://127.0.0.1:<loopback-port>/api/webui/companions/<companion-id>/access-token
 # => {"success":true,"data":{"token":"<64位hex令牌>","companion_id":"<companion-id>"}}
-#    若该伙伴尚无可用模型，data 还会带 "warning":"…"（令牌照常铸造，但 nomi_agent_run 等
+#    若该伙伴尚无可用模型，data 还会带 "warning":"…"（令牌照常铸造，但
 #    需要模型的能力会失败，先去「模型管理」配置）
 
 # 查询是否已配置（不返回令牌）
@@ -93,14 +93,23 @@ NOMIFUN_COMPANION_TOKEN="$(openssl rand -hex 32)" \
 
 平台能力通过同一条能力总线（`nomifun-gateway` 的 Capability Registry）暴露到 MCP/HTTP/CLI/Skill 等外部面。新增能力时，应同时评估它是否适合 Remote surface、是否需要确认，以及是否应进入 `/mcp-agent` 精简集。
 
-调用方**以令牌所绑定的伙伴身份运行**：继承该伙伴的 profile 模型、人格与知识库，伙伴之间彼此隔离。因此 `nomi_agent_run` 在不显式指定 `model` 时，会解析所绑定伙伴的 profile 模型——**该伙伴必须配置好可用模型**（否则铸造时会返回 `warning`，且需要模型的能力会失败）。
+调用方**以令牌所绑定的伙伴身份运行**：继承该伙伴的 profile 模型、人格与知识库，伙伴之间彼此隔离。需要模型的 Remote 能力会按其参数契约使用该伙伴的 profile 模型，因此使用这类能力前应先配置可用模型；否则铸造令牌时会返回 `warning`，相应调用也会失败。
+
+## Agent 协作边界
+
+单 Agent 与多 Agent 协作共用一套持久化执行契约：
+
+- `nomi_delegate`：根据目标或显式步骤创建 Agent execution；
+- `nomi_execution_get`：读取计划、attempt、结果与当前状态；
+- `nomi_execution_update`：承载计划调整和全部生命周期操作。
+
+三项工具是否可见取决于调用权限，而不是传输 surface。Desktop 与 Channel 调用从当前 Conversation 及其 execution link 解析权限；安装所有者绑定的伙伴令牌也可通过 Remote MCP/REST 使用三项工具：`nomi_delegate` 会把该伙伴记录为不可变的创建者，后续读取和修改只能访问这个伙伴创建的 execution。任何 surface 上的次级用户都看不到三项工具。伙伴令牌等价于委派安装所有者的高权限，只能由可信本地所有者上下文铸造；Remote 客户端应以 `/v1/tools` 的实际发现结果为准，并按高权限凭据保护令牌。
 
 ## 当前可用面
 
-- ✅ **MCP**：`/mcp`（全量 ~140 工具）+ `/mcp-agent`（curated 干活子集）。
-- ✅ **委派目标**：`nomi_agent_run(goal,workspace?,model?,timeout_secs?)` 一句话把任务交给一个自治 nomi agent，跑完返回终稿；长任务返回 `{status:running}` 句柄，用 `nomi_agent_result(conversation_id)` 轮询。
+- ✅ **MCP**：`/mcp`（完整 Remote 工具面）+ `/mcp-agent`（curated 干活子集）。
 - ✅ **HTTP REST**：`POST /v1/tools/{name}`、`GET /v1/tools[?profile=agent]`、`GET /v1/openapi.json[?profile=agent]`（OpenAPI 3.1，同令牌）。
-- ✅ **CLI**：`nomicore tools`（离线列能力）、`nomicore call <name> [json]`、`nomicore agent "<目标>"`（读 `NOMIFUN_URL`/`NOMIFUN_COMPANION_TOKEN` 或 `--url`/`--token`）。
+- ✅ **CLI**：`nomicore tools`（列 Remote 能力）、`nomicore call <name> [json]`（读 `NOMIFUN_URL`/`NOMIFUN_COMPANION_TOKEN` 或 `--url`/`--token`）。
 - ✅ **Skill**：`docs/skills/drive-nomifun/SKILL.md` —— 教外部 agent 如何连上并驱动 Flowy（可发布到技能市场）。
 - ✅ **Computer**：桌面版（`computer-use` 构建）暴露 `nomi_computer_*`（snapshot/click/type/key/scroll/launch/screenshot/…），外部调用方可驱动桌面（headless/web 构建不含）。
-- ✅ **流式**：`POST /v1/tools/{name}/stream`（SSE）—— 流式工具（如 `nomi_agent_run`）实时吐 `{type:..}` delta，末帧 `{type:"__result__"}` 带终值；非流式工具仅末帧。`nomi_agent_run` 已流式（订阅 agent 广播逐条转发）。
+- ✅ **流式**：`POST /v1/tools/{name}/stream`（SSE）——支持进度的工具会实时发送 `{type:..}` delta，末帧 `{type:"__result__"}` 携带终值；非流式工具只发送末帧。

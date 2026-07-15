@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
 import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
 import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
+import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import MessageFileChanges from '../MessageFileChanges';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
@@ -171,7 +172,8 @@ const EditConfirmationDiff: React.FC<{ diff: string; file_name: string; title: s
 const ConfirmationDetails: React.FC<{
   content: IMessageToolGroupProps['message']['content'][number];
   onConfirm: (outcome: ToolConfirmationOutcome) => void;
-}> = ({ content, onConfirm }) => {
+  readOnly?: boolean;
+}> = ({ content, onConfirm, readOnly }) => {
   const { t } = useTranslation();
   const { confirmationDetails } = content;
   if (!confirmationDetails) return;
@@ -214,7 +216,7 @@ const ConfirmationDetails: React.FC<{
       ) : (
         node
       )}
-      {content.status === 'Confirming' && (
+      {!readOnly && content.status === 'Confirming' && (
         <>
           <div className='mt-10px text-t-primary'>{question}</div>
           <Radio.Group direction='vertical' size='mini' value={selected} onChange={setSelected}>
@@ -580,6 +582,7 @@ const ToolResultDisplay: React.FC<{
 
 const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
   const { t } = useTranslation();
+  const readOnly = useConversationContextSafe()?.readOnly === true;
   const toolContent = Array.isArray(message.content) ? message.content : [];
 
   // 收集所有 WriteFile 结果用于汇总显示 / Collect all WriteFile results for summary display
@@ -627,7 +630,9 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
             <ConfirmationDetails
               key={callIdText}
               content={content}
+              readOnly={readOnly}
               onConfirm={(outcome) => {
+                if (readOnly) return;
                 ipcBridge.conversation.confirmMessage
                   .invoke({
                     confirm_key: outcome,

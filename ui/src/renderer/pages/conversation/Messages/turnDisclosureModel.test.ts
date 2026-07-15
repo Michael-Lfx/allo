@@ -217,7 +217,7 @@ describe('buildTurnDisclosureItems', () => {
         item('tool', 'process', { createdAt: 2000, processState: 'completed' }),
         item('final', 'assistant', { createdAt: 3000 }),
       ],
-      { tailClosed: true }
+      { tailClosed: true },
     );
 
     const disclosure = result.find((entry) => entry.type === 'turn_disclosure');
@@ -228,6 +228,23 @@ describe('buildTurnDisclosureItems', () => {
       thinking: 'completed',
       tool: 'completed',
     });
+  });
+
+  test('settles stale running thinking when a process-only turn closes', () => {
+    const result = buildTurnDisclosureItems(
+      [
+        item('user', 'user', { createdAt: 1000 }),
+        item('thinking', 'process_content', { createdAt: 2000, processState: 'running' }),
+      ],
+      { tailClosed: true }
+    );
+
+    const disclosure = result[1];
+    expect(disclosure.type).toBe('turn_disclosure');
+    if (disclosure.type !== 'turn_disclosure') return;
+    expect(disclosure.state).toBe('completed');
+    expect(disclosure.running).toBe(false);
+    expect(disclosure.processItemStates).toEqual({ thinking: 'completed' });
   });
 
   test('keeps running assistant text visible after the live disclosure', () => {
@@ -291,7 +308,7 @@ describe('buildTurnDisclosureItems', () => {
 
   test('keeps the live turn banner running after intermediate tool failures', () => {
     // While the turn is still open, intermediate Browser/Bash errors must not
-    // flip the banner to 「处理失败」— only the closed turn may show failure.
+    // flip the banner to ??????? only the closed turn may show failure.
     const result = buildTurnDisclosureItems([
       item('user', 'user', { createdAt: 1000 }),
       item('tool', 'process', { createdAt: 2000, processState: 'failed' }),

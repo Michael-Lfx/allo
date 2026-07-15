@@ -16,7 +16,6 @@ import {
   ChartPie,
   CloudStorage,
   Puzzle,
-  Robot,
   Speed,
   System,
 } from '@icon-park/react';
@@ -87,12 +86,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     // Build builtin items
     const builtinMap: Record<string, SiderItem> = {
       model: { id: 'model', label: t('settings.model'), icon: <LinkCloud />, path: 'model' },
-      assistants: {
-        id: 'assistants',
-        label: t('settings.assistants', { defaultValue: 'Assistants' }),
-        icon: <Robot />,
-        path: 'assistants',
-      },
       agent: {
         id: 'agent',
         label: t('settings.agents', { defaultValue: 'Agents' }),
@@ -108,7 +101,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
       system: { id: 'system', label: t('settings.system'), icon: <System />, path: 'system' },
       'agent-runtime': {
         id: 'agent-runtime',
-        label: t('settings.agentRuntime'),
+        label: t('settings.agentLimits'),
         icon: <Speed />,
         path: 'agent-runtime',
       },

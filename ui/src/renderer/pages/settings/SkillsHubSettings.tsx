@@ -1,12 +1,12 @@
 /**
  * SkillsHubSettings — The Skills Hub page. Every skill (built-in, custom,
  * extension, auto-injected) lives in ONE responsive card grid, filtered by a
- * shared two-row tag bar (Audience / Skill Scenario) over the assistant tag
+ * shared two-row tag bar (Audience / Skill Scenario) over the preset tag
  * vocabulary. Cards open a SkillTagModal to assign tags; the "Manage Tags" chip
  * opens the shared TagManagementModal for vocabulary CRUD.
  *
- * Visual language mirrors the assistant page: a soft fill-2 panel, an
- * AssistantTagFilterBar, and AssistantCard-style grid items (see SkillCard).
+ * Visual language mirrors the preset page: a soft fill-2 panel, an
+ * PresetTagFilterBar, and PresetCard-style grid items (see SkillCard).
  * Theme variables only; `<div onClick>`/Arco controls (no <button>).
  *
  * `withWrapper` is preserved for the legacy CapabilitiesSettings embed.
@@ -16,15 +16,16 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { resolveLocaleKey } from '@/common/utils';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-// Shared tag UI + vocabulary — reused verbatim from the assistant page so the
-// skill and assistant surfaces share one chip language and one tag vocabulary.
-import { useAssistantTags } from '@/renderer/hooks/assistant';
-import AssistantTagFilterBar from './AssistantSettings/AssistantTagFilterBar';
-import TagManagementModal from './AssistantSettings/TagManagementModal';
-import type { SkillInfo } from './AssistantSettings/types';
+// Shared tag UI + vocabulary — reused verbatim from the preset page so the
+// skill and preset surfaces share one chip language and one tag vocabulary.
+import { usePresetTags } from '@/renderer/hooks/preset';
+import PresetTagFilterBar from './PresetSettings/PresetTagFilterBar';
+import TagManagementModal from './PresetSettings/TagManagementModal';
+import type { SkillInfo } from './PresetSettings/types';
 import AgentSkillImportDrawer from './skill/AgentSkillImportDrawer';
 import type { ExternalAgentSkillSource } from './skill/agentSkillImportUtils';
 import SkillCard from './skill/SkillCard';
+import SkillDetailDrawer from './skill/SkillDetailDrawer';
 import SkillTagModal from './skill/SkillTagModal';
 import { filterSkillsByTags, type SkillTagFilterState } from './skill/skillFilter';
 import { Button, Input, Modal } from '@arco-design/web-react';
@@ -36,12 +37,14 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 /**
  * 卡片网格按「内容容器实际宽度」自动定列(auto-fill),而非视口断点 —— 设置内容
- * 面板被一级 rail + 二级 ContentSider 占去宽度。镜像 AssistantListPanel 的常量。
+ * 面板被一级 rail + 二级 ContentSider 占去宽度。镜像 PresetListPanel 的常量。
  * Card grid auto-fits columns to the actual container width (not viewport
- * breakpoints); copied from AssistantListPanel so both surfaces sit on the same
+ * breakpoints); copied from PresetListPanel so both surfaces sit on the same
  * 232px lower bound.
  */
 const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))';
+const IMPORT_ACTION_BUTTON_CLASS =
+  '!rounded-[100px] !h-34px !px-14px !text-t-primary flex items-center gap-6px';
 
 interface SkillsHubSettingsProps {
   /** When false, renders without SettingsPageWrapper — useful for embedding in a tab */
@@ -70,10 +73,11 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
   const [tagFilter, setTagFilter] = useState<SkillTagFilterState>({ audience: [], scenario: [] });
   const [agentImportVisible, setAgentImportVisible] = useState(false);
 
-  // Shared assistant tag vocabulary.
-  const tags = useAssistantTags();
+  // Shared preset tag vocabulary.
+  const tags = usePresetTags();
   const [tagMgmtVisible, setTagMgmtVisible] = useState(false);
   const [tagModalSkill, setTagModalSkill] = useState<SkillInfo | null>(null);
+  const [detailSkill, setDetailSkill] = useState<SkillInfo | null>(null);
 
   // Name set of built-in auto-inject skills → drives the "Auto" badge.
   const autoInjectedNames = useMemo(
@@ -110,7 +114,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
 
   // Self-heal the tag filter against the current vocabulary: dropping a tag in
   // the management modal must not leave a stale key invisibly constraining a
-  // facet. Mirrors AssistantListPanel's guard.
+  // facet. Mirrors PresetListPanel's guard.
   useEffect(() => {
     const audKeys = new Set(tags.audienceTags.map((tag) => tag.key));
     const scnKeys = new Set(tags.scenarioTags.map((tag) => tag.key));
@@ -249,7 +253,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
                 <p className='mt-8px mb-0 max-w-[680px] text-14px text-t-secondary leading-relaxed'>
                   {t('settings.skillsHub.gridDescription', {
                     defaultValue:
-                      'Reusable skill packages your assistants can call on. Tag them so they surface under the right filters.',
+                      'Reusable skill packages your presets can call on. Tag them so they surface under the right filters.',
                   })}
                 </p>
               </div>
@@ -286,7 +290,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
                 <Button
                   size='small'
                   data-testid='btn-import-agent-skills'
-                  className='!rounded-[100px] !h-34px !px-14px !text-t-primary'
+                  className={IMPORT_ACTION_BUTTON_CLASS}
                   icon={<FolderOpen size={14} fill='currentColor' />}
                   onClick={() => setAgentImportVisible(true)}
                 >
@@ -295,7 +299,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
                 <Button
                   size='small'
                   data-testid='btn-manual-import'
-                  className='!rounded-[100px] !h-34px !px-14px !text-t-primary'
+                  className={IMPORT_ACTION_BUTTON_CLASS}
                   icon={<FolderOpen size={14} fill='currentColor' />}
                   onClick={handleImportFolder}
                 >
@@ -304,7 +308,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
                 <Button
                   size='small'
                   data-testid='btn-import-zip'
-                  className='!rounded-[100px] !h-34px !px-14px !text-t-primary'
+                  className={IMPORT_ACTION_BUTTON_CLASS}
                   icon={<FileZip size={14} fill='currentColor' />}
                   onClick={handleImportZip}
                 >
@@ -326,8 +330,8 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
               />
             )}
 
-            {/* Shared tag filter bar — vocab from useAssistantTags */}
-            <AssistantTagFilterBar
+            {/* Shared tag filter bar — vocab from usePresetTags */}
+            <PresetTagFilterBar
               audienceTags={tags.audienceTags}
               scenarioTags={tags.scenarioTags}
               value={tagFilter}
@@ -347,6 +351,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
                   tagByKey={tags.tagByKey}
                   localeKey={localeKey}
                   isAutoInjected={skill.source !== 'extension' && autoInjectedNames.has(skill.name)}
+                  onOpenDetails={setDetailSkill}
                   onEditTags={setTagModalSkill}
                   onDelete={confirmDelete}
                   highlighted={highlightedSkill === skill.name}
@@ -389,6 +394,23 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({ withWrapper = tru
           </div>
         </div>
       </div>
+
+      <SkillDetailDrawer
+        visible={detailSkill !== null}
+        skill={detailSkill}
+        tagByKey={tags.tagByKey}
+        localeKey={localeKey}
+        isAutoInjected={
+          detailSkill !== null &&
+          detailSkill.source !== 'extension' &&
+          autoInjectedNames.has(detailSkill.name)
+        }
+        onClose={() => setDetailSkill(null)}
+        onEditTags={(skill) => {
+          setDetailSkill(null);
+          setTagModalSkill(skill);
+        }}
+      />
 
       <SkillTagModal
         visible={tagModalSkill !== null}

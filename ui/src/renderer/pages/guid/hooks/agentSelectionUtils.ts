@@ -1,13 +1,11 @@
-/**
+﻿/**
  * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
+ * Copyright 2025-2026 NomiFun (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 
 import { configService } from '@/common/config/configService';
-import type { Assistant } from '@/common/types/agent/assistantTypes';
 import type { AgentSource } from '@/renderer/utils/model/agentTypes';
-import type { AvailableAgent } from '../types';
 
 /** Save preferred mode to the agent's own config key */
 export async function savePreferredMode(agentKey: string, mode: string): Promise<void> {
@@ -49,12 +47,12 @@ export async function saveNomiDefaultModel(provider_id: string, use_model: strin
  * Get agent key for selection.
  *
  * Rows that are row-scoped (custom ACP / remote agents) use `agent.id` directly
- * as the key — no namespace prefix. Builtin / internal agents keep `backend` or
+ * as the key ? no namespace prefix. Builtin / internal agents keep `backend` or
  * `agent_type` as the key since there is only one row per type.
  *
- * Note: preset *assistants* (not agents) still use a `custom:<assistantId>`
- * form produced inline by `AssistantSelectionArea`. That is a separate
- * selection path that points at the backend-merged assistant catalog, not
+ * Note: preset *presets* (not agents) still use a `preset:<presetId>`
+ * form produced inline by `PresetSelectionArea`. That is a separate
+ * selection path that points at the backend-merged preset catalog, not
  * `AgentRegistry`.
  */
 export const getAgentKey = (agent: {
@@ -69,33 +67,20 @@ export const getAgentKey = (agent: {
   return agent.backend || agent.agent_type;
 };
 
-/** Parse `custom:<assistantId>` selection keys from the Guid agent picker. */
-export const parseCustomAssistantId = (agentKey: string): string | null => {
-  if (!agentKey.startsWith('custom:')) return null;
-  const assistantId = agentKey.slice('custom:'.length);
-  return assistantId || null;
+/** Parse `preset:<presetId>` selection keys from the Guid agent picker. */
+export const parsePresetSelectionId = (agentKey: string): string | null => {
+  if (!agentKey.startsWith('preset:')) return null;
+  const presetId = agentKey.slice('preset:'.length);
+  return presetId || null;
 };
 
-/** Match assistant catalog ids, including builtin- alias normalization. */
-export const assistantIdMatches = (recordId: string, targetId: string): boolean => {
+/** Match preset catalog ids, including builtin- alias normalization. */
+export const presetIdMatches = (recordId: string, targetId: string): boolean => {
   const stripped = targetId.replace(/^builtin-/, '');
   const candidates = new Set([targetId, `builtin-${stripped}`, stripped]);
   return candidates.has(recordId);
 };
 
-/** Resolve an assistant row from the catalog using id alias normalization. */
-export const findAssistantById = <T extends { id: string }>(assistants: T[], targetId: string): T | undefined =>
-  assistants.find((item) => assistantIdMatches(item.id, targetId));
-
-/** Map a catalog assistant row into the Guid preset `AvailableAgent` shape. */
-export const toPresetAvailableAgent = (assistant: Assistant): AvailableAgent => ({
-  agent_type: assistant.preset_agent_type || 'gemini',
-  backend: assistant.preset_agent_type || 'gemini',
-  name: assistant.name,
-  id: assistant.id,
-  custom_agent_id: assistant.id,
-  is_preset: true,
-  context: '',
-  avatar: assistant.avatar,
-  presetAgentType: assistant.preset_agent_type,
-});
+/** Resolve a preset row from the catalog using id alias normalization. */
+export const findPresetById = <T extends { id: string }>(presets: T[], targetId: string): T | undefined =>
+  presets.find((item) => presetIdMatches(item.id, targetId));

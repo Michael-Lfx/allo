@@ -2,10 +2,11 @@
 
 Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态、一份前端**。无论你启动桌面产品 **Flowy**，还是自托管 Web 服务器，同一个 `axum` HTTP/WS 服务器（`nomifun-app`，二进制 `nomicore`）都在宿主进程中执行。`ui/` 下的 React 19 SPA 是唯一客户端，它始终通过普通的 HTTP 与 WebSocket 通信 —— 没有 Electron preload，也没有 Tauri 自定义协议。
 
-本文档是这张地图的总图。配套的四篇文档分别深入介绍各个部分：
+本文档是这张地图的总图。配套文档分别深入介绍各个部分：
 
-- [`backend-crates.md`](backend-crates.zh.md) —— 29 个 `nomifun-*` crate。
+- [`backend-crates.md`](backend-crates.zh.md) —— 32 个 `nomifun-*` crate。
 - [`agent-engine.md`](agent-engine.zh.md) —— 15 个 `nomi-*` crate（AI 引擎）。
+- [`agent-execution.zh.md`](agent-execution.zh.md) —— 统一的持久化 AgentExecution 模型。
 - [`frontend.md`](frontend.zh.md) —— React SPA、适配层、路由。
 - [`communication.md`](communication.zh.md) —— HTTP / WebSocket / Tauri IPC / ACP / MCP。
 - [`data-and-storage.md`](data-and-storage.zh.md) —— SQLite、工作区、运行时。
@@ -38,12 +39,12 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
                         │  nomifun-app  (binary nomicore)     │
                         │  composition root · axum router     │
                         │  bootstrap → data layer → services  │
-                        │  /api · /ws · Routes from 29 crates │
+                        │  /api · /ws · Routes from 32 crates │
                         └─────────────────────────────────────┘
                           │                       │
                           ▼                       ▼
               ┌─────────────────────┐   ┌─────────────────────┐
-              │  nomifun-* (29)     │   │  nomi-* (15)         │
+              │  nomifun-* (32)     │   │  nomi-* (15)         │
               │  backend crates     │◀─▶│  agent engine crates │
               │  data, auth, MCP,   │   │  via the SEAM:       │
               │  conversation, etc. │   │  nomifun-ai-agent     │
@@ -76,8 +77,8 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
    persists the message, looks up the conversation's bound agent
 5. Agent seam
    crates/backend/nomifun-ai-agent  — the only backend crate that sees nomi-*
-   AgentRegistry / WorkerTaskManager dispatches to the right agent kind
-6. Agent run
+   AgentRegistry 解析 Agent 类型；AgentRuntimeRegistry 复用该 Conversation 的 runtime
+6. Agent turn
    nomi-agent  drives the engine: providers (anthropic/openai/bedrock/vertex),
    tools (bash/read/write/...), MCP servers, skills, plan/confirm/output sinks
    For ACP-protocol agents (Claude Code, Codex, Gemini CLI, ...), the backend
@@ -95,8 +96,8 @@ Cargo 工作区（根 [`Cargo.toml`](../../Cargo.toml)，`resolver = "3"`，`edi
 | 目录 | 用途 | Crate 前缀 | 数量 |
 | --- | --- | --- | --- |
 | `crates/agent/` | AI 引擎 —— providers、tools、sessions、MCP、skills、browser/computer-use | `nomi-*` | 15 |
-| `crates/backend/` | HTTP/WS 服务器、数据、认证、各项功能 | `nomifun-*` | 29 |
-| `crates/shared/` | 真正跨层共享工具 | mixed | 2 |
+| `crates/backend/` | HTTP/WS 服务器、数据、认证、各项功能 | `nomifun-*` | 32 |
+| `crates/shared/` | 真正跨层共享工具 | mixed | 3 |
 
 agent 分组是**基本自包含的** —— `nomi-*` crate 不引用 `nomifun-*` crate、工作区根目录或 Tauri / sqlx / axum 等后端框架。反向依赖默认通过 `nomifun-ai-agent` 这条接缝汇集，它再导出 `nomi_config`、`nomi_types` 和 `RequirementSink`。当前 `nomifun-app` 与 `nomifun-gateway` 为 browser/computer-use bridge 存在 feature-gated 直接依赖例外；新增例外必须有明确 feature gate 和文档说明。
 
@@ -109,8 +110,8 @@ nomifun-tauri/
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
 │   ├─ agent/     15 nomi-*  crates  → see agent-engine.md
-│   ├─ backend/   29 nomifun-* crates → see backend-crates.md
-│   └─ shared/    2 shared crates
+│   ├─ backend/   32 nomifun-* crates → see backend-crates.md
+│   └─ shared/    3 shared crates
 ├─ ui/            React 19 + Vite 6 + Arco + UnoCSS  → see frontend.md
 └─ docs/
     ├─ architecture/   (this folder)

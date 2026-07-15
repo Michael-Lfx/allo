@@ -1,5 +1,5 @@
 /**
- * SkillCard — A grid item for the Skills Hub. Mirrors the AssistantCard visual
+ * SkillCard — A grid item for the Skills Hub. Mirrors the PresetCard visual
  * language (rounded-16px bordered surface on bg-2, soft hover lift, fixed 2-line
  * description clamp, resolved tag-chip row capped at MAX_VISIBLE_TAGS + "+N", and
  * a hover-revealed action footer) but is tuned for skills:
@@ -8,13 +8,14 @@
  *   - a source badge: Built-in / Custom / Extension / Auto-injected
  *   - NO enable switch (skills aren't toggled here)
  *   - hover footer: Edit Tags (every source) + Delete (custom only)
- * The whole card is clickable → onEditTags.
+ * The whole card is clickable → onOpenDetails. Tag editing stays an explicit
+ * footer action so inspecting a skill never mutates its organization.
  *
  * Theme variables only (the avatar hex palette is the documented exception);
  * `<div onClick>` for clickables (no <button>, to dodge the WebView2 black box).
  */
-import type { AssistantTag } from '@/common/types/agent/assistantTypes';
-import type { SkillInfo } from '@/renderer/pages/settings/AssistantSettings/types';
+import type { PresetTag } from '@/common/types/agent/presetTypes';
+import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
 import { resolveSkillDisplay } from './skillDisplay';
 import { getAvatarColorClass, normalizeTestId } from './skillPresentation';
 import { Tag } from '@arco-design/web-react';
@@ -24,11 +25,12 @@ import { useTranslation } from 'react-i18next';
 
 type SkillCardProps = {
   skill: SkillInfo;
-  /** Shared assistant tag vocabulary, for resolving tag keys → labels. */
-  tagByKey: Map<string, AssistantTag>;
+  /** Shared preset tag vocabulary, for resolving tag keys → labels. */
+  tagByKey: Map<string, PresetTag>;
   localeKey: string;
   /** True when the skill name is in the built-in auto-inject set (parent-supplied). */
   isAutoInjected: boolean;
+  onOpenDetails: (skill: SkillInfo) => void;
   onEditTags: (skill: SkillInfo) => void;
   onDelete: (skill: SkillInfo) => void;
   highlighted?: boolean;
@@ -90,6 +92,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
   tagByKey,
   localeKey,
   isAutoInjected,
+  onOpenDetails,
   onEditTags,
   onDelete,
   highlighted = false,
@@ -102,7 +105,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
   // Resolve tag keys → labels via the shared vocabulary; drop unknown keys.
   const resolvedTags = [...(skill.audience_tags ?? []), ...(skill.scenario_tags ?? [])]
     .map((key) => tagByKey.get(key))
-    .filter((tag): tag is AssistantTag => Boolean(tag));
+    .filter((tag): tag is PresetTag => Boolean(tag));
   const visibleTags = resolvedTags.slice(0, MAX_VISIBLE_TAGS);
   const overflowCount = resolvedTags.length - visibleTags.length;
 
@@ -112,17 +115,17 @@ const SkillCard: React.FC<SkillCardProps> = ({
     <div
       ref={cardRef}
       data-testid={`skill-card-${testId}`}
-      onClick={() => onEditTags(skill)}
+      onClick={() => onOpenDetails(skill)}
       role='button'
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onEditTags(skill);
+          onOpenDetails(skill);
         }
       }}
       className={[
-        'group relative flex flex-col rounded-16px border border-solid p-14px cursor-pointer outline-none',
+        'group relative flex flex-col rounded-16px border border-solid p-14px pb-42px cursor-pointer outline-none',
         'transition-all duration-180',
         highlighted
           ? 'border-[rgb(var(--primary-5))] bg-[var(--color-primary-light-1)] shadow-[0_0_0_3px_rgba(var(--primary-6),0.12)]'
@@ -193,7 +196,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
 
       {/* Hover footer — quiet action links, revealed on card hover */}
       <div
-        className='mt-12px pt-10px flex items-center justify-end gap-14px border-t border-solid border-[var(--color-border-1)] opacity-0 group-hover:opacity-100 transition-opacity duration-180'
+        className='absolute bottom-14px right-14px flex items-center justify-end gap-14px opacity-0 group-hover:opacity-100 transition-opacity duration-180'
         onClick={(e) => e.stopPropagation()}
       >
         {canDelete && (
@@ -205,6 +208,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
+                e.stopPropagation();
                 onDelete(skill);
               }
             }}
@@ -222,13 +226,14 @@ const SkillCard: React.FC<SkillCardProps> = ({
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
+              e.stopPropagation();
               onEditTags(skill);
             }
           }}
-          className='inline-flex items-center gap-4px text-12px text-[rgb(var(--primary-6))] cursor-pointer hover:text-[rgb(var(--primary-7))] transition-colors'
+          className='inline-flex items-center gap-4px text-12px leading-none text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-2)] transition-colors'
         >
-          <SettingOne theme='outline' size={13} strokeWidth={3} />
-          {t('settings.skillsHub.editTags', { defaultValue: 'Edit Tags' })}
+          <SettingOne theme='outline' size={13} strokeWidth={3} fill='currentColor' className='relative top-px shrink-0' />
+          <span className='leading-none'>{t('settings.skillsHub.editTags', { defaultValue: 'Edit Tags' })}</span>
         </span>
       </div>
     </div>

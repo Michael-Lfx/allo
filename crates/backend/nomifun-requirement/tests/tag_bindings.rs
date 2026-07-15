@@ -8,13 +8,18 @@ use nomifun_db::{
     CreateTerminalParams, IConversationRepository, IRequirementRepository, ITerminalRepository,
     SqliteConversationRepository, SqliteRequirementRepository, SqliteTerminalRepository, init_database_memory,
 };
-use nomifun_realtime::EventBroadcaster;
+use nomifun_realtime::UserEventSink;
 use nomifun_requirement::{RequirementEventEmitter, RequirementService};
 
 #[derive(Default)]
 struct NoopBroadcaster;
-impl EventBroadcaster for NoopBroadcaster {
-    fn broadcast(&self, _event: nomifun_api_types::WebSocketMessage<serde_json::Value>) {}
+impl UserEventSink for NoopBroadcaster {
+    fn send_to_user(
+        &self,
+        _user_id: &str,
+        _event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
+    ) {
+    }
 }
 
 fn conv(id: i64, name: &str, autowork_json: &str) -> ConversationRow {
@@ -24,6 +29,10 @@ fn conv(id: i64, name: &str, autowork_json: &str) -> ConversationRow {
         name: name.into(),
         r#type: "nomi".into(),
         extra: autowork_json.into(),
+        delegation_policy: "automatic".into(),
+        execution_model_pool: None,
+        decision_policy: "automatic".into(),
+        execution_template_id: None,
         model: None,
         status: Some("pending".into()),
         source: None,
@@ -31,6 +40,9 @@ fn conv(id: i64, name: &str, autowork_json: &str) -> ConversationRow {
         pinned: false,
         pinned_at: None,
         cron_job_id: None,
+        preset_id: None,
+        preset_revision: None,
+        preset_snapshot: None,
         created_at: 0,
         updated_at: 0,
     }
@@ -94,7 +106,13 @@ async fn groups_enabled_conversation_and_terminal_bindings_by_tag() {
         .await
         .unwrap();
 
-    let svc = RequirementService::new(req_repo, RequirementEventEmitter::new(Arc::new(NoopBroadcaster)))
+    let svc = RequirementService::new(
+        req_repo,
+        RequirementEventEmitter::new(
+            Arc::new(NoopBroadcaster),
+            Arc::from("system_default_user"),
+        ),
+    )
         .with_conversation_repo(conv_repo)
         .with_terminal_repo(term_repo);
     Box::leak(Box::new(db));
@@ -113,7 +131,7 @@ async fn groups_enabled_conversation_and_terminal_bindings_by_tag() {
     assert_eq!(y.bindings.len(), 1);
     assert_eq!(y.bindings[0].target_id, term_id.to_string());
 
-    // No "active" run_state without a live orchestrator (route enriches that).
+    // No "active" run_state without a live AutoWork runner (route enriches that).
     assert!(
         groups
             .iter()

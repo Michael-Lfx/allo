@@ -9,25 +9,19 @@
   "poiStartersHint": "根据你的兴趣，试试这些开场：",
   "poiStartersPresetHint": "试试这些话题开场：",
   "poiStartersRefresh": "换一批",
-  "selectAssistantHint": "选择一位助手开始任务",
+  "selectPresetHint": "选择一位设定开始任务",
   "agentSwitcherLabel": "Agent",
   "switchedToAgent": "已切换到 {{agent}}",
   "modelRequired": "请先选择模型",
-  "orchestration": {
-    "collaborators": {
+  "collaboration": {
+    "models": {
       "title": "协作模型",
       "label": "协作模型",
       "count": "协作模型 · {{count}}",
       "mainTag": "主模型",
-      "placeholder": "选择参与编排的协作模型…",
-      "emptyHint": "主模型始终在池中；可再选协作模型，让主模型按难度把较简单的任务分给更省的模型。",
-      "selectedHint": "主模型 + {{count}} 个协作模型组成模型池，主模型按任务难度为各节点挑选，兼顾成本与效果。"
-    },
-    "approval": {
-      "title": "审批模式",
-      "desc": "关键决策先暂停，等你确认。",
-      "auto": "审批 · 自动",
-      "manual": "审批 · 确认"
+      "placeholder": "选择参与协作的模型…",
+      "emptyHint": "主模型始终参与；可再选择协作模型，让不同任务匹配更合适的模型。",
+      "selectedHint": "主模型和 {{count}} 个协作模型将按任务需要共同推进。"
     }
   },
   "workspace": {
@@ -57,15 +51,12 @@
   },
   "entry": {
     "free": "自由发挥",
-    "summon": "召唤助手",
+    "usePreset": "使用设定",
     "skills": "使用 Skills",
     "skillsActive": "使用 Skills · 已启用",
     "skillsAdjustAria": "调整本次会话已启用的 {{count}} 个 Skills",
     "skillsActiveAria": "查看本次会话已启用的 {{count}} 个 Skills",
-    "backToFree": "自由发挥",
-    "cluster": "agent 集群",
-    "clusterAria": "切换 agent 集群模式",
-    "clusterHint": "多 agent 协作：主 agent 刻意评估并拆分任务给多个独立 agent 并行交付；太简单的任务会说明原因后直接作答。"
+    "backToFree": "自由发挥"
   },
   "skillsPopover": {
     "title": "本次会话使用的 Skills",
@@ -75,19 +66,19 @@
     "adjustHint": "点击「使用 Skills」调整本次会话。"
   },
   "drawer": {
-    "assistantTab": "助手",
+    "presetTab": "设定",
     "skillsTab": "Skills",
-    "searchAssistant": "搜索助手名称或描述…",
+    "searchPreset": "搜索设定名称或描述…",
     "searchSkill": "搜索 Skill 名称或描述…",
-    "summon": "召唤",
+    "usePreset": "使用",
     "keepFree": "保持自由发挥",
     "applySkills": "应用到本次会话",
     "selectedCount": "已选 {{count}} 个 Skill",
     "sourceCustom": "自定义",
     "sourceBuiltin": "内置",
     "autoInject": "自动注入",
-    "assistantCount": "位助手",
+    "presetCount": "个设定",
     "skillCount": "个 Skill",
-    "assistantHint": "点卡片「召唤」即让本次会话使用该助手（单选）"
+    "presetHint": "选择一个设定，本次会话将由后端解析并固化配置快照。"
   }
 }

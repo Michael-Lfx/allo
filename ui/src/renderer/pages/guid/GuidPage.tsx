@@ -7,7 +7,13 @@
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import type { IMcpServer } from '@/common/config/storage';
-import type { TModelRange, TModelRef } from '@/common/types/orchestrator/orchestratorTypes';
+import {
+  MAX_AGENT_EXECUTION_MODELS,
+  type TDecisionPolicy,
+  type TDelegationPolicy,
+  type TExecutionModelPool,
+  type TExecutionModelRef,
+} from '@/common/types/agentExecution/agentExecutionTypes';
 import { resolveLocaleKey } from '@/common/utils';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
@@ -16,41 +22,44 @@ import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
+import AgentPillBar from './components/AgentPillBar';
 import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerEntryStrip';
-import GuidAssistantEditorHost from './components/GuidAssistantEditorHost';
+import GuidPresetEditorHost from './components/GuidPresetEditorHost';
+import { AgentPillBarSkeleton } from './components/GuidSkeleton';
 import GuidActionRow from './components/GuidActionRow';
+import GuidCompanionPosterPreview from './components/GuidCompanionPosterPreview';
 import GuidInputCard from './components/GuidInputCard';
 import PoiStarterChips from './components/PoiStarterChips';
-import GuidClusterApprovalSelector from './components/GuidClusterApprovalSelector';
-import type { GuidClusterApprovalMode } from './components/GuidClusterApprovalSelector';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
+import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
 import GuidModelSelector from './components/GuidModelSelector';
+import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
-import SummonDrawer from './components/SummonDrawer';
+import QuickActionButtons from './components/QuickActionButtons';
+import PresetPickerDrawer from './components/PresetPickerDrawer';
 import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
-import { findAssistantById, parseCustomAssistantId } from './hooks/agentSelectionUtils';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
 import { isAutoWorkEntry } from './hooks/autoWorkEntry';
 import { useGuidInput } from './hooks/useGuidInput';
 import { useGuidMention } from './hooks/useGuidMention';
 import { useGuidModelSelection } from './hooks/useGuidModelSelection';
 import { useGuidSend } from './hooks/useGuidSend';
-import { useModelRange } from '@/renderer/pages/orchestrator/useModelRange';
-import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/orchestrator/collaboratorModelRefs';
+import { useExecutionModelPool } from '@/renderer/pages/conversation/execution/useExecutionModelPool';
+import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/conversation/execution/executionModelRefs';
+import CollaborationPolicyControl from '@/renderer/components/collaboration/CollaborationPolicyControl';
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { useTypewriterPlaceholder } from './hooks/useTypewriterPlaceholder';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { ConfigProvider, Message } from '@arco-design/web-react';
-import { Robot } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { mutate as swrMutate } from 'swr';
-import type { Assistant } from '@/common/types/agent/assistantTypes';
+import type { Preset } from '@/common/types/agent/presetTypes';
 import styles from './index.module.css';
 
 const GuidPage: React.FC = () => {
@@ -66,28 +75,27 @@ const GuidPage: React.FC = () => {
   }, []);
   const location = useLocation();
   const guidContainerRef = useRef<HTMLDivElement>(null);
-  const openAssistantDetailsRef = useRef<(() => void) | null>(null);
+  const openPresetDetailsRef = useRef<(() => void) | null>(null);
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
 
   const localeKey = resolveLocaleKey(i18n.language);
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerMode, setDrawerMode] = useState<'assistant' | 'skills'>('assistant');
-  // 「agent 集群」模式（需求1）：composer 顶部 toggle。选中后发送即在新会话 extra
-  // 落 agent_cluster_mode=true——主 agent 对每个任务刻意评估是否开多 agent 集群，
-  // 太简单则先向用户说明使用简单模式的原因。仅 nomi 主 agent 路径消费。
-  const [clusterMode, setClusterMode] = useState(false);
-  const [clusterApprovalMode, setClusterApprovalMode] = useState<GuidClusterApprovalMode>('auto');
-  const [orchestrationCollaborators, setOrchestrationCollaborators] = useState<TModelRef[]>(
-    () => configService.get('nomi.orchestrationCollaborators') ?? []
+  const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
+  const [delegationPolicy, setDelegationPolicy] = useState<TDelegationPolicy>('automatic');
+  const [decisionPolicy, setDecisionPolicy] = useState<TDecisionPolicy>('automatic');
+  const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
+    () => configService.get('nomi.collaborationModels') ?? [],
   );
+  const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
+    useState<AppliedCollaborationTemplate | null>(null);
 
   // --- Skills state ---
   // All available skills (builtin auto-injected + user-imported custom) merged
   // into one catalog for the action-row menu. Auto-injected skills default to
   // checked; the rest are opt-in per conversation (or pre-checked when the
-  // active assistant declares them in `enabled_skills`).
+  // active preset declares them in `included_skills`).
   const [allSkills, setAllSkills] = useState<Array<{ name: string; description: string; isAuto: boolean }>>([]);
   const [guidDisabledBuiltinSkills, setGuidDisabledBuiltinSkills] = useState<string[] | undefined>(undefined);
   const [guidEnabledSkills, setGuidEnabledSkills] = useState<string[] | undefined>(undefined);
@@ -98,11 +106,23 @@ const GuidPage: React.FC = () => {
     Promise.all([ipcBridge.fs.listBuiltinAutoSkills.invoke(), ipcBridge.fs.listAvailableSkills.invoke()])
       .then(([autoSkills, availableSkills]) => {
         const autoNames = new Set(autoSkills.map((s) => s.name));
-        const merged: Array<{ name: string; description: string; isAuto: boolean }> = [
-          ...autoSkills.map((s) => ({ name: s.name, description: s.description, isAuto: true })),
+        const merged: Array<{
+          name: string;
+          description: string;
+          isAuto: boolean;
+        }> = [
+          ...autoSkills.map((s) => ({
+            name: s.name,
+            description: s.description,
+            isAuto: true,
+          })),
           ...availableSkills
             .filter((s) => !autoNames.has(s.name))
-            .map((s) => ({ name: s.name, description: s.description, isAuto: false })),
+            .map((s) => ({
+              name: s.name,
+              description: s.description,
+              isAuto: false,
+            })),
         ];
         setAllSkills(merged);
       })
@@ -147,57 +167,63 @@ const GuidPage: React.FC = () => {
   // Only nomi uses this provider-based model picker now (Gemini runs as a
   // regular ACP backend with its own model selector).
   const modelSelection = useGuidModelSelection('nomi');
-  const {
-    configuredPairs,
-    allPairs,
-    isLoading: isModelCatalogLoading,
-  } = useModelRange();
+  const { configuredPairs, allPairs, isLoading: isModelCatalogLoading } = useExecutionModelPool();
   const collaboratorReconciliation = useMemo(
-    () =>
-      isModelCatalogLoading
-        ? null
-        : reconcileModelRefs(orchestrationCollaborators, configuredPairs, allPairs),
-    [allPairs, configuredPairs, isModelCatalogLoading, orchestrationCollaborators]
+    () => (isModelCatalogLoading ? null : reconcileModelRefs(collaborationModels, configuredPairs, allPairs)),
+    [allPairs, collaborationModels, configuredPairs, isModelCatalogLoading],
   );
   const activeCollaborators = collaboratorReconciliation?.active ?? [];
-  const mainModelRef = useMemo<TModelRef | null>(
+  const mainModelRef = useMemo<TExecutionModelRef | null>(
     () =>
       modelSelection.current_model
-        ? { provider_id: modelSelection.current_model.id, model: modelSelection.current_model.use_model }
+        ? {
+            provider_id: modelSelection.current_model.id,
+            model: modelSelection.current_model.use_model,
+          }
         : null,
-    [modelSelection.current_model?.id, modelSelection.current_model?.use_model]
+    [modelSelection.current_model?.id, modelSelection.current_model?.use_model],
   );
-  const handleOrchestrationCollaboratorsChange = useCallback((next: TModelRef[]) => {
-    setOrchestrationCollaborators(next);
-    void configService.set('nomi.orchestrationCollaborators', next).catch((error) => {
-      console.error('[GuidPage] Failed to save orchestration collaborators:', error);
+  useEffect(() => {
+    if (!selectedCollaborationTemplate || !mainModelRef) return;
+    const containsLead = selectedCollaborationTemplate.models.some(
+      (model) => model.provider_id === mainModelRef.provider_id && model.model === mainModelRef.model,
+    );
+    if (!containsLead) setSelectedCollaborationTemplate(null);
+  }, [mainModelRef, selectedCollaborationTemplate]);
+  const persistCollaborationModels = useCallback((next: TExecutionModelRef[]) => {
+    setCollaborationModels(next);
+    void configService.set('nomi.collaborationModels', next).catch((error) => {
+      console.error('[GuidPage] Failed to save collaboration models:', error);
     });
   }, []);
   useEffect(() => {
     if (!collaboratorReconciliation || collaboratorReconciliation.removed.length === 0) return;
-    if (sameModelRefs(orchestrationCollaborators, collaboratorReconciliation.retained)) return;
-    handleOrchestrationCollaboratorsChange(collaboratorReconciliation.retained);
-  }, [collaboratorReconciliation, handleOrchestrationCollaboratorsChange, orchestrationCollaborators]);
-  const orchestratorModelRange = useMemo<TModelRange | undefined>(() => {
+    if (sameModelRefs(collaborationModels, collaboratorReconciliation.retained)) return;
+    setSelectedCollaborationTemplate(null);
+    persistCollaborationModels(collaboratorReconciliation.retained);
+  }, [collaborationModels, collaboratorReconciliation, persistCollaborationModels]);
+  const executionModelPool = useMemo<TExecutionModelPool | undefined>(() => {
     if (!mainModelRef) return undefined;
     const models = [
       mainModelRef,
       ...activeCollaborators.filter(
-        (item) => item.provider_id !== mainModelRef.provider_id || item.model !== mainModelRef.model
+        (item) => item.provider_id !== mainModelRef.provider_id || item.model !== mainModelRef.model,
       ),
-    ];
-    return { mode: 'range', models };
+    ].slice(0, MAX_AGENT_EXECUTION_MODELS);
+    return models.length === 1 ? { mode: 'single', model: models[0] } : { mode: 'range', models };
   }, [activeCollaborators, mainModelRef]);
-  const orchestratorApprovalMode = clusterApprovalMode;
 
-  const navState = location.state as { resetAssistant?: boolean; selectedAgentKey?: string } | null;
-  const resetAssistantRequested = navState?.resetAssistant === true;
+  const navState = location.state as {
+    resetPreset?: boolean;
+    selectedAgentKey?: string;
+  } | null;
+  const resetPresetRequested = navState?.resetPreset === true;
   const preselectAgentKey = navState?.selectedAgentKey;
   const agentSelection = useGuidAgentSelection({
     modelList: modelSelection.modelList,
     isGoogleAuth: modelSelection.isGoogleAuth,
     localeKey,
-    resetAssistant: resetAssistantRequested,
+    resetPreset: resetPresetRequested,
     preselectAgentKey,
     locationKey: location.key,
   });
@@ -244,9 +270,6 @@ const GuidPage: React.FC = () => {
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
     getEffectiveAgentType: agentSelection.getEffectiveAgentType,
-    resolvePresetRulesAndSkills: agentSelection.resolvePresetRulesAndSkills,
-    resolveEnabledSkills: agentSelection.resolveEnabledSkills,
-    resolveDisabledBuiltinSkills: agentSelection.resolveDisabledBuiltinSkills,
     guidDisabledBuiltinSkills,
     guidEnabledSkills,
     availableMcpServers,
@@ -255,9 +278,10 @@ const GuidPage: React.FC = () => {
     isGoogleAuth: modelSelection.isGoogleAuth,
     applyAdvancedConfig: advancedConfig.applyToConversation,
     autoWork: advancedConfig.autoWork,
-    clusterMode,
-    orchestratorModelRange,
-    orchestratorApprovalMode,
+    delegationPolicy,
+    executionModelPool,
+    decisionPolicy,
+    executionTemplateId: selectedCollaborationTemplate?.id,
 
     // Mention state reset
     setMentionOpen: mention.setMentionOpen,
@@ -278,8 +302,17 @@ const GuidPage: React.FC = () => {
   const handleInputChange = useCallback(
     (value: string) => {
       guidInput.setInput(value);
+      const match = value.match(mention.mentionMatchRegex);
+      // 首页不根据输入 @ 呼起 mention 列表，占位符里的 @agent 仅为提示，选 agent 用顶部栏或下拉手动选
+      if (match) {
+        mention.setMentionQuery(match[1]);
+        mention.setMentionOpen(false);
+      } else {
+        mention.setMentionQuery(null);
+        mention.setMentionOpen(false);
+      }
     },
-    [guidInput.setInput]
+    [mention.mentionMatchRegex, guidInput.setInput, mention.setMentionQuery, mention.setMentionOpen],
   );
 
   const [sendKeyPref] = useConfig('chat.sendKey');
@@ -307,7 +340,7 @@ const GuidPage: React.FC = () => {
           const query = mention.mentionQuery?.toLowerCase();
           const exactMatch = query
             ? mention.filteredMentionOptions.find(
-                (option) => option.label.toLowerCase() === query || option.tokens.has(query)
+                (option) => option.label.toLowerCase() === query || option.tokens.has(query),
               )
             : undefined;
           const selected =
@@ -357,7 +390,7 @@ const GuidPage: React.FC = () => {
         send.sendMessageHandler();
       }
     },
-    [mention, guidInput.input, send.sendMessageHandler, sendKey]
+    [mention, guidInput.input, send.sendMessageHandler, sendKey],
   );
 
   const handleSelectAgentFromPillBar = useCallback(
@@ -374,12 +407,12 @@ const GuidPage: React.FC = () => {
       mention.setMentionQuery,
       mention.setMentionSelectorOpen,
       mention.setMentionActiveIndex,
-    ]
+    ],
   );
 
-  const handleSelectAssistant = useCallback(
-    (assistantId: string) => {
-      agentSelection.setSelectedAgentKey(assistantId);
+  const handleSelectPreset = useCallback(
+    (presetId: string) => {
+      agentSelection.setSelectedAgentKey(presetId);
       mention.setMentionOpen(false);
       mention.setMentionQuery(null);
       mention.setMentionSelectorOpen(false);
@@ -391,115 +424,59 @@ const GuidPage: React.FC = () => {
       mention.setMentionQuery,
       mention.setMentionSelectorOpen,
       mention.setMentionActiveIndex,
-    ]
+    ],
   );
 
   // Typewriter placeholder
   const typewriterPlaceholder = useTypewriterPlaceholder(t('conversation.welcome.placeholder'));
-  const isPresetAssistantLike = agentSelection.is_presetAgent || agentSelection.is_presetAgentPending;
-  const selectedAssistantRecord = useMemo(() => {
-    if (!isPresetAssistantLike) return undefined;
-    const selectedId =
-      agentSelection.selectedAgentInfo?.custom_agent_id ??
-      parseCustomAssistantId(agentSelection.selectedAgentKey) ??
-      undefined;
-    if (!selectedId) return undefined;
-    return findAssistantById(agentSelection.assistants, selectedId);
-  }, [
-    agentSelection.assistants,
-    agentSelection.selectedAgentInfo?.custom_agent_id,
-    agentSelection.selectedAgentKey,
-    isPresetAssistantLike,
-  ]);
+  const selectedPresetRecord = useMemo(() => {
+    if (!agentSelection.is_presetAgent || !agentSelection.selectedAgentInfo?.preset_id) return undefined;
+    return agentSelection.presets.find((item) => item.id === agentSelection.selectedAgentInfo?.preset_id);
+  }, [agentSelection.presets, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id]);
 
-  // Sync disabledBuiltinSkills + enabledSkills from preset assistant config
+  // Sync disabledBuiltinSkills + enabledSkills from preset preset config
   useEffect(() => {
-    if (!isPresetAssistantLike) {
-      setGuidDisabledBuiltinSkills(undefined);
-      setGuidEnabledSkills(undefined);
-      return;
-    }
-    if (selectedAssistantRecord) {
-      setGuidDisabledBuiltinSkills(selectedAssistantRecord.disabled_builtin_skills ?? []);
-      setGuidEnabledSkills(selectedAssistantRecord.enabled_skills ?? []);
-      return;
-    }
-    // Catalog is loaded but the saved preset id no longer resolves — drop stale overrides.
-    if (agentSelection.assistants.length > 0) {
+    if (agentSelection.is_presetAgent && selectedPresetRecord) {
+      setGuidDisabledBuiltinSkills(selectedPresetRecord.excluded_auto_skills);
+      setGuidEnabledSkills(selectedPresetRecord.included_skills.map((item) => item.skill_name));
+    } else {
       setGuidDisabledBuiltinSkills(undefined);
       setGuidEnabledSkills(undefined);
     }
-  }, [isPresetAssistantLike, selectedAssistantRecord, agentSelection.assistants]);
+  }, [agentSelection.is_presetAgent, selectedPresetRecord]);
 
-  const welcomeTitle = t('conversation.welcome.title');
   const heroTitle = useMemo(() => {
-    if (!isPresetAssistantLike) return welcomeTitle;
-    const i18nName = selectedAssistantRecord?.name_i18n?.[localeKey];
+    if (!agentSelection.is_presetAgent) return t('conversation.welcome.title');
+    const i18nName = selectedPresetRecord?.name_i18n?.[localeKey];
     if (i18nName) return i18nName;
-    return mention.selectedAgentLabel || welcomeTitle;
-  }, [isPresetAssistantLike, selectedAssistantRecord, localeKey, mention.selectedAgentLabel, welcomeTitle]);
-  const heroSubtitle = useMemo(() => {
-    if (!isPresetAssistantLike || !selectedAssistantRecord) return null;
-    return (
-      selectedAssistantRecord.description_i18n?.[localeKey] ||
-      selectedAssistantRecord.description_i18n?.['en-US'] ||
-      selectedAssistantRecord.description ||
-      null
+    return mention.selectedAgentLabel || t('conversation.welcome.title');
+  }, [agentSelection.is_presetAgent, selectedPresetRecord, localeKey, mention.selectedAgentLabel, t]);
+  const selectedPresetAvatar = useMemo(() => {
+    if (!agentSelection.is_presetAgent) return null;
+    const selectedPreset = agentSelection.presets.find(
+      (item) => item.id === agentSelection.selectedAgentInfo?.preset_id,
     );
-  }, [isPresetAssistantLike, selectedAssistantRecord, localeKey]);
-  const renderHeroAvatar = () => {
-    if (!selectedAssistantAvatar) return null;
-    switch (selectedAssistantAvatar.kind) {
-      case 'image':
-        return (
-          <img
-            src={selectedAssistantAvatar.value}
-            alt=''
-            className='w-28px h-28px rounded-8px object-contain'
-          />
-        );
-      case 'emoji':
-        return <span className={styles.heroTitleEmoji}>{selectedAssistantAvatar.value}</span>;
-      case 'icon':
-      default:
-        return <Robot theme='outline' size={22} fill='currentColor' />;
-    }
-  };
-  const selectedAssistantAvatar = useMemo(() => {
-    if (!isPresetAssistantLike) return null;
-    const selectedId =
-      agentSelection.selectedAgentInfo?.custom_agent_id ??
-      parseCustomAssistantId(agentSelection.selectedAgentKey) ??
-      undefined;
-    const selectedAssistant = selectedId ? findAssistantById(agentSelection.assistants, selectedId) : undefined;
-    const avatarValue = selectedAssistant?.avatar?.trim() || agentSelection.selectedAgentInfo?.avatar?.trim();
+    const avatarValue = selectedPreset?.avatar?.trim() || agentSelection.selectedAgentInfo?.avatar?.trim();
     if (!avatarValue) return { kind: 'icon' as const };
     const mappedAvatar = CUSTOM_AVATAR_IMAGE_MAP[avatarValue];
     const resolvedAvatar = resolveExtensionAssetUrl(avatarValue);
     const avatarImage = mappedAvatar || resolvedAvatar;
     const isImageAvatar = Boolean(
       avatarImage &&
-      (/\.(svg|png|jpe?g|webp|gif)$/i.test(avatarImage) || /^(https?:|file:\/\/|data:|\/)/i.test(avatarImage))
+      (/\.(svg|png|jpe?g|webp|gif)$/i.test(avatarImage) || /^(https?:|file:\/\/|data:|\/)/i.test(avatarImage)),
     );
     if (isImageAvatar && avatarImage) {
       return { kind: 'image' as const, value: avatarImage };
     }
     return { kind: 'emoji' as const, value: avatarValue };
   }, [
-    agentSelection.assistants,
+    agentSelection.presets,
+    agentSelection.is_presetAgent,
     agentSelection.selectedAgentInfo?.avatar,
-    agentSelection.selectedAgentInfo?.custom_agent_id,
-    agentSelection.selectedAgentKey,
-    isPresetAssistantLike,
+    agentSelection.selectedAgentInfo?.preset_id,
   ]);
-  const summonSelectedAssistantId = useMemo(
-    () =>
-      agentSelection.selectedAgentInfo?.custom_agent_id ??
-      parseCustomAssistantId(agentSelection.selectedAgentKey),
-    [agentSelection.selectedAgentInfo?.custom_agent_id, agentSelection.selectedAgentKey]
-  );
   // Reset guid-local UI state before paint so same-route navigations do not
-  // briefly show the previous draft or preset assistant layout.
+  // briefly show the previous draft or preset preset layout.
   useLayoutEffect(() => {
     guidInput.setInput('');
     guidInput.setFiles([]);
@@ -518,7 +495,7 @@ const GuidPage: React.FC = () => {
     location.state,
   ]);
 
-  // Clear resetAssistant from location.state after the hook has consumed it,
+  // Clear resetPreset from location.state after the hook has consumed it,
   // so that re-renders don't re-trigger the reset logic.
   //
   // Must go through React Router's navigate — raw window.history.replaceState
@@ -527,19 +504,23 @@ const GuidPage: React.FC = () => {
   // next hard reload, the browser would then request '/guid' directly from
   // the dev server (which has no SPA fallback) and 404.
   useEffect(() => {
-    if (!resetAssistantRequested && !preselectAgentKey) return;
-    navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state: null });
-  }, [resetAssistantRequested, preselectAgentKey, location.pathname, location.search, location.hash, navigate]);
+    if (!resetPresetRequested && !preselectAgentKey) return;
+    navigate(`${location.pathname}${location.search}${location.hash}`, {
+      replace: true,
+      state: null,
+    });
+  }, [resetPresetRequested, preselectAgentKey, location.pathname, location.search, location.hash, navigate]);
 
-  const currentPresetAgentType = selectedAssistantRecord?.preset_agent_type || 'gemini';
-  // Mirrors AssistantEditDrawer's Main Agent options — detected execution
+  const currentPresetAgentId =
+    selectedPresetRecord?.preferred_agent_id || selectedPresetRecord?.agent_preferences[0]?.agent_id;
+  // Mirrors PresetEditDrawer's Main Agent options — detected execution
   // engines from AgentPillBar's data source, so avatars resolve the same way.
   const agentSwitcherItems = useMemo(() => {
-    if (!agentSelection.availableAgents) return [];
+    if (!agentSelection.availableAgents || !selectedPresetRecord) return [];
     return agentSelection.availableAgents
       .filter((a) => !a.is_preset && a.agent_type !== 'remote')
       .map((a) => {
-        const key = a.backend || a.agent_type;
+        const key = a.id || a.backend || a.agent_type;
         const extensionAvatar = a.isExtension ? resolveExtensionAssetUrl(a.avatar) : undefined;
         const logo =
           extensionAvatar ||
@@ -553,16 +534,16 @@ const GuidPage: React.FC = () => {
           key,
           label: a.name,
           logo,
-          isCurrent: key === currentPresetAgentType,
+          isCurrent: key === currentPresetAgentId,
           isExtension: a.isExtension,
         };
       });
-  }, [agentSelection.availableAgents, currentPresetAgentType]);
+  }, [agentSelection.availableAgents, currentPresetAgentId, selectedPresetRecord]);
 
   const effectiveAgentRecord = useMemo(() => {
     return agentSelection.availableAgents?.find(
       (agent) =>
-        !agent.is_preset && (agent.backend || agent.agent_type) === agentSelection.currentEffectiveAgentInfo.agent_type
+        !agent.is_preset && (agent.backend || agent.agent_type) === agentSelection.currentEffectiveAgentInfo.agent_type,
     );
   }, [agentSelection.availableAgents, agentSelection.currentEffectiveAgentInfo.agent_type]);
 
@@ -574,43 +555,36 @@ const GuidPage: React.FC = () => {
         custom_agent_id: effectiveAgentRecord?.custom_agent_id,
         isExtension: effectiveAgentRecord?.isExtension,
       }),
-    [effectiveAgentRecord, agentSelection.currentEffectiveAgentInfo.agent_type]
+    [effectiveAgentRecord, agentSelection.currentEffectiveAgentInfo.agent_type],
   );
-  const handlePresetAgentTypeSwitch = useCallback(
-    async (nextType: string) => {
-      // Only preset assistants (is_preset=true) expose `custom_agent_id` here, so this id is
-      // always backed by the `/api/assistants` store. ACP custom agents are a separate store
-      // (`ipcBridge.acpConversation.updateCustomAgent`) and do not carry `preset_agent_type`.
-      // See commit 13858579d on main for the legacy single-store fix that this split already covers.
-      const assistantId = agentSelection.selectedAgentInfo?.custom_agent_id;
-      if (!assistantId || nextType === currentPresetAgentType) return;
+  const handlePresetAgentSwitch = useCallback(
+    async (nextAgentId: string) => {
+      const presetId = agentSelection.selectedAgentInfo?.preset_id;
+      if (!presetId || nextAgentId === currentPresetAgentId) return;
       try {
-        // Optimistically patch the shared `assistants.list` SWR cache so the hero
-        // avatar/logo reflect the new preset_agent_type on the same frame as the
-        // click. Without this, downstream memos (selectedAssistantRecord →
-        // currentEffectiveAgentInfo → effectiveAgentLogo) lag a network roundtrip
-        // behind the user action.
         await swrMutate(
-          'assistants.list',
-          (prev: Assistant[] | undefined) =>
-            prev?.map((a) => (a.id === assistantId ? { ...a, preset_agent_type: nextType } : a)),
-          { revalidate: false }
+          'presets.list',
+          (prev: Preset[] | undefined) =>
+            prev?.map((item) => (item.id === presetId ? { ...item, preferred_agent_id: nextAgentId } : item)),
+          { revalidate: false },
         );
-        await ipcBridge.assistants.update.invoke({ id: assistantId, preset_agent_type: nextType });
-        await Promise.all([swrMutate('assistants.list'), agentSelection.refreshCustomAgents()]);
-        const agent_name =
-          agentSelection.availableAgents?.find((a) => (a.backend || a.agent_type) === nextType)?.name || nextType;
+        await ipcBridge.presets.setState.invoke({
+          id: presetId,
+          preferred_agent_id: nextAgentId,
+        });
+        await Promise.all([swrMutate('presets.list'), agentSelection.refreshCustomAgents()]);
+        const agent_name = agentSelection.availableAgents?.find((a) => a.id === nextAgentId)?.name || nextAgentId;
         Message.success(t('guid.switchedToAgent', { agent: agent_name }));
       } catch (error) {
-        console.error('[GuidPage] Failed to switch preset agent type:', error);
+        console.error('[GuidPage] Failed to switch preset agent preference:', error);
         Message.error(t('common.failed', { defaultValue: 'Failed' }));
       }
     },
-    [agentSelection, currentPresetAgentType, t]
+    [agentSelection, currentPresetAgentId, selectedPresetRecord, t],
   );
 
-  // Resolve the effective agent type once — covers both direct selection and preset assistants
-  const effectiveAgentType = isPresetAssistantLike
+  // Resolve the effective agent type once — covers both direct selection and preset presets
+  const effectiveAgentType = agentSelection.is_presetAgent
     ? agentSelection.currentEffectiveAgentInfo.agent_type
     : agentSelection.selectedAgent;
 
@@ -619,7 +593,7 @@ const GuidPage: React.FC = () => {
   const PROVIDER_BASED_AGENTS = new Set(['nomi']);
   const isGeminiMode =
     PROVIDER_BASED_AGENTS.has(effectiveAgentType) &&
-    (!isPresetAssistantLike || agentSelection.currentEffectiveAgentInfo.isAvailable);
+    (!agentSelection.is_presetAgent || agentSelection.currentEffectiveAgentInfo.isAvailable);
 
   // Build the mention dropdown node
   const mentionDropdownNode = (
@@ -646,13 +620,35 @@ const GuidPage: React.FC = () => {
   const collaboratorSelectorNode = (
     <GuidCollaboratorSelector
       value={activeCollaborators}
-      onChange={handleOrchestrationCollaboratorsChange}
+      onChange={(next) => {
+        setSelectedCollaborationTemplate(null);
+        persistCollaborationModels(next);
+      }}
       mainModel={mainModelRef}
+      selectedTemplate={selectedCollaborationTemplate}
+      workDir={guidInput.dir}
+      onTemplateApply={(template) => {
+        setSelectedCollaborationTemplate({
+          id: template.id,
+          name: template.name,
+          participantCount: template.participantCount,
+          models: template.models,
+        });
+      }}
+      onTemplateClear={() => setSelectedCollaborationTemplate(null)}
       className='nomi-sendbox-model-btn'
     />
   );
-  const clusterApprovalSelectorNode = (
-    <GuidClusterApprovalSelector value={clusterApprovalMode} onChange={setClusterApprovalMode} />
+  const collaborationPolicyNode = (
+    <CollaborationPolicyControl
+      runtimeType={effectiveAgentType}
+      delegationPolicy={delegationPolicy}
+      decisionPolicy={decisionPolicy}
+      onChange={(next) => {
+        setDelegationPolicy(next.delegationPolicy);
+        setDecisionPolicy(next.decisionPolicy);
+      }}
+    />
   );
 
   // Advanced drafts — the same controls as the conversation header, in draft
@@ -664,7 +660,10 @@ const GuidPage: React.FC = () => {
     <>
       <AutoWorkControl
         key={`autowork-${location.key}`}
-        draft={{ value: advancedConfig.autoWork, onChange: advancedConfig.setAutoWork }}
+        draft={{
+          value: advancedConfig.autoWork,
+          onChange: advancedConfig.setAutoWork,
+        }}
         applyNote={t('guid.advanced.applyNote')}
       />
       <IdmmControl
@@ -674,7 +673,10 @@ const GuidPage: React.FC = () => {
       />
       <KnowledgeControl
         key={`knowledge-${location.key}`}
-        draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}
+        draft={{
+          value: advancedConfig.knowledge,
+          onChange: advancedConfig.setKnowledge,
+        }}
         applyNote={t('guid.advanced.applyNote')}
       />
     </>
@@ -691,21 +693,22 @@ const GuidPage: React.FC = () => {
       files={guidInput.files}
       onFilesUploaded={guidInput.handleFilesUploaded}
       modelSelectorNode={modelSelectorNode}
-      collaboratorSelectorNode={clusterMode ? collaboratorSelectorNode : undefined}
-      clusterApprovalSelectorNode={clusterMode ? clusterApprovalSelectorNode : undefined}
+      collaboratorSelectorNode={
+        effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled' ? collaboratorSelectorNode : undefined
+      }
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}
       onModeSelect={agentSelection.setSelectedMode}
-      is_presetAgent={isPresetAssistantLike}
+      is_presetAgent={agentSelection.is_presetAgent}
       selectedAgentInfo={agentSelection.selectedAgentInfo}
-      assistants={agentSelection.assistants}
+      presets={agentSelection.presets}
       localeKey={localeKey}
       onClosePresetTag={() => agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey)}
       agentLogo={effectiveAgentLogo}
       agentSwitcherItems={agentSwitcherItems}
       onAgentSwitch={(key) => {
-        handlePresetAgentTypeSwitch(key).catch((err) => console.error('Failed to switch agent type:', err));
+        handlePresetAgentSwitch(key).catch((err) => console.error('Failed to switch preset agent:', err));
       }}
       mcpServers={availableMcpServers}
       selectedMcpServerIds={guidSelectedMcpServerIds ?? []}
@@ -717,7 +720,7 @@ const GuidPage: React.FC = () => {
       hasDraft={hasDraft}
       speechLocale={i18n.language}
       onSpeechTranscript={(transcript) => {
-        guidInput.setInput(appendSpeechTranscript(guidInput.input, transcript));
+        guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
       }}
       onSend={send.sendMessageHandler}
     />
@@ -737,7 +740,7 @@ const GuidPage: React.FC = () => {
   }, []);
 
   const handleRegisterOpenDetails = useCallback((openDetails: (() => void) | null) => {
-    openAssistantDetailsRef.current = openDetails;
+    openPresetDetailsRef.current = openDetails;
   }, []);
 
   return (
@@ -751,27 +754,26 @@ const GuidPage: React.FC = () => {
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
-              {isPresetAssistantLike ? (
-                <>
-                  <h1 className={`${styles.heroTitle} text-2xl font-semibold text-0 text-center`}>
-                    {selectedAssistantAvatar ? (
-                      <span className={styles.heroTitleInlineIcon} aria-hidden='true'>
-                        {renderHeroAvatar()}
-                      </span>
-                    ) : null}
-                    <span>{heroTitle}</span>
-                  </h1>
-                  {heroSubtitle ? <p className={styles.heroDescription}>{heroSubtitle}</p> : null}
-                </>
-              ) : (
-                <p className='text-2xl font-semibold mb-0 text-0 text-center'>{welcomeTitle}</p>
-              )}
+              <p className='text-2xl font-semibold mb-0 text-0 text-center'>{t('conversation.welcome.title')}</p>
             </div>
+
+            {agentSelection.availableAgents === undefined ? (
+              <AgentPillBarSkeleton />
+            ) : agentSelection.availableAgents.length > 0 ? (
+              <AgentPillBar
+                availableAgents={agentSelection.availableAgents}
+                selectedAgentKey={agentSelection.selectedAgentKey}
+                getAgentKey={agentSelection.getAgentKey}
+                onSelectAgent={handleSelectAgentFromPillBar}
+                suppressSelectionAnimation={resetPresetRequested}
+              />
+            ) : null}
 
             <PoiStarterChips
               onSetInput={guidInput.setInput}
               onFocusInput={guidInput.handleTextareaFocus}
             />
+
 
             <GuidInputCard
               input={guidInput.input}
@@ -780,7 +782,7 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={typewriterPlaceholder || t('conversation.welcome.placeholder')}
+              placeholder={`${mention.selectedAgentLabel}, ${typewriterPlaceholder || t('conversation.welcome.placeholder')}`}
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
@@ -807,23 +809,29 @@ const GuidPage: React.FC = () => {
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
                 <ComposerEntryStrip
-                  isPresetAgent={isPresetAssistantLike}
-                  assistantLabel={heroTitle !== welcomeTitle ? heroTitle : undefined}
-                  assistantAvatar={selectedAssistantAvatar ?? undefined}
-                  onSummon={() => { setDrawerMode('assistant'); setDrawerOpen(true); }}
+                  isPresetAgent={agentSelection.is_presetAgent}
+                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                  presetAvatar={selectedPresetAvatar ?? undefined}
+                  onChoosePreset={() => {
+                    setDrawerMode('preset');
+                    setDrawerOpen(true);
+                  }}
                   onAdjustSkills={handleOpenSkillsDrawer}
-                  onFree={() => { agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); }}
+                  onFree={() => {
+                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+                  }}
                   activeSkillCount={activeSkillCount}
                   activeSkills={activeSkills}
-                  clusterActive={clusterMode}
-                  onToggleCluster={() => setClusterMode((v) => !v)}
+                  collaborationPolicyNode={collaborationPolicyNode}
                 />
               }
             />
 
+            <GuidResourceCards />
+
             {/* Editor host (modals + example prompts + fallback notice) */}
-            <GuidAssistantEditorHost
-              assistants={agentSelection.assistants}
+            <GuidPresetEditorHost
+              presets={agentSelection.presets}
               localeKey={localeKey}
               selectedAgentKey={agentSelection.selectedAgentKey}
               selectedAgentInfo={agentSelection.selectedAgentInfo}
@@ -835,23 +843,33 @@ const GuidPage: React.FC = () => {
           </div>
         </div>
 
-        {/* SummonDrawer (right-side) */}
-        <SummonDrawer
+        <div className={styles.guidDiscoveryArea}>
+          <GuidCompanionPosterPreview />
+        </div>
+
+        {/* PresetPickerDrawer (right-side) */}
+        <PresetPickerDrawer
           visible={drawerOpen}
           mode={drawerMode}
           onModeChange={setDrawerMode}
           onClose={() => setDrawerOpen(false)}
-          assistants={agentSelection.assistants}
+          presets={agentSelection.presets}
           localeKey={localeKey}
-          selectedAssistantId={summonSelectedAssistantId}
-          onSelectAssistant={(id) => { handleSelectAssistant(`custom:${id}`); setDrawerOpen(false); }}
-          onFree={() => { agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey); setDrawerOpen(false); }}
+          onSelectPreset={(id) => {
+            handleSelectPreset(`preset:${id}`);
+            setDrawerOpen(false);
+          }}
+          onFree={() => {
+            agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+            setDrawerOpen(false);
+          }}
           allSkills={allSkills}
           enabledSkills={guidEnabledSkills ?? []}
           disabledBuiltinSkills={guidDisabledBuiltinSkills ?? []}
           onToggleSkill={handleToggleSkill}
         />
 
+        <QuickActionButtons inactiveBorderColor={inactiveBorderColor} activeShadow={activeShadow} />
       </div>
     </ConfigProvider>
   );

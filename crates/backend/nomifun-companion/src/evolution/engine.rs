@@ -676,8 +676,8 @@ mod tests {
             cron_skills_dir: dir.join("cron/skills"),
             builtin_skills_dir: dir.join("builtin-skills"),
             builtin_rules_dir: dir.join("rules"),
-            assistant_rules_dir: dir.join("assistant-rules"),
-            assistant_skills_dir: dir.join("assistant-skills"),
+            preset_rules_dir: dir.join("preset-rules"),
+            preset_skills_dir: dir.join("preset-skills"),
         })
     }
 
@@ -721,7 +721,7 @@ mod tests {
             store: CompanionStore::open_memory().await.unwrap(),
             registry,
             completer,
-            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16))),
+            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16)), "owner-a"),
             skill_paths: test_skill_paths(dir),
             transcript: std::sync::RwLock::new(Arc::new(NoopTranscriptSource)),
             run_lock: Arc::new(Mutex::new(())),

@@ -13,7 +13,7 @@ import { getCleanFileNames, FileService } from '@/renderer/services/FileService'
 import { iconColors } from '@/renderer/styles/colors';
 import { isDesktopShell } from '@/renderer/utils/platform';
 import type { AvailableAgent } from '../types';
-import type { Assistant } from '@/common/types/agent/assistantTypes';
+import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
@@ -32,7 +32,6 @@ type GuidActionRowProps = {
   // Model selector node (rendered by parent)
   modelSelectorNode: React.ReactNode;
   collaboratorSelectorNode?: React.ReactNode;
-  clusterApprovalSelectorNode?: React.ReactNode;
 
   // Agent mode
   selectedAgent: string | 'custom';
@@ -47,7 +46,7 @@ type GuidActionRowProps = {
    * Backend-merged preset catalog — drives the preset tag label lookup. Not
    * the ACP engine-config list (custom agents from the AgentRegistry).
    */
-  assistants: Assistant[];
+  presets: Preset[];
   localeKey: string;
   onClosePresetTag: () => void;
   agentLogo?: string | null;
@@ -78,14 +77,13 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onFilesUploaded,
   modelSelectorNode,
   collaboratorSelectorNode,
-  clusterApprovalSelectorNode,
   selectedAgent,
   effectiveModeAgent,
   selectedMode,
   onModeSelect,
   is_presetAgent,
   selectedAgentInfo,
-  assistants,
+  presets,
   localeKey,
   onClosePresetTag,
   agentLogo,
@@ -109,10 +107,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const modeBackend = effectiveModeAgent || selectedAgent;
   const showModeSwitch = supportsModeSwitch(modeBackend);
   const configOptionCount =
-    (modelSelectorNode ? 1 : 0) +
-    (collaboratorSelectorNode ? 1 : 0) +
-    (clusterApprovalSelectorNode ? 1 : 0) +
-    (showModeSwitch ? 1 : 0);
+    (modelSelectorNode ? 1 : 0) + (collaboratorSelectorNode ? 1 : 0) + (showModeSwitch ? 1 : 0);
 
   // Browser file picker ref (WebUI only)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -218,6 +213,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             >
               <Checkbox
                 checked={selectedMcpServerIds.includes(server.id)}
+                className='guid-mcp-selection-checkbox'
                 onClick={(e: React.MouseEvent) => e.stopPropagation()}
                 onChange={() => onToggleMcpServer(server.id)}
               >
@@ -274,7 +270,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           <div className={styles.actionConfigGroup} data-mobile={isMobile ? 'true' : undefined}>
             {modelSelectorNode}
             {collaboratorSelectorNode}
-            {clusterApprovalSelectorNode}
 
             {showModeSwitch && (
               <AgentModeSelector
@@ -293,7 +288,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           <div className={styles.actionPresetAgent}>
             <PresetAgentTag
               agentInfo={selectedAgentInfo}
-              assistants={assistants}
+              presets={presets}
               localeKey={localeKey}
               onClose={onClosePresetTag}
               agentLogo={agentLogo}

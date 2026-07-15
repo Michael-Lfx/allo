@@ -15,18 +15,17 @@ import styles from './MessageThinking.module.css';
 interface MessageThinkingProps {
   message: IMessageThinking;
   variant?: 'standalone' | 'process';
+  completed?: boolean;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
-  /** Soft-closed by the turn disclosure even if the message status never flipped to done. */
-  forceDone?: boolean;
 }
 
 const MessageThinking: React.FC<MessageThinkingProps> = ({
   message,
   variant = 'standalone',
+  completed,
   expanded,
   onExpandedChange,
-  forceDone = false,
 }) => {
   const { t } = useTranslation();
   const isProcessVariant = variant === 'process';
@@ -43,7 +42,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
 
   const { status, subject } = message.content;
   const text = toDisplayText(message.content.content);
-  const isDone = status === 'done' || forceDone;
+  const isDone = completed === true || status === 'done';
   const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);
   const [internalExpanded, setInternalExpanded] = useState(() => defaultExpanded);
   const resolvedExpanded = expanded ?? internalExpanded;

@@ -9,7 +9,7 @@ import { DEFAULT_CODEX_MODELS } from '@/common/types/codex/codexModels';
 import { CODEX_MODE_NATIVE_FULL_ACCESS, normalizeCodexMode } from '@/common/types/codex/codexModes';
 import type { IProvider } from '@/common/config/storage';
 import { configService } from '@/common/config/configService';
-import type { Assistant } from '@/common/types/agent/assistantTypes';
+import type { Preset } from '@/common/types/agent/presetTypes';
 import type { AcpSessionModes } from '@/common/types/platform/acpTypes';
 import type { AcpModelInfo, AvailableAgent, EffectiveAgentInfo } from '../types';
 import {
@@ -21,8 +21,14 @@ import {
 import { getAgentModes, getFullAutoMode } from '@/renderer/utils/model/agentModes';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
-import { savePreferredMode, savePreferredModelId, getAgentKey as getAgentKeyUtil, findAssistantById, parseCustomAssistantId, toPresetAvailableAgent } from './agentSelectionUtils';
-import { usePresetAssistantResolver } from './usePresetAssistantResolver';
+import {
+  savePreferredMode,
+  savePreferredModelId,
+  getAgentKey as getAgentKeyUtil,
+  findPresetById,
+  parsePresetSelectionId,
+} from './agentSelectionUtils';
+import { usePresetResolver } from './usePresetResolver';
 import { useAgentAvailability } from './useAgentAvailability';
 import { useCustomAgentsLoader } from './useCustomAgentsLoader';
 
@@ -33,11 +39,11 @@ export type GuidAgentSelectionResult = {
   selectedAgent: string;
   selectedAgentInfo: AvailableAgent | undefined;
   is_presetAgent: boolean;
-  /** Saved `custom:<id>` key before the assistant catalog has hydrated. */
+  /** Saved `preset:<id>` key before the preset catalog has hydrated. */
   is_presetAgentPending: boolean;
   availableAgents: AvailableAgent[] | undefined;
   /** Backend-merged preset catalog: builtin + user + extension. */
-  assistants: Assistant[];
+  presets: Preset[];
   /** User-defined ACP engine rows (agent_source === 'custom') from the backend. */
   customAgents: AgentMetadata[];
   selectedMode: string;
@@ -54,21 +60,9 @@ export type GuidAgentSelectionResult = {
     custom_agent_id?: string;
   }) => string;
   findAgentByKey: (key: string) => AvailableAgent | undefined;
-  resolvePresetRulesAndSkills: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string; context?: string } | undefined
-  ) => Promise<{ rules?: string; skills?: string }>;
-  resolvePresetContext: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string; context?: string } | undefined
-  ) => Promise<string | undefined>;
   resolvePresetAgentType: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
+    agentInfo: { agent_type: string; backend?: string; preset_id?: string } | undefined
   ) => string;
-  resolveEnabledSkills: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
-  ) => string[] | undefined;
-  resolveDisabledBuiltinSkills: (
-    agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
-  ) => string[] | undefined;
   isMainAgentAvailable: (agent_type: string) => boolean;
   getEffectiveAgentType: (
     agentInfo: { agent_type: string; backend?: string; custom_agent_id?: string } | undefined
@@ -110,7 +104,7 @@ type UseGuidAgentSelectionOptions = {
   modelList: IProvider[];
   isGoogleAuth: boolean;
   localeKey: string;
-  resetAssistant?: boolean;
+  resetPreset?: boolean;
   /** Pre-select a specific agent by key (e.g. from "Go to Chat" deep-links). */
   preselectAgentKey?: string;
   /** React Router location.key — changes on every navigation, used to detect new resets. */
@@ -118,13 +112,13 @@ type UseGuidAgentSelectionOptions = {
 };
 
 /**
- * Hook that manages agent selection, availability, and preset assistant logic.
+ * Hook that manages agent selection, availability, and preset preset logic.
  */
 export const useGuidAgentSelection = ({
   modelList,
   isGoogleAuth,
-  localeKey,
-  resetAssistant,
+  localeKey: _localeKey,
+  resetPreset,
   preselectAgentKey,
   locationKey,
 }: UseGuidAgentSelectionOptions): GuidAgentSelectionResult => {
@@ -169,7 +163,7 @@ export const useGuidAgentSelection = ({
     _setSelectedAcpModel((prev) => {
       const newModelId = typeof model_id === 'function' ? model_id(prev) : model_id;
       const agentKey = selectedAgentRef.current;
-      if (agentKey && agentKey !== 'gemini' && agentKey !== 'custom' && newModelId) {
+      if (agentKey && agentKey !== 'gemini' && agentKey !== 'custom' && agentKey !== 'preset' && newModelId) {
         void savePreferredModelId(agentKey, newModelId);
       }
       return newModelId;
@@ -191,17 +185,11 @@ export const useGuidAgentSelection = ({
   const getAgentKey = getAgentKeyUtil;
 
   // --- Sub-hooks ---
-  const { assistants, customAgents, customAgentAvatarMap, refreshCustomAgents } = useCustomAgentsLoader({
+  const { presets, customAgents, customAgentAvatarMap, refreshCustomAgents } = useCustomAgentsLoader({
     availableCustomAgentIds,
   });
 
-  const {
-    resolvePresetRulesAndSkills,
-    resolvePresetContext,
-    resolvePresetAgentType,
-    resolveEnabledSkills,
-    resolveDisabledBuiltinSkills,
-  } = usePresetAssistantResolver({ assistants, localeKey });
+  const { resolvePresetAgentType } = usePresetResolver({ presets });
 
   const { isMainAgentAvailable, getEffectiveAgentType } = useAgentAvailability({
     modelList,
@@ -217,16 +205,32 @@ export const useGuidAgentSelection = ({
    *   - Plain id (custom ACP / remote rows) → resolved by `AvailableAgent.id`.
    *   - Plain backend or agent_type (builtin rows) → resolved by `backend` or
    *     `agent_type` fallback.
-   *   - `custom:<assistantId>` → preset assistant from the assistant catalog
-   *     (kept as the only surviving prefix path; preset assistants are a
+   *   - `preset:<presetId>` → preset preset from the preset catalog
+   *     (kept as the only surviving prefix path; preset presets are a
    *     different selection surface from AgentRegistry rows).
    */
   const findAgentByKey = (key: string): AvailableAgent | undefined => {
-    if (key.startsWith('custom:')) {
-      const assistantId = parseCustomAssistantId(key);
-      if (!assistantId) return undefined;
-      const assistant = findAssistantById(assistants, assistantId);
-      if (assistant) return toPresetAvailableAgent(assistant);
+    const presetId = parsePresetSelectionId(key);
+    if (presetId) {
+      const preset = findPresetById(presets, presetId);
+      if (preset) {
+        const preferenceIds = [
+          ...(preset.preferred_agent_id ? [preset.preferred_agent_id] : []),
+          ...preset.agent_preferences.map((preference) => preference.agent_id),
+        ];
+        const preferredAgent = preferenceIds
+          .map((agentId) => availableAgents?.find((agent) => agent.id === agentId))
+          .find(Boolean);
+        return {
+          agent_type: preferredAgent?.agent_type || 'nomi',
+          backend: preferredAgent?.backend,
+          name: preset.name,
+          id: preset.id,
+          preset_id: preset.id,
+          is_preset: true,
+          avatar: preset.avatar,
+        };
+      }
       return undefined;
     }
     // Row id (custom ACP / remote) takes precedence, so two rows sharing
@@ -240,7 +244,7 @@ export const useGuidAgentSelection = ({
   // config namespaces (acp.config / mode preferences) are not fragmented
   // per row.
   const selectedAgent: string = ((): string => {
-    if (selectedAgentKey.startsWith('custom:')) return 'custom';
+    if (selectedAgentKey.startsWith('preset:')) return 'preset';
     const info = availableAgents?.find((a) => a.id === selectedAgentKey);
     if (info?.agent_type === 'remote') return 'remote';
     if (info?.agent_source === 'custom') return 'custom';
@@ -248,9 +252,9 @@ export const useGuidAgentSelection = ({
   })();
   const selectedAgentInfo = useMemo(() => {
     return findAgentByKey(selectedAgentKey);
-  }, [selectedAgentKey, availableAgents, assistants]);
+  }, [selectedAgentKey, availableAgents, presets]);
   const is_presetAgent = Boolean(selectedAgentInfo?.is_preset);
-  const is_presetAgentPending = selectedAgentKey.startsWith('custom:') && !is_presetAgent;
+  const is_presetAgentPending = selectedAgentKey.startsWith('preset:') && !is_presetAgent;
 
   // --- SWR: Fetch detected execution engines (shared cache) ---
   const { data: availableAgentsData } = useSWR<AvailableAgent[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
@@ -276,20 +280,22 @@ export const useGuidAgentSelection = ({
         avatar: isCustomRow ? asAgent.icon : (a as AvailableAgent).avatar,
       };
     });
-    const remoteAsAvailable: AvailableAgent[] = (remoteAgentsData || []).map((ra) => ({
-      agent_type: 'remote',
-      name: ra.name,
-      // remote_agents.id is an integer row key; the agent-selection layer is
-      // string-keyed (shares the namespace with custom ACP slugs), so stringify
-      // here and parse back to a number at the create boundary.
-      id: String(ra.id),
-      custom_agent_id: String(ra.id),
-      avatar: ra.avatar,
-    }));
+    const remoteAsAvailable: AvailableAgent[] = (remoteAgentsData || [])
+      .filter((ra) => ra.protocol === 'openclaw')
+      .map((ra) => ({
+        agent_type: 'remote',
+        name: ra.name,
+        // remote_agents.id is an integer row key; the agent-selection layer is
+        // string-keyed (shares the namespace with custom ACP slugs), so stringify
+        // here and parse back to a number at the create boundary.
+        id: String(ra.id),
+        custom_agent_id: String(ra.id),
+        avatar: ra.avatar,
+      }));
     setAvailableAgents([...normalisedDetected, ...remoteAsAvailable]);
   }, [availableAgentsData, remoteAgentsData]);
 
-  // Track whether the resetAssistant flag has been consumed so it only fires once
+  // Track whether the resetPreset flag has been consumed so it only fires once
   // per navigation. Use locationKey (changes on every navigate()) to reset the guard,
   // because window.history.replaceState does NOT update React Router's location.state.
   const resetHandledRef = useRef(false);
@@ -300,7 +306,7 @@ export const useGuidAgentSelection = ({
   }
 
   // Apply sidebar "new chat" resets and explicit "Go to Chat" pre-selections
-  // before paint so the previous assistant selection does not flash for a
+  // before paint so the previous preset selection does not flash for a
   // frame when navigating to /guid again.
   useLayoutEffect(() => {
     if (!availableAgents || availableAgents.length === 0) return;
@@ -321,12 +327,12 @@ export const useGuidAgentSelection = ({
       }
     }
 
-    if (resetAssistant) {
+    if (resetPreset) {
       resetHandledRef.current = true;
-      // Only reset when the current selection is a preset assistant.
+      // Only reset when the current selection is a preset preset.
       // CLI agent selections (Claude Code, Gemini CLI, etc.) are preserved so
       // New Chat keeps the last-used CLI agent.
-      const currentIsPreset = selectedAgentKey.startsWith('custom:');
+      const currentIsPreset = selectedAgentKey.startsWith('preset:');
       if (currentIsPreset) {
         const firstCliAgent = availableAgents.find((a) => !a.is_preset);
         const fallbackKey = firstCliAgent ? getAgentKey(firstCliAgent) : 'nomi';
@@ -336,12 +342,12 @@ export const useGuidAgentSelection = ({
         });
       }
     }
-  }, [availableAgents, resetAssistant, preselectAgentKey, locationKey]);
+  }, [availableAgents, resetPreset, preselectAgentKey, locationKey]);
 
   // Load last selected agent when no explicit reset was requested.
   useEffect(() => {
     if (!availableAgents || availableAgents.length === 0) return;
-    if (resetAssistant) return;
+    if (resetPreset) return;
     // An explicit pre-selection from navigation state wins over the
     // persisted last-selected key — skip the saved-restore path so
     // useLayoutEffect's preselect remains the authoritative pick.
@@ -356,8 +362,8 @@ export const useGuidAgentSelection = ({
         if (cancelled) return;
 
         if (savedKey) {
-          // Preset assistant key — trust directly, assistants list resolves later
-          if (savedKey.startsWith('custom:')) {
+          // Preset preset key — trust directly, presets list resolves later
+          if (savedKey.startsWith('preset:')) {
             _setSelectedAgentKey(savedKey);
             return;
           }
@@ -383,7 +389,7 @@ export const useGuidAgentSelection = ({
     return () => {
       cancelled = true;
     };
-  }, [availableAgents, resetAssistant, preselectAgentKey, locationKey]);
+  }, [availableAgents, resetPreset, preselectAgentKey, locationKey]);
 
   const currentEffectiveAgentInfo = useMemo(() => {
     if (!is_presetAgent) {
@@ -398,22 +404,22 @@ export const useGuidAgentSelection = ({
     return getEffectiveAgentType(selectedAgentInfo);
   }, [is_presetAgent, selectedAgent, selectedAgentInfo, getEffectiveAgentType, isMainAgentAvailable]);
 
-  // Reset selected ACP model when agent changes: prefer the preset assistant's
+  // Reset selected ACP model when agent changes: prefer the preset preset's
   // own configured model, then the backend's saved preference, then the
   // handshake default.
   useEffect(() => {
     // For preset agents, resolve to the actual backend type for config lookup
     const backend = is_presetAgent ? currentEffectiveAgentInfo.agent_type : selectedAgent;
 
-    // A preset assistant carries its own model selection (`assistant.models`).
+    // A preset carries provider-qualified model preferences.
     // It must win over the backend's global `preferredModelId`, otherwise the
-    // assistant's chosen model is silently discarded in favour of whatever the
-    // ACP engine was last configured with globally. Mirrors the assistant-record
-    // lookup used by the rule/skill resolvers (`a.id === custom_agent_id`).
+    // preset's chosen model is silently discarded in favour of whatever the
+    // ACP engine was last configured with globally. Mirrors the preset-record
+    // Use the first display preference only; execution resolution remains server-side.
     if (is_presetAgent) {
-      const presetModel = assistants.find((a) => a.id === selectedAgentInfo?.custom_agent_id)?.models?.[0];
-      if (presetModel) {
-        _setSelectedAcpModel(presetModel);
+      const presetModel = presets.find((a) => a.id === selectedAgentInfo?.preset_id)?.model_preferences?.[0];
+      if (presetModel?.model) {
+        _setSelectedAcpModel(presetModel.model);
         return;
       }
     }
@@ -429,7 +435,7 @@ export const useGuidAgentSelection = ({
     const matched = metadataAgents?.find((a) => (a.backend ?? a.agent_type) === backend);
     const handshakeModels = matched?.handshake?.available_models as AcpModelInfo | undefined;
     _setSelectedAcpModel(handshakeModels?.current_model_id ?? null);
-  }, [selectedAgentKey, availableAgentsData, is_presetAgent, currentEffectiveAgentInfo.agent_type, assistants, selectedAgentInfo?.custom_agent_id]);
+  }, [selectedAgentKey, availableAgentsData, is_presetAgent, currentEffectiveAgentInfo.agent_type, presets, selectedAgentInfo?.preset_id]);
 
   // Read preferred mode or fallback to legacy yoloMode config
   useEffect(() => {
@@ -555,7 +561,7 @@ export const useGuidAgentSelection = ({
     is_presetAgent,
     is_presetAgentPending,
     availableAgents,
-    assistants,
+    presets,
     customAgents,
     selectedMode,
     setSelectedMode,
@@ -565,11 +571,7 @@ export const useGuidAgentSelection = ({
     currentEffectiveAgentInfo,
     getAgentKey,
     findAgentByKey,
-    resolvePresetRulesAndSkills,
-    resolvePresetContext,
     resolvePresetAgentType,
-    resolveEnabledSkills,
-    resolveDisabledBuiltinSkills,
     isMainAgentAvailable,
     getEffectiveAgentType,
     refreshCustomAgents,

@@ -7,7 +7,7 @@
 /**
  * 渠道行寻址目标（多机器人模型）。
  *
- * Addresses one channel row (`assistant_plugins` row) for the per-owner
+ * Addresses one channel row (`channel_plugins` row) for the per-owner
  * multi-bot flows:
  * - `channelId` present → update that row (`achn_` prefixed id, or a legacy
  *   platform-name id migrated from the single-bot era);
@@ -30,4 +30,4 @@ export interface ChannelTarget {
 }
 
 /** Builtin IM platforms a companion can connect (the channel config forms cover this set). */
-export type MasterAgentPlatform = 'telegram' | 'lark' | 'dingtalk' | 'weixin' | 'wecom' | 'discord' | 'slack' | 'matrix' | 'mattermost' | 'twitch' | 'nostr' | 'qqbot';
+export type ChannelPlatform = 'telegram' | 'lark' | 'dingtalk' | 'weixin' | 'wecom' | 'discord' | 'slack' | 'matrix' | 'mattermost' | 'twitch' | 'nostr' | 'qqbot';

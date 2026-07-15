@@ -23,7 +23,6 @@ import idmm from './idmm.json';
 import starOffice from './starOffice.json';
 import guid from './guid.json';
 import agent from './agent.json';
-import team from './team.json';
 import terminal from './terminal.json';
 import webhook from './webhook.json';
 import autowork from './autowork.json';
@@ -33,17 +32,18 @@ import publicCompanion from './publicCompanion.json';
 import assetLibrary from './assetLibrary.json';
 import sessionList from './sessionList.json';
 import modelFailover from './modelFailover.json';
-import orchestrator from './orchestrator.json';
 import poi from './poi.json';
 import insights from './insights.json';
 import media from './media.json';
 import cloudLogin from './cloudLogin.json';
+import agentExecution from './agentExecution.json';
+import collaboration from './collaboration.json';
 import workshop from './workshop.json';
 import workshopCanvas from './workshopCanvas.json';
 import workshopAssets from './workshopAssets.json';
 import workshopEditor from './workshopEditor.json';
 import workshopGeneration from './workshopGeneration.json';
-import workshopAssistant from './workshopAssistant.json';
+import workshopAgent from './workshopAgent.json';
 
 export default {
   common,
@@ -66,7 +66,6 @@ export default {
   starOffice,
   guid,
   agent,
-  team,
   terminal,
   webhook,
   autowork,
@@ -76,15 +75,16 @@ export default {
   assetLibrary,
   sessionList,
   modelFailover,
-  orchestrator,
   poi,
   insights,
   media,
   cloudLogin,
+  agentExecution,
+  collaboration,
   workshop,
   workshopCanvas,
   workshopAssets,
   workshopEditor,
   workshopGeneration,
-  workshopAssistant,
+  workshopAgent,
 };

@@ -22,9 +22,9 @@ export const FEEDBACK_MODULES: readonly FeedbackModule[] = [
     tag: 'agent-detection',
   },
   {
-    i18nKey: 'settings.bugReportModuleAssistant',
-    descriptionI18nKey: 'settings.bugReportModuleAssistantDescription',
-    tag: 'assistant-preset',
+    i18nKey: 'settings.bugReportModulePreset',
+    descriptionI18nKey: 'settings.bugReportModulePresetDescription',
+    tag: 'preset',
   },
   {
     i18nKey: 'settings.bugReportModuleLlmConfig',
@@ -72,9 +72,9 @@ export const FEEDBACK_MODULES: readonly FeedbackModule[] = [
     tag: 'scheduled-task',
   },
   {
-    i18nKey: 'settings.bugReportModuleAgentTeam',
-    descriptionI18nKey: 'settings.bugReportModuleAgentTeamDescription',
-    tag: 'agent-team',
+    i18nKey: 'settings.bugReportModuleCollaboration',
+    descriptionI18nKey: 'settings.bugReportModuleCollaborationDescription',
+    tag: 'agent-collaboration',
   },
   {
     i18nKey: 'settings.bugReportModuleDisplaySettings',

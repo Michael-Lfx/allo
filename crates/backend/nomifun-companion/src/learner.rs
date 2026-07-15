@@ -350,7 +350,7 @@ mod tests {
             store: CompanionStore::open_memory().await.unwrap(),
             registry,
             completer: Arc::new(CannedCompleter(reply.to_owned())),
-            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16))),
+            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16)), "owner-a"),
             run_lock: Arc::new(Mutex::new(())),
         };
         (learner, companion.id)
@@ -459,8 +459,8 @@ mod tests {
     struct RecordingBroadcaster {
         events: std::sync::Mutex<Vec<WebSocketMessage<serde_json::Value>>>,
     }
-    impl nomifun_realtime::EventBroadcaster for RecordingBroadcaster {
-        fn broadcast(&self, e: WebSocketMessage<serde_json::Value>) {
+    impl nomifun_realtime::UserEventSink for RecordingBroadcaster {
+        fn send_to_user(&self, _user_id: &str, e: WebSocketMessage<serde_json::Value>) {
             self.events.lock().unwrap().push(e);
         }
     }
@@ -488,7 +488,7 @@ mod tests {
             store: CompanionStore::open_memory().await.unwrap(),
             registry,
             completer: Arc::new(CannedCompleter(reply.to_owned())),
-            emitter: CompanionEventEmitter::new(bc.clone()),
+            emitter: CompanionEventEmitter::new(bc.clone(), "owner-a"),
             run_lock: Arc::new(Mutex::new(())),
         };
         learner.run_once().await.unwrap();

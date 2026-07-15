@@ -15,7 +15,7 @@ describe('Guid homepage single-screen layout', () => {
 
     const inputIndex = source.indexOf('<GuidInputCard');
     const primaryStageIndex = source.indexOf('className={styles.guidPrimaryStage}');
-    const editorHostIndex = source.indexOf('<GuidAssistantEditorHost', inputIndex);
+    const editorHostIndex = source.indexOf('<GuidPresetEditorHost', inputIndex);
 
     expect(primaryStageIndex).toBeGreaterThan(-1);
     expect(inputIndex).toBeGreaterThan(-1);

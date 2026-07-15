@@ -207,7 +207,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
             onClick={handleBrowseWorkspace}
           >
             <PlusIcon />
-            <span>{t('team.create.chooseDifferentFolder')}</span>
+            <span>{t('common.filePicker.chooseDifferentFolder')}</span>
           </button>
 
           <>

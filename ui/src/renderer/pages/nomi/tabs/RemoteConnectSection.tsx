@@ -8,7 +8,7 @@ import type { IChannelPluginStatus } from '@/common/types/channel/channel';
 import { channel } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import NomiModal from '@/renderer/components/base/NomiModal';
-import type { MasterAgentPlatform } from '@/renderer/components/settings/SettingsModal/contents/channels/channelTarget';
+import type { ChannelPlatform } from '@/renderer/components/settings/SettingsModal/contents/channels/channelTarget';
 import {
   CHANNEL_PLATFORMS,
   CREDENTIALS_REQUIRED_KEY,
@@ -24,13 +24,13 @@ import { useCompanions } from '../useNomi';
 
 /**
  * 伙伴设置页「远程连接」节：每伙伴视角的多机器人管理。
- * 每个机器人 = assistant_plugins 一行（行上 companion_id 绑宠，UNIQUE(type,bot_key)
+ * 每个机器人 = channel_plugins 一行（行上 companion_id 绑宠，UNIQUE(type,bot_key)
  * 保证同一机器人不绑多宠）。同一平台可以有多行：本宠的行直接启停/配置/解绑/
  * 删除；未绑定的行可以绑到本宠；他宠的行不可抢，但本宠可以为该平台新建自己的
  * 机器人——这是多行模型的核心能力。
  *
  * Per-companion "Remote connect" section over the multi-bot channel model. Each bot
- * is one assistant_plugins row; the card for a platform branches on whether
+ * is one channel_plugins row; the card for a platform branches on whether
  * this companion owns a row, an unbound row exists, or only other companions' rows exist.
  * Pending pairing requests still surface as a platform-level badge.
  */
@@ -44,7 +44,7 @@ const RemoteConnectSection: React.FC<{ companionId: string; companionName: strin
   const [busyRowId, setBusyRowId] = useState<string | null>(null);
   // Config modal target: with channelId = edit that row; without = create mode
   // (the form's first save creates a row bound to this companion).
-  const [configTarget, setConfigTarget] = useState<{ platform: MasterAgentPlatform; channelId?: string } | null>(null);
+  const [configTarget, setConfigTarget] = useState<{ platform: ChannelPlatform; channelId?: string } | null>(null);
 
   // ── Channel plugin statuses (REST snapshot + WS live updates) ──
   const refreshStatuses = useCallback(async () => {
@@ -116,7 +116,7 @@ const RemoteConnectSection: React.FC<{ companionId: string; companionName: strin
 
   // ── Row actions ──
   const handleToggleEnabled = useCallback(
-    async (row: IChannelPluginStatus, platform: MasterAgentPlatform, enabled: boolean) => {
+    async (row: IChannelPluginStatus, platform: ChannelPlatform, enabled: boolean) => {
       setBusyRowId(row.id);
       try {
         if (enabled) {
@@ -155,7 +155,7 @@ const RemoteConnectSection: React.FC<{ companionId: string; companionName: strin
       try {
         // Backend contract: empty companion_id clears the binding. The call atomically
         // persists the binding AND resets only this channel row's sessions.
-        await channel.setMasterAgentCompanion.invoke({ plugin_id: rowId, companion_id: bind ? companionId : null });
+        await channel.setChannelCompanion.invoke({ plugin_id: rowId, companion_id: bind ? companionId : null });
         Message.success(
           bind ? t('nomi.settings.remoteBindSuccess', { companionName }) : t('nomi.settings.remoteUnbindSuccess')
         );
@@ -200,7 +200,7 @@ const RemoteConnectSection: React.FC<{ companionId: string; companionName: strin
 
   // Move (rebind) a bot that currently belongs to ANOTHER owner onto this
   // companion. A bot serves exactly one owner at a time, but moving is free —
-  // this reuses the same setMasterAgentCompanion rebind as bind (clears the
+  // this reuses the same setChannelCompanion rebind as bind (clears the
   // channel's old sessions server-side).
   const confirmMove = useCallback(
     (row: IChannelPluginStatus) => {

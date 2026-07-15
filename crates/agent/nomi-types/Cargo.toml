@@ -13,3 +13,4 @@ async-trait.workspace = true
 chrono.workspace      = true
 indexmap = { version = "2", features = ["serde"] }
 thiserror.workspace   = true
+schemars               = "1"

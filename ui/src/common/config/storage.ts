@@ -5,6 +5,12 @@
  */
 
 import type { SpeechToTextConfig } from '@/common/types/provider/speech';
+import type { ResolvedPresetSnapshot } from '@/common/types/agent/presetTypes';
+import type {
+  TDecisionPolicy,
+  TDelegationPolicy,
+  TExecutionModelPool,
+} from '@/common/types/agentExecution/agentExecutionTypes';
 import { storage } from '@/platform';
 
 // 系统配置存储
@@ -70,9 +76,8 @@ export interface IConfigStorageRefer {
     preferredMode?: string;
   };
   'nomi.defaultModel'?: { id: string; use_model: string };
-  // 智能编排「协作模型」默认偏好（多选）。主模型见 nomi.defaultModel；这里是供主模型
-  // 按任务难度挑选的额外 worker 模型池。空 = 全程用主模型。
-  'nomi.orchestrationCollaborators'?: { provider_id: string; model: string }[];
+  /** 新会话的协作模型偏好。空数组表示只使用主模型。 */
+  'nomi.collaborationModels'?: { provider_id: string; model: string }[];
   'tools.imageGenerationModel': TProviderWithModel & {
     /** @deprecated Image generation is now controlled via built-in MCP server toggle */
     switch?: boolean;
@@ -94,32 +99,32 @@ export interface IConfigStorageRefer {
   'system.autoPreviewOfficeFiles'?: boolean;
   // Unlock advanced settings tabs (e.g. cloud account) after a password gate in System settings.
   'system.developerMode'?: boolean;
-  // Telegram assistant agent selection / Telegram 助手所使用的 Agent
-  'assistant.telegram.agent'?: {
+  // Telegram channel agent selection / Telegram Channel 所使用的 Agent
+  'channels.telegram.agent'?: {
     backend: string;
     custom_agent_id?: string;
     name?: string;
   };
-  // Lark assistant agent selection / Lark 助手所使用的 Agent
-  'assistant.lark.agent'?: {
+  // Lark channel agent selection / Lark Channel 所使用的 Agent
+  'channels.lark.agent'?: {
     backend: string;
     custom_agent_id?: string;
     name?: string;
   };
-  // DingTalk assistant agent selection / DingTalk 助手所使用的 Agent
-  'assistant.dingtalk.agent'?: {
+  // DingTalk channel agent selection / DingTalk Channel 所使用的 Agent
+  'channels.dingtalk.agent'?: {
     backend: string;
     custom_agent_id?: string;
     name?: string;
   };
-  // WeChat assistant agent selection / WeChat 助手所使用的 Agent
-  'assistant.weixin.agent'?: {
+  // WeChat channel agent selection / WeChat Channel 所使用的 Agent
+  'channels.weixin.agent'?: {
     backend: string;
     custom_agent_id?: string;
     name?: string;
   };
-  // WeCom assistant agent selection / 企业微信助手所使用的 Agent
-  'assistant.wecom.agent'?: {
+  // WeCom channel agent selection / 企业微信 Channel 所使用的 Agent
+  'channels.wecom.agent'?: {
     backend: string;
     custom_agent_id?: string;
     name?: string;
@@ -135,14 +140,6 @@ export interface IConfigStorageRefer {
    * pre-flag build still re-reads the legacy data unchanged.
    */
   'migration.providersMigrated_v1'?: boolean;
-  /**
-   * One-shot completion flag for the legacy `assistants` → backend assistants
-   * migration in {@link migrateAssistantsToBackend}. Same rationale as
-   * `migration.providersMigrated_v1` — without it, an assistant the user
-   * deletes after migration would be re-imported on the next launch from the
-   * still-on-disk legacy field.
-   */
-  'migration.assistantsMigrated_v1'?: boolean;
 }
 
 export interface IEnvStorageRefer {
@@ -164,8 +161,8 @@ export type TConversationRuntimeStateKind = 'idle' | 'starting' | 'running' | 'w
 export type TConversationRuntimeSummary = {
   state: TConversationRuntimeStateKind;
   can_send_message: boolean;
-  has_task: boolean;
-  task_status?: TChatConversationStatus;
+  has_runtime: boolean;
+  runtime_status?: TChatConversationStatus;
   is_processing: boolean;
   pending_confirmations: number;
   /** Epoch ms when the currently-running turn started, present while
@@ -195,6 +192,22 @@ interface IChatConversation<T, Extra> {
    *  top-level conversations column; mirrored into extra by the API mapper so
    *  existing extra-readers keep working). */
   cron_job_id?: string;
+  /** Immutable preset lineage resolved and persisted by the backend. */
+  preset_id?: string;
+  preset_revision?: number;
+  preset_snapshot?: ResolvedPresetSnapshot;
+  /** Nomi-only collaboration policy persisted as first-class conversation fields. */
+  delegation_policy?: TDelegationPolicy;
+  execution_model_pool?: TExecutionModelPool;
+  decision_policy?: TDecisionPolicy;
+  /** Optional collaboration authoring template. Runtime executions copy its
+   * resolved snapshot and never retain this mutable reference. `null` is the
+   * PATCH wire value for explicitly clearing the selection. */
+  execution_template_id?: string | null;
+  /** Collaboration aggregate linked to this lead or retained Attempt transcript. */
+  linked_execution_id?: string;
+  execution_step_id?: string;
+  execution_attempt_id?: string;
 }
 
 // Token 使用统计数据类型
@@ -228,7 +241,6 @@ export type TChatConversation =
           custom_workspace?: boolean;
           agent_name?: string;
           custom_agent_id?: string; // UUID for identifying specific custom agent
-          preset_context?: string; // 智能助手的预设规则/提示词 / Preset context from smart assistant
           /** Skills snapshot for this conversation — authoritative list, written
            * once at creation. Join with `GET /api/skills` for descriptions. */
           skills?: string[];
@@ -240,8 +252,6 @@ export type TChatConversation =
           mcp_statuses?: IConversationMcpStatus[];
           /** Session-only MCP server snapshot persisted at creation time. */
           session_mcp_servers?: ISessionMcpServer[];
-          /** 预设助手 ID，用于在会话面板显示助手名称和头像 / Preset assistant ID for displaying name and avatar in conversation panel */
-          preset_assistant_id?: string;
           /** 是否置顶会话 / Whether this conversation is pinned */
           pinned?: boolean;
           /** 置顶时间戳（毫秒）/ Pin timestamp in milliseconds */
@@ -280,12 +290,9 @@ export type TChatConversation =
           cli_path?: string;
           custom_workspace?: boolean;
           sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access'; // Codex sandbox permission mode
-          preset_context?: string; // 智能助手的预设规则/提示词 / Preset context from smart assistant
           /** Skills snapshot for this conversation — authoritative list, written
            * once at creation. Join with `GET /api/skills` for descriptions. */
           skills?: string[];
-          /** 预设助手 ID，用于在会话面板显示助手名称和头像 / Preset assistant ID for displaying name and avatar in conversation panel */
-          preset_assistant_id?: string;
           /** 是否置顶会话 / Whether this conversation is pinned */
           pinned?: boolean;
           /** 置顶时间戳（毫秒）/ Pin timestamp in milliseconds */
@@ -334,8 +341,6 @@ export type TChatConversation =
           /** Skills snapshot for this conversation — authoritative list, written
            * once at creation. Join with `GET /api/skills` for descriptions. */
           skills?: string[];
-          /** 预设助手 ID / Preset assistant ID */
-          preset_assistant_id?: string;
           /** 是否置顶会话 / Whether this conversation is pinned */
           pinned?: boolean;
           /** 置顶时间戳（毫秒）/ Pin timestamp in milliseconds */
@@ -362,13 +367,12 @@ export type TChatConversation =
           workspace?: string;
           custom_workspace?: boolean;
           agent_name?: string;
-          preset_assistant_id?: string;
           pinned?: boolean;
           pinned_at?: number;
           /** Legacy marker for pre-provider-probe health-check conversations */
           is_health_check?: boolean;
           cron_job_id?: string;
-          // Other legacy-only keys (session_mode, preset_rules, etc.)
+          // Other legacy-only keys (session_mode, injected rules, etc.)
           // deliberately omitted — they're not read by the renderer.
         }
       >,
@@ -383,8 +387,6 @@ export type TChatConversation =
           /** Skills snapshot for this conversation — authoritative list, written
            * once at creation. Join with `GET /api/skills` for descriptions. */
           skills?: string[];
-          /** 预设助手 ID / Preset assistant ID */
-          preset_assistant_id?: string;
           /** 是否置顶会话 / Whether this conversation is pinned */
           pinned?: boolean;
           /** 置顶时间戳（毫秒）/ Pin timestamp in milliseconds */
@@ -404,14 +406,14 @@ export type TChatConversation =
           workspace?: string;
           custom_workspace?: boolean;
           /** Remote agent config ID (FK to remote_agents table) */
-          remoteAgentId: number;
+          remote_agent_id: number;
+          /** Legacy UI alias kept during the snake_case migration. */
+          remoteAgentId?: number;
           /** Remote session key for resume */
           sessionKey?: string;
           /** Skills snapshot for this conversation — authoritative list, written
            * once at creation. Join with `GET /api/skills` for descriptions. */
           skills?: string[];
-          /** Preset assistant ID */
-          preset_assistant_id?: string;
           /** Whether this conversation is pinned */
           pinned?: boolean;
           /** Pin timestamp in milliseconds */
@@ -430,8 +432,6 @@ export type TChatConversation =
         workspace: string;
         custom_workspace?: boolean;
         proxy?: string;
-        /** System rules injected at initialization */
-        preset_rules?: string;
         /** Skills snapshot for this conversation — authoritative list, written
          * once at creation. Join with `GET /api/skills` for descriptions. */
         skills?: string[];
@@ -443,8 +443,6 @@ export type TChatConversation =
         mcp_statuses?: IConversationMcpStatus[];
         /** Session-only MCP server snapshot persisted at creation time. */
         session_mcp_servers?: ISessionMcpServer[];
-        /** Preset assistant ID */
-        preset_assistant_id?: string;
         /** Whether this conversation is pinned */
         pinned?: boolean;
         /** Pin timestamp in milliseconds */
@@ -461,32 +459,6 @@ export type TChatConversation =
         last_token_usage?: TokenUsageData;
         /** Cron job ID that spawned this conversation */
         cron_job_id?: string;
-        /** Orchestration run linked to this conversation (会话原生编排 v2).
-         * Written by the backend (Tasks B1–B3) onto the originating conversation
-         * and refreshed via `conversation.listChanged`; the single source of truth
-         * for "does this conversation have a run". `useConversationRun` derives its
-         * `runId` from here. Absent for conversations with no orchestration run. */
-        orchestrator_run_id?: string;
-        /** The specific run task this conversation backs, when the conversation was
-         * created as a worker for an orchestration run task (vs. the run's lead
-         * conversation). Absent for the lead conversation and non-orchestration ones. */
-        orchestrator_task_id?: string;
-        /** Legacy field kept for backward-compat only (`#[serde(default)]`). Once
-         * marked the homepage 智能编排 LEAD on-ramp, but that entry was removed: it
-         * no longer drives any lead prompt. The model range (主/协作) is now chosen
-         * per-conversation via the composer's collaborator selector, persisted into
-         * `extra.orchestrator_model_range`. Retained so old rows keep deserializing. */
-        orchestrator_role?: string;
-        /** Curated model range for the orchestration run this lead conversation
-         * spawns (homepage「主模型 + 协作模型」picker). `models[0]` is the 主模型
-         * (also the lead/planner); the rest are 协作模型 the planner may assign
-         * per node by difficulty. Written by the homepage entry into `extra`; the
-         * `nomi_run_create` gateway handler reads it back to build the run's fleet
-         * (deterministic — not relayed through the LLM). Absent ⇒ Auto (all enabled). */
-        orchestrator_model_range?:
-          | { mode: 'single'; model: { provider_id: string; model: string } }
-          | { mode: 'auto' }
-          | { mode: 'range'; models: { provider_id: string; model: string }[] };
         /** Marks this nomi conversation as a desktop-companion's single per-companion
          * session (单会话契约). Written by the backend at companion-session creation.
          * Drives the 桌面伙伴 session-list group, the constrained companion chat panel
@@ -588,9 +560,9 @@ export interface IProvider {
   model_protocols?: Record<string, string>;
   /**
    * 每个模型的用户撰写描述。映射模型名称到描述文本。
-   * 供编排器按描述自动择优模型。
+   * 供智能协作按描述自动选择模型。
    * Per-model user-authored descriptions. Maps model name to description text.
-   * Consumed by the orchestrator to auto-pick models by description.
+   * Used by collaboration planning to select models by description.
    * e.g. { "gpt-4o": "擅长前端与多模态", "claude-sonnet-4": "长上下文推理" }
    */
   model_descriptions?: Record<string, string>;
@@ -690,12 +662,22 @@ export interface IMcpServer {
   builtin?: boolean;
 }
 
-export type ISessionMcpServer = Pick<IMcpServer, 'id' | 'name' | 'transport'>;
+/**
+ * Conversation-scoped MCP snapshot. This intentionally does not reuse
+ * `IMcpServer.id`: a session snapshot may represent either a repository-backed
+ * server (numeric database key) or a session-only server (arbitrary key), so
+ * its wire identifier is always a string.
+ */
+export interface ISessionMcpServer {
+  id: string;
+  name: string;
+  transport: IMcpServerTransport;
+}
 
 export type IConversationMcpStatusKind = 'loaded' | 'failed' | 'unsupported';
 
 export interface IConversationMcpStatus {
-  id: number;
+  id: string;
   name: string;
   status: IConversationMcpStatusKind;
   reason?: string;

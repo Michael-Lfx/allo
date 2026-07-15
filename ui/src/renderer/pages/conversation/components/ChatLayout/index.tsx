@@ -1,5 +1,5 @@
 import { AgentLogoIcon } from '@/renderer/components/agent/AgentBadge';
-import type { PresetAssistantInfo } from '@/renderer/hooks/agent/usePresetAssistantInfo';
+import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
@@ -13,7 +13,7 @@ import WorkspaceToolRail, {
   WORKSPACE_PANEL_META_EVENT,
   dispatchWorkspacePanelTabEvent,
   type WorkspacePanelMetaDetail,
-  type WorkspaceToolRailOrchestration,
+  type WorkspaceToolRailCollaboration,
 } from './WorkspaceToolRail';
 import { useContainerWidth } from '@/renderer/pages/conversation/hooks/useContainerWidth';
 import { useLayoutConstraints } from '@/renderer/pages/conversation/hooks/useLayoutConstraints';
@@ -47,9 +47,9 @@ export interface ChatLayoutProps {
   sider: React.ReactNode;
   siderTitle?: React.ReactNode;
   backend?: string;
-  /** Preset assistant info — when provided, badge shows assistant identity instead of backend */
-  presetAssistant?: PresetAssistantInfo & { id?: string };
-  /** Fallback agent name (used when no presetAssistant, e.g. from conversation.extra.agent_name) */
+  /** Preset info — when provided, the badge shows the preset identity instead of the backend. */
+  preset?: PresetInfo & { id?: string };
+  /** Fallback agent name (used when no preset, e.g. from conversation.extra.agent_name) */
   agent_name?: string;
   headerExtra?: React.ReactNode;
   /**
@@ -87,12 +87,12 @@ export interface ChatLayoutProps {
   workspacePreferenceKey?: string;
   /** Custom rename handler; when provided, replaces the default conversation.update rename flow */
   onRenameTitle?: (new_name: string) => Promise<boolean>;
-  /** Optional override for the leading icon shown before the title (e.g. team Peoples icon) */
+  /** Optional override for the leading icon shown before the title. */
   headerLeading?: React.ReactNode;
   /** Extra panels exposed by the persistent vertical tool rail. */
   workspaceExtraTabs?: WorkspaceExtraTab[];
-  /** Optional orchestration canvas entry merged into the same tool rail. */
-  workspaceOrchestration?: WorkspaceToolRailOrchestration;
+  /** Optional collaboration progress entry merged into the same tool rail. */
+  workspaceCollaboration?: WorkspaceToolRailCollaboration;
 }
 
 /**
@@ -105,7 +105,7 @@ export interface ChatLayoutProps {
 const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const { t } = useTranslation();
   const { conversation_id, workspacePath, isTemporaryWorkspace } = props;
-  const { backend, presetAssistant, agent_name, workspaceEnabled = true, workspacePreferenceKey } = props;
+  const { backend, preset, agent_name, workspaceEnabled = true, workspacePreferenceKey } = props;
   const layout = useLayoutContext();
   // Desktop-shell mac/win runtime. MUST gate on `isDesktopShell()` first
   // (matching Titlebar): the titlebar workspace toggle only exists in the
@@ -144,20 +144,20 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const selectWorkspaceTool = (tab: string) => {
     const nextTab = tab as WorkspaceTab;
     const clickingActivePanel = !rightSiderCollapsed && activeWorkspaceTab === nextTab;
-    if (props.workspaceOrchestration?.active) props.workspaceOrchestration.onClick();
+    if (props.workspaceCollaboration?.active) props.workspaceCollaboration.onClick();
     setActiveWorkspaceTab(nextTab);
     dispatchWorkspacePanelTabEvent(nextTab, conversation_id != null ? String(conversation_id) : undefined);
     persistRightSiderCollapsed(clickingActivePanel);
   };
 
-  const workspaceOrchestration = props.workspaceOrchestration
+  const workspaceCollaboration = props.workspaceCollaboration
     ? {
-        ...props.workspaceOrchestration,
+        ...props.workspaceCollaboration,
         onClick: () => {
-          if (!props.workspaceOrchestration?.active) {
+          if (!props.workspaceCollaboration?.active) {
             setRightSiderCollapsed(true);
           }
-          props.workspaceOrchestration?.onClick();
+          props.workspaceCollaboration?.onClick();
         },
       }
     : undefined;
@@ -183,7 +183,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const capitalizedBackend = backend ? backend.charAt(0).toUpperCase() + backend.slice(1) : backend;
 
   // Compute display name with fallback chain
-  const display_name = presetAssistant?.name || agent_name || backendAgentName || capitalizedBackend;
+  const display_name = preset?.name || agent_name || backendAgentName || capitalizedBackend;
 
   const {
     splitRatio: workspaceWidthPxPref,
@@ -307,12 +307,12 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           conversation_id={conversation_id}
           leading={
             props.headerLeading ??
-            ((backend || presetAssistant) && (
+            ((backend || preset) && (
               <AgentLogoIcon
                 backend={backend}
                 agent_name={display_name}
-                agentLogo={presetAssistant?.logo}
-                agentLogoIsEmoji={presetAssistant?.isEmoji}
+                agentLogo={preset?.logo}
+                agentLogoIsEmoji={preset?.isEmoji}
               />
             ))
           }
@@ -467,14 +467,14 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
             onSelect={selectWorkspaceTool}
             changeCount={workspaceChangeCount}
             extraTabs={props.workspaceExtraTabs}
-            orchestration={workspaceOrchestration}
+            collaboration={workspaceCollaboration}
             footer={
               <button
                 type='button'
                 className='workspace-tool-rail__item workspace-tool-rail__item--collapse'
                 onClick={() => {
-                  if (rightSiderCollapsed && props.workspaceOrchestration?.active) {
-                    props.workspaceOrchestration.onClick();
+                  if (rightSiderCollapsed && props.workspaceCollaboration?.active) {
+                    props.workspaceCollaboration.onClick();
                   }
                   persistRightSiderCollapsed(!rightSiderCollapsed);
                 }}

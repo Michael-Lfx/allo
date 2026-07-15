@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CronJobRow {
     pub id: String,
+    /// Immutable aggregate owner. Runtime code must never infer or default it
+    /// from an optional Conversation.
+    pub user_id: String,
     pub name: String,
     pub enabled: bool,
     pub schedule_kind: String,
@@ -14,6 +17,10 @@ pub struct CronJobRow {
     pub execution_mode: String,
     /// JSON: serialized `CronAgentConfig`.
     pub agent_config: Option<String>,
+    /// Preset lineage and immutable resolved launch configuration.
+    pub preset_id: Option<String>,
+    pub preset_revision: Option<i64>,
+    pub preset_snapshot: Option<String>,
     /// Target conversation; NULL for a new_conversation job before first fire
     /// (FK to conversations, ON DELETE SET NULL).
     pub conversation_id: Option<i64>,
@@ -31,28 +38,6 @@ pub struct CronJobRow {
     pub run_count: i64,
     pub retry_count: i64,
     pub max_retries: i64,
-    /// Execution target: `"agent"` (default) or `"terminal"`.
-    #[serde(default = "default_target_kind")]
-    pub target_kind: String,
-    /// Terminal placement: `"new_terminal"` | `"existing_terminal"` (NULL for agent tasks).
-    #[serde(default)]
-    pub terminal_mode: Option<String>,
-    /// Bound/selected terminal session id (NULL until lazily created).
-    #[serde(default)]
-    pub terminal_session_id: Option<i64>,
-    /// Startup program for terminal tasks, e.g. `"$SHELL"`, `"claude"`.
-    #[serde(default)]
-    pub terminal_command: Option<String>,
-    /// JSON array of args for the startup program.
-    #[serde(default)]
-    pub terminal_args: Option<String>,
-    /// Script text written to the terminal's stdin on each fire.
-    #[serde(default)]
-    pub terminal_script: Option<String>,
-}
-
-fn default_target_kind() -> String {
-    "agent".to_string()
 }
 
 #[cfg(test)]
@@ -63,6 +48,7 @@ mod tests {
     fn cron_job_row_serialization_roundtrip() {
         let row = CronJobRow {
             id: "cron_abc123".into(),
+            user_id: "user_1".into(),
             name: "Daily report".into(),
             enabled: true,
             schedule_kind: "cron".into(),
@@ -72,6 +58,9 @@ mod tests {
             payload_message: "Generate daily report".into(),
             execution_mode: "new_conversation".into(),
             agent_config: Some(r#"{"backend":"openai"}"#.into()),
+            preset_id: None,
+            preset_revision: None,
+            preset_snapshot: None,
             conversation_id: Some(101),
             conversation_title: Some("Reports".into()),
             agent_type: "openai".into(),
@@ -87,12 +76,6 @@ mod tests {
             run_count: 5,
             retry_count: 0,
             max_retries: 3,
-            target_kind: "agent".into(),
-            terminal_mode: None,
-            terminal_session_id: None,
-            terminal_command: None,
-            terminal_args: None,
-            terminal_script: None,
         };
         let json = serde_json::to_string(&row).expect("serialize");
         let restored: CronJobRow = serde_json::from_str(&json).expect("deserialize");
@@ -107,6 +90,7 @@ mod tests {
     fn cron_job_row_optional_fields_default_to_none() {
         let row = CronJobRow {
             id: "cron_min".into(),
+            user_id: "user_1".into(),
             name: "Minimal".into(),
             enabled: true,
             schedule_kind: "every".into(),
@@ -116,6 +100,9 @@ mod tests {
             payload_message: "ping".into(),
             execution_mode: "existing".into(),
             agent_config: None,
+            preset_id: None,
+            preset_revision: None,
+            preset_snapshot: None,
             conversation_id: Some(1),
             conversation_title: None,
             agent_type: "acp".into(),
@@ -131,12 +118,6 @@ mod tests {
             run_count: 0,
             retry_count: 0,
             max_retries: 3,
-            target_kind: "agent".into(),
-            terminal_mode: None,
-            terminal_session_id: None,
-            terminal_command: None,
-            terminal_args: None,
-            terminal_script: None,
         };
         assert!(row.schedule_tz.is_none());
         assert!(row.agent_config.is_none());

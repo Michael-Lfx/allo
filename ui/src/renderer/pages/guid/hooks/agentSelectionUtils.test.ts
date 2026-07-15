@@ -6,39 +6,27 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
-  assistantIdMatches,
-  findAssistantById,
-  parseCustomAssistantId,
-  toPresetAvailableAgent,
+  findPresetById,
+  parsePresetSelectionId,
+  presetIdMatches,
 } from './agentSelectionUtils';
 
-describe('agentSelectionUtils preset assistant helpers', () => {
-  test('parseCustomAssistantId reads custom selection keys', () => {
-    expect(parseCustomAssistantId('custom:abc')).toBe('abc');
-    expect(parseCustomAssistantId('nomi')).toBeNull();
-    expect(parseCustomAssistantId('custom:')).toBeNull();
+describe('agentSelectionUtils preset selection helpers', () => {
+  test('parsePresetSelectionId reads preset selection keys', () => {
+    expect(parsePresetSelectionId('preset:abc')).toBe('abc');
+    expect(parsePresetSelectionId('nomi')).toBeNull();
+    expect(parsePresetSelectionId('preset:')).toBeNull();
+    expect(parsePresetSelectionId('custom:abc')).toBeNull();
   });
 
-  test('assistantIdMatches normalizes builtin aliases', () => {
-    expect(assistantIdMatches('builtin-cowork', 'cowork')).toBe(true);
-    expect(assistantIdMatches('cowork', 'builtin-cowork')).toBe(true);
-    expect(assistantIdMatches('other', 'cowork')).toBe(false);
+  test('presetIdMatches normalizes builtin aliases', () => {
+    expect(presetIdMatches('builtin-cowork', 'cowork')).toBe(true);
+    expect(presetIdMatches('cowork', 'builtin-cowork')).toBe(true);
+    expect(presetIdMatches('other', 'cowork')).toBe(false);
   });
 
-  test('findAssistantById resolves alias ids in the catalog', () => {
-    const assistants = [{ id: 'builtin-cowork', name: 'Cowork' }];
-    expect(findAssistantById(assistants, 'cowork')?.name).toBe('Cowork');
-  });
-
-  test('toPresetAvailableAgent maps preset backend from the catalog row', () => {
-    const agent = toPresetAvailableAgent({
-      id: 'builtin-cowork',
-      name: 'Cowork',
-      preset_agent_type: 'nomi',
-      avatar: '🤝',
-    } as never);
-    expect(agent.backend).toBe('nomi');
-    expect(agent.custom_agent_id).toBe('builtin-cowork');
-    expect(agent.is_preset).toBe(true);
+  test('findPresetById resolves alias ids in the catalog', () => {
+    const presets = [{ id: 'builtin-cowork', name: 'Cowork' }];
+    expect(findPresetById(presets, 'cowork')?.name).toBe('Cowork');
   });
 });

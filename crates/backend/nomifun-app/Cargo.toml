@@ -36,7 +36,7 @@ computer-use = [
 # ACP sessions get the same browser-use; web/headless builds omit them entirely
 # (no self-hosted-CDP / Chromium stack). Mirrors how `computer-use` pulls
 # nomi-computer/-config/-tools/-types for mcp-computer-stdio.
-# P3-GW1: also forwards to `nomifun-gateway/browser-use` so the desktop gateway
+# P3-GW1: also forwards to `nomifun-gateway/browser-use` so the Platform Gateway
 # exposes the per-companion `nomi_browser_*` tools (route A). Web/headless builds
 # omit the feature → the gateway registers no browser tools.
 browser-use = [
@@ -72,7 +72,7 @@ nomifun-poi.workspace = true
 nomifun-insights.workspace = true
 nomifun-media.workspace = true
 nomifun-cloud.workspace = true
-nomifun-orchestrator.workspace = true
+nomifun-agent-execution.workspace = true
 nomifun-companion.workspace = true
 nomifun-public-agent.workspace = true
 nomifun-workshop.workspace = true
@@ -83,7 +83,7 @@ nomifun-webhook.workspace = true
 # P3-X2: per-pet browser-use credential secret CRUD endpoints (web feature mounts routes).
 nomifun-secret = { workspace = true, features = ["web"] }
 nomifun-terminal.workspace = true
-nomifun-assistant.workspace = true
+nomifun-preset.workspace = true
 nomifun-runtime.workspace = true
 nomifun-net.workspace = true
 nomifun-models-dev.workspace = true
@@ -126,13 +126,16 @@ nomi-config.workspace = true
 nomi-tools = { workspace = true, optional = true }
 nomi-types = { workspace = true, optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 nomifun-api-types.workspace = true
 nomifun-realtime.workspace = true
 clap.workspace = true
 reqwest.workspace = true
 sqlx.workspace = true
-# Enable the `AgentInstance::Mock` variant so tests can build fake agents
+# Enable the `AgentRuntimeHandle::Mock` variant so tests can build fake Agents
 # through the trait-object escape hatch without spawning real CLI processes.
 nomifun-ai-agent = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true
