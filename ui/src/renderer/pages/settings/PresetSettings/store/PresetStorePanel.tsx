@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Message } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
+import type { Preset } from '@/common/types/agent/presetTypes';
 import { getStoreData, getTemplatesByCategory } from './data';
 import PresetStoreCard from './PresetStoreCard';
 import PresetStoreDetail from './PresetStoreDetail';
@@ -11,15 +12,22 @@ import './PresetStorePanel.css';
 const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))';
 
 interface PresetStorePanelProps {
+  presets: Preset[];
   onInstalled?: () => void;
 }
 
-const PresetStorePanel: React.FC<PresetStorePanelProps> = ({ onInstalled }) => {
+const PresetStorePanel: React.FC<PresetStorePanelProps> = ({ presets, onInstalled }) => {
   const { t } = useTranslation();
   const storeData = useMemo(() => getStoreData(), []);
   const [activeCategory, setActiveCategory] = useState('all');
   const [detailTemplate, setDetailTemplate] = useState<StorePresetTemplate | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+
+  // Match user-installed presets to store templates by name
+  const installedNames = useMemo(
+    () => new Set(presets.filter((p) => p.source === 'user').map((p) => p.name)),
+    [presets],
+  );
 
   const filteredTemplates = useMemo(
     () => getTemplatesByCategory(activeCategory),
@@ -78,6 +86,7 @@ const PresetStorePanel: React.FC<PresetStorePanelProps> = ({ onInstalled }) => {
               key={template.id}
               template={template}
               installing={installing === template.id}
+              isInstalled={installedNames.has(template.name)}
               onInstall={handleInstall}
               onDetail={setDetailTemplate}
             />
@@ -94,6 +103,7 @@ const PresetStorePanel: React.FC<PresetStorePanelProps> = ({ onInstalled }) => {
         template={detailTemplate}
         visible={detailTemplate !== null}
         onClose={() => setDetailTemplate(null)}
+        isInstalled={detailTemplate ? installedNames.has(detailTemplate.name) : false}
         onInstall={handleInstall}
       />
     </div>

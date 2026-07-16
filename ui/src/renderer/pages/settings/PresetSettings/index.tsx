@@ -266,6 +266,7 @@ const PresetSettings: React.FC = () => {
         ) : (
           <div className='w-full pb-16px'>
             <PresetStorePanel
+              presets={presets}
               onInstalled={() => {
                 void loadPresets();
               }}

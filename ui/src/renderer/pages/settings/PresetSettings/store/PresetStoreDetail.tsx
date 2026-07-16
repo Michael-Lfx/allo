@@ -2,22 +2,18 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@arco-design/web-react';
 import type { StorePresetTemplate } from './types';
+import { pickI18n } from './i18n';
 import './PresetStoreDetail.css';
 
 interface PresetStoreDetailProps {
   template: StorePresetTemplate | null;
   visible: boolean;
   onClose: () => void;
+  isInstalled: boolean;
   onInstall: (template: StorePresetTemplate) => void;
 }
 
-function pickI18n(value: string, i18nDict: Record<string, string>, locale: string): string {
-  // locale is BCP 47, e.g. "zh-CN" / "en-US"; i18n keys may be short ("zh", "en")
-  const langOnly = locale.split('-')[0];
-  return i18nDict[locale] || i18nDict[langOnly] || value;
-}
-
-const PresetStoreDetail: React.FC<PresetStoreDetailProps> = ({ template, visible, onClose, onInstall }) => {
+const PresetStoreDetail: React.FC<PresetStoreDetailProps> = ({ template, visible, onClose, isInstalled, onInstall }) => {
   const { t, i18n } = useTranslation();
   if (!template) return null;
 
@@ -64,9 +60,12 @@ const PresetStoreDetail: React.FC<PresetStoreDetailProps> = ({ template, visible
 
         <button
           className='preset-store-detail__install-btn'
-          onClick={() => { onInstall(template); onClose(); }}
+          disabled={isInstalled}
+          onClick={() => { if (!isInstalled) { onInstall(template); onClose(); } }}
         >
-          {t('settings.presetStore.install')}
+          {isInstalled
+            ? t('settings.presetStore.installed')
+            : t('settings.presetStore.install')}
         </button>
       </div>
     </Modal>

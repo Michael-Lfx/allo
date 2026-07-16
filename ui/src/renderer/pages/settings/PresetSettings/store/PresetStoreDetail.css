@@ -95,3 +95,9 @@
 .preset-store-detail__install-btn:hover {
   background: rgb(var(--primary-5));
 }
+.preset-store-detail__install-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--color-fill-3);
+  color: var(--color-text-3);
+}

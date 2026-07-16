@@ -17,8 +17,6 @@ export interface StorePresetTemplate {
 /** 商店分类 */
 export interface StoreCategory {
   key: string;
-  label: string;
-  label_i18n: Record<string, string>;
 }
 
 /** 静态商店数据 */

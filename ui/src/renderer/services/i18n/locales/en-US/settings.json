@@ -1561,6 +1561,7 @@
     },
     "installs": "installs",
     "install": "Install",
+    "installed": "Installed",
     "skills": "Skills",
     "instructions": "Instructions",
     "noTemplates": "No templates available yet.",

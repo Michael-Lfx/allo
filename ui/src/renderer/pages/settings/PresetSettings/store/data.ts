@@ -1,13 +1,13 @@
 import type { StoreData, StoreCategory, StorePresetTemplate } from './types';
 
 const STORE_CATEGORIES: StoreCategory[] = [
-  { key: 'all', label: '全部', label_i18n: { zh: '全部', en: 'All' } },
-  { key: 'office', label: '办公', label_i18n: { zh: '办公', en: 'Office' } },
-  { key: 'presentation', label: '演示', label_i18n: { zh: '演示', en: 'Presentation' } },
-  { key: 'design', label: '设计', label_i18n: { zh: '设计', en: 'Design' } },
-  { key: 'development', label: '开发', label_i18n: { zh: '开发', en: 'Development' } },
-  { key: 'marketing', label: '营销', label_i18n: { zh: '营销', en: 'Marketing' } },
-  { key: 'education', label: '教育', label_i18n: { zh: '教育', en: 'Education' } },
+  { key: 'all' },
+  { key: 'office' },
+  { key: 'presentation' },
+  { key: 'design' },
+  { key: 'development' },
+  { key: 'marketing' },
+  { key: 'education' },
 ];
 
 const STORE_TEMPLATES: StorePresetTemplate[] = [

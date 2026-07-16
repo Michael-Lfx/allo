@@ -1,26 +1,24 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StorePresetTemplate } from './types';
+import { pickI18n } from './i18n';
 import './PresetStoreCard.css';
 
 interface PresetStoreCardProps {
   template: StorePresetTemplate;
   installing: boolean;
+  isInstalled: boolean;
   onInstall: (template: StorePresetTemplate) => void;
   onDetail: (template: StorePresetTemplate) => void;
 }
 
-function pickI18n(value: string, i18nDict: Record<string, string>, locale: string): string {
-  // locale is BCP 47, e.g. "zh-CN" / "en-US"; i18n keys may be short ("zh", "en")
-  const langOnly = locale.split('-')[0];
-  return i18nDict[locale] || i18nDict[langOnly] || value;
-}
-
-const PresetStoreCard: React.FC<PresetStoreCardProps> = ({ template, installing, onInstall, onDetail }) => {
+const PresetStoreCard: React.FC<PresetStoreCardProps> = ({ template, installing, isInstalled, onInstall, onDetail }) => {
   const { t, i18n } = useTranslation();
   const locale = i18n.language;
   const displayName = pickI18n(template.name, template.name_i18n, locale);
   const displayDesc = pickI18n(template.description, template.description_i18n, locale);
+
+  const disabled = installing || isInstalled;
 
   return (
     <div
@@ -47,10 +45,12 @@ const PresetStoreCard: React.FC<PresetStoreCardProps> = ({ template, installing,
         </span>
         <button
           className='preset-store-card__install-btn'
-          disabled={installing}
-          onClick={(e) => { e.stopPropagation(); onInstall(template); }}
+          disabled={disabled}
+          onClick={(e) => { if (!disabled) { e.stopPropagation(); onInstall(template); } }}
         >
-          {t('settings.presetStore.install')}
+          {isInstalled
+            ? t('settings.presetStore.installed')
+            : t('settings.presetStore.install')}
         </button>
       </div>
     </div>
