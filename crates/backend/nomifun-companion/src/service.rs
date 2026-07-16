@@ -258,6 +258,7 @@ impl CompanionService {
             completer: completer.clone(),
             emitter: emitter.clone(),
             run_lock: Arc::new(Mutex::new(())),
+            gate: crate::learner::SuggestionGate::production(),
         });
         learner.clone().spawn();
 

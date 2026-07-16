@@ -1972,6 +1972,85 @@ impl CompanionStore {
         Ok(None)
     }
 
+    /// Recently *decided* (accepted/dismissed) suggestions within the last
+    /// `within_ms`, newest-decided first. Fed back into the learn prompt so the
+    /// model won't re-raise a just-handled idea (cross-time 统筹). A zero/negative
+    /// window returns nothing.
+    pub async fn list_recently_decided_suggestions(
+        &self,
+        within_ms: i64,
+        limit: i64,
+    ) -> Result<Vec<CompanionSuggestion>, AppError> {
+        if within_ms <= 0 {
+            return Ok(Vec::new());
+        }
+        let cutoff = now_ms() - within_ms;
+        let rows = sqlx::query(
+            "SELECT * FROM companion_suggestions WHERE status IN ('accepted','dismissed') AND decided_at >= ? ORDER BY decided_at DESC LIMIT ?",
+        )
+        .bind(cutoff)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows.iter().map(row_to_suggestion).collect())
+    }
+
+    /// Cross-time dedup backstop: has a lexically-similar suggestion of the same
+    /// `kind` been *decided* (accepted/dismissed) within `within_ms`? If so,
+    /// re-raising it now is noise — the owner just handled it. Mirrors
+    /// [`find_similar_suggestion`]'s matching, but over recently-decided rows
+    /// instead of pending ones. A zero/negative window disables the check.
+    pub async fn find_recent_decided_similar(
+        &self,
+        kind: &str,
+        title: &str,
+        body: &str,
+        within_ms: i64,
+    ) -> Result<Option<String>, AppError> {
+        if within_ms <= 0 {
+            return Ok(None);
+        }
+        const CONTAINMENT_MIN_RATIO: f64 = 0.6;
+        let cutoff = now_ms() - within_ms;
+        let norm_title = title.trim().to_lowercase();
+        let norm_body = body.trim().to_lowercase();
+        let rows = sqlx::query(
+            "SELECT id, title, body FROM companion_suggestions WHERE kind = ? AND status IN ('accepted','dismissed') AND decided_at >= ?",
+        )
+        .bind(kind)
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for row in rows {
+            let existing_title: String = row.get("title");
+            let existing_title = existing_title.trim().to_lowercase();
+            if !norm_title.is_empty() && existing_title == norm_title {
+                return Ok(Some(row.get("id")));
+            }
+            let (short_len, long_len) = {
+                let a = norm_title.chars().count();
+                let b = existing_title.chars().count();
+                (a.min(b), a.max(b))
+            };
+            let close_in_length = long_len > 0 && (short_len as f64 / long_len as f64) >= CONTAINMENT_MIN_RATIO;
+            if close_in_length
+                && !norm_title.is_empty()
+                && (existing_title.contains(&norm_title) || norm_title.contains(&existing_title))
+            {
+                return Ok(Some(row.get("id")));
+            }
+            if !norm_body.is_empty() {
+                let existing_body: String = row.get("body");
+                if existing_body.trim().to_lowercase() == norm_body {
+                    return Ok(Some(row.get("id")));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// "Touch" a still-pending suggestion the learner just re-derived: bump
     /// `created_at` so it re-floats to the top of the (created_at DESC)
     /// list as freshly reinforced evidence. The table has no updated_at or
