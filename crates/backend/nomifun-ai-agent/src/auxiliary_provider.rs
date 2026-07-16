@@ -20,7 +20,7 @@ use crate::factory::provider_config::{one_shot_completion_no_thinking, resolve_p
 use crate::knowledge_completer::first_enabled_model;
 
 /// Built-in Flowy cloud provider — the only LLM source for auxiliary tasks.
-pub const FLOWY_CLOUD_PROVIDER_ID: &str = "flowy-cloud";
+pub use nomifun_common::FLOWY_BUILTIN_PROVIDER_ID as FLOWY_CLOUD_PROVIDER_ID;
 
 const AUXILIARY_MAX_TOKENS: u32 = 4096;
 const AUXILIARY_MAX_ATTEMPTS: u32 = 3;

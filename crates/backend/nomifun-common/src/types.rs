@@ -129,6 +129,15 @@ mod tests {
     }
 
     #[test]
+    fn provider_with_model_accepts_reserved_flowy_cloud_id() {
+        let json = r#"{"provider_id":"flowy-cloud","model":"default","use_model":"AIPC-glm-4.7"}"#;
+        let parsed: ProviderWithModel = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.provider_id, "flowy-cloud");
+        assert_eq!(parsed.use_model.as_deref(), Some("AIPC-glm-4.7"));
+        parsed.validate().unwrap();
+    }
+
+    #[test]
     fn test_confirmation_serde() {
         let c = Confirmation {
             id: "c1".into(),

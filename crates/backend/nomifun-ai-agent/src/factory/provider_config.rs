@@ -69,7 +69,7 @@ pub(crate) async fn resolve_provider_fields(
     // 依进程级 registry 命中把「不支持图片」透传为 compat override(主动剔除)。
     // 未命中 → None → 下游默认 supports_image=true,现有行为不变。
     compat_overrides.supports_image = image_support_override(provider_id, model);
-    if provider_id == "flowy-cloud" {
+    if provider_id == nomifun_common::FLOWY_BUILTIN_PROVIDER_ID {
         compat_overrides.mirror_bearer_header = Some("token".to_string());
     }
     if row.platform == "nomifun-free-model"

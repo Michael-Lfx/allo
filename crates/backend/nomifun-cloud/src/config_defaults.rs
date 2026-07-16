@@ -6,7 +6,7 @@ use nomi_config::{
 };
 
 /// Built-in provider row id synced after cloud login.
-pub const FLOWY_BUILTIN_PROVIDER_ID: &str = "flowy-cloud";
+pub use nomifun_common::FLOWY_BUILTIN_PROVIDER_ID;
 
 /// Apply production defaults when server is not yet configured.
 pub fn ensure_gateway_defaults(config: &mut GatewayConfig) {

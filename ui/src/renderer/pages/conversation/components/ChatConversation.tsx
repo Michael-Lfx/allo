@@ -463,11 +463,14 @@ const NomiConversationPanel: React.FC<{
       if (ok) {
         setSelectedCollaborationTemplate(null);
         void saveNomiDefaultModel(heal.provider.id, heal.use_model);
-        Message.info(
-          t('conversation.chat.modelHealedToDefault', {
-            model: heal.use_model,
-          }),
-        );
+        // Silent for first-time default; only notify when replacing a stale binding.
+        if (heal.reason === 'stale') {
+          Message.info(
+            t('conversation.chat.modelHealedToDefault', {
+              model: heal.use_model,
+            }),
+          );
+        }
       }
     })();
     // Re-evaluate when the conversation or provider list changes.

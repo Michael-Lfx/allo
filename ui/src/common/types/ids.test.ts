@@ -8,15 +8,19 @@ import { describe, expect, test } from 'bun:test';
 import {
   InvalidEntityIdError,
   conversationTarget,
+  isReservedProviderId,
   isSameSessionTarget,
   parseCompanionEvolutionFeedbackId,
   parseConversationId,
   parseFigureId,
   parsePresetTagId,
+  parseProviderId,
   parsePublicAgentAuditEntryId,
   parseTerminalId,
   parseWorkshopEdgeId,
   parseWorkshopNodeId,
+  FLOWY_BUILTIN_PROVIDER_ID,
+  GOOGLE_AUTH_PROVIDER_ID,
   terminalTarget,
   tryParseEntityId,
 } from './ids';
@@ -41,6 +45,21 @@ describe('entity ids', () => {
       expect(error instanceof InvalidEntityIdError).toBe(true);
     }
     expect(tryParseEntityId('conversation', null)).toBeNull();
+  });
+
+  test('provider parser accepts reserved system singletons', () => {
+    expect(parseProviderId(FLOWY_BUILTIN_PROVIDER_ID)).toBe(FLOWY_BUILTIN_PROVIDER_ID);
+    expect(parseProviderId(GOOGLE_AUTH_PROVIDER_ID)).toBe(GOOGLE_AUTH_PROVIDER_ID);
+    expect(isReservedProviderId(FLOWY_BUILTIN_PROVIDER_ID)).toBe(true);
+    expect(isReservedProviderId('custom-cloud')).toBe(false);
+
+    let error: unknown;
+    try {
+      parseProviderId('custom-cloud');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error instanceof InvalidEntityIdError).toBe(true);
   });
 
   test('enforces the entity-kind prefix and canonical UUID form', () => {

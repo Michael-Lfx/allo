@@ -6,10 +6,8 @@
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { configService } from '@/common/config/configService';
-import { useGoogleAuthModels } from '@/renderer/hooks/agent/useGoogleAuthModels';
-import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
-import { getAvailableModels, hasAvailableModels } from '../utils/modelUtils';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Build a unique key for a provider/model pair.
@@ -20,13 +18,17 @@ const buildModelKey = (providerId?: string, modelName?: string) => {
 };
 
 /**
- * Check if a model key still exists in the provider list.
+ * Check if a model key still exists in the selectable catalog.
  */
-const isModelKeyAvailable = (key: string | null, providers?: IProvider[]) => {
+const isModelKeyAvailable = (
+  key: string | null,
+  providers: IProvider[] | undefined,
+  getAvailableModels: (provider: IProvider) => string[]
+) => {
   if (!key || !providers || providers.length === 0) return false;
   return providers.some((provider) => {
-    if (!provider.id || !provider.models?.length) return false;
-    return provider.models.some((modelName) => buildModelKey(provider.id, modelName) === key);
+    if (!provider.id) return false;
+    return getAvailableModels(provider).some((modelName) => buildModelKey(provider.id, modelName) === key);
   });
 };
 
@@ -51,18 +53,14 @@ export type GuidModelSelectionResult = {
  * @param agentKey - current provider-based agent (currently only 'nomi')
  */
 export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): GuidModelSelectionResult => {
-  const { isGoogleAuth } = useGoogleAuthModels();
-  const { data: modelConfig } = useProvidersQuery();
-
-  const modelList = useMemo(() => {
-    const allProviders: IProvider[] = (modelConfig || []).filter((platform) => !!platform.models.length);
-    return allProviders.filter(hasAvailableModels);
-  }, [modelConfig]);
-
-  const formatGeminiModelLabel = useCallback((_provider: { platform?: string } | undefined, modelName?: string) => {
-    if (!modelName) return '';
-    return modelName;
-  }, []);
+  // Share the conversation catalog so Guid only sees flowy-cloud under
+  // SERVER_MANAGED_MODELS and uses the same available-model filter.
+  const {
+    providers: modelList,
+    getAvailableModels,
+    formatModelLabel,
+    isLoading,
+  } = useModelProviderList();
 
   const [current_model, _setCurrentModel] = useState<TProviderWithModel>();
   const selectedModelKeyRef = useRef<string | null>(null);
@@ -84,7 +82,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
   // Set default model when modelList or agent changes
   useEffect(() => {
     const setDefaultModel = async () => {
-      if (!modelList || modelList.length === 0) {
+      if (isLoading || !modelList || modelList.length === 0) {
         return;
       }
       // When agent switches, reset selection so we reload from the new storage key
@@ -95,7 +93,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       }
 
       const currentKey = selectedModelKeyRef.current || buildModelKey(current_model?.id, current_model?.use_model);
-      if (!agentChanged && isModelKeyAvailable(currentKey, modelList)) {
+      if (!agentChanged && isModelKeyAvailable(currentKey, modelList, getAvailableModels)) {
         if (!selectedModelKeyRef.current && currentKey) {
           selectedModelKeyRef.current = currentKey;
         }
@@ -106,14 +104,9 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       const isNewFormat = savedModel && typeof savedModel === 'object' && 'id' in savedModel;
 
       // First-available enabled model — the fallback whenever nothing valid was
-      // saved. `modelList` is already filtered by `hasAvailableModels`, so the
-      // first provider is guaranteed to expose at least one selectable model.
-      // Use `getAvailableModels(provider)[0]` (the FILTERED list the picker shows)
-      // rather than raw `provider.models[0]`, which can be a model that lacks
-      // function_calling / is excludeFromPrimary and thus never appears in the
-      // picker — picking it would leave current_model pointing at an unselectable
-      // model. This guarantees the lead (主管) model is always set and editable,
-      // so submit is never silently blocked in auto/range mode.
+      // saved. `modelList` already excludes providers with no selectable models,
+      // so the first provider is guaranteed to expose at least one. Prefer the
+      // filtered catalog (`getAvailableModels`) over raw `provider.models[0]`.
       const firstProvider = modelList[0];
       const firstAvailableModel = firstProvider ? (getAvailableModels(firstProvider)[0] ?? '') : '';
 
@@ -149,12 +142,12 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     setDefaultModel().catch((error) => {
       console.error('Failed to set default model:', error);
     });
-  }, [modelList, storageKey]);
+  }, [getAvailableModels, isLoading, modelList, setCurrentModel, storageKey]);
 
   return {
     modelList,
-    isGoogleAuth,
-    formatGeminiModelLabel,
+    isGoogleAuth: false,
+    formatGeminiModelLabel: formatModelLabel,
     current_model,
     setCurrentModel,
   };
