@@ -160,7 +160,7 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
         });
         if let Ok(created) = self
             .store
-            .insert_suggestion("create_skill", &title, &body_text, Some(&action))
+            .insert_suggestion(Some(owner.as_str()), "create_skill", &title, &body_text, Some(&action))
             .await
         {
             self.emitter.emit_suggestion_created(&owner, &created);

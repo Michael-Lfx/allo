@@ -299,6 +299,7 @@ mod tests {
             status: "new".into(),
             created_at: 0,
             decided_at: None,
+            companion_id: None,
         };
         let prompt = build_learn_prompt(&[], &[suggestion], &[], &["{\"x\":1}".into()], false, true);
         assert!(prompt.contains("已有建议"));

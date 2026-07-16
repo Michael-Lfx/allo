@@ -430,7 +430,7 @@ impl EvolutionEngine {
             // Dedup: if a similar pending suggestion exists, touch it instead of duplicating.
             if let Ok(Some(existing_id)) = self.store.find_similar_suggestion("create_skill", &title, &body).await {
                 let _ = self.store.touch_suggestion(&existing_id).await;
-            } else if let Ok(created) = self.store.insert_suggestion("create_skill", &title, &body, Some(&action)).await {
+            } else if let Ok(created) = self.store.insert_suggestion(Some(owner), "create_skill", &title, &body, Some(&action)).await {
                 self.emitter.emit_suggestion_created(&owner, &created);
             }
             self.emitter.emit_skill_drafted(owner, &name);
@@ -778,7 +778,7 @@ impl EvolutionEngine {
         let action = serde_json::json!({ "type": "create_skill", "name": name, "companion_id": owner, "signature": "" });
         let title = format!("我学会了你示范的技能：{name}");
         let body = format!("照你示范的「{}」整理成了技能，采纳后我就能复用。", draft.description);
-        if let Ok(created) = self.store.insert_suggestion("create_skill", &title, &body, Some(&action)).await {
+        if let Ok(created) = self.store.insert_suggestion(Some(owner), "create_skill", &title, &body, Some(&action)).await {
             self.emitter.emit_suggestion_created(&owner, &created);
         }
         self.emitter.emit_skill_drafted(owner, &name);
@@ -1285,7 +1285,7 @@ mod tests {
             .insert_skill(&CompanionSkill {
                 skill_name: name.to_owned(),
                 scope_kind: "companion".into(),
-                scope_companion_id: cid.to_owned(),
+                scope_companion_id: Some(cid.to_owned()),
                 status: "active".into(),
                 source: "mined".into(),
                 confidence: 0.7,

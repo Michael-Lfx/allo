@@ -321,6 +321,7 @@ impl Learner {
             let milestone = self
                 .store
                 .insert_suggestion(
+                    target.as_deref(),
                     "insight",
                     "nomi 学会了关于你的第一条记忆！",
                     "我开始懂你了，快来记忆页看看吧～",
@@ -387,7 +388,7 @@ impl Learner {
             };
             let created = self
                 .store
-                .insert_suggestion(&s.kind, &s.title, &s.body, action.as_ref())
+                .insert_suggestion(target.as_deref(), &s.kind, &s.title, &s.body, action.as_ref())
                 .await?;
             run.suggestions_added += 1;
             emitted_suggestion = true;
@@ -621,8 +622,8 @@ mod tests {
         let reply = r#"{"suggestions":[{"kind":"insight","title":"全新洞察","body":"全新内容"}]}"#;
         let (mut learner, _) = make_learner(dir.path(), reply).await;
         learner.gate = SuggestionGate { min_events: 0, cooldown_ms: 0, max_pending: 2, decided_repeat_cooldown_ms: 0 };
-        learner.store.insert_suggestion("insight", "占位一", "x", None).await.unwrap();
-        learner.store.insert_suggestion("insight", "占位二", "y", None).await.unwrap();
+        learner.store.insert_suggestion(None, "insight", "占位一", "x", None).await.unwrap();
+        learner.store.insert_suggestion(None, "insight", "占位二", "y", None).await.unwrap();
         assert_eq!(learner.store.count_suggestions("new").await.unwrap(), 2);
 
         let run = learner.run_once().await.unwrap();
@@ -647,7 +648,7 @@ mod tests {
         // An identical idea, dismissed just now.
         let s = learner
             .store
-            .insert_suggestion("insight", "最近常调编译错误", "看看构建脚本", None)
+            .insert_suggestion(None, "insight", "最近常调编译错误", "看看构建脚本", None)
             .await
             .unwrap();
         learner.store.decide_suggestion(&s.id, false).await.unwrap();
