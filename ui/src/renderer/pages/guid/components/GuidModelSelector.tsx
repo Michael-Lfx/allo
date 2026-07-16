@@ -6,6 +6,7 @@
 
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import { compositeKey } from '@/common/utils/compositeKey';
 import { iconColors } from '@/renderer/styles/colors';
 import { getModelDisplayLabel } from '@/renderer/utils/model/agentLogo';
 import { formatCloudModelLabel, hydrateProviderWithModel } from '@/renderer/utils/model/cloudModelLabel';
@@ -150,7 +151,12 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                           const label = formatCloudModelLabel(modelName, provider.model_descriptions);
                           return (
                             <Menu.Item
-                              key={provider.id + modelName}
+                              key={compositeKey(provider.id, modelName)}
+                              className={
+                                current_model?.id === provider.id && current_model?.use_model === modelName
+                                  ? '!bg-2'
+                                  : ''
+                              }
                               onClick={() => {
                                 setCurrentModel({ ...provider, use_model: modelName }).catch((error) => {
                                   console.error('Failed to set current model:', error);

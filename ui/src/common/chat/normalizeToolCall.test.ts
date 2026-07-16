@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { parseConversationId } from '@/common/types/ids';
 import { normalizeAcpToolCall, normalizeToolCall, normalizeToolGroup } from './normalizeToolCall';
+
+const CONVERSATION_ID = parseConversationId('conv_0190f5fe-7c00-7a00-8000-000000000001');
 
 describe('normalizeToolCall', () => {
   it('ignores tool_call messages without call_id', () => {
@@ -232,7 +235,7 @@ describe('normalizeAcpToolCall', () => {
     const result = normalizeAcpToolCall({
       type: 'acp_tool_call',
       id: 'msg-1',
-      conversation_id: 1,
+      conversation_id: CONVERSATION_ID,
       content: {
         session_id: 'session-1',
         update: {
@@ -256,7 +259,7 @@ describe('normalizeAcpToolCall', () => {
     const result = normalizeAcpToolCall({
       type: 'acp_tool_call',
       id: 'msg-1',
-      conversation_id: 1,
+      conversation_id: CONVERSATION_ID,
       content: {
         session_id: 'session-1',
         update: {
@@ -281,7 +284,7 @@ describe('normalizeAcpToolCall', () => {
     const result = normalizeAcpToolCall({
       type: 'acp_tool_call',
       id: 'msg-1',
-      conversation_id: 1,
+      conversation_id: CONVERSATION_ID,
       content: {
         session_id: 'session-1',
         update: {
@@ -320,7 +323,7 @@ describe('normalizeAcpToolCall', () => {
       const result = normalizeAcpToolCall({
         type: 'acp_tool_call',
         id: 'msg-1',
-        conversation_id: 1,
+        conversation_id: CONVERSATION_ID,
         content: {
           session_id: 'session-1',
           update: {
@@ -343,7 +346,7 @@ describe('normalizeAcpToolCall', () => {
     const result = normalizeAcpToolCall({
       type: 'acp_tool_call',
       id: 'msg-1',
-      conversation_id: 1,
+      conversation_id: CONVERSATION_ID,
       content: {
         session_id: 'session-1',
         update: {

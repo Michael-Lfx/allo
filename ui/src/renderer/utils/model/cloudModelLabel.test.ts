@@ -11,6 +11,7 @@ import {
   hydrateProviderWithModel,
 } from './cloudModelLabel';
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import type { ProviderId } from '@/common/types/ids';
 
 describe('formatCloudModelLabel', () => {
   test('strips AIPC- prefix from raw model id', () => {
@@ -29,7 +30,7 @@ describe('formatCloudModelLabel', () => {
 describe('hydrateProviderWithModel', () => {
   const providers: IProvider[] = [
     {
-      id: 'flowy-cloud',
+      id: 'flowy-cloud' as ProviderId,
       platform: 'openai',
       name: 'Flowy Cloud',
       base_url: 'https://example.com',
@@ -40,7 +41,7 @@ describe('hydrateProviderWithModel', () => {
   ];
 
   test('merges persisted conversation model with live provider catalog', () => {
-    const persisted = { id: 'flowy-cloud', use_model: 'AIPC-glm-4.7' } as TProviderWithModel;
+    const persisted = { id: 'flowy-cloud' as ProviderId, use_model: 'AIPC-glm-4.7' } as TProviderWithModel;
     const hydrated = hydrateProviderWithModel(providers, persisted);
     expect(hydrated?.model_descriptions?.['AIPC-glm-4.7']).toBe('glm-4.7');
     expect(hydrated?.use_model).toBe('AIPC-glm-4.7');

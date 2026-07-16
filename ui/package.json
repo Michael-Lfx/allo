@@ -1,14 +1,14 @@
 {
   "name": "@nomifun-tauri/ui",
   "private": true,
-  "version": "0.2.19",
+  "version": "0.2.20",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:web": "vite --mode webdev",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.18.2",

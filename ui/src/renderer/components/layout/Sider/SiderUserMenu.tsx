@@ -170,12 +170,14 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
       className='sider-soft-popover sider-user-menu-popover'
       trigger='click'
       position={collapsed ? 'rt' : 'tr'}
-      popupAlign={collapsed ? { left: 10 } : { bottom: 8, left: -28 }}
       popupVisible={menuVisible}
       onVisibleChange={handleMenuVisibleChange}
       getPopupContainer={() => document.body}
       content={menuContent}
       unmountOnExit
+      {...({
+        popupAlign: collapsed ? { left: 10 } : { bottom: 8, left: -28 },
+      } as Record<string, unknown>)}
     >
       <Tooltip
         {...siderTooltipProps}

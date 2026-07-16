@@ -10,6 +10,7 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
 - [`frontend.md`](frontend.zh.md) —— React SPA、适配层、路由。
 - [`communication.md`](communication.zh.md) —— HTTP / WebSocket / Tauri IPC / ACP / MCP。
 - [`data-and-storage.md`](data-and-storage.zh.md) —— SQLite、工作区、运行时。
+- [`id-system.md`](id-system.zh.md) —— 规范实体 ID、强类型 ID 与前缀注册表。
 
 ## 双宿主模型
 

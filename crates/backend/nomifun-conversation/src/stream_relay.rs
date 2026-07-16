@@ -12,7 +12,7 @@ use nomifun_ai_agent::{
 use crate::response_middleware::{ICronService, MessageMiddleware, MiddlewareResult};
 use crate::runtime_state::ConversationRuntimeStateService;
 use nomifun_api_types::{AgentErrorCode, ConversationRuntimeSummary, WebSocketMessage};
-use nomifun_common::{ErrorChain, normalize_keys_to_snake_case, now_ms};
+use nomifun_common::{CompanionId, ErrorChain, MessageId, normalize_keys_to_snake_case, now_ms};
 
 use crate::service::ConversationService;
 use nomifun_db::{DbError, IConversationRepository, MessageRowUpdate};
@@ -159,11 +159,7 @@ async fn persist_turn_writeback_state(
     msg_id: &str,
     state: &Value,
 ) {
-    let Ok(conv_id) = conversation_id.parse::<i64>() else {
-        debug!(conversation_id, msg_id, "skip writeback state persist for non-numeric conversation id");
-        return;
-    };
-    let row = match repo.get_message(conv_id, msg_id).await {
+    let row = match repo.get_message(conversation_id, msg_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             debug!(conversation_id, msg_id, "skip writeback state persist; assistant message row not found");
@@ -363,11 +359,11 @@ pub struct StreamRelay {
     user_events: Arc<dyn UserEventSink>,
     cron_service: Option<Arc<dyn ICronService>>,
     complete_turn: bool,
-    /// Companion-companion wire markers (from `conversation.extra.companionSession` /
-    /// `.companionId`), stamped onto every `message.stream` / `turn.completed`
+    /// Companion-companion wire markers (from `conversation.extra.companion_session` /
+    /// `.companion_id`), stamped onto every `message.stream` / `turn.completed`
     /// payload so the companion collector can classify the turn off the wire.
     companion: bool,
-    companion_id: Option<String>,
+    companion_id: Option<CompanionId>,
     /// Originator of the user message that started this turn when it was NOT
     /// typed by the human owner (`"companion"` / `"cron"` / `"autowork"` /
     /// `"idmm"`; `None` = a real person). Stamped onto every `message.stream`
@@ -375,7 +371,7 @@ pub struct StreamRelay {
     /// companion collector) can tell agent-driven replies from owner-driven work.
     origin: Option<String>,
     /// IM platform of a Channel Agent conversation (from
-    /// `conversation.extra.channelPlatform`, e.g. `"telegram"`; `None` = not
+    /// `conversation.extra.channel_platform`, e.g. `"telegram"`; `None` = not
     /// a channel conversation). Stamped onto every `message.stream` /
     /// `turn.completed` payload so the companion window can tell remote IM turns
     /// from local companion turns off the wire.
@@ -399,6 +395,10 @@ pub struct StreamRelay {
     /// Conversation↔Execution relation identifies an active attempt. Once wired,
     /// the relay always accumulates; it does not perform a second identity lookup.
     runtime_state: Option<Arc<ConversationRuntimeStateService>>,
+    /// Stable canonical row IDs for streamed sub-records that receive multiple
+    /// updates during one relay. Protocol call/session IDs are correlation keys,
+    /// never database entity IDs.
+    derived_message_ids: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl StreamRelay {
@@ -424,6 +424,7 @@ impl StreamRelay {
             channel_platform: None,
             failover_suppressor: None,
             runtime_state: None,
+            derived_message_ids: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -456,7 +457,11 @@ impl StreamRelay {
 
     /// Tag this relay's broadcasts with the conversation's companion-companion
     /// markers (no-op markers by default; see field docs).
-    pub fn with_companion_context(mut self, companion: bool, companion_id: Option<String>) -> Self {
+    pub fn with_companion_context(
+        mut self,
+        companion: bool,
+        companion_id: Option<CompanionId>,
+    ) -> Self {
         self.companion = companion;
         self.companion_id = companion_id;
         self
@@ -888,7 +893,7 @@ impl StreamRelay {
                                 self.forward_to_websocket_hidden(&source_event);
                                 self.persist_tool_call_with_hidden(&source, true, &mut pending_superseded_call_ids).await;
                             }
-                            let plan_id = self.plan_message_id(data);
+                            let plan_id = self.plan_message_id(data).await;
                             if data.entries.iter().all(|entry| {
                                 entry.get("status").and_then(serde_json::Value::as_str) == Some("completed")
                             }) {
@@ -1040,13 +1045,9 @@ impl StreamRelay {
         }
     }
 
-    /// The integer conversation key for repo calls and `MessageRow` builds.
-    /// `StreamRelay.conversation_id` stays the public String form; this parses
-    /// it to the i64 the DB layer now uses. A relay is only ever constructed
-    /// with a real (numeric) conversation id, so a non-numeric value here is a
-    /// programming error and falls back to `0` rather than failing the turn.
-    fn conv_id(&self) -> i64 {
-        self.conversation_id.parse().unwrap_or_default()
+    /// The canonical Conversation ID used by repository calls and events.
+    fn conv_id(&self) -> &str {
+        &self.conversation_id
     }
 
     /// Forward an agent event to connected WebSocket clients.
@@ -1114,7 +1115,7 @@ impl StreamRelay {
         } else {
             let row = MessageRow {
                 id: segment.id.clone(),
-                conversation_id: self.conv_id(),
+                conversation_id: self.conversation_id.clone(),
                 msg_id: Some(segment.id.clone()),
                 r#type: "text".into(),
                 content,
@@ -1149,7 +1150,7 @@ impl StreamRelay {
         } else {
             let row = MessageRow {
                 id: segment.id.clone(),
-                conversation_id: self.conv_id(),
+                conversation_id: self.conversation_id.clone(),
                 msg_id: Some(segment.id.clone()),
                 r#type: "text".into(),
                 content,
@@ -1234,7 +1235,7 @@ impl StreamRelay {
             } else if !hidden {
                 let row = MessageRow {
                     id: self.msg_id.clone(),
-                    conversation_id: self.conv_id(),
+                    conversation_id: self.conversation_id.clone(),
                     msg_id: Some(self.msg_id.clone()),
                     r#type: "text".into(),
                     content: json!({ "content": final_text }).to_string(),
@@ -1274,7 +1275,7 @@ impl StreamRelay {
         let content = json!({ "content": &data.message, "type": "error", "error": &data }).to_string();
         let row = MessageRow {
             id: ConversationService::mint_msg_id(),
-            conversation_id: self.conv_id(),
+            conversation_id: self.conversation_id.clone(),
             msg_id: None,
             r#type: "tips".into(),
             content,
@@ -1290,7 +1291,7 @@ impl StreamRelay {
 
     #[tracing::instrument(skip_all)]
     async fn persist_agent_status(&self, data: &nomifun_ai_agent::protocol::events::AgentStatusEventData) {
-        let id = self.agent_status_message_id();
+        let id = self.agent_status_message_id().await;
         let content = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_owned());
         let status = match data.status.as_str() {
             "prepared" => "finish",
@@ -1321,7 +1322,7 @@ impl StreamRelay {
 
         let row = MessageRow {
             id: id.clone(),
-            conversation_id: self.conv_id(),
+            conversation_id: self.conversation_id.clone(),
             msg_id: Some(self.msg_id.clone()),
             r#type: "agent_status".into(),
             content,
@@ -1339,8 +1340,8 @@ impl StreamRelay {
         }
     }
 
-    fn agent_status_message_id(&self) -> String {
-        format!("{}:agent_status:model_activity", self.msg_id)
+    async fn agent_status_message_id(&self) -> String {
+        self.derived_message_id("agent_status", "model_activity").await
     }
 
     async fn finalize_active_agent_status(
@@ -1370,13 +1371,13 @@ impl StreamRelay {
             .to_owned()
     }
 
-    fn plan_message_id(&self, data: &PlanEventData) -> String {
-        format!("{}:plan:{}", self.msg_id, self.plan_session_id(data))
+    async fn plan_message_id(&self, data: &PlanEventData) -> String {
+        self.derived_message_id("plan", &self.plan_session_id(data)).await
     }
 
     #[tracing::instrument(skip_all)]
     async fn persist_plan(&self, data: &PlanEventData) {
-        let plan_id = self.plan_message_id(data);
+        let plan_id = self.plan_message_id(data).await;
         let session_id = self.plan_session_id(data);
         let status = if data.entries.iter().all(|entry| {
             entry.get("status").and_then(serde_json::Value::as_str) == Some("completed")
@@ -1411,7 +1412,7 @@ impl StreamRelay {
 
         let row = MessageRow {
             id: plan_id.clone(),
-            conversation_id: self.conv_id(),
+            conversation_id: self.conversation_id.clone(),
             msg_id: Some(plan_id),
             r#type: "plan".into(),
             content,
@@ -1443,7 +1444,7 @@ impl StreamRelay {
         .to_string();
         let row = MessageRow {
             id: segment.id.clone(),
-            conversation_id: self.conv_id(),
+            conversation_id: self.conversation_id.clone(),
             msg_id: Some(segment.id),
             r#type: "thinking".into(),
             content,
@@ -1503,7 +1504,7 @@ impl StreamRelay {
             ToolCallStatus::Completed | ToolCallStatus::Canceled => "finish",
             ToolCallStatus::Error => "error",
         };
-        let message_id = self.tool_message_id(&data.call_id);
+        let message_id = self.tool_message_id(&data.call_id).await;
         let mut content_value = serde_json::to_value(data).unwrap_or_default();
         if let Some(object) = content_value.as_object_mut() {
             object.insert("turn_id".to_owned(), json!(self.msg_id));
@@ -1576,7 +1577,7 @@ impl StreamRelay {
 
             let row = MessageRow {
                 id: message_id.clone(),
-                conversation_id: self.conv_id(),
+                conversation_id: self.conversation_id.clone(),
                 msg_id: Some(self.msg_id.clone()),
                 r#type: "tool_call".into(),
                 content,
@@ -1604,8 +1605,8 @@ impl StreamRelay {
         }
     }
 
-    fn tool_message_id(&self, call_id: &str) -> String {
-        format!("{}:tool:{call_id}", self.msg_id)
+    async fn tool_message_id(&self, call_id: &str) -> String {
+        self.derived_message_id("tool_call", call_id).await
     }
 
     fn incomplete_tool_reason(event: &AgentStreamEvent) -> Option<&'static str> {
@@ -1640,7 +1641,7 @@ impl StreamRelay {
     }
 
     async fn tool_call_already_settled(&self, call_id: &str) -> bool {
-        let message_id = self.tool_message_id(call_id);
+        let message_id = self.tool_message_id(call_id).await;
         let Ok(Some(row)) = self.repo.get_message(self.conv_id(), &message_id).await else {
             return false;
         };
@@ -1673,7 +1674,7 @@ impl StreamRelay {
         call_id: &str,
         pending_superseded_call_ids: &mut HashSet<String>,
     ) {
-        let message_id = self.tool_message_id(call_id);
+        let message_id = self.tool_message_id(call_id).await;
         let content = self
             .repo
             .get_message(self.conv_id(), &message_id)
@@ -1853,7 +1854,7 @@ impl StreamRelay {
     #[tracing::instrument(skip_all)]
     async fn persist_acp_tool_call(&self, data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData) {
         let tool_call_id = &data.update.tool_call_id;
-        let message_id = self.acp_tool_message_id(tool_call_id);
+        let message_id = self.acp_tool_message_id(tool_call_id).await;
         let status = match data.update.status {
             Some(AcpToolCallStatus::Pending) | None => "work",
             Some(AcpToolCallStatus::InProgress) => "work",
@@ -1902,7 +1903,7 @@ impl StreamRelay {
 
         let row = MessageRow {
             id: message_id.clone(),
-            conversation_id: self.conv_id(),
+            conversation_id: self.conversation_id.clone(),
             msg_id: Some(self.msg_id.clone()),
             r#type: "acp_tool_call".into(),
             content,
@@ -1916,8 +1917,8 @@ impl StreamRelay {
         }
     }
 
-    fn acp_tool_message_id(&self, tool_call_id: &str) -> String {
-        format!("{}:acp_tool:{tool_call_id}", self.msg_id)
+    async fn acp_tool_message_id(&self, tool_call_id: &str) -> String {
+        self.derived_message_id("acp_tool_call", tool_call_id).await
     }
 
     /// Patch stored tool_call JSON so superseded previews show terminal status in content.
@@ -1987,7 +1988,7 @@ impl StreamRelay {
             .first()
             .map(|e| e.call_id.clone())
             .unwrap_or_else(ConversationService::mint_msg_id);
-        let group_id = format!("{}:tool_group:{source_group_id}", self.msg_id);
+        let group_id = self.derived_message_id("tool_group", &source_group_id).await;
 
         let existing = self
             .repo
@@ -2021,7 +2022,7 @@ impl StreamRelay {
         } else {
             let row = MessageRow {
                 id: group_id.clone(),
-                conversation_id: self.conv_id(),
+                conversation_id: self.conversation_id.clone(),
                 msg_id: Some(self.msg_id.clone()),
                 r#type: "tool_group".into(),
                 content,
@@ -2106,29 +2107,23 @@ impl StreamRelay {
         conversation_id: &str,
         runtime: Option<ConversationRuntimeSummary>,
         companion: bool,
-        companion_id: Option<String>,
+        companion_id: Option<CompanionId>,
         origin: Option<String>,
         channel_platform: Option<String>,
     ) {
-        // The public id stays the String form; the repo + the i64 DTO fields on
-        // the `turn.completed` payload use the integer key. A relay only ever
-        // carries a numeric conversation id, so a parse failure here is a
-        // programming error and degrades to `0` rather than failing the turn.
-        let conv_id: i64 = conversation_id.parse().unwrap_or_default();
         let update = nomifun_db::ConversationRowUpdate {
             status: Some("finished".to_owned()),
             updated_at: Some(now_ms()),
             ..Default::default()
         };
-        if let Err(e) = repo.update(conv_id, &update).await {
+        if let Err(e) = repo.update(conversation_id, &update).await {
             error!(error = %ErrorChain(&e), "Failed to update conversation status");
         }
 
         let payload = json!({
-            "conversation_id": conv_id,
-            "session_id": conv_id,
+            "conversation_id": conversation_id,
             "status": "finished",
-            "canSendMessage": true,
+            "can_send_message": true,
             "runtime": runtime,
             "companion": companion,
             "companion_id": companion_id,
@@ -2139,6 +2134,46 @@ impl StreamRelay {
         user_events.send_to_user(user_id, msg);
 
         debug!(conversation_id, status = "finished", "Turn completed");
+    }
+
+    async fn derived_message_id(&self, message_type: &str, correlation_key: &str) -> String {
+        let cache_key = format!("{message_type}\0{correlation_key}");
+        if let Some(id) = self
+            .derived_message_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&cache_key)
+            .cloned()
+        {
+            return id;
+        }
+
+        let id = match self
+            .repo
+            .claim_message_correlation(
+                self.conv_id(),
+                &self.msg_id,
+                message_type,
+                correlation_key,
+            )
+            .await
+        {
+            Ok(id) => id,
+            Err(error) => {
+                error!(
+                    message_type,
+                    correlation_key,
+                    error = %ErrorChain(&error),
+                    "Failed to claim durable streamed-message correlation"
+                );
+                MessageId::new().into_string()
+            }
+        };
+        self.derived_message_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(cache_key, id.clone());
+        id
     }
 }
 
@@ -2199,9 +2234,19 @@ mod tests {
     use nomifun_ai_agent::protocol::events::{
         ErrorEventData, FinishEventData, PlanEventData, TextEventData, ThinkingEventData,
     };
+    use nomifun_common::{ConversationId, MessageId};
     use nomifun_db::DbError;
     use std::collections::HashSet;
     use std::sync::Mutex;
+
+    const TEST_ASSISTANT_MESSAGE_ID: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678941";
+    const TEST_TURN_A: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678942";
+    const TEST_TURN_B: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678943";
+    const TEST_USER_ID: &str = "user_0190f5fe-7c00-7a00-8abc-012345678944";
+
+    fn test_conversation_id() -> String {
+        ConversationId::new().into_string()
+    }
 
     struct TestUserEventBus {
         sender: broadcast::Sender<WebSocketMessage<Value>>,
@@ -2232,10 +2277,11 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
 
+        let conversation_id = test_conversation_id();
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            conversation_id.clone(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -2264,8 +2310,8 @@ mod tests {
         let inserts = repo.take_inserts();
         assert_eq!(inserts.len(), 1);
         let msg = &inserts[0];
-        assert_eq!(msg.conversation_id, 1);
-        assert_eq!(msg.id, "asst-1");
+        assert_eq!(msg.conversation_id, conversation_id);
+        assert_eq!(msg.id, TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(msg.r#type, "text");
         assert_eq!(msg.status.as_deref(), Some("finish"));
 
@@ -2285,7 +2331,8 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
         let runtime_state = Arc::new(ConversationRuntimeStateService::default());
 
-        let relay = StreamRelay::new("42".into(), "asst-1".into(), "user-1".into(), repo, bus, None)
+        let conversation_id = test_conversation_id();
+        let relay = StreamRelay::new(conversation_id.clone(), TEST_ASSISTANT_MESSAGE_ID.into(), TEST_USER_ID.into(), repo, bus, None)
             .with_runtime_state(runtime_state.clone());
         let rx = tx.subscribe();
 
@@ -2307,7 +2354,7 @@ mod tests {
         let _ = relay.consume(rx).await;
 
         // (100+40) + (30+10) = 180, keyed by the relay's conversation id.
-        assert_eq!(runtime_state.take_turn_tokens("42"), Some(180));
+        assert_eq!(runtime_state.take_turn_tokens(&conversation_id), Some(180));
     }
 
     // Zero-regression: a relay WITHOUT runtime state wired (the default chat path)
@@ -2321,7 +2368,8 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
         let observer = Arc::new(ConversationRuntimeStateService::default());
 
-        let relay = StreamRelay::new("42".into(), "asst-1".into(), "user-1".into(), repo, bus, None);
+        let conversation_id = test_conversation_id();
+        let relay = StreamRelay::new(conversation_id.clone(), TEST_ASSISTANT_MESSAGE_ID.into(), TEST_USER_ID.into(), repo, bus, None);
         let rx = tx.subscribe();
 
         tx.send(AgentStreamEvent::TurnCompleted(TurnCompletedEventData {
@@ -2335,7 +2383,7 @@ mod tests {
         let _ = relay.consume(rx).await;
 
         // The relay was never given this runtime state, so it cannot have written.
-        assert_eq!(observer.take_turn_tokens("42"), None);
+        assert_eq!(observer.take_turn_tokens(&conversation_id), None);
     }
 
     #[tokio::test]
@@ -2345,9 +2393,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -2369,8 +2417,8 @@ mod tests {
 
         let inserts = repo.take_inserts();
         let plan_msg = inserts.iter().find(|m| m.r#type == "plan").expect("plan message must be persisted");
-        assert_eq!(plan_msg.id, "asst-1:plan:session-1");
-        assert_eq!(plan_msg.msg_id.as_deref(), Some("asst-1:plan:session-1"));
+        MessageId::parse(&plan_msg.id).expect("plan row has a canonical message ID");
+        assert_eq!(plan_msg.msg_id.as_deref(), Some(plan_msg.id.as_str()));
         assert_eq!(plan_msg.status.as_deref(), Some("work"));
 
         let content: serde_json::Value = serde_json::from_str(&plan_msg.content).unwrap();
@@ -2380,7 +2428,7 @@ mod tests {
         let updates = repo.take_updates();
         let (_, terminal_update) = updates
             .iter()
-            .find(|(id, _)| id == "asst-1:plan:session-1")
+            .find(|(id, _)| id == &plan_msg.id)
             .expect("incomplete plan must be closed with the turn");
         assert_eq!(
             terminal_update.status.as_ref().map(|status| status.as_deref()),
@@ -2397,9 +2445,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -2427,10 +2475,17 @@ mod tests {
 
         relay.consume(rx).await;
 
+        let source_id = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("source tool must be persisted")
+            .id;
+        MessageId::parse(&source_id).expect("tool row has a canonical message ID");
         let updates = repo.take_updates();
         let source_updates: Vec<_> = updates
             .iter()
-            .filter(|(id, _)| id == "asst-1:tool:tc-plan")
+            .filter(|(id, _)| id == &source_id)
             .collect();
         assert_eq!(source_updates.len(), 1, "source tool must settle exactly once");
         let update = &source_updates[0].1;
@@ -2449,9 +2504,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -2469,10 +2524,17 @@ mod tests {
 
         relay.consume(rx).await;
 
+        let status_id = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "agent_status")
+            .expect("agent status must be persisted")
+            .id;
+        MessageId::parse(&status_id).expect("agent status has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == "turn-a:agent_status:model_activity")
+            .find(|(id, _)| id == &status_id)
             .expect("preparing agent status must close on terminal error");
         assert_eq!(update.status.as_ref().map(|s| s.as_deref()), Some(Some("error")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().unwrap()).unwrap();
@@ -2488,9 +2550,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -2522,7 +2584,7 @@ mod tests {
         let inserts = repo.take_inserts();
         let text_msgs: Vec<_> = inserts.iter().filter(|msg| msg.r#type == "text").collect();
         assert_eq!(text_msgs.len(), 2, "text should split across tool boundaries");
-        assert_eq!(text_msgs[0].id, "asst-1");
+        assert_eq!(text_msgs[0].id, TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(text_msgs[0].id, text_msgs[1].id);
 
         let mut text_event_msg_ids = Vec::new();
@@ -2532,7 +2594,7 @@ mod tests {
             }
         }
         assert_eq!(text_event_msg_ids.len(), 2);
-        assert_eq!(text_event_msg_ids[0], "asst-1");
+        assert_eq!(text_event_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(text_event_msg_ids[0], text_event_msg_ids[1]);
     }
 
@@ -2544,9 +2606,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -2593,9 +2655,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -2645,9 +2707,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -2690,9 +2752,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -2719,10 +2781,17 @@ mod tests {
         let outcome = relay.consume(rx).await;
         assert_eq!(outcome.terminal, RelayTerminal::Finish);
 
+        let tool_id = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("tool call must be persisted")
+            .id;
+        MessageId::parse(&tool_id).expect("tool row has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == "asst-1:tool:tc-write")
+            .find(|(id, _)| id == &tool_id)
             .expect("active tool call should be marked canceled when the turn is truncated");
         assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
@@ -2731,19 +2800,17 @@ mod tests {
     }
 
     #[tokio::test]
-
-    #[tokio::test]
     async fn run_scopes_tool_message_identity_to_the_turn() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
 
         let repo = Arc::new(RecordingRepo::new());
-        for turn_id in ["turn-a", "turn-b"] {
+        for turn_id in [TEST_TURN_A, TEST_TURN_B] {
             let bus = Arc::new(TestUserEventBus::new(64));
             let (tx, _) = broadcast::channel(64);
             let relay = StreamRelay::new(
-                "1".into(),
+                test_conversation_id(),
                 turn_id.into(),
-                "user-1".into(),
+                TEST_USER_ID.into(),
                 repo.clone(),
                 bus,
                 None,
@@ -2769,13 +2836,15 @@ mod tests {
             .filter(|row| row.r#type == "tool_call")
             .map(|row| row.id.as_str())
             .collect();
-        assert_eq!(ids, ["turn-a:tool:provider-call-1", "turn-b:tool:provider-call-1"]);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().all(|id| MessageId::parse(*id).is_ok()));
+        assert_ne!(ids[0], ids[1], "the same provider call key is scoped by turn");
         let turns: Vec<_> = inserts
             .iter()
             .filter(|row| row.r#type == "tool_call")
             .map(|row| serde_json::from_str::<serde_json::Value>(&row.content).unwrap()["turn_id"].clone())
             .collect();
-        assert_eq!(turns, [json!("turn-a"), json!("turn-b")]);
+        assert_eq!(turns, [json!(TEST_TURN_A), json!(TEST_TURN_B)]);
     }
 
     #[tokio::test]
@@ -3056,9 +3125,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -3101,9 +3170,9 @@ mod tests {
             let bus = Arc::new(TestUserEventBus::new(64));
             let (tx, _) = broadcast::channel(64);
             let relay = StreamRelay::new(
-                "1".into(),
-                "turn-a".into(),
-                "user-1".into(),
+                test_conversation_id(),
+                TEST_TURN_A.into(),
+                TEST_USER_ID.into(),
                 repo.clone(),
                 bus,
                 None,
@@ -3141,9 +3210,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3191,9 +3260,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3221,9 +3290,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3284,9 +3353,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3326,9 +3395,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3379,9 +3448,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3421,7 +3490,7 @@ mod tests {
         let inserts = repo.take_inserts();
         let thinking_msgs: Vec<_> = inserts.iter().filter(|msg| msg.r#type == "thinking").collect();
         assert_eq!(thinking_msgs.len(), 2, "thinking should split across tool boundaries");
-        assert_eq!(thinking_msgs[0].msg_id.as_deref(), Some("asst-1"));
+        assert_eq!(thinking_msgs[0].msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_ne!(thinking_msgs[0].msg_id, thinking_msgs[1].msg_id);
 
         let mut done_msg_ids = Vec::new();
@@ -3431,7 +3500,7 @@ mod tests {
             }
         }
         assert_eq!(done_msg_ids.len(), 2);
-        assert_eq!(done_msg_ids[0], "asst-1");
+        assert_eq!(done_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(done_msg_ids[0], done_msg_ids[1]);
     }
 
@@ -3442,9 +3511,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3474,7 +3543,7 @@ mod tests {
 
         assert_eq!(thinking_msgs.len(), 1);
         assert_eq!(text_msgs.len(), 1);
-        assert_eq!(thinking_msgs[0].id, "asst-1");
+        assert_eq!(thinking_msgs[0].id, TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(thinking_msgs[0].id, text_msgs[0].id);
 
         let mut text_msg_ids = Vec::new();
@@ -3491,9 +3560,9 @@ mod tests {
             }
         }
 
-        assert_eq!(thinking_done_ids, vec!["asst-1".to_string()]);
+        assert_eq!(thinking_done_ids, vec![TEST_ASSISTANT_MESSAGE_ID.to_string()]);
         assert_eq!(text_msg_ids.len(), 1);
-        assert_ne!(text_msg_ids[0], "asst-1");
+        assert_ne!(text_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(
             outcome.final_text_msg_id.as_deref(),
             Some(text_msg_ids[0].as_str()),
@@ -3508,9 +3577,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3553,10 +3622,11 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
 
+        let conversation_id = test_conversation_id();
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            conversation_id.clone(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3581,10 +3651,10 @@ mod tests {
         let turn_event = ws_events.iter().find(|e| e.name == "turn.completed");
         assert!(turn_event.is_some());
         let data = &turn_event.unwrap().data;
-        assert_eq!(data["conversation_id"], 1);
-        assert_eq!(data["session_id"], 1);
+        assert_eq!(data["conversation_id"], conversation_id);
+        assert_eq!(data["conversation_id"], conversation_id);
         assert_eq!(data["status"], "finished");
-        assert_eq!(data["canSendMessage"], true);
+        assert_eq!(data["can_send_message"], true);
     }
 
     #[tokio::test]
@@ -3594,14 +3664,20 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "2".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
         )
-        .with_companion_context(true, Some("companion_42".into()));
+        .with_companion_context(
+            true,
+            Some(
+                CompanionId::parse("companion_0190f5fe-7c00-7a00-8abc-012345678942")
+                    .unwrap(),
+            ),
+        );
 
         let mut ws_rx = bus.subscribe();
         let rx = tx.subscribe();
@@ -3619,13 +3695,19 @@ mod tests {
             .find(|e| e.name == "message.stream")
             .expect("stream event broadcast");
         assert_eq!(stream_evt.data["companion"], true);
-        assert_eq!(stream_evt.data["companion_id"], "companion_42");
+        assert_eq!(
+            stream_evt.data["companion_id"],
+            "companion_0190f5fe-7c00-7a00-8abc-012345678942"
+        );
         let turn_evt = ws_events
             .iter()
             .find(|e| e.name == "turn.completed")
             .expect("turn.completed broadcast");
         assert_eq!(turn_evt.data["companion"], true);
-        assert_eq!(turn_evt.data["companion_id"], "companion_42");
+        assert_eq!(
+            turn_evt.data["companion_id"],
+            "companion_0190f5fe-7c00-7a00-8abc-012345678942"
+        );
     }
 
     #[tokio::test]
@@ -3636,13 +3718,19 @@ mod tests {
 
         let relay = StreamRelay::new(
             "3".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
         )
-        .with_companion_context(true, Some("companion_42".into()))
+        .with_companion_context(
+            true,
+            Some(
+                CompanionId::parse("companion_0190f5fe-7c00-7a00-8abc-012345678942")
+                    .unwrap(),
+            ),
+        )
         .with_channel_platform(Some("telegram".into()));
 
         let mut ws_rx = bus.subscribe();
@@ -3675,9 +3763,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3706,9 +3794,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3742,9 +3830,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3784,9 +3872,9 @@ mod tests {
 
         // Blank origin must normalize to None (owner speech).
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3816,9 +3904,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             Some(Arc::new(MockCronService)),
@@ -3840,7 +3928,7 @@ mod tests {
         let updates = repo.take_updates();
         let final_update = updates
             .iter()
-            .find(|(id, update)| id == "asst-1" && update.content.is_some())
+            .find(|(id, update)| id == TEST_ASSISTANT_MESSAGE_ID && update.content.is_some())
             .expect("expected cleaned final text update");
         let content: serde_json::Value = serde_json::from_str(final_update.1.content.as_deref().unwrap()).unwrap();
         assert_eq!(content["content"].as_str().map(str::trim), Some("Hello"));
@@ -3871,9 +3959,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3911,12 +3999,12 @@ mod tests {
         let tool_msg = inserts.iter().find(|m| m.r#type == "tool_call");
         assert!(tool_msg.is_some());
         let msg = tool_msg.unwrap();
-        assert_eq!(msg.id, "asst-1:tool:tc-001");
-        assert_eq!(msg.msg_id.as_deref(), Some("asst-1"));
+        MessageId::parse(&msg.id).expect("tool row has a canonical message ID");
+        assert_eq!(msg.msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_eq!(msg.status.as_deref(), Some("work"));
 
         let updates = repo.take_updates();
-        let tool_update = updates.iter().find(|(id, _)| id == "asst-1:tool:tc-001");
+        let tool_update = updates.iter().find(|(id, _)| id == &msg.id);
         assert!(tool_update.is_some());
         let (_, upd) = tool_update.unwrap();
         assert_eq!(upd.status, Some(Some("finish".to_owned())));
@@ -3945,9 +4033,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -3997,14 +4085,14 @@ mod tests {
         let acp_msg = inserts.iter().find(|m| m.r#type == "acp_tool_call");
         assert!(acp_msg.is_some());
         let msg = acp_msg.unwrap();
-        assert_eq!(msg.id, "asst-1:acp_tool:atc-001");
-        assert_eq!(msg.msg_id.as_deref(), Some("asst-1"));
+        MessageId::parse(&msg.id).expect("ACP tool row has a canonical message ID");
+        assert_eq!(msg.msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_eq!(msg.status.as_deref(), Some("work"));
 
         let updates = repo.take_updates();
         let acp_update = updates
             .iter()
-            .find(|(id, _)| id == "asst-1:acp_tool:atc-001");
+            .find(|(id, _)| id == &msg.id);
         assert!(acp_update.is_some());
         let (_, upd) = acp_update.unwrap();
         assert_eq!(upd.status, Some(Some("finish".to_owned())));
@@ -4042,9 +4130,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -4075,10 +4163,10 @@ mod tests {
             .iter()
             .find(|row| row.r#type == "acp_tool_call")
             .expect("terminal ACP update must survive a missing start event");
-        assert_eq!(row.id, "turn-a:acp_tool:atc-001");
+        MessageId::parse(&row.id).expect("ACP tool row has a canonical message ID");
         assert_eq!(row.status.as_deref(), Some("finish"));
         let content: serde_json::Value = serde_json::from_str(&row.content).unwrap();
-        assert_eq!(content["turn_id"], "turn-a");
+        assert_eq!(content["turn_id"], TEST_TURN_A);
     }
 
     #[tokio::test]
@@ -4091,9 +4179,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -4123,10 +4211,17 @@ mod tests {
 
         relay.consume(rx).await;
 
+        let tool_id = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "acp_tool_call")
+            .expect("ACP tool must be persisted")
+            .id;
+        MessageId::parse(&tool_id).expect("ACP tool row has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == "turn-a:acp_tool:atc-001")
+            .find(|(id, _)| id == &tool_id)
             .expect("active ACP tool must be terminalized");
         assert_eq!(update.status.as_ref().map(|s| s.as_deref()), Some(Some("error")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().unwrap()).unwrap();
@@ -4146,9 +4241,9 @@ mod tests {
         let (tx, _) = broadcast::channel(64);
 
         let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus.clone(),
             None,
@@ -4179,8 +4274,8 @@ mod tests {
         let group_msg = inserts.iter().find(|m| m.r#type == "tool_group");
         assert!(group_msg.is_some());
         let msg = group_msg.unwrap();
-        assert_eq!(msg.id, "asst-1:tool_group:tg-001");
-        assert_eq!(msg.msg_id.as_deref(), Some("asst-1"));
+        MessageId::parse(&msg.id).expect("tool-group row has a canonical message ID");
+        assert_eq!(msg.msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_eq!(msg.status.as_deref(), Some("finish"));
 
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
@@ -4196,9 +4291,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -4225,8 +4320,8 @@ mod tests {
 
         let inserts = repo.take_inserts();
         let row = inserts.iter().find(|row| row.r#type == "tool_group").unwrap();
-        assert_eq!(row.id, "turn-a:tool_group:tg-001");
-        assert_eq!(row.msg_id.as_deref(), Some("turn-a"));
+        MessageId::parse(&row.id).expect("tool-group row has a canonical message ID");
+        assert_eq!(row.msg_id.as_deref(), Some(TEST_TURN_A));
         assert_eq!(row.status.as_deref(), Some("error"));
     }
 
@@ -4238,9 +4333,9 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
         let relay = StreamRelay::new(
-            "1".into(),
-            "turn-a".into(),
-            "user-1".into(),
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
             repo.clone(),
             bus,
             None,
@@ -4257,10 +4352,17 @@ mod tests {
 
         relay.consume(rx).await;
 
+        let group_id = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_group")
+            .expect("tool group must be persisted")
+            .id;
+        MessageId::parse(&group_id).expect("tool-group row has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == "turn-a:tool_group:tg-001")
+            .find(|(id, _)| id == &group_id)
             .expect("active tool group must be terminalized on channel close");
         assert_eq!(update.status.as_ref().map(|s| s.as_deref()), Some(Some("error")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().unwrap()).unwrap();
@@ -4336,16 +4438,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl IConversationRepository for StrictRecordingRepo {
-        async fn get(&self, id: i64) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
+        async fn get(&self, id: &str) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
             self.inner.get(id).await
         }
-        async fn create(&self, row: &nomifun_db::models::ConversationRow) -> Result<i64, DbError> {
+        async fn create(&self, row: &nomifun_db::models::ConversationRow) -> Result<String, DbError> {
             self.inner.create(row).await
         }
-        async fn update(&self, id: i64, updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
+        async fn update(&self, id: &str, updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
             self.inner.update(id, updates).await
         }
-        async fn delete(&self, id: i64) -> Result<(), DbError> {
+        async fn delete(&self, id: &str) -> Result<(), DbError> {
             self.inner.delete(id).await
         }
         async fn list_paginated(
@@ -4376,13 +4478,13 @@ mod tests {
         async fn list_associated(
             &self,
             user_id: &str,
-            conversation_id: i64,
+            conversation_id: &str,
         ) -> Result<Vec<nomifun_db::models::ConversationRow>, DbError> {
             self.inner.list_associated(user_id, conversation_id).await
         }
         async fn get_messages(
             &self,
-            conv_id: i64,
+            conv_id: &str,
             page: u32,
             page_size: u32,
             order: nomifun_db::SortOrder,
@@ -4398,12 +4500,12 @@ mod tests {
             }
             self.inner.update_message(id, updates).await
         }
-        async fn delete_messages_by_conversation(&self, conv_id: i64) -> Result<(), DbError> {
+        async fn delete_messages_by_conversation(&self, conv_id: &str) -> Result<(), DbError> {
             self.inner.delete_messages_by_conversation(conv_id).await
         }
         async fn get_message_by_msg_id(
             &self,
-            conv_id: i64,
+            conv_id: &str,
             msg_id: &str,
             msg_type: &str,
         ) -> Result<Option<MessageRow>, DbError> {
@@ -4424,6 +4526,7 @@ mod tests {
     struct RecordingRepo {
         inserts: Mutex<Vec<MessageRow>>,
         updates: Mutex<Vec<(String, nomifun_db::MessageRowUpdate)>>,
+        correlations: Mutex<HashMap<(String, String, String, String), String>>,
     }
 
     impl RecordingRepo {
@@ -4431,6 +4534,7 @@ mod tests {
             Self {
                 inserts: Mutex::new(vec![]),
                 updates: Mutex::new(vec![]),
+                correlations: Mutex::new(HashMap::new()),
             }
         }
 
@@ -4450,16 +4554,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl IConversationRepository for RecordingRepo {
-        async fn get(&self, _id: i64) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
+        async fn get(&self, _id: &str) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
             Ok(None)
         }
-        async fn create(&self, _row: &nomifun_db::models::ConversationRow) -> Result<i64, DbError> {
-            Ok(1)
+        async fn create(&self, row: &nomifun_db::models::ConversationRow) -> Result<String, DbError> {
+            Ok(row.id.clone())
         }
-        async fn update(&self, _id: i64, _updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
+        async fn update(&self, _id: &str, _updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
             Ok(())
         }
-        async fn delete(&self, _id: i64) -> Result<(), DbError> {
+        async fn delete(&self, _id: &str) -> Result<(), DbError> {
             Ok(())
         }
         async fn list_paginated(
@@ -4492,13 +4596,13 @@ mod tests {
         async fn list_associated(
             &self,
             _user_id: &str,
-            _conversation_id: i64,
+            _conversation_id: &str,
         ) -> Result<Vec<nomifun_db::models::ConversationRow>, DbError> {
             Ok(vec![])
         }
         async fn get_messages(
             &self,
-            _conv_id: i64,
+            _conv_id: &str,
             _page: u32,
             _page_size: u32,
             _order: nomifun_db::SortOrder,
@@ -4509,7 +4613,7 @@ mod tests {
                 has_more: false,
             })
         }
-        async fn get_message(&self, _conv_id: i64, message_id: &str) -> Result<Option<MessageRow>, DbError> {
+        async fn get_message(&self, _conv_id: &str, message_id: &str) -> Result<Option<MessageRow>, DbError> {
             Ok(self
                 .inserts
                 .lock()
@@ -4522,16 +4626,37 @@ mod tests {
             self.inserts.lock().unwrap().push(row.clone());
             Ok(())
         }
+        async fn claim_message_correlation(
+            &self,
+            conversation_id: &str,
+            turn_message_id: &str,
+            message_type: &str,
+            correlation_key: &str,
+        ) -> Result<String, DbError> {
+            let key = (
+                conversation_id.to_owned(),
+                turn_message_id.to_owned(),
+                message_type.to_owned(),
+                correlation_key.to_owned(),
+            );
+            Ok(self
+                .correlations
+                .lock()
+                .unwrap()
+                .entry(key)
+                .or_insert_with(|| MessageId::new().into_string())
+                .clone())
+        }
         async fn update_message(&self, id: &str, updates: &nomifun_db::MessageRowUpdate) -> Result<(), DbError> {
             self.updates.lock().unwrap().push((id.to_owned(), updates.clone()));
             Ok(())
         }
-        async fn delete_messages_by_conversation(&self, _conv_id: i64) -> Result<(), DbError> {
+        async fn delete_messages_by_conversation(&self, _conv_id: &str) -> Result<(), DbError> {
             Ok(())
         }
         async fn get_message_by_msg_id(
             &self,
-            _conv_id: i64,
+            _conv_id: &str,
             msg_id: &str,
             msg_type: &str,
         ) -> Result<Option<MessageRow>, DbError> {

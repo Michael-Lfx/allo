@@ -7,11 +7,12 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { IProvider, ModelProfile } from '@/common/config/storage';
+import type { ProviderId } from '@/common/types/ids';
 import { getCreationModels } from './creationModels';
 
 const provider = (overrides: Partial<IProvider> = {}): IProvider =>
   ({
-    id: 'prov_1',
+    id: 'prov_1' as ProviderId,
     platform: 'openai',
     name: 'OpenAI',
     base_url: 'https://api.openai.com',
@@ -22,7 +23,7 @@ const provider = (overrides: Partial<IProvider> = {}): IProvider =>
   }) as IProvider;
 
 const localProvider = {
-  id: 'nomifun-local-model',
+  id: 'nomifun-local-model' as ProviderId,
   name: 'Local Models',
   platform: 'nomifun-local-model',
   enabled: true,
@@ -34,7 +35,7 @@ const profile = (
   source: ModelProfile['source'],
   model: string,
   tasks: ModelProfile['tasks'],
-  providerId = 'prov_1'
+  providerId: ProviderId = 'prov_1' as ProviderId
 ): ModelProfile => ({
   provider_id: providerId,
   model,

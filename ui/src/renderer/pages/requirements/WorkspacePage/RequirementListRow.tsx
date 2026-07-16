@@ -22,15 +22,16 @@ import { useTranslation } from 'react-i18next';
 
 import type { IRequirement, RequirementStatus } from '@/common/adapter/ipcBridge';
 import StatusPill from '../components/StatusPill';
+import type { RequirementId } from '@/common/types/ids';
 
 interface RequirementListRowProps {
   item: IRequirement;
   selected: boolean;
-  onToggleSelect: (id: number) => void;
-  onOpenDetail: (id: number) => void; // row click
-  onStatusChange: (id: number, next: RequirementStatus) => void;
-  onEdit: (id: number) => void;
-  onDelete: (id: number) => void;
+  onToggleSelect: (id: RequirementId) => void;
+  onOpenDetail: (id: RequirementId) => void; // row click
+  onStatusChange: (id: RequirementId, next: RequirementStatus) => void;
+  onEdit: (id: RequirementId) => void;
+  onDelete: (id: RequirementId) => void;
 }
 
 const stop = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -92,7 +93,7 @@ const RequirementListRow: React.FC<RequirementListRowProps> = ({
         className='flex-shrink-0 text-12px text-[var(--color-text-3)] tabular-nums'
         style={{ fontVariantNumeric: 'tabular-nums' }}
       >
-        {`#${item.id}`}
+        {item.id}
       </span>
 
       {/* Title + snippet — flexes, truncates gracefully on narrow widths */}
