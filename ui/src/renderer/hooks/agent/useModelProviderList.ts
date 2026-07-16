@@ -76,20 +76,21 @@ export const useModelProviderList = (): ModelProviderListResult => {
 
   const configuredProviders = useMemo(() => {
     const list: IProvider[] = Array.isArray(modelConfig) ? modelConfig : [];
-    if (isGoogleAuth) {
-      const googleProvider: IProvider = {
-        id: GOOGLE_AUTH_PROVIDER_ID,
-        name: 'Gemini Google Auth',
-        platform: 'gemini-with-google-auth',
-        base_url: '',
-        api_key: '',
-        model: [],
-        capabilities: [{ type: 'text' }, { type: 'vision' }, { type: 'function_calling' }],
-        enabled: true, // Google Auth provider 始终启用
-      } as unknown as IProvider;
-      return [googleProvider, ...list];
+    // Server-managed mode only exposes Flowy Cloud; skip virtual Google Auth.
+    if (SERVER_MANAGED_MODELS || !isGoogleAuth) {
+      return list;
     }
-    return list;
+    const googleProvider: IProvider = {
+      id: GOOGLE_AUTH_PROVIDER_ID,
+      name: 'Gemini Google Auth',
+      platform: 'gemini-with-google-auth',
+      base_url: '',
+      api_key: '',
+      model: [],
+      capabilities: [{ type: 'text' }, { type: 'vision' }, { type: 'function_calling' }],
+      enabled: true, // Google Auth provider 始终启用
+    } as unknown as IProvider;
+    return [googleProvider, ...list];
   }, [isGoogleAuth, modelConfig]);
 
   const providers = useMemo(() => {

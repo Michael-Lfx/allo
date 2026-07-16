@@ -178,6 +178,9 @@ pub trait EntityId:
 
 macro_rules! define_entity_id {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
+        define_entity_id!($(#[$meta])* $name, $prefix, reserved: []);
+    };
+    ($(#[$meta:meta])* $name:ident, $prefix:literal, reserved: [$($reserved:literal),* $(,)?]) => {
         $(#[$meta])*
         #[derive(
             Clone,
@@ -197,13 +200,24 @@ macro_rules! define_entity_id {
             pub const PREFIX: &'static str = $prefix;
 
             /// Mint a new globally unique ID of this entity kind.
+            ///
+            /// Reserved singleton IDs (when declared) are never minted here;
+            /// callers must use the stable literal for those rows.
             pub fn new() -> Self {
                 Self(generate_prefixed_id(Self::PREFIX))
             }
 
             /// Parse and validate a canonical ID of this entity kind.
+            ///
+            /// When this entity declares reserved singletons, those exact
+            /// literals are accepted alongside `{prefix}_{uuidv7}`.
             pub fn parse(value: impl Into<String>) -> Result<Self, PrefixedIdError> {
                 let value = value.into();
+                $(
+                    if value == $reserved {
+                        return Ok(Self(value));
+                    }
+                )*
                 validate_prefixed_id(&value, Self::PREFIX)?;
                 Ok(Self(value))
             }
@@ -342,9 +356,25 @@ define_entity_id!(
 );
 define_entity_id!(
     /// Globally unique provider configuration identifier.
+    ///
+    /// User-authored providers use `prov_<uuidv7>`. System-managed singletons
+    /// keep stable reserved literals (`flowy-cloud`, `google-auth-gemini`) so
+    /// cloud sync and virtual Google Auth stay addressable across installs.
     ProviderId,
-    "prov"
+    "prov",
+    reserved: ["flowy-cloud", "google-auth-gemini"]
 );
+
+/// Built-in Flowy Cloud provider row id synced after server login.
+pub const FLOWY_BUILTIN_PROVIDER_ID: &str = "flowy-cloud";
+
+/// Virtual Google Auth provider id synthesized by the client catalog.
+pub const GOOGLE_AUTH_PROVIDER_ID: &str = "google-auth-gemini";
+
+/// Return true when `value` is a reserved system provider singleton.
+pub fn is_reserved_provider_id(value: &str) -> bool {
+    matches!(value, FLOWY_BUILTIN_PROVIDER_ID | GOOGLE_AUTH_PROVIDER_ID)
+}
 define_entity_id!(
     /// Globally unique custom-agent identifier.
     ///
@@ -671,6 +701,22 @@ mod tests {
         assert_eq!(text.parse::<ConversationId>().unwrap(), id);
         assert_eq!(String::from(id.clone()), text);
         assert_eq!(id.into_string(), text);
+    }
+
+    #[test]
+    fn provider_id_accepts_reserved_system_singletons() {
+        for reserved in [FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID] {
+            let parsed = ProviderId::parse(reserved).unwrap();
+            assert_eq!(parsed.as_str(), reserved);
+            assert!(is_reserved_provider_id(reserved));
+            assert_eq!(
+                serde_json::from_str::<ProviderId>(&format!("\"{reserved}\"")).unwrap(),
+                parsed
+            );
+        }
+
+        assert!(ProviderId::parse("custom-cloud").is_err());
+        assert!(!is_reserved_provider_id("prov_0190f5fe-7c00-7a00-8000-000000000001"));
     }
 
     #[test]

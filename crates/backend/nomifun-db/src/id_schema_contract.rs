@@ -226,7 +226,9 @@ pub(crate) async fn validate_id_value_contract(pool: &SqlitePool) -> Result<(), 
                 let allowed_natural_key = (is_agent_identity_column(table, column)
                     && natural_agent_keys.contains(&value))
                     || (is_preset_identity_column(table, column)
-                        && natural_preset_keys.contains(&value));
+                        && natural_preset_keys.contains(&value))
+                    || (is_provider_identity_column(table, column)
+                        && nomifun_common::is_reserved_provider_id(&value));
                 if !allowed_natural_key {
                     return Err(DbError::Init(format!(
                         "ID contract value {table}.{column}={value:?} is not canonical: {reason}"
@@ -276,6 +278,21 @@ fn is_agent_identity_column(table: &str, column: &str) -> bool {
 
 fn is_preset_identity_column(table: &str, column: &str) -> bool {
     (table == "presets" && column == "id") || column == "preset_id"
+}
+
+fn is_provider_identity_column(table: &str, column: &str) -> bool {
+    matches!(
+        (table, column),
+        ("providers", "id")
+            | ("model_profiles", "provider_id")
+            | ("preset_model_preferences", "provider_id")
+            | ("creation_tasks", "provider_id")
+            | ("agent_execution_participants", "provider_id")
+            | (
+                "agent_execution_template_participants",
+                "provider_id"
+            )
+    )
 }
 
 fn validate_natural_installation_key(value: &str) -> Result<(), &'static str> {

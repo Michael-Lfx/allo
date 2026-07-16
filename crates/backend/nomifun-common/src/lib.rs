@@ -52,12 +52,12 @@ pub use id::{
     ChannelUserId, CompanionId, CompanionLearnRunId, CompanionMemoryId, CompanionSessionWindowId,
     CompanionSuggestionId, CompanionEvolutionFeedbackId, ConnectorCredentialId, ConversationArtifactId,
     ConversationExecutionLinkId, ConversationId, CreationTaskId, CronJobId, CronJobRunId,
-    EntityId, FigureId, IdPrefixError, IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
-    MAX_ID_PREFIX_LEN, McpServerId, MessageId, PrefixedIdError, PresetId, PresetTagId, ProviderId,
-    PublicAgentAuditEntryId, PublicAgentId, RemoteAgentId, RequirementId, TerminalId,
-    UUID_STRING_LEN, UuidV7Error, UserId, WebhookId, WorkshopAssetId, WorkshopCanvasId,
-    WorkshopEdgeId, WorkshopNodeId, generate_id, generate_prefixed_id, validate_id_prefix,
-    validate_uuidv7,
+    EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID, IdPrefixError,
+    IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId, MAX_ID_PREFIX_LEN, McpServerId,
+    MessageId, PrefixedIdError, PresetId, PresetTagId, ProviderId, PublicAgentAuditEntryId,
+    PublicAgentId, RemoteAgentId, RequirementId, TerminalId, UUID_STRING_LEN, UuidV7Error, UserId,
+    WebhookId, WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,
+    generate_prefixed_id, is_reserved_provider_id, validate_id_prefix, validate_uuidv7,
     validate_prefixed_id,
 };
 pub use scoped_auth::{

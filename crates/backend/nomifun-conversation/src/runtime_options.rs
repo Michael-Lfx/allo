@@ -44,9 +44,8 @@ pub fn provider_model_from_conversation_row(
 ///
 /// Returns `None` when the conversation uses another provider or has no model.
 pub fn flowy_cloud_model_from_conversation_row(row: &ConversationRow) -> Option<String> {
-    const FLOWY_CLOUD: &str = "flowy-cloud";
     let pm = provider_model_from_conversation_row(row).ok().flatten()?;
-    if pm.provider_id != FLOWY_CLOUD {
+    if pm.provider_id != nomifun_common::FLOWY_BUILTIN_PROVIDER_ID {
         return None;
     }
     pm.use_model

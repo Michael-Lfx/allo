@@ -10,6 +10,9 @@
  * Every persistent entity ID is a canonical prefixed UUIDv7 string at storage
  * and protocol boundaries. The brand prevents accidentally passing one
  * entity's identifier to another entity's API without runtime wrappers.
+ *
+ * Provider IDs additionally accept reserved system singletons
+ * (`flowy-cloud`, `google-auth-gemini`) that are not UUIDv7-backed.
  */
 declare const entityIdBrand: unique symbol;
 
@@ -173,11 +176,26 @@ const ENTITY_ID_PREFIXES = {
 const CANONICAL_UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+/** Built-in Flowy Cloud provider — models and keys come from server login. */
+export const FLOWY_BUILTIN_PROVIDER_ID = 'flowy-cloud' as ProviderId;
+
+/** Virtual Google Auth provider synthesized by the client catalog. */
+export const GOOGLE_AUTH_PROVIDER_ID = 'google-auth-gemini' as ProviderId;
+
+const RESERVED_PROVIDER_IDS = new Set<string>([FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID]);
+
+export function isReservedProviderId(value: unknown): value is ProviderId {
+  return typeof value === 'string' && RESERVED_PROVIDER_IDS.has(value);
+}
+
 /**
  * Strictly validates an ID received at a route, wire, or storage boundary.
  * Numbers are intentionally rejected rather than stringified implicitly.
  */
 export function parseEntityId<Kind extends EntityKind>(kind: Kind, value: unknown): EntityId<Kind> {
+  if (kind === 'provider' && isReservedProviderId(value)) {
+    return value as EntityId<Kind>;
+  }
   const prefix = ENTITY_ID_PREFIXES[kind];
   if (
     typeof value !== 'string' ||
