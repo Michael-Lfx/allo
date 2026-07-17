@@ -4230,6 +4230,8 @@ export interface ICompanionEvolveConfig {
   reflect_enabled: boolean;
   auto_activate: boolean;
   auto_threshold: number;
+  /** Periodically fold semantically-redundant existing skills into one (archives the rest). */
+  consolidate_enabled: boolean;
 }
 
 /** Shared session-window archiving settings (伙伴会话窗口归档). Default OFF (opt-in). */
@@ -4526,6 +4528,11 @@ export const companion = {
       (p) => ({ accept: p.accept, reason: p.reason })
     ),
     fromApiCompanionSkill
+  ),
+  /** Manually archive an active skill (soft, reversible — recoverable under the Archived filter). */
+  archiveSkill: httpPost<ICompanionSkill, { companion_id: CompanionId; name: string }>(
+    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}/archive`,
+    () => ({})
   ),
   weeklyDigest: httpGet<ICompanionWeeklyDigest, { companion_id: CompanionId; days?: number }>(
     (p) => `/api/companion/companions/${p.companion_id}/weekly-digest${p.days ? `?days=${p.days}` : ''}`

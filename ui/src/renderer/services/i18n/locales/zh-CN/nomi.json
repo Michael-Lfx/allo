@@ -34,6 +34,9 @@
     "accept": "采纳",
     "reject": "拒绝",
     "rejectConfirm": "拒绝这个技能？",
+    "archive": "归档",
+    "archiveConfirm": "归档这个技能？归档后伴侣不再自动用它，你可在“已归档”里找回。",
+    "archivedOk": "已归档",
     "confidence": "置信",
     "usage": "已用",
     "provenance": "来源",
@@ -224,7 +227,9 @@
     "reflect": "任务后反思",
     "reflectHint": "复杂任务完成后也反思是否值得固化",
     "autoActivate": "高置信自动生效",
-    "autoActivateHint": "多次重复的高置信技能直接启用（仍可在技能页撤销）"
+    "autoActivateHint": "多次重复的高置信技能直接启用（仍可在技能页撤销）",
+    "consolidate": "定期整合冗余技能",
+    "consolidateHint": "每天巡检已有技能，把做同一类事的合并成一个（其余归档，可在技能页恢复）"
   },
   "archive": {
     "title": "会话归档",

@@ -34,6 +34,9 @@
     "accept": "Accept",
     "reject": "Reject",
     "rejectConfirm": "Reject this skill?",
+    "archive": "Archive",
+    "archiveConfirm": "Archive this skill? Your companion will stop using it automatically — you can restore it under Archived.",
+    "archivedOk": "Archived",
     "confidence": "Confidence",
     "usage": "Used",
     "provenance": "From",
@@ -224,7 +227,9 @@
     "reflect": "Post-task reflection",
     "reflectHint": "Also reflect after a complex task whether it's worth saving",
     "autoActivate": "Auto-activate high-confidence",
-    "autoActivateHint": "Strongly-repeated high-confidence skills activate directly (still revocable in the Skills tab)"
+    "autoActivateHint": "Strongly-repeated high-confidence skills activate directly (still revocable in the Skills tab)",
+    "consolidate": "Periodically consolidate redundant skills",
+    "consolidateHint": "Reviews existing skills daily and folds ones that do the same thing into one (the rest are archived, restorable in the Skills tab)"
   },
   "archive": {
     "title": "Session archiving",

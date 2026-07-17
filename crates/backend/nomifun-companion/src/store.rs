@@ -98,6 +98,11 @@ pub struct CompanionSuggestion {
     pub status: String,
     pub created_at: TimestampMs,
     pub decided_at: Option<TimestampMs>,
+    /// Owning canonical companion id the suggestion was raised for; `None` for
+    /// unowned/global rows (legacy suggestions that predate scoping). The
+    /// per-companion learning graph only shows a companion's own suggestions.
+    #[serde(default)]
+    pub companion_id: Option<String>,
 }
 
 /// One suggestion page and the number of rows matching the same status filter.
@@ -254,9 +259,11 @@ CREATE TABLE IF NOT EXISTS companion_suggestions (
   action TEXT,
   status TEXT NOT NULL DEFAULT 'new',
   created_at INTEGER NOT NULL,
-  decided_at INTEGER
+  decided_at INTEGER,
+  companion_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_companion_suggestions_status ON companion_suggestions(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_companion_suggestions_companion ON companion_suggestions(companion_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS companion_learn_runs (
   id TEXT PRIMARY KEY,
@@ -388,7 +395,7 @@ const COMPANION_UNIQUE_INDEX: &str = "CREATE UNIQUE INDEX IF NOT EXISTS idx_comp
 
 /// Current schema version stamped into `PRAGMA user_version`. The base
 /// SCHEMA always reflects this latest shape (fresh dbs are born current).
-const STORE_VERSION: i64 = 6;
+const STORE_VERSION: i64 = 7;
 
 /// Schema bootstrap shared by `open`/`open_memory`. Runs entirely on one
 /// acquired connection so DDL is never spread across pool members. Probes
@@ -634,6 +641,18 @@ async fn apply_migrations_on(conn: &mut SqliteConnection) -> Result<(), AppError
     if version < 6 {
         sqlx::raw_sql("BEGIN IMMEDIATE").execute(&mut *conn).await.map_err(db_err)?;
         match migrate_v5_to_v6(conn).await {
+            Ok(()) => {
+                sqlx::raw_sql("COMMIT").execute(&mut *conn).await.map_err(db_err)?;
+            }
+            Err(e) => {
+                let _ = sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await;
+                return Err(e);
+            }
+        }
+    }
+    if version < 7 {
+        sqlx::raw_sql("BEGIN IMMEDIATE").execute(&mut *conn).await.map_err(db_err)?;
+        match migrate_v6_to_v7(conn).await {
             Ok(()) => {
                 sqlx::raw_sql("COMMIT").execute(&mut *conn).await.map_err(db_err)?;
             }
@@ -1067,6 +1086,36 @@ async fn quarantine_v6_row(
     Ok(())
 }
 
+/// v6 → v7: companion_suggestions grows a nullable `companion_id` column so
+/// insights and skill cards attribute to the companion they were raised for.
+/// Pre-existing rows predate scoping — they stay NULL (unowned/global), which
+/// the per-companion learning graph filters out. Only ALTER when the column is
+/// genuinely missing (the transaction holds the write lock, so the preflight
+/// cannot go stale before the ALTER).
+async fn migrate_v6_to_v7(conn: &mut SqliteConnection) -> Result<(), AppError> {
+    let has_companion_id = sqlx::query("PRAGMA table_info(companion_suggestions)")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(db_err)?
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "companion_id");
+    if !has_companion_id {
+        sqlx::raw_sql("ALTER TABLE companion_suggestions ADD COLUMN companion_id TEXT")
+            .execute(&mut *conn)
+            .await
+            .map_err(db_err)?;
+    }
+    sqlx::raw_sql(
+        "CREATE INDEX IF NOT EXISTS idx_companion_suggestions_companion \
+         ON companion_suggestions(companion_id, created_at DESC)",
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(db_err)?;
+    sqlx::raw_sql("PRAGMA user_version = 7").execute(&mut *conn).await.map_err(db_err)?;
+    Ok(())
+}
+
 fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Result<CompanionMemory, AppError> {
     let tags: String = row.get("tags");
     let id: String = row.get("id");
@@ -1184,6 +1233,7 @@ fn row_to_suggestion(row: &sqlx::sqlite::SqliteRow) -> CompanionSuggestion {
         status: row.get("status"),
         created_at: row.get("created_at"),
         decided_at: row.get("decided_at"),
+        companion_id: row.try_get("companion_id").ok().flatten(),
     }
 }
 
@@ -1366,6 +1416,32 @@ impl CompanionStore {
             .await
             .map_err(db_err)?;
         sqlx::query("DELETE FROM companion_threads WHERE companion_id = ?")
+            .bind(companion_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // Private (companion-scoped) memories and skills belong to this
+        // companion alone — purge them. Shared 'user'-scoped rows stay for the
+        // remaining companions.
+        sqlx::query("DELETE FROM companion_memories WHERE scope_kind = 'companion' AND scope_companion_id = ?")
+            .bind(companion_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        sqlx::query("DELETE FROM companion_skills WHERE scope_kind = 'companion' AND scope_companion_id = ?")
+            .bind(companion_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // Session windows are per-companion by construction.
+        sqlx::query("DELETE FROM companion_session_windows WHERE companion_id = ?")
+            .bind(companion_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // Suggestions raised for this companion. Unowned/legacy (NULL) rows are
+        // global and are preserved.
+        sqlx::query("DELETE FROM companion_suggestions WHERE companion_id = ?")
             .bind(companion_id)
             .execute(&mut *tx)
             .await
@@ -1899,11 +1975,15 @@ impl CompanionStore {
 
     pub async fn insert_suggestion(
         &self,
+        companion_id: Option<&str>,
         kind: &str,
         title: &str,
         body: &str,
         action: Option<&serde_json::Value>,
     ) -> Result<CompanionSuggestion, AppError> {
+        if let Some(companion_id) = companion_id {
+            validate_companion_id(companion_id, "suggestion companion_id")?;
+        }
         let now = now_ms();
         let s = CompanionSuggestion {
             id: CompanionSuggestionId::new().into_string(),
@@ -1914,8 +1994,9 @@ impl CompanionStore {
             status: "new".into(),
             created_at: now,
             decided_at: None,
+            companion_id: companion_id.map(str::to_owned),
         };
-        sqlx::query("INSERT INTO companion_suggestions(id, kind, title, body, action, status, created_at) VALUES(?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO companion_suggestions(id, kind, title, body, action, status, created_at, companion_id) VALUES(?,?,?,?,?,?,?,?)")
             .bind(&s.id)
             .bind(&s.kind)
             .bind(&s.title)
@@ -1923,6 +2004,7 @@ impl CompanionStore {
             .bind(s.action.as_ref().map(|a| a.to_string()))
             .bind(&s.status)
             .bind(s.created_at)
+            .bind(s.companion_id.as_deref())
             .execute(&self.pool)
             .await
             .map_err(db_err)?;
@@ -1944,6 +2026,85 @@ impl CompanionStore {
             .fetch_all(&self.pool)
             .await
             .map_err(db_err)?;
+        for row in rows {
+            let existing_title: String = row.get("title");
+            let existing_title = existing_title.trim().to_lowercase();
+            if !norm_title.is_empty() && existing_title == norm_title {
+                return Ok(Some(row.get("id")));
+            }
+            let (short_len, long_len) = {
+                let a = norm_title.chars().count();
+                let b = existing_title.chars().count();
+                (a.min(b), a.max(b))
+            };
+            let close_in_length = long_len > 0 && (short_len as f64 / long_len as f64) >= CONTAINMENT_MIN_RATIO;
+            if close_in_length
+                && !norm_title.is_empty()
+                && (existing_title.contains(&norm_title) || norm_title.contains(&existing_title))
+            {
+                return Ok(Some(row.get("id")));
+            }
+            if !norm_body.is_empty() {
+                let existing_body: String = row.get("body");
+                if existing_body.trim().to_lowercase() == norm_body {
+                    return Ok(Some(row.get("id")));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Recently *decided* (accepted/dismissed) suggestions within the last
+    /// `within_ms`, newest-decided first. Fed back into the learn prompt so the
+    /// model won't re-raise a just-handled idea (cross-time 统筹). A zero/negative
+    /// window returns nothing.
+    pub async fn list_recently_decided_suggestions(
+        &self,
+        within_ms: i64,
+        limit: i64,
+    ) -> Result<Vec<CompanionSuggestion>, AppError> {
+        if within_ms <= 0 {
+            return Ok(Vec::new());
+        }
+        let cutoff = now_ms() - within_ms;
+        let rows = sqlx::query(
+            "SELECT * FROM companion_suggestions WHERE status IN ('accepted','dismissed') AND decided_at >= ? ORDER BY decided_at DESC LIMIT ?",
+        )
+        .bind(cutoff)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows.iter().map(row_to_suggestion).collect())
+    }
+
+    /// Cross-time dedup backstop: has a lexically-similar suggestion of the same
+    /// `kind` been *decided* (accepted/dismissed) within `within_ms`? If so,
+    /// re-raising it now is noise — the owner just handled it. Mirrors
+    /// [`find_similar_suggestion`]'s matching, but over recently-decided rows
+    /// instead of pending ones. A zero/negative window disables the check.
+    pub async fn find_recent_decided_similar(
+        &self,
+        kind: &str,
+        title: &str,
+        body: &str,
+        within_ms: i64,
+    ) -> Result<Option<String>, AppError> {
+        if within_ms <= 0 {
+            return Ok(None);
+        }
+        const CONTAINMENT_MIN_RATIO: f64 = 0.6;
+        let cutoff = now_ms() - within_ms;
+        let norm_title = title.trim().to_lowercase();
+        let norm_body = body.trim().to_lowercase();
+        let rows = sqlx::query(
+            "SELECT id, title, body FROM companion_suggestions WHERE kind = ? AND status IN ('accepted','dismissed') AND decided_at >= ?",
+        )
+        .bind(kind)
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
         for row in rows {
             let existing_title: String = row.get("title");
             let existing_title = existing_title.trim().to_lowercase();
@@ -2001,6 +2162,26 @@ impl CompanionStore {
                 .fetch_all(&self.pool)
                 .await
         }
+        .map_err(db_err)?;
+        Ok(rows.iter().map(row_to_suggestion).collect())
+    }
+
+    /// Suggestions owned by one companion, newest first. Unowned/legacy rows
+    /// (NULL `companion_id`) are excluded: the per-companion learning graph
+    /// lives under a specific companion and shows only what belongs to it.
+    pub async fn list_suggestions_for_companion(
+        &self,
+        companion_id: &str,
+        limit: i64,
+    ) -> Result<Vec<CompanionSuggestion>, AppError> {
+        validate_companion_id(companion_id, "suggestion companion_id")?;
+        let rows = sqlx::query(
+            "SELECT * FROM companion_suggestions WHERE companion_id = ? ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(companion_id)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&self.pool)
+        .await
         .map_err(db_err)?;
         Ok(rows.iter().map(row_to_suggestion).collect())
     }
@@ -2560,6 +2741,24 @@ impl CompanionStore {
             .execute(&self.pool)
             .await
             .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Archive a skill as superseded by another (consolidation): set status='archived',
+    /// record `superseded_by = canonical`, and stamp updated_at. The on-disk SKILL.md is
+    /// left in place (restorable), mirroring the decay pass.
+    pub async fn supersede_skill(&self, companion_id: &str, name: &str, canonical: &str) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE companion_skills SET status = 'archived', superseded_by = ?, updated_at = ? \
+             WHERE scope_companion_id = ? AND skill_name = ?",
+        )
+        .bind(canonical)
+        .bind(now_ms())
+        .bind(companion_id)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(())
     }
 
@@ -3475,7 +3674,7 @@ mod tests {
     async fn suggestion_decide_and_xp_roundtrip() {
         let store = CompanionStore::open_memory().await.unwrap();
         let s = store
-            .insert_suggestion("guess_question", "猜你想问", "要不要看看…", None)
+            .insert_suggestion(None, "guess_question", "猜你想问", "要不要看看…", None)
             .await
             .unwrap();
         let (decided, newly) = store.decide_suggestion(&s.id, true).await.unwrap();
@@ -3502,7 +3701,7 @@ mod tests {
     async fn find_similar_suggestion_matches_pending_only() {
         let store = CompanionStore::open_memory().await.unwrap();
         let s = store
-            .insert_suggestion("create_cron", "建议加个每日备份定时任务", "每天 22:00 备份工作目录", None)
+            .insert_suggestion(None, "create_cron", "建议加个每日备份定时任务", "每天 22:00 备份工作目录", None)
             .await
             .unwrap();
 
@@ -3555,7 +3754,7 @@ mod tests {
     async fn touch_suggestion_bumps_pending_created_at_only() {
         let store = CompanionStore::open_memory().await.unwrap();
         let s = store
-            .insert_suggestion("insight", "最近常调编译错误", "建议看看构建脚本", None)
+            .insert_suggestion(None, "insight", "最近常调编译错误", "建议看看构建脚本", None)
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(3)).await;
@@ -3576,9 +3775,9 @@ mod tests {
     #[tokio::test]
     async fn list_suggestion_page_counts_the_same_status() {
         let store = CompanionStore::open_memory().await.unwrap();
-        store.insert_suggestion("insight", "new one", "first pending", None).await.unwrap();
-        store.insert_suggestion("insight", "new two", "second pending", None).await.unwrap();
-        let decided = store.insert_suggestion("insight", "accepted", "already reviewed", None).await.unwrap();
+        store.insert_suggestion(None, "insight", "new one", "first pending", None).await.unwrap();
+        store.insert_suggestion(None, "insight", "new two", "second pending", None).await.unwrap();
+        let decided = store.insert_suggestion(None, "insight", "accepted", "already reviewed", None).await.unwrap();
         store.decide_suggestion(&decided.id, true).await.unwrap();
 
         let page = store.list_suggestion_page(Some("new"), 1, 1).await.unwrap();
@@ -3936,6 +4135,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn suggestions_scope_to_their_companion_and_purge_on_delete() {
+        let store = CompanionStore::open_memory().await.unwrap();
+        let a = companion_fixture(1);
+        let b = companion_fixture(2);
+
+        // Two owned suggestions plus one unowned/global row.
+        store.insert_suggestion(Some(a.as_str()), "insight", "甲的洞察", "x", None).await.unwrap();
+        store.insert_suggestion(Some(b.as_str()), "insight", "乙的洞察", "y", None).await.unwrap();
+        store.insert_suggestion(None, "insight", "全局洞察", "z", None).await.unwrap();
+
+        // Per-companion listing returns only that companion's own rows; the
+        // unowned/global row never leaks into a companion view.
+        let for_a = store.list_suggestions_for_companion(&a, 50).await.unwrap();
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].companion_id.as_deref(), Some(a.as_str()));
+
+        // A malformed companion id is rejected, not silently treated as unowned.
+        assert!(matches!(
+            store.insert_suggestion(Some(MALFORMED_COMPANION_ID), "insight", "坏", "id", None).await,
+            Err(AppError::BadRequest(_))
+        ));
+
+        // Deleting companion A purges its suggestions but leaves B's and the global row.
+        store.delete_companion_rows(&a).await.unwrap();
+        assert!(store.list_suggestions_for_companion(&a, 50).await.unwrap().is_empty());
+        assert_eq!(store.list_suggestions_for_companion(&b, 50).await.unwrap().len(), 1);
+        let all = store.list_suggestions(None, 50).await.unwrap();
+        assert_eq!(all.len(), 2, "B's owned row + the unowned global row survive");
+    }
+
+    #[tokio::test]
+    async fn delete_companion_rows_purges_private_data_but_keeps_shared() {
+        let store = CompanionStore::open_memory().await.unwrap();
+        let a = companion_fixture(1);
+        let b = companion_fixture(2);
+
+        store
+            .insert_memory_scoped("preference", "甲私有", &[], 0.5, "manual", MemoryScope::Companion(a.clone()))
+            .await
+            .unwrap();
+        store
+            .insert_memory_scoped("preference", "乙私有", &[], 0.5, "manual", MemoryScope::Companion(b.clone()))
+            .await
+            .unwrap();
+        store
+            .insert_memory_scoped("knowledge", "共享记忆", &[], 0.5, "manual", MemoryScope::Shared)
+            .await
+            .unwrap();
+
+        let private_count = |owner: String| {
+            let pool = store.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM companion_memories WHERE scope_kind = 'companion' AND scope_companion_id = ?",
+                )
+                .bind(owner)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        store.delete_companion_rows(&a).await.unwrap();
+
+        assert_eq!(private_count(a.clone()).await, 0, "A's private memory is purged");
+        assert_eq!(private_count(b.clone()).await, 1, "B's private memory is untouched");
+        let shared: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM companion_memories WHERE scope_kind = 'user'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(shared, 1, "shared memories survive a companion delete");
+    }
+
+    #[tokio::test]
     async fn backfill_first_companion_moves_only_legacy_xp() {
         let store = CompanionStore::open_memory().await.unwrap();
         let first_companion = companion_fixture(1);
@@ -4154,7 +4429,7 @@ mod tests {
         assert_eq!(n, 1, "fresh db must be born with companion_session_windows");
         let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&store.pool).await.unwrap();
         assert_eq!(version, STORE_VERSION);
-        assert_eq!(STORE_VERSION, 6);
+        assert_eq!(STORE_VERSION, 7);
     }
 
     #[tokio::test]
@@ -4181,6 +4456,47 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(n, 1);
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&pool).await.unwrap();
+        assert_eq!(version, STORE_VERSION);
+    }
+
+    #[tokio::test]
+    async fn migrate_v6_to_v7_adds_suggestion_companion_id_idempotent() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
+        // A pre-v7 db whose companion_suggestions predates the companion_id column.
+        sqlx::raw_sql(
+            "CREATE TABLE companion_suggestions (
+               id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+               action TEXT, status TEXT NOT NULL DEFAULT 'new', created_at INTEGER NOT NULL, decided_at INTEGER
+             );
+             INSERT INTO companion_suggestions(id, kind, title, body, status, created_at)
+               VALUES('sug_legacy', 'insight', '旧建议', '内容', 'new', 1);
+             PRAGMA user_version = 6;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        apply_migrations(&pool).await.unwrap();
+        apply_migrations(&pool).await.unwrap(); // second run must be a no-op
+
+        let has_col: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pragma_table_info('companion_suggestions') WHERE name = 'companion_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_col, 1, "v7 adds companion_id");
+        // Legacy rows predate scoping — they become unowned (NULL companion_id).
+        let owner: Option<String> =
+            sqlx::query_scalar("SELECT companion_id FROM companion_suggestions WHERE id = 'sug_legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owner, None, "legacy suggestions become unowned");
         let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&pool).await.unwrap();
         assert_eq!(version, STORE_VERSION);
     }

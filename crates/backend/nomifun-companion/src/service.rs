@@ -258,6 +258,7 @@ impl CompanionService {
             completer: completer.clone(),
             emitter: emitter.clone(),
             run_lock: Arc::new(Mutex::new(())),
+            gate: crate::learner::SuggestionGate::production(),
         });
         learner.clone().spawn();
 
@@ -641,6 +642,22 @@ impl CompanionService {
         // (the app assembly registers a KnowledgeService-backed hook that
         // drops the ('companion', id) binding row).
         self.store.delete_companion_rows(id).await?;
+        // On-disk cleanup for this companion's private skills: the DB rows are
+        // gone above, but SKILL.md bodies live under {skills}/companion/{id} and
+        // draft staging under {skills}/_drafts/{id}. Best-effort — the companion
+        // is already gone; a leftover directory is harmless, so failures only warn.
+        if !id.is_empty() {
+            for dir in [
+                skill_service::companion_skills_root(&self.skill_paths).join(id),
+                skill_service::drafts_root(&self.skill_paths).join(id),
+            ] {
+                if dir.exists() {
+                    if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+                        tracing::warn!(companion_id = id, dir = %dir.display(), error = %e, "failed to remove companion skill directory on delete");
+                    }
+                }
+            }
+        }
         self.registry.remove(id).await?;
         // Post-removal cascade hooks. The companion is already gone, so a failing
         // hook must never fail the delete — implementations warn internally.
@@ -1167,10 +1184,13 @@ impl CompanionService {
             }
         }
 
-        // Memory nodes
+        // Memory nodes — scoped to this companion (shared 'user' memories +
+        // this companion's private ones), matching the skill scoping above so
+        // the graph shows only what belongs under this companion.
         let memories = self.store
             .list_memories(&MemoryFilter {
                 limit: 200,
+                scope_companion_id: Some(companion_id.to_owned()),
                 ..Default::default()
             })
             .await?;
@@ -1187,8 +1207,9 @@ impl CompanionService {
             });
         }
 
-        // Suggestion nodes
-        let suggestions = self.store.list_suggestions(None, 50).await.unwrap_or_default();
+        // Suggestion nodes — only this companion's own suggestions (the graph
+        // lives under a specific companion; unowned/legacy '' rows are excluded).
+        let suggestions = self.store.list_suggestions_for_companion(companion_id, 50).await.unwrap_or_default();
         for s in &suggestions {
             nodes.push(LearningGraphNode {
                 id: format!("suggestion:{}", s.id),
@@ -1578,6 +1599,25 @@ impl CompanionService {
         Ok(self.store.get_skill(companion_id, name).await?.unwrap_or(skill))
     }
 
+    /// Manually archive a skill — soft and reversible ("see + undo"): flips the registry row to
+    /// `archived` and leaves the on-disk SKILL.md intact (recoverable via the Archived filter).
+    /// Idempotent when already archived. Unlike rejecting a draft, this does NOT record reject
+    /// feedback or suppress the originating mined pattern — the user is tidying up an active skill,
+    /// not correcting a bad suggestion.
+    pub async fn archive_companion_skill(&self, companion_id: &str, name: &str) -> Result<CompanionSkill, AppError> {
+        let skill = self
+            .store
+            .get_skill(companion_id, name)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("skill {name} not found")))?;
+        if skill.status == "archived" {
+            return Ok(skill); // idempotent: already archived
+        }
+        self.store.set_skill_status(companion_id, name, "archived").await?;
+        self.emitter.emit_skill_archived(companion_id, name);
+        Ok(self.store.get_skill(companion_id, name).await?.unwrap_or(skill))
+    }
+
     /// Learn-by-demonstration (P5 T2-B): reconstruct a tool-name sequence from `conversation_id`'s
     /// collected tool-calls and draft a reviewable skill from it. Requires `collect.tool_calls` to
     /// have been on for that session. Returns the drafted skill name.
@@ -1858,7 +1898,7 @@ mod tests {
             .await
             .unwrap();
         let action = serde_json::json!({"type": "create_skill", "name": "demo", "companion_id": cid});
-        let sug = svc.store.insert_suggestion("create_skill", "学会 demo", "body", Some(&action)).await.unwrap();
+        let sug = svc.store.insert_suggestion(Some(cid.as_str()), "create_skill", "学会 demo", "body", Some(&action)).await.unwrap();
 
         // Accept → promote draft to active.
         svc.decide_suggestion(&sug.id, true).await.unwrap();
@@ -2377,7 +2417,7 @@ mod tests {
 
         let s = svc
             .store
-            .insert_suggestion("insight", "洞察", "试试看", None)
+            .insert_suggestion(None, "insight", "洞察", "试试看", None)
             .await
             .unwrap();
         let decided = svc.decide_suggestion(&s.id, true).await.unwrap();
@@ -2397,7 +2437,7 @@ mod tests {
         // Dismissals award nothing.
         let s2 = svc
             .store
-            .insert_suggestion("insight", "再来", "不要", None)
+            .insert_suggestion(None, "insight", "再来", "不要", None)
             .await
             .unwrap();
         svc.decide_suggestion(&s2.id, false).await.unwrap();

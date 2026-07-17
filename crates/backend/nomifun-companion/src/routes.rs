@@ -60,6 +60,10 @@ pub fn companion_routes(state: CompanionRouterState) -> Router {
             post(decide_companion_skill),
         )
         .route(
+            "/api/companion/companions/{companion_id}/skills/{name}/archive",
+            post(archive_companion_skill),
+        )
+        .route(
             "/api/companion/companions/{companion_id}/skills/from-session",
             post(draft_skill_from_session),
         )
@@ -418,6 +422,17 @@ async fn decide_companion_skill(
             .service
             .decide_companion_skill(&companion_id, &name, req.accept, req.reason.as_deref())
             .await?,
+    )))
+}
+
+/// Manually archive a skill (soft, reversible). No body: the action is fully addressed by the path.
+async fn archive_companion_skill(
+    State(state): State<CompanionRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path((companion_id, name)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<CompanionSkill>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.archive_companion_skill(&companion_id, &name).await?,
     )))
 }
 

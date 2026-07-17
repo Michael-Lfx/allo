@@ -194,6 +194,16 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
               {t('nomi.evolve.autoActivateHint', { defaultValue: '多次重复的高置信技能直接启用（仍可在技能页撤销）' })}
             </span>
           </div>
+          <div className='flex items-center gap-8px'>
+            <span className='text-13px text-t-secondary'>{t('nomi.evolve.consolidate', { defaultValue: '定期整合冗余技能' })}</span>
+            <Switch
+              checked={sharedConfig.evolve.consolidate_enabled ?? false}
+              onChange={(checked) => void patchSharedConfig({ evolve: { consolidate_enabled: checked } })}
+            />
+            <span className='text-11px text-t-tertiary'>
+              {t('nomi.evolve.consolidateHint', { defaultValue: '每天巡检已有技能，把做同一类事的合并成一个（其余归档，可在技能页恢复）' })}
+            </span>
+          </div>
           <div className='flex items-center gap-8px flex-wrap'>
             <span className='text-13px text-t-secondary'>{t('nomi.evolve.interval', { defaultValue: '挖掘间隔' })}</span>
             <InputNumber

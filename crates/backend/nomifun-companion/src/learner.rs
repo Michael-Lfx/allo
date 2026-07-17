@@ -22,6 +22,50 @@ const TICK_SECONDS: u64 = 60;
 /// After this many consecutive scheduled runs fail to parse, the batch is
 /// abandoned (cursor advanced) instead of re-burning tokens forever.
 const PARSE_FAIL_GIVE_UP_RUNS: i64 = 3;
+/// Max suggestions accepted from one learn run (quality-first; the system prompt
+/// already asks for 0~2 and permits an empty array).
+const MAX_SUGGESTIONS_PER_RUN: usize = 2;
+
+/// Suggestion cadence tunables (internal — NOT user config). The learner still
+/// distills memories/mood/diary every run; this gate only throttles *suggestions*
+/// so they stay infrequent, high-signal and non-repetitive without losing the
+/// memory-side context. Production uses [`SuggestionGate::production`]; tests use
+/// [`SuggestionGate::open`] to exercise the apply/dedup pipeline without throttling.
+#[derive(Debug, Clone, Copy)]
+pub struct SuggestionGate {
+    /// Min new events accumulated since the last emitted suggestion before a new
+    /// batch of suggestions may be proposed (evidence gate — frequency scales with
+    /// real activity, not the wall clock).
+    pub min_events: i64,
+    /// Wall-clock cooldown between suggestion bursts, in ms (caps burst rate even
+    /// when the user is very active).
+    pub cooldown_ms: i64,
+    /// Max pending (status='new') suggestions; at/above this, propose none
+    /// (backpressure — don't pile onto an unhandled backlog).
+    pub max_pending: i64,
+    /// A recently-decided idea won't be re-raised within this window, in ms
+    /// (cross-time dedup). Zero disables the cross-time check.
+    pub decided_repeat_cooldown_ms: i64,
+}
+
+impl SuggestionGate {
+    /// Production cadence: at most one suggestion burst every 4h, gated on ≥15 new
+    /// events, capped at 8 pending, and no repeating a decided idea within 3 days.
+    pub fn production() -> Self {
+        Self {
+            min_events: 15,
+            cooldown_ms: 4 * 60 * 60 * 1000,
+            max_pending: 8,
+            decided_repeat_cooldown_ms: 3 * 24 * 60 * 60 * 1000,
+        }
+    }
+
+    /// Gate-open: never throttles insertion and disables the cross-time window.
+    /// Used by tests that assert the apply/dedup pipeline directly.
+    pub fn open() -> Self {
+        Self { min_events: 0, cooldown_ms: 0, max_pending: i64::MAX, decided_repeat_cooldown_ms: 0 }
+    }
+}
 
 /// LLM seam so tests can run the learner without a live provider.
 /// (Companion chat runs on the real agent engine; this trait only serves
@@ -77,6 +121,8 @@ pub struct Learner {
     pub emitter: CompanionEventEmitter,
     /// Re-entrancy guard shared between the tick loop and "run now".
     pub run_lock: Arc<Mutex<()>>,
+    /// Suggestion cadence gate (internal defaults; see [`SuggestionGate`]).
+    pub gate: SuggestionGate,
 }
 
 impl Learner {
@@ -166,11 +212,39 @@ impl Learner {
             })
             .await?;
         let pending_suggestions = self.store.list_suggestions(Some("new"), 50).await.unwrap_or_default();
+
+        // Suggestion cadence gate (A: evidence + cooldown; B: pending backpressure).
+        // Memories/mood/diary always distill; only *suggestions* are throttled so
+        // they stay infrequent and high-signal without losing memory-side context.
+        let pending_new = pending_suggestions.len() as i64;
+        let last_suggestion_ts = self.store.get_state_i64("last_suggestion_ts").await.unwrap_or(0);
+        let prev_events_since = self.store.get_state_i64("events_since_suggestion").await.unwrap_or(0);
+        let events_since = prev_events_since + run.events_processed;
+        let cooldown_ok = now_ms().saturating_sub(last_suggestion_ts) >= self.gate.cooldown_ms;
+        let evidence_ok = events_since >= self.gate.min_events;
+        let capacity_ok = pending_new < self.gate.max_pending;
+        let suggestions_allowed = cooldown_ok && evidence_ok && capacity_ok;
+
+        // Recently-decided suggestions feed the model cross-time context (C) so it
+        // won't re-raise a just-handled idea, restoring holistic 统筹 while throttled.
+        let recently_decided = self
+            .store
+            .list_recently_decided_suggestions(self.gate.decided_repeat_cooldown_ms, 30)
+            .await
+            .unwrap_or_default();
+
         let event_lines: Vec<String> = events
             .iter()
             .map(|e| serde_json::to_string(e).unwrap_or_default())
             .collect();
-        let user_prompt = prompt::build_learn_prompt(&existing, &pending_suggestions, &event_lines, truncated);
+        let user_prompt = prompt::build_learn_prompt(
+            &existing,
+            &pending_suggestions,
+            &recently_decided,
+            &event_lines,
+            truncated,
+            suggestions_allowed,
+        );
 
         // One retry on parse failure (the model occasionally wraps in prose).
         let mut parsed = None;
@@ -247,6 +321,7 @@ impl Learner {
             let milestone = self
                 .store
                 .insert_suggestion(
+                    target.as_deref(),
                     "insight",
                     "nomi 学会了关于你的第一条记忆！",
                     "我开始懂你了，快来记忆页看看吧～",
@@ -258,16 +333,36 @@ impl Learner {
                 self.emitter.emit_suggestion_created(target, &milestone);
             }
         }
-        for s in output.suggestions.iter().take(3) {
+        let mut emitted_suggestion = false;
+        for s in output.suggestions.iter().take(MAX_SUGGESTIONS_PER_RUN) {
             // Insert-side dedup backstop: even when the model ignores the
             // "don't repeat pending suggestions" rule, a similar status='new'
             // suggestion blocks the duplicate. The hit is not silently
             // dropped: the existing suggestion is touched (created_at bumped)
-            // so repeated evidence re-floats it instead of vanishing.
+            // so repeated evidence re-floats it instead of vanishing. This
+            // runs regardless of the cadence gate (touching is free and keeps
+            // the backlog fresh).
             if let Some(existing_id) = self.store.find_similar_suggestion(&s.kind, &s.title, &s.body).await? {
                 if let Err(e) = self.store.touch_suggestion(&existing_id).await {
                     tracing::warn!(error = %e, suggestion_id = %existing_id, "companion learn failed to touch duplicate suggestion");
                 }
+                continue;
+            }
+            // Cross-time dedup (C): don't re-raise an idea the owner just
+            // accepted or dismissed within the repeat-cooldown window.
+            if self
+                .store
+                .find_recent_decided_similar(&s.kind, &s.title, &s.body, self.gate.decided_repeat_cooldown_ms)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+            // Cadence gate (A/B): a genuinely new suggestion is inserted only
+            // when there's enough fresh evidence, the cooldown has elapsed and
+            // the pending backlog isn't full. Otherwise skip — evidence keeps
+            // accumulating for a later, higher-signal burst.
+            if !suggestions_allowed {
                 continue;
             }
             // Optimization 9: when a create_skill suggestion carries
@@ -293,12 +388,23 @@ impl Learner {
             };
             let created = self
                 .store
-                .insert_suggestion(&s.kind, &s.title, &s.body, action.as_ref())
+                .insert_suggestion(target.as_deref(), &s.kind, &s.title, &s.body, action.as_ref())
                 .await?;
             run.suggestions_added += 1;
+            emitted_suggestion = true;
             if let Some(target) = target.as_deref() {
                 self.emitter.emit_suggestion_created(target, &created);
             }
+        }
+
+        // Advance the suggestion cadence counters: a fresh burst resets both the
+        // event tally and the cooldown clock; a throttled/empty run banks the
+        // accumulated evidence for next time.
+        if emitted_suggestion {
+            let _ = self.store.set_state("last_suggestion_ts", &now_ms().to_string()).await;
+            let _ = self.store.set_state("events_since_suggestion", "0").await;
+        } else {
+            let _ = self.store.set_state("events_since_suggestion", &events_since.to_string()).await;
         }
 
         if let Some(mood) = &output.mood {
@@ -367,6 +473,7 @@ mod tests {
             completer: Arc::new(CannedCompleter(reply.to_owned())),
             emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16)), "owner-a"),
             run_lock: Arc::new(Mutex::new(())),
+            gate: SuggestionGate::open(),
         };
         (learner, companion.id)
     }
@@ -470,6 +577,87 @@ mod tests {
         assert_eq!(run.status, "model_unconfigured");
     }
 
+    /// Evidence gate: a thin batch (below `min_events`) is throttled — no
+    /// suggestion is inserted, and the evidence is banked (not lost) so a later,
+    /// richer run can fire. This is the core "control frequency" behaviour.
+    #[tokio::test]
+    async fn run_once_throttles_then_fires_on_accumulated_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_event(dir.path()); // 1 event only
+        // A suggestion but NO memory, so the first-memory milestone can't muddy the count.
+        let reply = r#"{"suggestions":[{"kind":"insight","title":"洞察","body":"最近常调编译错误"}]}"#;
+        let (mut learner, _) = make_learner(dir.path(), reply).await;
+        learner.gate = SuggestionGate { min_events: 5, cooldown_ms: 0, max_pending: i64::MAX, decided_repeat_cooldown_ms: 0 };
+
+        let run1 = learner.run_once().await.unwrap();
+        assert_eq!(run1.status, "ok");
+        assert_eq!(run1.suggestions_added, 0, "1 event < 5-event threshold → throttled");
+        assert_eq!(learner.store.count_suggestions("new").await.unwrap(), 0);
+        assert_eq!(
+            learner.store.get_state_i64("events_since_suggestion").await.unwrap(),
+            1,
+            "evidence is banked, not lost"
+        );
+
+        // Accumulate past the threshold: a later run now clears the gate.
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            seed_event(dir.path());
+        }
+        let run2 = learner.run_once().await.unwrap();
+        assert_eq!(run2.suggestions_added, 1, "banked 1 + 5 new ≥ 5 → suggestion emitted");
+        assert_eq!(
+            learner.store.get_state_i64("events_since_suggestion").await.unwrap(),
+            0,
+            "a fresh burst resets the evidence tally"
+        );
+    }
+
+    /// Backpressure (B): when the pending backlog is already at the cap, no new
+    /// suggestion is added regardless of fresh evidence.
+    #[tokio::test]
+    async fn run_once_backpressure_caps_pending_suggestions() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_event(dir.path());
+        let reply = r#"{"suggestions":[{"kind":"insight","title":"全新洞察","body":"全新内容"}]}"#;
+        let (mut learner, _) = make_learner(dir.path(), reply).await;
+        learner.gate = SuggestionGate { min_events: 0, cooldown_ms: 0, max_pending: 2, decided_repeat_cooldown_ms: 0 };
+        learner.store.insert_suggestion(None, "insight", "占位一", "x", None).await.unwrap();
+        learner.store.insert_suggestion(None, "insight", "占位二", "y", None).await.unwrap();
+        assert_eq!(learner.store.count_suggestions("new").await.unwrap(), 2);
+
+        let run = learner.run_once().await.unwrap();
+        assert_eq!(run.suggestions_added, 0, "backlog at cap → no new suggestion");
+        assert_eq!(learner.store.count_suggestions("new").await.unwrap(), 2);
+    }
+
+    /// Cross-time dedup (C): an idea the owner just dismissed is not re-raised
+    /// while it's inside the repeat-cooldown window, even with the cadence gate open.
+    #[tokio::test]
+    async fn run_once_skips_recently_decided_idea() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_event(dir.path());
+        let reply = r#"{"suggestions":[{"kind":"insight","title":"最近常调编译错误","body":"看看构建脚本"}]}"#;
+        let (mut learner, _) = make_learner(dir.path(), reply).await;
+        learner.gate = SuggestionGate {
+            min_events: 0,
+            cooldown_ms: 0,
+            max_pending: i64::MAX,
+            decided_repeat_cooldown_ms: 24 * 60 * 60 * 1000,
+        };
+        // An identical idea, dismissed just now.
+        let s = learner
+            .store
+            .insert_suggestion(None, "insight", "最近常调编译错误", "看看构建脚本", None)
+            .await
+            .unwrap();
+        learner.store.decide_suggestion(&s.id, false).await.unwrap();
+
+        let run = learner.run_once().await.unwrap();
+        assert_eq!(run.suggestions_added, 0, "a just-dismissed idea is not re-raised within the window");
+        assert_eq!(learner.store.count_suggestions("new").await.unwrap(), 0);
+    }
+
     #[derive(Default)]
     struct RecordingBroadcaster {
         events: std::sync::Mutex<Vec<WebSocketMessage<serde_json::Value>>>,
@@ -508,6 +696,7 @@ mod tests {
             completer: Arc::new(CannedCompleter(reply.to_owned())),
             emitter: CompanionEventEmitter::new(bc.clone(), "owner-a"),
             run_lock: Arc::new(Mutex::new(())),
+            gate: SuggestionGate::open(),
         };
         learner.run_once().await.unwrap();
 
