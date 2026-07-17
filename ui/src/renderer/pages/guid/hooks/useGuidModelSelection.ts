@@ -6,6 +6,7 @@
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { configService } from '@/common/config/configService';
+import { useGoogleAuthModels } from '@/renderer/hooks/agent/useGoogleAuthModels';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -53,6 +54,7 @@ export type GuidModelSelectionResult = {
  * @param agentKey - current provider-based agent (currently only 'nomi')
  */
 export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): GuidModelSelectionResult => {
+  const { isGoogleAuth } = useGoogleAuthModels();
   // Share the conversation catalog so Guid only sees flowy-cloud under
   // SERVER_MANAGED_MODELS and uses the same available-model filter.
   const {
@@ -146,7 +148,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
 
   return {
     modelList,
-    isGoogleAuth: false,
+    isGoogleAuth,
     formatGeminiModelLabel: formatModelLabel,
     current_model,
     setCurrentModel,

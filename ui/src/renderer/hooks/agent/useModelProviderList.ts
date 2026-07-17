@@ -6,6 +6,7 @@ import useSWR, { type SWRConfiguration } from 'swr';
 import { useGoogleAuthModels } from './useGoogleAuthModels';
 import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabilities';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
+import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
 
 export interface ModelProviderListResult {
   providers: IProvider[];
@@ -100,7 +101,7 @@ export const useModelProviderList = (): ModelProviderListResult => {
       return list.filter((p) => p.id === FLOWY_BUILTIN_PROVIDER_ID && getAvailableModels(p).length > 0);
     }
     // 过滤掉没有可用模型的 provider
-    return list.filter((p) => getAvailableModels(p).length > 0);
+    return orderModelSelectorProviders(list.filter((p) => getAvailableModels(p).length > 0));
   }, [configuredProviders, getAvailableModels]);
 
   const formatModelLabel = useCallback(

@@ -197,6 +197,7 @@ import {
   parseIdmmInterventionId,
   parseKnowledgeBaseId,
   parseMessageId,
+  parseOptionalEntityId,
   parseProviderId,
   parsePublicAgentId,
   parsePublicAgentAuditEntryId,
@@ -2060,7 +2061,7 @@ function fromApiCronJob(job: ICronJob): ICronJob {
     id: parseCronJobId(job.id),
     metadata: {
       ...job.metadata,
-      conversation_id: parseConversationId(job.metadata.conversation_id),
+      conversation_id: parseOptionalEntityId('conversation', job.metadata.conversation_id),
       ...(job.metadata.agent_config?.preset_id
         ? {
             agent_config: {
@@ -2147,7 +2148,8 @@ export interface ICronJob {
   message: string;
   execution_mode: 'existing' | 'new_conversation';
   metadata: {
-    conversation_id: ConversationId;
+    /** Absent until an unbound task materializes its first conversation. */
+    conversation_id?: ConversationId;
     conversation_title?: string;
     agent_type: string;
     created_by: 'user' | 'agent';
@@ -2174,8 +2176,8 @@ export interface ICronJobRun {
 }
 
 export interface ICronAgentConfig {
-  backend?: string;
-  name?: string;
+  backend: string;
+  name: string;
   cli_path?: string;
   preset_id?: PresetReference;
   mode?: string;
@@ -2192,7 +2194,8 @@ export interface ICreateCronJobParams {
   schedule: ICronSchedule;
   prompt?: string;
   message?: string;
-  conversation_id: ConversationId;
+  /** Only specified-conversation creation supplies this; other modes start unbound. */
+  conversation_id?: ConversationId;
   conversation_title?: string;
   agent_type: string;
   created_by: 'user' | 'agent';
@@ -2280,7 +2283,10 @@ export const terminal = {
     (items) => items.map(fromApiTerminalSession),
   ),
   get: withResponseMap(
-    httpGet<ITerminalSession, { id: TerminalId }>((p) => `/api/terminals/${p.id}`),
+    httpGet<ITerminalSession, { id: TerminalId }>(
+      (p) => `/api/terminals/${p.id}`,
+      { timeoutMs: 10_000 }
+    ),
     fromApiTerminalSession,
   ),
   create: withResponseMap(
@@ -2309,7 +2315,10 @@ export const terminal = {
   ),
   resize: httpPost<void, { id: TerminalId; cols: number; rows: number }>(
     (p) => `/api/terminals/${p.id}/resize`,
-    (p) => ({ cols: p.cols, rows: p.rows })
+    (p) => ({ cols: p.cols, rows: p.rows }),
+    // Deferred activation is serialized and resize is idempotent, so a client
+    // deadline can safely turn a hung request into the Xterm retry/error path.
+    { timeoutMs: 6_000 }
   ),
   kill: httpPost<void, { id: TerminalId }>((p) => `/api/terminals/${p.id}/kill`),
   relaunch: withResponseMap(
@@ -3007,6 +3016,8 @@ export interface INewAttachmentRef {
 export interface IRequirement {
   /** Canonical globally unique requirement id (`req_<uuid-v7>`). */
   id: RequirementId;
+  /** Compact, immutable human-facing identifier, rendered as `#N`. */
+  display_no: number;
   title: string;
   content: string;
   tag: string;
@@ -3026,7 +3037,7 @@ export interface IRequirement {
 }
 
 /** Whitelisted sort columns for the requirements list (server validates too). */
-export type RequirementOrderBy = 'id' | 'created_at' | 'updated_at' | 'status';
+export type RequirementOrderBy = 'display_no' | 'id' | 'created_at' | 'updated_at' | 'status';
 
 export interface IListRequirementsParams {
   tag?: string;

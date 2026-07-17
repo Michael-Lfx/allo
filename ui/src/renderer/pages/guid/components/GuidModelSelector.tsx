@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
+import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 
 type GuidModelSelectorProps = {
   // Gemini model state
@@ -45,6 +46,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const defaultModelLabel = t('common.defaultModel');
+  const providerLabel = useModelSelectorProviderLabel();
 
   // 获取模型配置数据（包含健康状态）
   const { data: modelConfig } = useProvidersQuery();
@@ -145,7 +147,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                     const available_models = getAvailableModels(provider);
                     if (available_models.length === 0) return null;
                     return (
-                      <Menu.ItemGroup title={provider.name} key={provider.id}>
+                      <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>
                         {available_models.map((modelName) => {
                           const dot = healthDotColor(provider.id, modelName);
                           const label = formatCloudModelLabel(modelName, provider.model_descriptions);

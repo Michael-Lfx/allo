@@ -14,6 +14,7 @@ const SkillsSettingsPage = React.lazy(() => import('@renderer/pages/settings/Ski
 const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
+const ExecutionEngineSettings = React.lazy(() => import('@renderer/pages/settings/AgentSettings'));
 const ExtensionSettingsPage = React.lazy(() => import('@renderer/pages/settings/ExtensionSettingsPage'));
 const LoginPage = React.lazy(() => import('@renderer/pages/login'));
 const ComponentsShowcase = React.lazy(() => import('@renderer/pages/TestShowcase'));
@@ -45,17 +46,45 @@ const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabi
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 
+const RouteFallback: React.FC<{ Component: React.LazyExoticComponent<React.ComponentType> }> = ({ Component }) => {
+  const location = useLocation();
+  const resetKey = `${location.pathname}${location.search}${location.hash}`;
+
+  return (
+    <RouteErrorBoundary resetKey={resetKey}>
+      <Suspense fallback={<AppLoader />}>
+        <Component />
+      </Suspense>
+    </RouteErrorBoundary>
+  );
+};
+
 const withRouteFallback = (Component: React.LazyExoticComponent<React.ComponentType>) => (
-  <RouteErrorBoundary>
-    <Suspense fallback={<AppLoader />}>
-      <Component />
-    </Suspense>
-  </RouteErrorBoundary>
+  <RouteFallback Component={Component} />
 );
+
+const SessionShellRoute: React.FC = () => {
+  const location = useLocation();
+  const resetKey = `${location.pathname}${location.search}${location.hash}`;
+
+  return (
+    <RouteErrorBoundary resetKey={resetKey}>
+      <Suspense fallback={<AppLoader />}>
+        <ConversationShell />
+      </Suspense>
+    </RouteErrorBoundary>
+  );
+};
 
 const withSearch = (path: string, searchParams: URLSearchParams) => {
   const search = searchParams.toString();
   return search ? `${path}?${search}` : path;
+};
+
+/** Preserve local/remote tab deep links from the former settings route. */
+const LegacyExecutionEngineRedirect: React.FC = () => {
+  const { search } = useLocation();
+  return <Navigate to={`/settings/execution-engines${search}`} replace />;
 };
 
 const LegacyExtensionsRedirect: React.FC = () => {
@@ -206,13 +235,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           {/* Legacy assistant route → presets */}
           <Route path='/assistants' element={<Navigate to='/presets' replace />} />
           {/* Session section — the secondary sidebar (ContentSider) persists across these routes */}
-          <Route
-            element={
-              <Suspense fallback={<AppLoader />}>
-                <ConversationShell />
-              </Suspense>
-            }
-          >
+          <Route element={<SessionShellRoute />}>
             <Route path='/guid' element={withRouteFallback(Guid)} />
             <Route path='/conversation/:id' element={withRouteFallback(Conversation)} />
             <Route path='/terminal-new' element={withRouteFallback(TerminalCreatePage)} />
@@ -220,14 +243,15 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           </Route>
           {/* Relocated to the capability rail. */}
           <Route path='/settings/model' element={<Navigate to='/models?section=models' replace />} />
-          <Route path='/settings/agent' element={<Navigate to='/models?section=agents' replace />} />
+          <Route path='/settings/agent' element={<LegacyExecutionEngineRedirect />} />
           <Route path='/settings/capabilities' element={<Navigate to='/skills' replace />} />
           <Route path='/settings/skills-hub' element={<Navigate to='/skills' replace />} />
           <Route path='/settings/tools' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
           <Route path='/settings/webui' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
-          <Route path='/settings/agent-runtime' element={withRouteFallback(SystemSettings)} />
+          <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />
+          <Route path='/settings/agent-runtime' element={<Navigate to='/settings/execution-engines?tab=runtime' replace />} />
           <Route path='/settings/browser-use' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/computer-use' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />

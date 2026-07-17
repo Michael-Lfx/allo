@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Flowy"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -127,7 +127,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -1255,6 +1257,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "borrow-or-share"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1299,6 +1307,12 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "bytecount"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
 name = "bytemuck"
@@ -1527,9 +1541,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "cfg_aliases"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
@@ -2718,6 +2732,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "email_address"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "embed-resource"
 version = "3.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2878,6 +2901,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fancy-regex"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1e1dacd0d2082dfcf1351c4bdd566bbe89a2b263235a2b50058f1e130a47277"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2959,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "flowy-web"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "dom_smoothie",
@@ -2976,6 +3010,17 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "fluent-uri"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc74ac4d8359ae70623506d512209619e5cf8f347124910440dbc221714b328e"
+dependencies = [
+ "borrow-or-share",
+ "ref-cast",
+ "serde",
 ]
 
 [[package]]
@@ -3041,6 +3086,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fraction"
+version = "0.15.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
+dependencies = [
+ "lazy_static",
+ "num",
 ]
 
 [[package]]
@@ -4521,6 +4576,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonschema"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "281c43ff06dcb331e9356d30e38853d559ce3d0a3f693e0b0e102667dec14fb1"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex",
+ "fraction",
+ "getrandom 0.3.4",
+ "idna",
+ "itoa",
+ "jsonschema-regex",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "referencing",
+ "regex",
+ "serde",
+ "serde_json",
+ "unicode-general-category",
+ "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema-regex"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee0b351864e7ffbc5db9273daf7fa1b4d5177b0946713d667ca571b83c0b4045"
+dependencies = [
+ "regex-syntax",
+]
+
+[[package]]
 name = "jsonwebtoken"
 version = "9.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4991,6 +5082,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "micromap"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5203,7 +5300,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-a11y"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "atspi",
  "base64 0.22.1",
@@ -5227,7 +5324,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-agent"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5263,7 +5360,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
- "tokio-util",
  "tracing",
  "uuid",
  "wiremock",
@@ -5271,7 +5367,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-auxiliary"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "nomi-types",
@@ -5282,7 +5378,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-browser"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5302,7 +5398,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-browser-engine"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5335,7 +5431,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-cli"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -5356,7 +5452,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-compact"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "regex",
  "serde",
@@ -5365,7 +5461,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-computer"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5388,7 +5484,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-config"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5420,7 +5516,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-insights-core"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "chrono",
  "hex",
@@ -5444,7 +5540,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-mcp"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "futures",
@@ -5455,6 +5551,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5462,7 +5559,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-media"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5487,7 +5584,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-memory"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "chrono",
  "nomi-config",
@@ -5503,7 +5600,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-poi"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "chrono",
  "hex",
@@ -5522,7 +5619,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-process-runtime"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "encoding_rs",
@@ -5542,7 +5639,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-protocol"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "rstest",
  "serde",
@@ -5553,13 +5650,14 @@ dependencies = [
 
 [[package]]
 name = "nomi-providers"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
  "aws-sigv4",
  "base64 0.22.1",
+ "crc32fast",
  "dirs 6.0.0",
  "futures",
  "http 1.4.2",
@@ -5580,14 +5678,14 @@ dependencies = [
 
 [[package]]
 name = "nomi-redact"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "nomi-skills"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "dirs 6.0.0",
@@ -5613,12 +5711,13 @@ dependencies = [
 
 [[package]]
 name = "nomi-tools"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "glob",
  "indexmap 2.14.0",
+ "jsonschema",
  "libc",
  "lru 0.18.1",
  "nomi-config",
@@ -5639,7 +5738,7 @@ dependencies = [
 
 [[package]]
 name = "nomi-types"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5652,7 +5751,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-agent-execution"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -5681,7 +5780,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-ai-agent"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -5752,7 +5851,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-api-types"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "nomifun-common",
  "serde",
@@ -5761,7 +5860,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-app"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5839,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-assets"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "http 1.4.2",
@@ -5854,7 +5953,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-auth"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5877,7 +5976,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-channel"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "aes",
  "async-trait",
@@ -5914,7 +6013,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cloud"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5950,7 +6049,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-common"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5974,7 +6073,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-companion"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6004,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-conversation"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6031,7 +6130,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-creation"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6054,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-cron"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6082,7 +6181,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-db"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "fs2",
@@ -6103,7 +6202,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-extension"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6136,7 +6235,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-file"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6163,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-gateway"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6207,7 +6306,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-idmm"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6230,7 +6329,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-insights"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6246,7 +6345,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-knowledge"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6283,7 +6382,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-mcp"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6309,7 +6408,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-media"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6325,7 +6424,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-models-dev"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "dirs 6.0.0",
  "nomifun-net",
@@ -6341,7 +6440,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-net"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "reqwest 0.12.28",
  "tracing",
@@ -6350,7 +6449,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-office"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6378,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-poi"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "nomi-config",
@@ -6397,7 +6496,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-preset"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6418,7 +6517,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-public"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "futures",
@@ -6436,7 +6535,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-public-agent"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6454,7 +6553,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-realtime"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "dashmap",
@@ -6468,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-requirement"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6493,7 +6592,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-runtime"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "dirs 6.0.0",
  "fs2",
@@ -6514,7 +6613,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-secret"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "getrandom 0.2.17",
@@ -6534,7 +6633,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-shell"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6565,7 +6664,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-system"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -6606,7 +6705,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-terminal"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6633,13 +6732,14 @@ dependencies = [
 
 [[package]]
 name = "nomifun-web"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
  "nomifun-app",
  "nomifun-runtime",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",
@@ -6647,7 +6747,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-webhook"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "axum",
@@ -6671,7 +6771,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-workshop"
-version = "0.2.20"
+version = "0.2.23"
 dependencies = [
  "axum",
  "image",
@@ -6768,6 +6868,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "num"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
+dependencies = [
+ "num-bigint",
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6794,6 +6908,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-cmp"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63335b2e2c34fae2fb0aa2cecfd9f0832a1e24b3b32ecec612c3426d46dc8aaa"
+
+[[package]]
+name = "num-complex"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6814,6 +6943,17 @@ version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b"
 dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
  "num-integer",
  "num-traits",
 ]
@@ -8196,6 +8336,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "referencing"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "348e860aeb0b7bd035778fd11dd9cd5290d32e4aed3b8f2274a00287a9fd362b"
+dependencies = [
+ "ahash",
+ "fluent-uri",
+ "getrandom 0.3.4",
+ "hashbrown 0.17.1",
+ "itoa",
+ "micromap",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
 ]
 
 [[package]]
@@ -10407,9 +10564,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.52.3"
+version = "1.52.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
+checksum = "317fafbbe3f02fc663dad00ea6186197de963cd4190e86a26d8d0fae095539af"
 dependencies = [
  "bytes",
  "libc",
@@ -10982,6 +11139,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
+name = "unicode-general-category"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11101,6 +11264,16 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uuid-simd"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23b082222b4f6619906941c17eb2297fff4c2fb96cb60164170522942a200bd8"
+dependencies = [
+ "outref",
+ "vsimd",
 ]
 
 [[package]]
