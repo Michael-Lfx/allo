@@ -89,6 +89,8 @@ jobs:
           src/renderer/pages/conversation/Messages/components/messageFileMarker.test.ts
           src/renderer/pages/conversation/Messages/components/MessageText.structure.test.ts
           src/renderer/pages/conversation/Messages/hooks.mergeFetchedMessages.test.ts
+          src/renderer/pages/conversation/Messages/errorIsolation.redteam.test.ts
+          src/renderer/pages/conversation/platforms/acp/acpSendFailurePresentation.test.ts
           src/renderer/pages/conversation/platforms/localImageWorkspace.structure.test.ts
 
       - name: Type-check artifact event and renderer contracts
@@ -161,6 +163,12 @@ jobs:
           --features test-support
           --locked
 
+      - name: Test reusable runtime turn isolation
+        run: cargo test -p nomifun-ai-agent --test runtime_turn_isolation --locked
+
+      - name: Test ACP prompt notification ordering
+        run: cargo test -p nomifun-ai-agent --test acp_prompt_ordering --locked
+
       - name: Test channel artifact projection
         run: cargo test -p nomifun-channel stream_relay --lib --locked
 
@@ -172,6 +180,9 @@ jobs:
 
       - name: Test conversation stream persistence integration
         run: cargo test -p nomifun-conversation --test stream_relay_tool_call --locked
+
+      - name: Test ACP artifact terminal and turn-history integration
+        run: cargo test -p nomifun-conversation --test acp_artifact_turn_history --locked
 
       - name: Test managed conversation workspace cleanup barrier
         run: >-
