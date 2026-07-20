@@ -142,6 +142,8 @@ pub struct AppServices {
     pub insights_service: Arc<nomifun_insights::InsightsService>,
     /// Flowy media generation settings, credits, and workflow history.
     pub media_service: Arc<nomifun_media::MediaApiService>,
+    /// ViMax video-generation sessions / plan / render.
+    pub vimax_service: Arc<nomifun_vimax::VimaxApiService>,
     /// Flowy cloud account (email OTP login, whoami).
     pub cloud_service: Arc<nomifun_cloud::CloudService>,
 }
@@ -870,6 +872,10 @@ impl AppServices {
             nomifun_media::MediaApiService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open media service: {e}"))?,
         );
+        let vimax_service = Arc::new(
+            nomifun_vimax::VimaxApiService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open vimax service: {e}"))?,
+        );
         let cloud_service = Arc::new(
             nomifun_cloud::CloudService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
@@ -936,6 +942,7 @@ impl AppServices {
             poi_service,
             insights_service,
             media_service,
+            vimax_service,
             cloud_service,
         })
     }

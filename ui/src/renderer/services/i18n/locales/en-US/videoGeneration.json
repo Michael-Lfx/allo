@@ -1,0 +1,132 @@
+{
+  "title": "Video Generation",
+  "subtitle": "Start from an idea, script, or novel — plan artifacts and render a finished video.",
+  "nav": {
+    "entry": "Video Generation"
+  },
+  "list": {
+    "searchPlaceholder": "Search sessions...",
+    "newSession": "New session",
+    "createFirst": "Create your first session",
+    "loadError": "Failed to load",
+    "retry": "Retry",
+    "filterEmpty": "No matching sessions",
+    "untitled": "Untitled session",
+    "empty": {
+      "title": "No video sessions yet",
+      "desc": "Pick a workflow to create your first video."
+    },
+    "card": {
+      "updatedAt": "Updated {{time}}",
+      "stage": "Stage: {{stage}}"
+    }
+  },
+  "create": {
+    "title": "New video session",
+    "hint": "Choose a workflow. It cannot be changed after creation.",
+    "confirm": "Create & open",
+    "titleLabel": "Title (optional)",
+    "titlePlaceholder": "Name this generation"
+  },
+  "workflow": {
+    "idea2video": {
+      "title": "Idea to Video",
+      "desc": "Start from an idea and plan a video automatically."
+    },
+    "script2video": {
+      "title": "Script to Video",
+      "desc": "Break down a full script into shots and render."
+    },
+    "novel2video": {
+      "title": "Novel to Video",
+      "desc": "Extract a storyline from novel text and generate video."
+    }
+  },
+  "status": {
+    "idle": "Idle",
+    "planning": "Planning",
+    "rendering": "Rendering",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "cancelled": "Cancelled"
+  },
+  "actions": {
+    "createFailed": "Failed to create"
+  },
+  "workspace": {
+    "back": "Back to list",
+    "loadError": "Failed to load",
+    "refresh": "Refresh",
+    "workflowLocked": "Workflow is locked after creation.",
+    "plan": "Start planning",
+    "planStarted": "Planning started",
+    "planFailed": "Planning failed",
+    "render": "Start render",
+    "renderStarted": "Render started",
+    "renderFailed": "Render failed",
+    "cancel": "Cancel",
+    "cancelOk": "Cancel requested",
+    "cancelFailed": "Cancel failed",
+    "finalVideo": "Final video",
+    "progressIdle": "Not started yet. Progress appears after you submit a plan.",
+    "artifactsEmpty": "Artifacts will appear here after planning.",
+    "source": {
+      "title": "Source input",
+      "ideaLabel": "Idea",
+      "scriptLabel": "Script",
+      "novelLabel": "Novel text",
+      "ideaPlaceholder": "Describe your idea or story…",
+      "scriptPlaceholder": "Paste the full script…",
+      "novelPlaceholder": "Paste novel text…",
+      "requirementLabel": "Extra requirements (optional)",
+      "requirementPlaceholder": "Duration, pacing, audience…",
+      "styleLabel": "Style (optional)",
+      "stylePlaceholder": "e.g. cyberpunk, ink wash, photoreal",
+      "required": "Please enter source content first"
+    },
+    "models": {
+      "title": "Models (LLM for planning; image/video for render)",
+      "llm": "Planning model (LLM)",
+      "llmPlaceholder": "Select a chat model",
+      "llmRequired": "Please select a planning model (LLM) first",
+      "image": "Image model",
+      "imagePlaceholder": "Select an image model",
+      "video": "Video model",
+      "videoPlaceholder": "Select a video model",
+      "mediaRequired": "Please select image and video models first",
+      "empty": "No models available",
+      "noProviders": "Configure a platform in Model Hub first"
+    },
+    "artifacts": {
+      "title": "Artifacts",
+      "tree": "File tree",
+      "selectHint": "Select a file on the left to preview",
+      "previewEmpty": "Cannot preview this file"
+    },
+    "revise": {
+      "title": "Revise artifact",
+      "targetPlaceholder": "Target path, e.g. storyboard/shot_01.json",
+      "instructionPlaceholder": "Describe the change…",
+      "submit": "Submit revision",
+      "required": "Please fill in the target path and instruction",
+      "ok": "Revision submitted",
+      "failed": "Revision failed"
+    },
+    "progress": {
+      "title": "Progress",
+      "now": "Current step",
+      "working": "Working…",
+      "idleStep": "Idle",
+      "log": "Recent activity",
+      "errorDetail": "Show raw error"
+    }
+  },
+  "time": {
+    "justNow": "just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "yesterday": "yesterday",
+    "daysAgo": "{{count}}d ago",
+    "weeksAgo": "last week"
+  }
+}

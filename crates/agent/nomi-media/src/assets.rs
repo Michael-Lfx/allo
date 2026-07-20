@@ -201,6 +201,7 @@ fn collect_urls(value: &serde_json::Value, out: &mut Vec<String>) {
             for (key, val) in map {
                 if (key.eq_ignore_ascii_case("url")
                     || key.eq_ignore_ascii_case("image_url")
+                    || key.eq_ignore_ascii_case("image")
                     || key.ends_with("_url"))
                     && let Some(s) = val.as_str()
                     && looks_like_media_url(s)

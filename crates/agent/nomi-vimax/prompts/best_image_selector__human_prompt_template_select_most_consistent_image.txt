@@ -1,0 +1,4 @@
+
+<TARGET_DESCRIPTION_START>
+{target_description}
+<TARGET_DESCRIPTION_END>

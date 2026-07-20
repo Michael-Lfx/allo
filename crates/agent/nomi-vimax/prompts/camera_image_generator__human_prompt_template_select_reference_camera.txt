@@ -1,0 +1,5 @@
+
+There are exactly {camera_count} cameras in <CAMERA_SEQ>.
+Return JSON with camera_parent_items of length {camera_count} (one item per camera, same order as below).
+
+{camera_seq_str}

@@ -31,6 +31,8 @@ const PublicCompanionRosterPage = React.lazy(() => import('@renderer/pages/publi
 const PublicAgentDetailPage = React.lazy(() => import('@renderer/pages/publicCompanion/PublicAgentDetailPage'));
 const KnowledgeListPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeListPage'));
 const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeDetailPage'));
+const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
+const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 // TODO: 暂时隐藏创意工坊与资产库，后续开放时取消注释
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
 // const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
@@ -286,6 +288,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/public-companions/:id' element={withRouteFallback(PublicAgentDetailPage)} />
           <Route path='/knowledge' element={withRouteFallback(KnowledgeListPage)} />
           <Route path='/knowledge/:id' element={withRouteFallback(KnowledgeDetailPage)} />
+          <Route path='/video-generation' element={withRouteFallback(VideoGenerationListPage)} />
+          <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
           {/* TODO: 暂时隐藏资产库与创意工坊，后续开放时取消注释
           <Route path='/assets' element={withRouteFallback(AssetLibraryPage)} />
           <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />

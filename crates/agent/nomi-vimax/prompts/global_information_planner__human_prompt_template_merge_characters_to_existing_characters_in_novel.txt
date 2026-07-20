@@ -1,0 +1,8 @@
+
+<EXISTING_CHARACTERS_START>
+{existing_characters_in_novel}
+<EXISTING_CHARACTERS_END>
+
+<EVENT_CHARACTERS_START>
+{characters_in_event}
+<EVENT_CHARACTERS_END>

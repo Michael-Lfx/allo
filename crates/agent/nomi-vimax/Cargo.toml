@@ -1,0 +1,29 @@
+[package]
+name = "nomi-vimax"
+description = "ViMax-faithful video generation pipelines (Flowy LLM/image/video only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomifun-cloud.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+futures.workspace = true
+image.workspace = true
+regex.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

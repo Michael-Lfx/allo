@@ -44,6 +44,88 @@ fn is_retryable_video_upstream_err(err: &ServerClientError) -> bool {
 
 pub type VideoTaskProgressFn = Box<dyn FnMut(&VideoTaskRecord, u64) + Send>;
 
+/// Max prompt length for Flowy AIPC image models (Z-Image Turbo docs: ≤800).
+const FLOWY_IMAGE_TEXT_MAX_CHARS: usize = 800;
+
+/// Build DashScope multimodal-generation body expected by Flowy image proxy.
+///
+/// Z-Image Turbo (and similar AIPC text-to-image models) require:
+/// - `input.messages[0].content` = **exactly one** `{ "text": "…" }` object
+/// - text length ≤ 800 characters
+/// - no image parts in `content` (text-only)
+///
+/// Reference images are therefore not embedded in the body; callers should fold
+/// consistency hints into the text prompt when needed.
+pub fn build_flowy_image_body(req: &ImageGenerationRequest) -> Value {
+    let mut body = Map::new();
+    body.insert("model".into(), json!(req.model));
+
+    // Caller-supplied `extra.input` wins (advanced / already-shaped payloads).
+    let has_input = req
+        .extra
+        .as_object()
+        .and_then(|o| o.get("input"))
+        .is_some();
+
+    if has_input {
+        if let Value::Object(extra) = &req.extra {
+            for (k, v) in extra {
+                body.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        let mut text = req.prompt.trim().to_string();
+        // Side/back portrait calls may pass a reference path; keep a short hint
+        // in text only — Z-Image rejects image parts in `content`.
+        if req.image_url.as_ref().is_some_and(|u| !u.trim().is_empty())
+            && !text.to_ascii_lowercase().contains("same character")
+            && !text.to_ascii_lowercase().contains("consistent")
+        {
+            text.push_str(" Keep the same character identity, face, outfit, and style.");
+        }
+        let text = truncate_chars(&text, FLOWY_IMAGE_TEXT_MAX_CHARS);
+        body.insert(
+            "input".into(),
+            json!({
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "text": text }]
+                }]
+            }),
+        );
+
+        if let Value::Object(extra) = &req.extra {
+            for (k, v) in extra {
+                if k == "model" || k == "input" || k == "prompt" || k == "image_url" {
+                    continue;
+                }
+                body.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+
+        if !body.contains_key("parameters") {
+            // Landscape default matches ViMax portrait prompts (16:9 wide canvas).
+            body.insert(
+                "parameters".into(),
+                json!({
+                    "prompt_extend": false,
+                    "watermark": false,
+                    "size": "1280*720"
+                }),
+            );
+        }
+    }
+
+    Value::Object(body)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max).collect()
+}
+
 impl FlowyApiClient {
     /// `POST {LLM根}/images/generations` — upstream JSON passthrough on success.
     pub async fn images_generations(
@@ -65,29 +147,19 @@ impl FlowyApiClient {
             .await
     }
 
-    /// Convenience wrapper for minimal text-to-image requests.
+    /// Flowy image generation for DashScope multimodal-generation upstream.
+    ///
+    /// Upstream requires `input.messages`; Flowy proxies the JSON as-is and does
+    /// **not** convert OpenAI-style `{prompt}` bodies.
     pub async fn generate_image(
         &self,
         session: &ServerSession,
         req: &ImageGenerationRequest,
     ) -> Result<Value, ServerClientError> {
-        let mut body = Map::new();
-        body.insert("model".into(), json!(req.model));
-        body.insert("prompt".into(), json!(req.prompt));
-        if let Some(url) = &req.image_url {
-            body.insert("image_url".into(), json!(url));
-        }
-        if let Value::Object(extra) = &req.extra {
-            for (k, v) in extra {
-                body.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-        }
-        let path = if req.image_url.is_some() {
-            "/images/edits"
-        } else {
-            "/images/generations"
-        };
-        self.post_upstream_json(&self.llm_transport, path, session, Value::Object(body))
+        let body = build_flowy_image_body(req);
+        // Z-Image / AIPC text-to-image always uses generations; image refs are
+        // folded into text by `build_flowy_image_body` (content must be 1× text).
+        self.post_upstream_json(&self.llm_transport, "/images/generations", session, body)
             .await
     }
 
@@ -435,6 +507,76 @@ mod tests {
             base_url: base_url.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn build_flowy_image_body_wraps_prompt_as_input_messages() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-z-image-turbo".into(),
+            prompt: "a cat".into(),
+            image_url: None,
+            extra: Value::Null,
+        });
+        assert_eq!(body["model"], json!("AIPC-z-image-turbo"));
+        assert!(body.get("prompt").is_none());
+        let content = body["input"]["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], json!("a cat"));
+        assert_eq!(body["parameters"]["size"], json!("1280*720"));
+    }
+
+    #[test]
+    fn build_flowy_image_body_ignores_reference_image_in_content() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-z-image-turbo".into(),
+            prompt: "side view".into(),
+            image_url: Some("data:image/png;base64,abc".into()),
+            extra: Value::Null,
+        });
+        let content = body["input"]["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1, "Z-Image allows exactly one text part");
+        assert!(content[0].get("image").is_none());
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("side view"));
+        assert!(text.to_ascii_lowercase().contains("same character"));
+    }
+
+    #[test]
+    fn build_flowy_image_body_truncates_long_prompt() {
+        let long = "字".repeat(900);
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-z-image-turbo".into(),
+            prompt: long,
+            image_url: None,
+            extra: Value::Null,
+        });
+        let text = body["input"]["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(text.chars().count(), 800);
+    }
+
+    #[test]
+    fn build_flowy_image_body_respects_caller_input() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-z-image-turbo".into(),
+            prompt: "ignored".into(),
+            image_url: None,
+            extra: json!({
+                "input": {
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"text": "from extra"}]
+                    }]
+                },
+                "parameters": { "size": "1024*1024" }
+            }),
+        });
+        assert_eq!(
+            body["input"]["messages"][0]["content"][0]["text"],
+            json!("from extra")
+        );
+        assert_eq!(body["parameters"]["size"], json!("1024*1024"));
     }
 
     #[test]

@@ -1,0 +1,132 @@
+{
+  "title": "视频生成",
+  "subtitle": "从灵感、剧本或小说出发，规划产物并渲染成片。",
+  "nav": {
+    "entry": "视频生成"
+  },
+  "list": {
+    "searchPlaceholder": "搜索任务...",
+    "newSession": "新建任务",
+    "createFirst": "新建第一个任务",
+    "loadError": "加载失败",
+    "retry": "重试",
+    "filterEmpty": "没有匹配的任务",
+    "untitled": "未命名任务",
+    "empty": {
+      "title": "还没有视频任务",
+      "desc": "选择一种工作流，开始你的第一段成片。"
+    },
+    "card": {
+      "updatedAt": "{{time}} 更新",
+      "stage": "阶段：{{stage}}"
+    }
+  },
+  "create": {
+    "title": "新建视频任务",
+    "hint": "选择一种工作流。创建后工作流类型不可更改。",
+    "confirm": "创建并打开",
+    "titleLabel": "标题（可选）",
+    "titlePlaceholder": "给这次生成起个名字"
+  },
+  "workflow": {
+    "idea2video": {
+      "title": "灵感成片",
+      "desc": "从一个想法出发，自动规划并生成视频。"
+    },
+    "script2video": {
+      "title": "剧本成片",
+      "desc": "基于完整剧本拆解镜头并渲染成片。"
+    },
+    "novel2video": {
+      "title": "小说成片",
+      "desc": "从小说文本提炼剧情，规划并生成视频。"
+    }
+  },
+  "status": {
+    "idle": "待命",
+    "planning": "规划中",
+    "rendering": "渲染中",
+    "succeeded": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消"
+  },
+  "actions": {
+    "createFailed": "创建失败"
+  },
+  "workspace": {
+    "back": "返回列表",
+    "loadError": "加载失败",
+    "refresh": "刷新",
+    "workflowLocked": "工作流在创建后已锁定，不可更改。",
+    "plan": "开始规划",
+    "planStarted": "已开始规划",
+    "planFailed": "规划失败",
+    "render": "开始渲染",
+    "renderStarted": "已开始渲染",
+    "renderFailed": "渲染失败",
+    "cancel": "取消",
+    "cancelOk": "已请求取消",
+    "cancelFailed": "取消失败",
+    "finalVideo": "成片",
+    "progressIdle": "尚未开始。提交规划后将显示进度。",
+    "artifactsEmpty": "规划完成后，产物将显示在这里。",
+    "source": {
+      "title": "输入素材",
+      "ideaLabel": "灵感",
+      "scriptLabel": "剧本",
+      "novelLabel": "小说文本",
+      "ideaPlaceholder": "描述你的灵感或故事想法…",
+      "scriptPlaceholder": "粘贴完整剧本…",
+      "novelPlaceholder": "粘贴小说文本…",
+      "requirementLabel": "额外要求（可选）",
+      "requirementPlaceholder": "时长、节奏、受众等",
+      "styleLabel": "风格（可选）",
+      "stylePlaceholder": "如：赛博朋克、水墨、写实",
+      "required": "请先填写输入内容"
+    },
+    "models": {
+      "title": "模型（规划用 LLM，渲染用图片/视频）",
+      "llm": "规划模型（LLM）",
+      "llmPlaceholder": "选择聊天模型",
+      "llmRequired": "请先选择规划模型（LLM）",
+      "image": "图片模型",
+      "imagePlaceholder": "选择图片模型",
+      "video": "视频模型",
+      "videoPlaceholder": "选择视频模型",
+      "mediaRequired": "请先选择图片模型与视频模型",
+      "empty": "暂无可用模型",
+      "noProviders": "请先在模型中心配置平台"
+    },
+    "artifacts": {
+      "title": "产物",
+      "tree": "文件树",
+      "selectHint": "选择左侧文件以预览",
+      "previewEmpty": "无法预览此文件"
+    },
+    "revise": {
+      "title": "修订产物",
+      "targetPlaceholder": "目标路径，如 storyboard/shot_01.json",
+      "instructionPlaceholder": "说明如何修改…",
+      "submit": "提交修订",
+      "required": "请填写修订目标路径与说明",
+      "ok": "已提交修订",
+      "failed": "修订失败"
+    },
+    "progress": {
+      "title": "进度",
+      "now": "当前步骤",
+      "working": "处理中…",
+      "idleStep": "待命",
+      "log": "最近动态",
+      "errorDetail": "查看原始错误"
+    }
+  },
+  "time": {
+    "justNow": "刚刚",
+    "minutesAgo": "{{count}} 分钟前",
+    "hoursAgo": "{{count}} 小时前",
+    "yesterday": "昨天",
+    "daysAgo": "{{count}} 天前",
+    "weeksAgo": "上周"
+  }
+}
