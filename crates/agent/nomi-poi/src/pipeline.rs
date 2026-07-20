@@ -61,6 +61,10 @@ impl<'a> PoiPipeline<'a> {
                     if promoted {
                         report.promoted += 1;
                         report.starter_topic_ids.push(topic_id);
+                    } else if self.config.starter_enabled {
+                        // Already-active reinforce: still candidate for starter
+                        // backfill if the prior generation pass was missed.
+                        report.starter_topic_ids.push(topic_id);
                     }
                 }
                 CompareAction::MergeInto { topic_id } => {
@@ -73,6 +77,8 @@ impl<'a> PoiPipeline<'a> {
                     report.merged += 1;
                     if promoted {
                         report.promoted += 1;
+                        report.starter_topic_ids.push(topic_id);
+                    } else if self.config.starter_enabled {
                         report.starter_topic_ids.push(topic_id);
                     }
                 }

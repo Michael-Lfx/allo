@@ -11,6 +11,29 @@ use super::llm::generate_starters_for_topic_llm;
 use super::store::InterestStore;
 use super::types::TopicStatus;
 
+/// How many missing-starter active topics to backfill per ingest flush.
+const MISSING_STARTERS_BACKFILL_LIMIT: usize = 8;
+
+/// Merge insert/promote hooks with active topics that still lack starters.
+pub fn collect_starter_topic_ids(
+    store: &InterestStore,
+    mut hooked: Vec<String>,
+) -> Vec<String> {
+    if let Ok(missing) = store.list_active_topic_ids_missing_starters(MISSING_STARTERS_BACKFILL_LIMIT)
+    {
+        if !missing.is_empty() {
+            info!(
+                count = missing.len(),
+                "interest starters: backfilling active topics without starters"
+            );
+            hooked.extend(missing);
+        }
+    }
+    hooked.sort();
+    hooked.dedup();
+    hooked
+}
+
 /// Spawn background starter generation for topics that just became active.
 pub fn spawn_starters_for_topics(
     data_dir: PathBuf,
@@ -26,7 +49,7 @@ pub fn spawn_starters_for_topics(
         return;
     }
     let Some(aux) = auxiliary else {
-        debug!(
+        warn!(
             count = topic_ids.len(),
             "interest starters: no auxiliary client; skip generation"
         );
@@ -52,7 +75,7 @@ pub fn spawn_starters_for_topics_with_store(
         return;
     }
     let Some(aux) = auxiliary else {
-        debug!(
+        warn!(
             count = topic_ids.len(),
             "interest starters: no auxiliary client; skip generation"
         );
@@ -63,12 +86,16 @@ pub fn spawn_starters_for_topics_with_store(
     });
 }
 
-async fn generate_starters_for_topics(
+/// Generate starters in the current async task (preferred: no nested spawn / reopen race).
+pub async fn generate_starters_for_topics(
     data_dir: &Path,
     config: &InterestConfig,
     topic_ids: &[String],
     auxiliary: &AuxiliaryClient,
 ) {
+    if !config.enabled || !config.starter_enabled || topic_ids.is_empty() {
+        return;
+    }
     let db_path = data_dir.join("interest.db");
     let Ok(store) = InterestStore::open(&db_path, config.clone()) else {
         warn!(
@@ -81,14 +108,24 @@ async fn generate_starters_for_topics(
     generate_starters_with_store(store, config, topic_ids, auxiliary).await;
 }
 
-async fn generate_starters_with_store(
+/// Generate starters using an already-open store (same connection as ingest when possible).
+pub async fn generate_starters_with_store(
     store: Arc<Mutex<InterestStore>>,
     config: &InterestConfig,
     topic_ids: &[String],
     auxiliary: &AuxiliaryClient,
 ) {
+    if !config.enabled || !config.starter_enabled || topic_ids.is_empty() {
+        return;
+    }
     let per_topic = config.starters_per_topic.max(2) as usize;
     let max_global = config.max_starters_global.max(8) as u32;
+
+    info!(
+        count = topic_ids.len(),
+        per_topic,
+        "interest starters: generation starting"
+    );
 
     for topic_id in topic_ids {
         let topic = {
@@ -97,12 +134,14 @@ async fn generate_starters_with_store(
                 return;
             };
             match guard.get_topic(topic_id) {
-                Ok(Some(t))
-                    if t.status == TopicStatus::Active || t.pinned =>
-                {
+                Ok(Some(t)) if t.status == TopicStatus::Active || t.pinned => {
                     let existing = guard.count_starters_for_topic(topic_id).unwrap_or(0);
                     if existing >= per_topic as u32 {
-                        debug!(topic_id = %topic_id, existing, "interest starters: already populated");
+                        debug!(
+                            topic_id = %topic_id,
+                            existing,
+                            "interest starters: already populated"
+                        );
                         continue;
                     }
                     let global = guard.count_starters_global().unwrap_or(0);
@@ -115,9 +154,27 @@ async fn generate_starters_with_store(
                     }
                     t
                 }
-                Ok(_) => continue,
+                Ok(Some(t)) => {
+                    debug!(
+                        topic_id = %topic_id,
+                        status = t.status.as_str(),
+                        "interest starters: skip non-active topic"
+                    );
+                    continue;
+                }
+                Ok(None) => {
+                    warn!(
+                        topic_id = %topic_id,
+                        "interest starters: topic missing after ingest"
+                    );
+                    continue;
+                }
                 Err(err) => {
-                    warn!(topic_id = %topic_id, error = %err, "interest starters: load topic failed");
+                    warn!(
+                        topic_id = %topic_id,
+                        error = %err,
+                        "interest starters: load topic failed"
+                    );
                     continue;
                 }
             }
@@ -125,6 +182,11 @@ async fn generate_starters_with_store(
 
         let prompts = generate_starters_for_topic_llm(auxiliary, &topic, per_topic).await;
         if prompts.is_empty() {
+            warn!(
+                topic_id = %topic_id,
+                label = %topic.label,
+                "interest starters: LLM returned no usable prompts"
+            );
             continue;
         }
 

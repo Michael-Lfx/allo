@@ -14,7 +14,7 @@ use super::extract::{
 use super::llm::extract_signals_from_transcript_llm;
 use super::pipeline::apply_signal_batch;
 use super::quality::filter_persistable_signals;
-use super::starters::spawn_starters_for_topics_with_store;
+use super::starters::{collect_starter_topic_ids, generate_starters_with_store};
 use super::store::{InterestSignal, InterestStore};
 use super::types::ExtractOptions;
 
@@ -108,7 +108,11 @@ pub fn spawn_session_end_ingest(
                             "interest: session-end POI pipeline applied"
                         );
                     }
-                    report.starter_topic_ids
+                    if config.starter_enabled {
+                        collect_starter_topic_ids(&guard, report.starter_topic_ids)
+                    } else {
+                        Vec::new()
+                    }
                 }
                 Err(err) => {
                     tracing::warn!("interest: session-end pipeline failed: {err}");
@@ -118,14 +122,18 @@ pub fn spawn_session_end_ingest(
         } else {
             Vec::new()
         };
-        if !starter_ids.is_empty() {
-            spawn_starters_for_topics_with_store(
-                Arc::clone(&store),
-                config,
-                starter_ids,
-                auxiliary,
-            );
+        if starter_ids.is_empty() {
+            return;
         }
+        let Some(aux) = auxiliary else {
+            tracing::warn!(
+                count = starter_ids.len(),
+                "interest starters: need generation but auxiliary client unavailable"
+            );
+            return;
+        };
+        // Await in this task (reuse the same store) — avoids nested spawn + reopen races.
+        generate_starters_with_store(store, &config, &starter_ids, &aux).await;
     });
 }
 

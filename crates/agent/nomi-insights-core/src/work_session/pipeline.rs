@@ -6,9 +6,10 @@ use std::sync::Arc;
 use nomi_config::{InsightsContributionConfig, InterestConfig};
 use nomi_auxiliary::AuxiliaryClient;
 use nomi_poi::{
-    InterestSignal, InterestStore, apply_signal_batch, extract_signals_from_messages,
-    extract_signals_from_transcript_llm, filter_persistable_signals, filter_poi_signals,
-    format_user_transcript_for_llm, spawn_starters_for_topics,
+    InterestSignal, InterestStore, apply_signal_batch, collect_starter_topic_ids,
+    extract_signals_from_messages, extract_signals_from_transcript_llm,
+    filter_persistable_signals, filter_poi_signals, format_user_transcript_for_llm,
+    generate_starters_with_store,
 };
 use tracing::{info, warn};
 
@@ -181,7 +182,7 @@ async fn run_poi_ingest(
         return;
     }
     let _ = store.apply_decay();
-    match apply_signal_batch(&store, config, all_signals) {
+    let report = match apply_signal_batch(&store, config, all_signals) {
         Ok(report) => {
             if report.inserted + report.reinforced + report.merged > 0 {
                 info!(
@@ -199,17 +200,32 @@ async fn run_poi_ingest(
                     "interest: session-end POI pipeline — signals present but compare/update made no changes"
                 );
             }
-            if !report.starter_topic_ids.is_empty() {
-                spawn_starters_for_topics(
-                    data_dir.clone(),
-                    config.clone(),
-                    report.starter_topic_ids,
-                    auxiliary.cloned(),
-                );
-            }
+            report
         }
-        Err(err) => warn!("interest: session-end pipeline failed: {err}"),
+        Err(err) => {
+            warn!("interest: session-end pipeline failed: {err}");
+            return;
+        }
+    };
+
+    if !config.starter_enabled {
+        return;
     }
+    let starter_ids = collect_starter_topic_ids(&store, report.starter_topic_ids);
+    if starter_ids.is_empty() {
+        return;
+    }
+    let Some(aux) = auxiliary else {
+        warn!(
+            count = starter_ids.len(),
+            "interest starters: need generation but auxiliary client unavailable"
+        );
+        return;
+    };
+    // Reuse the ingest connection and await inline — nested spawn + reopen was
+    // racing / silently skipping after upstream merges on Windows.
+    let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+    generate_starters_with_store(store, config, &starter_ids, aux).await;
 }
 
 fn skip_work_package(data_dir: &Path, reason: &str, detail: &str) {
