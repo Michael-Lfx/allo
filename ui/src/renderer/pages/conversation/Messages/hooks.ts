@@ -4,15 +4,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { ConversationId } from '@/common/types/ids';
+import { parseMessageId, type ConversationId, type MessageId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import type { AgentStreamErrorInfo, IMessageThinking, IMessageTips, TMessage } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
 import {
   composeMessage,
   mergeAcpToolCallContent,
+  mergeToolCallContent,
   mergeTextMessageContent,
+  normalizeAcpToolCallContent,
   normalizeKnowledgeWritebackState,
+  normalizeToolCallContent,
+  normalizeToolGroupContent,
   normalizeWireAgentMessageMetadata,
   normalizeAgentStreamError,
   preferTextMessageVersion,
@@ -40,7 +44,7 @@ const getToolLifecycleKey = (message: TMessage, callId: string): string => {
     message.content && typeof message.content === 'object' && 'turn_id' in message.content
       ? toDisplayText((message.content as { turn_id?: unknown }).turn_id)
       : '';
-  const turnId = contentTurnId || message.msg_id || message.id;
+  const turnId = message.turn_id || contentTurnId || message.msg_id || message.id;
   return `${turnId}:${callId}`;
 };
 
@@ -51,7 +55,11 @@ function getMessageIndexKey(message: TMessage): string | undefined {
     const backend = typeof message.content?.backend === 'string' ? message.content.backend : 'agent';
     return `agent_status:${message.msg_id}:${backend}`;
   }
-  return message.msg_id;
+  // A msg_id identifies the owning stream segment, not a renderer row. Text,
+  // tips, plans and tool/status events can legitimately share it. Keeping a
+  // type namespace prevents a terminal error from replacing the successful
+  // assistant text that preceded it (and vice versa).
+  return `${message.type}:${message.msg_id}`;
 }
 
 const compactThinkingStreamText = (value: unknown): string => toDisplayText(value).replace(/\s+/g, ' ').trim();
@@ -137,7 +145,7 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
   }
 
   if (message.type === 'text' && message.content.knowledge_writeback && message.msg_id) {
-    const existingIdx = index.msgIdIndex.get(message.msg_id);
+    const existingIdx = index.msgIdIndex.get(getMessageIndexKey(message)!);
     if (existingIdx !== undefined && existingIdx < list.length) {
       const existingMsg = list[existingIdx];
       if (existingMsg.type === 'text') {
@@ -154,7 +162,7 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
     }
 
     const newIdx = list.length;
-    index.msgIdIndex.set(message.msg_id, newIdx);
+    index.msgIdIndex.set(getMessageIndexKey(message)!, newIdx);
     return list.concat(message);
   }
 
@@ -195,7 +203,7 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
       const existingMsg = list[existingIdx];
       if (existingMsg.type === 'tool_call') {
         const newList = list.slice();
-        const merged = { ...existingMsg.content, ...message.content };
+        const merged = mergeToolCallContent(existingMsg.content, message.content);
         newList[existingIdx] = { ...existingMsg, ...message, content: merged };
         return newList;
       }
@@ -250,7 +258,8 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
   // text message: merge only with the latest contiguous streaming chunk.
   // text 消息: 只与最后一条连续的流式片段合并，保留被工具/思考打断后的消息边界。
   if (message.type === 'text' && message.msg_id) {
-    const existingIdx = index.msgIdIndex.get(message.msg_id);
+    const textKey = getMessageIndexKey(message)!;
+    const existingIdx = index.msgIdIndex.get(textKey);
     if (existingIdx !== undefined && existingIdx < list.length) {
       const existingMsg = list[existingIdx];
       if (existingMsg.type === 'text') {
@@ -289,7 +298,7 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
     }
 
     const newIdx = list.length;
-    index.msgIdIndex.set(message.msg_id, newIdx);
+    index.msgIdIndex.set(textKey, newIdx);
     return list.concat(message);
   }
 
@@ -340,7 +349,7 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
   // then fall back to the plan session id so a later turn can refresh the same
   // visible checklist even when the backend minted a new message id.
   if (message.type === 'plan') {
-    let existingIdx = message.msg_id ? index.msgIdIndex.get(message.msg_id) : undefined;
+    let existingIdx = message.msg_id ? index.msgIdIndex.get(getMessageIndexKey(message)!) : undefined;
     if (existingIdx !== undefined && list[existingIdx]?.type !== 'plan') {
       existingIdx = undefined;
     }
@@ -545,8 +554,34 @@ const parseJsonRecord = (value: unknown): Record<string, unknown> | undefined =>
   }
 };
 
+const parseJsonArray = (value: unknown): unknown[] | undefined => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const normalizeTipType = (value: unknown, fallback: IMessageTips['content']['type']) =>
   value === 'success' || value === 'warning' || value === 'error' ? value : fallback;
+
+const normalizePersistedTurnId = (value: unknown): MessageId | undefined => {
+  if (typeof value !== 'string') return undefined;
+  try {
+    return parseMessageId(value);
+  } catch {
+    return undefined;
+  }
+};
+
+const resolvePersistedTurnId = (
+  msg: TMessage,
+  parsed: Record<string, unknown>
+): MessageId | undefined =>
+  normalizePersistedTurnId(msg.turn_id) ?? normalizePersistedTurnId(parsed.turn_id);
 
 const normalizePersistedWorkspaceRuntimeError = (
   parsed: Record<string, unknown>,
@@ -659,6 +694,7 @@ const normalizeDbTipsMessage = (msg: TMessage): TMessage => {
       ? existingContent.type
       : 'error';
   const tipType = normalizeTipType(parsed.type, fallbackType);
+  const turnId = resolvePersistedTurnId(msg, parsed);
   const structuredError =
     tipType === 'error'
       ? (normalizePersistedWorkspaceRuntimeError(parsed, parsed.content) ??
@@ -669,6 +705,7 @@ const normalizeDbTipsMessage = (msg: TMessage): TMessage => {
 
   return {
     ...msg,
+    turn_id: turnId,
     content: {
       content: parsed.content,
       type: tipType,
@@ -683,6 +720,34 @@ const normalizeDbTipsMessage = (msg: TMessage): TMessage => {
  */
 export function normalizeDbMessage(msg: TMessage): TMessage {
   if (msg.type === 'tips') return normalizeDbTipsMessage(msg);
+  if (msg.type === 'tool_call') {
+    const parsed = parseJsonRecord(msg.content) ?? {};
+    const content = normalizeToolCallContent(parsed, msg.status ?? null);
+    return {
+      ...msg,
+      turn_id: resolvePersistedTurnId(msg, parsed),
+      content,
+      status: content.status === 'error' ? 'error' : msg.status,
+    };
+  }
+  if (msg.type === 'acp_tool_call') {
+    const parsed = parseJsonRecord(msg.content) ?? {};
+    const content = normalizeAcpToolCallContent(parsed, msg.status ?? null);
+    return {
+      ...msg,
+      turn_id: resolvePersistedTurnId(msg, parsed),
+      content,
+      status: content.update?.status === 'failed' ? 'error' : msg.status,
+    };
+  }
+  if (msg.type === 'tool_group') {
+    const content = normalizeToolGroupContent(parseJsonArray(msg.content) ?? []);
+    return {
+      ...msg,
+      content,
+      status: content.some((item) => item.status === 'Error') ? 'error' : msg.status,
+    };
+  }
   if (msg.type !== 'text') return msg;
   const raw = msg.content as unknown;
   if (typeof raw !== 'string') return msg;
@@ -692,6 +757,7 @@ export function normalizeDbMessage(msg: TMessage): TMessage {
     const knowledgeWriteback = normalizeKnowledgeWritebackState(parsed.knowledge_writeback);
     return {
       ...msg,
+      turn_id: resolvePersistedTurnId(msg, parsed),
       content: {
         content: parsed.content as string,
         ...(knowledgeWriteback ? { knowledge_writeback: knowledgeWriteback } : {}),
@@ -712,7 +778,22 @@ const messageCursorOf = (m: TMessage): string => `${m.created_at ?? 0}:${m.id}`;
 
 const getFetchedMergeKey = (message: TMessage): string | undefined => {
   if (!message.msg_id) return undefined;
+  if (message.type === 'tool_call' && message.content?.call_id) {
+    return `tool_call:${getToolLifecycleKey(message, message.content.call_id)}`;
+  }
+  if (message.type === 'acp_tool_call' && message.content?.update?.tool_call_id) {
+    return `acp_tool_call:${getToolLifecycleKey(message, message.content.update.tool_call_id)}`;
+  }
   return `${message.type}:${message.msg_id}`;
+};
+
+const compareTranscriptOrder = (left: TMessage, right: TMessage): number => {
+  const leftCreatedAt = left.created_at ?? Number.MAX_SAFE_INTEGER;
+  const rightCreatedAt = right.created_at ?? Number.MAX_SAFE_INTEGER;
+  if (leftCreatedAt !== rightCreatedAt) return leftCreatedAt - rightCreatedAt;
+  // IDs are canonical ASCII. Avoid localeCompare so ordering is identical
+  // across Windows/macOS/Linux regardless of the host ICU locale.
+  return left.id === right.id ? 0 : left.id < right.id ? -1 : 1;
 };
 
 const getThinkingTextLength = (message: IMessageThinking): number => {
@@ -763,17 +844,42 @@ export const mergeFetchedMessagesForConversation = (
     if (dbMessage.type === 'thinking' && streamMessage.type === 'thinking') {
       return preferThinkingMessageVersion(dbMessage, streamMessage);
     }
+    if (dbMessage.type === 'tool_call' && streamMessage.type === 'tool_call') {
+      const content = mergeToolCallContent(dbMessage.content, streamMessage.content);
+      return {
+        ...dbMessage,
+        ...streamMessage,
+        id: dbMessage.id,
+        content,
+        status: content.status === 'error' ? 'error' : dbMessage.status,
+      };
+    }
+    if (dbMessage.type === 'acp_tool_call' && streamMessage.type === 'acp_tool_call') {
+      const content = mergeAcpToolCallContent(dbMessage.content, streamMessage.content);
+      return {
+        ...dbMessage,
+        ...streamMessage,
+        id: dbMessage.id,
+        content,
+        status: content.update.status === 'failed' ? 'error' : dbMessage.status,
+      };
+    }
     return dbMessage;
   });
 
   const streamingOnly = sameConversation.filter((message) => {
     if (dbIds.has(message.id)) return false;
     const key = getFetchedMergeKey(message);
-    return !key || !dbKeys.has(key);
+    if (key && dbKeys.has(key)) return false;
+
+    // This is a chronological union, not an append-only streaming tail. Rows
+    // from older keyset pages and genuinely in-flight rows both remain visible;
+    // canonical IDs/keys above remove their persisted live counterparts.
+    return true;
   });
 
   if (!streamingOnly.length && !streamingByKey.size) return messages;
-  return [...mergedMessages, ...streamingOnly];
+  return [...mergedMessages, ...streamingOnly].sort(compareTranscriptOrder);
 };
 
 /**
@@ -800,11 +906,21 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   const oldestCursorRef = useRef<string | null>(null);
   const hasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  const newestLoadSequenceRef = useRef(0);
+  const activeConversationRef = useRef<ConversationId>(key);
+
+  // Providers are shared by the mounted chat surface. Invalidate outstanding
+  // fetches synchronously when routing to another conversation so a slower old
+  // request can never replace the new conversation's transcript.
+  if (activeConversationRef.current !== key) {
+    newestLoadSequenceRef.current += 1;
+    activeConversationRef.current = key;
+  }
 
   // Merge a freshly fetched DB page (newest window or full list) with any
   // in-flight streaming messages for this conversation. During streaming the DB
   // may hold an older snapshot (2000ms save debounce), so we keep whichever
-  // version has more content and append streaming-only rows at the tail.
+  // version has more content and build a stable chronological union.
   const mergeIntoList = useCallback(
     (messages: TMessage[]) => {
       update((currentList) => {
@@ -815,12 +931,20 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   );
 
   const loadMessages = useCallback(async (): Promise<TMessage[]> => {
+    const loadSequence = newestLoadSequenceRef.current + 1;
+    newestLoadSequenceRef.current = loadSequence;
     const result = await ipcBridge.database.getConversationMessages.invoke(
       windowed
         ? { conversation_id: key, cursor: '', page_size: HISTORY_WINDOW_SIZE, content_mode: 'compact' }
         : { conversation_id: key, page: 0, page_size: 10000, content_mode: 'compact' }
     );
     const messages = result?.items?.map(normalizeDbMessage);
+    if (
+      activeConversationRef.current !== key ||
+      newestLoadSequenceRef.current !== loadSequence
+    ) {
+      return [];
+    }
     if (windowed) {
       hasMoreRef.current = Boolean(result?.has_more);
       setHasMore(hasMoreRef.current);
@@ -850,6 +974,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
         content_mode: 'compact',
       });
       const older = result?.items?.map(normalizeDbMessage) ?? [];
+      if (activeConversationRef.current !== key) return;
       hasMoreRef.current = Boolean(result?.has_more);
       setHasMore(hasMoreRef.current);
       if (older.length) {
@@ -887,8 +1012,23 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       });
     return () => {
       cancelled = true;
+      newestLoadSequenceRef.current += 1;
     };
   }, [key, loadMessages, setLoading]);
+
+  // Plan rows are finalized in the database when the authoritative turn
+  // completes, but that status-only write does not need another plan stream
+  // fragment. Refresh the current window so terminal plan state is reflected
+  // immediately instead of waiting for a remount/manual history refresh.
+  useEffect(() => {
+    if (!key) return;
+    return ipcBridge.conversation.turnCompleted.on((event) => {
+      if (event.conversation_id !== key || event.runtime.is_processing) return;
+      void loadMessages().catch((error) => {
+        console.warn('[useMessageLstCache] Failed to refresh terminal message state:', error);
+      });
+    });
+  }, [key, loadMessages]);
 
   return { loadOlder, hasMore, loadingOlder };
 };

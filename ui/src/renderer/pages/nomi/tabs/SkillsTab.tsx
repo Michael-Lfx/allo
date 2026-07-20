@@ -127,6 +127,7 @@ const SkillsTab: React.FC<Props> = ({ companion }) => {
 
   const archive = useCallback(
     async (s: ICompanionSkill) => {
+      if (!companionId) return;
       try {
         await ipcBridge.companion.archiveSkill.invoke({ companion_id: companionId, name: s.skill_name });
         Message.success(t('nomi.skills.archivedOk', { defaultValue: '已归档' }));

@@ -22,12 +22,12 @@ const provider = (overrides: Partial<IProvider> = {}): IProvider =>
     ...overrides,
   }) as IProvider;
 
-const localProvider = {
-  id: 'nomifun-local-model' as ProviderId,
-  name: 'Local Models',
-  platform: 'nomifun-local-model',
+const catalogProvider = {
+  id: 'prov_catalog' as ProviderId,
+  name: 'Catalog Provider',
+  platform: 'openai',
   enabled: true,
-  models: ['z-image-turbo-q3-k', 'stable-diffusion-chat-lookalike'],
+  models: ['custom-visual-v1', 'stable-diffusion-chat-lookalike'],
   model_enabled: {},
 } as unknown as IProvider;
 
@@ -87,17 +87,17 @@ describe('getCreationModels profile precedence', () => {
 });
 
 describe('creation model catalog authority', () => {
-  test('catalog profiles expose local image models and override name guesses', () => {
+  test('catalog profiles expose image models and override name guesses', () => {
     const result = getCreationModels(
-      [localProvider],
+      [catalogProvider],
       'image_generation',
       [
-        profile('catalog', 'z-image-turbo-q3-k', ['image_generation'], localProvider.id),
-        profile('catalog', 'stable-diffusion-chat-lookalike', ['chat'], localProvider.id),
+        profile('catalog', 'custom-visual-v1', ['image_generation'], catalogProvider.id),
+        profile('catalog', 'stable-diffusion-chat-lookalike', ['chat'], catalogProvider.id),
       ]
     );
 
-    expect(result.map((entry) => entry.model)).toEqual(['z-image-turbo-q3-k']);
+    expect(result.map((entry) => entry.model)).toEqual(['custom-visual-v1']);
     expect(result[0].capabilities).toEqual(['image_generation']);
   });
 });

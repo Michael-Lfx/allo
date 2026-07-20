@@ -336,10 +336,6 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         ),
         models_catalog_service: services.models_catalog.clone(),
         managed_model_service: Some(services.managed_model_service.clone()),
-        local_model_service: None,
-        image_model_service: None,
-        asr_model_service: None,
-        lazy_local_model_runtime: Some(services.lazy_local_model_runtime.clone()),
         protocol_detection_service: ProtocolDetectionService::new_dynamic(),
         version_check_service: VersionCheckService::new_dynamic(env!("CARGO_PKG_VERSION").to_owned()),
         data_dir: services.data_dir.clone(),
@@ -988,18 +984,11 @@ pub fn build_workshop_state(services: &AppServices) -> WorkshopRouterState {
 }
 
 /// Build the 生成引擎 (creation) router state, reusing the singleton
-/// `creation_service`, and settle any task left live by a previous process
-/// (boot reconciliation — "running ⟺ live generation task" invariant). The reconcile is
-/// detached + best-effort, mirroring the other boot-resume tasks.
+/// `creation_service`. Creation task/asset reconciliation is completed during
+/// `AppServices::from_config`, before this router can accept new generation
+/// tasks, so a live write cannot race the boot inventory snapshot.
 pub fn build_creation_state(services: &AppServices) -> CreationRouterState {
-    let service = services.creation_service.clone();
-    {
-        let service = service.clone();
-        tokio::spawn(async move {
-            service.reconcile_on_boot().await;
-        });
-    }
-    CreationRouterState::new(service)
+    CreationRouterState::new(services.creation_service.clone())
 }
 
 /// Build the single Agent Execution facade shared by REST, model tools and boot
@@ -1399,7 +1388,6 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
         client_pref_service,
         data_dir: services.data_dir.clone(),
         provider_service: Some(ProviderService::new(provider_repo, services.encryption_key)),
-        lazy_local_model_runtime: Some(services.lazy_local_model_runtime.clone()),
     }
 }
 

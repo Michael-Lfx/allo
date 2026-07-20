@@ -82,35 +82,6 @@ struct SttMultipartFields {
     language_hint: Option<String>,
 }
 
-fn local_asr_supports_audio(file_name: &str, mime_type: &str) -> bool {
-    let extension = std::path::Path::new(file_name)
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_ascii_lowercase);
-    let mime_type = mime_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-
-    matches!(
-        extension.as_deref(),
-        Some("wav" | "mp3" | "ogg" | "oga" | "opus" | "flac")
-    ) || matches!(
-        mime_type.as_str(),
-        "audio/wav"
-            | "audio/wave"
-            | "audio/x-wav"
-            | "audio/mpeg"
-            | "audio/mp3"
-            | "audio/ogg"
-            | "audio/opus"
-            | "audio/flac"
-            | "audio/x-flac"
-    )
-}
-
 async fn extract_stt_multipart(mut multipart: Multipart) -> Result<SttMultipartFields, AppError> {
     let mut file_data: Option<Vec<u8>> = None;
     let mut file_name: Option<String> = None;
@@ -227,48 +198,6 @@ async fn speech_to_text(
 
     let config = speech_to_text_config_from_preferences(&prefs);
 
-    if config.enabled && config.provider == SpeechToTextProvider::Local {
-        let asr = state
-            .lazy_local_model_runtime
-            .as_ref()
-            .and_then(|runtime| runtime.asr_if_started())
-            .filter(|_| local_asr_supports_audio(&fields.file_name, &fields.mime_type))
-            .ok_or_else(|| stt_error_response(&SttError::LocalNotConfigured))?;
-        let local_status = asr.status().await;
-        if !local_status.ready || local_status.active_model_id.as_deref() != config.model.as_deref() {
-            return Err(stt_error_response(&SttError::LocalNotConfigured));
-        }
-        let result = asr
-            .transcribe(
-                fields.file_data,
-                &fields.file_name,
-                &fields.mime_type,
-                config
-                    .language
-                    .as_deref()
-                    .or(fields.language_hint.as_deref()),
-            )
-            .await
-            .map_err(|error| {
-                let body = serde_json::json!({
-                    "success": false,
-                    "error": error.to_string(),
-                    "code": "STT_LOCAL_FAILED",
-                });
-                (error.status_code(), Json(body))
-            })?;
-        let body = serde_json::json!({
-            "success": true,
-            "data": {
-                "text": result.text,
-                "model": result.model_id,
-                "provider": "local",
-                "language": result.language,
-            },
-        });
-        return Ok((StatusCode::OK, Json(body)));
-    }
-
     let config = resolve_cloud_speech_to_text_config(&state, config)
         .await
         .map_err(|error| stt_error_response(&error))?;
@@ -302,7 +231,7 @@ fn speech_to_text_config_from_preferences(prefs: &ClientPreferencesResponse) -> 
         .find_map(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or(SpeechToTextConfig {
             enabled: false,
-            provider: SpeechToTextProvider::Local,
+            provider: SpeechToTextProvider::Openai,
             provider_id: None,
             model: None,
             language: None,
@@ -316,12 +245,7 @@ async fn resolve_cloud_speech_to_text_config(
     state: &ShellRouterState,
     config: SpeechToTextConfig,
 ) -> Result<SpeechToTextConfig, SttError> {
-    if !config.enabled
-        || matches!(
-            config.provider,
-            SpeechToTextProvider::Local | SpeechToTextProvider::Claw
-        )
-    {
+    if !config.enabled || matches!(config.provider, SpeechToTextProvider::Claw) {
         return Ok(config);
     }
     let Some(provider_id) = config.provider_id.as_deref() else {
@@ -343,7 +267,6 @@ async fn resolve_cloud_speech_to_text_config(
         return Err(match config.provider {
             SpeechToTextProvider::Openai => SttError::OpenaiNotConfigured,
             SpeechToTextProvider::Deepgram => SttError::DeepgramNotConfigured,
-            SpeechToTextProvider::Local => SttError::LocalNotConfigured,
             SpeechToTextProvider::Claw => SttError::ClawNotConfigured,
         });
     }
@@ -392,7 +315,7 @@ async fn resolve_cloud_speech_to_text_config(
             language,
             ..config
         },
-        SpeechToTextProvider::Local | SpeechToTextProvider::Claw => config,
+        SpeechToTextProvider::Claw => config,
     })
 }
 
@@ -432,7 +355,6 @@ mod tests {
             client_pref_service,
             data_dir: std::env::temp_dir(),
             provider_service: None,
-            lazy_local_model_runtime: None,
         }
     }
 
@@ -475,15 +397,6 @@ mod tests {
             )
             .body(Body::from_stream(stream))
             .unwrap()
-    }
-
-    #[test]
-    fn local_asr_audio_format_detection_matches_whisper_cli_inputs() {
-        assert!(local_asr_supports_audio("speech.wav", "application/octet-stream"));
-        assert!(local_asr_supports_audio("speech.bin", "audio/ogg; codecs=opus"));
-        assert!(local_asr_supports_audio("speech.flac", "audio/flac"));
-        assert!(!local_asr_supports_audio("speech.webm", "audio/webm"));
-        assert!(!local_asr_supports_audio("speech.m4a", "audio/mp4"));
     }
 
     #[test]
@@ -557,26 +470,6 @@ mod tests {
             config.openai.as_ref().map(|value| value.api_key.as_str()),
             Some("legacy-key")
         );
-    }
-
-    #[test]
-    fn current_local_speech_to_text_selection_parses_without_cloud_secrets() {
-        let prefs = ClientPreferencesResponse::from([(
-            "tools.speechToText".into(),
-            json!({
-                "enabled": true,
-                "provider": "local",
-                "model": "whisper-small-q5_1",
-                "language": "zh"
-            }),
-        )]);
-
-        let config = speech_to_text_config_from_preferences(&prefs);
-        assert_eq!(config.provider, SpeechToTextProvider::Local);
-        assert_eq!(config.model.as_deref(), Some("whisper-small-q5_1"));
-        assert_eq!(config.language.as_deref(), Some("zh"));
-        assert!(config.openai.is_none());
-        assert!(config.deepgram.is_none());
     }
 
     #[tokio::test]

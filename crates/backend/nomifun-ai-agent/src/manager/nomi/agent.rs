@@ -71,6 +71,7 @@ pub struct NomiAgentManager {
     /// Durable per-turn cancellation token. Unlike `Notify`, cancellation is
     /// retained when kill arrives before `send_message` reaches its select.
     turn_cancel: std::sync::Mutex<tokio_util::sync::CancellationToken>,
+    active_turn: Arc<std::sync::Mutex<Option<crate::runtime_state::AgentRuntimeTurn>>>,
     /// Serializes turn admission with permanent task shutdown.
     lifecycle_gate: std::sync::Mutex<()>,
     /// Holds for the complete send lifecycle. A second send waits here and
@@ -260,7 +261,9 @@ impl NomiAgentManager {
         };
 
         let backend_output_sink = Arc::new(
-            BackendOutputSink::new(runtime.event_sender()).with_distill_dir(distill_dir.clone()),
+            BackendOutputSink::new(runtime.event_sender())
+                .with_distill_dir(distill_dir.clone())
+                .with_artifact_workspace(&workspace),
         );
         let sink: Arc<dyn OutputSink> = backend_output_sink.clone();
 
@@ -613,6 +616,7 @@ impl NomiAgentManager {
             approval_manager,
             confirmations,
             turn_cancel: std::sync::Mutex::new(tokio_util::sync::CancellationToken::new()),
+            active_turn: Arc::new(std::sync::Mutex::new(None)),
             lifecycle_gate: std::sync::Mutex::new(()),
             turn_gate: Mutex::new(()),
             closing: AtomicBool::new(false),
@@ -666,6 +670,7 @@ impl NomiAgentManager {
             self.closing.store(true, Ordering::Release);
         }
         let was_running = self.runtime.status() == Some(ConversationStatus::Running);
+        let runtime_turn = *self.active_turn.lock().unwrap_or_else(|e| e.into_inner());
 
         self.turn_cancel
             .lock()
@@ -691,8 +696,20 @@ impl NomiAgentManager {
             self.backend_output_sink.cancel_active_tool_calls(
                 "The tool call was cancelled before the turn could finish.",
             );
-            self.runtime
-                .emit_finish_with_reason(None, Some(TurnStopReason::Cancelled));
+            if let Some(runtime_turn) = runtime_turn {
+                self.runtime.emit_finish_for_turn(
+                    runtime_turn,
+                    None,
+                    Some(TurnStopReason::Cancelled),
+                );
+            } else {
+                // Initial Pending/idle managers have no accepted turn token,
+                // but their stop contract still requires a terminal boundary.
+                // Between real turns the absorbing Finished state makes this
+                // a no-op, so it cannot terminate a later reset turn.
+                self.runtime
+                    .emit_finish_with_reason(None, Some(TurnStopReason::Cancelled));
+            }
         }
 
         info!(
@@ -723,6 +740,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
         self.runtime.status()
     }
 
+    fn is_transport_healthy(&self) -> bool {
+        self.runtime.is_transport_healthy()
+    }
+
     fn last_activity_at(&self) -> TimestampMs {
         self.runtime.last_activity_at()
     }
@@ -739,7 +760,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             "Nomi send_message started"
         );
         let _turn = self.turn_gate.lock().await;
-        let turn_cancel = {
+        let (turn_cancel, runtime_turn) = {
             let _lifecycle = self
                 .lifecycle_gate
                 .lock()
@@ -755,8 +776,9 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = token.clone();
             self.runtime.bump_activity();
-            self.runtime.reset_for_new_turn(ConversationStatus::Running);
-            token
+            let runtime_turn = self.runtime.reset_for_new_turn(ConversationStatus::Running);
+            *self.active_turn.lock().unwrap_or_else(|e| e.into_inner()) = Some(runtime_turn);
+            (token, runtime_turn)
         };
 
         // Backstop: guarantee a terminal event even if this turn unwinds
@@ -764,6 +786,8 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
         // after the real terminal event is emitted below. (Phase 0 F0.2)
         let mut term_guard = TurnTerminationGuard {
             runtime: self.runtime.clone(),
+            turn: runtime_turn,
+            active_turn: Arc::clone(&self.active_turn),
             backend_output_sink: self.backend_output_sink.clone(),
             armed: true,
         };
@@ -813,8 +837,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         "The turn failed while loading its attachments.",
                     );
                     self.runtime
-                        .emit_error_data(send_error.stream_error().clone());
-                    self.runtime.emit_finish(None);
+                        .emit_error_data_for_turn(runtime_turn, send_error.stream_error().clone());
                     term_guard.disarm();
                     return Err(send_error);
                 }
@@ -833,6 +856,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 None => content,
             };
 
+            self.backend_output_sink.begin_artifact_delivery_turn();
             engine.set_steering_inbox(Some(self.steering_inbox.clone()));
 
             // Each iteration runs one engine pass inside the same accepted
@@ -945,8 +969,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             self.backend_output_sink.cancel_active_tool_calls(
                 "The tool call was cancelled because the user stopped the turn.",
             );
-            self.runtime
-                .emit_finish_with_reason(None, Some(TurnStopReason::Cancelled));
+            self.runtime.emit_finish_for_turn(
+                runtime_turn,
+                None,
+                Some(TurnStopReason::Cancelled),
+            );
             term_guard.disarm();
             return Ok(());
         };
@@ -970,6 +997,25 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 self.backend_output_sink.fail_active_tool_calls(&format!(
                     "The model turn ended with {stop_reason:?} before this tool call reached a terminal state."
                 ));
+
+                if let Err(delivery_error) = self
+                    .backend_output_sink
+                    .finish_artifact_delivery_turn()
+                {
+                    error!(
+                        conversation_id = %self.runtime.conversation_id(),
+                        elapsed_ms,
+                        error = %delivery_error,
+                        "Nomi turn ended without satisfying every artifact-delivery obligation"
+                    );
+                    let send_error = AgentSendError::from_app_error(AppError::Internal(format!(
+                        "Artifact delivery failed: {delivery_error}"
+                    )));
+                    self.runtime
+                        .emit_error_data_for_turn(runtime_turn, send_error.stream_error().clone());
+                    term_guard.disarm();
+                    return Err(send_error);
+                }
 
                 // Phase 3 observability: a per-turn metrics event the UI shows as
                 // duration / token cost and telemetry records. Purely additive and
@@ -1055,7 +1101,8 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     }
                 }
 
-                self.runtime.emit_finish_with_reason(None, Some(stop_reason));
+                self.runtime
+                    .emit_finish_for_turn(runtime_turn, None, Some(stop_reason));
                 Ok(())
             }
             Err(e) => {
@@ -1064,19 +1111,19 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     conversation_id = %self.runtime.conversation_id(),
                     elapsed_ms,
                     error = %ErrorChain(&e),
-                    "Nomi engine.execute_turn() failed, emitting Error+Finish"
+                    "Nomi engine.execute_turn() failed, emitting terminal Error"
                 );
                 let send_error = nomi_engine_error_to_send_error(error_msg);
                 self.backend_output_sink.fail_active_tool_calls(&format!(
                     "The model/provider turn failed before this tool call completed: {e}"
                 ));
-                self.runtime.emit_error_data(send_error.stream_error().clone());
-                self.runtime.emit_finish(None);
+                self.runtime
+                    .emit_error_data_for_turn(runtime_turn, send_error.stream_error().clone());
                 Err(send_error)
             }
         };
 
-        // Normal completion: a real terminal event was emitted above, so the
+        // Normal completion: a real terminal event (Finish or Error) was emitted above, so the
         // backstop is no longer needed. (Phase 0 F0.2)
         term_guard.disarm();
         outcome
@@ -1102,6 +1149,8 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
 /// never leak a spurious terminal event past a real one. (Phase 0 F0.2)
 struct TurnTerminationGuard {
     runtime: AgentRuntimeState,
+    turn: crate::runtime_state::AgentRuntimeTurn,
+    active_turn: Arc<std::sync::Mutex<Option<crate::runtime_state::AgentRuntimeTurn>>>,
     backend_output_sink: Arc<BackendOutputSink>,
     armed: bool,
 }
@@ -1114,12 +1163,17 @@ impl TurnTerminationGuard {
 
 impl Drop for TurnTerminationGuard {
     fn drop(&mut self) {
+        let mut active_turn = self.active_turn.lock().unwrap_or_else(|e| e.into_inner());
+        if active_turn.as_ref() == Some(&self.turn) {
+            *active_turn = None;
+        }
+        drop(active_turn);
         if self.armed {
             self.backend_output_sink.cancel_active_tool_calls(
                 "The turn ended unexpectedly before this tool call reached a terminal state.",
             );
             self.runtime
-                .emit_finish_with_reason(None, Some(TurnStopReason::Cancelled));
+                .emit_finish_for_turn(self.turn, None, Some(TurnStopReason::Cancelled));
         }
     }
 }
@@ -1482,6 +1536,75 @@ mod tests {
         }
     }
 
+    /// Advertises the production `Write` route for stream-boundary tests that
+    /// never commit or execute the call. Tool progress from an unadvertised
+    /// name is intentionally rejected by the engine, so those fixtures must
+    /// model the same request authority as a real desktop Nomi session.
+    struct PreviewOnlyWriteTool;
+
+    #[async_trait::async_trait]
+    impl Tool for PreviewOnlyWriteTool {
+        fn name(&self) -> &str {
+            "Write"
+        }
+
+        fn description(&self) -> &str {
+            "Test-only advertised write tool"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": { "type": "string" },
+                    "content": { "type": "string" }
+                },
+                "required": ["file_path", "content"]
+            })
+        }
+
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+
+        async fn execute(&self, _input: serde_json::Value) -> ToolResult {
+            ToolResult::error("PreviewOnlyWriteTool must not be executed")
+        }
+
+        fn category(&self) -> ToolCategory {
+            ToolCategory::Exec
+        }
+    }
+
+    struct MissingImageArtifactTool;
+
+    #[async_trait::async_trait]
+    impl Tool for MissingImageArtifactTool {
+        fn name(&self) -> &str {
+            "image_gen"
+        }
+
+        fn description(&self) -> &str {
+            "Test-only image generator that falsely reports text success"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+
+        async fn execute(&self, _input: serde_json::Value) -> ToolResult {
+            ToolResult::text("generated successfully")
+        }
+
+        fn category(&self) -> ToolCategory {
+            ToolCategory::Info
+        }
+    }
+
     struct HangingKnowledgeSink {
         started: Arc<tokio::sync::Semaphore>,
     }
@@ -1578,6 +1701,7 @@ mod tests {
             approval_manager,
             confirmations,
             turn_cancel: std::sync::Mutex::new(tokio_util::sync::CancellationToken::new()),
+            active_turn: Arc::new(std::sync::Mutex::new(None)),
             lifecycle_gate: std::sync::Mutex::new(()),
             turn_gate: Mutex::new(()),
             closing: AtomicBool::new(false),
@@ -1689,6 +1813,7 @@ mod tests {
             approval_manager,
             confirmations: Arc::new(std::sync::RwLock::new(Vec::new())),
             turn_cancel: std::sync::Mutex::new(tokio_util::sync::CancellationToken::new()),
+            active_turn: Arc::new(std::sync::Mutex::new(None)),
             lifecycle_gate: std::sync::Mutex::new(()),
             turn_gate: Mutex::new(()),
             closing: AtomicBool::new(false),
@@ -1777,6 +1902,69 @@ mod tests {
 
         assert_eq!(completed_reasons, vec![Some(TurnStopReason::EndTurn)]);
         assert_eq!(finish_reason, Some(TurnStopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn missing_generated_artifact_emits_error_and_never_normal_finish() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            vec![
+                LlmEvent::ToolUse {
+                    id: "missing-image".into(),
+                    name: "image_gen".into(),
+                    input: serde_json::json!({}),
+                    extra: None,
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                    usage: Default::default(),
+                },
+            ],
+            vec![LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            }],
+        ]));
+        let mut agent = make_agent_with_provider(provider);
+        assert!(
+            agent
+                .engine
+                .get_mut()
+                .registry_mut()
+                .register(Box::new(MissingImageArtifactTool))
+        );
+        let mut rx = agent.subscribe();
+
+        let result = agent
+            .send_message(SendMessageData {
+                content: "generate an image".into(),
+                msg_id: "msg-missing-image".into(),
+                files: Vec::new(),
+                inject_skills: Vec::new(),
+                origin: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentStreamEvent::ToolCall(data)
+                if data.call_id == "nomi-missing-image"
+                    && data.status == ToolCallStatus::Error
+                    && data.artifacts.is_empty()
+        )));
+        assert!(events.iter().any(|event| matches!(event, AgentStreamEvent::Error(_))));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentStreamEvent::Finish(_))),
+            "artifact-delivery failure must not be followed by a normal Finish"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentStreamEvent::TurnCompleted(_)))
+        );
     }
 
     #[tokio::test]
@@ -2269,7 +2457,15 @@ mod tests {
                 usage: Default::default(),
             }],
         ]));
-        let agent = make_agent_with_provider(provider.clone());
+        let mut agent = make_agent_with_provider(provider.clone());
+        assert!(
+            agent
+                .engine
+                .get_mut()
+                .registry_mut()
+                .register(Box::new(PreviewOnlyWriteTool)),
+            "Write must be advertised in the request that emits its progress"
+        );
         let mut rx = agent.subscribe();
 
         agent
@@ -2674,11 +2870,15 @@ mod tests {
         let rt = AgentRuntimeState::new("c-guard", "/w", 16);
         let mut rx = rt.subscribe();
         let backend_output_sink = Arc::new(BackendOutputSink::new(rt.event_sender()));
+        let turn = rt.reset_for_new_turn(ConversationStatus::Running);
+        let active_turn = Arc::new(std::sync::Mutex::new(Some(turn)));
         backend_output_sink.emit_tool_call("guarded-call", "Write", "{}");
         assert!(matches!(rx.try_recv(), Ok(AgentStreamEvent::ToolCall(_))));
         {
             let _g = TurnTerminationGuard {
                 runtime: rt.clone(),
+                turn,
+                active_turn,
                 backend_output_sink,
                 armed: true,
             };
@@ -2705,9 +2905,13 @@ mod tests {
         let rt = AgentRuntimeState::new("c-guard2", "/w", 16);
         let mut rx = rt.subscribe();
         let backend_output_sink = Arc::new(BackendOutputSink::new(rt.event_sender()));
+        let turn = rt.reset_for_new_turn(ConversationStatus::Running);
+        let active_turn = Arc::new(std::sync::Mutex::new(Some(turn)));
         {
             let mut g = TurnTerminationGuard {
                 runtime: rt.clone(),
+                turn,
+                active_turn,
                 backend_output_sink,
                 armed: true,
             };

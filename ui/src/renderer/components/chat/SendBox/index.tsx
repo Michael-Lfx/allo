@@ -255,6 +255,8 @@ const SendBox: React.FC<{
   const conversationContext = useConversationContextSafe();
   const { t, i18n } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const isStoppingRef = useRef(false);
   const [isSingleLine, setIsSingleLine] = useState(!effectiveDefaultMultiLine);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isInputActive = isInputFocused;
@@ -1292,7 +1294,7 @@ const SendBox: React.FC<{
   };
 
   const sendMessageHandler = () => {
-    if (isUploading) return;
+    if (isUploading || isStopping) return;
     // 编辑模式：提交走截断重跑而非普通发送。
     if (editingMsgId && onEditResubmit) {
       if (!input.trim()) return;
@@ -1376,7 +1378,7 @@ const SendBox: React.FC<{
   };
 
   const steerMessageHandler = () => {
-    if (!onSteer || isUploading) return;
+    if (!onSteer || isUploading || isStopping) return;
     const finalMessage = composeAndClear();
     if (finalMessage == null) return;
     setIsLoading(true);
@@ -1388,10 +1390,14 @@ const SendBox: React.FC<{
   };
 
   const stopHandler = async () => {
-    if (!onStop) return;
+    if (!onStop || isStoppingRef.current) return;
+    isStoppingRef.current = true;
+    setIsStopping(true);
     try {
       await onStop();
     } finally {
+      isStoppingRef.current = false;
+      setIsStopping(false);
       setIsLoading(false);
     }
   };
@@ -1497,7 +1503,7 @@ const SendBox: React.FC<{
           className='absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2 z-30'
           data-testid='sendbox-plan-anchor'
         >
-          <PinnedPlan plan={pinnedPlan} />
+          <PinnedPlan plan={pinnedPlan} active={Boolean(loading || isLoading)} />
         </div>
       )}
       <div

@@ -40,12 +40,8 @@ import {
 import type { CreationTask, CreationTaskStatus, WorkshopGeneratorMode, WorkshopGeneratorNodeData } from '../../types';
 import { buildTaskParams } from '../genConstants';
 import type { ModelOption } from '../genTypes';
-import {
-  isLocalZImageModel,
-  normalizeImageParamsForModel,
-  validateLocalZImageRun,
-} from '../localZImage';
 import { buildRunPlan, loadWorkshopText, type RunPlan } from '../pipeline';
+import { succeededArtifactIds } from '../taskArtifacts';
 import { beginLoopRun, endLoopRun, patchLoopProgress, recordLoopRound } from './loopRegistry';
 import { injectCount, LOOP_PARALLEL_LIMIT, LOOP_POLL_INTERVAL_MS, type LoopConfig, type LoopRoundResult } from './loopTypes';
 import type { AssetId, CreationTaskId, WorkshopNodeId } from '@/common/types/ids';
@@ -66,14 +62,11 @@ export interface StartLoopArgs {
   canvasId: import('@/common/types/ids').CanvasId;
   config: LoopConfig;
   model: ModelOption;
-  localZImageInputError: string;
 }
 
 interface RunContext extends StartLoopArgs {
   signal: AbortSignal;
 }
-
-type LoopRoundExecutionResult = LoopRoundResult | 'blocked';
 
 /** Resolve a node's absolute canvas position (accounting for a group parent). */
 function absolutePosition(rf: RF, node: WorkshopFlowNode): { x: number; y: number } {
@@ -165,39 +158,8 @@ async function buildRoundPlan(
   });
 }
 
-function showLocalZImageInputError(ctx: RunContext): void {
-  ctx.rf.updateNodeData(ctx.targetId, {
-    status: 'error',
-    taskId: null,
-    errorMessage: ctx.localZImageInputError,
-  });
-}
-
-/** Preflight every local round before parallel scheduling can create a task. */
-async function localZImageLoopIsBlocked(ctx: RunContext, rounds: number[]): Promise<boolean> {
-  if (!isLocalZImageModel(ctx.model)) return false;
-  const target = ctx.rf.getNode(ctx.targetId);
-  if (!target || target.type !== 'generator') return false;
-  const data = target.data as WorkshopGeneratorNodeData;
-  const mode: WorkshopGeneratorMode = data.mode ?? 'image';
-
-  for (const round of rounds) {
-    try {
-      const plan = await buildRoundPlan(ctx, target, data, mode, round);
-      if (validateLocalZImageRun(ctx.model, plan.capability, plan.inputs)) {
-        showLocalZImageInputError(ctx);
-        return true;
-      }
-    } catch {
-      // The regular round path owns pipeline errors; this pass only prevents
-      // unsupported local-image tasks from being submitted.
-    }
-  }
-  return false;
-}
-
 /** Run a single round end-to-end; returns its terminal result. */
-async function executeRound(ctx: RunContext, round: number): Promise<LoopRoundExecutionResult> {
+async function executeRound(ctx: RunContext, round: number): Promise<LoopRoundResult> {
   const { rf, targetId, canvasId, model, signal } = ctx;
   if (signal.aborted) return 'canceled';
   patchLoopProgress(ctx.loopId, { activeRound: round });
@@ -215,20 +177,13 @@ async function executeRound(ctx: RunContext, round: number): Promise<LoopRoundEx
   }
   if (signal.aborted) return 'canceled';
 
-  if (validateLocalZImageRun(model, plan.capability, plan.inputs)) {
-    showLocalZImageInputError(ctx);
-    return 'blocked';
-  }
-
-  const storedParams = mode === 'image' ? normalizeImageParamsForModel(model, data.params ?? {}) : (data.params ?? {});
-  const params = buildTaskParams(mode, storedParams, plan.prompt);
+  const params = buildTaskParams(mode, data.params ?? {}, plan.prompt);
   let task: CreationTask;
   try {
     task = await createTask({
       canvas_id: canvasId,
       node_id: targetId,
       provider_id: model.providerId,
-      provider_platform: model.platform,
       model: model.model,
       capability: plan.capability,
       params,
@@ -242,22 +197,21 @@ async function executeRound(ctx: RunContext, round: number): Promise<LoopRoundEx
   if (!final) return 'canceled';
   if (final.status !== 'succeeded') return final.status === 'canceled' ? 'canceled' : 'failed';
 
-  const results = final.result_asset_ids ?? [];
-  if (results.length) {
-    if (mode === 'text') {
-      const texts = await Promise.all(results.map((id) => loadWorkshopText(id)));
-      const created = texts
-        .map((text, col) => (text ? placeRoundNode(rf, target, round, col, (pos) => makeTextNode(pos, { content: text })) : null))
-        .filter((n): n is WorkshopFlowNode => n !== null);
-      spawnRoundResults(rf, target, created);
-    } else {
-      const factory = (assetId: AssetId) =>
-        mode === 'video'
-          ? (pos: { x: number; y: number }) => makeVideoNode(pos, { assetId })
-          : (pos: { x: number; y: number }) => makeImageNode(pos, { assetId });
-      const created = results.map((assetId, col) => placeRoundNode(rf, target, round, col, factory(assetId)));
-      spawnRoundResults(rf, target, created);
-    }
+  const results = succeededArtifactIds(final);
+  if (!results) return 'failed';
+  if (mode === 'text') {
+    const texts = await Promise.all(results.map((id) => loadWorkshopText(id)));
+    const created = texts
+      .map((text, col) => (text ? placeRoundNode(rf, target, round, col, (pos) => makeTextNode(pos, { content: text })) : null))
+      .filter((n): n is WorkshopFlowNode => n !== null);
+    spawnRoundResults(rf, target, created);
+  } else {
+    const factory = (assetId: AssetId) =>
+      mode === 'video'
+        ? (pos: { x: number; y: number }) => makeVideoNode(pos, { assetId })
+        : (pos: { x: number; y: number }) => makeImageNode(pos, { assetId });
+    const created = results.map((assetId, col) => placeRoundNode(rf, target, round, col, factory(assetId)));
+    spawnRoundResults(rf, target, created);
   }
   return 'success';
 }
@@ -290,25 +244,18 @@ export function startLoopRun(args: StartLoopArgs): boolean {
   const ctx: RunContext = { ...args, signal };
   void (async () => {
     const rounds = Array.from({ length: ctx.config.count }, (_, i) => i + 1);
-    let blocked = false;
     const runOne = async (round: number): Promise<void> => {
-      if (blocked || ctx.signal.aborted) return;
+      if (ctx.signal.aborted) return;
       const result = await executeRound(ctx, round);
-      if (result === 'blocked') {
-        blocked = true;
-        return;
-      }
       if (result === 'canceled') return;
       recordLoopRound(ctx.loopId, round, result);
     };
     try {
-      blocked = await localZImageLoopIsBlocked(ctx, rounds);
-      if (blocked) return;
       if (ctx.config.loopMode === 'parallel') {
         await runPool(rounds, LOOP_PARALLEL_LIMIT, runOne);
       } else {
         for (const round of rounds) {
-          if (ctx.signal.aborted || blocked) break;
+          if (ctx.signal.aborted) break;
           await runOne(round);
         }
       }

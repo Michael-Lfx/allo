@@ -7,6 +7,7 @@
 import type {
   AcpPermissionRequest,
   PlanUpdate,
+  PersistedToolArtifact,
   ToolCallContentItem,
   ToolCallUpdate,
 } from '@/common/types/platform/acpTypes';
@@ -22,6 +23,10 @@ import {
 } from '../types/ids';
 import { uuid } from '../utils';
 import { optionalDisplayText, toDisplayText } from './displayText';
+import { normalizeToolGroupStatus } from './toolGroupStatus';
+import { isAbsoluteLocalPath, isFileUri } from '../utils/localPath';
+
+export { joinLocalPath as joinPath } from '../utils/localPath';
 
 declare const confirmationCorrelationBrand: unique symbol;
 
@@ -35,46 +40,6 @@ export const parseConfirmationCorrelationId = (value: unknown): ConfirmationCorr
     throw new TypeError('confirmation correlation id must be non-empty canonical text');
   }
   return value as ConfirmationCorrelationId;
-};
-
-/**
- * 安全的路径拼接函数，兼容Windows和Mac
- * @param basePath 基础路径
- * @param relativePath 相对路径
- * @returns 拼接后的绝对路径
- */
-export const joinPath = (basePath: string, relativePath: string): string => {
-  // 标准化路径分隔符为 /
-  const normalizePath = (path: string) => path.replace(/\\/g, '/');
-
-  const base = normalizePath(basePath);
-  const relative = normalizePath(relativePath);
-
-  // 去掉base路径末尾的斜杠
-  const cleanBase = base.replace(/\/+$/, '');
-
-  // 处理相对路径中的 ./ 和 ../
-  const parts = relative.split('/');
-  const resultParts = [];
-
-  for (const part of parts) {
-    if (part === '.' || part === '') {
-      continue; // 跳过 . 和空字符串
-    } else if (part === '..') {
-      // 处理上级目录
-      if (resultParts.length > 0) {
-        resultParts.pop(); // 移除最后一个部分
-      }
-    } else {
-      resultParts.push(part);
-    }
-  }
-
-  // 拼接路径
-  const result = cleanBase + '/' + resultParts.join('/');
-
-  // 确保路径格式正确
-  return result.replace(/\/+/g, '/'); // 将多个连续的斜杠替换为单个
 };
 
 /**
@@ -103,6 +68,10 @@ interface IMessage<T extends TMessageType, Content extends Record<string, any>> 
    * 消息来源ID，— backend messages.id, stays TEXT (`msg_…`).
    */
   msg_id?: MessageId;
+
+  /** Stable backend turn correlation. Message identity and turn identity are
+   * intentionally separate: multiple durable rows belong to one turn. */
+  turn_id?: MessageId;
 
   /** Owning canonical Conversation entity id. */
   conversation_id: ConversationId;
@@ -244,14 +213,50 @@ export type IMessageToolCall = IMessage<
   {
     call_id: string;
     name: string;
-    args: Record<string, any>;
+    /**
+     * Provider arguments when they were decoded as a JSON object. Local
+     * pre-execution validation failures can legitimately persist `null` here
+     * because no valid argument object reached the tool.
+     */
+    args?: Record<string, unknown> | null;
     error?: string;
     status?: 'running' | 'completed' | 'error' | 'canceled';
-    input?: Record<string, any>;
+    input?: Record<string, unknown>;
     output?: string;
     description?: string;
+    /** Verified, durable outputs emitted by the backend. */
+    artifacts?: PersistedToolArtifact[];
+    /** Persisted rows expose receipts only after the enclosing turn commits. */
+    artifact_delivery_committed?: boolean;
   }
 >;
+
+/**
+ * Merge one generic tool lifecycle without allowing stale success to win.
+ * Error is absorbing, but an Error correction is allowed to replace an
+ * earlier Completed frame when the enclosing turn later fails.
+ */
+export const mergeToolCallContent = (
+  existing: IMessageToolCall['content'],
+  incoming: IMessageToolCall['content']
+): IMessageToolCall['content'] => {
+  const merged = { ...existing, ...incoming };
+
+  if (existing.status === 'error' || incoming.status === 'error') {
+    return { ...merged, status: 'error', artifacts: [] };
+  }
+  if (existing.status === 'completed' && incoming.status !== 'completed') {
+    return {
+      ...merged,
+      status: 'completed',
+      artifacts: existing.artifacts ?? [],
+    };
+  }
+  if (merged.status !== 'completed') {
+    merged.artifacts = [];
+  }
+  return merged;
+};
 
 type IMessageToolGroupConfirmationDetailsBase<Type, Extra extends Record<string, any>> = {
   type: Type;
@@ -342,14 +347,30 @@ export type IMessageAcpToolCall = IMessage<'acp_tool_call', ToolCallUpdate>;
 export const mergeAcpToolCallContent = (
   existing: IMessageAcpToolCall['content'],
   incoming: IMessageAcpToolCall['content']
-): IMessageAcpToolCall['content'] => ({
-  ...existing,
-  ...incoming,
-  update: {
+): IMessageAcpToolCall['content'] => {
+  const update = {
     ...existing.update,
     ...incoming.update,
-  },
-});
+  };
+
+  // Tool failure is terminal in ACP. Besides protecting artifact-delivery
+  // failures, this prevents a malformed late partial update from repainting a
+  // failed call as completed in recovered/live renderer state.
+  if (existing.update.status === 'failed' || incoming.update.status === 'failed') {
+    update.status = 'failed';
+    if (update.content) {
+      update.content = update.content.filter(
+        (item) => item.type !== 'artifact' && item.type !== 'resource_link'
+      );
+    }
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    update,
+  };
+};
 
 type ResponseTextData = {
   content: unknown;
@@ -718,20 +739,6 @@ const normalizeThinkingStatus = (value: unknown): IMessageThinking['content']['s
 const finiteNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
-const normalizeToolGroupStatus = (value: unknown): IMessageToolGroup['content'][number]['status'] => {
-  switch (value) {
-    case 'Success':
-    case 'Error':
-    case 'Canceled':
-    case 'Pending':
-    case 'Confirming':
-    case 'Executing':
-      return value;
-    default:
-      return 'Executing';
-  }
-};
-
 const normalizeToolGroupResultDisplay = (
   value: unknown
 ): IMessageToolGroup['content'][number]['result_display'] | undefined => {
@@ -800,7 +807,10 @@ const normalizeToolGroupConfirmationDetails = (
   return undefined;
 };
 
-const normalizeToolGroupContent = (value: unknown): IMessageToolGroup['content'] => {
+const LEGACY_TOOL_GROUP_ARTIFACT_ERROR =
+  'Legacy image result was not backed by a committed artifact receipt';
+
+export const normalizeToolGroupContent = (value: unknown): IMessageToolGroup['content'] => {
   if (!Array.isArray(value)) return [];
 
   return value
@@ -808,14 +818,31 @@ const normalizeToolGroupContent = (value: unknown): IMessageToolGroup['content']
     .map((item) => {
       const resultDisplay = normalizeToolGroupResultDisplay(item.result_display);
       const confirmationDetails = normalizeToolGroupConfirmationDetails(item.confirmationDetails);
+      const status = normalizeToolGroupStatus(item.status);
+      const description = toDisplayText(item.description);
+      // ToolGroupEntry has no receipt or 2PC-marker fields. Historical
+      // `result_display.img_url` therefore cannot prove delivery and must be
+      // downgraded at message admission, before process summaries can render a
+      // green state. Verified outputs use the detailed ToolCall/ACP carriers.
+      const unverifiedLegacyImage =
+        isObject(resultDisplay) &&
+        'img_url' in resultDisplay &&
+        Boolean(optionalDisplayText(resultDisplay.img_url));
       return {
         call_id: optionalDisplayText(item.call_id) ?? optionalDisplayText(item.id) ?? uuid(),
-        description: toDisplayText(item.description),
+        description:
+          unverifiedLegacyImage && status === 'Success'
+            ? description
+              ? `${description}: ${LEGACY_TOOL_GROUP_ARTIFACT_ERROR}`
+              : LEGACY_TOOL_GROUP_ARTIFACT_ERROR
+            : description,
         name: toDisplayText(item.name, 'Tool'),
         render_output_as_markdown:
           typeof item.render_output_as_markdown === 'boolean' ? item.render_output_as_markdown : false,
-        status: normalizeToolGroupStatus(item.status),
-        ...(resultDisplay !== undefined ? { result_display: resultDisplay } : {}),
+        status: unverifiedLegacyImage && status === 'Success' ? 'Error' : status,
+        ...(!unverifiedLegacyImage && resultDisplay !== undefined
+          ? { result_display: resultDisplay }
+          : {}),
         ...(confirmationDetails ? { confirmationDetails } : {}),
       };
     });
@@ -891,38 +918,244 @@ const normalizeAcpPermissionContent = (value: unknown): AcpPermissionRequest => 
   };
 };
 
-const normalizeAcpToolCallContent = (value: unknown): IMessageAcpToolCall['content'] => {
+const TOOL_ARTIFACT_KINDS = new Set<PersistedToolArtifact['kind']>([
+  'image',
+  'audio',
+  'video',
+  'text',
+  'file',
+]);
+const SHA256_RE = /^[a-f\d]{64}$/i;
+const URI_SCHEME_RE = /^[A-Za-z][A-Za-z\d+.-]*:/;
+const MAX_DURABLE_RESOURCE_URI_LENGTH = 8 * 1024;
+const UNSAFE_OR_TRANSIENT_RESOURCE_SCHEMES = new Set(['data:', 'blob:', 'javascript:', 'about:', 'file:']);
+
+const normalizeDurableResourceUri = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const uri = value.trim();
+  if (!uri || uri.length > MAX_DURABLE_RESOURCE_URI_LENGTH) return undefined;
+  try {
+    const parsed = new URL(uri);
+    if (UNSAFE_OR_TRANSIENT_RESOURCE_SCHEMES.has(parsed.protocol.toLowerCase())) return undefined;
+    return uri;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Reject malformed or non-canonical receipt metadata before it reaches UI. */
+const normalizePersistedToolArtifact = (value: unknown): PersistedToolArtifact | undefined => {
+  if (!isObject(value)) return undefined;
+  const id = optionalDisplayText(value.id);
+  const kind = optionalDisplayText(value.kind) as PersistedToolArtifact['kind'] | undefined;
+  const mimeType = optionalDisplayText(value.mime_type);
+  const artifactPath = optionalDisplayText(value.path);
+  const relativePath = optionalDisplayText(value.relative_path);
+  const sizeBytes = value.size_bytes;
+  const sha256 = optionalDisplayText(value.sha256);
+
+  if (
+    !id ||
+    !kind ||
+    !TOOL_ARTIFACT_KINDS.has(kind) ||
+    !mimeType ||
+    !mimeType.includes('/') ||
+    !artifactPath ||
+    !isAbsoluteLocalPath(artifactPath) ||
+    !relativePath ||
+    isAbsoluteLocalPath(relativePath) ||
+    isFileUri(relativePath) ||
+    URI_SCHEME_RE.test(relativePath) ||
+    relativePath.split(/[\\/]+/).some((part) => part === '..') ||
+    typeof sizeBytes !== 'number' ||
+    !Number.isSafeInteger(sizeBytes) ||
+    sizeBytes <= 0 ||
+    !sha256 ||
+    !SHA256_RE.test(sha256)
+  ) {
+    return undefined;
+  }
+
+  return {
+    id,
+    kind,
+    mime_type: mimeType,
+    path: artifactPath,
+    relative_path: relativePath,
+    size_bytes: sizeBytes,
+    sha256: sha256.toLowerCase(),
+  };
+};
+
+export const normalizeToolCallContent = (
+  value: unknown,
+  persistedStatus?: unknown
+): IMessageToolCall['content'] => {
+  const data = isObject(value) ? value : {};
+  const rawStatus =
+    data.status === 'running' || data.status === 'completed' || data.status === 'error'
+      ? data.status
+      : undefined;
+  let status = rawStatus;
+  if (persistedStatus === 'error') {
+    status = 'error';
+  } else if (persistedStatus !== undefined && persistedStatus !== 'finish' && status === 'completed') {
+    status = 'running';
+  }
+
+  const terminalSuccess = status === 'completed' && (persistedStatus === undefined || persistedStatus === 'finish');
+  const hasArtifactClaim = Object.prototype.hasOwnProperty.call(data, 'artifacts');
+  const rawArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+  const deliveryCommitted = persistedStatus === undefined || data.artifact_delivery_committed === true;
+  const committedTerminalSuccess = terminalSuccess && deliveryCommitted;
+  const artifacts = committedTerminalSuccess
+    ? rawArtifacts
+        .map(normalizePersistedToolArtifact)
+        .filter((artifact): artifact is PersistedToolArtifact => artifact !== undefined)
+    : [];
+  const invalidTerminalClaim =
+    terminalSuccess &&
+    hasArtifactClaim &&
+    (!Array.isArray(data.artifacts) ||
+      (rawArtifacts.length > 0 && !deliveryCommitted) ||
+      artifacts.length !== rawArtifacts.length);
+  if (invalidTerminalClaim) {
+    status = 'error';
+  }
+
+  return {
+    ...data,
+    ...(status ? { status } : {}),
+    artifacts: invalidTerminalClaim ? [] : artifacts,
+  } as IMessageToolCall['content'];
+};
+
+export const normalizeAcpToolCallContent = (
+  value: unknown,
+  persistedStatus?: unknown
+): IMessageAcpToolCall['content'] => {
   if (!isObject(value)) return value as IMessageAcpToolCall['content'];
   const update = isObject(value.update) ? value.update : undefined;
   if (!update) return value as unknown as IMessageAcpToolCall['content'];
+  let effectiveStatus =
+    update.status === 'pending' ||
+    update.status === 'in_progress' ||
+    update.status === 'completed' ||
+    update.status === 'failed'
+      ? update.status
+      : undefined;
+  if (persistedStatus === 'error') {
+    effectiveStatus = 'failed';
+  } else if (
+    persistedStatus !== undefined &&
+    persistedStatus !== 'finish' &&
+    effectiveStatus === 'completed'
+  ) {
+    effectiveStatus = 'in_progress';
+  }
+  const terminalSuccess =
+    effectiveStatus === 'completed' && (persistedStatus === undefined || persistedStatus === 'finish');
+  const deliveryCommitted = persistedStatus === undefined || value.artifact_delivery_committed === true;
+  const committedTerminalSuccess = terminalSuccess && deliveryCommitted;
+  let invalidArtifactClaim = false;
   const content = Array.isArray(update.content)
-    ? update.content.filter(isObject).map((item): ToolCallContentItem => {
-        const normalized: ToolCallContentItem = {
-          ...(item as unknown as ToolCallContentItem),
-          type: item.type === 'diff' ? 'diff' : 'content',
-          ...(item.path != null ? { path: toDisplayText(item.path) } : {}),
-          ...(item.old_text != null ? { old_text: toDisplayText(item.old_text) } : {}),
-          ...(item.new_text != null ? { new_text: toDisplayText(item.new_text) } : {}),
-        };
-        if (isObject(item.content)) {
-          normalized.content = {
-            type: 'text',
-            text: toDisplayText(item.content.text),
-          };
+    ? update.content
+      .filter(isObject)
+      .map((item): ToolCallContentItem | undefined => {
+        switch (item.type) {
+          case 'diff':
+            return {
+              type: 'diff',
+              path: toDisplayText(item.path),
+              ...(item.old_text != null ? { old_text: toDisplayText(item.old_text) } : {}),
+              new_text: toDisplayText(item.new_text),
+            };
+          case 'artifact': {
+            if (!terminalSuccess) return undefined;
+            if (!committedTerminalSuccess) {
+              invalidArtifactClaim = true;
+              return { type: 'artifact_error', message: 'Uncommitted artifact delivery' };
+            }
+            const artifact = normalizePersistedToolArtifact(item.artifact);
+            if (!artifact) {
+              invalidArtifactClaim = true;
+              return { type: 'artifact_error', message: 'Invalid or incomplete artifact receipt' };
+            }
+            return {
+              type: 'artifact',
+              artifact,
+              ...(item.source_uri != null ? { source_uri: toDisplayText(item.source_uri) } : {}),
+            };
+          }
+          case 'resource_link': {
+            if (!terminalSuccess) return undefined;
+            if (!committedTerminalSuccess) {
+              invalidArtifactClaim = true;
+              return { type: 'artifact_error', message: 'Uncommitted artifact delivery' };
+            }
+            const uri = normalizeDurableResourceUri(item.uri);
+            if (!uri) {
+              invalidArtifactClaim = true;
+              return { type: 'artifact_error', message: 'Invalid or unsafe resource link' };
+            }
+            return {
+              type: 'resource_link',
+              name: toDisplayText(item.name),
+              uri,
+              ...(item.title != null ? { title: toDisplayText(item.title) } : {}),
+              ...(item.description != null ? { description: toDisplayText(item.description) } : {}),
+              ...(item.mime_type != null ? { mime_type: toDisplayText(item.mime_type) } : {}),
+              ...(typeof item.size_bytes === 'number' && Number.isFinite(item.size_bytes)
+                ? { size_bytes: Math.max(0, item.size_bytes) }
+                : {}),
+            };
+          }
+          case 'terminal':
+            return { type: 'terminal', terminal_id: toDisplayText(item.terminal_id) };
+          case 'artifact_error':
+            return { type: 'artifact_error', message: toDisplayText(item.message) };
+          case 'content':
+          default:
+            return {
+              type: 'content',
+              content: {
+                type: 'text',
+                text: isObject(item.content) ? toDisplayText(item.content.text) : toDisplayText(item.content),
+              },
+            };
         }
-        return normalized;
       })
+      .filter((item): item is ToolCallContentItem => item !== undefined)
     : undefined;
+
+  if (invalidArtifactClaim) {
+    effectiveStatus = 'failed';
+  }
+  const safeContent = invalidArtifactClaim
+    ? content?.filter((item) => item.type !== 'artifact' && item.type !== 'resource_link')
+    : content;
+
+  const {
+    status: _status,
+    title: _title,
+    kind: _kind,
+    content: _content,
+    ...partialUpdate
+  } = update;
 
   return ({
     ...value,
     update: {
-      ...update,
+      ...partialUpdate,
       tool_call_id: toDisplayText(update.tool_call_id),
-      status: toDisplayText(update.status, 'pending') as IMessageAcpToolCall['content']['update']['status'],
-      title: toDisplayText(update.title, 'Tool'),
-      kind: toDisplayText(update.kind, 'execute') as IMessageAcpToolCall['content']['update']['kind'],
-      ...(content ? { content } : {}),
+      ...(effectiveStatus != null
+        ? { status: effectiveStatus as IMessageAcpToolCall['content']['update']['status'] }
+        : {}),
+      ...(update.title != null ? { title: toDisplayText(update.title) } : {}),
+      ...(update.kind != null
+        ? { kind: toDisplayText(update.kind) as IMessageAcpToolCall['content']['update']['kind'] }
+        : {}),
+      ...(safeContent ? { content: safeContent } : {}),
     },
   } as unknown) as IMessageAcpToolCall['content'];
 };
@@ -956,6 +1189,7 @@ const normalizeAgentStatusContent = (value: unknown): IMessageAgentStatus['conte
  * */
 export const transformMessage = (message: IResponseMessage): TMessage | undefined => {
   const created_at = message.created_at ?? Date.now();
+  const turnIdentity = message.turn_id ? { turn_id: message.turn_id } : {};
   switch (message.type) {
     case 'error': {
       const errorData = message.data;
@@ -963,9 +1197,10 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       const errorText =
         (isObject(errorData) ? optionalDisplayText(errorData.message) : undefined) ?? toDisplayText(errorData);
       return {
-        id: uuid(),
+        id: message.msg_id,
         type: 'tips',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'center',
         conversation_id: message.conversation_id,
         created_at,
@@ -985,9 +1220,10 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
           ? (normalizeAgentStreamError(data.error) ?? normalizeAgentStreamError({ ...data, message: content }))
           : undefined;
       return {
-        id: uuid(),
+        id: message.msg_id,
         type: 'tips',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'center',
         conversation_id: message.conversation_id,
         created_at,
@@ -1009,6 +1245,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'text',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: message.type === 'user_content' ? 'right' : 'left',
         conversation_id: message.conversation_id,
         created_at,
@@ -1028,14 +1265,16 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       };
     }
     case 'tool_call': {
+      const data = isObject(message.data) ? message.data : {};
       return {
         id: uuid(),
         type: 'tool_call',
         msg_id: message.msg_id,
+        ...turnIdentity,
         conversation_id: message.conversation_id,
         position: 'left',
         created_at,
-        content: message.data as any,
+        content: normalizeToolCallContent(data),
       };
     }
     case 'tool_group': {
@@ -1043,6 +1282,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         type: 'tool_group',
         id: uuid(),
         msg_id: message.msg_id,
+        ...turnIdentity,
         conversation_id: message.conversation_id,
         created_at,
         content: normalizeToolGroupContent(message.data),
@@ -1053,6 +1293,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'agent_status',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'center',
         conversation_id: message.conversation_id,
         created_at,
@@ -1064,6 +1305,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'permission',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'left',
         conversation_id: message.conversation_id,
         created_at,
@@ -1075,6 +1317,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'acp_permission',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'left',
         conversation_id: message.conversation_id,
         created_at,
@@ -1086,6 +1329,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'acp_tool_call',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'left',
         conversation_id: message.conversation_id,
         created_at,
@@ -1097,9 +1341,11 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'plan',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'left',
         conversation_id: message.conversation_id,
         created_at,
+        status: message.status,
         content: message.data as any,
       };
     }
@@ -1110,6 +1356,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         id: uuid(),
         type: 'thinking',
         msg_id: message.msg_id,
+        ...turnIdentity,
         position: 'left',
         conversation_id: message.conversation_id,
         created_at,
@@ -1240,7 +1487,20 @@ export const composeMessage = (
         didMergeIntoThisMessage = true;
         remainingToolsMap.delete(tool.call_id);
         // Create new object instead of mutating original
-        return { ...tool, ...newToolData };
+        const merged = { ...tool, ...newToolData };
+        const existingTerminal = ['Success', 'Error', 'Canceled'].includes(tool.status);
+        if (existingTerminal) {
+          return tool;
+        }
+        if (
+          ['Success', 'Error', 'Canceled'].includes(newToolData.status) &&
+          !Object.prototype.hasOwnProperty.call(newToolData, 'result_display')
+        ) {
+          // A provisional result retained from Executing is not proof of a
+          // terminal output. The terminal frame must carry it explicitly.
+          merged.result_display = undefined;
+        }
+        return merged;
       });
 
       if (!didMergeIntoThisMessage) return existingMessage;
@@ -1276,8 +1536,8 @@ export const composeMessage = (
         msg.msg_id === message.msg_id &&
         msg.content.call_id === message.content.call_id
       ) {
-        // Create new object instead of mutating original
-        return updateMessage(i, { ...msg, ...message, content: { ...msg.content, ...message.content } });
+        const content = mergeToolCallContent(msg.content, message.content);
+        return updateMessage(i, { ...msg, ...message, content });
       }
     }
     // If no existing tool call found, add new one

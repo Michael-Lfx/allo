@@ -96,7 +96,7 @@ const profileKey = (providerId: ProviderId, model: string): string => JSON.strin
 /**
  * Index profiles by (providerId, model). Precedence when duplicates:
  * user > catalog > inferred. User and catalog both override the name heuristic.
- * Inferred is indexed too so it can override heuristic when present.
+ * Inferred alone does not override the legacy name heuristic.
  */
 const sourceRank = (source: ProfileSource | undefined): number => {
   switch (source) {

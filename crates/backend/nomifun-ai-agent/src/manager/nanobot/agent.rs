@@ -8,10 +8,10 @@ use tracing::{debug, error, info, warn};
 
 use nomifun_common::CommandSpec;
 
-use crate::runtime_state::AgentRuntimeState;
+use crate::runtime_state::{AgentRuntimeState, AgentRuntimeTurn};
 use crate::capability::cli_process::CliAgentProcess;
 use crate::manager::process_registry::register_session_process;
-use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::events::{AgentStreamEvent, TurnStopReason};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::SendMessageData;
 use std::path::PathBuf;
@@ -22,6 +22,23 @@ const NANOBOT_KILL_GRACE_MS: u64 = 500;
 /// Internal mutable state for the Nanobot agent.
 struct NanobotState {
     has_messages: bool,
+    runtime_turn: Option<AgentRuntimeTurn>,
+}
+
+/// Nanobot's raw event protocol has no run/message identity on terminal
+/// frames. After cancellation the process therefore cannot be safely reused:
+/// a delayed Finish from the cancelled request would be indistinguishable
+/// from the next request's Finish. Detach the token and quarantine this
+/// transport so the registry rebuilds the manager for the next turn.
+fn quarantine_cancelled_turn(
+    runtime: &AgentRuntimeState,
+    state: &mut NanobotState,
+) -> Option<AgentRuntimeTurn> {
+    let turn = state.runtime_turn.take();
+    if turn.is_some() {
+        runtime.mark_transport_broken();
+    }
+    turn
 }
 
 /// Manages a Nanobot CLI agent subprocess.
@@ -66,7 +83,10 @@ impl NanobotAgentManager {
         Ok(Self {
             runtime,
             process,
-            state: RwLock::new(NanobotState { has_messages: false }),
+            state: RwLock::new(NanobotState {
+                has_messages: false,
+                runtime_turn: None,
+            }),
             raw_rx: Mutex::new(Some(raw_rx)),
         })
     }
@@ -104,7 +124,26 @@ impl NanobotAgentManager {
         };
 
         loop {
-            match raw_rx.recv().await {
+            let raw_event = tokio::select! {
+                event = raw_rx.recv() => Some(event),
+                status = self.process.wait_for_exit() => {
+                    if self.runtime.status() == Some(ConversationStatus::Running) {
+                        let detail = status
+                            .map(|status| format!(" ({status})"))
+                            .unwrap_or_default();
+                        self.runtime.emit_stream_broken(format!(
+                            "Nanobot process exited before the turn completed{detail}"
+                        ));
+                    } else {
+                        self.runtime.mark_transport_broken();
+                    }
+                    None
+                }
+            };
+            let Some(raw_event) = raw_event else {
+                break;
+            };
+            match raw_event {
                 Ok(raw_json) => {
                     self.runtime.bump_activity();
                     self.handle_raw_event(raw_json).await;
@@ -115,22 +154,28 @@ impl NanobotAgentManager {
                         lagged = n,
                         "Nanobot event relay lagged"
                     );
+                    self.runtime.emit_stream_broken(format!(
+                        "Nanobot event relay lost {n} buffered event(s)"
+                    ));
+                    break;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     debug!(
                         conversation_id = %self.runtime.conversation_id(),
                         "Nanobot CLI event channel closed"
                     );
+                    if self.runtime.status() == Some(ConversationStatus::Running) {
+                        self.runtime.emit_stream_broken(
+                            "Nanobot event channel closed before the turn completed",
+                        );
+                    } else {
+                        self.runtime.mark_transport_broken();
+                    }
                     break;
                 }
             }
         }
 
-        // Channel closed without a Finish/Error event from the subprocess;
-        // ensure the status reaches a terminal state.
-        if self.runtime.status() == Some(ConversationStatus::Running) {
-            self.runtime.transition_to(ConversationStatus::Finished);
-        }
     }
 
     async fn handle_raw_event(&self, raw: Value) {
@@ -145,19 +190,25 @@ impl NanobotAgentManager {
             }
         };
 
-        self.update_state_from_event(&stream_event);
-        self.runtime.emit(stream_event);
-    }
-
-    fn update_state_from_event(&self, event: &AgentStreamEvent) {
-        match event {
-            AgentStreamEvent::Start(_) => {
+        match stream_event {
+            event @ AgentStreamEvent::Start(_) => {
                 self.runtime.transition_to(ConversationStatus::Running);
+                self.runtime.emit(event);
             }
-            AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => {
-                self.runtime.transition_to(ConversationStatus::Finished);
+            AgentStreamEvent::Finish(data) => {
+                let runtime_turn = self.state.write().await.runtime_turn.take();
+                if let Some(runtime_turn) = runtime_turn {
+                    self.runtime
+                        .emit_finish_for_turn(runtime_turn, data.session_id, data.stop_reason);
+                }
             }
-            _ => {}
+            AgentStreamEvent::Error(data) => {
+                let runtime_turn = self.state.write().await.runtime_turn.take();
+                if let Some(runtime_turn) = runtime_turn {
+                    self.runtime.emit_error_data_for_turn(runtime_turn, data);
+                }
+            }
+            event => self.runtime.emit(event),
         }
     }
 }
@@ -180,6 +231,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NanobotAgentManager {
         self.runtime.status()
     }
 
+    fn is_transport_healthy(&self) -> bool {
+        self.runtime.is_transport_healthy()
+    }
+
     fn last_activity_at(&self) -> TimestampMs {
         self.runtime.last_activity_at()
     }
@@ -190,12 +245,26 @@ impl crate::runtime_handle::AgentRuntimeControl for NanobotAgentManager {
 
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.bump_activity();
+        if !self.runtime.is_transport_healthy() {
+            return Err(AgentSendError::stream_broken(
+                "Nanobot's process/event relay is no longer running",
+            ));
+        }
 
+        let runtime_turn = self.runtime.reset_for_new_turn(ConversationStatus::Running);
         {
             let mut state = self.state.write().await;
             state.has_messages = true;
+            state.runtime_turn = Some(runtime_turn);
         }
-        self.runtime.transition_to(ConversationStatus::Running);
+        if !self.runtime.is_transport_healthy() {
+            let error = AgentSendError::stream_broken(
+                "Nanobot's process/event relay stopped during turn admission",
+            );
+            self.runtime
+                .emit_error_data_for_turn(runtime_turn, error.stream_error().clone());
+            return Err(error);
+        }
 
         // Nanobot uses fire-and-forget: send the message, CLI blocks until complete
         let payload = json!({
@@ -209,21 +278,32 @@ impl crate::runtime_handle::AgentRuntimeControl for NanobotAgentManager {
         match self.process.send(&payload).await {
             Ok(()) => Ok(()),
             Err(err) => {
+                self.state.write().await.runtime_turn = None;
                 error!(
                     conversation_id = %self.runtime.conversation_id(),
                     error = %ErrorChain(&err),
                     "Nanobot send_message failed, emitting Error"
                 );
                 let send_error = AgentSendError::from_app_error(err);
-                self.runtime.emit_error_data(send_error.stream_error().clone());
+                self.runtime
+                    .emit_error_data_for_turn(runtime_turn, send_error.stream_error().clone());
                 Err(send_error)
             }
         }
     }
 
     async fn cancel(&self) -> Result<(), AppError> {
+        let runtime_turn = {
+            let mut state = self.state.write().await;
+            quarantine_cancelled_turn(&self.runtime, &mut state)
+        };
         let payload = json!({ "type": "stop.stream", "data": {} });
-        self.process.send(&payload).await
+        let stop_result = self.process.send(&payload).await;
+        if let Some(runtime_turn) = runtime_turn {
+            self.runtime
+                .emit_finish_for_turn(runtime_turn, None, Some(TurnStopReason::Cancelled));
+        }
+        stop_result
     }
 
     fn kill(&self, reason: Option<AgentKillReason>) -> Result<(), AppError> {
@@ -240,6 +320,17 @@ impl crate::runtime_handle::AgentRuntimeControl for NanobotAgentManager {
                 error!(error = %ErrorChain(&e), "Failed to kill Nanobot process");
             }
         });
+
+        if reason == Some(AgentKillReason::UserCancelled) {
+            if let Ok(state) = self.state.try_read()
+                && let Some(runtime_turn) = state.runtime_turn
+            {
+                self.runtime
+                    .emit_finish_for_turn(runtime_turn, None, Some(TurnStopReason::Cancelled));
+            }
+        } else if self.runtime.status() == Some(ConversationStatus::Running) {
+            self.runtime.emit_error(format!("Nanobot agent was terminated ({reason:?})"));
+        }
 
         Ok(())
     }
@@ -288,5 +379,23 @@ mod tests {
         assert_eq!(config.cwd, Some("/project".into()));
         assert!(config.args.is_empty());
         assert!(config.env.is_empty());
+    }
+
+    #[test]
+    fn cancelled_turn_is_detached_and_transport_is_quarantined() {
+        let runtime = AgentRuntimeState::new("nanobot-cancel", "/workspace", 8);
+        let turn = runtime.reset_for_new_turn(ConversationStatus::Running);
+        let mut state = NanobotState {
+            has_messages: true,
+            runtime_turn: Some(turn),
+        };
+
+        assert_eq!(quarantine_cancelled_turn(&runtime, &mut state), Some(turn));
+        assert_eq!(state.runtime_turn, None);
+        assert!(!runtime.is_transport_healthy());
+
+        // A delayed uncorrelated CLI terminal now has no token to consume;
+        // the registry will replace this unhealthy manager before another send.
+        assert_eq!(state.runtime_turn.take(), None);
     }
 }

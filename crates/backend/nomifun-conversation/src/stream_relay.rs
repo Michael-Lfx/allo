@@ -1,21 +1,30 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use nomifun_ai_agent::{
     AgentSendError, AgentStreamEvent,
+    artifact_store::ArtifactStore,
     protocol::events::{
-        PlanEventData, ThinkingEventData,
-        tool_call::{AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData, ToolCallStatus, should_supersede_preview},
+        FinishEventData, PlanEventData, ThinkingEventData, TurnStopReason,
+        tool_call::{
+            AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData,
+            ToolCallStatus, should_supersede_preview, validate_artifact_receipt_integrity,
+            validate_completed_artifact_contract,
+        },
     },
 };
 
 use crate::response_middleware::{ICronService, MessageMiddleware, MiddlewareResult};
-use crate::runtime_state::ConversationRuntimeStateService;
+use crate::runtime_state::{AgentTurnCancellation, ConversationRuntimeStateService};
 use nomifun_api_types::{AgentErrorCode, ConversationRuntimeSummary, WebSocketMessage};
 use nomifun_common::{CompanionId, ErrorChain, MessageId, normalize_keys_to_snake_case, now_ms};
 
 use crate::service::ConversationService;
-use nomifun_db::{DbError, IConversationRepository, MessageRowUpdate};
+use nomifun_db::{DbError, IConversationRepository, MessageRowUpdate, TurnArtifactMessageCommit};
 use nomifun_db::models::MessageRow;
 use nomifun_realtime::UserEventSink;
 use serde_json::{Value, json};
@@ -24,6 +33,223 @@ use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
 const FLUSH_INTERVAL: u32 = 20;
+const TURN_COMPLETION_PERSIST_GRACE: Duration = Duration::from_secs(1);
+const TERMINAL_FINALIZATION_GRACE: Duration = Duration::from_secs(5);
+const ARTIFACT_COMMIT_GRACE: Duration = Duration::from_secs(5);
+const EVENT_SIDE_EFFECT_GRACE: Duration = Duration::from_secs(1);
+const MAX_TERMINAL_ACTIVE_ITEMS: usize = 256;
+const ARTIFACT_DELIVERY_COMMITTED_FIELD: &str = "artifact_delivery_committed";
+const ARTIFACT_DELIVERY_PENDING_OUTPUT: &str =
+    "Artifact delivery is pending final turn validation";
+
+fn track_bounded<V>(map: &mut HashMap<String, V>, key: String, value: V, kind: &'static str) -> bool {
+    if map.contains_key(&key) || map.len() < MAX_TERMINAL_ACTIVE_ITEMS {
+        map.insert(key, value);
+        true
+    } else {
+        warn!(kind, max = MAX_TERMINAL_ACTIVE_ITEMS, "Relay terminal tracking limit reached");
+        false
+    }
+}
+
+fn remember_bounded(set: &mut HashSet<String>, value: String, kind: &'static str) -> bool {
+    if set.contains(&value) || set.len() < MAX_TERMINAL_ACTIVE_ITEMS {
+        set.insert(value);
+        true
+    } else {
+        warn!(kind, max = MAX_TERMINAL_ACTIVE_ITEMS, "Relay terminal deduplication limit reached");
+        false
+    }
+}
+
+/// Apply the normalized ToolCall artifact contract to an externally-produced
+/// ACP update. Only locally verified `Artifact` receipts count; a remote
+/// ResourceLink is a locator, not proof that a requested image/export exists.
+fn validate_completed_acp_artifact_contract(
+    data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+) -> Result<(), String> {
+    if data.update.status != Some(AcpToolCallStatus::Completed) {
+        return Ok(());
+    }
+    let artifacts = data
+        .update
+        .content
+        .iter()
+        .flatten()
+        .filter_map(|item| match item {
+            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact {
+                artifact,
+                ..
+            } => Some(artifact.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    validate_artifact_receipt_integrity("ACP artifact delivery", &artifacts)
+        .map_err(|error| format!("ACP {error}"))?;
+    const IDENTITY_KEYS: &[&str] = &[
+        "tool",
+        "tool_name",
+        "toolName",
+        "name",
+        "operation",
+        "operation_name",
+        "operationName",
+    ];
+    let mut identities = data.update.title.iter().map(String::as_str).collect::<Vec<_>>();
+    for value in [&data.update.raw_input, &data.update.raw_output]
+        .into_iter()
+        .filter_map(Option::as_ref)
+    {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        identities.extend(
+            IDENTITY_KEYS
+                .iter()
+                .filter_map(|key| object.get(*key).and_then(Value::as_str)),
+        );
+    }
+    identities.sort_unstable();
+    identities.dedup();
+
+    for name in identities {
+        validate_completed_artifact_contract(&ToolCallEventData {
+            call_id: data.update.tool_call_id.clone(),
+            name: name.to_owned(),
+            args: data.update.raw_input.clone().unwrap_or(Value::Null),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: None,
+            description: None,
+            artifacts: artifacts.clone(),
+        })
+        .map_err(|error| format!("ACP {error}"))?;
+    }
+    Ok(())
+}
+
+/// Materialize a provider's sparse ACP update against the latest lifecycle
+/// snapshot before validating or persisting it. ACP `ToolCallUpdate` fields are
+/// optional and prompt-boundary completion synthesis intentionally carries only
+/// the call id, terminal status and verified receipts. Committing that sparse
+/// frame directly would discard the tool identity/input that established the
+/// artifact contract.
+fn effective_acp_tool_call_projection(
+    active: Option<&nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData>,
+    incoming: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+) -> nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData {
+    let Some(active) = active else {
+        return incoming.clone();
+    };
+    let mut effective = incoming.clone();
+    if effective.session_id.trim().is_empty() {
+        effective.session_id.clone_from(&active.session_id);
+    }
+    if effective.update.status.is_none() {
+        effective.update.status = active.update.status;
+    }
+    if effective.update.title.is_none() {
+        effective.update.title.clone_from(&active.update.title);
+    }
+    if effective.update.kind.is_none() {
+        effective.update.kind = active.update.kind;
+    }
+    if effective.update.raw_input.is_none() {
+        effective.update.raw_input.clone_from(&active.update.raw_input);
+    }
+    if effective.update.raw_output.is_none() {
+        effective.update.raw_output.clone_from(&active.update.raw_output);
+    }
+    if effective.update.content.is_none() {
+        effective.update.content.clone_from(&active.update.content);
+    } else if effective.update.status == Some(AcpToolCallStatus::Completed) {
+        // A synthesized completion carries an authoritative delivery receipt
+        // list but no narration/diff/terminal blocks. Retain those non-delivery
+        // blocks from the active snapshot while replacing (rather than
+        // duplicating) provisional artifact/resource locators.
+        let mut merged = active
+            .update
+            .content
+            .iter()
+            .flatten()
+            .filter(|item| {
+                !matches!(
+                    item,
+                    nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                        | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut seen = merged
+            .iter()
+            .filter_map(|item| serde_json::to_string(item).ok())
+            .collect::<HashSet<_>>();
+        for item in incoming.update.content.iter().flatten() {
+            let duplicate = serde_json::to_string(item)
+                .ok()
+                .is_some_and(|encoded| !seen.insert(encoded));
+            if !duplicate {
+                merged.push(item.clone());
+            }
+        }
+        effective.update.content = Some(merged);
+    }
+    if effective.update.locations.is_none() {
+        effective.update.locations.clone_from(&active.update.locations);
+    }
+    if effective.meta.is_none() {
+        effective.meta.clone_from(&active.meta);
+    }
+    effective
+}
+
+/// ToolGroup is a legacy summary event and has no artifact receipt field. A
+/// Completed high-signal generator/exporter entry therefore cannot establish
+/// delivery and must be corrected to Error before the enclosing Finish.
+fn tool_group_artifact_contract_errors(
+    entries: &[nomifun_ai_agent::protocol::events::tool_call::ToolGroupEntry],
+    completed_artifact_tool_calls: &HashMap<String, ToolCallEventData>,
+) -> Vec<(usize, String)> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let paired_delivery = completed_artifact_tool_calls.get(&entry.call_id);
+            let result = validate_completed_artifact_contract(&ToolCallEventData {
+                call_id: entry.call_id.clone(),
+                name: entry.name.clone(),
+                args: paired_delivery
+                    .map(|delivery| delivery.args.clone())
+                    .unwrap_or(Value::Null),
+                status: entry.status,
+                input: None,
+                output: None,
+                description: entry.description.clone(),
+                artifacts: paired_delivery
+                    .map(|delivery| delivery.artifacts.clone())
+                    .unwrap_or_default(),
+            });
+            result.err().map(|error| (index, error))
+        })
+        .collect()
+}
+
+fn tool_group_entry_has_artifact_contract(
+    entry: &nomifun_ai_agent::protocol::events::tool_call::ToolGroupEntry,
+) -> bool {
+    validate_completed_artifact_contract(&ToolCallEventData {
+        call_id: entry.call_id.clone(),
+        name: entry.name.clone(),
+        args: Value::Null,
+        status: ToolCallStatus::Completed,
+        input: None,
+        output: None,
+        description: entry.description.clone(),
+        artifacts: Vec::new(),
+    })
+    .is_err()
+}
 
 #[derive(Debug, Clone)]
 struct TextSegmentState {
@@ -51,6 +277,10 @@ struct ThinkingSegmentState {
 pub struct RelayOutcome {
     pub system_responses: Vec<String>,
     pub terminal: RelayTerminal,
+    /// Normalized terminal reason carried by Finish. `Cancelled` is never a
+    /// successful completion and must suppress failover, continuation, and
+    /// post-turn writeback in the service send loop.
+    pub stop_reason: Option<TurnStopReason>,
     /// Phase 3 (plan D4): whether this turn emitted **any** externally-visible
     /// response before terminating — assistant `Text` OR a forwarded/persisted
     /// tool action (ToolCall / AcpToolCall / ToolGroup / persisted Thinking).
@@ -353,6 +583,15 @@ impl RelayTerminal {
 /// background tokio task until the agent finishes or errors out.
 pub struct StreamRelay {
     conversation_id: String,
+    /// Stable identity of the user-visible logical turn. This remains fixed
+    /// across model failover and system continuations.
+    root_turn_id: String,
+    /// Identity of the current provider wire segment within `root_turn_id`.
+    ///
+    /// This is only a transport/stream identity. Durable child messages and
+    /// artifact commits belong to `root_turn_id`, otherwise a continuation is
+    /// grouped under a different turn after history hydration than it was on
+    /// the live WebSocket stream.
     msg_id: String,
     user_id: String,
     repo: Arc<dyn IConversationRepository>,
@@ -395,13 +634,60 @@ pub struct StreamRelay {
     /// Conversation↔Execution relation identifies an active attempt. Once wired,
     /// the relay always accumulates; it does not perform a second identity lookup.
     runtime_state: Option<Arc<ConversationRuntimeStateService>>,
+    /// Generation-scoped service cancellation. This is independent of every
+    /// backend transport, so a CLI/gateway that ignores its abort request cannot
+    /// leave the relay waiting forever for a terminal event.
+    cancellation: Option<AgentTurnCancellation>,
     /// Stable canonical row IDs for streamed sub-records that receive multiple
     /// updates during one relay. Protocol call/session IDs are correlation keys,
     /// never database entity IDs.
     derived_message_ids: std::sync::Mutex<HashMap<String, String>>,
+    event_side_effect_circuit_open: AtomicBool,
+    /// Canonical session workspace used to re-verify every local receipt at
+    /// the final database commit barrier. Runtime event payloads are untrusted:
+    /// a marker proves an atomic DB transition, not that bytes exist.
+    artifact_workspace: Option<PathBuf>,
 }
 
 impl StreamRelay {
+    async fn bounded_event_side_effect<T, F>(
+        &self,
+        deadline: tokio::time::Instant,
+        label: &'static str,
+        future: F,
+    ) -> Option<T>
+    where
+        F: Future<Output = T>,
+    {
+        if self.event_side_effect_circuit_open.load(Ordering::Acquire) {
+            return None;
+        }
+        let timed = tokio::time::timeout_at(deadline, future);
+        let result = if let Some(cancellation) = self.cancellation.as_ref() {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return None,
+                result = timed => result,
+            }
+        } else {
+            timed.await
+        };
+        match result {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.event_side_effect_circuit_open
+                    .store(true, Ordering::Release);
+                warn!(
+                    conversation_id = %self.conversation_id,
+                    msg_id = %self.msg_id,
+                    side_effect = label,
+                    "Relay event side effect exceeded its shared hard bound; continuing to consume the stream"
+                );
+                None
+            }
+        }
+    }
+
     pub fn new(
         conversation_id: String,
         msg_id: String,
@@ -410,8 +696,10 @@ impl StreamRelay {
         user_events: Arc<dyn UserEventSink>,
         cron_service: Option<Arc<dyn ICronService>>,
     ) -> Self {
+        let root_turn_id = msg_id.clone();
         Self {
             conversation_id,
+            root_turn_id,
             msg_id,
             user_id,
             repo,
@@ -424,12 +712,20 @@ impl StreamRelay {
             channel_platform: None,
             failover_suppressor: None,
             runtime_state: None,
+            cancellation: None,
             derived_message_ids: std::sync::Mutex::new(HashMap::new()),
+            event_side_effect_circuit_open: AtomicBool::new(false),
+            artifact_workspace: None,
         }
     }
 
     pub fn with_turn_completion(mut self, enabled: bool) -> Self {
         self.complete_turn = enabled;
+        self
+    }
+
+    pub fn with_root_turn_id(mut self, turn_id: impl Into<String>) -> Self {
+        self.root_turn_id = turn_id.into();
         self
     }
 
@@ -440,6 +736,16 @@ impl StreamRelay {
     /// chat and companion turns leave it unset.
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
         self.runtime_state = Some(runtime_state);
+        self
+    }
+
+    pub fn with_cancellation(mut self, cancellation: AgentTurnCancellation) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    pub fn with_artifact_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.artifact_workspace = Some(workspace.into());
         self
     }
 
@@ -506,12 +812,41 @@ impl StreamRelay {
     /// own terminal-error side effects: broadcast the WS `message.stream` error
     /// event and persist the error `tips` row — so a queue-exhausted failover
     /// still shows the ORIGINAL error. No-op for non-`Error` events.
-    pub async fn surface_terminal_error(&self, event: &AgentStreamEvent) {
+    pub async fn surface_terminal_error(
+        &self,
+        event: &AgentStreamEvent,
+        cancellation: &AgentTurnCancellation,
+    ) -> bool {
         let AgentStreamEvent::Error(data) = event else {
-            return;
+            return false;
         };
-        self.forward_to_websocket(event);
-        self.persist_error_tips(data).await;
+        if !cancellation.try_claim_terminal_surface() {
+            return false;
+        }
+        if cancellation.is_cancelled() {
+            self.forward_to_websocket(&Self::cancelled_finish_event());
+            cancellation.mark_terminal_observed();
+            return false;
+        }
+        let error_message_id = ConversationService::mint_msg_id();
+        self.forward_to_websocket_with_msg_id(&error_message_id, event);
+        let persistence = tokio::time::timeout(
+            TURN_COMPLETION_PERSIST_GRACE,
+            self.persist_error_tips(&error_message_id, data),
+        );
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                warn!(conversation_id = %self.conversation_id, "Cancelled while persisting re-surfaced terminal error");
+            }
+            result = persistence => {
+                if result.is_err() {
+                    warn!(conversation_id = %self.conversation_id, "Timed out persisting re-surfaced terminal error");
+                }
+            }
+        }
+        cancellation.mark_terminal_observed();
+        true
     }
 
     /// Run the relay loop while also accepting a typed send failure from the
@@ -526,7 +861,7 @@ impl StreamRelay {
     pub async fn consume_with_send_error(
         self,
         rx: broadcast::Receiver<AgentStreamEvent>,
-        send_error_rx: oneshot::Receiver<AgentSendError>,
+        send_error_rx: oneshot::Receiver<Result<(), AgentSendError>>,
     ) -> RelayOutcome {
         self.consume_inner(rx, Some(send_error_rx)).await
     }
@@ -534,7 +869,7 @@ impl StreamRelay {
     async fn consume_inner(
         self,
         mut rx: broadcast::Receiver<AgentStreamEvent>,
-        mut send_error_rx: Option<oneshot::Receiver<AgentSendError>>,
+        mut send_error_rx: Option<oneshot::Receiver<Result<(), AgentSendError>>>,
     ) -> RelayOutcome {
         let started_at = now_ms();
         info!("StreamRelay started");
@@ -545,12 +880,19 @@ impl StreamRelay {
         let mut active_thinking: Option<ThinkingSegmentState> = None;
         let mut active_tool_calls: HashMap<String, ToolCallEventData> = HashMap::new();
         let mut pending_superseded_call_ids: HashSet<String> = HashSet::new();
+        let mut completed_artifact_tool_calls: HashMap<String, ToolCallEventData> = HashMap::new();
         let mut terminal_tool_calls: HashSet<String> = HashSet::new();
+        let mut failed_terminal_tool_calls: HashSet<String> = HashSet::new();
         let mut active_acp_tool_calls: HashMap<
             String,
             nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
         > = HashMap::new();
+        let mut completed_artifact_acp_tool_calls: HashMap<
+            String,
+            nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+        > = HashMap::new();
         let mut terminal_acp_tool_calls: HashSet<String> = HashSet::new();
+        let mut failed_terminal_acp_tool_calls: HashSet<String> = HashSet::new();
         let mut active_tool_groups: HashMap<
             String,
             Vec<nomifun_ai_agent::protocol::events::tool_call::ToolGroupEntry>,
@@ -560,6 +902,7 @@ impl StreamRelay {
         let mut used_primary_segment_msg_id = false;
         let mut first_agent_event_logged = false;
         let mut first_visible_output_logged = false;
+        let mut fatal_tracking_error: Option<String> = None;
         // Phase 3 (plan D4): tracks whether any externally-visible response has
         // been emitted this turn — assistant Text OR a forwarded/persisted tool
         // action. Surfaced on the RelayOutcome so the failover seam can restrict
@@ -569,30 +912,106 @@ impl StreamRelay {
         let mut send_error_done = send_error_rx.is_none();
 
         loop {
-            let recv_result = if send_error_done {
-                rx.recv().await
+            let recv_result = if let Some(message) = fatal_tracking_error.take() {
+                Ok(AgentStreamEvent::Error(
+                    nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                        message,
+                        Some(AgentErrorCode::NomifunStreamBroken),
+                    ),
+                ))
             } else {
-                tokio::select! {
-                    recv = rx.recv() => recv,
-                    send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
-                        send_error_done = true;
-                        match send_error {
-                            Ok(send_error) => {
-                                warn!(
-                                    code = ?send_error.code(),
-                                    ownership = ?send_error.ownership(),
-                                    "Injecting stream error for failed agent send"
-                                );
-                                Ok(AgentStreamEvent::Error(send_error.into_stream_error()))
+                match (self.cancellation.as_ref(), send_error_done) {
+                (Some(cancellation), true) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
+                        recv = rx.recv() => recv,
+                    }
+                }
+                (Some(cancellation), false) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
+                        recv = rx.recv() => recv,
+                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                            send_error_done = true;
+                            match send_error {
+                                Ok(Err(send_error)) => {
+                                    warn!(
+                                        code = ?send_error.code(),
+                                        ownership = ?send_error.ownership(),
+                                        "Injecting stream error for failed agent send"
+                                    );
+                                    Ok(AgentStreamEvent::Error(send_error.into_stream_error()))
+                                }
+                                Ok(Ok(())) => continue,
+                                Err(_) => Ok(AgentStreamEvent::Error(
+                                    nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                                        "Agent send task exited before reporting acceptance",
+                                        None,
+                                    ),
+                                )),
                             }
-                            Err(_) => continue,
                         }
                     }
                 }
+                (None, true) => rx.recv().await,
+                (None, false) => {
+                    tokio::select! {
+                        recv = rx.recv() => recv,
+                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                            send_error_done = true;
+                            match send_error {
+                                Ok(Err(send_error)) => {
+                                    warn!(
+                                        code = ?send_error.code(),
+                                        ownership = ?send_error.ownership(),
+                                        "Injecting stream error for failed agent send"
+                                    );
+                                    Ok(AgentStreamEvent::Error(send_error.into_stream_error()))
+                                }
+                                Ok(Ok(())) => continue,
+                                Err(_) => Ok(AgentStreamEvent::Error(
+                                    nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                                        "Agent send task exited before reporting acceptance",
+                                        None,
+                                    ),
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+            };
+            let recv_result = match recv_result {
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(lagged = skipped, "Stream relay lagged; terminating the incomplete event stream");
+                    Ok(AgentStreamEvent::Error(
+                        nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                            format!(
+                                "Agent event stream lagged and skipped {skipped} events; the turn was terminated to preserve terminal-state integrity"
+                            ),
+                            Some(AgentErrorCode::NomifunStreamBroken),
+                        ),
+                    ))
+                }
+                result => result,
             };
 
             match recv_result {
-                Ok(event) => {
+                Ok(mut event) => {
+                    // Cancellation is authoritative even if `rx.recv()` won
+                    // just before the token fired. Re-check after receive so a
+                    // concurrently queued ordinary Finish cannot execute
+                    // middleware/cron or be reported as successful.
+                    if self
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(AgentTurnCancellation::is_cancelled)
+                        && matches!(event, AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_))
+                    {
+                        event = Self::cancelled_finish_event();
+                    }
                     if !first_agent_event_logged {
                         first_agent_event_logged = true;
                         info!(
@@ -601,11 +1020,23 @@ impl StreamRelay {
                             "StreamRelay received first agent event"
                         );
                     }
+                    // Every non-terminal event shares one persistence budget.
+                    // WebSocket forwarding happens first where applicable;
+                    // a locked/failed DB must never prevent an already-queued
+                    // Finish/Error from being consumed.
+                    let event_side_effect_deadline =
+                        tokio::time::Instant::now() + EVENT_SIDE_EFFECT_GRACE;
 
                     match &event {
                         AgentStreamEvent::Thinking(data) => {
                             if data.status.as_deref() == Some("done") {
-                                self.complete_active_thinking(&mut active_thinking).await;
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "complete_thinking",
+                                        self.complete_active_thinking(&mut active_thinking),
+                                    )
+                                    .await;
                                 continue;
                             }
 
@@ -613,7 +1044,16 @@ impl StreamRelay {
                             // externally visible — once it streams we are no
                             // longer pre-response, so the failover seam stands down.
                             emitted_response = true;
-                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "close_text_before_thinking",
+                                    self.close_active_text_segment(
+                                        &mut active_text,
+                                        &mut text_segments,
+                                        "finish",
+                                    ),
+                                )
                                 .await;
                             if !first_visible_output_logged && !data.content.is_empty() {
                                 first_visible_output_logged = true;
@@ -633,7 +1073,13 @@ impl StreamRelay {
                             self.forward_to_websocket_with_msg_id(&segment.id, &event);
                         }
                         AgentStreamEvent::Text(data) => {
-                            self.complete_active_thinking(&mut active_thinking).await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "complete_thinking_before_text",
+                                    self.complete_active_thinking(&mut active_thinking),
+                                )
+                                .await;
                             // Plan D4: any assistant Text means we are no longer
                             // pre-response. The failover seam keys off this.
                             emitted_response = true;
@@ -658,18 +1104,136 @@ impl StreamRelay {
                             full_text_buffer.push_str(&data.content);
                             segment.flush_counter += 1;
                             if segment.flush_counter >= FLUSH_INTERVAL {
-                                self.flush_text_segment(segment).await;
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "flush_text",
+                                        self.flush_text_segment(segment),
+                                    )
+                                    .await;
                                 segment.flush_counter = 0;
                             }
                         }
                         AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => {
+                            if self
+                                .cancellation
+                                .as_ref()
+                                .is_some_and(AgentTurnCancellation::is_cancelled)
+                                && !Self::is_cancelled_finish(&event)
+                            {
+                                event = Self::cancelled_finish_event();
+                            }
+                            let mut terminal = Self::terminal_from_event(&event);
+                            // Decide suppression before any persistence await.
+                            // Terminal publication is scoped to the current
+                            // wire segment. The send loop resets that scope for
+                            // every continuation/failover resend, so ordinary
+                            // intermediate terminals cannot mask cancellation
+                            // of a later segment.
+                            let mut suppress_error = !emitted_response
+                                && matches!(event, AgentStreamEvent::Error(_))
+                                && terminal
+                                    .code()
+                                    .zip(self.failover_suppressor.as_ref())
+                                    .is_some_and(|(code, suppressor)| suppressor(code));
+                            let mut terminal_claimed = false;
+                            if !suppress_error {
+                                terminal_claimed = self
+                                    .cancellation
+                                    .as_ref()
+                                    .map(AgentTurnCancellation::try_claim_terminal_surface)
+                                    .unwrap_or(true);
+                                if !terminal_claimed {
+                                    // A bounded stop fallback (or another
+                                    // terminal publisher for this exact wire
+                                    // segment) already won. Never publish or
+                                    // middleware-process a late ordinary
+                                    // terminal after that cancelled terminal.
+                                    event = Self::cancelled_finish_event();
+                                    terminal = Self::terminal_from_event(&event);
+                                    suppress_error = false;
+                                }
+                            }
+
+                            if terminal_claimed
+                                && !Self::invalidates_completed_artifacts(&event)
+                                && (!completed_artifact_tool_calls.is_empty()
+                                    || !completed_artifact_acp_tool_calls.is_empty())
+                            {
+                                let commit_result = tokio::time::timeout(
+                                    ARTIFACT_COMMIT_GRACE,
+                                    self.commit_pending_artifact_deliveries(
+                                        &completed_artifact_tool_calls,
+                                        &completed_artifact_acp_tool_calls,
+                                    ),
+                                )
+                                .await;
+
+                                match commit_result {
+                                    Ok(Ok(())) => {
+                                        // The transaction is now the linearization
+                                        // point for artifact success. Publish every
+                                        // receipt-bearing Completed frame only after
+                                        // all rows committed, and still before Finish.
+                                        self.broadcast_committed_artifact_tool_calls(
+                                            &completed_artifact_tool_calls,
+                                        );
+                                        self.broadcast_committed_artifact_acp_tool_calls(
+                                            &completed_artifact_acp_tool_calls,
+                                        );
+                                        completed_artifact_tool_calls.clear();
+                                        completed_artifact_acp_tool_calls.clear();
+                                    }
+                                    Ok(Err(commit_error)) => {
+                                        error!(
+                                            error = %ErrorChain(&commit_error),
+                                            "Atomic artifact projection failed; rejecting turn success"
+                                        );
+                                        event = AgentStreamEvent::Error(
+                                            nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                                                "The generated artifacts could not be committed to conversation history",
+                                                Some(AgentErrorCode::NomifunStateInconsistent),
+                                            ),
+                                        );
+                                        terminal = Self::terminal_from_event(&event);
+                                        suppress_error = false;
+                                    }
+                                    Err(_) => {
+                                        error!(
+                                            conversation_id = %self.conversation_id,
+                                            msg_id = %self.msg_id,
+                                            "Atomic artifact projection timed out; rejecting turn success"
+                                        );
+                                        event = AgentStreamEvent::Error(
+                                            nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                                                "Timed out while committing generated artifacts to conversation history",
+                                                Some(AgentErrorCode::NomifunStateInconsistent),
+                                            ),
+                                        );
+                                        terminal = Self::terminal_from_event(&event);
+                                        suppress_error = false;
+                                    }
+                                }
+                            }
+                            // A terminal error is its own durable message, not
+                            // another update of the assistant text/thinking
+                            // message that happened to use the turn's primary
+                            // wire id. Mint the identity once and use it for
+                            // both the live frame and the persisted tips row;
+                            // `turn_id` retains the owning turn relation.
+                            let terminal_message_id = if matches!(event, AgentStreamEvent::Error(_))
+                                && !suppress_error
+                            {
+                                ConversationService::mint_msg_id()
+                            } else {
+                                self.msg_id.clone()
+                            };
                             let elapsed_ms = now_ms() - started_at;
                             let event_type = if matches!(event, AgentStreamEvent::Finish(_)) {
                                 "Finish"
                             } else {
                                 "Error"
                             };
-                            let terminal = Self::terminal_from_event(&event);
                             match &terminal {
                                 RelayTerminal::Error { code, retryable } => {
                                     info!(
@@ -691,11 +1255,55 @@ impl StreamRelay {
                                 }
                             }
 
+                            let fallback_terminal = terminal.clone();
+                            let fallback_stop_reason = match &event {
+                                AgentStreamEvent::Finish(data) => data.stop_reason,
+                                _ => None,
+                            };
+                            let fallback_suppressed = suppress_error.then(|| event.clone());
+                            let fallback_text = (!full_text_buffer.trim().is_empty())
+                                .then(|| full_text_buffer.trim().to_owned());
+                            let fallback_msg_id = active_text
+                                .as_ref()
+                                .map(|segment| segment.id.clone())
+                                .or_else(|| text_segments.last().map(|segment| segment.id.clone()));
+                            let terminal_cleanup = async {
+                            // Artifact corrections are the first terminal side
+                            // effect and are all broadcast before any repository
+                            // await. Even a wedged DB cannot leave strict live
+                            // consumers with an earlier green receipt.
+                            let invalidates_artifacts =
+                                !suppress_error && Self::invalidates_completed_artifacts(&event);
+                            let (failed_completed_tools, failed_completed_acp_tools) =
+                                if invalidates_artifacts {
+                                    let reason = Self::incomplete_tool_reason(&event)
+                                        .unwrap_or("incomplete_turn");
+                                    let tools = Self::take_failed_tool_calls(
+                                        &mut completed_artifact_tool_calls,
+                                        reason,
+                                    );
+                                    let acp_tools = Self::take_failed_acp_tool_calls(
+                                        &mut completed_artifact_acp_tool_calls,
+                                        reason,
+                                    );
+                                    self.broadcast_failed_tool_calls(&tools);
+                                    self.broadcast_failed_acp_tool_calls(&acp_tools);
+                                    (tools, acp_tools)
+                                } else {
+                                    (Vec::new(), Vec::new())
+                                };
+
+                            let _ = tokio::join!(
+                                self.persist_failed_tool_calls(&failed_completed_tools),
+                                self.persist_failed_acp_tool_calls(&failed_completed_acp_tools),
+                            );
                             self.complete_active_thinking(&mut active_thinking).await;
                             self.close_active_text_segment(
                                 &mut active_text,
                                 &mut text_segments,
-                                if matches!(event, AgentStreamEvent::Error(_)) {
+                                if matches!(event, AgentStreamEvent::Error(_))
+                                    || Self::is_cancelled_finish(&event)
+                                {
                                     "error"
                                 } else {
                                     "finish"
@@ -709,16 +1317,16 @@ impl StreamRelay {
                             // model's output. Only the Error terminal with no
                             // emitted response and a positive suppressor verdict
                             // qualifies; everything else broadcasts/persists as before.
-                            let suppress_error = !emitted_response
-                                && matches!(event, AgentStreamEvent::Error(_))
-                                && terminal
-                                    .code()
-                                    .zip(self.failover_suppressor.as_ref())
-                                    .is_some_and(|(code, suppressor)| suppressor(code));
                             if suppress_error {
                                 info!("StreamRelay suppressing pre-response error pending model failover");
                             } else {
                                 if let Some(reason) = Self::incomplete_tool_reason(&event) {
+                                    // A provider can emit a per-tool Completed frame and then
+                                    // fail/cancel/truncate the enclosing turn. Artifact success
+                                    // is a turn-level contract, so retract those receipts on an
+                                    // unsuccessful terminal. A normal EndTurn/unspecified Finish
+                                    // keeps already verified completed artifacts, while still
+                                    // closing genuinely Running tools below.
                                     self.fail_active_tool_calls(
                                         &mut active_tool_calls,
                                         reason,
@@ -728,7 +1336,6 @@ impl StreamRelay {
                                     self.fail_active_acp_tool_calls(&mut active_acp_tool_calls, reason).await;
                                     self.fail_active_tool_groups(&mut active_tool_groups, reason).await;
                                 }
-                                self.forward_to_websocket(&event);
                             }
                             self.finalize_active_plans(
                                 &mut active_plan_ids,
@@ -748,14 +1355,61 @@ impl StreamRelay {
                                     terminal,
                                     emitted_response,
                                     suppress_error,
+                                    &terminal_message_id,
                                 )
                                 .await;
+                            // Publish the terminal only after all lifecycle
+                            // corrections. Strict consumers may stop reading at
+                            // Error/Finish, so a receipt retraction sent after it
+                            // would leave stale success visible.
+                            if terminal_claimed {
+                                self.forward_to_websocket_with_msg_id(&terminal_message_id, &event);
+                            }
+                            outcome
+                            };
+                            let outcome = match tokio::time::timeout(
+                                TERMINAL_FINALIZATION_GRACE,
+                                terminal_cleanup,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(_) => {
+                                    warn!(
+                                        conversation_id = %self.conversation_id,
+                                        msg_id = %self.msg_id,
+                                        "Terminal relay finalization exceeded the hard bound"
+                                    );
+                                    if terminal_claimed {
+                                        self.forward_to_websocket_with_msg_id(&terminal_message_id, &event);
+                                    }
+                                    RelayOutcome {
+                                        system_responses: Vec::new(),
+                                        terminal: fallback_terminal,
+                                        stop_reason: fallback_stop_reason,
+                                        emitted_response,
+                                        suppressed_error: fallback_suppressed,
+                                        final_text: fallback_text,
+                                        final_text_msg_id: fallback_msg_id,
+                                    }
+                                }
+                            };
+                            if terminal_claimed
+                                && let Some(cancellation) = self.cancellation.as_ref()
+                            {
+                                // Relay persistence/finalization is complete
+                                // and the authoritative Finish is already on
+                                // the wire. The stop worker may now release the
+                                // exact generation and publish turn.completed.
+                                cancellation.mark_terminal_observed();
+                            }
                             if self.complete_turn {
                                 Self::complete_conversation_with_context(
                                     &self.repo,
                                     &self.user_events,
                                     &self.user_id,
                                     &self.conversation_id,
+                                    Some(self.root_turn_id.clone()),
                                     None,
                                     self.companion,
                                     self.companion_id.clone(),
@@ -771,6 +1425,23 @@ impl StreamRelay {
                             // externally-visible action with a side effect — no
                             // failover after this, or the tool would re-run.
                             emitted_response = true;
+                            let has_artifact_delivery =
+                                data.status == ToolCallStatus::Completed && !data.artifacts.is_empty();
+                            let active_contract_source = active_tool_calls.get(&data.call_id).cloned();
+                            let artifact_contract_error = if data.status == ToolCallStatus::Completed {
+                                let terminal_error = validate_completed_artifact_contract(data).err();
+                                terminal_error.or_else(|| {
+                                    active_contract_source.as_ref().and_then(|active| {
+                                        let mut effective = active.clone();
+                                        effective.status = ToolCallStatus::Completed;
+                                        effective.artifacts = data.artifacts.clone();
+                                        validate_completed_artifact_contract(&effective).err()
+                                    })
+                                })
+                            } else {
+                                None
+                            };
+                            let mut tracking_overflow = false;
                             match data.status {
                                 ToolCallStatus::Running => {
                                     if terminal_tool_calls.contains(&data.call_id) {
@@ -788,7 +1459,12 @@ impl StreamRelay {
                                             &mut pending_superseded_call_ids,
                                         )
                                         .await;
-                                        active_tool_calls.insert(data.call_id.clone(), data.clone());
+                                        tracking_overflow |= !track_bounded(
+                                            &mut active_tool_calls,
+                                            data.call_id.clone(),
+                                            data.clone(),
+                                            "tool_call",
+                                        );
                                     } else {
                                         debug!(
                                             call_id = %data.call_id,
@@ -800,25 +1476,243 @@ impl StreamRelay {
                                 ToolCallStatus::Completed
                                 | ToolCallStatus::Error
                                 | ToolCallStatus::Canceled => {
+                                    if terminal_tool_calls.contains(&data.call_id) {
+                                        if data.status == ToolCallStatus::Error
+                                            && !failed_terminal_tool_calls.contains(&data.call_id)
+                                        {
+                                            tracking_overflow |= !remember_bounded(
+                                                &mut failed_terminal_tool_calls,
+                                                data.call_id.clone(),
+                                                "failed_terminal_tool_call",
+                                            );
+                                        } else {
+                                            warn!(
+                                                call_id = %data.call_id,
+                                                tool = %data.name,
+                                                status = ?data.status,
+                                                "Ignoring duplicate or non-failing terminal event for tool call"
+                                            );
+                                            continue;
+                                        }
+                                    } else {
+                                        tracking_overflow |= !remember_bounded(
+                                            &mut terminal_tool_calls,
+                                            data.call_id.clone(),
+                                            "terminal_tool_call",
+                                        );
+                                        if data.status == ToolCallStatus::Error {
+                                            tracking_overflow |= !remember_bounded(
+                                                &mut failed_terminal_tool_calls,
+                                                data.call_id.clone(),
+                                                "failed_terminal_tool_call",
+                                            );
+                                        }
+                                    }
                                     active_tool_calls.remove(&data.call_id);
-                                    terminal_tool_calls.insert(data.call_id.clone());
+                                    if has_artifact_delivery && artifact_contract_error.is_none() {
+                                        tracking_overflow |= !track_bounded(
+                                            &mut completed_artifact_tool_calls,
+                                            data.call_id.clone(),
+                                            data.clone(),
+                                            "completed_artifact_tool_call",
+                                        );
+                                    } else {
+                                        completed_artifact_tool_calls.remove(&data.call_id);
+                                    }
                                 }
                             }
-                            self.complete_active_thinking(&mut active_thinking).await;
-                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                            if tracking_overflow {
+                                active_tool_calls.remove(&data.call_id);
+                                completed_artifact_tool_calls.remove(&data.call_id);
+                                let mut failed = data.clone();
+                                failed.status = ToolCallStatus::Error;
+                                failed.artifacts.clear();
+                                failed.output = Some(
+                                    "The turn exceeded its safe tool-lifecycle tracking limit; artifact delivery was rejected"
+                                        .to_owned(),
+                                );
+                                let failed_event = AgentStreamEvent::ToolCall(failed.clone());
+                                self.forward_to_websocket(&failed_event);
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_tool_tracking_overflow",
+                                        self.persist_tool_call(&failed, &mut pending_superseded_call_ids),
+                                    )
+                                    .await;
+                                fatal_tracking_error = Some(
+                                    "The agent emitted more tool lifecycle events than can be verified safely; the turn was terminated"
+                                        .to_owned(),
+                                );
+                                continue;
+                            }
+                            if let Some(contract_error) = artifact_contract_error {
+                                completed_artifact_tool_calls.remove(&data.call_id);
+                                let mut failed = data.clone();
+                                failed.status = ToolCallStatus::Error;
+                                failed.artifacts.clear();
+                                failed.output = Some(contract_error.clone());
+                                let failed_event = AgentStreamEvent::ToolCall(failed.clone());
+                                self.forward_to_websocket(&failed_event);
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_artifact_contract_failure",
+                                        self.persist_tool_call(&failed, &mut pending_superseded_call_ids),
+                                    )
+                                    .await;
+                                fatal_tracking_error = Some(format!(
+                                    "Artifact delivery contract failed; the turn was terminated: {contract_error}"
+                                ));
+                                continue;
+                            }
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "complete_thinking_before_tool",
+                                    self.complete_active_thinking(&mut active_thinking),
+                                )
                                 .await;
-                            self.forward_to_websocket(&event);
-                            self.persist_tool_call(data, &mut pending_superseded_call_ids).await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "close_text_before_tool",
+                                    self.close_active_text_segment(
+                                        &mut active_text,
+                                        &mut text_segments,
+                                        "finish",
+                                    ),
+                                )
+                                .await;
+                            if has_artifact_delivery {
+                                let identity_ready = matches!(
+                                    self.bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "claim_artifact_tool_identity",
+                                        self.try_derived_message_id("tool_call", &data.call_id),
+                                    )
+                                    .await,
+                                    Some(Ok(_))
+                                );
+                                if !identity_ready {
+                                    completed_artifact_tool_calls.remove(&data.call_id);
+                                    let mut failed = data.clone();
+                                    failed.status = ToolCallStatus::Error;
+                                    failed.artifacts.clear();
+                                    failed.output = Some(
+                                        "Artifact delivery could not claim a durable message identity"
+                                            .to_owned(),
+                                    );
+                                    self.forward_to_websocket(&AgentStreamEvent::ToolCall(failed));
+                                    fatal_tracking_error = Some(
+                                        "Artifact delivery could not be projected durably; the turn was terminated"
+                                            .to_owned(),
+                                    );
+                                    continue;
+                                }
+
+                                // Do not expose a green receipt before the
+                                // enclosing turn commits. Live clients receive
+                                // the same receipt-free provisional lifecycle as
+                                // history hydration; the full Completed frame is
+                                // published by the terminal commit barrier.
+                                let provisional = Self::provisional_artifact_tool_call(data);
+                                self.forward_to_websocket(&AgentStreamEvent::ToolCall(provisional));
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_provisional_artifact_tool_call",
+                                        self.persist_provisional_artifact_tool_call(data),
+                                    )
+                                    .await;
+                            } else {
+                                self.forward_to_websocket(&event);
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_tool_call",
+                                        self.persist_tool_call(data, &mut pending_superseded_call_ids),
+                                    )
+                                    .await;
+                            }
                         }
                         AgentStreamEvent::AcpToolCall(data) => {
                             // Plan D4: see ToolCall — an ACP tool call is a
                             // visible, side-effecting action; block failover.
                             emitted_response = true;
                             let tool_call_id = data.update.tool_call_id.clone();
-                            match data.update.status {
+                            let effective_data = effective_acp_tool_call_projection(
+                                active_acp_tool_calls.get(&tool_call_id),
+                                data,
+                            );
+                            let has_artifact_delivery = effective_data
+                                .update
+                                .content
+                                .as_ref()
+                                .is_some_and(|items| {
+                                    items.iter().any(|item| {
+                                        matches!(
+                                            item,
+                                            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                                                | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                                        )
+                                    })
+                                });
+                            let artifact_contract_error = if effective_data.update.status
+                                == Some(AcpToolCallStatus::Completed)
+                            {
+                                validate_completed_acp_artifact_contract(&effective_data).err()
+                            } else {
+                                None
+                            };
+                            let mut tracking_overflow = false;
+                            match effective_data.update.status {
                                 Some(AcpToolCallStatus::Completed | AcpToolCallStatus::Failed) => {
+                                    if terminal_acp_tool_calls.contains(&tool_call_id) {
+                                        if effective_data.update.status == Some(AcpToolCallStatus::Failed)
+                                            && !failed_terminal_acp_tool_calls.contains(&tool_call_id)
+                                        {
+                                            tracking_overflow |= !remember_bounded(
+                                                &mut failed_terminal_acp_tool_calls,
+                                                tool_call_id.clone(),
+                                                "failed_terminal_acp_tool_call",
+                                            );
+                                        } else {
+                                            warn!(
+                                                tool_call_id,
+                                                status = ?effective_data.update.status,
+                                                "Ignoring duplicate or non-failing terminal ACP tool event"
+                                            );
+                                            continue;
+                                        }
+                                    } else {
+                                        tracking_overflow |= !remember_bounded(
+                                            &mut terminal_acp_tool_calls,
+                                            tool_call_id.clone(),
+                                            "terminal_acp_tool_call",
+                                        );
+                                        if effective_data.update.status == Some(AcpToolCallStatus::Failed) {
+                                            tracking_overflow |= !remember_bounded(
+                                                &mut failed_terminal_acp_tool_calls,
+                                                tool_call_id.clone(),
+                                                "failed_terminal_acp_tool_call",
+                                            );
+                                        }
+                                    }
                                     active_acp_tool_calls.remove(&tool_call_id);
-                                    terminal_acp_tool_calls.insert(tool_call_id);
+                                    if effective_data.update.status == Some(AcpToolCallStatus::Completed)
+                                        && has_artifact_delivery
+                                        && artifact_contract_error.is_none()
+                                    {
+                                        tracking_overflow |= !track_bounded(
+                                            &mut completed_artifact_acp_tool_calls,
+                                            tool_call_id.clone(),
+                                            effective_data.clone(),
+                                            "completed_artifact_acp_tool_call",
+                                        );
+                                    } else {
+                                        completed_artifact_acp_tool_calls.remove(&tool_call_id);
+                                    }
                                 }
                                 Some(AcpToolCallStatus::Pending | AcpToolCallStatus::InProgress) | None => {
                                     if terminal_acp_tool_calls.contains(&tool_call_id) {
@@ -828,31 +1722,251 @@ impl StreamRelay {
                                         );
                                         continue;
                                     }
-                                    active_acp_tool_calls.insert(tool_call_id, data.clone());
+                                    tracking_overflow |= !track_bounded(
+                                        &mut active_acp_tool_calls,
+                                        tool_call_id.clone(),
+                                        effective_data.clone(),
+                                        "acp_tool_call",
+                                    );
                                 }
                             }
-                            self.complete_active_thinking(&mut active_thinking).await;
-                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                            if tracking_overflow {
+                                active_acp_tool_calls.remove(&tool_call_id);
+                                completed_artifact_acp_tool_calls.remove(&tool_call_id);
+                                let mut failed = effective_data.clone();
+                                failed.update.session_update = AcpToolCallSessionUpdateKind::ToolCallUpdate;
+                                failed.update.status = Some(AcpToolCallStatus::Failed);
+                                failed.update.raw_output = Some(json!(
+                                    "The turn exceeded its safe tool-lifecycle tracking limit; artifact delivery was rejected"
+                                ));
+                                if let Some(content) = failed.update.content.as_mut() {
+                                    content.retain(|item| {
+                                        !matches!(
+                                            item,
+                                            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                                                | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                                        )
+                                    });
+                                }
+                                let failed_event = AgentStreamEvent::AcpToolCall(failed.clone());
+                                self.forward_to_websocket(&failed_event);
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_acp_tracking_overflow",
+                                        self.persist_acp_tool_call(&failed),
+                                    )
+                                    .await;
+                                fatal_tracking_error = Some(
+                                    "The agent emitted more ACP tool lifecycle events than can be verified safely; the turn was terminated"
+                                        .to_owned(),
+                                );
+                                continue;
+                            }
+                            if let Some(contract_error) = artifact_contract_error {
+                                completed_artifact_acp_tool_calls.remove(&tool_call_id);
+                                let mut failed = effective_data.clone();
+                                failed.update.session_update =
+                                    AcpToolCallSessionUpdateKind::ToolCallUpdate;
+                                failed.update.status = Some(AcpToolCallStatus::Failed);
+                                failed.update.raw_output = Some(json!(contract_error.clone()));
+                                if let Some(content) = failed.update.content.as_mut() {
+                                    content.retain(|item| {
+                                        !matches!(
+                                            item,
+                                            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                                                | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                                        )
+                                    });
+                                }
+                                let failed_event = AgentStreamEvent::AcpToolCall(failed.clone());
+                                self.forward_to_websocket(&failed_event);
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_acp_artifact_contract_failure",
+                                        self.persist_acp_tool_call(&failed),
+                                    )
+                                    .await;
+                                fatal_tracking_error = Some(format!(
+                                    "ACP artifact delivery contract failed; the turn was terminated: {contract_error}"
+                                ));
+                                continue;
+                            }
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "complete_thinking_before_acp_tool",
+                                    self.complete_active_thinking(&mut active_thinking),
+                                )
                                 .await;
-                            self.forward_to_websocket(&event);
-                            self.persist_acp_tool_call(data).await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "close_text_before_acp_tool",
+                                    self.close_active_text_segment(
+                                        &mut active_text,
+                                        &mut text_segments,
+                                        "finish",
+                                    ),
+                                )
+                                .await;
+                            if effective_data.update.status == Some(AcpToolCallStatus::Completed)
+                                && has_artifact_delivery
+                            {
+                                let identity_ready = matches!(
+                                    self.bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "claim_artifact_acp_tool_identity",
+                                        self.try_derived_message_id(
+                                            "acp_tool_call",
+                                            &effective_data.update.tool_call_id,
+                                        ),
+                                    )
+                                    .await,
+                                    Some(Ok(_))
+                                );
+                                if !identity_ready {
+                                    completed_artifact_acp_tool_calls.remove(&tool_call_id);
+                                    let mut failed = effective_data.clone();
+                                    failed.update.session_update =
+                                        AcpToolCallSessionUpdateKind::ToolCallUpdate;
+                                    failed.update.status = Some(AcpToolCallStatus::Failed);
+                                    failed.update.raw_output = Some(json!(
+                                        "Artifact delivery could not claim a durable message identity"
+                                    ));
+                                    if let Some(content) = failed.update.content.as_mut() {
+                                        content.retain(|item| {
+                                            !matches!(
+                                                item,
+                                                nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                                                    | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                                            )
+                                        });
+                                    }
+                                    self.forward_to_websocket(&AgentStreamEvent::AcpToolCall(failed));
+                                    fatal_tracking_error = Some(
+                                        "ACP artifact delivery could not be projected durably; the turn was terminated"
+                                            .to_owned(),
+                                    );
+                                    continue;
+                                }
+
+                                let provisional =
+                                    Self::provisional_artifact_acp_tool_call(&effective_data);
+                                self.forward_to_websocket(&AgentStreamEvent::AcpToolCall(provisional));
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_provisional_artifact_acp_tool_call",
+                                        self.persist_provisional_artifact_acp_tool_call(
+                                            &effective_data,
+                                        ),
+                                    )
+                                    .await;
+                            } else {
+                                self.forward_to_websocket(&AgentStreamEvent::AcpToolCall(
+                                    effective_data.clone(),
+                                ));
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_acp_tool_call",
+                                        self.persist_acp_tool_call(&effective_data),
+                                    )
+                                    .await;
+                            }
                         }
                         AgentStreamEvent::ToolGroup(entries) => {
                             // Plan D4: see ToolCall — a tool group is a visible,
                             // side-effecting action; block failover.
                             emitted_response = true;
+                            let artifact_contract_errors = tool_group_artifact_contract_errors(
+                                entries,
+                                &completed_artifact_tool_calls,
+                            );
+                            if !artifact_contract_errors.is_empty() {
+                                let mut failed = entries.clone();
+                                let mut reasons = Vec::with_capacity(artifact_contract_errors.len());
+                                for (index, contract_error) in artifact_contract_errors {
+                                    if let Some(entry) = failed.get_mut(index) {
+                                        entry.status = ToolCallStatus::Error;
+                                        entry.description = Some(contract_error.clone());
+                                    }
+                                    reasons.push(contract_error);
+                                }
+                                if let Some(group_id) = failed.first().map(|entry| &entry.call_id) {
+                                    active_tool_groups.remove(group_id);
+                                }
+                                let failed_event = AgentStreamEvent::ToolGroup(failed.clone());
+                                self.forward_to_websocket(&failed_event);
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_tool_group_artifact_contract_failure",
+                                        self.persist_tool_group(&failed),
+                                    )
+                                    .await;
+                                fatal_tracking_error = Some(format!(
+                                    "Tool-group artifact delivery contract failed; the turn was terminated: {}",
+                                    reasons.join("; ")
+                                ));
+                                continue;
+                            }
+                            // ToolGroupEntry cannot carry a receipt or 2PC
+                            // marker, so it can never be an authoritative
+                            // artifact-success carrier. Suppress high-signal
+                            // entries and rely on their detailed ToolCall row;
+                            // retain unrelated summaries from a mixed group.
+                            let visible_entries = entries
+                                .iter()
+                                .filter(|entry| !tool_group_entry_has_artifact_contract(entry))
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let entries = visible_entries.as_slice();
+                            if entries.is_empty() {
+                                continue;
+                            }
                             if let Some(group_id) = entries.first().map(|entry| entry.call_id.clone()) {
                                 if entries.iter().any(|entry| entry.status == ToolCallStatus::Running) {
-                                    active_tool_groups.insert(group_id, entries.clone());
+                                    let mut tracked_entries = entries.to_vec();
+                                    tracked_entries.truncate(MAX_TERMINAL_ACTIVE_ITEMS);
+                                    track_bounded(
+                                        &mut active_tool_groups,
+                                        group_id,
+                                        tracked_entries,
+                                        "tool_group",
+                                    );
                                 } else {
                                     active_tool_groups.remove(&group_id);
                                 }
                             }
-                            self.complete_active_thinking(&mut active_thinking).await;
-                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "complete_thinking_before_tool_group",
+                                    self.complete_active_thinking(&mut active_thinking),
+                                )
                                 .await;
-                            self.forward_to_websocket(&event);
-                            self.persist_tool_group(entries).await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "close_text_before_tool_group",
+                                    self.close_active_text_segment(
+                                        &mut active_text,
+                                        &mut text_segments,
+                                        "finish",
+                                    ),
+                                )
+                                .await;
+                            self.forward_to_websocket(&AgentStreamEvent::ToolGroup(entries.to_vec()));
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "persist_tool_group",
+                                    self.persist_tool_group(entries),
+                                )
+                                .await;
                         }
                         AgentStreamEvent::AgentStatus(data) => {
                             self.forward_to_websocket(&event);
@@ -862,18 +1976,35 @@ impl StreamRelay {
                                 } else {
                                     active_agent_status = None;
                                 }
-                                self.persist_agent_status(data).await;
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_agent_status",
+                                        self.persist_agent_status(data),
+                                    )
+                                    .await;
                             }
                         }
                         AgentStreamEvent::Plan(data) => {
                             emitted_response = true;
-                            self.complete_active_thinking(&mut active_thinking).await;
-                            self.close_active_text_segment(
-                                &mut active_text,
-                                &mut text_segments,
-                                "finish",
-                            )
-                            .await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "complete_thinking_before_plan",
+                                    self.complete_active_thinking(&mut active_thinking),
+                                )
+                                .await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "close_text_before_plan",
+                                    self.close_active_text_segment(
+                                        &mut active_text,
+                                        &mut text_segments,
+                                        "finish",
+                                    ),
+                                )
+                                .await;
                             if let Some(source_call_id) = data.source_call_id.as_deref() {
                                 let mut source = active_tool_calls.remove(source_call_id).unwrap_or_else(|| {
                                     ToolCallEventData {
@@ -884,25 +2015,62 @@ impl StreamRelay {
                                         input: None,
                                         output: None,
                                         description: None,
+                                        artifacts: Vec::new(),
                                     }
                                 });
                                 source.status = ToolCallStatus::Completed;
                                 source.output = Some("Plan updated".to_owned());
-                                terminal_tool_calls.insert(source_call_id.to_owned());
+                                remember_bounded(
+                                    &mut terminal_tool_calls,
+                                    source_call_id.to_owned(),
+                                    "terminal_tool_call",
+                                );
                                 let source_event = AgentStreamEvent::ToolCall(source.clone());
                                 self.forward_to_websocket_hidden(&source_event);
-                                self.persist_tool_call_with_hidden(&source, true, &mut pending_superseded_call_ids).await;
+                                let _ = self
+                                    .bounded_event_side_effect(
+                                        event_side_effect_deadline,
+                                        "persist_plan_source_tool",
+                                        self.persist_tool_call_with_hidden(
+                                            &source,
+                                            true,
+                                            &mut pending_superseded_call_ids,
+                                        ),
+                                    )
+                                    .await;
                             }
-                            let plan_id = self.plan_message_id(data).await;
+                            let plan_id = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "resolve_plan_message_id",
+                                    self.plan_message_id(data),
+                                )
+                                .await
+                                .unwrap_or_else(|| {
+                                    Self::mint_segment_msg_id(
+                                        &mut used_primary_segment_msg_id,
+                                        &self.msg_id,
+                                    )
+                                });
                             if data.entries.iter().all(|entry| {
                                 entry.get("status").and_then(serde_json::Value::as_str) == Some("completed")
                             }) {
                                 active_plan_ids.remove(&plan_id);
                             } else {
-                                active_plan_ids.insert(plan_id.clone());
+                                remember_bounded(
+                                    &mut active_plan_ids,
+                                    plan_id.clone(),
+                                    "active_plan",
+                                );
                             }
                             self.forward_to_websocket_with_msg_id(&plan_id, &event);
-                            self.persist_plan(data).await;
+                            let _ = self
+                                .bounded_event_side_effect(
+                                    event_side_effect_deadline,
+                                    "persist_plan",
+                                    self.persist_plan(data),
+                                )
+                                .await;
                         }
                         AgentStreamEvent::TurnCompleted(metrics) => {
                             // Accumulate this turn's token usage into the owning
@@ -933,49 +2101,157 @@ impl StreamRelay {
                         "StreamRelay channel closed without terminal event"
                     );
 
-                    let channel_error = AgentStreamEvent::Error(
-                        nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
-                            "Agent event channel closed before the turn completed",
-                            None,
-                        ),
-                    );
-                    self.complete_active_thinking(&mut active_thinking).await;
-                    self.close_active_text_segment(&mut active_text, &mut text_segments, "error")
-                        .await;
-                    self.fail_active_tool_calls(
-                        &mut active_tool_calls,
-                        "channel_closed",
-                        &mut pending_superseded_call_ids,
-                    )
-                    .await;
-                    self.fail_active_acp_tool_calls(&mut active_acp_tool_calls, "channel_closed")
-                        .await;
-                    self.fail_active_tool_groups(&mut active_tool_groups, "channel_closed")
-                        .await;
-                    self.finalize_active_plans(&mut active_plan_ids, "error").await;
-                    self.finalize_active_agent_status(&mut active_agent_status, "error")
-                        .await;
-                    self.forward_to_websocket(&channel_error);
-                    // Channel closure is an unexpected terminal failure. Finalize
-                    // partial output, but never manufacture a clean Finish.
-                    let outcome = self
-                        .finalize(
-                            &full_text_buffer,
-                            &text_segments,
-                            &channel_error,
-                            RelayTerminal::ChannelClosed,
-                            emitted_response,
-                            // A channel-closed terminal is never an Error event,
-                            // so there is nothing to suppress here.
-                            false,
+                    let mut terminal_event = if self
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(AgentTurnCancellation::is_cancelled)
+                    {
+                        Self::cancelled_finish_event()
+                    } else {
+                        AgentStreamEvent::Error(
+                            nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                                "Agent event channel closed before the turn completed",
+                                None,
+                            ),
+                        )
+                    };
+                    if self
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(AgentTurnCancellation::is_cancelled)
+                    {
+                        terminal_event = Self::cancelled_finish_event();
+                    }
+                    let terminal_claimed = self
+                        .cancellation
+                        .as_ref()
+                        .map(AgentTurnCancellation::try_claim_terminal_surface)
+                        .unwrap_or(true);
+                    let terminal = if Self::is_cancelled_finish(&terminal_event) {
+                        RelayTerminal::Finish
+                    } else {
+                        RelayTerminal::ChannelClosed
+                    };
+                    let fallback_terminal = terminal.clone();
+                    let fallback_stop_reason = match &terminal_event {
+                        AgentStreamEvent::Finish(data) => data.stop_reason,
+                        _ => None,
+                    };
+                    let fallback_text = (!full_text_buffer.trim().is_empty())
+                        .then(|| full_text_buffer.trim().to_owned());
+                    let fallback_msg_id = active_text
+                        .as_ref()
+                        .map(|segment| segment.id.clone())
+                        .or_else(|| text_segments.last().map(|segment| segment.id.clone()));
+                    let terminal_message_id = if matches!(terminal_event, AgentStreamEvent::Error(_)) {
+                        ConversationService::mint_msg_id()
+                    } else {
+                        self.msg_id.clone()
+                    };
+                    let terminal_cleanup = async {
+                        let incomplete_reason = if Self::is_cancelled_finish(&terminal_event) {
+                            "cancelled"
+                        } else {
+                            "channel_closed"
+                        };
+                        let failed_completed_tools = Self::take_failed_tool_calls(
+                            &mut completed_artifact_tool_calls,
+                            incomplete_reason,
+                        );
+                        let failed_completed_acp_tools = Self::take_failed_acp_tool_calls(
+                            &mut completed_artifact_acp_tool_calls,
+                            incomplete_reason,
+                        );
+                        self.broadcast_failed_tool_calls(&failed_completed_tools);
+                        self.broadcast_failed_acp_tool_calls(&failed_completed_acp_tools);
+                        let _ = tokio::join!(
+                            self.persist_failed_tool_calls(&failed_completed_tools),
+                            self.persist_failed_acp_tool_calls(&failed_completed_acp_tools),
+                        );
+                        self.complete_active_thinking(&mut active_thinking).await;
+                        self.close_active_text_segment(
+                            &mut active_text,
+                            &mut text_segments,
+                            "error",
                         )
                         .await;
+                        self.fail_active_tool_calls(
+                            &mut active_tool_calls,
+                            incomplete_reason,
+                            &mut pending_superseded_call_ids,
+                        )
+                        .await;
+                        self.fail_active_acp_tool_calls(&mut active_acp_tool_calls, incomplete_reason)
+                            .await;
+                        self.fail_active_tool_groups(&mut active_tool_groups, incomplete_reason)
+                            .await;
+                        self.finalize_active_plans(
+                            &mut active_plan_ids,
+                            Self::plan_terminal_status(&terminal_event),
+                        )
+                        .await;
+                        self.finalize_active_agent_status(
+                            &mut active_agent_status,
+                            Self::plan_terminal_status(&terminal_event),
+                        )
+                        .await;
+                        let outcome = self
+                            .finalize(
+                                &full_text_buffer,
+                                &text_segments,
+                                &terminal_event,
+                                terminal,
+                                emitted_response,
+                                // A channel-closed terminal is never a
+                                // suppressible provider failure.
+                                false,
+                                &terminal_message_id,
+                            )
+                            .await;
+                        if terminal_claimed {
+                            self.forward_to_websocket_with_msg_id(&terminal_message_id, &terminal_event);
+                        }
+                        outcome
+                    };
+                    let outcome = match tokio::time::timeout(
+                        TERMINAL_FINALIZATION_GRACE,
+                        terminal_cleanup,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(_) => {
+                            warn!(
+                                conversation_id = %self.conversation_id,
+                                msg_id = %self.msg_id,
+                                "Channel-closed relay finalization exceeded the hard bound"
+                            );
+                            if terminal_claimed {
+                                self.forward_to_websocket_with_msg_id(&terminal_message_id, &terminal_event);
+                            }
+                            RelayOutcome {
+                                system_responses: Vec::new(),
+                                terminal: fallback_terminal,
+                                stop_reason: fallback_stop_reason,
+                                emitted_response,
+                                suppressed_error: None,
+                                final_text: fallback_text,
+                                final_text_msg_id: fallback_msg_id,
+                            }
+                        }
+                    };
+                    if terminal_claimed
+                        && let Some(cancellation) = self.cancellation.as_ref()
+                    {
+                        cancellation.mark_terminal_observed();
+                    }
                     if self.complete_turn {
                         Self::complete_conversation_with_context(
                             &self.repo,
                             &self.user_events,
                             &self.user_id,
                             &self.conversation_id,
+                            Some(self.root_turn_id.clone()),
                             None,
                             self.companion,
                             self.companion_id.clone(),
@@ -986,8 +2262,8 @@ impl StreamRelay {
                     }
                     break outcome;
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(lagged = n, "Stream relay lagged, some events dropped");
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    unreachable!("lagged receive results are normalized to terminal errors")
                 }
             }
         }
@@ -1034,6 +2310,38 @@ impl StreamRelay {
             AgentStreamEvent::Finish(_) => RelayTerminal::Finish,
             _ => RelayTerminal::ChannelClosed,
         }
+    }
+
+    fn cancelled_finish_event() -> AgentStreamEvent {
+        AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::Cancelled),
+        })
+    }
+
+    fn is_cancelled_finish(event: &AgentStreamEvent) -> bool {
+        matches!(
+            event,
+            AgentStreamEvent::Finish(FinishEventData {
+                stop_reason: Some(TurnStopReason::Cancelled),
+                ..
+            })
+        )
+    }
+
+    /// Publish the bounded stop fallback when no backend/relay terminal was
+    /// observed. The generation snapshot arbitrates the single publisher, so
+    /// a late backend acknowledgement cannot duplicate the cancelled Finish.
+    pub(crate) fn surface_cancelled_turn(
+        &self,
+        cancellation: &AgentTurnCancellation,
+    ) -> bool {
+        if !cancellation.try_claim_terminal_surface() {
+            return false;
+        }
+        self.forward_to_websocket(&Self::cancelled_finish_event());
+        cancellation.mark_terminal_observed();
+        true
     }
 
     fn mint_segment_msg_id(used_primary: &mut bool, primary_msg_id: &str) -> String {
@@ -1101,7 +2409,11 @@ impl StreamRelay {
             return;
         }
 
-        let content = json!({ "content": segment.buffer }).to_string();
+        let content = json!({
+            "content": segment.buffer,
+            "turn_id": &self.root_turn_id,
+        })
+        .to_string();
 
         if segment.record_created {
             let update = nomifun_db::MessageRowUpdate {
@@ -1137,7 +2449,11 @@ impl StreamRelay {
             return None;
         }
 
-        let content = json!({ "content": segment.buffer }).to_string();
+        let content = json!({
+            "content": segment.buffer,
+            "turn_id": &self.root_turn_id,
+        })
+        .to_string();
         if segment.record_created {
             let update = nomifun_db::MessageRowUpdate {
                 content: Some(content),
@@ -1177,22 +2493,51 @@ impl StreamRelay {
         terminal: RelayTerminal,
         emitted_response: bool,
         suppress_error: bool,
+        terminal_message_id: &str,
     ) -> RelayOutcome {
         let mut outcome = RelayOutcome {
             system_responses: Vec::new(),
             terminal,
+            stop_reason: match event {
+                AgentStreamEvent::Finish(data) => data.stop_reason,
+                _ => None,
+            },
             emitted_response,
             suppressed_error: None,
             final_text: None,
             final_text_msg_id: None,
         };
-        let status = match event {
-            AgentStreamEvent::Error(_) => "error",
-            _ => "finish",
+        let cancelled = Self::is_cancelled_finish(event);
+        let status = if matches!(event, AgentStreamEvent::Error(_)) || cancelled {
+            "error"
+        } else {
+            "finish"
         };
 
+        // Error is a first-class terminal record regardless of whether the
+        // provider emitted partial text first. Persisting it only for empty
+        // turns left the live Error frame unmatched after history hydration;
+        // the renderer then carried that orphan into later turns. The error
+        // message has its own canonical identity and an explicit owning turn.
+        if let AgentStreamEvent::Error(data) = event
+            && !suppress_error
+        {
+            self.persist_error_tips(terminal_message_id, data).await;
+        }
+
         if !text.is_empty() {
-            let processed = self.process_final_text(text).await;
+            let processed = if cancelled {
+                // A cancelled partial response is data to preserve, never a
+                // completed instruction stream. In particular, do not execute
+                // embedded cron commands or produce continuation responses.
+                MiddlewareResult {
+                    message: text.to_owned(),
+                    display_message: None,
+                    system_responses: Vec::new(),
+                }
+            } else {
+                self.process_final_text(text).await
+            };
             let final_text = processed.message.trim().to_owned();
             let hidden = final_text.is_empty();
             if !hidden {
@@ -1204,7 +2549,11 @@ impl StreamRelay {
                     if !hidden {
                         outcome.final_text_msg_id = Some(primary_segment.id.clone());
                     }
-                    let content = json!({ "content": final_text }).to_string();
+                    let content = json!({
+                        "content": final_text,
+                        "turn_id": &self.root_turn_id,
+                    })
+                    .to_string();
                     let update = nomifun_db::MessageRowUpdate {
                         content: Some(content),
                         status: Some(Some(status.to_owned())),
@@ -1238,7 +2587,11 @@ impl StreamRelay {
                     conversation_id: self.conversation_id.clone(),
                     msg_id: Some(self.msg_id.clone()),
                     r#type: "text".into(),
-                    content: json!({ "content": final_text }).to_string(),
+                    content: json!({
+                        "content": final_text,
+                        "turn_id": &self.root_turn_id,
+                    })
+                    .to_string(),
                     position: Some("left".into()),
                     status: Some(status.to_owned()),
                     hidden: false,
@@ -1252,7 +2605,7 @@ impl StreamRelay {
 
             self.send_system_responses(&processed.system_responses);
             outcome.system_responses = processed.system_responses;
-        } else if let AgentStreamEvent::Error(data) = event {
+        } else if matches!(event, AgentStreamEvent::Error(_)) {
             if suppress_error {
                 // review #1/#5: the send loop will (try to) fail over this
                 // pre-response fault — do NOT persist the error tips row. Hand the
@@ -1261,8 +2614,6 @@ impl StreamRelay {
                 outcome.suppressed_error = Some(event.clone());
                 return outcome;
             }
-            // No text accumulated but got an error — store error as tips message.
-            self.persist_error_tips(data).await;
         }
 
         outcome
@@ -1271,12 +2622,22 @@ impl StreamRelay {
     /// Persist a terminal provider error as a `tips` message row (the "no text,
     /// got error" surface). Factored out so [`Self::surface_terminal_error`] can
     /// re-persist a previously-suppressed error on a missed failover (review #1/#5).
-    async fn persist_error_tips(&self, data: &nomifun_ai_agent::protocol::events::ErrorEventData) {
-        let content = json!({ "content": &data.message, "type": "error", "error": &data }).to_string();
+    async fn persist_error_tips(
+        &self,
+        message_id: &str,
+        data: &nomifun_ai_agent::protocol::events::ErrorEventData,
+    ) {
+        let content = json!({
+            "content": &data.message,
+            "type": "error",
+            "error": &data,
+            "turn_id": &self.root_turn_id,
+        })
+        .to_string();
         let row = MessageRow {
-            id: ConversationService::mint_msg_id(),
+            id: message_id.to_owned(),
             conversation_id: self.conversation_id.clone(),
-            msg_id: None,
+            msg_id: Some(message_id.to_owned()),
             r#type: "tips".into(),
             content,
             position: Some("left".into()),
@@ -1323,7 +2684,7 @@ impl StreamRelay {
         let row = MessageRow {
             id: id.clone(),
             conversation_id: self.conversation_id.clone(),
-            msg_id: Some(self.msg_id.clone()),
+            msg_id: Some(self.root_turn_id.clone()),
             r#type: "agent_status".into(),
             content,
             position: Some("left".into()),
@@ -1367,7 +2728,7 @@ impl StreamRelay {
             .as_deref()
             .map(str::trim)
             .filter(|session_id| !session_id.is_empty())
-            .unwrap_or(&self.msg_id)
+            .unwrap_or(&self.root_turn_id)
             .to_owned()
     }
 
@@ -1469,7 +2830,14 @@ impl StreamRelay {
             return;
         };
         if let Some(segment) = self.finalize_text_segment(text_segment, status).await {
-            text_segments.push(segment);
+            if text_segments.len() < MAX_TERMINAL_ACTIVE_ITEMS {
+                text_segments.push(segment);
+            } else {
+                warn!(
+                    max = MAX_TERMINAL_ACTIVE_ITEMS,
+                    "Relay finalized-text tracking limit reached"
+                );
+            }
         }
     }
 
@@ -1484,19 +2852,49 @@ impl StreamRelay {
             .await;
     }
 
+    async fn persist_provisional_artifact_tool_call(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
+    ) -> bool {
+        let provisional = Self::provisional_artifact_tool_call(data);
+        let mut noop_pending = HashSet::new();
+        self.persist_tool_call_projection(&provisional, false, Some(false), &mut noop_pending)
+            .await
+    }
+
+    fn provisional_artifact_tool_call(data: &ToolCallEventData) -> ToolCallEventData {
+        let mut provisional = data.clone();
+        provisional.status = ToolCallStatus::Running;
+        provisional.artifacts.clear();
+        provisional.output = Some(ARTIFACT_DELIVERY_PENDING_OUTPUT.to_owned());
+        provisional
+    }
+
     async fn persist_tool_call_with_hidden(
         &self,
         data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
         hidden: bool,
         pending_superseded_call_ids: &mut HashSet<String>,
     ) {
+        let _ = self
+            .persist_tool_call_projection(data, hidden, None, pending_superseded_call_ids)
+            .await;
+    }
+
+    async fn persist_tool_call_projection(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
+        hidden: bool,
+        artifact_delivery_committed: Option<bool>,
+        pending_superseded_call_ids: &mut HashSet<String>,
+    ) -> bool {
         if data.call_id.trim().is_empty() {
             warn!(
                 tool = %data.name,
                 status = ?data.status,
                 "Skipping tool_call persistence because call_id is empty"
             );
-            return;
+            return false;
         }
 
         let status = match data.status {
@@ -1507,15 +2905,33 @@ impl StreamRelay {
         let message_id = self.tool_message_id(&data.call_id).await;
         let mut content_value = serde_json::to_value(data).unwrap_or_default();
         if let Some(object) = content_value.as_object_mut() {
-            object.insert("turn_id".to_owned(), json!(self.msg_id));
+            object.insert("turn_id".to_owned(), json!(self.root_turn_id));
+            if let Some(committed) = artifact_delivery_committed {
+                object.insert(ARTIFACT_DELIVERY_COMMITTED_FIELD.to_owned(), json!(committed));
+            }
+            if data.status != ToolCallStatus::Completed {
+                // Artifact receipts are a terminal-success contract. Force an
+                // explicit empty array (the wire serializer normally skips an
+                // empty Vec) so merging an Error over a malformed Running row
+                // cannot retain provisional/stale receipts.
+                object.insert("artifacts".to_owned(), json!([]));
+            }
         }
         let content = content_value.to_string();
 
-        let existing = self
-            .repo
-            .get_message(self.conv_id(), &message_id)
-            .await
-            .unwrap_or(None);
+        let existing = match self.repo.get_message(self.conv_id(), &message_id).await {
+            Ok(existing) => existing,
+            Err(e) => {
+                error!(
+                    call_id = %data.call_id,
+                    tool = %data.name,
+                    status,
+                    error = %ErrorChain(&e),
+                    "Failed to load tool_call message before persistence"
+                );
+                return false;
+            }
+        };
 
         if let Some(existing_row) = &existing {
             if status == "work" && Self::tool_call_row_is_settled(existing_row) {
@@ -1524,13 +2940,31 @@ impl StreamRelay {
                     tool = %data.name,
                     "Ignoring stale Running tool_call update for already-settled call"
                 );
-                return;
+                return false;
             }
         }
 
         if let Some(existing_row) = existing {
+            let existing_artifact_committed = serde_json::from_str::<Value>(&existing_row.content)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get(ARTIFACT_DELIVERY_COMMITTED_FIELD)
+                        .and_then(Value::as_bool)
+                })
+                == Some(true);
             let terminal_conflict = match (existing_row.status.as_deref(), data.status) {
-                (Some("finish"), ToolCallStatus::Completed) | (Some("error"), ToolCallStatus::Error) => false,
+                (Some("finish"), ToolCallStatus::Completed | ToolCallStatus::Error)
+                | (Some("error"), ToolCallStatus::Error) => false,
+                // A newly verified artifact completion always starts a fresh
+                // provisional projection. It may safely demote an uncommitted
+                // or legacy finish row; an existing error remains absorbing.
+                (Some("finish"), _)
+                    if artifact_delivery_committed == Some(false)
+                        && !existing_artifact_committed =>
+                {
+                    false
+                }
                 (Some("finish" | "error"), _) => true,
                 _ => false,
             };
@@ -1542,7 +2976,7 @@ impl StreamRelay {
                     incoming_status = ?data.status,
                     "Ignoring tool call transition away from persisted terminal state"
                 );
-                return;
+                return false;
             }
             let merged_content = Self::merge_json_content(&existing_row.content, &content);
             let update = nomifun_db::MessageRowUpdate {
@@ -1558,6 +2992,7 @@ impl StreamRelay {
                     error = %ErrorChain(&e),
                     "Failed to update tool_call message"
                 );
+                return false;
             } else {
                 debug!(
                     call_id = %data.call_id,
@@ -1578,7 +3013,7 @@ impl StreamRelay {
             let row = MessageRow {
                 id: message_id.clone(),
                 conversation_id: self.conversation_id.clone(),
-                msg_id: Some(self.msg_id.clone()),
+                msg_id: Some(self.root_turn_id.clone()),
                 r#type: "tool_call".into(),
                 content,
                 position: Some("left".into()),
@@ -1594,6 +3029,7 @@ impl StreamRelay {
                     error = %ErrorChain(&e),
                     "Failed to persist tool_call message"
                 );
+                return false;
             } else {
                 debug!(
                     call_id = %data.call_id,
@@ -1603,6 +3039,7 @@ impl StreamRelay {
                 );
             }
         }
+        true
     }
 
     async fn tool_message_id(&self, call_id: &str) -> String {
@@ -1724,6 +3161,210 @@ impl StreamRelay {
         }
     }
 
+    fn invalidates_completed_artifacts(event: &AgentStreamEvent) -> bool {
+        match event {
+            AgentStreamEvent::Error(_) => true,
+            AgentStreamEvent::Finish(data) => !matches!(
+                data.stop_reason,
+                None | Some(nomifun_ai_agent::protocol::events::TurnStopReason::EndTurn)
+            ),
+            _ => false,
+        }
+    }
+
+    fn committed_artifact_tool_content(
+        &self,
+        data: &ToolCallEventData,
+    ) -> Result<String, nomifun_db::DbError> {
+        if data.status != ToolCallStatus::Completed || data.artifacts.is_empty() {
+            return Err(nomifun_db::DbError::Conflict(format!(
+                "tool call '{}' is not a completed artifact delivery",
+                data.call_id
+            )));
+        }
+        let mut value = serde_json::to_value(data)
+            .map_err(|error| nomifun_db::DbError::Conflict(error.to_string()))?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            nomifun_db::DbError::Conflict(format!(
+                "tool call '{}' did not serialize as an object",
+                data.call_id
+            ))
+        })?;
+        object.insert("turn_id".to_owned(), json!(self.root_turn_id));
+        object.insert(ARTIFACT_DELIVERY_COMMITTED_FIELD.to_owned(), json!(true));
+        Ok(value.to_string())
+    }
+
+    fn committed_artifact_acp_tool_content(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+    ) -> Result<String, nomifun_db::DbError> {
+        let has_delivery = data.update.content.as_ref().is_some_and(|items| {
+            items.iter().any(|item| {
+                matches!(
+                    item,
+                    nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                        | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                )
+            })
+        });
+        if data.update.status != Some(AcpToolCallStatus::Completed) || !has_delivery {
+            return Err(nomifun_db::DbError::Conflict(format!(
+                "ACP tool call '{}' is not a completed artifact delivery",
+                data.update.tool_call_id
+            )));
+        }
+        let mut value = serde_json::to_value(data)
+            .map_err(|error| nomifun_db::DbError::Conflict(error.to_string()))?;
+        normalize_keys_to_snake_case(&mut value);
+        let object = value.as_object_mut().ok_or_else(|| {
+            nomifun_db::DbError::Conflict(format!(
+                "ACP tool call '{}' did not serialize as an object",
+                data.update.tool_call_id
+            ))
+        })?;
+        object.insert("turn_id".to_owned(), json!(self.root_turn_id));
+        object.insert(ARTIFACT_DELIVERY_COMMITTED_FIELD.to_owned(), json!(true));
+        Ok(value.to_string())
+    }
+
+    async fn commit_pending_artifact_deliveries(
+        &self,
+        generic: &HashMap<String, ToolCallEventData>,
+        acp: &HashMap<
+            String,
+            nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+        >,
+    ) -> Result<(), nomifun_db::DbError> {
+        let has_local_receipts = generic.values().any(|data| !data.artifacts.is_empty())
+            || acp.values().any(|data| {
+                data.update.content.as_ref().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        matches!(
+                            item,
+                            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                        )
+                    })
+                })
+            });
+        if has_local_receipts {
+            let workspace = self.artifact_workspace.as_ref().ok_or_else(|| {
+                nomifun_db::DbError::Conflict(
+                    "artifact delivery has no canonical session workspace for final verification".to_owned(),
+                )
+            })?;
+            let store = ArtifactStore::new(workspace);
+            for data in generic.values() {
+                for artifact in &data.artifacts {
+                    store.reverify_receipt(artifact).map_err(|error| {
+                        nomifun_db::DbError::Conflict(format!(
+                            "tool call '{}' artifact '{}' failed final verification: {error}",
+                            data.call_id, artifact.id
+                        ))
+                    })?;
+                }
+            }
+            for data in acp.values() {
+                for item in data.update.content.iter().flatten() {
+                    if let nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact {
+                        artifact,
+                        ..
+                    } = item
+                    {
+                        store.reverify_receipt(artifact).map_err(|error| {
+                            nomifun_db::DbError::Conflict(format!(
+                                "ACP tool call '{}' artifact '{}' failed final verification: {error}",
+                                data.update.tool_call_id, artifact.id
+                            ))
+                        })?;
+                    }
+                }
+            }
+        }
+
+        let mut generic_calls = generic.values().collect::<Vec<_>>();
+        generic_calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
+        let mut acp_calls = acp.values().collect::<Vec<_>>();
+        acp_calls.sort_by(|left, right| {
+            left.update
+                .tool_call_id
+                .cmp(&right.update.tool_call_id)
+        });
+
+        let mut commits = Vec::with_capacity(generic_calls.len() + acp_calls.len());
+        for data in generic_calls {
+            commits.push(TurnArtifactMessageCommit {
+                id: self
+                    .try_derived_message_id("tool_call", &data.call_id)
+                    .await?,
+                message_type: "tool_call".to_owned(),
+                content: self.committed_artifact_tool_content(data)?,
+            });
+        }
+        for data in acp_calls {
+            commits.push(TurnArtifactMessageCommit {
+                id: self
+                    .try_derived_message_id("acp_tool_call", &data.update.tool_call_id)
+                    .await?,
+                message_type: "acp_tool_call".to_owned(),
+                content: self.committed_artifact_acp_tool_content(data)?,
+            });
+        }
+
+        let expected_ids = commits
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<HashSet<_>>();
+        let committed = self
+            .repo
+            .commit_turn_artifact_messages(
+                self.conv_id(),
+                &self.root_turn_id,
+                &commits,
+                now_ms(),
+            )
+            .await?;
+        if committed.len() != commits.len()
+            || committed
+                .iter()
+                .any(|row| !expected_ids.contains(row.id.as_str()))
+        {
+            return Err(nomifun_db::DbError::Conflict(
+                "artifact commit returned an incomplete or mismatched durable batch".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn broadcast_committed_artifact_tool_calls(
+        &self,
+        completed: &HashMap<String, ToolCallEventData>,
+    ) {
+        let mut completed = completed.values().collect::<Vec<_>>();
+        completed.sort_by(|left, right| left.call_id.cmp(&right.call_id));
+        for data in completed {
+            self.forward_to_websocket(&AgentStreamEvent::ToolCall(data.clone()));
+        }
+    }
+
+    fn broadcast_committed_artifact_acp_tool_calls(
+        &self,
+        completed: &HashMap<
+            String,
+            nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+        >,
+    ) {
+        let mut completed = completed.values().collect::<Vec<_>>();
+        completed.sort_by(|left, right| {
+            left.update
+                .tool_call_id
+                .cmp(&right.update.tool_call_id)
+        });
+        for data in completed {
+            self.forward_to_websocket(&AgentStreamEvent::AcpToolCall(data.clone()));
+        }
+    }
+
     fn plan_terminal_status(event: &AgentStreamEvent) -> &'static str {
         match event {
             AgentStreamEvent::Finish(data)
@@ -1737,7 +3378,10 @@ impl StreamRelay {
     }
 
     async fn finalize_active_plans(&self, active_plan_ids: &mut HashSet<String>, status: &str) {
-        for plan_id in active_plan_ids.drain() {
+        if active_plan_ids.len() > MAX_TERMINAL_ACTIVE_ITEMS {
+            warn!(count = active_plan_ids.len(), "Truncating active plans during terminal cleanup");
+        }
+        for plan_id in active_plan_ids.drain().take(MAX_TERMINAL_ACTIVE_ITEMS) {
             let update = nomifun_db::MessageRowUpdate {
                 content: None,
                 status: Some(Some(status.to_owned())),
@@ -1751,6 +3395,50 @@ impl StreamRelay {
                     "Failed to finalize active plan"
                 );
             }
+        }
+    }
+
+    fn take_failed_tool_calls(
+        active_tool_calls: &mut HashMap<String, ToolCallEventData>,
+        reason: &str,
+    ) -> Vec<ToolCallEventData> {
+        if active_tool_calls.is_empty() {
+            return Vec::new();
+        }
+
+        if active_tool_calls.len() > MAX_TERMINAL_ACTIVE_ITEMS {
+            warn!(count = active_tool_calls.len(), "Truncating active tool calls during terminal cleanup");
+        }
+        active_tool_calls
+            .drain()
+            .take(MAX_TERMINAL_ACTIVE_ITEMS)
+            .map(|(_, mut data)| {
+                let output = if data.status == ToolCallStatus::Completed {
+                    format!(
+                        "The turn ended without a valid completed delivery for this tool: {reason}"
+                    )
+                } else {
+                    format!("The turn ended before this tool completed: {reason}")
+                };
+                data.status = ToolCallStatus::Error;
+                data.output = Some(output);
+                data.artifacts.clear();
+                data
+            })
+            .collect()
+    }
+
+    fn broadcast_failed_tool_calls(&self, failed: &[ToolCallEventData]) {
+        for data in failed {
+            let event = AgentStreamEvent::ToolCall(data.clone());
+            self.forward_to_websocket(&event);
+        }
+    }
+
+    async fn persist_failed_tool_calls(&self, failed: &[ToolCallEventData]) {
+        let mut noop_pending = HashSet::new();
+        for data in failed {
+            self.persist_tool_call(data, &mut noop_pending).await;
         }
     }
 
@@ -1776,18 +3464,75 @@ impl StreamRelay {
                 );
                 continue;
             }
-            // Turn closed before the tool finished — cancel, don't paint as tool failure.
             data.status = ToolCallStatus::Canceled;
             data.output = Some(output.clone());
             canceled.push(data);
         }
 
         for data in canceled {
-            let event = AgentStreamEvent::ToolCall(data);
+            let event = AgentStreamEvent::ToolCall(data.clone());
             self.forward_to_websocket(&event);
-            if let AgentStreamEvent::ToolCall(data) = &event {
-                self.persist_tool_call(data, pending_superseded_call_ids).await;
-            }
+            self.persist_tool_call(&data, pending_superseded_call_ids).await;
+        }
+    }
+
+    fn take_failed_acp_tool_calls(
+        active_tool_calls: &mut HashMap<
+            String,
+            nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+        >,
+        reason: &str,
+    ) -> Vec<nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData> {
+        if active_tool_calls.len() > MAX_TERMINAL_ACTIVE_ITEMS {
+            warn!(count = active_tool_calls.len(), "Truncating active ACP tool calls during terminal cleanup");
+        }
+        active_tool_calls
+            .drain()
+            .take(MAX_TERMINAL_ACTIVE_ITEMS)
+            .map(|(_, mut data)| {
+                let output = if data.update.status == Some(AcpToolCallStatus::Completed) {
+                    format!(
+                        "The turn ended without a valid completed delivery for this tool: {reason}"
+                    )
+                } else {
+                    format!("The turn ended before this tool completed: {reason}")
+                };
+                data.update.session_update = AcpToolCallSessionUpdateKind::ToolCallUpdate;
+                data.update.status = Some(AcpToolCallStatus::Failed);
+                data.update.raw_output = Some(json!(output));
+                if let Some(content) = data.update.content.as_mut() {
+                    content.retain(|item| {
+                        !matches!(
+                            item,
+                            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact {
+                                ..
+                            } | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink {
+                                ..
+                            }
+                        )
+                    });
+                }
+                data
+            })
+            .collect()
+    }
+
+    fn broadcast_failed_acp_tool_calls(
+        &self,
+        failed: &[nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData],
+    ) {
+        for data in failed {
+            let event = AgentStreamEvent::AcpToolCall(data.clone());
+            self.forward_to_websocket(&event);
+        }
+    }
+
+    async fn persist_failed_acp_tool_calls(
+        &self,
+        failed: &[nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData],
+    ) {
+        for data in failed {
+            self.persist_acp_tool_call(&data).await;
         }
     }
 
@@ -1799,22 +3544,9 @@ impl StreamRelay {
         >,
         reason: &str,
     ) {
-        let output = format!("The turn ended before this tool completed: {reason}");
-        let failed: Vec<_> = active_tool_calls
-            .drain()
-            .map(|(_, mut data)| {
-                data.update.session_update = AcpToolCallSessionUpdateKind::ToolCallUpdate;
-                data.update.status = Some(AcpToolCallStatus::Failed);
-                data.update.raw_output = Some(json!(output));
-                data
-            })
-            .collect();
-
-        for data in failed {
-            let event = AgentStreamEvent::AcpToolCall(data.clone());
-            self.forward_to_websocket(&event);
-            self.persist_acp_tool_call(&data).await;
-        }
+        let failed = Self::take_failed_acp_tool_calls(active_tool_calls, reason);
+        self.broadcast_failed_acp_tool_calls(&failed);
+        self.persist_failed_acp_tool_calls(&failed).await;
     }
 
     async fn fail_active_tool_groups(
@@ -1825,9 +3557,14 @@ impl StreamRelay {
         >,
         reason: &str,
     ) {
+        if active_tool_groups.len() > MAX_TERMINAL_ACTIVE_ITEMS {
+            warn!(count = active_tool_groups.len(), "Truncating active tool groups during terminal cleanup");
+        }
         let failed: Vec<_> = active_tool_groups
             .drain()
+            .take(MAX_TERMINAL_ACTIVE_ITEMS)
             .map(|(_, mut entries)| {
+                entries.truncate(MAX_TERMINAL_ACTIVE_ITEMS);
                 for entry in &mut entries {
                     if entry.status == ToolCallStatus::Running {
                         entry.status = ToolCallStatus::Error;
@@ -1853,7 +3590,46 @@ impl StreamRelay {
     /// First event (ToolCall) inserts; subsequent events (ToolCallUpdate) update.
     #[tracing::instrument(skip_all)]
     async fn persist_acp_tool_call(&self, data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData) {
+        let _ = self.persist_acp_tool_call_projection(data, None).await;
+    }
+
+    async fn persist_provisional_artifact_acp_tool_call(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+    ) -> bool {
+        let provisional = Self::provisional_artifact_acp_tool_call(data);
+        self.persist_acp_tool_call_projection(&provisional, Some(false))
+            .await
+    }
+
+    fn provisional_artifact_acp_tool_call(
+        data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+    ) -> nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData {
+        let mut provisional = data.clone();
+        provisional.update.status = Some(AcpToolCallStatus::InProgress);
+        provisional.update.raw_output = Some(json!(ARTIFACT_DELIVERY_PENDING_OUTPUT));
+        if let Some(content) = provisional.update.content.as_mut() {
+            content.retain(|item| {
+                !matches!(
+                    item,
+                    nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact { .. }
+                        | nomifun_ai_agent::protocol::events::AcpToolCallContentItem::ResourceLink { .. }
+                )
+            });
+        }
+        provisional
+    }
+
+    async fn persist_acp_tool_call_projection(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+        artifact_delivery_committed: Option<bool>,
+    ) -> bool {
         let tool_call_id = &data.update.tool_call_id;
+        if tool_call_id.trim().is_empty() {
+            warn!("Skipping ACP tool call persistence because tool_call_id is empty");
+            return false;
+        }
         let message_id = self.acp_tool_message_id(tool_call_id).await;
         let status = match data.update.status {
             Some(AcpToolCallStatus::Pending) | None => "work",
@@ -1865,18 +3641,59 @@ impl StreamRelay {
         let mut value = serde_json::to_value(data).unwrap_or_default();
         normalize_keys_to_snake_case(&mut value);
         if let Some(object) = value.as_object_mut() {
-            object.insert("turn_id".to_owned(), json!(self.msg_id));
+            object.insert("turn_id".to_owned(), json!(self.root_turn_id));
+            if let Some(committed) = artifact_delivery_committed {
+                object.insert(ARTIFACT_DELIVERY_COMMITTED_FIELD.to_owned(), json!(committed));
+            }
+        }
+        if data.update.status != Some(AcpToolCallStatus::Completed)
+            && let Some(content) = value
+                .get_mut("update")
+                .and_then(|update| update.as_object_mut())
+                .and_then(|update| update.get_mut("content"))
+                .and_then(serde_json::Value::as_array_mut)
+        {
+            // A progress/failed frame may contain partial bytes or a remote
+            // link, but those are not successful durable output. Keep text,
+            // diffs, terminal diagnostics and artifact_error items only.
+            content.retain(|item| {
+                !matches!(
+                    item.get("type").and_then(serde_json::Value::as_str),
+                    Some("artifact" | "resource_link")
+                )
+            });
         }
         let content = value.to_string();
 
-        let existing = self
-            .repo
-            .get_message(self.conv_id(), &message_id)
-            .await
-            .unwrap_or(None);
+        let existing = match self.repo.get_message(self.conv_id(), &message_id).await {
+            Ok(existing) => existing,
+            Err(e) => {
+                error!(
+                    tool_call_id,
+                    status,
+                    error = %ErrorChain(&e),
+                    "Failed to load ACP tool call before persistence"
+                );
+                return false;
+            }
+        };
         if let Some(existing_row) = existing {
+            let existing_artifact_committed = serde_json::from_str::<Value>(&existing_row.content)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get(ARTIFACT_DELIVERY_COMMITTED_FIELD)
+                        .and_then(Value::as_bool)
+                })
+                == Some(true);
             let terminal_conflict = match (existing_row.status.as_deref(), status) {
-                (Some("finish"), "finish") | (Some("error"), "error") => false,
+                (Some("finish"), "finish" | "error") | (Some("error"), "error") => false,
+                (Some("finish"), _)
+                    if artifact_delivery_committed == Some(false)
+                        && !existing_artifact_committed =>
+                {
+                    false
+                }
                 (Some("finish" | "error"), _) => true,
                 _ => false,
             };
@@ -1887,7 +3704,7 @@ impl StreamRelay {
                     incoming_status = status,
                     "Ignoring ACP tool transition away from persisted terminal state"
                 );
-                return;
+                return false;
             }
             let merged_content = Self::merge_acp_tool_call_content(&existing_row.content, &value);
             let update = nomifun_db::MessageRowUpdate {
@@ -1897,14 +3714,15 @@ impl StreamRelay {
             };
             if let Err(e) = self.repo.update_message(&message_id, &update).await {
                 error!(error = %ErrorChain(&e), "Failed to update acp_tool_call message");
+                return false;
             }
-            return;
+            return true;
         }
 
         let row = MessageRow {
             id: message_id.clone(),
             conversation_id: self.conversation_id.clone(),
-            msg_id: Some(self.msg_id.clone()),
+            msg_id: Some(self.root_turn_id.clone()),
             r#type: "acp_tool_call".into(),
             content,
             position: Some("left".into()),
@@ -1914,7 +3732,9 @@ impl StreamRelay {
         };
         if let Err(e) = self.repo.insert_message(&row).await {
             error!(error = %ErrorChain(&e), "Failed to persist acp_tool_call message");
+            return false;
         }
+        true
     }
 
     async fn acp_tool_message_id(&self, tool_call_id: &str) -> String {
@@ -1967,6 +3787,18 @@ impl StreamRelay {
                 if !val.is_null() {
                     base_update.insert(key.clone(), val.clone());
                 }
+            }
+            if new_update.get("status").and_then(serde_json::Value::as_str) == Some("failed")
+                && let Some(content) = base_update
+                    .get_mut("content")
+                    .and_then(serde_json::Value::as_array_mut)
+            {
+                content.retain(|item| {
+                    !matches!(
+                        item.get("type").and_then(serde_json::Value::as_str),
+                        Some("artifact" | "resource_link")
+                    )
+                });
             }
         }
         base.to_string()
@@ -2023,7 +3855,7 @@ impl StreamRelay {
             let row = MessageRow {
                 id: group_id.clone(),
                 conversation_id: self.conversation_id.clone(),
-                msg_id: Some(self.msg_id.clone()),
+                msg_id: Some(self.root_turn_id.clone()),
                 r#type: "tool_group".into(),
                 content,
                 position: Some("left".into()),
@@ -2055,7 +3887,18 @@ impl StreamRelay {
                 .map(|service| Box::new(SharedCronService(Arc::clone(service))) as Box<dyn ICronService>),
         );
 
-        middleware.process(text, &self.user_id, &self.conversation_id).await
+        let cancellation = self
+            .cancellation
+            .as_ref()
+            .map(AgentTurnCancellation::cancellation_token);
+        middleware
+            .process_with_cancellation(
+                text,
+                &self.user_id,
+                &self.conversation_id,
+                cancellation.as_ref(),
+            )
+            .await
     }
 
     fn send_final_text_override(&self, msg_id: &str, text: &str, hidden: bool) {
@@ -2086,6 +3929,7 @@ impl StreamRelay {
         // (the websocket consumers tolerate unknown fields; the companion collector
         // keys off them).
         if let Some(obj) = payload.as_object_mut() {
+            obj.insert("turn_id".into(), json!(self.root_turn_id));
             obj.insert("companion".into(), json!(self.companion));
             obj.insert("companion_id".into(), json!(self.companion_id));
             obj.insert("origin".into(), json!(self.origin));
@@ -2105,23 +3949,67 @@ impl StreamRelay {
         user_events: &Arc<dyn UserEventSink>,
         user_id: &str,
         conversation_id: &str,
+        turn_id: Option<String>,
         runtime: Option<ConversationRuntimeSummary>,
         companion: bool,
         companion_id: Option<CompanionId>,
         origin: Option<String>,
         channel_platform: Option<String>,
     ) {
+        Self::persist_conversation_finished(repo, conversation_id).await;
+        Self::broadcast_turn_completed_with_context(
+            user_events,
+            user_id,
+            conversation_id,
+            turn_id,
+            runtime,
+            companion,
+            companion_id,
+            origin,
+            channel_platform,
+        );
+    }
+
+    pub async fn persist_conversation_finished(
+        repo: &Arc<dyn IConversationRepository>,
+        conversation_id: &str,
+    ) {
         let update = nomifun_db::ConversationRowUpdate {
             status: Some("finished".to_owned()),
             updated_at: Some(now_ms()),
             ..Default::default()
         };
-        if let Err(e) = repo.update(conversation_id, &update).await {
-            error!(error = %ErrorChain(&e), "Failed to update conversation status");
+        match tokio::time::timeout(
+            TURN_COMPLETION_PERSIST_GRACE,
+            repo.update(conversation_id, &update),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                error!(error = %ErrorChain(&e), "Failed to update conversation status");
+            }
+            Err(_) => {
+                warn!(conversation_id, "Timed out updating conversation status");
+            }
         }
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn broadcast_turn_completed_with_context(
+        user_events: &Arc<dyn UserEventSink>,
+        user_id: &str,
+        conversation_id: &str,
+        turn_id: Option<String>,
+        runtime: Option<ConversationRuntimeSummary>,
+        companion: bool,
+        companion_id: Option<CompanionId>,
+        origin: Option<String>,
+        channel_platform: Option<String>,
+    ) {
         let payload = json!({
             "conversation_id": conversation_id,
+            "turn_id": turn_id,
             "status": "finished",
             "can_send_message": true,
             "runtime": runtime,
@@ -2136,7 +4024,11 @@ impl StreamRelay {
         debug!(conversation_id, status = "finished", "Turn completed");
     }
 
-    async fn derived_message_id(&self, message_type: &str, correlation_key: &str) -> String {
+    async fn try_derived_message_id(
+        &self,
+        message_type: &str,
+        correlation_key: &str,
+    ) -> Result<String, nomifun_db::DbError> {
         let cache_key = format!("{message_type}\0{correlation_key}");
         if let Some(id) = self
             .derived_message_ids
@@ -2145,17 +4037,32 @@ impl StreamRelay {
             .get(&cache_key)
             .cloned()
         {
-            return id;
+            return Ok(id);
         }
 
-        let id = match self
+        let id = self
             .repo
             .claim_message_correlation(
                 self.conv_id(),
+                // Provider call/session ids are only guaranteed unique inside
+                // one wire prompt. Continuations can legitimately reuse a call
+                // id, so canonical row identity remains wire-scoped even though
+                // the row's ownership (`msg_id`/content.turn_id) is root-scoped.
                 &self.msg_id,
                 message_type,
                 correlation_key,
             )
+            .await?;
+        self.derived_message_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(cache_key, id.clone());
+        Ok(id)
+    }
+
+    async fn derived_message_id(&self, message_type: &str, correlation_key: &str) -> String {
+        match self
+            .try_derived_message_id(message_type, correlation_key)
             .await
         {
             Ok(id) => id,
@@ -2168,12 +4075,7 @@ impl StreamRelay {
                 );
                 MessageId::new().into_string()
             }
-        };
-        self.derived_message_ids
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(cache_key, id.clone());
-        id
+        }
     }
 }
 
@@ -2237,7 +4139,10 @@ mod tests {
     use nomifun_common::{ConversationId, MessageId};
     use nomifun_db::DbError;
     use std::collections::HashSet;
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering},
+    };
 
     const TEST_ASSISTANT_MESSAGE_ID: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678941";
     const TEST_TURN_A: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678942";
@@ -2246,6 +4151,32 @@ mod tests {
 
     fn test_conversation_id() -> String {
         ConversationId::new().into_string()
+    }
+
+    fn test_artifact(id: &str) -> nomifun_ai_agent::artifact_store::PersistedArtifact {
+        nomifun_ai_agent::artifact_store::PersistedArtifact {
+            id: id.into(),
+            kind: nomifun_ai_agent::artifact_store::ArtifactKind::Image,
+            mime_type: "image/png".into(),
+            path: format!("/workspace/{id}.png"),
+            relative_path: format!("nomifun-artifacts/{id}.png"),
+            size_bytes: 10,
+            sha256: "a".repeat(64),
+        }
+    }
+
+    fn persisted_png_artifact(
+        workspace: &std::path::Path,
+    ) -> nomifun_ai_agent::artifact_store::PersistedArtifact {
+        const ONE_PIXEL_PNG: &str =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        ArtifactStore::new(workspace)
+            .persist_inline(
+                nomifun_ai_agent::artifact_store::ArtifactKind::Image,
+                "image/png",
+                ONE_PIXEL_PNG,
+            )
+            .expect("persist verified test PNG")
     }
 
     struct TestUserEventBus {
@@ -2317,6 +4248,81 @@ mod tests {
 
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
         assert_eq!(content["content"], "Hello World");
+    }
+
+    #[tokio::test]
+    async fn non_terminal_persistence_timeout_opens_a_turn_wide_circuit_breaker() {
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            Arc::new(RecordingRepo::new()),
+            Arc::new(TestUserEventBus::new(8)),
+            None,
+        );
+        let first = relay
+            .bounded_event_side_effect(
+                tokio::time::Instant::now() + Duration::from_millis(1),
+                "never_resolves",
+                std::future::pending::<()>(),
+            )
+            .await;
+        assert!(first.is_none());
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let polls_for_future = Arc::clone(&polls);
+        let second = relay
+            .bounded_event_side_effect(
+                tokio::time::Instant::now() + Duration::from_secs(1),
+                "must_not_poll",
+                async move {
+                    polls_for_future.fetch_add(1, AtomicOrdering::SeqCst);
+                },
+            )
+            .await;
+        assert!(second.is_none());
+        assert_eq!(polls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn lagged_stream_with_live_sender_becomes_one_bounded_terminal_error() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(16));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(1);
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "overwrites the only finish".into(),
+        }))
+        .unwrap();
+
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo,
+            bus,
+            None,
+        );
+        let outcome = tokio::time::timeout(Duration::from_secs(2), relay.consume(rx))
+            .await
+            .expect("live sender must not keep a lagged relay pending");
+
+        assert_eq!(
+            outcome.terminal.code(),
+            Some(AgentErrorCode::NomifunStreamBroken)
+        );
+        assert_eq!(tx.receiver_count(), 0, "relay receiver is released after terminal fallback");
+        let mut error_events = 0;
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name == "message.stream" && event.data["type"] == "error" {
+                error_events += 1;
+            }
+        }
+        assert_eq!(error_events, 1);
+        assert!(tx.send(AgentStreamEvent::Finish(FinishEventData::default())).is_err());
     }
 
     // UC-2b: a relay wired with runtime state accumulates the TurnCompleted token
@@ -2462,6 +4468,7 @@ mod tests {
             input: Some(json!({"plan": []})),
             output: None,
             description: None,
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Plan(PlanEventData {
@@ -2573,6 +4580,7 @@ mod tests {
             description: None,
             input: None,
             output: None,
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Text(TextEventData { content: "Beta".into() }))
@@ -2624,6 +4632,7 @@ mod tests {
             input: None,
             output: Some("ok".into()),
             description: None,
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Text(TextEventData { content: "After".into() }))
@@ -2663,6 +4672,7 @@ mod tests {
             None,
         );
 
+        let mut ws_rx = bus.subscribe();
         let rx = tx.subscribe();
 
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -2689,10 +4699,53 @@ mod tests {
         let msg = &inserts[0];
         assert_eq!(msg.r#type, "tips");
         assert_eq!(msg.status.as_deref(), Some("error"));
+        assert_eq!(msg.msg_id.as_deref(), Some(msg.id.as_str()));
+        assert_ne!(msg.id, TEST_ASSISTANT_MESSAGE_ID);
 
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
         assert_eq!(content["content"], "Something went wrong");
         assert_eq!(content["type"], "error");
+        assert_eq!(content["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
+
+        let live_error = std::iter::from_fn(|| ws_rx.try_recv().ok())
+            .find(|event| event.name == "message.stream" && event.data["type"] == "error")
+            .expect("terminal error must be broadcast");
+        assert_eq!(live_error.data["msg_id"], msg.id);
+        assert_eq!(live_error.data["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
+    }
+
+    #[tokio::test]
+    async fn partial_text_error_persists_a_distinct_canonical_error_message() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "partial answer".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy("late provider failure", None)))
+            .unwrap();
+
+        relay.consume(rx).await;
+
+        let inserts = repo.take_inserts();
+        let text = inserts.iter().find(|row| row.r#type == "text").expect("partial text row");
+        let error = inserts.iter().find(|row| row.r#type == "tips").expect("error tips row");
+        assert_eq!(text.status.as_deref(), Some("error"));
+        assert_eq!(error.status.as_deref(), Some("error"));
+        assert_ne!(text.id, error.id, "text and terminal error need independent identities");
+        assert_eq!(error.msg_id.as_deref(), Some(error.id.as_str()));
+        let content: serde_json::Value = serde_json::from_str(&error.content).unwrap();
+        assert_eq!(content["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
     }
 
     #[tokio::test]
@@ -2725,6 +4778,7 @@ mod tests {
             description: None,
             input: None,
             output: Some("ok".into()),
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -2770,6 +4824,7 @@ mod tests {
             description: None,
             input: Some(json!({"file_path": "/tmp/index.html"})),
             output: None,
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData {
@@ -2824,6 +4879,7 @@ mod tests {
                 input: None,
                 output: Some("ok".into()),
                 description: None,
+                artifacts: Vec::new(),
             }))
             .unwrap();
             tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -3142,6 +5198,7 @@ mod tests {
                 input: None,
                 output,
                 description: None,
+                artifacts: Vec::new(),
             })
         };
         tx.send(event(ToolCallStatus::Completed, Some("ok".into()))).unwrap();
@@ -3159,6 +5216,843 @@ mod tests {
             updates.iter().all(|(_, update)| update.status.as_ref().map(|s| s.as_deref()) != Some(Some("error"))),
             "a late running event must not reactivate the tool for terminal cleanup"
         );
+    }
+
+    #[tokio::test]
+    async fn run_does_not_forward_late_completed_artifact_after_tool_error() {
+        use nomifun_ai_agent::artifact_store::{ArtifactKind, PersistedArtifact};
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        let event = |status, artifacts| {
+            AgentStreamEvent::ToolCall(ToolCallEventData {
+                call_id: "provider-call-1".into(),
+                name: "ImageGeneration".into(),
+                args: json!({"prompt": "cat"}),
+                status,
+                input: None,
+                output: None,
+                description: None,
+                artifacts,
+            })
+        };
+        tx.send(event(ToolCallStatus::Error, Vec::new())).unwrap();
+        tx.send(event(
+            ToolCallStatus::Completed,
+            vec![PersistedArtifact {
+                id: "stale".into(),
+                kind: ArtifactKind::Image,
+                mime_type: "image/png".into(),
+                path: "/workspace/old.png".into(),
+                relative_path: "nomifun-artifacts/old.png".into(),
+                size_bytes: 10,
+                sha256: "a".repeat(64),
+            }],
+        ))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        relay.consume(rx).await;
+
+        let rows = repo.take_inserts();
+        let row = rows
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("failed tool call is persisted");
+        assert_eq!(row.status.as_deref(), Some("error"));
+        let content: serde_json::Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(content["artifacts"], json!([]));
+
+        let mut tool_events = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name == "message.stream" && event.data["type"] == "tool_call" {
+                tool_events.push(event.data);
+            }
+        }
+        assert_eq!(tool_events.len(), 1, "late terminal success must not reach live UI");
+        assert_eq!(tool_events[0]["data"]["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn run_keeps_completed_artifact_after_successful_turn_finish() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let workspace = std::env::temp_dir().join(format!(
+            "nomifun-conversation-artifact-test-{}",
+            MessageId::new().into_string()
+        ));
+        std::fs::create_dir_all(&workspace).expect("create test workspace");
+        let artifact = persisted_png_artifact(&workspace);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_artifact_workspace(workspace.clone());
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "artifact-success".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![artifact],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        relay.consume(rx).await;
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("artifact tool gets a provisional row");
+        assert_eq!(row.status.as_deref(), Some("work"));
+        let provisional: serde_json::Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(provisional["status"], "running");
+        assert_eq!(provisional["artifacts"], json!([]));
+        assert_eq!(provisional[ARTIFACT_DELIVERY_COMMITTED_FIELD], false);
+
+        let updates = repo.take_updates();
+        let committed = updates
+            .iter()
+            .rev()
+            .find(|(id, update)| {
+                id == &row.id
+                    && update.status.as_ref().map(|s| s.as_deref()) == Some(Some("finish"))
+            })
+            .expect("successful enclosing turn promotes the artifact receipt");
+        let committed_content: serde_json::Value =
+            serde_json::from_str(committed.1.content.as_deref().expect("committed content")).unwrap();
+        assert_eq!(committed_content["artifacts"].as_array().map(Vec::len), Some(1));
+        assert_eq!(committed_content[ARTIFACT_DELIVERY_COMMITTED_FIELD], true);
+
+        let mut tool_statuses = Vec::new();
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            if event.data["type"] == "tool_call"
+                && let Some(status) = event.data["data"]["status"].as_str()
+            {
+                tool_statuses.push(status.to_owned());
+            }
+        }
+        assert_eq!(tool_statuses, ["running", "completed"]);
+        assert_eq!(stream_types.last(), Some(&json!("finish")));
+        std::fs::remove_dir_all(workspace).expect("remove test workspace");
+    }
+
+    #[tokio::test]
+    async fn atomic_artifact_commit_failure_rejects_finish_and_leaves_only_provisional_history() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.fail_artifact_commits();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "artifact-commit-fails".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![test_artifact("commit-fails")],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+        assert_eq!(
+            outcome.terminal.code(),
+            Some(AgentErrorCode::NomifunStateInconsistent)
+        );
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("phase one persists a fail-closed row");
+        assert_eq!(row.status.as_deref(), Some("work"));
+        let content: Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(content["status"], "running");
+        assert_eq!(content["artifacts"], json!([]));
+        assert_eq!(content[ARTIFACT_DELIVERY_COMMITTED_FIELD], false);
+
+        let mut tool_statuses = Vec::new();
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            if event.data["type"] == "tool_call"
+                && let Some(status) = event.data["data"]["status"].as_str()
+            {
+                tool_statuses.push(status.to_owned());
+            }
+        }
+        assert_eq!(tool_statuses, ["running", "error"]);
+        assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
+        assert_eq!(stream_types.last(), Some(&json!("error")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn atomic_artifact_commit_timeout_rejects_finish_without_exposing_completed_receipt() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.block_artifact_commits();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "artifact-commit-times-out".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![test_artifact("commit-timeout")],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(
+            outcome.terminal.code(),
+            Some(AgentErrorCode::NomifunStateInconsistent)
+        );
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("timeout leaves the provisional row intact");
+        assert_eq!(row.status.as_deref(), Some("work"));
+        let content: Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(content["artifacts"], json!([]));
+
+        let mut observed_completed = false;
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            observed_completed |= event.data["type"] == "tool_call"
+                && event.data["data"]["status"] == "completed";
+        }
+        assert!(!observed_completed);
+        assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
+        assert_eq!(stream_types.last(), Some(&json!("error")));
+    }
+
+    #[tokio::test]
+    async fn artifact_delivery_never_uses_random_message_identity_after_correlation_failure() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.fail_message_correlations();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "artifact-without-durable-id".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![test_artifact("identity-failure")],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+        assert!(repo.take_inserts().iter().all(|row| {
+            row.r#type != "tool_call" || row.status.as_deref() != Some("finish")
+        }));
+
+        let mut saw_tool_error = false;
+        let mut saw_tool_completed = false;
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            if event.data["type"] == "tool_call" {
+                saw_tool_error |= event.data["data"]["status"] == "error";
+                saw_tool_completed |= event.data["data"]["status"] == "completed";
+            }
+        }
+        assert!(saw_tool_error);
+        assert!(!saw_tool_completed);
+        assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
+        assert_eq!(stream_types.last(), Some(&json!("error")));
+    }
+
+    #[tokio::test]
+    async fn run_retracts_completed_artifact_when_enclosing_turn_errors() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "artifact-then-error".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![test_artifact("retracted")],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "provider failed after artifact delivery",
+            None,
+        )))
+        .unwrap();
+
+        relay.consume(rx).await;
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("completed artifact tool is persisted provisionally");
+        assert_eq!(row.status.as_deref(), Some("work"));
+        let provisional: serde_json::Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(provisional["artifacts"], json!([]));
+        assert_eq!(provisional[ARTIFACT_DELIVERY_COMMITTED_FIELD], false);
+        let updates = repo.take_updates();
+        let correction = updates
+            .iter()
+            .rev()
+            .find(|(id, _)| id == &row.id)
+            .expect("global turn error must correct the completed artifact row");
+        assert_eq!(
+            correction.1.status.as_ref().map(|status| status.as_deref()),
+            Some(Some("error"))
+        );
+        let content: serde_json::Value =
+            serde_json::from_str(correction.1.content.as_deref().expect("corrected content")).unwrap();
+        assert_eq!(content["status"], "error");
+        assert_eq!(content["artifacts"], json!([]));
+
+        let mut last_tool = None;
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name == "message.stream" {
+                stream_types.push(event.data["type"].clone());
+                if event.data["type"] == "tool_call" {
+                    last_tool = Some(event.data);
+                }
+            }
+        }
+        let last_tool = last_tool.expect("live UI receives the terminal artifact correction");
+        assert_eq!(last_tool["data"]["status"], "error");
+        assert_eq!(last_tool["data"]["artifacts"], json!([]));
+        assert_eq!(
+            stream_types.last(),
+            Some(&json!("error")),
+            "the enclosing terminal must be published after artifact retraction"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_timeout_still_broadcasts_artifact_retraction_before_error() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "artifact-before-wedged-db".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![test_artifact("wedged-db")],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "provider failed after artifact delivery",
+            None,
+        )))
+        .unwrap();
+        // The completed row above can be inserted, but its terminal correction
+        // now wedges forever. Paused Tokio time advances directly to the relay's
+        // hard terminal timeout.
+        repo.block_message_updates();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+
+        let provisional = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("the pre-terminal artifact projection is durable");
+        assert_eq!(provisional.status.as_deref(), Some("work"));
+        let content: serde_json::Value = serde_json::from_str(&provisional.content).unwrap();
+        assert_eq!(content["status"], "running");
+        assert_eq!(content["artifacts"], json!([]));
+        assert_eq!(content[ARTIFACT_DELIVERY_COMMITTED_FIELD], false);
+
+        let mut final_tool_status = None;
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            if event.data["type"] == "tool_call" {
+                final_tool_status = event.data["data"]["status"].as_str().map(str::to_owned);
+            }
+        }
+        assert_eq!(final_tool_status.as_deref(), Some("error"));
+        assert_eq!(
+            stream_types.last(),
+            Some(&json!("error")),
+            "hard-timeout fallback terminal must remain after the synchronous receipt retraction"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_retracts_completed_acp_artifact_when_enclosing_turn_errors() {
+        use nomifun_ai_agent::protocol::events::{
+            AcpToolCallContentItem,
+            tool_call::{
+                AcpToolCallEventData, AcpToolCallSessionUpdateKind, AcpToolCallStatus,
+                AcpToolCallUpdateData,
+            },
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
+            session_id: "session-artifact".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                tool_call_id: "acp-artifact-then-error".into(),
+                status: Some(AcpToolCallStatus::Completed),
+                title: Some("Generate image".into()),
+                kind: None,
+                raw_input: None,
+                raw_output: Some(json!("generated")),
+                content: Some(vec![AcpToolCallContentItem::Artifact {
+                    artifact: test_artifact("acp-retracted"),
+                    source_uri: None,
+                }]),
+                locations: None,
+            },
+            meta: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "provider failed after ACP artifact delivery",
+            None,
+        )))
+        .unwrap();
+
+        relay.consume(rx).await;
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "acp_tool_call")
+            .expect("completed ACP artifact tool is persisted provisionally");
+        assert_eq!(row.status.as_deref(), Some("work"));
+        let provisional: serde_json::Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(provisional["update"]["status"], "in_progress");
+        assert!(
+            provisional["update"]["content"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert_eq!(provisional[ARTIFACT_DELIVERY_COMMITTED_FIELD], false);
+        let updates = repo.take_updates();
+        let correction = updates
+            .iter()
+            .rev()
+            .find(|(id, _)| id == &row.id)
+            .expect("global turn error must correct the completed ACP artifact row");
+        assert_eq!(
+            correction.1.status.as_ref().map(|status| status.as_deref()),
+            Some(Some("error"))
+        );
+        let content: serde_json::Value =
+            serde_json::from_str(correction.1.content.as_deref().expect("corrected content")).unwrap();
+        assert_eq!(content["update"]["status"], "failed");
+        assert!(
+            content["update"]["content"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "failed ACP projection must remove artifact/resource-link delivery blocks"
+        );
+
+        let mut last_acp = None;
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name == "message.stream" {
+                stream_types.push(event.data["type"].clone());
+                if event.data["type"] == "acp_tool_call" {
+                    last_acp = Some(event.data);
+                }
+            }
+        }
+        let last_acp = last_acp.expect("live UI receives the terminal ACP artifact correction");
+        assert_eq!(last_acp["data"]["update"]["status"], "failed");
+        assert!(
+            last_acp["data"]["update"]["content"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert_eq!(stream_types.last(), Some(&json!("error")));
+    }
+
+    #[tokio::test]
+    async fn channel_close_retracts_completed_generic_and_acp_artifacts_before_terminal() {
+        use nomifun_ai_agent::protocol::events::{
+            AcpToolCallContentItem,
+            tool_call::{
+                AcpToolCallEventData, AcpToolCallSessionUpdateKind, AcpToolCallStatus,
+                AcpToolCallUpdateData, ToolCallEventData, ToolCallStatus,
+            },
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "generic-before-close".into(),
+            name: "ImageGeneration".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![test_artifact("generic-close")],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
+            session_id: "session-close".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                tool_call_id: "acp-before-close".into(),
+                status: Some(AcpToolCallStatus::Completed),
+                title: Some("Generate image".into()),
+                kind: None,
+                raw_input: None,
+                raw_output: Some(json!("generated")),
+                content: Some(vec![AcpToolCallContentItem::Artifact {
+                    artifact: test_artifact("acp-close"),
+                    source_uri: None,
+                }]),
+                locations: None,
+            },
+            meta: None,
+        }))
+        .unwrap();
+        drop(tx);
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::ChannelClosed);
+
+        let rows = repo.take_inserts();
+        let generic_id = rows
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("generic artifact row")
+            .id
+            .clone();
+        let acp_id = rows
+            .iter()
+            .find(|row| row.r#type == "acp_tool_call")
+            .expect("ACP artifact row")
+            .id
+            .clone();
+        let updates = repo.take_updates();
+        for id in [generic_id, acp_id] {
+            let update = updates
+                .iter()
+                .rev()
+                .find(|(updated_id, _)| updated_id == &id)
+                .expect("closed stream must retract every completed artifact lifecycle");
+            assert_eq!(
+                update.1.status.as_ref().map(|status| status.as_deref()),
+                Some(Some("error"))
+            );
+        }
+
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name == "message.stream" {
+                stream_types.push(event.data["type"].clone());
+            }
+        }
+        assert_eq!(stream_types.last(), Some(&json!("error")));
+        assert_eq!(
+            stream_types
+                .iter()
+                .filter(|event_type| **event_type == json!("tool_call"))
+                .count(),
+            2,
+            "completed generic tool plus its error correction are both visible"
+        );
+        assert_eq!(
+            stream_types
+                .iter()
+                .filter(|event_type| **event_type == json!("acp_tool_call"))
+                .count(),
+            2,
+            "completed ACP tool plus its error correction are both visible"
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_artifact_tracking_limit_fails_closed_without_an_untracked_success() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(4096));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(1024);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        for index in 0..=MAX_TERMINAL_ACTIVE_ITEMS {
+            tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+                call_id: format!("artifact-{index}"),
+                name: "ImageGeneration".into(),
+                args: json!({"prompt": "cat"}),
+                status: ToolCallStatus::Completed,
+                input: None,
+                output: Some("generated".into()),
+                description: None,
+                artifacts: vec![test_artifact(&format!("artifact-{index}"))],
+            }))
+            .unwrap();
+        }
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+
+        let mut final_statuses = HashMap::new();
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            if event.data["type"] == "tool_call"
+                && let (Some(call_id), Some(status)) = (
+                    event.data["data"]["call_id"].as_str(),
+                    event.data["data"]["status"].as_str(),
+                )
+            {
+                final_statuses.insert(call_id.to_owned(), status.to_owned());
+            }
+        }
+        assert_eq!(final_statuses.len(), MAX_TERMINAL_ACTIVE_ITEMS + 1);
+        assert!(final_statuses.values().all(|status| status == "error"));
+        assert_eq!(stream_types.last(), Some(&json!("error")));
+
+        let rows = repo.take_inserts();
+        assert_eq!(
+            rows.iter().filter(|row| row.r#type == "tool_call").count(),
+            MAX_TERMINAL_ACTIVE_ITEMS + 1
+        );
+        assert_eq!(
+            repo.take_updates()
+                .iter()
+                .filter(|(_, update)| {
+                    update.status.as_ref().map(|status| status.as_deref()) == Some(Some("error"))
+                })
+                .count(),
+            MAX_TERMINAL_ACTIVE_ITEMS
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_artifact_tracking_limit_fails_closed_without_an_untracked_success() {
+        use nomifun_ai_agent::protocol::events::{
+            AcpToolCallContentItem,
+            tool_call::{
+                AcpToolCallEventData, AcpToolCallSessionUpdateKind, AcpToolCallStatus,
+                AcpToolCallUpdateData,
+            },
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(4096));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(1024);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo,
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        for index in 0..=MAX_TERMINAL_ACTIVE_ITEMS {
+            tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
+                session_id: "session-overflow".into(),
+                update: AcpToolCallUpdateData {
+                    session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                    tool_call_id: format!("acp-artifact-{index}"),
+                    status: Some(AcpToolCallStatus::Completed),
+                    title: Some("Generate image".into()),
+                    kind: None,
+                    raw_input: None,
+                    raw_output: Some(json!("generated")),
+                    content: Some(vec![AcpToolCallContentItem::Artifact {
+                        artifact: test_artifact(&format!("acp-artifact-{index}")),
+                        source_uri: None,
+                    }]),
+                    locations: None,
+                },
+                meta: None,
+            }))
+            .unwrap();
+        }
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+
+        let mut final_statuses = HashMap::new();
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            if event.data["type"] == "acp_tool_call"
+                && let (Some(call_id), Some(status)) = (
+                    event.data["data"]["update"]["tool_call_id"].as_str(),
+                    event.data["data"]["update"]["status"].as_str(),
+                )
+            {
+                final_statuses.insert(call_id.to_owned(), status.to_owned());
+            }
+        }
+        assert_eq!(final_statuses.len(), MAX_TERMINAL_ACTIVE_ITEMS + 1);
+        assert!(final_statuses.values().all(|status| status == "failed"));
+        assert_eq!(stream_types.last(), Some(&json!("error")));
     }
 
     #[tokio::test]
@@ -3186,6 +6080,7 @@ mod tests {
                 input: None,
                 output: (status == ToolCallStatus::Completed).then(|| "ok".into()),
                 description: None,
+                artifacts: Vec::new(),
             }))
             .unwrap();
             tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -3302,9 +6197,9 @@ mod tests {
         let rx = tx.subscribe();
         let (send_error_tx, send_error_rx) = tokio::sync::oneshot::channel();
         send_error_tx
-            .send(AgentSendError::from_app_error(nomifun_common::AppError::BadGateway(
+            .send(Err(AgentSendError::from_app_error(nomifun_common::AppError::BadGateway(
                 "provider returned 401 invalid api key".into(),
-            )))
+            ))))
             .unwrap();
 
         let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
@@ -3373,7 +6268,7 @@ mod tests {
         let (send_error_tx, send_error_rx) = tokio::sync::oneshot::channel();
         let delayed_send_error = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let _ = send_error_tx.send(send_error);
+            let _ = send_error_tx.send(Err(send_error));
         });
 
         let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
@@ -3406,9 +6301,9 @@ mod tests {
         let rx = tx.subscribe();
         let (send_error_tx, send_error_rx) = tokio::sync::oneshot::channel();
         send_error_tx
-            .send(AgentSendError::from_app_error(nomifun_common::AppError::BadGateway(
+            .send(Err(AgentSendError::from_app_error(nomifun_common::AppError::BadGateway(
                 "provider returned 401 invalid api key".into(),
-            )))
+            ))))
             .unwrap();
         let delayed_stream_error = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -3437,6 +6332,38 @@ mod tests {
         assert_eq!(content["type"], "error");
         assert_eq!(content["error"]["resolution"]["kind"], "check_provider_credentials");
         assert_eq!(content["error"]["resolution"]["target"], "provider_settings");
+    }
+
+    #[tokio::test]
+    async fn closed_send_task_signal_is_a_bounded_terminal_error() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        let (send_tx, send_rx) = tokio::sync::oneshot::channel::<Result<(), AgentSendError>>();
+        drop(send_tx);
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            relay.consume_with_send_error(rx, send_rx),
+        )
+        .await
+        .expect("closed send task signal must not leave the relay waiting");
+        assert!(outcome.terminal.is_error());
+        let inserts = repo.take_inserts();
+        let tips = inserts
+            .iter()
+            .find(|row| row.r#type == "tips")
+            .expect("abnormal send task exit must be persisted as an error");
+        assert!(tips.content.contains("exited before reporting acceptance"));
     }
 
     #[tokio::test]
@@ -3474,6 +6401,7 @@ mod tests {
             description: None,
             input: None,
             output: None,
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
@@ -3598,22 +6526,26 @@ mod tests {
         let outcome = relay.consume(rx).await;
         assert!(outcome.system_responses.is_empty());
 
-        // Should still persist the partial text
+        // Preserve both pieces of terminal evidence: the partial assistant
+        // text and a first-class canonical error row for the broken channel.
         let inserts = repo.take_inserts();
-        assert_eq!(inserts.len(), 1);
-        assert_eq!(inserts[0].status.as_deref(), Some("error"));
-        let content: serde_json::Value = serde_json::from_str(&inserts[0].content).unwrap();
-        assert_eq!(content["content"], "partial");
+        assert_eq!(inserts.len(), 2);
+        let text = inserts.iter().find(|row| row.r#type == "text").expect("partial text row");
+        let error = inserts.iter().find(|row| row.r#type == "tips").expect("channel error row");
+        assert_eq!(text.status.as_deref(), Some("error"));
+        assert_eq!(error.status.as_deref(), Some("error"));
+        let text_content: serde_json::Value = serde_json::from_str(&text.content).unwrap();
+        assert_eq!(text_content["content"], "partial");
+        assert_eq!(error.msg_id.as_deref(), Some(error.id.as_str()));
         let mut ws_events = Vec::new();
         while let Ok(event) = ws_rx.try_recv() {
             ws_events.push(event);
         }
-        assert!(
-            ws_events
-                .iter()
-                .any(|event| event.name == "message.stream" && event.data["type"] == "error"),
-            "unexpected channel closure must be visible as a terminal error"
-        );
+        let live_error = ws_events
+            .iter()
+            .find(|event| event.name == "message.stream" && event.data["type"] == "error")
+            .expect("unexpected channel closure must be visible as a terminal error");
+        assert_eq!(live_error.data["msg_id"], error.id);
     }
 
     #[tokio::test]
@@ -3652,9 +6584,155 @@ mod tests {
         assert!(turn_event.is_some());
         let data = &turn_event.unwrap().data;
         assert_eq!(data["conversation_id"], conversation_id);
-        assert_eq!(data["conversation_id"], conversation_id);
+        assert_eq!(data["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(data["status"], "finished");
         assert_eq!(data["can_send_message"], true);
+    }
+
+    #[tokio::test]
+    async fn cancellation_token_injects_terminal_finish_without_backend_ack() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (_tx, rx) = broadcast::channel(64);
+        let runtime_state = Arc::new(ConversationRuntimeStateService::default());
+        let turn_handle = runtime_state
+            .try_acquire_turn_with_wire_id(
+                &test_conversation_id(),
+                Some(TEST_ASSISTANT_MESSAGE_ID.to_owned()),
+            )
+            .expect("turn handle");
+        let cancellation = turn_handle.turn_cancellation();
+        cancellation.cancel();
+
+        let mut ws_rx = bus.subscribe();
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo,
+            bus,
+            None,
+        )
+        .with_cancellation(cancellation);
+
+        let outcome = tokio::time::timeout(Duration::from_millis(250), relay.consume(rx))
+            .await
+            .expect("cancelled relay must not wait for the backend channel");
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let mut ws_events = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            ws_events.push(event);
+        }
+        let finish = ws_events
+            .iter()
+            .find(|event| event.name == "message.stream" && event.data["type"] == "finish")
+            .expect("cancel must surface a terminal stream event");
+        assert_eq!(finish.data["data"]["stop_reason"], "cancelled");
+        let completed = ws_events
+            .iter()
+            .find(|event| event.name == "turn.completed")
+            .expect("cancelled relay must complete the turn");
+        assert_eq!(completed.data["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
+    }
+
+    #[tokio::test]
+    async fn cancellation_marks_streamed_partial_text_as_error() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, rx) = broadcast::channel(64);
+        let runtime_state = Arc::new(ConversationRuntimeStateService::default());
+        let turn_handle = runtime_state
+            .try_acquire_turn_with_wire_id(
+                &test_conversation_id(),
+                Some(TEST_ASSISTANT_MESSAGE_ID.to_owned()),
+            )
+            .expect("turn handle");
+        let cancellation = turn_handle.turn_cancellation();
+        let mut ws_rx = bus.subscribe();
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_cancellation(cancellation.clone());
+        let relay_task = tokio::spawn(relay.consume(rx));
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "partial before stop".into(),
+        }))
+        .unwrap();
+        tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let event = ws_rx.recv().await.expect("stream event");
+                if event.name == "message.stream" && event.data["type"] == "content" {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("partial text reached relay");
+        cancellation.cancel();
+        relay_task.await.expect("relay task");
+
+        let text = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "text")
+            .expect("partial text persisted");
+        assert_eq!(text.status.as_deref(), Some("error"));
+    }
+
+    #[tokio::test]
+    async fn fallback_cancel_winner_suppresses_late_ordinary_terminal() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, rx) = broadcast::channel(64);
+        let runtime_state = Arc::new(ConversationRuntimeStateService::default());
+        let turn_handle = runtime_state
+            .try_acquire_turn_with_wire_id(
+                &test_conversation_id(),
+                Some(TEST_ASSISTANT_MESSAGE_ID.to_owned()),
+            )
+            .expect("turn handle");
+        let cancellation = turn_handle.turn_cancellation();
+        let mut ws_rx = bus.subscribe();
+
+        let fallback = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+        assert!(fallback.surface_cancelled_turn(&cancellation));
+
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo,
+            bus,
+            None,
+        )
+        .with_cancellation(cancellation);
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.stop_reason, Some(TurnStopReason::Cancelled));
+
+        let mut terminal_count = 0;
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name == "message.stream"
+                && matches!(event.data["type"].as_str(), Some("finish" | "error"))
+            {
+                terminal_count += 1;
+            }
+        }
+        assert_eq!(terminal_count, 1, "one wire segment has one terminal publisher");
     }
 
     #[tokio::test]
@@ -3972,23 +7050,25 @@ mod tests {
         // First event: Running with input but no output
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
             call_id: "tc-001".into(),
-            name: "image_gen".into(),
-            args: json!({"prompt": "a cat"}),
+            name: "read_file".into(),
+            args: json!({"path": "notes.txt"}),
             status: ToolCallStatus::Running,
-            input: Some(json!({"prompt": "a cat", "size": "1024x1024"})),
+            input: Some(json!({"path": "notes.txt"})),
             output: None,
-            description: Some("Generate image".into()),
+            description: Some("Read file".into()),
+            artifacts: Vec::new(),
         }))
         .unwrap();
         // Second event: Completed with output but no input
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
             call_id: "tc-001".into(),
-            name: "image_gen".into(),
-            args: json!({"prompt": "a cat"}),
+            name: "read_file".into(),
+            args: json!({"path": "notes.txt"}),
             status: ToolCallStatus::Completed,
             input: None,
-            output: Some("image.png".into()),
+            output: Some("contents".into()),
             description: None,
+            artifacts: Vec::new(),
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -4011,15 +7091,83 @@ mod tests {
 
         // Verify merge: input from first event preserved, output from second event added
         let merged: serde_json::Value = serde_json::from_str(upd.content.as_deref().unwrap()).unwrap();
-        assert_eq!(merged["name"], "image_gen");
+        assert_eq!(merged["name"], "read_file");
         assert_eq!(merged["status"], "completed");
         assert!(
             merged.get("input").is_some() && !merged["input"].is_null(),
             "input must be preserved after merge"
         );
-        assert_eq!(merged["input"]["prompt"], "a cat");
-        assert_eq!(merged["output"], "image.png");
-        assert_eq!(merged["description"], "Generate image");
+        assert_eq!(merged["input"]["path"], "notes.txt");
+        assert_eq!(merged["output"], "contents");
+        assert_eq!(merged["description"], "Read file");
+    }
+
+    #[tokio::test]
+    async fn completed_image_tool_without_receipt_fails_the_enclosing_turn() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "empty-image-result".into(),
+            name: "image_gen".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Running,
+            input: Some(json!({"prompt": "cat"})),
+            output: None,
+            description: Some("Generate image".into()),
+            artifacts: Vec::new(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "empty-image-result".into(),
+            name: "tool_result".into(),
+            args: json!({}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("success".into()),
+            description: None,
+            artifacts: Vec::new(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        relay.consume(rx).await;
+
+        let inserts = repo.take_inserts();
+        let tool_row = inserts
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("failed image result is persisted");
+        let updates = repo.take_updates();
+        let final_tool_update = updates
+            .iter()
+            .rev()
+            .find(|(id, _)| id == &tool_row.id)
+            .expect("tool terminal update");
+        assert_eq!(final_tool_update.1.status.as_ref().and_then(|s| s.as_deref()), Some("error"));
+        let content: serde_json::Value =
+            serde_json::from_str(final_tool_update.1.content.as_deref().expect("tool content")).unwrap();
+        assert_eq!(content["artifacts"], json!([]));
+        assert_eq!(content["status"], "error");
+
+        let mut saw_successful_finish = false;
+        while let Ok(event) = ws_rx.try_recv() {
+            saw_successful_finish |= event.name == "message.stream" && event.data["type"] == "finish";
+        }
+        assert!(!saw_successful_finish, "a receipt-less image result must not finish successfully");
     }
 
     #[tokio::test]
@@ -4118,6 +7266,223 @@ mod tests {
             update_obj.get("raw_output").is_some(),
             "raw_output must be present after merge"
         );
+    }
+
+    #[tokio::test]
+    async fn external_acp_export_title_cannot_complete_without_a_verified_artifact() {
+        use nomifun_ai_agent::protocol::events::tool_call::{
+            AcpToolCallEventData, AcpToolCallSessionUpdateKind, AcpToolCallStatus,
+            AcpToolCallUpdateData,
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
+            session_id: "external-session".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCall,
+                tool_call_id: "external-export".into(),
+                status: Some(AcpToolCallStatus::InProgress),
+                title: Some("export_pdf".into()),
+                kind: None,
+                raw_input: Some(json!({"output_path": "report.pdf"})),
+                raw_output: None,
+                content: None,
+                locations: None,
+            },
+            meta: None,
+        }))
+        .unwrap();
+        // External runtimes commonly omit repeated title/input metadata on the
+        // terminal delta. The active identity must remain authoritative.
+        tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
+            session_id: "external-session".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                tool_call_id: "external-export".into(),
+                status: Some(AcpToolCallStatus::Completed),
+                title: None,
+                kind: None,
+                raw_input: None,
+                raw_output: Some(json!({"ok": true})),
+                content: None,
+                locations: None,
+            },
+            meta: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "acp_tool_call")
+            .expect("external ACP tool row");
+        let updates = repo.take_updates();
+        let (_, terminal) = updates
+            .iter()
+            .rev()
+            .find(|(id, _)| id == &row.id)
+            .expect("external ACP terminal correction");
+        assert_eq!(
+            terminal.status.as_ref().and_then(|status| status.as_deref()),
+            Some("error")
+        );
+        let content: Value =
+            serde_json::from_str(terminal.content.as_deref().expect("ACP correction content"))
+                .unwrap();
+        assert_eq!(content["update"]["status"], "failed");
+        assert!(content["update"]["raw_output"]
+            .as_str()
+            .is_some_and(|message| message.contains("required verified artifacts")));
+
+        let mut saw_finish = false;
+        while let Ok(event) = ws_rx.try_recv() {
+            saw_finish |= event.name == "message.stream" && event.data["type"] == "finish";
+        }
+        assert!(!saw_finish);
+    }
+
+    #[tokio::test]
+    async fn external_acp_duplicate_receipt_cannot_satisfy_requested_image_count() {
+        use nomifun_ai_agent::protocol::events::{
+            AcpToolCallContentItem,
+            tool_call::{
+                AcpToolCallEventData, AcpToolCallSessionUpdateKind, AcpToolCallStatus,
+                AcpToolCallUpdateData,
+            },
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        let first = test_artifact("external-duplicate");
+        let mut duplicate = first.clone();
+        duplicate.id = "external-duplicate-alias".into();
+        tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
+            session_id: "external-session".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                tool_call_id: "external-image-count".into(),
+                status: Some(AcpToolCallStatus::Completed),
+                title: Some("image_gen".into()),
+                kind: None,
+                raw_input: Some(json!({"prompt": "two cats", "count": 2})),
+                raw_output: Some(json!({"ok": true})),
+                content: Some(vec![
+                    AcpToolCallContentItem::Artifact {
+                        artifact: first,
+                        source_uri: None,
+                    },
+                    AcpToolCallContentItem::Artifact {
+                        artifact: duplicate,
+                        source_uri: None,
+                    },
+                ]),
+                locations: None,
+            },
+            meta: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "acp_tool_call")
+            .expect("failed external ACP count row");
+        assert_eq!(row.status.as_deref(), Some("error"));
+        let content: Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(content["update"]["status"], "failed");
+        assert_eq!(content["update"]["content"], json!([]));
+        assert!(content["update"]["raw_output"]
+            .as_str()
+            .is_some_and(|message| message.contains("same canonical artifact path")));
+
+        let mut saw_completed = false;
+        let mut saw_finish = false;
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            saw_completed |= event.data["type"] == "acp_tool_call"
+                && event.data["data"]["update"]["status"] == "completed";
+            saw_finish |= event.data["type"] == "finish";
+        }
+        assert!(!saw_completed);
+        assert!(!saw_finish);
+    }
+
+    #[test]
+    fn external_acp_receipt_ids_are_validated_without_tool_identity() {
+        use nomifun_ai_agent::protocol::events::{
+            AcpToolCallContentItem,
+            tool_call::{
+                AcpToolCallEventData, AcpToolCallSessionUpdateKind, AcpToolCallStatus,
+                AcpToolCallUpdateData,
+            },
+        };
+
+        let first = test_artifact("identity-free-first");
+        let mut duplicate_id = test_artifact("identity-free-second");
+        duplicate_id.id = first.id.clone();
+        let result = validate_completed_acp_artifact_contract(&AcpToolCallEventData {
+            session_id: "external-session".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                tool_call_id: "identity-free-receipts".into(),
+                status: Some(AcpToolCallStatus::Completed),
+                title: None,
+                kind: None,
+                raw_input: None,
+                raw_output: None,
+                content: Some(vec![
+                    AcpToolCallContentItem::Artifact {
+                        artifact: first,
+                        source_uri: None,
+                    },
+                    AcpToolCallContentItem::Artifact {
+                        artifact: duplicate_id,
+                        source_uri: None,
+                    },
+                ]),
+                locations: None,
+            },
+            meta: None,
+        });
+
+        assert!(result.unwrap_err().contains("same artifact id more than once"));
     }
 
     #[tokio::test]
@@ -4281,6 +7646,266 @@ mod tests {
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
         assert!(content.is_array());
         assert_eq!(content.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn completed_artifact_tool_group_without_receipts_fails_the_enclosing_turn() {
+        use nomifun_ai_agent::protocol::events::tool_call::{
+            ToolCallStatus, ToolGroupEntry,
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolGroup(vec![
+            ToolGroupEntry {
+                call_id: "group-image".into(),
+                name: "image_gen".into(),
+                status: ToolCallStatus::Completed,
+                description: Some("generated".into()),
+            },
+            ToolGroupEntry {
+                call_id: "group-export".into(),
+                name: "export_pdf".into(),
+                status: ToolCallStatus::Completed,
+                description: Some("exported".into()),
+            },
+        ]))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(outcome.terminal.is_error());
+
+        let row = repo
+            .take_inserts()
+            .into_iter()
+            .find(|row| row.r#type == "tool_group")
+            .expect("failed artifact tool group row");
+        assert_eq!(row.status.as_deref(), Some("error"));
+        let content: Value = serde_json::from_str(&row.content).unwrap();
+        assert_eq!(content[0]["status"], "error");
+        assert_eq!(content[1]["status"], "error");
+        assert!(content[0]["description"]
+            .as_str()
+            .is_some_and(|message| message.contains("required verified artifacts")));
+        assert!(content[1]["description"]
+            .as_str()
+            .is_some_and(|message| message.contains("required verified artifacts")));
+
+        let mut saw_finish = false;
+        while let Ok(event) = ws_rx.try_recv() {
+            saw_finish |= event.name == "message.stream" && event.data["type"] == "finish";
+        }
+        assert!(!saw_finish);
+    }
+
+    #[test]
+    fn tool_group_count_contract_rejects_duplicate_paired_receipts() {
+        use nomifun_ai_agent::protocol::events::tool_call::{
+            ToolCallEventData, ToolCallStatus, ToolGroupEntry,
+        };
+
+        let first = test_artifact("group-count-duplicate");
+        let mut duplicate = first.clone();
+        duplicate.id = "group-count-alias".into();
+        let paired = ToolCallEventData {
+            call_id: "group-count".into(),
+            name: "image_gen".into(),
+            args: json!({"prompt": "two cats", "count": 2}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![first, duplicate],
+        };
+        let completed = HashMap::from([(paired.call_id.clone(), paired)]);
+        let entries = vec![ToolGroupEntry {
+            call_id: "group-count".into(),
+            name: "image_gen".into(),
+            status: ToolCallStatus::Completed,
+            description: Some("generated two images".into()),
+        }];
+
+        let errors = tool_group_artifact_contract_errors(&entries, &completed);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].1.contains("same canonical artifact path"));
+    }
+
+    #[tokio::test]
+    async fn artifact_tool_group_is_suppressed_when_receipt_commit_fails() {
+        use nomifun_ai_agent::protocol::events::tool_call::{
+            ToolCallEventData, ToolCallStatus, ToolGroupEntry,
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.fail_artifact_commits();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let workspace = std::env::temp_dir().join(format!(
+            "nomifun-tool-group-2pc-test-{}",
+            MessageId::new().into_string()
+        ));
+        std::fs::create_dir_all(&workspace).expect("create test workspace");
+        let artifact = persisted_png_artifact(&workspace);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_artifact_workspace(workspace.clone());
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "group-2pc-image".into(),
+            name: "image_gen".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![artifact],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolGroup(vec![ToolGroupEntry {
+            call_id: "group-2pc-image".into(),
+            name: "image_gen".into(),
+            status: ToolCallStatus::Completed,
+            description: Some("generated".into()),
+        }]))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(
+            outcome.terminal.code(),
+            Some(AgentErrorCode::NomifunStateInconsistent)
+        );
+
+        assert!(
+            repo.take_inserts()
+                .iter()
+                .all(|row| row.r#type != "tool_group"),
+            "receipt-less artifact summaries must never enter durable history"
+        );
+        assert!(
+            repo.take_updates().iter().all(|(_, update)| {
+                update
+                    .content
+                    .as_deref()
+                    .and_then(|content| serde_json::from_str::<Value>(content).ok())
+                    .is_none_or(|content| !content.is_array())
+            }),
+            "a suppressed artifact summary must not acquire an update row"
+        );
+
+        let mut saw_finish = false;
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            assert_ne!(event.data["type"], "tool_group");
+            saw_finish |= event.data["type"] == "finish";
+        }
+        assert!(!saw_finish);
+        std::fs::remove_dir_all(workspace).expect("remove test workspace");
+    }
+
+    #[tokio::test]
+    async fn artifact_tool_group_is_suppressed_after_receipt_commit_succeeds() {
+        use nomifun_ai_agent::protocol::events::tool_call::{
+            ToolCallEventData, ToolCallStatus, ToolGroupEntry,
+        };
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let workspace = std::env::temp_dir().join(format!(
+            "nomifun-tool-group-2pc-success-test-{}",
+            MessageId::new().into_string()
+        ));
+        std::fs::create_dir_all(&workspace).expect("create test workspace");
+        let artifact = persisted_png_artifact(&workspace);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_artifact_workspace(workspace.clone());
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "group-2pc-success".into(),
+            name: "image_gen".into(),
+            args: json!({"prompt": "cat"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("generated".into()),
+            description: None,
+            artifacts: vec![artifact],
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolGroup(vec![ToolGroupEntry {
+            call_id: "group-2pc-success".into(),
+            name: "image_gen".into(),
+            status: ToolCallStatus::Completed,
+            description: Some("generated".into()),
+        }]))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert!(matches!(outcome.terminal, RelayTerminal::Finish));
+
+        assert!(
+            repo.take_inserts()
+                .iter()
+                .all(|row| row.r#type != "tool_group"),
+            "receipt-less artifact summaries must never enter durable history"
+        );
+        assert!(
+            repo.take_updates().iter().all(|(_, update)| {
+                update
+                    .content
+                    .as_deref()
+                    .and_then(|content| serde_json::from_str::<Value>(content).ok())
+                    .is_none_or(|content| !content.is_array())
+            }),
+            "a suppressed artifact summary must not acquire an update row"
+        );
+
+        let mut stream_types = Vec::new();
+        while let Ok(event) = ws_rx.try_recv() {
+            if event.name != "message.stream" {
+                continue;
+            }
+            stream_types.push(event.data["type"].clone());
+            assert_ne!(event.data["type"], "tool_group");
+        }
+        assert_eq!(stream_types.last(), Some(&json!("finish")));
+        std::fs::remove_dir_all(workspace).expect("remove test workspace");
     }
 
     #[tokio::test]
@@ -4527,6 +8152,10 @@ mod tests {
         inserts: Mutex<Vec<MessageRow>>,
         updates: Mutex<Vec<(String, nomifun_db::MessageRowUpdate)>>,
         correlations: Mutex<HashMap<(String, String, String, String), String>>,
+        block_message_updates: AtomicBool,
+        fail_message_correlations: AtomicBool,
+        fail_artifact_commits: AtomicBool,
+        block_artifact_commits: AtomicBool,
     }
 
     impl RecordingRepo {
@@ -4535,7 +8164,30 @@ mod tests {
                 inserts: Mutex::new(vec![]),
                 updates: Mutex::new(vec![]),
                 correlations: Mutex::new(HashMap::new()),
+                block_message_updates: AtomicBool::new(false),
+                fail_message_correlations: AtomicBool::new(false),
+                fail_artifact_commits: AtomicBool::new(false),
+                block_artifact_commits: AtomicBool::new(false),
             }
+        }
+
+        fn block_message_updates(&self) {
+            self.block_message_updates.store(true, AtomicOrdering::SeqCst);
+        }
+
+        fn fail_message_correlations(&self) {
+            self.fail_message_correlations
+                .store(true, AtomicOrdering::SeqCst);
+        }
+
+        fn fail_artifact_commits(&self) {
+            self.fail_artifact_commits
+                .store(true, AtomicOrdering::SeqCst);
+        }
+
+        fn block_artifact_commits(&self) {
+            self.block_artifact_commits
+                .store(true, AtomicOrdering::SeqCst);
         }
 
         fn take_inserts(&self) -> Vec<MessageRow> {
@@ -4626,6 +8278,70 @@ mod tests {
             self.inserts.lock().unwrap().push(row.clone());
             Ok(())
         }
+        async fn commit_turn_artifact_messages(
+            &self,
+            conversation_id: &str,
+            turn_message_id: &str,
+            messages: &[TurnArtifactMessageCommit],
+            committed_at: i64,
+        ) -> Result<Vec<MessageRow>, DbError> {
+            if self.block_artifact_commits.load(AtomicOrdering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            if self.fail_artifact_commits.load(AtomicOrdering::SeqCst) {
+                return Err(DbError::Conflict(
+                    "injected atomic artifact commit failure".to_owned(),
+                ));
+            }
+
+            let mut inserts = self.inserts.lock().unwrap();
+            let mut updates = self.updates.lock().unwrap();
+            for message in messages {
+                if let Some(existing) = inserts.iter().find(|row| row.id == message.id)
+                    && (existing.conversation_id != conversation_id
+                        || existing.msg_id.as_deref() != Some(turn_message_id)
+                        || existing.r#type != message.message_type
+                        || existing.status.as_deref() != Some("work"))
+                {
+                    return Err(DbError::Conflict(
+                        "injected repository found an incompatible provisional artifact row"
+                            .to_owned(),
+                    ));
+                }
+            }
+            let mut committed = Vec::with_capacity(messages.len());
+            for message in messages {
+                if let Some(existing) = inserts.iter().find(|row| row.id == message.id) {
+                    updates.push((
+                        message.id.clone(),
+                        nomifun_db::MessageRowUpdate {
+                            content: Some(message.content.clone()),
+                            status: Some(Some("finish".to_owned())),
+                            hidden: None,
+                        },
+                    ));
+                    let mut row = existing.clone();
+                    row.content = message.content.clone();
+                    row.status = Some("finish".to_owned());
+                    committed.push(row);
+                } else {
+                    let row = MessageRow {
+                        id: message.id.clone(),
+                        conversation_id: conversation_id.to_owned(),
+                        msg_id: Some(turn_message_id.to_owned()),
+                        r#type: message.message_type.clone(),
+                        content: message.content.clone(),
+                        position: Some("left".to_owned()),
+                        status: Some("finish".to_owned()),
+                        hidden: false,
+                        created_at: committed_at,
+                    };
+                    inserts.push(row.clone());
+                    committed.push(row);
+                }
+            }
+            Ok(committed)
+        }
         async fn claim_message_correlation(
             &self,
             conversation_id: &str,
@@ -4633,6 +8349,11 @@ mod tests {
             message_type: &str,
             correlation_key: &str,
         ) -> Result<String, DbError> {
+            if self.fail_message_correlations.load(AtomicOrdering::SeqCst) {
+                return Err(DbError::Conflict(
+                    "injected message correlation failure".to_owned(),
+                ));
+            }
             let key = (
                 conversation_id.to_owned(),
                 turn_message_id.to_owned(),
@@ -4648,6 +8369,9 @@ mod tests {
                 .clone())
         }
         async fn update_message(&self, id: &str, updates: &nomifun_db::MessageRowUpdate) -> Result<(), DbError> {
+            if self.block_message_updates.load(AtomicOrdering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
             self.updates.lock().unwrap().push((id.to_owned(), updates.clone()));
             Ok(())
         }

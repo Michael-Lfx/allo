@@ -10,8 +10,6 @@
 //!   (t2v / i2v).
 //! - [`openai_chat`] — OpenAI-compatible sync `/v1/chat/completions` (`text`);
 //!   the reply is returned inline as `text/plain` UTF-8.
-//! - [`local_image`] - an app-injected adapter for the pinned Z-Image-Turbo
-//!   `sd-cli` recipe (`t2i` only; no implicit download).
 //! - [`gemini_text`] — Google `:generateContent` text mode (`text`).
 //!
 //! `ark` (火山方舟) and `modelscope` are P1 stubs (empty module files that keep
@@ -29,7 +27,6 @@ use crate::types::MediaCapability;
 pub(crate) mod ark;
 pub(crate) mod gemini_image;
 pub(crate) mod gemini_text;
-pub(crate) mod local_image;
 pub(crate) mod modelscope;
 pub(crate) mod openai_chat;
 pub(crate) mod openai_images;
@@ -47,24 +44,8 @@ pub fn default_adapters(http: reqwest::Client) -> Vec<Arc<dyn MediaProvider>> {
     ]
 }
 
-/// Build the standard adapter set plus an app-injected local image backend.
-///
-/// Kept separate from [`default_adapters`] because the creation crate does not
-/// own model/runtime installation. App assembly should call this only after the
-/// local control plane has resolved verified `sd-cli` and model artifact paths.
-pub fn default_adapters_with_local_image(
-    http: reqwest::Client,
-    backend: Arc<dyn local_image::LocalImageBackend>,
-) -> Vec<Arc<dyn MediaProvider>> {
-    let mut adapters = default_adapters(http);
-    adapters.push(Arc::new(local_image::LocalImageAdapter::new(backend)));
-    adapters
-}
-
 /// Pick the adapter id for a `(capability, platform, model)` triple. Explicit,
-/// extensible dispatch (P1 adds `ark` / `modelscope` branches). The managed
-/// local Z-Image id routes to `local_image`; that adapter then enforces its
-/// current t2i-only capability:
+/// extensible dispatch (P1 adds `ark` / `modelscope` branches):
 /// - video caps → `openai_video`;
 /// - `gemini` platform or a model whose name contains `gemini` → `gemini_image`
 ///   (which serves t2i/i2i; inpaint always falls to `openai_images`);
@@ -76,9 +57,6 @@ pub fn route_adapter_id(cap: MediaCapability, platform: &str, model: &str) -> Op
     use MediaCapability::*;
     match cap {
         T2v | I2v | V2v => Some("openai_video"),
-        T2i | I2i | Inpaint if is_local_z_image(platform, model) => {
-            Some(local_image::LOCAL_IMAGE_ADAPTER_ID)
-        }
         Inpaint => Some("openai_images"),
         T2i | I2i => {
             if is_gemini(platform, model) {
@@ -96,11 +74,6 @@ pub fn route_adapter_id(cap: MediaCapability, platform: &str, model: &str) -> Op
         }
         Tts => None,
     }
-}
-
-fn is_local_z_image(platform: &str, model: &str) -> bool {
-    platform.eq_ignore_ascii_case("nomifun-local-model")
-        && model.eq_ignore_ascii_case(local_image::LOCAL_Z_IMAGE_TURBO_MODEL_ID)
 }
 
 fn is_gemini(platform: &str, model: &str) -> bool {
@@ -145,9 +118,43 @@ pub(crate) fn param_prompt(params: &serde_json::Value) -> String {
     params.get("prompt").and_then(|v| v.as_str()).unwrap_or_default().to_string()
 }
 
-/// Batch count (`params.count`), clamped to 1..=10; defaults to 1.
-pub(crate) fn param_count(params: &serde_json::Value) -> u32 {
-    params.get("count").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 10) as u32
+/// Maximum image batch size supported by the creation adapters.
+pub(crate) const MAX_IMAGE_OUTPUT_COUNT: u32 = 10;
+
+/// Strict image batch count contract. Both the product-facing `count` name and
+/// the OpenAI-compatible `n` alias are accepted. Omission means one image, but
+/// a present value is never defaulted or clamped: malformed, zero, excessive,
+/// or conflicting values fail the request.
+pub(crate) fn param_count(params: &serde_json::Value) -> Result<u32, crate::types::CreationError> {
+    let mut parsed = None;
+    for field in ["count", "n"] {
+        let Some(value) = params.get(field) else {
+            continue;
+        };
+        let Some(value) = value.as_u64().filter(|value| *value > 0) else {
+            return Err(crate::types::CreationError::new(
+                "invalid_params",
+                format!("params.{field} must be a positive integer"),
+            ));
+        };
+        if value > u64::from(MAX_IMAGE_OUTPUT_COUNT) {
+            return Err(crate::types::CreationError::new(
+                "invalid_params",
+                format!(
+                    "params.{field} ({value}) exceeds the supported image output limit ({MAX_IMAGE_OUTPUT_COUNT})"
+                ),
+            ));
+        }
+        let value = value as u32;
+        if parsed.is_some_and(|previous| previous != value) {
+            return Err(crate::types::CreationError::new(
+                "invalid_params",
+                "params.count and params.n must match when both are provided",
+            ));
+        }
+        parsed = Some(value);
+    }
+    Ok(parsed.unwrap_or(1))
 }
 
 /// A `WxH` size string from `params.width`/`params.height`, or an explicit
@@ -266,25 +273,6 @@ mod tests {
         assert_eq!(route_adapter_id(Text, "custom", "gemini-flash"), Some("gemini_text"));
         // unrouted
         assert_eq!(route_adapter_id(Tts, "openai", "tts-1"), None);
-        assert_eq!(
-            route_adapter_id(
-                T2i,
-                "nomifun-local-model",
-                local_image::LOCAL_Z_IMAGE_TURBO_MODEL_ID,
-            ),
-            Some(local_image::LOCAL_IMAGE_ADAPTER_ID)
-        );
-        // Route references to the local adapter too, so its capability check
-        // yields a local unsupported-capability error rather than making an
-        // unrelated OpenAI Images HTTP request.
-        assert_eq!(
-            route_adapter_id(
-                I2i,
-                "nomifun-local-model",
-                local_image::LOCAL_Z_IMAGE_TURBO_MODEL_ID,
-            ),
-            Some(local_image::LOCAL_IMAGE_ADAPTER_ID)
-        );
     }
 
     #[test]
@@ -313,13 +301,25 @@ mod tests {
     fn param_helpers() {
         let p = serde_json::json!({"prompt": "a cat", "width": 512, "height": 768, "count": 3});
         assert_eq!(param_prompt(&p), "a cat");
-        assert_eq!(param_count(&p), 3);
+        assert_eq!(param_count(&p).unwrap(), 3);
         assert_eq!(param_size(&p).as_deref(), Some("512x768"));
 
-        let p2 = serde_json::json!({"size": "1024x1024", "count": 99});
+        let p2 = serde_json::json!({"size": "1024x1024", "count": MAX_IMAGE_OUTPUT_COUNT});
         assert_eq!(param_size(&p2).as_deref(), Some("1024x1024"));
-        assert_eq!(param_count(&p2), 10); // clamped
-        assert_eq!(param_count(&serde_json::json!({})), 1); // default
+        assert_eq!(param_count(&p2).unwrap(), MAX_IMAGE_OUTPUT_COUNT);
+        assert_eq!(param_count(&serde_json::json!({})).unwrap(), 1); // default
+        assert_eq!(param_count(&serde_json::json!({"n": 4})).unwrap(), 4);
+        assert_eq!(param_count(&serde_json::json!({"count": 4, "n": 4})).unwrap(), 4);
+        for invalid in [
+            serde_json::json!({"count": 0}),
+            serde_json::json!({"count": -1}),
+            serde_json::json!({"count": "2"}),
+            serde_json::json!({"count": 1.5}),
+            serde_json::json!({"n": MAX_IMAGE_OUTPUT_COUNT + 1}),
+            serde_json::json!({"count": 2, "n": 3}),
+        ] {
+            assert!(param_count(&invalid).is_err(), "must reject {invalid}");
+        }
         assert_eq!(param_prompt(&serde_json::json!({})), "");
         assert!(param_size(&serde_json::json!({})).is_none());
     }

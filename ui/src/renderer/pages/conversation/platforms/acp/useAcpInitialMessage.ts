@@ -8,13 +8,13 @@ import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 
 import { ipcBridge } from '@/common';
 import type { TMessage } from '@/common/chat/chatLib';
-import { parseError, prefixedId } from '@/common/utils';
+import { parseError } from '@/common/utils';
 import { emitter } from '@/renderer/utils/emitter';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
+import { Message } from '@arco-design/web-react';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getConversationRuntimeWorkspaceErrorMessage } from '../../utils/conversationCreateError';
-import { buildSendFailureError } from './buildSendFailureError';
 
 type UseAcpInitialMessageParams = {
   conversation_id: ConversationId;
@@ -22,6 +22,7 @@ type UseAcpInitialMessageParams = {
   workspacePath?: string;
   enabled?: boolean;
   setAiProcessing: (value: boolean) => void;
+  markTurnAccepted: () => void;
   checkAndUpdateTitle: (conversation_id: ConversationId, input: string) => void;
   addOrUpdateMessage: (message: TMessage, prepend?: boolean) => void;
 };
@@ -36,6 +37,7 @@ export const useAcpInitialMessage = ({
   workspacePath,
   enabled = true,
   setAiProcessing,
+  markTurnAccepted,
   checkAndUpdateTitle,
   addOrUpdateMessage,
 }: UseAcpInitialMessageParams): void => {
@@ -73,6 +75,7 @@ export const useAcpInitialMessage = ({
           conversation_id: conversation_id,
           files,
         });
+        markTurnAccepted();
 
         // Use add=false (compose mode) so composeMessageWithIndex can de-dup
         // by msg_id — this prevents a duplicate bubble if useMessageLstCache
@@ -99,19 +102,11 @@ export const useAcpInitialMessage = ({
           conversation_id,
         });
 
-        const errorMessage: TMessage = {
-          id: prefixedId('msg'),
-          conversation_id: conversation_id,
-          type: 'tips',
-          position: 'center',
-          content: {
-            content: errorMessageText,
-            type: 'error',
-            error: buildSendFailureError(error, errorMessageText),
-          },
-          created_at: Date.now() + 2,
-        };
-        addOrUpdateMessage(errorMessage, true);
+        // The backend owns durable transcript errors and their canonical
+        // identity. A POST failure that never produced a server message is
+        // transient UI feedback, not a synthetic chat row that history
+        // reconciliation could later duplicate or move into another turn.
+        Message.error({ content: errorMessageText, duration: 6000 });
         setAiProcessing(false); // Stop loading state on error
       }
     };
@@ -119,5 +114,15 @@ export const useAcpInitialMessage = ({
     sendInitialMessage().catch((error) => {
       console.error('Failed to send initial message:', error);
     });
-  }, [addOrUpdateMessage, backend, checkAndUpdateTitle, conversation_id, enabled, setAiProcessing, t, workspacePath]);
+  }, [
+    addOrUpdateMessage,
+    backend,
+    checkAndUpdateTitle,
+    conversation_id,
+    enabled,
+    markTurnAccepted,
+    setAiProcessing,
+    t,
+    workspacePath,
+  ]);
 };
