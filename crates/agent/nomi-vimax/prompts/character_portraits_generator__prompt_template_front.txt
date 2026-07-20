@@ -1,0 +1,3 @@
+Generate a full-body front-view of {identifier} on a pure white background, wide 16:9 landscape, character centered. Standing, arms relaxed, looking straight ahead.
+Features: {features}
+Style: {style}

@@ -71,6 +71,7 @@ nomifun-knowledge.workspace = true
 nomifun-poi.workspace = true
 nomifun-insights.workspace = true
 nomifun-media.workspace = true
+nomifun-vimax.workspace = true
 nomifun-cloud.workspace = true
 nomifun-agent-execution.workspace = true
 nomifun-companion.workspace = true

@@ -28,6 +28,7 @@ import {
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderSectionHeader,
+  SiderVideoGenerationEntry,
   // SiderWorkshopEntry, // TODO: 暂时隐藏创意工坊，后续开放时取消注释
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
@@ -104,6 +105,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleKnowledgeClick = () => navTo('/knowledge');
   // const handleAssetLibraryClick = () => navTo('/assets'); // TODO: 暂时隐藏资产库
   const handleNomiClick = () => navTo('/nomi');
+  const handleVideoGenerationClick = () => navTo('/video-generation');
   // const handleWorkshopClick = () => navTo('/workshop'); // TODO: 暂时隐藏创意工坊
   const handlePublicServiceClick = () => navTo('/public-companions');
   const handlePresetClick = () => navTo('/presets');
@@ -199,6 +201,14 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleNomiClick}
+            />
+            {/* ViMax video generation */}
+            <SiderVideoGenerationEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/video-generation')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleVideoGenerationClick}
             />
             {/* TODO: 暂时隐藏创意工坊，后续开放时取消注释
             <SiderWorkshopEntry

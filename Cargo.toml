@@ -46,6 +46,7 @@ nomifun-app = { path = "crates/backend/nomifun-app" }
 nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
 nomifun-insights = { path = "crates/backend/nomifun-insights" }
 nomifun-media = { path = "crates/backend/nomifun-media" }
+nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
@@ -67,6 +68,7 @@ nomi-poi = { path = "crates/agent/nomi-poi" }
 nomi-auxiliary = { path = "crates/agent/nomi-auxiliary" }
 nomi-insights-core = { path = "crates/agent/nomi-insights-core" }
 nomi-media = { path = "crates/agent/nomi-media" }
+nomi-vimax = { path = "crates/agent/nomi-vimax" }
 nomi-agent = { path = "crates/agent/nomi-agent" }
 nomi-computer = { path = "crates/agent/nomi-computer" }
 nomi-a11y = { path = "crates/agent/nomi-a11y" }

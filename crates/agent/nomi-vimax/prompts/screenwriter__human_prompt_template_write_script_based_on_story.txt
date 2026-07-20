@@ -1,0 +1,8 @@
+
+<STORY>
+{story}
+</STORY>
+
+<USER_REQUIREMENT>
+{user_requirement}
+</USER_REQUIREMENT>

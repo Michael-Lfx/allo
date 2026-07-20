@@ -1,0 +1,12 @@
+
+<SCRIPT>
+{script_str}
+</SCRIPT>
+
+<CHARACTERS>
+{characters_str}
+</CHARACTERS>
+
+<USER_REQUIREMENT>
+{user_requirement_str}
+</USER_REQUIREMENT>

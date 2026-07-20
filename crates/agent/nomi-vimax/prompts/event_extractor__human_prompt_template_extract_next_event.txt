@@ -1,0 +1,8 @@
+
+<NOVEL_TEXT_START>
+{novel_text}
+<NOVEL_TEXT_END>
+
+<EXTRACTED_EVENTS_START>
+{extracted_events}
+<EXTRACTED_EVENTS_END>

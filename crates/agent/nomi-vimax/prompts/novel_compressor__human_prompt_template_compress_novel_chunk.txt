@@ -1,0 +1,4 @@
+
+<NOVEL_CHUNK_START>
+{novel_chunk}
+<NOVEL_CHUNK_END>

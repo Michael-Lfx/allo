@@ -5755,6 +5755,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-vimax"
+version = "0.2.29"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "image",
+ "nomi-config",
+ "nomifun-cloud",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "nomifun-agent-execution"
 version = "0.2.29"
 dependencies = [
@@ -5924,6 +5948,7 @@ dependencies = [
  "nomifun-shell",
  "nomifun-system",
  "nomifun-terminal",
+ "nomifun-vimax",
  "nomifun-webhook",
  "nomifun-workshop",
  "reqwest 0.12.28",
@@ -6726,6 +6751,24 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nomifun-vimax"
+version = "0.2.29"
+dependencies = [
+ "axum",
+ "mime_guess",
+ "nomi-config",
+ "nomi-vimax",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-cloud",
+ "nomifun-common",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
