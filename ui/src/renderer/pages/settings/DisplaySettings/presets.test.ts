@@ -25,19 +25,23 @@ const getLocaleString = (settings: unknown, key: string): string => {
 };
 
 describe('display theme presets', () => {
-  test('uses Rhythm Dark as the first system default theme', () => {
+  test('uses Classic as the first system default theme', () => {
     const ids = PRESET_THEMES.map((theme) => theme.id);
-    const rhythmDarkIndex = ids.indexOf('rhythm-dark');
+    const classicIndex = ids.indexOf('codex-neutral');
 
-    expect(DEFAULT_THEME_ID).toBe('rhythm-dark');
-    expect(rhythmDarkIndex).toBe(0);
-    expect(rhythmDarkIndex).toBeLessThan(ids.indexOf('codex-neutral'));
-    expect(rhythmDarkIndex).toBeLessThan(ids.indexOf('neon-rainbow'));
-    expect(PRESET_THEMES[rhythmDarkIndex]?.name).toBe('律动暗黑');
+    expect(DEFAULT_THEME_ID).toBe('codex-neutral');
+    expect(classicIndex).toBe(0);
+    expect(classicIndex).toBeLessThan(ids.indexOf('rhythm-dark'));
+    expect(classicIndex).toBeLessThan(ids.indexOf('neon-rainbow'));
+    expect(PRESET_THEMES[classicIndex]?.name).toBe('经典');
   });
 
   test('defines a localized display name key for every built-in preset', () => {
-    expect(Object.keys(PRESET_THEME_NAME_KEYS).sort()).toEqual(PRESET_THEMES.map((theme) => theme.id).sort());
+    expect(Object.keys(PRESET_THEME_NAME_KEYS).sort()).toEqual(
+      PRESET_THEMES.filter((theme) => theme.id !== 'notion')
+        .map((theme) => theme.id)
+        .sort()
+    );
 
     for (const key of Object.values(PRESET_THEME_NAME_KEYS)) {
       expect(getLocaleString(zhSettings, key).trim()).toBeTruthy();
@@ -49,20 +53,12 @@ describe('display theme presets', () => {
     const zh = (key: string) => getLocaleString(zhSettings, key);
     const en = (key: string) => getLocaleString(enSettings, key);
 
-    expect(PRESET_THEMES.map((theme) => getCssThemeDisplayName(theme, zh))).toEqual([
-      '律动暗黑',
-      '经典',
-      '暗夜霓虹',
-      '冰晶幻境',
-      '落日余晖',
-    ]);
-    expect(PRESET_THEMES.map((theme) => getCssThemeDisplayName(theme, en))).toEqual([
-      'Rhythm Dark',
-      'Classic',
-      'Neon Night',
-      'Frosted Glass',
-      'Sunset Afterglow',
-    ]);
+    expect(
+      PRESET_THEMES.filter((theme) => theme.id !== 'notion').map((theme) => getCssThemeDisplayName(theme, zh))
+    ).toEqual(['经典', '律动暗黑', '暗夜霓虹', '冰晶幻境', '落日余晖']);
+    expect(
+      PRESET_THEMES.filter((theme) => theme.id !== 'notion').map((theme) => getCssThemeDisplayName(theme, en))
+    ).toEqual(['Classic', 'Rhythm Dark', 'Neon Night', 'Frosted Glass', 'Sunset Afterglow']);
   });
 
   test('keeps user theme names literal instead of translating them', () => {

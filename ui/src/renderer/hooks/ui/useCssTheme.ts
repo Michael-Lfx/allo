@@ -23,7 +23,7 @@ import { useTranslation } from 'react-i18next';
 /**
  * useCssTheme — the single source of truth for the CSS skin/preset axis.
  *
- * The light/dark axis lives in ThemeContext; the CSS preset axis (rhythm-dark,
+ * The light/dark axis lives in ThemeContext; the CSS preset axis (codex-neutral,
  * neon-rainbow, …) historically lived only inside `CssThemeSettings`. This hook
  * extracts that axis so EVERY surface (the Display settings page AND the sider
  * footer quick-switcher) shares one apply path: resolve preset CSS → write
