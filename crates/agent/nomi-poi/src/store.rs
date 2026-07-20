@@ -128,9 +128,9 @@ impl InterestStore {
         if version < 2 {
             Self::migrate_v2_columns(&conn)?;
         }
-        if version < 3 {
-            Self::migrate_v3_starters(&conn)?;
-        }
+        // Always ensure starters exists (idempotent). Covers DBs whose
+        // user_version was bumped without the table (upgrade / merge edges).
+        Self::migrate_v3_starters(&conn)?;
         if version < SCHEMA_VERSION {
             conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])
                 .map_err(|e| e.to_string())?;
@@ -556,6 +556,34 @@ impl InterestStore {
             )
             .map_err(|e| e.to_string())?;
         Ok(count as u32)
+    }
+
+    /// Active/pinned topics that still have no conversation starters.
+    ///
+    /// Used to backfill after a missed or failed generation pass (reinforce-only
+    /// flushes never re-enter the insert/promote starter hook).
+    pub fn list_active_topic_ids_missing_starters(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        let limit = limit.max(1) as i64;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.id FROM topics t
+                 WHERE (t.status = 'active' OR t.pinned = 1)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM starters s WHERE s.topic_id = t.id
+                   )
+                 ORDER BY t.pinned DESC, t.weight DESC, t.last_seen_at DESC
+                 LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn count_starters_for_topic(&self, topic_id: &str) -> Result<u32, String> {
@@ -1010,5 +1038,47 @@ mod tests {
         assert_eq!(store.list_for_cli(true).unwrap().len(), 0);
         assert_eq!(store.count_starters_global().unwrap(), 0);
         assert!(db.exists());
+    }
+
+    #[test]
+    fn lists_active_topics_missing_starters_for_backfill() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("interest.db");
+        let store = InterestStore::open(&db, InterestConfig::default()).unwrap();
+        store
+            .insert_topic(
+                &InterestSignal::new(
+                    "interest:a".into(),
+                    "A".into(),
+                    "a".into(),
+                    0.4,
+                    vec![],
+                    SignalSource::Declared,
+                ),
+                TopicStatus::Active,
+            )
+            .unwrap();
+        store
+            .insert_topic(
+                &InterestSignal::new(
+                    "interest:b".into(),
+                    "B".into(),
+                    "b".into(),
+                    0.3,
+                    vec![],
+                    SignalSource::Declared,
+                ),
+                TopicStatus::Active,
+            )
+            .unwrap();
+        store
+            .replace_starters_for_topic(
+                "interest:a",
+                &[("关于 A 的开场".into(), "zh-CN".into())],
+                "llm",
+            )
+            .unwrap();
+        let missing = store.list_active_topic_ids_missing_starters(10).unwrap();
+        assert_eq!(missing, vec!["interest:b".to_string()]);
     }
 }

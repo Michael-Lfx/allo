@@ -61,7 +61,7 @@ use nomifun_webhook::WebhookRouterState;
 
 use nomifun_secret::SecretRouterState;
 
-use crate::{derive_encryption_key, services::AppServices};
+use crate::services::AppServices;
 
 /// All module-level router states bundled into a single struct.
 ///
@@ -249,7 +249,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         cloud: CloudRouterState::new(
             services.cloud_service.clone(),
             services.provider_repo.clone(),
-            derive_encryption_key(&services.jwt_secret_raw),
+            services.encryption_key,
         ),
         companion: companion_state,
         public_agent: PublicAgentRouterState::new(services.public_agent_service.clone())
@@ -383,10 +383,9 @@ pub fn build_conversation_state(
     // Best-effort — no provider configured means no LLM title, fallback via
     // the frontend's first-message heuristic still applies.
     {
-        let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
         conversation_service.with_title_completer(Arc::new(nomifun_ai_agent::LiveConversationTitleCompleter {
             provider_repo: Arc::new(SqliteProviderRepository::new(services.database.pool().clone())),
-            encryption_key,
+            encryption_key: services.encryption_key,
             workspace: services.data_dir.clone(),
         }));
     }
@@ -419,11 +418,10 @@ pub fn build_conversation_state(
         conversation_service.with_delete_hook(cron_service.clone());
         conversation_service.with_cron_service(Some(cron_service));
     }
-    let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
     let provider_repo = Arc::new(SqliteProviderRepository::new(services.database.pool().clone()));
     let auxiliary_factory = Arc::new(nomifun_ai_agent::AuxiliaryClientFactory::new(
         provider_repo,
-        encryption_key,
+        services.encryption_key,
         services.data_dir.clone(),
     ));
     let conv_for_loader = conversation_service.clone();

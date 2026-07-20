@@ -39,7 +39,10 @@ pub use pipeline::{PoiPipeline, apply_signal_batch};
 pub use plugin::InterestMemoryPlugin;
 pub use quality::filter_persistable_signals;
 pub use session_buffer::SessionPoiBuffer;
-pub use starters::{spawn_starters_for_topics, spawn_starters_for_topics_with_store};
+pub use starters::{
+    collect_starter_topic_ids, generate_starters_for_topics, generate_starters_with_store,
+    spawn_starters_for_topics, spawn_starters_for_topics_with_store,
+};
 pub use store::{
     InterestSignal, InterestStarter, InterestStore, InterestTopic, load_interest_snapshot,
 };
