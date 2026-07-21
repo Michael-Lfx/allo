@@ -263,7 +263,6 @@ CREATE TABLE IF NOT EXISTS companion_suggestions (
   companion_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_companion_suggestions_status ON companion_suggestions(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_companion_suggestions_companion ON companion_suggestions(companion_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS companion_learn_runs (
   id TEXT PRIMARY KEY,
@@ -393,6 +392,15 @@ fn invalid_disk_id(field: &str, value: &str, error: impl std::fmt::Display) -> A
 const COMPANION_UNIQUE_INDEX: &str = "CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_threads_companion \
      ON companion_threads(companion_id)";
 
+/// Per-companion suggestion listing index. Same reason as [`COMPANION_UNIQUE_INDEX`]:
+/// kept out of the inline SCHEMA because SCHEMA runs before migrations, and a
+/// pre-v7 `companion_suggestions` table still lacks `companion_id` — creating this
+/// index there would fail with "no such column: companion_id" and bounce the
+/// store to in-memory. Fresh dbs create it in [`init_schema`]; existing dbs get
+/// it from migrate_v6_to_v7 after the column is added.
+const SUGGESTIONS_COMPANION_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_companion_suggestions_companion \
+     ON companion_suggestions(companion_id, created_at DESC)";
+
 /// Current schema version stamped into `PRAGMA user_version`. The base
 /// SCHEMA always reflects this latest shape (fresh dbs are born current).
 const STORE_VERSION: i64 = 7;
@@ -474,10 +482,14 @@ async fn init_schema(pool: &SqlitePool) -> Result<(), AppError> {
     .map_err(db_err)?;
     sqlx::raw_sql(SCHEMA).execute(&mut *conn).await.map_err(db_err)?;
     if existing_tables == 0 {
-        // Fresh db: the table was just born with `companion_id`, so the single-
-        // session unique index is safe to create now (and fresh dbs skip the
-        // migration ladder that would otherwise create it).
+        // Fresh db: the table was just born with `companion_id`, so indexes that
+        // reference migration-added columns are safe to create now (and fresh
+        // dbs skip the migration ladder that would otherwise create them).
         sqlx::raw_sql(COMPANION_UNIQUE_INDEX).execute(&mut *conn).await.map_err(db_err)?;
+        sqlx::raw_sql(SUGGESTIONS_COMPANION_INDEX)
+            .execute(&mut *conn)
+            .await
+            .map_err(db_err)?;
         sqlx::raw_sql(&format!("PRAGMA user_version = {STORE_VERSION}"))
             .execute(&mut *conn)
             .await
@@ -1105,13 +1117,10 @@ async fn migrate_v6_to_v7(conn: &mut SqliteConnection) -> Result<(), AppError> {
             .await
             .map_err(db_err)?;
     }
-    sqlx::raw_sql(
-        "CREATE INDEX IF NOT EXISTS idx_companion_suggestions_companion \
-         ON companion_suggestions(companion_id, created_at DESC)",
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(db_err)?;
+    sqlx::raw_sql(SUGGESTIONS_COMPANION_INDEX)
+        .execute(&mut *conn)
+        .await
+        .map_err(db_err)?;
     sqlx::raw_sql("PRAGMA user_version = 7").execute(&mut *conn).await.map_err(db_err)?;
     Ok(())
 }
@@ -4497,6 +4506,50 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(owner, None, "legacy suggestions become unowned");
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&pool).await.unwrap();
+        assert_eq!(version, STORE_VERSION);
+    }
+
+    /// Regression: production bootstrap runs SCHEMA *before* the migration
+    /// ladder. A pre-v7 suggestions table has no `companion_id` yet, so any
+    /// SCHEMA index on that column must not run until after migrate_v6_to_v7.
+    #[tokio::test]
+    async fn init_schema_upgrades_pre_v7_suggestions_without_companion_id() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE companion_suggestions (
+               id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+               action TEXT, status TEXT NOT NULL DEFAULT 'new', created_at INTEGER NOT NULL, decided_at INTEGER
+             );
+             INSERT INTO companion_suggestions(id, kind, title, body, status, created_at)
+               VALUES('sug_legacy', 'insight', '旧建议', '内容', 'new', 1);
+             PRAGMA user_version = 6;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        init_schema(&pool).await.expect("SCHEMA must not fail before v7 adds companion_id");
+        init_schema(&pool).await.expect("second bootstrap must stay idempotent");
+
+        let has_col: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pragma_table_info('companion_suggestions') WHERE name = 'companion_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_col, 1);
+        let has_idx: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_companion_suggestions_companion'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_idx, 1);
         let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&pool).await.unwrap();
         assert_eq!(version, STORE_VERSION);
     }
