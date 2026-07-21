@@ -3369,18 +3369,30 @@ impl StreamRelay {
         } else {
             let superseded = pending_superseded_call_ids.remove(&data.call_id);
             let row_status = if superseded { "finish" } else { status };
-            let mut persisted = data.clone();
-            if superseded {
-                persisted.status = ToolCallStatus::Completed;
-            }
-            let content = serde_json::to_string(&persisted).unwrap_or_default();
+            // Persist the same enriched projection the update path writes — the
+            // `turn_id`, artifact-delivery marker, and normalized `artifacts` —
+            // instead of a bare re-serialization that silently drops them from a
+            // first-seen row. A superseded preview still resolves to Completed.
+            let insert_content = if superseded {
+                let mut value = content_value;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "status".to_owned(),
+                        serde_json::to_value(ToolCallStatus::Completed)
+                            .unwrap_or_else(|_| json!("completed")),
+                    );
+                }
+                value.to_string()
+            } else {
+                content
+            };
 
             let row = MessageRow {
                 id: message_id.clone(),
                 conversation_id: self.conversation_id.clone(),
                 msg_id: Some(self.root_turn_id.clone()),
                 r#type: "tool_call".into(),
-                content,
+                content: insert_content,
                 position: Some("left".into()),
                 status: Some(row_status.to_owned()),
                 hidden: hidden || superseded,
@@ -5889,10 +5901,16 @@ mod tests {
         let outcome = relay.consume(rx).await;
         assert_eq!(outcome.terminal, RelayTerminal::Finish);
 
+        let inserts = repo.take_inserts();
+        let browser_id = inserts
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .map(|row| row.id.clone())
+            .expect("active Browser call should be persisted before cancellation");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == "asst-1:tool:tc-browser")
+            .find(|(id, _)| id == &browser_id)
             .expect("active Browser call should be marked canceled on end_turn");
         assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
@@ -6022,8 +6040,18 @@ mod tests {
         let outcome = relay.consume(rx).await;
         assert_eq!(outcome.terminal, RelayTerminal::Finish);
 
+        let inserts = repo.take_inserts();
+        let preview_id = inserts
+            .iter()
+            .find(|row| {
+                row.r#type == "tool_call"
+                    && serde_json::from_str::<ToolCallEventData>(&row.content)
+                        .is_ok_and(|data| data.call_id == "nomi-call_call_fbb31e380c974b268f4561c1")
+            })
+            .map(|row| row.id.clone())
+            .expect("preview Browser call should be persisted before it is superseded");
+        let preview_id = preview_id.as_str();
         let updates = repo.take_updates();
-        let preview_id = "asst-1:tool:nomi-call_call_fbb31e380c974b268f4561c1";
         assert!(
             updates
                 .iter()
@@ -6114,10 +6142,21 @@ mod tests {
 
         relay.consume(rx).await;
 
+        let inserts = repo.take_inserts();
+        let computer_id = inserts
+            .iter()
+            .find(|row| {
+                row.r#type == "tool_call"
+                    && serde_json::from_str::<ToolCallEventData>(&row.content)
+                        .is_ok_and(|data| data.call_id == "tc-computer")
+            })
+            .map(|row| row.id.clone())
+            .expect("settled Computer call should be persisted before the terminal error");
+        let computer_id = computer_id.as_str();
         let updates = repo.take_updates();
         assert!(
             !updates.iter().any(|(id, update)| {
-                id == "asst-1:tool:tc-computer"
+                id == computer_id
                     && update
                         .content
                         .as_deref()

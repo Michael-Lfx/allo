@@ -907,6 +907,16 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(rows)
     }
 
+    async fn list_running(&self) -> Result<Vec<ConversationRow>, DbError> {
+        let rows = sqlx::query_as::<_, ConversationRow>(
+            "SELECT * FROM conversations WHERE status = 'running'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
     async fn list_associated(&self, user_id: &str, conversation_id: &str) -> Result<Vec<ConversationRow>, DbError> {
         // First get the target conversation's workspace
         let target = sqlx::query_as::<_, ConversationRow>("SELECT * FROM conversations WHERE id = ? AND user_id = ?")
