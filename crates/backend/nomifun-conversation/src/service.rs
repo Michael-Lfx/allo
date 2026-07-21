@@ -1011,6 +1011,24 @@ impl ConversationService {
         )
     }
 
+    /// Persists the conversation row as `running` at turn start — the durable
+    /// counterpart to the `turn.started` WebSocket event. Previously `running`
+    /// was only ever broadcast, never written to disk, so a process killed
+    /// mid-turn left no marker to distinguish an interrupted conversation from
+    /// a healthy one. Writing it here leaves that marker: if the process dies
+    /// before the turn completes, the ghost `running` row is what boot
+    /// reconciliation (`crate::boot`) detects and settles. The completion path
+    /// writes the status back to `finished` via `persist_conversation_finished`.
+    pub(crate) async fn persist_conversation_running(&self, conversation_id: &str) {
+        let update = ConversationRowUpdate {
+            status: Some("running".to_owned()),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        if let Err(e) = self.conversation_repo.update(conversation_id, &update).await {
+            warn!(conversation_id, error = %ErrorChain(&e), "Failed to persist running conversation status");
+        }
+    }
 }
 
 // ── Conversation CRUD ───────────────────────────────────────────────
@@ -3572,6 +3590,11 @@ impl ConversationService {
             let _ = turn_handle.release();
             return Ok(user_msg_id);
         }
+
+        // Leave a durable `running` marker before the turn actually starts, so a
+        // process killed mid-turn can be settled at next boot (see `crate::boot`).
+        // Mirrors the `turn.started` broadcast that follows.
+        self.persist_conversation_running(conversation_id).await;
 
         self.broadcast_turn_started_with_context(
             user_id,

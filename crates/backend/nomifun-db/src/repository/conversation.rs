@@ -163,6 +163,14 @@ pub trait IConversationRepository: Send + Sync {
     /// The conversation identified by `conversation_id` is excluded.
     async fn list_associated(&self, user_id: &str, conversation_id: &str) -> Result<Vec<ConversationRow>, DbError>;
 
+    /// Boot reconciliation: every conversation still persisted as 'running'
+    /// (installation-wide). At boot no runtime is live, so these are always
+    /// ghosts left behind by a killed process. Default returns empty so mock
+    /// repos compile; the SQLite repo overrides it.
+    async fn list_running(&self) -> Result<Vec<ConversationRow>, DbError> {
+        Ok(Vec::new())
+    }
+
     /// Lists every retained Conversation whose top-level current model is
     /// bound to `provider_id`. These are hard references: deleting the
     /// provider would leave the Conversation lead unrunnable.

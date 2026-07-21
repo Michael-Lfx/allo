@@ -306,6 +306,15 @@ impl IConversationRepository for MockRepo {
         Ok(vec![])
     }
 
+    async fn list_running(&self) -> Result<Vec<ConversationRow>, nomifun_db::DbError> {
+        let rows = self.rows.lock().unwrap();
+        Ok(rows
+            .iter()
+            .filter(|r| r.status.as_deref() == Some("running"))
+            .cloned()
+            .collect())
+    }
+
     async fn get_messages(
         &self,
         conv_id: &str,
@@ -661,6 +670,93 @@ impl IAcpSessionRepository for StubAcpSessionRepo {
     }
 }
 
+/// Stateful ACP session repo for boot reconciliation tests: stores rows in a
+/// map so `clear_session_id` can be observed via `get` (NULLs `session_id` and
+/// resets the status to `idle`, mirroring the SQLite implementation).
+#[derive(Default)]
+struct BootAcpSessionRepo {
+    sessions: Mutex<std::collections::HashMap<String, AcpSessionRow>>,
+}
+
+impl BootAcpSessionRepo {
+    fn seed(&self, conversation_id: &str, session_id: &str) {
+        self.sessions.lock().unwrap().insert(
+            conversation_id.to_owned(),
+            AcpSessionRow {
+                conversation_id: conversation_id.to_owned(),
+                agent_backend: "stub".into(),
+                agent_source: "stub".into(),
+                agent_id: "stub".into(),
+                session_id: Some(session_id.to_owned()),
+                session_status: "active".into(),
+                session_config: "{}".into(),
+                last_active_at: None,
+                suspended_at: None,
+            },
+        );
+    }
+}
+
+#[async_trait::async_trait]
+impl IAcpSessionRepository for BootAcpSessionRepo {
+    async fn get(&self, conversation_id: &str) -> Result<Option<AcpSessionRow>, DbError> {
+        Ok(self.sessions.lock().unwrap().get(conversation_id).cloned())
+    }
+    async fn create(&self, params: &CreateAcpSessionParams<'_>) -> Result<AcpSessionRow, DbError> {
+        let row = AcpSessionRow {
+            conversation_id: params.conversation_id.to_owned(),
+            agent_backend: "stub".into(),
+            agent_source: "stub".into(),
+            agent_id: "stub".into(),
+            session_id: None,
+            session_status: "idle".into(),
+            session_config: "{}".into(),
+            last_active_at: None,
+            suspended_at: None,
+        };
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(params.conversation_id.to_owned(), row.clone());
+        Ok(row)
+    }
+    async fn update_session_id(&self, conversation_id: &str, session_id: &str) -> Result<bool, DbError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        match sessions.get_mut(conversation_id) {
+            Some(row) => {
+                row.session_id = Some(session_id.to_owned());
+                row.session_status = "active".into();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+    async fn clear_session_id(&self, conversation_id: &str) -> Result<bool, DbError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        match sessions.get_mut(conversation_id) {
+            Some(row) => {
+                row.session_id = None;
+                row.session_status = "idle".into();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+    async fn delete(&self, conversation_id: &str) -> Result<bool, DbError> {
+        Ok(self.sessions.lock().unwrap().remove(conversation_id).is_some())
+    }
+    async fn load_runtime_state(&self, _conversation_id: &str) -> Result<Option<PersistedSessionState>, DbError> {
+        Ok(None)
+    }
+    async fn save_runtime_state(
+        &self,
+        _conversation_id: &str,
+        _params: &SaveRuntimeStateParams<'_>,
+    ) -> Result<bool, DbError> {
+        Ok(true)
+    }
+}
+
 fn make_service() -> (
     ConversationService,
     Arc<MockBroadcaster>,
@@ -941,6 +1037,160 @@ async fn get_reports_idle_runtime_when_only_persisted_status_is_running() {
     assert_eq!(fetched.status, ConversationStatus::Running);
     assert_eq!(runtime.state, nomifun_api_types::ConversationRuntimeStateKind::Idle);
     assert!(runtime.can_send_message);
+}
+
+// ── Boot reconciliation tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn reconcile_marks_running_conversation_finished() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    repo.update(
+        &created.id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
+    let acp_repo: Arc<dyn IAcpSessionRepository> = Arc::new(BootAcpSessionRepo::default());
+
+    let reconciled = crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+
+    assert_eq!(reconciled, 1);
+    let fetched = svc.get(TEST_USER_1, &created.id).await.unwrap();
+    assert_eq!(fetched.status, ConversationStatus::Finished);
+}
+
+#[tokio::test]
+async fn reconcile_finalizes_dangling_thinking() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    repo.update(
+        &created.id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    repo.insert_message(&MessageRow {
+        id: "msg_thinking_dangling".into(),
+        conversation_id: created.id.clone(),
+        msg_id: Some("msg_thinking_dangling".into()),
+        r#type: "thinking".into(),
+        content: json!({ "content": "half a thought", "status": "thinking" }).to_string(),
+        position: Some("left".into()),
+        status: Some("work".into()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
+
+    let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
+    let acp_repo: Arc<dyn IAcpSessionRepository> = Arc::new(BootAcpSessionRepo::default());
+
+    crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+
+    let message = repo
+        .get_message(&created.id, "msg_thinking_dangling")
+        .await
+        .unwrap()
+        .expect("thinking message should still exist");
+    let content: serde_json::Value = serde_json::from_str(&message.content).unwrap();
+    assert_eq!(content["status"], "done");
+    // Accumulated content is preserved.
+    assert_eq!(content["content"], "half a thought");
+}
+
+#[tokio::test]
+async fn reconcile_clears_acp_session() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    repo.update(
+        &created.id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let acp_repo_concrete = Arc::new(BootAcpSessionRepo::default());
+    acp_repo_concrete.seed(&created.id, "acp_session_abc");
+    let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
+    let acp_repo: Arc<dyn IAcpSessionRepository> = acp_repo_concrete.clone();
+
+    crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+
+    let session = acp_repo.get(&created.id).await.unwrap().expect("session row should exist");
+    assert!(session.session_id.is_none());
+    assert_eq!(session.session_status, "idle");
+}
+
+#[tokio::test]
+async fn reconcile_noop_when_no_running() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    // A pending conversation must be left untouched.
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+
+    let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
+    let acp_repo: Arc<dyn IAcpSessionRepository> = Arc::new(BootAcpSessionRepo::default());
+
+    let reconciled = crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+
+    assert_eq!(reconciled, 0);
+    let fetched = svc.get(TEST_USER_1, &created.id).await.unwrap();
+    assert_eq!(fetched.status, ConversationStatus::Pending);
+}
+
+#[tokio::test]
+async fn persist_conversation_running_writes_running_marker() {
+    // The linchpin of the fix: a turn must leave a durable `running` marker so
+    // that a process killed mid-turn can be detected and settled at boot. This
+    // asserts the persisted status actually flips from `pending` to `running`,
+    // not just that a WebSocket event is broadcast.
+    let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    assert_eq!(
+        svc.get(TEST_USER_1, &created.id).await.unwrap().status,
+        ConversationStatus::Pending
+    );
+
+    svc.persist_conversation_running(&created.id).await;
+
+    assert_eq!(
+        svc.get(TEST_USER_1, &created.id).await.unwrap().status,
+        ConversationStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn persist_running_then_reconcile_settles_the_ghost() {
+    // End-to-end of the durable marker + boot sweep: a turn persists `running`,
+    // the process "dies" (no completion writes `finished`), and the next boot's
+    // reconciliation finds the ghost and settles it back to a usable state.
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+
+    svc.persist_conversation_running(&created.id).await;
+
+    let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
+    let acp_repo: Arc<dyn IAcpSessionRepository> = Arc::new(BootAcpSessionRepo::default());
+    let reconciled =
+        crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+
+    assert_eq!(reconciled, 1);
+    assert_eq!(
+        svc.get(TEST_USER_1, &created.id).await.unwrap().status,
+        ConversationStatus::Finished
+    );
 }
 
 #[tokio::test]
@@ -3670,7 +3920,11 @@ async fn send_message_returns_before_cold_agent_build_completes() {
     );
 
     let updated = repo.get(&conv.id).await.unwrap().unwrap();
-    assert_ne!(updated.status.as_deref(), Some("running"));
+    // The turn has been admitted and `turn.started` broadcast, so the durable
+    // `running` marker is persisted even though the cold agent build is still
+    // in flight. This is exactly what lets boot reconciliation recover the
+    // conversation if the process is killed during the build window.
+    assert_eq!(updated.status.as_deref(), Some("running"));
     assert!(
         svc.runtime_state().has_active_turn(&conv.id),
         "turn handle must cover the cold Agent build window"
