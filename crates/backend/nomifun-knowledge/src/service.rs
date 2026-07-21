@@ -349,6 +349,12 @@ pub struct TurnWritebackRequest {
     pub scope: String,
     pub user_text: String,
     pub assistant_text: String,
+    /// The conversation's active `(provider_id, model)`. When present the
+    /// write-back distillation runs on the exact model the turn just used
+    /// successfully, instead of the completer's default first-enabled pick —
+    /// which may not be routable (e.g. a channel gateway rejects it with
+    /// "all channel models failed"). `None` keeps the default-model behaviour.
+    pub model_override: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1615,6 +1621,7 @@ impl KnowledgeService {
                 crate::turn_writeback::TURN_WRITEBACK_SYSTEM,
                 &prompt,
                 "extract",
+                req.model_override.as_ref(),
             )
             .await
             {
@@ -1722,7 +1729,7 @@ impl KnowledgeService {
                     if existing.trim() == content.trim() {
                         continue;
                     }
-                    match self.merge_direct_turn_writeback(&completer, &existing, &content).await {
+                    match self.merge_direct_turn_writeback(&completer, &existing, &content, req.model_override.as_ref()).await {
                         Ok(merged) => content = merged,
                         Err(e) => {
                             failures.push(TurnWritebackFailure {
@@ -1861,6 +1868,7 @@ impl KnowledgeService {
         completer: &Arc<dyn KnowledgeCompleter>,
         existing: &str,
         proposal: &str,
+        override_model: Option<&(String, String)>,
     ) -> Result<String, String> {
         if existing.trim() == proposal.trim() {
             return Ok(proposal.to_owned());
@@ -1872,6 +1880,7 @@ impl KnowledgeService {
             crate::turn_writeback::TURN_WRITEBACK_MERGE_SYSTEM,
             &prompt,
             "merge",
+            override_model,
         )
         .await?;
         let out = crate::turn_writeback::parse_turn_writeback_merge_output(&raw)?;
@@ -3412,8 +3421,14 @@ async fn complete_turn_writeback_llm(
     system: &'static str,
     prompt: &str,
     stage: &'static str,
+    override_model: Option<&(String, String)>,
 ) -> Result<String, String> {
-    match tokio::time::timeout(TURN_WRITEBACK_LLM_TIMEOUT, completer.complete(system, prompt)).await {
+    match tokio::time::timeout(
+        TURN_WRITEBACK_LLM_TIMEOUT,
+        complete_dispatch(completer.as_ref(), system, prompt, override_model),
+    )
+    .await
+    {
         Ok(Ok(raw)) => Ok(raw),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err(format!(
@@ -6979,6 +6994,7 @@ mod tests {
                 scope: TEST_CONVERSATION_ID.to_owned(),
                 user_text: "请分析为什么暂存没有产出。".into(),
                 assistant_text: "结论：触发时机应放在最终答复之后。".into(),
+                model_override: None,
             })
             .await;
 
@@ -7035,6 +7051,7 @@ mod tests {
                 scope: TEST_CONVERSATION_ID.to_owned(),
                 user_text: "u".into(),
                 assistant_text: "a".into(),
+                model_override: None,
             })
             .await;
 
@@ -7076,6 +7093,7 @@ mod tests {
                 scope: TEST_CONVERSATION_ID.to_owned(),
                 user_text: "u".into(),
                 assistant_text: "a".into(),
+                model_override: None,
             })
             .await;
 
@@ -7121,6 +7139,7 @@ mod tests {
                 scope: TEST_CONVERSATION_ID.to_owned(),
                 user_text: "请补充这个经验。".into(),
                 assistant_text: "结论：应保留旧内容并追加新经验。".into(),
+                model_override: None,
             })
             .await;
 
@@ -7159,6 +7178,7 @@ mod tests {
             scope: TEST_CONVERSATION_ID.to_owned(),
             user_text: user_text.into(),
             assistant_text: "final durable answer".into(),
+            model_override: None,
         };
 
         let (alpha, beta) = tokio::join!(
@@ -7216,6 +7236,7 @@ mod tests {
                 scope: TEST_CONVERSATION_ID.to_owned(),
                 user_text: "u".into(),
                 assistant_text: "a".into(),
+                model_override: None,
             })
             .await;
 
@@ -7289,6 +7310,7 @@ mod tests {
                 scope: "conv_0190f5fe-7c00-7a00-8000-000000000001/msg_0190f5fe-7c00-7a00-8000-000000000001".into(),
                 user_text: "u".into(),
                 assistant_text: "a".into(),
+                model_override: None,
             })
             .await;
 

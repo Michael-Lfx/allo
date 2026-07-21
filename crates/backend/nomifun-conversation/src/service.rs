@@ -3823,6 +3823,10 @@ impl ConversationService {
             }
             let stored_workspace = runtime_options.workspace.clone();
             let knowledge_extra = runtime_options.extra.clone();
+            // Capture the turn's provider/model before `runtime_options` is
+            // moved into the runtime build, so post-turn write-back can distill
+            // on the same model the conversation actually uses.
+            let knowledge_writeback_model = runtime_options.model.clone();
             let mut agent = match runtime_registry
                 .get_or_create_runtime_for_turn(
                     &conv_id,
@@ -4445,6 +4449,7 @@ impl ConversationService {
                             agent.agent_type(),
                             companion,
                             channel_platform.as_deref(),
+                            knowledge_writeback_model.as_ref(),
                         )
                     {
                         final_turn_writeback = Some((knowledge_service, request, final_text_msg_id, final_text));
@@ -5889,6 +5894,7 @@ impl ConversationService {
         agent_type: AgentType,
         companion: bool,
         channel_platform: Option<&str>,
+        model: Option<&nomifun_common::ProviderWithModel>,
     ) -> Option<(
         Arc<nomifun_knowledge::KnowledgeService>,
         nomifun_knowledge::TurnWritebackRequest,
@@ -5960,6 +5966,17 @@ impl ConversationService {
             scope,
             user_text: user_text.to_owned(),
             assistant_text: String::new(),
+            // Distill on the exact model this turn already used successfully.
+            // Falling back to the completer's default first-enabled pick can
+            // land on a model the gateway won't route ("all channel models
+            // failed"), which is what surfaced as a write-back error even
+            // though the document write itself succeeded.
+            model_override: model.map(|m| {
+                (
+                    m.provider_id.clone(),
+                    m.use_model.clone().unwrap_or_else(|| m.model.clone()),
+                )
+            }),
         };
 
         Some((service, request))
