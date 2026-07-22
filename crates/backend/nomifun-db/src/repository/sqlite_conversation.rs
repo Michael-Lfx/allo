@@ -1408,25 +1408,25 @@ impl IConversationRepository for SqliteConversationRepository {
         let offset = (effective_page - 1) * effective_size;
         let fetch_limit = effective_size + 1;
 
-        // Build a fuzzy-friendly LIKE pattern: each character of the keyword
-        // is separated by '%' so that "abc" becomes "%a%b%c%".
-        // This pre-filters the SQL result set to rows that contain all
-        // keyword characters in order, which is a superset of the fuzzy
-        // matches that SkimMatcherV2 will later score in the service layer.
-        let fuzzy_like: String = keyword
+        // Build a LIKE pattern from the keyword with proper metacharacter escaping.
+        // Escape LIKE metacharacters so user-typed `%`, `_`, `\` match literally.
+        let escaped: String = keyword
             .chars()
             .filter(|c| !c.is_whitespace())
-            .fold(String::from('%'), |mut acc, c| {
-                acc.push(c);
-                acc.push('%');
-                acc
-            });
-        let like_pattern = fuzzy_like;
+            .collect::<String>()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        // Use containment match `%kw%` (no per-character splitting). The previous
+        // subsequence pattern `%a%b%c%` defeated B-tree indexes and produced surprising
+        // matches. Containment is simpler, matches user intent, and still requires only
+        // a single scan pass. An index on (user_id, content) can still help the JOIN.
+        let like_pattern = format!("%{escaped}%");
 
         let count_row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM messages m \
              INNER JOIN conversations c ON m.conversation_id = c.id \
-             WHERE c.user_id = ? AND m.content LIKE ?",
+             WHERE c.user_id = ? AND m.content LIKE ? ESCAPE '\\'",
         )
         .bind(user_id)
         .bind(&like_pattern)
@@ -1458,7 +1458,7 @@ impl IConversationRepository for SqliteConversationRepository {
                 c.updated_at AS conversation_updated_at \
              FROM messages m \
              INNER JOIN conversations c ON m.conversation_id = c.id \
-             WHERE c.user_id = ? AND m.content LIKE ? \
+             WHERE c.user_id = ? AND m.content LIKE ? ESCAPE '\\' \
              ORDER BY m.created_at DESC \
              LIMIT ? OFFSET ?",
         )
