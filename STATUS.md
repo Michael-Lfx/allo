@@ -1,6 +1,6 @@
 # Current Technical Status
 
-Updated: 2026-06-24.
+Updated: 2026-07-22.
 
 This file is a compact current-state snapshot. Historical P0-P5 migration notes
 were removed from the active status because they described the 2026-06-08
@@ -30,14 +30,19 @@ The current frontend route map lives in
 - `/guid` and `/conversation/:id`
 - `/terminal-new` and `/terminal/:id`
 - `/models`
-- `/assistants`
-- `/mcp`
-- `/open-capabilities`
+- `/presets`, `/skills`
+- `/mcp` (MCP server library / session enablement — **not** the public front door)
+- `/open-capabilities` (and `/settings/open-capabilities`) — WebUI + **public**
+  Remote MCP/REST. External agents should default to **`/mcp-agent`** (curated
+  agent profile); full `/mcp` is the advanced surface. Companion access tokens
+  authenticate those fronts.
 - `/requirements`, `/requirements/extensions`, `/requirements/sources`
 - `/scheduled` and `/scheduled/:job_id`
 - `/nomi`
 - `/knowledge` and `/knowledge/:id`
 - `/settings/system` plus system sub-sections routed through that page
+
+Public HTTP fronts (when WebUI is running): `/mcp-agent`, `/mcp`, `/v1`.
 
 Several legacy paths still exist only as redirects. Do not document them as
 primary navigation.

@@ -27,7 +27,10 @@ import type { CompanionId } from '@/common/types/ids';
  * Kept separate from WebUI login controls because these tokens authenticate
  * external MCP / REST clients, not browser login sessions.
  */
-const CompanionAccessTokenPanel: React.FC = () => {
+const CompanionAccessTokenPanel: React.FC<{
+  /** When a token is minted (or cleared), notify the parent so snippets can inject it. */
+  onTokenChange?: (token: string | null) => void;
+}> = ({ onTokenChange }) => {
   const { t } = useTranslation();
   const [message, messageHolder] = useArcoMessage();
 
@@ -80,6 +83,7 @@ const CompanionAccessTokenPanel: React.FC = () => {
     setPlaintext(null);
     setWarning(null);
     setConfigured(null);
+    onTokenChange?.(null);
     if (!selectedId) return;
     let alive = true;
     setStatusLoading(true);
@@ -98,7 +102,7 @@ const CompanionAccessTokenPanel: React.FC = () => {
     return () => {
       alive = false;
     };
-  }, [selectedId]);
+  }, [selectedId, onTokenChange]);
 
   const friendlyError = useCallback(
     (error: unknown, fallback: string) =>
@@ -121,6 +125,7 @@ const CompanionAccessTokenPanel: React.FC = () => {
       const res = await webui.companionAccessToken.mint.invoke({ companionId: selectedId });
       // Plaintext is returned exactly once — keep it only in session state.
       setPlaintext(res.token);
+      onTokenChange?.(res.token);
       setWarning(res.warning ?? null);
       setConfigured(true);
       message.success(t('settings.webui.companionToken.minted'));
@@ -130,7 +135,7 @@ const CompanionAccessTokenPanel: React.FC = () => {
     } finally {
       setMinting(false);
     }
-  }, [selectedId, message, t, friendlyError]);
+  }, [selectedId, message, t, friendlyError, onTokenChange]);
 
   const handleRevoke = useCallback(async () => {
     if (!selectedId) return;
@@ -139,6 +144,7 @@ const CompanionAccessTokenPanel: React.FC = () => {
       await webui.companionAccessToken.revoke.invoke({ companionId: selectedId });
       setConfigured(false);
       setPlaintext(null);
+      onTokenChange?.(null);
       setWarning(null);
       message.success(t('settings.webui.companionToken.revoked'));
     } catch (error) {
@@ -147,7 +153,7 @@ const CompanionAccessTokenPanel: React.FC = () => {
     } finally {
       setRevoking(false);
     }
-  }, [selectedId, message, t, friendlyError]);
+  }, [selectedId, message, t, friendlyError, onTokenChange]);
 
   const hasCompanions = companions.length > 0;
 

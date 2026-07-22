@@ -25,6 +25,7 @@ import { WEBUI_DEFAULT_PORT } from '@/common/config/constants';
 const formatJson = (value: unknown) => JSON.stringify(value, null, 2);
 
 type OpenCapabilityTab = 'webui' | 'mcp';
+type McpProfileMode = 'agent' | 'full';
 
 type McpDomainOption = {
   id: string;
@@ -195,6 +196,8 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
   const [cwd, setCwd] = useState('');
   const [activeOpenCapabilityTab, setActiveOpenCapabilityTab] = useState<OpenCapabilityTab>('webui');
   const [selectedMcpDomains, setSelectedMcpDomains] = useState<string[]>([...RECOMMENDED_MCP_DOMAINS]);
+  const [mcpProfile, setMcpProfile] = useState<McpProfileMode>('agent');
+  const [accessToken, setAccessToken] = useState<string | null>(null);
 
   const baseUrl = useMemo(() => {
     const preferred = accessUrls[0];
@@ -203,30 +206,37 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
     return `http://127.0.0.1:${port}`;
   }, [accessUrls, status?.port]);
 
-  const mcpUrl = `${baseUrl}/mcp`;
+  // Default external clients to the curated agent profile (`/mcp-agent`).
+  // Full `/mcp` remains available as an advanced opt-in.
+  const mcpPath = mcpProfile === 'agent' ? '/mcp-agent' : '/mcp';
+  const mcpUrl = `${baseUrl}${mcpPath}`;
   const restUrl = `${baseUrl}/v1`;
   const domainsQuery = useMemo(() => {
+    if (mcpProfile === 'agent') return '';
     const normalized = normalizeMcpDomains(selectedMcpDomains);
     return normalized.length === MCP_DOMAIN_OPTIONS.length ? '' : normalized.join(',');
-  }, [selectedMcpDomains]);
+  }, [selectedMcpDomains, mcpProfile]);
   const querySuffix = domainsQuery ? `?domains=${domainsQuery}` : '';
   const selectedMcpUrl = `${mcpUrl}${querySuffix}`;
   const restToolsUrl = `${restUrl}/tools${querySuffix}`;
   const openapiUrl = `${restUrl}/openapi.json${querySuffix}`;
+  const bearerToken = accessToken?.trim() || '<companion-access-token>';
   const mcpClientJson = formatJson({
     mcpServers: {
-      nomifun: {
+      flowy: {
         type: 'streamable-http',
         url: selectedMcpUrl,
         headers: {
-          Authorization: 'Bearer <companion-access-token>',
+          Authorization: `Bearer ${bearerToken}`,
         },
       },
     },
   });
+  const cursorMcpJson = mcpClientJson;
+  const claudeCli = `claude mcp add --transport http flowy ${selectedMcpUrl} \\\n  --header "Authorization: Bearer ${bearerToken}"`;
   const restCurl = [
     `curl ${restToolsUrl}`,
-    '  -H "Authorization: Bearer <companion-access-token>"',
+    `  -H "Authorization: Bearer ${bearerToken}"`,
   ].join(' \\\n');
 
   const selectedDomainCount = selectedMcpDomains.length;
@@ -297,13 +307,18 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                   })}
                 />
 
-                <div className='mt-14px flex flex-col gap-10px md:flex-row md:items-center md:justify-between'>
+                <div className={`mt-14px flex flex-col gap-10px md:flex-row md:items-center md:justify-between${mcpProfile === 'agent' ? ' opacity-50 pointer-events-none' : ''}`}>
                   <div className='text-12px leading-18px text-t-secondary'>
-                    {t('settings.openCapabilities.selectedDomainCount', {
-                      count: selectedDomainCount,
-                      total: MCP_DOMAIN_OPTIONS.length,
-                      defaultValue: '已选择 {{count}} / {{total}} 个能力域',
-                    })}
+                    {mcpProfile === 'agent'
+                      ? t('settings.openCapabilities.scopeAgentDesc', {
+                          defaultValue:
+                            '精简模式使用服务端固化的 /mcp-agent 能力域；切到完整模式后可勾选能力域。',
+                        })
+                      : t('settings.openCapabilities.selectedDomainCount', {
+                          count: selectedDomainCount,
+                          total: MCP_DOMAIN_OPTIONS.length,
+                          defaultValue: '已选择 {{count}} / {{total}} 个能力域',
+                        })}
                   </div>
                   <div className='flex flex-wrap gap-8px'>
                     <Button size='mini' onClick={() => setSelectedMcpDomains([...RECOMMENDED_MCP_DOMAINS])}>
@@ -315,7 +330,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                   </div>
                 </div>
 
-                <div className='mt-12px grid grid-cols-1 gap-10px md:grid-cols-2 xl:grid-cols-3'>
+                <div className={`mt-12px grid grid-cols-1 gap-10px md:grid-cols-2 xl:grid-cols-3${mcpProfile === 'agent' ? ' opacity-50 pointer-events-none' : ''}`}>
                   {MCP_DOMAIN_OPTIONS.map((option) => {
                     const checked = selectedMcpDomains.includes(option.id);
                     return (
@@ -338,9 +353,25 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                   title={t('settings.openCapabilities.generatedConfigTitle', { defaultValue: '当前生成的接入配置' })}
                   body={t('settings.openCapabilities.generatedConfigDesc', {
                     defaultValue:
-                      '把下面的 MCP 地址写入外部 Agent。URL 中的 domains 参数就是当前勾选的 Flowy 平台能力范围。',
+                      '铸造 companion token 后，下方 Cursor / Claude 片段会注入真实 Bearer 与当前 MCP URL。默认 /mcp-agent。',
                   })}
                 />
+                <div className='flex flex-wrap gap-8px'>
+                  <Button
+                    size='mini'
+                    type={mcpProfile === 'agent' ? 'primary' : 'secondary'}
+                    onClick={() => setMcpProfile('agent')}
+                  >
+                    {t('settings.openCapabilities.scopeAgentTitle', { defaultValue: 'Agent 精简 (/mcp-agent)' })}
+                  </Button>
+                  <Button
+                    size='mini'
+                    type={mcpProfile === 'full' ? 'primary' : 'secondary'}
+                    onClick={() => setMcpProfile('full')}
+                  >
+                    {t('settings.openCapabilities.scopeFullTitle', { defaultValue: '完整 Remote (/mcp)' })}
+                  </Button>
+                </div>
                 <EndpointBlock
                   label={t('settings.openCapabilities.mcpEndpoint', { defaultValue: 'MCP 地址' })}
                   value={selectedMcpUrl}
@@ -355,7 +386,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                 />
                 {lifecycleSupported && (
                   <div className='rd-12px border border-border-2 bg-fill-0 p-14px'>
-                    <CompanionAccessTokenPanel />
+                    <CompanionAccessTokenPanel onTokenChange={setAccessToken} />
                   </div>
                 )}
               </div>
@@ -363,7 +394,19 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
 
             <section className='grid grid-cols-1 gap-16px lg:grid-cols-2'>
               <SnippetBlock
-                label={t('settings.openCapabilities.mcpClientConfig', { defaultValue: 'MCP 客户端配置示例' })}
+                label={t('settings.openCapabilities.cursorConfig', {
+                  defaultValue: 'Cursor (.cursor/mcp.json)',
+                })}
+                code={cursorMcpJson}
+              />
+              <SnippetBlock
+                label={t('settings.openCapabilities.claudeConfig', {
+                  defaultValue: 'Claude Code (claude mcp add)',
+                })}
+                code={claudeCli}
+              />
+              <SnippetBlock
+                label={t('settings.openCapabilities.mcpClientConfig', { defaultValue: '通用 MCP 客户端 JSON' })}
                 code={mcpClientJson}
               />
               <SnippetBlock
