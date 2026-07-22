@@ -8,6 +8,7 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetSettings'));
@@ -40,7 +41,6 @@ const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/vi
 // const AssetLibraryPage = React.lazy(() => import('@renderer/pages/assets'));
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
-const ConversationShell = React.lazy(() => import('@renderer/pages/conversation/components/ConversationShell'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
 const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
@@ -77,11 +77,10 @@ const SessionShellRoute: React.FC = () => {
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
+  // Eager shell keeps sider mounted across /guid ↔ conversation; only page chunks suspend.
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={<RouteContentFallback />}>
-        <ConversationShell />
-      </Suspense>
+      <ConversationShell />
     </RouteErrorBoundary>
   );
 };
@@ -132,17 +131,25 @@ const getHashRouteRedirectUrl = () => {
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
   const { status: localStatus } = useAuth();
   const { status: cloudStatus, ready: cloudReady } = useCloudAuth();
+  const authChecking = localStatus === 'checking' || !cloudReady || cloudStatus === 'checking';
 
-  if (localStatus === 'checking' || !cloudReady || cloudStatus === 'checking') {
-    return <AppLoader />;
-  }
-
-  if (localStatus !== 'authenticated') {
+  if (!authChecking && localStatus !== 'authenticated') {
     return <Navigate to='/login' replace />;
   }
 
-  if (cloudStatus !== 'authenticated') {
+  if (!authChecking && cloudStatus !== 'authenticated') {
     return <Navigate to='/cloud-login' replace />;
+  }
+
+  // Keep chrome mounted while auth resolves; only the outlet region shows a shell-safe loader.
+  if (authChecking) {
+    return (
+      <>
+        {React.cloneElement(layout as React.ReactElement<{ children?: React.ReactNode }>, {
+          children: <AppLoader fill />,
+        })}
+      </>
+    );
   }
 
   return (

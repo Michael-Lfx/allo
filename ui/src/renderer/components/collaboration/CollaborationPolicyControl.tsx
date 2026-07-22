@@ -101,7 +101,7 @@ const CollaborationPolicyControl: React.FC<CollaborationPolicyControlProps> = ({
       trigger='click'
       position='top'
       getPopupContainer={() => document.body}
-      unmountOnExit
+      unmountOnExit={false}
     >
       <Button
         type={compact ? 'text' : 'secondary'}

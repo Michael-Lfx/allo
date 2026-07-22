@@ -175,15 +175,26 @@ const ConversationShell: React.FC = () => {
   return (
     <PendingConversationProvider>
       <div className='relative flex size-full min-h-0'>
-        {!collapsed &&
-          (isMobile ? (
+        {isMobile ? (
+          !collapsed ? (
             <>
               <div className='absolute inset-0 z-20 bg-[rgba(0,0,0,0.45)]' onClick={collapse} />
               <div className='absolute inset-y-0 left-0 z-30 h-full'>{panel}</div>
             </>
-          ) : (
-            panel
-          ))}
+          ) : null
+        ) : (
+          <div
+            className='h-full shrink-0 overflow-hidden'
+            style={{
+              width: collapsed ? 0 : undefined,
+              visibility: collapsed ? 'hidden' : 'visible',
+              pointerEvents: collapsed ? 'none' : undefined,
+            }}
+            aria-hidden={collapsed}
+          >
+            {panel}
+          </div>
+        )}
         <div className='relative flex-1 min-w-0 min-h-0 flex flex-col'>
           <Outlet />
           <PendingConversationOverlay />

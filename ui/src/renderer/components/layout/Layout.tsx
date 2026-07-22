@@ -146,7 +146,9 @@ const detectMobileViewportOrTouch = (): boolean => {
 const Layout: React.FC<{
   sider: React.ReactNode;
   onSessionClick?: () => void;
-}> = ({ sider, onSessionClick: _onSessionClick }) => {
+  /** When set, replaces `<Outlet />` (auth gate keeps chrome without mounting child routes). */
+  children?: React.ReactNode;
+}> = ({ sider, onSessionClick: _onSessionClick, children }) => {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [railWidth, setRailWidth] = useState<number>(() => readStoredRailWidth());
@@ -727,7 +729,7 @@ const Layout: React.FC<{
                   : undefined
               }
             >
-              <Outlet />
+              {children ?? <Outlet />}
               {directorySelectionContextHolder}
               <PwaPullToRefresh />
               <Suspense fallback={null}>

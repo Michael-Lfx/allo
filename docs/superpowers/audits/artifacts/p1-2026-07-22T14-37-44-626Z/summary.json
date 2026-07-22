@@ -1,0 +1,105 @@
+{
+  "generatedAt": "2026-07-22T14:37:52.030Z",
+  "url": "http://127.0.0.1:5173",
+  "artifactDir": "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z",
+  "targets": {
+    "coldStartMs": {
+      "p50": 2500,
+      "p95": 4500
+    },
+    "routeSwitchMs": {
+      "p50": 180,
+      "p95": 450
+    },
+    "inputResponseMs": {
+      "p50": 50,
+      "p95": 120
+    },
+    "longTasksPerMinute": {
+      "p50": 8,
+      "p95": 20
+    },
+    "cls": {
+      "p50": 0.05,
+      "p95": 0.1
+    },
+    "animationFps": {
+      "p50": 50,
+      "p95": 45
+    }
+  },
+  "measured": {
+    "httpBoot": {
+      "httpMs": 25,
+      "status": 200,
+      "bytes": 2833,
+      "hasRoot": true
+    },
+    "coldStartMs": {
+      "samples": [
+        1171,
+        1220,
+        1222,
+        1223,
+        1239,
+        1284
+      ],
+      "p50": 1223,
+      "p95": 1284,
+      "method": "edge-headless-screenshot"
+    },
+    "routeSwitchMs": {
+      "samples": [
+        {
+          "hash": "#/cloud-login",
+          "ms": 2,
+          "httpMs": 2,
+          "status": 200,
+          "bytes": 2833,
+          "hasRoot": true
+        },
+        {
+          "hash": "#/guid",
+          "ms": 3,
+          "httpMs": 2,
+          "status": 200,
+          "bytes": 2833,
+          "hasRoot": true
+        },
+        {
+          "hash": "#/login",
+          "ms": 5,
+          "httpMs": 5,
+          "status": 200,
+          "bytes": 2833,
+          "hasRoot": true
+        }
+      ],
+      "p50": 3,
+      "p95": 5,
+      "method": "http-fetch-hash-url (document shell; SPA paint measured in authenticated retest)"
+    },
+    "inputResponseMs": null,
+    "longTasksPerMinute": null,
+    "cls": null,
+    "animationFps": null,
+    "note": "Authenticated path metrics (input / CLS / FPS / long tasks) require logged-in desktop session; record on full-path retest."
+  },
+  "codeAuditFixes": [
+    "ProtectedLayout keeps shell + AppLoader fill",
+    "ConversationShell eager import",
+    "workspace collapse sync localStorage",
+    "session sider keep-mounted when collapsed",
+    "guid max-height 760 padding",
+    "popover unmountOnExit=false"
+  ],
+  "findings": [],
+  "screenshots": [
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z/1280x720-light.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z/1280x720-dark.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z/1440x900-light.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z/1440x900-dark.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z/2560x1440-light.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-37-44-626Z/2560x1440-dark.png"
+  ]
+}

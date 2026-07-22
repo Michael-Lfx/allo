@@ -1,0 +1,12 @@
+{
+  "viewport": {
+    "name": "1280x720",
+    "width": 1280,
+    "height": 720
+  },
+  "theme": "dark",
+  "url": "http://127.0.0.1:5173/#/login",
+  "captureMs": 1830,
+  "exitCode": 0,
+  "note": "Theme toggle is app-controlled; Edge capture is initial paint of /#/login."
+}

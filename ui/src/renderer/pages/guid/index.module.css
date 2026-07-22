@@ -2172,6 +2172,19 @@ button.guidResourceCard:focus-visible {
   bottom: calc(32px + env(safe-area-inset-bottom, 0px));
 }
 
+/* 矮视口（含 1280×720）：取消负 margin，给浮动快捷按钮留底边距，避免重叠 */
+@media (max-height: 760px) {
+  .guidPrimaryStage {
+    justify-content: flex-start;
+    padding-top: 24px;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .guidPrimaryStage .guidLayout {
+    margin-top: 0;
+  }
+}
+
 @media (max-width: 768px) {
   .guidPrimaryStage {
     justify-content: flex-start;

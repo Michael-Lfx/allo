@@ -1,0 +1,110 @@
+{
+  "generatedAt": "2026-07-22T14:40:35.348Z",
+  "url": "http://127.0.0.1:5173",
+  "artifactDir": "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z",
+  "targets": {
+    "coldStartMs": {
+      "p50": 2500,
+      "p95": 4500
+    },
+    "routeSwitchMs": {
+      "p50": 180,
+      "p95": 450
+    },
+    "inputResponseMs": {
+      "p50": 50,
+      "p95": 120
+    },
+    "longTasksPerMinute": {
+      "p50": 8,
+      "p95": 20
+    },
+    "cls": {
+      "p50": 0.05,
+      "p95": 0.1
+    },
+    "animationFps": {
+      "p50": 50,
+      "p95": 45
+    }
+  },
+  "measured": {
+    "httpBoot": {
+      "httpMs": 11,
+      "status": 200,
+      "bytes": 2833,
+      "hasRoot": true
+    },
+    "coldStartMs": {
+      "samples": [
+        1879,
+        1940,
+        1955,
+        1984,
+        2015,
+        2125
+      ],
+      "p50": 1984,
+      "p95": 2125,
+      "method": "edge-headless-screenshot"
+    },
+    "routeSwitchMs": {
+      "samples": [
+        {
+          "hash": "#/cloud-login",
+          "ms": 2,
+          "httpMs": 2,
+          "status": 200,
+          "bytes": 2833,
+          "hasRoot": true
+        },
+        {
+          "hash": "#/guid",
+          "ms": 2,
+          "httpMs": 2,
+          "status": 200,
+          "bytes": 2833,
+          "hasRoot": true
+        },
+        {
+          "hash": "#/login",
+          "ms": 3,
+          "httpMs": 3,
+          "status": 200,
+          "bytes": 2833,
+          "hasRoot": true
+        }
+      ],
+      "p50": 2,
+      "p95": 3,
+      "method": "http-fetch-hash-url (document shell; SPA paint measured in authenticated retest)"
+    },
+    "inputResponseMs": null,
+    "longTasksPerMinute": null,
+    "cls": null,
+    "animationFps": null,
+    "note": "Authenticated path metrics (input / CLS / FPS / long tasks) require logged-in desktop session; record on full-path retest."
+  },
+  "codeAuditFixes": [
+    "ProtectedLayout keeps shell + AppLoader fill",
+    "ConversationShell eager import",
+    "workspace collapse sync localStorage",
+    "session sider keep-mounted when collapsed",
+    "guid max-height 760 padding",
+    "popover unmountOnExit=false"
+  ],
+  "findings": [],
+  "screenshots": [
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z/1280x720-light.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z/1280x720-dark.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z/1440x900-light.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z/1440x900-dark.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z/2560x1440-light.png",
+    "C:/Users/Administrator/nomifun-tauri/docs/superpowers/audits/artifacts/p1-2026-07-22T14-40-23-418Z/2560x1440-dark.png"
+  ],
+  "visualNotes": [
+    "Login shell uses framer-motion initial opacity:0; without reduced-motion, first paint can look blank (flash).",
+    "Login card visual theme is mostly self-contained; data-theme dark does not fully recolor the login split panel in headless capture.",
+    "Authenticated guid/workspace CLS/FPS not measured in this run (no credentials on probe machine)."
+  ]
+}

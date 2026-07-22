@@ -100,7 +100,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
             }}
           />
         }
-        unmountOnExit
+        unmountOnExit={false}
       >
         <button type='button' className={classNames(menuRowClass, skinVisible && '!bg-fill-2')}>
           <Theme theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
@@ -174,7 +174,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
       onVisibleChange={handleMenuVisibleChange}
       getPopupContainer={() => document.body}
       content={menuContent}
-      unmountOnExit
+      unmountOnExit={false}
       {...({
         popupAlign: collapsed ? { left: 10 } : { bottom: 8, left: -28 },
       } as Record<string, unknown>)}

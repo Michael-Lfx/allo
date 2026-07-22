@@ -9,7 +9,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import AppLoader from '@renderer/components/layout/AppLoader';
 import WindowControls from '@renderer/components/layout/WindowControls';
 import { ipcBridge } from '@/common';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -188,8 +187,9 @@ const CloudLoginPage: React.FC = () => {
     }
   }, [logout, ensureSession, showMessage]);
 
+  // Route Suspense already shows fullscreen AppLoader; avoid a second viewport swap.
   if (status === 'checking') {
-    return <AppLoader />;
+    return null;
   }
 
   const busy = sendingCode || loggingIn;

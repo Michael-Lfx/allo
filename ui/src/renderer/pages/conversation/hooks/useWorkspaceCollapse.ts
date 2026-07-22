@@ -120,13 +120,6 @@ export function useWorkspaceCollapse({
   isTemporaryWorkspace,
   autoExpandOnFiles = true,
 }: UseWorkspaceCollapseParams): UseWorkspaceCollapseReturn {
-  // Workspace panel always starts collapsed; manual toggles and allowed file
-  // signals can expand it. See WORKSPACE_HAS_FILES_EVENT handler below.
-  const [rightSiderCollapsed, setRightSiderCollapsed] = useState(true);
-
-  // Mirror ref for collapse state
-  const rightCollapsedRef = useRef(rightSiderCollapsed);
-
   const targetKind = target?.kind;
   const targetId = target?.id;
   const stableTarget =
@@ -136,6 +129,19 @@ export function useWorkspaceCollapse({
         ? terminalTarget(targetId)
         : undefined;
   const preferenceStorageKey = stableTarget ? sessionStorageKey('workspace-collapse', stableTarget) : null;
+
+  // Sync-read preference on first paint to avoid collapsed→expanded layout jump.
+  const [rightSiderCollapsed, setRightSiderCollapsed] = useState(() => {
+    if (!preferenceStorageKey) return true;
+    try {
+      return localStorage.getItem(preferenceStorageKey) !== 'expanded';
+    } catch {
+      return true;
+    }
+  });
+
+  // Mirror ref for collapse state
+  const rightCollapsedRef = useRef(rightSiderCollapsed);
 
   useEffect(() => {
     if (!preferenceStorageKey) {

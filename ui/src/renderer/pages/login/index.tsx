@@ -11,7 +11,6 @@ import { changeLanguage } from '@/renderer/services/i18n';
 import { useNavigate } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import { PreviewClose, PreviewOpen, Lock, User } from '@icon-park/react';
-import AppLoader from '@renderer/components/layout/AppLoader';
 import { useAuth } from '../../hooks/context/AuthContext';
 import LanMesh from './LanMesh';
 import './LoginPage.css';
@@ -196,8 +195,9 @@ const LoginPage: React.FC = () => {
     [login, setup, needsSetup, navigate, password, rememberMe, showMessage, t, username]
   );
 
+  // Route Suspense already shows fullscreen AppLoader; avoid a second viewport swap.
   if (status === 'checking') {
-    return <AppLoader />;
+    return null;
   }
 
   const panelTitle = needsSetup ? t('login.setupTitle') : t('login.welcomeTitle');
@@ -207,26 +207,26 @@ const LoginPage: React.FC = () => {
     <div className='login-page'>
       <motion.div
         className='login-page__shell'
-        initial={reduceMotion ? false : { opacity: 0, scale: 0.97 }}
+        initial={reduceMotion ? false : { scale: 0.985 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
       >
         <aside className='login-page__brand'>
           <LanMesh />
           <div className='login-page__brand-content'>
             <motion.div
               className='login-page__brand-logo'
-              initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+              initial={reduceMotion ? false : { opacity: 0.85, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2, duration: 0.4 }}
+              transition={{ delay: 0.08, duration: 0.3 }}
             >
               <FlowyLogo size={36} title={t('login.brand')} />
             </motion.div>
             <motion.h2
               className='login-page__brand-title'
-              initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+              initial={reduceMotion ? false : { opacity: 0.85, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3, duration: 0.4 }}
+              transition={{ delay: 0.12, duration: 0.3 }}
             >
               {t('login.brand')}
             </motion.h2>
@@ -236,9 +236,9 @@ const LoginPage: React.FC = () => {
         <section className='login-page__panel'>
           <motion.div
             className='login-page__panel-inner'
-            initial={reduceMotion ? false : { opacity: 0, y: 16 }}
+            initial={reduceMotion ? false : { opacity: 0.9, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.12, duration: 0.4 }}
+            transition={{ delay: 0.05, duration: 0.3 }}
           >
             <label className='login-page__lang' htmlFor='lang-select'>
               <span className='login-page__visually-hidden'>{t('login.languageToggle')}</span>
