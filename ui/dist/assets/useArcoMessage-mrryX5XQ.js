@@ -1,0 +1,1 @@
+import{M as l,r as n}from"./index-C17WTOs5.js";function i(u){const[s,c]=l.useMessage(u),e=n.useRef(s);e.current=s;const t=n.useRef(null);return t.current===null&&(t.current=new Proxy({},{get(f,o,a){const r=Reflect.get(e.current,o,a);return typeof r=="function"?r.bind(e.current):r}})),[t.current,c]}export{i as u};
