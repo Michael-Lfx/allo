@@ -66,6 +66,7 @@
   white-space: pre-wrap;
   word-break: break-word;
   overflow: hidden;
+  animation: thinking-body-enter 0.2s ease-out both;
 }
 
 .bodyProcess {
@@ -75,6 +76,26 @@
 
 .collapsed {
   display: none;
+  animation: none;
+}
+
+@keyframes thinking-body-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .body,
+  .arrow {
+    transition: none;
+    animation: none;
+  }
 }
 
 .summary {

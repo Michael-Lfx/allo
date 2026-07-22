@@ -362,6 +362,116 @@
   color: var(--color-text-3, #86909c);
 }
 
+.turn-process-disclosure--running .turn-process-disclosure__label {
+  animation: turn-process-running-label 1.4s ease-in-out infinite;
+}
+
+.turn-process-disclosure__item {
+  min-width: 0;
+  color: var(--color-text-3, #86909c);
+  margin-top: 14px;
+  animation: turn-process-item-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.turn-process-disclosure__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 12px 0 2px;
+  animation: turn-process-body-enter 0.2s ease-out both;
+}
+
+.turn-process-receipt {
+  width: 100%;
+  color: var(--color-text-3, #86909c);
+  animation: turn-process-item-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.turn-process-receipt--completed .turn-process-receipt__icon {
+  animation: turn-process-complete-pop 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.turn-process-receipt__body {
+  min-width: 0;
+  margin-left: 24px;
+  margin-top: 2px;
+  color: var(--color-text-2, #4e5969);
+  animation: turn-process-body-enter 0.18s ease-out both;
+}
+
+.turn-process-trace__row--running .turn-process-trace__row-icon {
+  animation: turn-process-running-dot 1.2s ease-in-out infinite;
+}
+
+.message-bubble-enter {
+  animation: message-bubble-enter 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes turn-process-running-label {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes turn-process-item-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes turn-process-body-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes turn-process-complete-pop {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.4;
+  }
+  70% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes turn-process-running-dot {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes message-bubble-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .turn-process-disclosure--running {
   color: var(--color-text-3, #86909c);
 }
@@ -850,7 +960,16 @@ button.turn-process-trace__row:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .turn-process-disclosure__arrow,
   .turn-process-receipt__arrow,
-  .turn-process-trace-tool__arrow {
+  .turn-process-trace-tool__arrow,
+  .turn-process-disclosure__item,
+  .turn-process-disclosure__body,
+  .turn-process-receipt,
+  .turn-process-receipt__body,
+  .turn-process-receipt--completed .turn-process-receipt__icon,
+  .turn-process-disclosure--running .turn-process-disclosure__label,
+  .turn-process-trace__row--running .turn-process-trace__row-icon,
+  .message-bubble-enter {
     transition: none;
+    animation: none;
   }
 }

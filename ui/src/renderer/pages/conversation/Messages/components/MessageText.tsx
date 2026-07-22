@@ -298,11 +298,15 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
         )}
         {hasRenderableContent && (
           <div
-            className={classNames('min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px', {
-              'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
-              'bg-3 p-6px md:p-8px': isAgentMessage,
-              'w-full': !(isUserMessage || cronMeta || isAgentMessage),
-            })}
+            className={classNames(
+              'min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px',
+              {
+                'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
+                'bg-3 p-6px md:p-8px': isAgentMessage,
+                'w-full': !(isUserMessage || cronMeta || isAgentMessage),
+                'message-bubble-enter': !isUserMessage,
+              }
+            )}
             style={{
               ...(isUserMessage || cronMeta
                 ? { borderRadius: '8px 0 8px 8px', color: 'var(--text-primary)' }

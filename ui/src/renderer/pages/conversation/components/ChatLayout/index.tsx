@@ -407,7 +407,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
                     lineClassName: 'opacity-30 group-hover:opacity-100 group-active:opacity-100',
                     lineStyle: { width: '2px' },
                   })}
-                <div className='h-full w-full overflow-hidden rounded-[15px]'>
+                <div className='preview-panel-content-enter h-full w-full overflow-hidden rounded-[15px]'>
                   <PreviewPanel />
                 </div>
               </div>

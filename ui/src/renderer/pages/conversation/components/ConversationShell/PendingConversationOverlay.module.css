@@ -1,0 +1,81 @@
+.pendingOverlayEnter {
+  animation: pending-overlay-enter 0.2s ease-out both;
+}
+
+.pendingUserBubbleEnter {
+  animation: pending-user-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pendingAssistEnter {
+  animation: pending-assist-enter 0.26s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+}
+
+.pendingSteps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-3, #86909c);
+}
+
+.pendingStep {
+  opacity: 0.45;
+  transition: opacity 0.2s ease, color 0.2s ease;
+}
+
+.pendingStepActive {
+  opacity: 1;
+  color: var(--color-text-1, #1d2129);
+  font-weight: 500;
+}
+
+.pendingStepDone {
+  opacity: 0.85;
+}
+
+.pendingStepArrow {
+  opacity: 0.35;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pendingOverlayEnter,
+  .pendingUserBubbleEnter,
+  .pendingAssistEnter {
+    animation: none;
+  }
+
+  .pendingStep {
+    transition: none;
+  }
+}
+
+@keyframes pending-overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pending-user-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pending-assist-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

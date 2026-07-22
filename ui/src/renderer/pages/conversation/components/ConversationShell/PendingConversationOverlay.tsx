@@ -4,12 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Spin } from '@arco-design/web-react';
 import { Paperclip } from '@icon-park/react';
+import classNames from 'classnames';
 import { iconColors } from '@/renderer/styles/colors';
 import { usePendingConversation } from './PendingConversationContext';
+import styles from './PendingConversationOverlay.module.css';
 
 /**
  * PendingConversationOverlay — the instant "creating conversation" transition.
@@ -31,6 +33,16 @@ import { usePendingConversation } from './PendingConversationContext';
 const PendingConversationOverlay: React.FC = () => {
   const { pending } = usePendingConversation();
   const { t } = useTranslation();
+  const [activeStep, setActiveStep] = useState(0);
+
+  useEffect(() => {
+    if (!pending) return;
+    setActiveStep(0);
+    const timer = window.setInterval(() => {
+      setActiveStep((prev) => (prev >= 2 ? 2 : prev + 1));
+    }, 700);
+    return () => window.clearInterval(timer);
+  }, [pending]);
 
   if (!pending) return null;
 
@@ -40,10 +52,15 @@ const PendingConversationOverlay: React.FC = () => {
 
   const fileCount = pending.files?.length ?? 0;
   const trimmedInput = pending.input.trim();
+  const steps = [
+    t('conversation.pending.stepUnderstand', { defaultValue: '理解任务' }),
+    t('conversation.pending.stepPrepare', { defaultValue: '准备执行' }),
+    t('conversation.pending.stepLaunch', { defaultValue: '启动会话' }),
+  ];
 
   return (
     <div
-      className='absolute inset-0 z-20 flex flex-col bg-1'
+      className={classNames('absolute inset-0 z-20 flex flex-col bg-1', styles.pendingOverlayEnter)}
       data-testid='pending-conversation-overlay'
       aria-busy='true'
     >
@@ -55,7 +72,12 @@ const PendingConversationOverlay: React.FC = () => {
         <div className='flex-1 overflow-y-auto py-10px min-h-0'>
           {/* Echoed user message (right) — matches MessageText user bubble. */}
           {trimmedInput && (
-            <div className='w-full min-w-0 flex justify-end px-8px m-t-10px max-w-full md:max-w-780px mx-auto'>
+            <div
+              className={classNames(
+                'w-full min-w-0 flex justify-end px-8px m-t-10px max-w-full md:max-w-780px mx-auto',
+                styles.pendingUserBubbleEnter
+              )}
+            >
               <div className='min-w-0 flex flex-col items-end'>
                 {fileCount > 0 && (
                   <div className='flex items-center gap-4px mb-6px text-t-secondary text-12px self-end'>
@@ -74,7 +96,12 @@ const PendingConversationOverlay: React.FC = () => {
           )}
 
           {/* Preset loading bubble (left) — same skin as the skeleton bubbles. */}
-          <div className='w-full min-w-0 flex justify-start px-8px m-t-10px max-w-full md:max-w-780px mx-auto'>
+          <div
+            className={classNames(
+              'w-full min-w-0 flex justify-start px-8px m-t-10px max-w-full md:max-w-780px mx-auto',
+              styles.pendingAssistEnter
+            )}
+          >
             <div
               className='flex flex-col gap-10px rd-16px p-14px'
               style={{ background: 'var(--color-fill-1)', border: '1px solid var(--color-border-2)' }}
@@ -83,12 +110,21 @@ const PendingConversationOverlay: React.FC = () => {
                 <Spin size={16} />
                 <span className='text-t-primary text-14px leading-none'>{caption}</span>
               </div>
-              <div className='flex items-center gap-8px text-12px text-t-secondary' aria-hidden='true'>
-                <span>{t('conversation.pending.stepUnderstand', { defaultValue: '理解任务' })}</span>
-                <span>→</span>
-                <span>{t('conversation.pending.stepPrepare', { defaultValue: '准备执行' })}</span>
-                <span>→</span>
-                <span>{t('conversation.pending.stepLaunch', { defaultValue: '启动会话' })}</span>
+              <div className={styles.pendingSteps} aria-hidden='true'>
+                {steps.map((label, index) => (
+                  <React.Fragment key={label}>
+                    {index > 0 ? <span className={styles.pendingStepArrow}>→</span> : null}
+                    <span
+                      className={classNames(
+                        styles.pendingStep,
+                        index === activeStep && styles.pendingStepActive,
+                        index < activeStep && styles.pendingStepDone
+                      )}
+                    >
+                      {label}
+                    </span>
+                  </React.Fragment>
+                ))}
               </div>
             </div>
           </div>
