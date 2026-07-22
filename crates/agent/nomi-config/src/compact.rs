@@ -3,10 +3,16 @@ use serde::{Deserialize, Serialize};
 /// Configuration for the multi-level context compaction system.
 ///
 /// All token-related fields are in tokens (not bytes or characters).
-/// The defaults are tuned for Claude models with a 200k context window.
+/// The defaults use a conservative 128k context window that works reasonably
+/// across providers. For best results, explicitly set `context_window` per
+/// provider (e.g. Claude: 200_000, GPT-4o: 128_000, smaller models: 32_000).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactConfig {
-    /// Context window size in tokens (e.g. 200_000 for Claude).
+    /// Context window size in tokens.
+    /// Default is a conservative 128_000 suitable for most providers.
+    /// Providers with larger windows (e.g. Claude 200k) should set this
+    /// explicitly via config or rely on `resolve_context_window` with a
+    /// per-model context_limit.
     #[serde(default = "default_context_window")]
     pub context_window: usize,
 
@@ -89,8 +95,28 @@ impl Default for CompactConfig {
 
 // --- Default value functions ---
 
+/// Conservative default context window (128k) that works across most providers.
+/// Claude: 200_000, OpenAI GPT-4o/4.1: 128_000, smaller models: 32_000–128_000.
+/// Users should explicitly configure this per provider for optimal behavior.
 fn default_context_window() -> usize {
-    200_000
+    128_000
+}
+
+/// Upper sanity bound for context_window. Values above this are almost
+/// certainly misconfigured (no current production model exceeds 1M tokens).
+pub const MAX_REASONABLE_CONTEXT_WINDOW: usize = 1_000_000;
+
+/// Validate the configured context_window and emit a warning via `tracing`
+/// if it exceeds [`MAX_REASONABLE_CONTEXT_WINDOW`].
+pub fn validate_context_window(context_window: usize) {
+    if context_window > MAX_REASONABLE_CONTEXT_WINDOW {
+        tracing::warn!(
+            context_window,
+            max_reasonable = MAX_REASONABLE_CONTEXT_WINDOW,
+            "compact.context_window exceeds reasonable upper bound; \
+             this is likely a misconfiguration"
+        );
+    }
 }
 fn default_output_reserve() -> usize {
     20_000
@@ -136,7 +162,7 @@ pub fn resolve_context_window(context_limit: Option<u64>, default_window: usize)
 
 /// Fit the response and compaction budgets inside the resolved context window.
 ///
-/// Nomi's defaults target a 200k context window. Reusing them unchanged for a
+/// Nomi's defaults target a 128k context window. Reusing them unchanged for a
 /// small provider can reserve more tokens than the provider accepts before the
 /// first user message is considered. The effective response limit is capped at
 /// one quarter of the window. Oversized compaction defaults are reduced to a
@@ -176,7 +202,7 @@ mod tests {
     #[test]
     fn default_values_match_spec() {
         let cfg = CompactConfig::default();
-        assert_eq!(cfg.context_window, 200_000);
+        assert_eq!(cfg.context_window, 128_000);
         assert_eq!(cfg.output_reserve, 20_000);
         assert_eq!(cfg.autocompact_buffer, 13_000);
         assert_eq!(cfg.emergency_buffer, 3_000);
@@ -332,12 +358,22 @@ cache_diagnostics = true
 
     #[test]
     fn context_budget_preserves_balanced_large_window_defaults() {
-        let mut cfg = CompactConfig::default();
+        let mut cfg = CompactConfig {
+            context_window: 200_000,
+            ..Default::default()
+        };
 
         assert_eq!(fit_context_budget(&mut cfg, 8192), 8192);
         assert_eq!(cfg.output_reserve, 20_000);
         assert_eq!(cfg.autocompact_buffer, 13_000);
         assert_eq!(cfg.emergency_buffer, 3_000);
+    }
+
+    #[test]
+    fn validate_context_window_warns_on_excessive_value() {
+        // Should not panic; just exercises the validation path.
+        validate_context_window(128_000);
+        validate_context_window(2_000_000); // would emit a tracing::warn
     }
 
     #[test]
