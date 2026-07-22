@@ -268,7 +268,7 @@ fn confirm_call(
     let input_display = serde_json::to_string(input).unwrap_or_default();
     let result = confirmer
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .check(name, &truncate_display(&input_display, 200));
 
     match result {

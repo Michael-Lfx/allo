@@ -761,12 +761,9 @@ impl AgentEngine {
 
         let cmd = self.commands.find(name)?;
 
-        // We need to borrow self mutably for CommandContext while also
-        // borrowing self.commands immutably (already done above via find()).
-        // Use a raw pointer to break the borrow conflict — safe because
-        // the command is not modified during execution.
-        let cmd_ptr = cmd as *const dyn crate::commands::SlashCommand;
-
+        // `find` returns an owned `Arc` clone, so the immutable borrow of
+        // `self.commands` is released before `CommandContext` borrows engine
+        // state — no unsafe raw-pointer dance needed.
         let mut ctx = crate::commands::CommandContext {
             messages: &mut self.messages,
             compact_state: &mut self.compact_state,
@@ -777,9 +774,7 @@ impl AgentEngine {
             registry: &self.commands,
         };
 
-        // SAFETY: cmd_ptr points to a command inside self.commands which is only
-        // borrowed immutably and not mutated during execute().
-        let result = unsafe { &*cmd_ptr }.execute(&mut ctx, args).await;
+        let result = cmd.execute(&mut ctx, args).await;
         Some(result)
     }
 
@@ -821,6 +816,12 @@ impl AgentEngine {
             msg_id = %msg_id,
         );
         let mut efficiency = ToolEfficiencyStats::default();
+        // Rollback snapshot for this turn. A full deep clone is required (not
+        // just a length checkpoint): the turn may mutate existing messages in
+        // place (compaction rewrites history, image pruning/redaction strips
+        // content), so restoring on error must recover content, not merely
+        // truncate. `execute_turn_inner` refreshes this checkpoint at each
+        // safe commit point (`*safe_messages = self.messages.clone()`).
         let mut safe_messages = self.messages.clone();
         let mut turn_started = false;
         let result = async {
@@ -1005,6 +1006,12 @@ impl AgentEngine {
             }
             let turn_tail =
                 crate::context_contributor::build_turn_tail_context(turn_tail_extras);
+            // Hot-path note: `LlmRequest` owns its message array across the
+            // provider trait boundary, so the turn-tail injection must operate
+            // on a clone of the history. `inject_turn_tail_context` only
+            // touches the last message, but a zero-copy (`Cow`) request
+            // payload would require changing every provider implementation;
+            // until then the full clone stays at this call site.
             let messages = crate::context_contributor::inject_turn_tail_context(
                 self.messages.clone(),
                 turn_tail,
@@ -1455,11 +1462,17 @@ impl AgentEngine {
 
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
-                let writer = self
-                    .protocol_writer
-                    .as_ref()
-                    .expect("protocol writer required for approval");
-                let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
+                let Some(writer) = self.protocol_writer.as_ref() else {
+                    self.save_session();
+                    return Err(AgentError::ApiError(
+                        "approval requires a protocol writer but none is configured".to_string(),
+                    ));
+                };
+                let auto_approve = self
+                    .confirmer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_auto_approve();
                 match execute_tool_calls_with_approval(
                     &self.tools,
                     &tool_calls,
@@ -1926,7 +1939,10 @@ impl AgentEngine {
                 if !self.allow_list.contains(tool_name) {
                     self.allow_list.push(tool_name.clone());
                 }
-                self.confirmer.lock().unwrap().add_to_allow_list(tool_name);
+                self.confirmer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .add_to_allow_list(tool_name);
             }
 
             // Handle plan mode transitions
@@ -5099,7 +5115,10 @@ mod compact_tests {
 
     #[tokio::test]
     async fn emergency_silent_below_limit() {
-        let config = CompactConfig::default();
+        let config = CompactConfig {
+            context_window: 200_000,
+            ..CompactConfig::default()
+        };
         let mut state = CompactState::new();
         state.last_input_tokens = 190_000; // below 197k
 
