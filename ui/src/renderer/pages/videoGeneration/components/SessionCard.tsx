@@ -7,8 +7,8 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Tag } from '@arco-design/web-react';
-import { VideoOne } from '@icon-park/react';
+import { Popconfirm, Tag } from '@arco-design/web-react';
+import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
 
 function toEpochMs(value: string | number | null | undefined): number | null {
@@ -82,9 +82,11 @@ export function statusLabel(status: VimaxRunStatus | null | undefined, t: TFunct
 interface SessionCardProps {
   session: SessionSummary;
   onOpen: (s: SessionSummary) => void;
+  onDelete?: (s: SessionSummary) => void;
+  deleting?: boolean;
 }
 
-const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen }) => {
+const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, deleting }) => {
   const { t } = useTranslation();
   const updatedMs = toEpochMs(session.updated_at ?? session.created_at);
   const meta: string[] = [
@@ -133,9 +135,46 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen }) => {
             <div className='truncate text-15px font-600 leading-[1.3] text-[var(--color-text-1)]'>
               {session.title || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
             </div>
-            <Tag size='small' color={statusTagColor(session.status)} className='shrink-0'>
-              {statusLabel(session.status, t)}
-            </Tag>
+            <div className='flex items-center gap-6px shrink-0'>
+              <Tag size='small' color={statusTagColor(session.status)} className='shrink-0'>
+                {statusLabel(session.status, t)}
+              </Tag>
+              {onDelete ? (
+                <Popconfirm
+                  title={t('videoGeneration.actions.deleteConfirm', {
+                    defaultValue: '确定删除该任务？产物将一并清除。',
+                  })}
+                  disabled={deleting}
+                  onOk={(e) => {
+                    e?.stopPropagation?.();
+                    onDelete(session);
+                  }}
+                >
+                  <span
+                    role='button'
+                    tabIndex={0}
+                    aria-label={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                    title={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                    className={[
+                      'inline-flex items-center justify-center w-24px h-24px rd-6px',
+                      'text-[var(--color-text-3)] hover:text-[rgb(var(--danger-6))]',
+                      'hover:bg-[var(--color-fill-2)] transition-colors',
+                      deleting ? 'opacity-40 pointer-events-none' : '',
+                    ].join(' ')}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === ' ') {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLElement).click();
+                      }
+                    }}
+                  >
+                    <Delete theme='outline' size={14} fill='currentColor' />
+                  </span>
+                </Popconfirm>
+              ) : null}
+            </div>
           </div>
 
           {session.stage ? (

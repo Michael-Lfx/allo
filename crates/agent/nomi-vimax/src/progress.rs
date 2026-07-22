@@ -48,6 +48,12 @@ pub struct RenderStatus {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_video: Option<String>,
+    /// Absolute session working directory (for UI / debugging).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir_abs: Option<String>,
+    /// RFC3339 timestamp of the last status / progress update.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProgressEvent>,
 }
@@ -63,14 +69,19 @@ pub struct ProgressEvent {
 }
 
 impl RenderStatus {
+    pub fn touch(&mut self) {
+        self.updated_at = chrono::Local::now().to_rfc3339();
+    }
+
     pub fn emit(&mut self, stage: &str, message: &str, metadata: Option<Value>) {
         self.stage = stage.to_string();
         self.message = message.to_string();
+        self.touch();
         self.events.push(ProgressEvent {
             stage: stage.to_string(),
             message: message.to_string(),
             metadata,
-            at: chrono::Local::now().to_rfc3339(),
+            at: self.updated_at.clone(),
         });
         // Cap event log so status payloads stay bounded.
         if self.events.len() > 200 {

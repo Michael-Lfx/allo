@@ -51,7 +51,11 @@
     "cancelled": "Cancelled"
   },
   "actions": {
-    "createFailed": "Failed to create"
+    "createFailed": "Failed to create",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this session? All artifacts will be removed.",
+    "deleteOk": "Session deleted",
+    "deleteFailed": "Failed to delete"
   },
   "workspace": {
     "back": "Back to list",

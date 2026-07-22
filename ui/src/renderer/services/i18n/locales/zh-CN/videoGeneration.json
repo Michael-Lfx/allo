@@ -51,7 +51,11 @@
     "cancelled": "已取消"
   },
   "actions": {
-    "createFailed": "创建失败"
+    "createFailed": "创建失败",
+    "delete": "删除",
+    "deleteConfirm": "确定删除该任务？产物将一并清除。",
+    "deleteOk": "已删除任务",
+    "deleteFailed": "删除失败"
   },
   "workspace": {
     "back": "返回列表",

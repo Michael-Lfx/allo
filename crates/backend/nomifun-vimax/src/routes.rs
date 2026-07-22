@@ -21,7 +21,10 @@ use crate::state::VimaxRouterState;
 pub fn vimax_routes(state: VimaxRouterState) -> Router {
     Router::new()
         .route("/api/vimax/sessions", get(list_sessions).post(create_session))
-        .route("/api/vimax/sessions/{id}", get(get_session))
+        .route(
+            "/api/vimax/sessions/{id}",
+            get(get_session).delete(delete_session),
+        )
         .route("/api/vimax/sessions/{id}/plan", post(plan_session))
         .route("/api/vimax/sessions/{id}/revise", post(revise_session))
         .route("/api/vimax/sessions/{id}/render", post(render_session))
@@ -68,6 +71,15 @@ async fn get_session(
     Ok(Json(ApiResponse::ok(state.service.get_session(&id)?)))
 }
 
+async fn delete_session(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.delete_session(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
 #[derive(Deserialize)]
 struct PlanBody {
     #[serde(default)]
@@ -86,6 +98,9 @@ struct PlanBody {
     image_model: Option<String>,
     #[serde(default)]
     video_model: Option<String>,
+    /// Target finished video length in seconds (planning + clip duration).
+    #[serde(default)]
+    target_duration_secs: Option<u32>,
 }
 
 async fn plan_session(
@@ -107,6 +122,7 @@ async fn plan_session(
             body.llm_model,
             body.image_model,
             body.video_model,
+            body.target_duration_secs,
         )
         .await?;
     Ok(Json(ApiResponse::ok(())))

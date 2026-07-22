@@ -84,6 +84,10 @@ export async function cancelSession(id: string): Promise<void> {
   await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/cancel`);
 }
 
+export async function deleteSession(id: string): Promise<void> {
+  await httpRequest<unknown>('DELETE', `${BASE}/sessions/${encodeURIComponent(id)}`);
+}
+
 export async function listArtifacts(id: string): Promise<ArtifactNode[]> {
   const data = await httpRequest<ArtifactNode[] | { tree: ArtifactNode[]; artifacts?: ArtifactNode[] }>(
     'GET',
@@ -94,8 +98,8 @@ export async function listArtifacts(id: string): Promise<ArtifactNode[]> {
 }
 
 /**
- * Fetch an artifact. Tries JSON first (text / URL envelope); falls back to a
- * resolvable file URL for media binaries.
+ * Fetch an artifact. Media is returned as an authenticated blob: URL so
+ * `<img>` / `<video>` work (raw API paths require Authorization headers).
  */
 export async function getArtifact(sessionId: string, artifactPath: string): Promise<ArtifactContent> {
   const url = artifactFileUrl(sessionId, artifactPath);
@@ -110,7 +114,7 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
   const contentType = response.headers.get('Content-Type') ?? '';
   const lowerPath = artifactPath.toLowerCase();
 
-  // Media / binary — expose as URL for <img>/<video>.
+  // Media / binary — blob URL so <img>/<video> can play without auth headers.
   if (
     contentType.startsWith('image/') ||
     contentType.startsWith('video/') ||
@@ -118,7 +122,15 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
     contentType.includes('octet-stream') ||
     /\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|mkv|mp3|wav)$/i.test(lowerPath)
   ) {
-    return { kind: contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath) ? 'url' : 'url', url, mime: contentType || undefined };
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const isVideo =
+      contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath);
+    return {
+      kind: 'url',
+      url: objectUrl,
+      mime: contentType || (isVideo ? 'video/mp4' : undefined),
+    };
   }
 
   if (contentType.includes('application/json')) {
@@ -161,6 +173,16 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
   }
 
   return { kind: 'text', text, mime: contentType || undefined };
+}
+
+/** Load a session artifact as a blob: URL (for final video / gallery). */
+export async function loadArtifactMediaUrl(
+  sessionId: string,
+  artifactPath: string
+): Promise<string> {
+  const content = await getArtifact(sessionId, artifactPath);
+  if (content.url) return content.url;
+  throw new Error(`Artifact is not media: ${artifactPath}`);
 }
 
 function looksLikeJson(s: string): boolean {

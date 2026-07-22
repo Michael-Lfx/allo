@@ -16,7 +16,7 @@ import { Button, Result, Spin } from '@arco-design/web-react';
 import { Plus, Search, VideoOne } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
-import { createSession, listSessions } from './api';
+import { createSession, deleteSession, listSessions } from './api';
 import type { SessionSummary, VimaxWorkflow } from './types';
 import SessionCard from './components/SessionCard';
 import WorkflowPicker from './components/WorkflowPicker';
@@ -34,6 +34,7 @@ const VideoGenerationListPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -87,6 +88,27 @@ const VideoGenerationListPage: React.FC = () => {
   const openSession = useCallback(
     (s: SessionSummary) => navigate(`/video-generation/${s.id}`),
     [navigate]
+  );
+
+  const handleDelete = useCallback(
+    async (s: SessionSummary) => {
+      if (deletingId) return;
+      setDeletingId(s.id);
+      try {
+        await deleteSession(s.id);
+        setSessions((prev) => prev.filter((x) => x.id !== s.id));
+        message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, message, t]
   );
 
   return (
@@ -192,7 +214,13 @@ const VideoGenerationListPage: React.FC = () => {
           <>
             <div className='grid gap-12px' style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))' }}>
               {displayed.map((session) => (
-                <SessionCard key={session.id} session={session} onOpen={openSession} />
+                <SessionCard
+                  key={session.id}
+                  session={session}
+                  onOpen={openSession}
+                  onDelete={(s) => void handleDelete(s)}
+                  deleting={deletingId === session.id}
+                />
               ))}
             </div>
             {displayed.length === 0 && (

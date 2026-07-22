@@ -53,9 +53,17 @@ const STAGE_LABELS: Record<string, string> = {
   render_start: '开始渲染',
   render_scene: '渲染场景',
   render_scene_skip: '跳过已完成场景',
+  render_scene_done: '场景渲染完成',
+  render_scene_failed: '场景渲染失败',
   render_resume: '从断点继续渲染',
   frames_start: '生成关键帧',
+  frame_camera_start: '生成机位关键帧',
+  frame_camera_done: '机位关键帧完成',
+  frames_done: '关键帧全部完成',
+  frames_cancelled: '关键帧已取消',
+  frame_start: '生成镜头首帧',
   frame_prompt_start: '选择参考图并生成提示',
+  frame_done: '关键帧已生成',
   video_clips_start: '生成视频片段',
   video_clip_exists: '跳过已有视频',
   video_clip_start: '生成镜头视频',
@@ -115,7 +123,14 @@ function classifyFailure(
     'render_resume',
     'frame_prompt_start',
   ]);
-  const imageStages = new Set(['character_portraits_start', 'frames_start', 'image_generate']);
+  const imageStages = new Set([
+    'character_portraits_start',
+    'frames_start',
+    'frame_camera_start',
+    'frame_start',
+    'frame_prompt_start',
+    'image_generate',
+  ]);
   const videoStages = new Set(['video_clips_start', 'video_generate', 'concat_start']);
 
   const looksLikeLlm =
@@ -222,6 +237,22 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
     return classifyFailure(status.error, status.stage, status.events);
   }, [status?.error, status?.stage, status?.events]);
 
+  const staleHint = useMemo(() => {
+    if (!status || (status.status !== 'planning' && status.status !== 'rendering')) {
+      return null;
+    }
+    const raw = status.updated_at || status.events?.[status.events.length - 1]?.at;
+    if (!raw) return null;
+    const ts = Date.parse(raw);
+    if (Number.isNaN(ts)) return null;
+    const ageSec = (Date.now() - ts) / 1000;
+    if (ageSec < 90) return null;
+    return t('videoGeneration.workspace.progress.stale', {
+      defaultValue:
+        '进度已超过 90 秒未更新。若上游已失败，请点取消后「从断点继续」；成功片段不会重复扣费。',
+    });
+  }, [status, t]);
+
   if (!status) {
     return (
       <div className='text-12px text-[var(--color-text-3)] py-8px'>
@@ -285,7 +316,21 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
             {currentMessage}
           </div>
         ) : null}
+        {staleHint ? (
+          <div className='text-12px leading-18px text-[rgb(var(--warning-6))] mt-6px'>
+            {staleHint}
+          </div>
+        ) : null}
       </div>
+
+      {status.working_dir_abs ? (
+        <div className='text-11px text-[var(--color-text-3)] break-all'>
+          {t('videoGeneration.workspace.progress.workdir', {
+            defaultValue: '工作目录',
+          })}
+          ：{status.working_dir_abs}
+        </div>
+      ) : null}
 
       {busy || progress > 0 ? (
         <Progress

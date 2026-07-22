@@ -36,7 +36,8 @@ You need to select up to 8 of the most relevant reference images based on the us
 [Guidelines]
 - Ensure that the language of all output values (not include keys) matches that used in the frame description.
 - The reference image descriptions may depict the same character from different angles, in different outfits, or in different scenes. Identify the description closest to the version described by the user
-- Prioritize image descriptions with similar compositions, i.e., shots taken by the same camera.
+- Prioritize image descriptions with similar compositions when they are also temporally adjacent.
+- Prefer the most recent prior-frame image for continuity; do NOT reset to an older establishing shot of the same camera when a newer ending frame is available.
 - The images from prior frames are arranged in chronological order. Give higher priority to more recent images (those closer to the end of the sequence).
 - Choose reference image descriptions that are as concise as possible and avoid including duplicate information. For example, if Image 3 depicts the facial features of Bob from the front, and Image 1 also depicts Bob's facial features from the front-view portrait, then Image 1 is redundant and should not be selected.
 - When a new character appears in the frame description, prioritize selecting their portrait image description (if available) to ensure accurate depiction of their appearance. Pay attention to whether the character is facing the camera from the front, side, or back. Choose the most suitable view as the reference image for the character.

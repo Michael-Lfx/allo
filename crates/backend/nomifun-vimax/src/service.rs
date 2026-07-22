@@ -64,6 +64,7 @@ impl VimaxApiService {
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
+        target_duration_secs: Option<u32>,
     ) -> Result<(), AppError> {
         self.refresh_backends().await;
         self.inner
@@ -77,6 +78,7 @@ impl VimaxApiService {
                 llm_model,
                 image_model,
                 video_model,
+                target_duration_secs,
             )
             .await
             .map_err(map_vimax_err)
@@ -115,6 +117,10 @@ impl VimaxApiService {
 
     pub async fn cancel(&self, id: &str) -> Result<(), AppError> {
         self.inner.cancel(id).await.map_err(map_vimax_err)
+    }
+
+    pub async fn delete_session(&self, id: &str) -> Result<(), AppError> {
+        self.inner.delete_session(id).await.map_err(map_vimax_err)
     }
 
     pub fn list_artifacts(&self, id: &str) -> Result<Vec<ArtifactNode>, AppError> {
