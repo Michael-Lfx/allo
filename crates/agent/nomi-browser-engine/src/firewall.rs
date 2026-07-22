@@ -629,7 +629,7 @@ impl ApprovedDomains {
         };
         self.inner
             .lock()
-            .expect("approved domains poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(e1)
     }
 
@@ -641,18 +641,18 @@ impl ApprovedDomains {
         };
         self.inner
             .lock()
-            .expect("approved domains poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(&e1)
     }
 
     /// 已记住的域数量（诊断 / 测试）。
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("approved domains poisoned").len()
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len()
     }
 
     /// 是否为空（诊断 / 测试）。
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().expect("approved domains poisoned").is_empty()
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty()
     }
 }
 
@@ -740,7 +740,7 @@ impl DnsResolverCache {
 
     /// 查询缓存：host 是否有未过期的条目。返回 `Some(is_blocked)` 命中或 `None` 未命中/已过期。
     pub fn get(&self, host: &str) -> Option<bool> {
-        let map = self.inner.lock().expect("dns cache poisoned");
+        let map = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(&(blocked, ts)) = map.get(host)
             && ts.elapsed() < self.ttl
         {
@@ -751,7 +751,7 @@ impl DnsResolverCache {
 
     /// 写入/更新缓存条目。
     pub fn insert(&self, host: &str, blocked: bool) {
-        let mut map = self.inner.lock().expect("dns cache poisoned");
+        let mut map = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         map.insert(host.to_string(), (blocked, Instant::now()));
     }
 }
