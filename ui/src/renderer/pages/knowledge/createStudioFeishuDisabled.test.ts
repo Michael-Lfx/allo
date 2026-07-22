@@ -11,18 +11,18 @@ const typeRailSource = readFileSync(new URL('./CreateStudio/TypeRail.tsx', impor
 const emptyStateSource = readFileSync(new URL('./KnowledgeEmptyState.tsx', import.meta.url), 'utf8');
 
 describe('CreateStudio Feishu creation gate', () => {
-  test('keeps Feishu knowledge-space creation disabled', () => {
-    expect(FEISHU_KNOWLEDGE_CREATION_ENABLED).toBe(false);
+  test('enables Feishu knowledge-space creation', () => {
+    expect(FEISHU_KNOWLEDGE_CREATION_ENABLED).toBe(true);
   });
 
-  test('falls back to blank when Feishu is preselected through a shortcut', () => {
-    expect(normalizeStudioInitialKind('feishu')).toBe('blank');
+  test('keeps Feishu when preselected through a shortcut', () => {
+    expect(normalizeStudioInitialKind('feishu')).toBe('feishu');
     expect(normalizeStudioInitialKind('web')).toBe('web');
     expect(normalizeStudioInitialKind(undefined)).toBe('blank');
   });
 
-  test('prevents submitting a Feishu source while the connector is disabled', () => {
-    expect(canSubmitStudioSourceType('feishu')).toBe(false);
+  test('allows submitting a Feishu source when creation is enabled', () => {
+    expect(canSubmitStudioSourceType('feishu')).toBe(true);
     expect(canSubmitStudioSourceType('blank')).toBe(true);
     expect(canSubmitStudioSourceType('local')).toBe(true);
     expect(canSubmitStudioSourceType('web')).toBe(true);
@@ -40,12 +40,12 @@ describe('CreateStudio Feishu creation gate', () => {
     });
     expect(canSubmitStudioSourceConfig('local', { rootPath: '/Users/muri/docs' })).toEqual({ ok: true });
     expect(canSubmitStudioSourceConfig('blank', {})).toEqual({ ok: true });
+    expect(canSubmitStudioSourceConfig('feishu', {})).toEqual({ ok: true });
   });
 
-  test('wires visible Feishu shortcuts to the disabled creation flag', () => {
+  test('wires visible Feishu shortcuts to the creation flag', () => {
     expect(typeRailSource.includes('FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
     expect(typeRailSource.includes('disabled: !FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
-    expect(typeRailSource.includes('暂不可用')).toBe(true);
 
     expect(emptyStateSource.includes('FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
     expect(emptyStateSource.includes('disabled: !FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);

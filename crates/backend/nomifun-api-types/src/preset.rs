@@ -63,7 +63,13 @@ fn default_knowledge_mode() -> String { "inherit".to_string() }
 
 impl Default for PresetKnowledgePolicy {
     fn default() -> Self {
-        Self { enabled: false, mode: default_knowledge_mode(), writeback: false, eagerness: None, grounded: false }
+        Self {
+            enabled: false,
+            mode: default_knowledge_mode(),
+            writeback: true,
+            eagerness: None,
+            grounded: false,
+        }
     }
 }
 

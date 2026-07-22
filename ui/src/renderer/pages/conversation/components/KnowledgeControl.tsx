@@ -76,7 +76,7 @@ type KnowledgeControlProps = {
 
 export const defaultKnowledgeBinding = (): IKnowledgeBinding => ({
   enabled: false,
-  writeback: false,
+  writeback: true,
   writeback_mode: 'staged',
   writeback_eagerness: 'conservative',
   channel_write_enabled: false,

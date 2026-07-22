@@ -243,7 +243,7 @@ impl Default for KnowledgeBinding {
     fn default() -> Self {
         Self {
             enabled: false,
-            writeback: false,
+            writeback: true,
             writeback_mode: default_writeback_mode(),
             writeback_eagerness: default_writeback_eagerness(),
             channel_write_enabled: false,
@@ -401,18 +401,22 @@ impl TurnWritebackReport {
     }
 }
 
-/// Per-surface write policy. Regular chat / terminal honor the binding's
-/// staged|direct choice (staged default); companion always writes direct when
-/// write-back is on; external IM channels are hard-disabled in P1 (the opt-in
-/// re-enable toggle is P2). `scope` is the staged inbox namespace
-/// (conversation/companion id).
+/// Per-surface write policy. Regular chat / terminal / companion honour the
+/// binding's staged|direct choice (staged default). External IM channels are
+/// hard-disabled in P1 (opt-in re-enable is P2) and always staged when enabled.
+/// `scope` is the staged inbox namespace (conversation/companion id).
 pub fn resolve_write_policy(surface: WriteSurface, binding: &KnowledgeBinding, scope: &str) -> WritePolicy {
     let writeback = binding.enabled && binding.writeback;
     let mode = if !writeback {
         WriteMode::Disabled
     } else {
         match surface {
-            WriteSurface::Companion => WriteMode::Direct,
+            WriteSurface::Companion | WriteSurface::RegularChat | WriteSurface::TerminalAcp => {
+                match binding.writeback_mode.as_str() {
+                    "direct" => WriteMode::Direct,
+                    _ => WriteMode::Staged { scope: scope.to_owned() },
+                }
+            }
             // External IM channel: disabled by default; the opt-in toggle
             // (`channel_write_enabled`) re-enables it, but ALWAYS staged —
             // an unattended bot's writes go through the review inbox.
@@ -423,10 +427,6 @@ pub fn resolve_write_policy(surface: WriteSurface, binding: &KnowledgeBinding, s
                     WriteMode::Disabled
                 }
             }
-            WriteSurface::RegularChat | WriteSurface::TerminalAcp => match binding.writeback_mode.as_str() {
-                "direct" => WriteMode::Direct,
-                _ => WriteMode::Staged { scope: scope.to_owned() },
-            },
         }
     };
     WritePolicy { mode, allow_create: true, surface }
@@ -2332,6 +2332,32 @@ impl KnowledgeService {
         let target_id = canonical_target_id(kind, target_id)?;
         let row = self.repo.get_binding(kind, &target_id).await?;
         row.map(binding_from_row).transpose().map(|row| row.unwrap_or_default())
+    }
+
+    /// Copy the default workpath mounts onto a companion/session target so new
+    /// companions inherit the user's library without a separate bind step.
+    /// Forces staged writeback when the source binding is enabled.
+    pub async fn inherit_default_workpath_mounts(
+        &self,
+        kind: &str,
+        target_id: &str,
+    ) -> Result<KnowledgeBinding, AppError> {
+        use crate::workpath::{DEFAULT_WORKPATH_KEY, WORKPATH_BINDING_KIND};
+        let source = self
+            .get_binding(WORKPATH_BINDING_KIND, DEFAULT_WORKPATH_KEY)
+            .await
+            .unwrap_or_default();
+        if !source.enabled && source.kb_ids.is_empty() {
+            return Ok(KnowledgeBinding::default());
+        }
+        let mut inherited = source;
+        if inherited.writeback_mode != "direct" {
+            inherited.writeback_mode = default_writeback_mode();
+        }
+        if inherited.enabled {
+            inherited.writeback = true;
+        }
+        self.set_binding(kind, target_id, inherited).await
     }
 
     pub async fn set_binding(
@@ -6797,10 +6823,23 @@ mod tests {
     }
 
     #[test]
-    fn policy_companion_direct_channel_disabled_unwritten_disabled() {
-        assert!(matches!(resolve_write_policy(WriteSurface::Companion, &wb_binding(true, "staged"), "c").mode, WriteMode::Direct));
-        assert!(matches!(resolve_write_policy(WriteSurface::ExternalChannel, &wb_binding(true, "direct"), "c").mode, WriteMode::Disabled));
-        assert!(matches!(resolve_write_policy(WriteSurface::RegularChat, &wb_binding(false, "direct"), "c").mode, WriteMode::Disabled));
+    fn policy_companion_respects_staged_and_direct() {
+        assert!(matches!(
+            resolve_write_policy(WriteSurface::Companion, &wb_binding(true, "staged"), "c").mode,
+            WriteMode::Staged { ref scope } if scope == "c"
+        ));
+        assert!(matches!(
+            resolve_write_policy(WriteSurface::Companion, &wb_binding(true, "direct"), "c").mode,
+            WriteMode::Direct
+        ));
+        assert!(matches!(
+            resolve_write_policy(WriteSurface::ExternalChannel, &wb_binding(true, "direct"), "c").mode,
+            WriteMode::Disabled
+        ));
+        assert!(matches!(
+            resolve_write_policy(WriteSurface::RegularChat, &wb_binding(false, "direct"), "c").mode,
+            WriteMode::Disabled
+        ));
     }
 
     #[test]

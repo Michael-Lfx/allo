@@ -587,6 +587,17 @@ async fn create_companion(
 ) -> Result<impl IntoResponse, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     let profile = state.service.create_companion(&req.name, &req.character).await?;
+    if let Some(knowledge) = state.knowledge_service.as_ref()
+        && let Err(e) = knowledge
+            .inherit_default_workpath_mounts("companion", &profile.id)
+            .await
+    {
+        tracing::warn!(
+            error = %e,
+            companion_id = %profile.id,
+            "inherit default knowledge mounts for new companion failed"
+        );
+    }
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(profile))))
 }
 

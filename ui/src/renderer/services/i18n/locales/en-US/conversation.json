@@ -77,6 +77,9 @@
     "untitled": "Untitled conversation"
   },
   "emptyCards": {
+    "knowledgeTitle": "Knowledge writeback demo",
+    "knowledgeDescription": "Create or sync a base, attach it in a Preset with staged writeback, then merge from the inbox.",
+    "knowledgeAction": "Open knowledge",
     "docsTitle": "User Guide",
     "docsDescription": "Read setup, project, conversation, settings, and common workflow docs.",
     "docsAction": "Open docs",

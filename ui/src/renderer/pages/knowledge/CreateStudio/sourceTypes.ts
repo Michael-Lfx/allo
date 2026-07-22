@@ -12,7 +12,7 @@ import type { KnowledgeKind } from '../KnowledgeTagFilterBar';
  */
 export type StudioSourceType = KnowledgeKind | 'import';
 
-export const FEISHU_KNOWLEDGE_CREATION_ENABLED = false;
+export const FEISHU_KNOWLEDGE_CREATION_ENABLED = true;
 
 export type StudioSourceConfigLike = {
   rootPath?: string | null;

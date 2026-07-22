@@ -1221,7 +1221,11 @@ impl ConversationService {
                 }
                 obj.insert("preset_enabled_skills".into(), serde_json::to_value(&snapshot.included_skills).unwrap_or_default());
                 obj.insert("exclude_auto_inject_skills".into(), serde_json::to_value(&snapshot.excluded_auto_skills).unwrap_or_default());
-                obj.insert("preset_knowledge_binding".into(), serde_json::Value::Bool(true));
+                // `inherit` keeps workpath mounts; only explicit staged/direct
+                // policies stamp a per-target binding (and skip workpath).
+                if snapshot.knowledge_policy.mode != "inherit" {
+                    obj.insert("preset_knowledge_binding".into(), serde_json::Value::Bool(true));
+                }
             }
         }
 
@@ -1532,13 +1536,12 @@ impl ConversationService {
         }
 
         // Materialize the preset's knowledge policy as an explicit target
-        // binding. This deliberately bypasses workpath inheritance at runtime:
-        // selecting a preset must reproduce its KB scope without mutating or
-        // silently sharing the user's general workspace binding.
+        // binding — unless mode is `inherit`, which must keep workpath mounts.
         if let Some(snapshot_value) = preset_snapshot_value.as_ref()
             && let Ok(snapshot) = serde_json::from_value::<nomifun_api_types::ResolvedPresetSnapshot>(
                 snapshot_value.clone(),
             )
+            && snapshot.knowledge_policy.mode != "inherit"
             && let Some(service) = self
                 .knowledge_service
                 .read()
@@ -1556,7 +1559,10 @@ impl ConversationService {
                     target_id,
                     nomifun_knowledge::KnowledgeBinding {
                         enabled: snapshot.knowledge_policy.enabled,
-                        writeback: snapshot.knowledge_policy.writeback,
+                        // Demo path: enabled KB presets default to staged writeback
+                        // so write → inbox → review is observable without extra toggles.
+                        writeback: snapshot.knowledge_policy.writeback
+                            || snapshot.knowledge_policy.enabled,
                         writeback_mode: mode.to_owned(),
                         writeback_eagerness: snapshot
                             .knowledge_policy

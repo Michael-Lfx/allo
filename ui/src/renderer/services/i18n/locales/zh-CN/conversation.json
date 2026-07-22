@@ -77,6 +77,9 @@
     "untitled": "未命名会话"
   },
   "emptyCards": {
+    "knowledgeTitle": "知识库回写演示",
+    "knowledgeDescription": "创建或同步知识库，在预设里挂库并开启 staged 回写，再在待审收件箱合并。",
+    "knowledgeAction": "打开知识库",
     "docsTitle": "使用介绍文档",
     "docsDescription": "查看安装、项目、会话、设置和常见工作流说明。",
     "docsAction": "打开文档",
