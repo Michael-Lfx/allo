@@ -73,7 +73,13 @@ pub(crate) const CANCEL_TEARDOWN_GRACE: Duration = Duration::from_secs(7);
 pub(crate) const CANCEL_COMPLETION_GRACE: Duration = Duration::from_secs(2);
 pub(crate) const CANCEL_HANDLER_GRACE: Duration = Duration::from_secs(11);
 pub(crate) const CANCEL_AUTH_PREFLIGHT_GRACE: Duration = Duration::from_secs(2);
-const TURN_WRITEBACK_GRACE: Duration = Duration::from_secs(5);
+/// Hard ceiling for the post-turn knowledge write-back. The extraction (and
+/// optional merge) each make LLM calls bounded by `TURN_WRITEBACK_LLM_TIMEOUT`
+/// (45s), so the whole report can legitimately need well over a minute. This
+/// must stay comfortably below `WRITEBACK_RUNNING_STALE_MS` (5min) so that a
+/// genuinely stuck report is landed on a terminal "interrupted" state by the
+/// self-bounding helper before the stale projection would kick in.
+const TURN_WRITEBACK_GRACE: Duration = Duration::from_secs(180);
 /// One relay terminal may trigger session persistence, failover/image rebuild,
 /// and ACP eviction. They share one deadline so several individually bounded
 /// operations cannot add up to an apparently permanent Running turn.
@@ -4534,6 +4540,10 @@ impl ConversationService {
             if !turn_token.is_cancelled()
                 && let Some((knowledge_service, request, msg_id, final_text)) = final_turn_writeback
             {
+                // The helper is self-bounding: it owns the cancellation token
+                // and the hard deadline, and always lands the row on a terminal
+                // state (including "interrupted" on cancel/timeout). We only
+                // guard against a panic here so a bug cannot poison the task.
                 let writeback = AssertUnwindSafe(run_turn_writeback_report(
                     knowledge_service,
                     request,
@@ -4547,24 +4557,12 @@ impl ConversationService {
                     conv_id.clone(),
                     msg_id,
                     final_text,
+                    turn_token.clone(),
+                    TURN_WRITEBACK_GRACE,
                 ))
                 .catch_unwind();
-                tokio::select! {
-                    biased;
-                    _ = turn_token.cancelled() => {
-                        info!(conversation_id = %conv_id, "Post-turn write-back cancelled");
-                    }
-                    result = tokio::time::timeout(TURN_WRITEBACK_GRACE, writeback) => {
-                        match result {
-                            Ok(Ok(())) => {}
-                            Ok(Err(_)) => {
-                                warn!(conversation_id = %conv_id, "Post-turn write-back panicked");
-                            }
-                            Err(_) => {
-                                warn!(conversation_id = %conv_id, "Turn write-back exceeded the hard bound");
-                            }
-                        }
-                    }
+                if writeback.await.is_err() {
+                    warn!(conversation_id = %conv_id, "Post-turn write-back panicked");
                 }
             }
             })
