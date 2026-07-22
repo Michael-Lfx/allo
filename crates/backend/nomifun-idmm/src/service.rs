@@ -12,13 +12,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nomifun_ai_agent::runtime_registry::AgentRuntimeRegistry;
 use nomifun_api_types::{
-    AutoWorkTargetKind, FaultWatchConfig, IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind,
+    AutoWorkTargetKind, FaultWatchConfig, IdmmBinding, IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind,
     InterventionRecord, WatchBase, WatchTier,
 };
 use nomifun_common::{AppError, ConversationId, IdmmInterventionId, TerminalId, UserId};
 use nomifun_conversation::ConversationService;
 use nomifun_db::models::IdmmInterventionRow;
-use nomifun_db::{IClientPreferenceRepository, IConversationRepository, IIdmmInterventionRepository};
+use nomifun_db::{
+    ConversationFilters, IClientPreferenceRepository, IConversationRepository, IIdmmInterventionRepository,
+    ITerminalRepository,
+};
 use nomifun_requirement::IdmmHandle;
 use nomifun_terminal::TerminalDriver;
 use tracing::warn;
@@ -73,6 +76,8 @@ pub struct ProbeDeps {
     pub conversation_repo: Arc<dyn IConversationRepository>,
     pub terminal_driver: Arc<dyn TerminalDriver>,
     pub runtime_registry: Arc<dyn AgentRuntimeRegistry>,
+    /// Optional: needed for `list_enabled_bindings` terminal scan.
+    pub terminal_repo: Option<Arc<dyn ITerminalRepository>>,
 }
 
 impl ProbeDeps {
@@ -421,6 +426,82 @@ impl IdmmService {
             resolved,
             persisted.as_ref(),
         ))
+    }
+
+    /// Bulk snapshot of IDMM-enabled conversation/terminal sessions for the
+    /// calling user (sidebar capability hydrate; mirrors requirement tag-bindings).
+    pub async fn list_enabled_bindings(&self, user_id: &str) -> Result<Vec<IdmmBinding>, AppError> {
+        let user_id = UserId::parse(user_id)
+            .map_err(|error| AppError::Forbidden(format!("invalid caller identity: {error}")))?;
+        let user_id = user_id.as_str();
+        let mut out: Vec<IdmmBinding> = Vec::new();
+
+        let mut cursor: Option<String> = None;
+        loop {
+            let filters = ConversationFilters {
+                cursor: cursor.clone(),
+                limit: 200,
+                source: None,
+                cron_job_id: None,
+                pinned: None,
+                exclude_companion_companion: false,
+                ..Default::default()
+            };
+            let page = self
+                .probe_deps
+                .conversation_repo
+                .list_paginated(user_id, &filters)
+                .await
+                .map_err(|e| AppError::Internal(format!("list conversations for idmm bindings: {e}")))?;
+            if page.items.is_empty() {
+                break;
+            }
+            for row in &page.items {
+                let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+                let Some(blob) = extra.get("idmm").cloned() else { continue };
+                let Ok(cfg) = serde_json::from_value::<IdmmConfig>(blob) else { continue };
+                if !cfg.any_enabled() {
+                    continue;
+                }
+                let shared = self.manager.shared_for(IdmmTargetKind::Conversation, &row.id);
+                let intervening = shared.intervening.load(std::sync::atomic::Ordering::Relaxed);
+                out.push(IdmmBinding {
+                    kind: IdmmTargetKind::Conversation,
+                    target_id: row.id.clone(),
+                    enabled: true,
+                    run_state: IdmmState::run_state(true, intervening),
+                });
+            }
+            if !page.has_more {
+                break;
+            }
+            cursor = page.items.last().map(|r| r.id.clone());
+        }
+
+        if let Some(term_repo) = &self.probe_deps.terminal_repo {
+            for row in term_repo
+                .list_by_user(user_id)
+                .await
+                .map_err(|e| AppError::Internal(format!("list terminals for idmm bindings: {e}")))?
+            {
+                let Some(blob) = row.idmm.as_deref() else { continue };
+                let Ok(cfg) = serde_json::from_str::<IdmmConfig>(blob) else { continue };
+                if !cfg.any_enabled() {
+                    continue;
+                }
+                let target_id = row.id.to_string();
+                let shared = self.manager.shared_for(IdmmTargetKind::Terminal, &target_id);
+                let intervening = shared.intervening.load(std::sync::atomic::Ordering::Relaxed);
+                out.push(IdmmBinding {
+                    kind: IdmmTargetKind::Terminal,
+                    target_id,
+                    enabled: true,
+                    run_state: IdmmState::run_state(true, intervening),
+                });
+            }
+        }
+
+        Ok(out)
     }
 
     /// Recent intervention log for a target (most-recent-first), read from the

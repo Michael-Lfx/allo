@@ -3152,6 +3152,9 @@ export const requirements = {
         target_id: binding.kind === 'conversation'
           ? parseConversationId(binding.target_id)
           : parseTerminalId(binding.target_id),
+        ...(binding.current_requirement_id
+          ? { current_requirement_id: parseRequirementId(binding.current_requirement_id) }
+          : {}),
       })),
     }))
   ),
@@ -3161,6 +3164,14 @@ export const requirements = {
 
 export type IdmmTargetKind = 'conversation' | 'terminal';
 export type IdmmRunState = 'off' | 'armed' | 'intervening';
+
+/** Lightweight IDMM-enabled session row from `GET /api/idmm/bindings`. */
+export interface IIdmmBinding {
+  kind: IdmmTargetKind;
+  target_id: SessionCapabilityTargetId;
+  enabled: boolean;
+  run_state: IdmmRunState;
+}
 
 // ── Phase-2 dual-watch config (mirrors `nomifun-api-types/src/idmm.rs` D1/D2). ──
 // IDMM is reorganized into two independently-toggleable, default-off watches that
@@ -3364,6 +3375,13 @@ export const idmm = {
   getStatus: withResponseMap(httpGet<IIdmmState, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}`
   ), fromApiIdmmState),
+  /** Bulk hydrate of IDMM-enabled sessions (sidebar capability map). */
+  listBindings: withResponseMap(httpGet<IIdmmBinding[], void>('/api/idmm/bindings'), (rows) =>
+    rows.map((row) => ({
+      ...row,
+      target_id: parseIdmmTargetId(row.kind, row.target_id),
+    }))
+  ),
   intervene: withResponseMap(httpPost<IIdmmState, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}/intervene`,
     () => ({})
@@ -3438,6 +3456,8 @@ export interface ITagBinding {
   target_id: SessionCapabilityTargetId;
   name: string;
   run_state: AutoWorkRunState;
+  current_requirement_id?: RequirementId;
+  lease_expires_at?: number;
 }
 
 /** All AutoWork bindings for one tag (used by 标签会话管理). */

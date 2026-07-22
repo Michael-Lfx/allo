@@ -32,8 +32,8 @@ export type SessionCapabilitySnapshot = {
 // 只有 per-target GET），而侧边栏不允许逐会话 N+1 查询，所以：
 // - AutoWork：启动时用 requirements.tagBindings 一次批量拉全部 enabled 绑定
 //   （含 conversation / terminal 两种 kind 与 run_state）；
-// - IDMM：没有批量查询端点，初始为空；由 idmm.statusChanged 事件以及
-//   IdmmControl 已经拿到的 GET / save 返回状态增量点亮；
+// - IDMM：启动时用 idmm.listBindings 批量 hydrate；之后靠 idmm.statusChanged
+//   与 IdmmControl 的 GET / save 增量点亮；
 // 之后都靠 WS 事件维护。Map 常驻模块级，侧边栏卸载重挂不丢已知状态。
 const autoworkMap = new Map<string, AutoWorkRunState>();
 const idmmMap = new Map<string, IdmmRunState>();
@@ -90,6 +90,21 @@ const ensureStarted = () => {
     })
     .catch(() => {
       /* best-effort initial snapshot — events still correct the map */
+    });
+
+  void ipcBridge.idmm.listBindings
+    .invoke()
+    .then((rows) => {
+      let changed = false;
+      for (const row of rows ?? []) {
+        if (!row.enabled) continue;
+        idmmMap.set(capabilityKey(row.kind, row.target_id), row.run_state);
+        changed = true;
+      }
+      if (changed) notify();
+    })
+    .catch(() => {
+      /* best-effort — events still correct the map */
     });
 
   // App-lifetime module subscriptions (deliberately never unsubscribed).

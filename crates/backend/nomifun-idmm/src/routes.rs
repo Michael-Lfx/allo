@@ -8,7 +8,7 @@ use axum::extract::{Extension, Json, Path, Query, State};
 use axum::routing::{get, post};
 
 use nomifun_api_types::{
-    ApiResponse, IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind, InterventionRecord, SetIdmmRequest,
+    ApiResponse, IdmmBinding, IdmmConfig, IdmmSettings, IdmmState, IdmmTargetKind, InterventionRecord, SetIdmmRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -40,6 +40,7 @@ struct ActivityQuery {
 pub fn idmm_routes(state: IdmmRouterState) -> Router {
     Router::new()
         .route("/api/idmm", post(set_idmm))
+        .route("/api/idmm/bindings", get(list_bindings))
         .route("/api/idmm/settings", get(get_settings).put(set_settings))
         .route("/api/idmm/activity", get(get_activity).delete(clear_activity))
         .route("/api/idmm/{kind}/{target_id}", get(get_idmm))
@@ -71,6 +72,14 @@ async fn set_idmm(
         .build_state(&user.id, req.kind, &req.target_id)
         .await?;
     Ok(Json(ApiResponse::ok(st)))
+}
+
+async fn list_bindings(
+    State(state): State<IdmmRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<IdmmBinding>>>, AppError> {
+    let bindings = state.service.list_enabled_bindings(&user.id).await?;
+    Ok(Json(ApiResponse::ok(bindings)))
 }
 
 async fn get_idmm(

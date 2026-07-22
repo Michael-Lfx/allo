@@ -106,6 +106,9 @@ pub struct Requirement {
     pub created_by: String,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
+    /// Claim lease expiry while `in_progress` (ms since epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<TimestampMs>,
     /// Image attachments. Populated on get/create/update responses; list/board
     /// rows and claim/status events carry an empty list for leanness.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

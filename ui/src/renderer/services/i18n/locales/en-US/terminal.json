@@ -117,7 +117,8 @@
   "autowork": {
     "requiresAgentCli": "AutoWork requires an agent CLI terminal (Claude / Codex, including wrappers like stepcode claude)",
     "terminalExited": "Terminal has exited — relaunch to use AutoWork",
-    "fullAutoHint": "Not in full-auto mode: injected requirements may stall on approval prompts."
+    "fullAutoHint": "Not in full-auto mode: injected requirements may stall on approval prompts.",
+    "fullAutoRequired": "Relaunch this terminal in Full Auto mode before enabling AutoWork."
   },
   "workspace": {
     "title": "Project",

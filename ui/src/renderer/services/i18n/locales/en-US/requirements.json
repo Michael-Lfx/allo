@@ -104,6 +104,7 @@
     "enabledWithFaultWatch": "AutoWork enabled — fault watch armed by default",
     "disabledOk": "AutoWork disabled",
     "completedCount": "Completed: {{count}}",
+    "currentRequirement": "Current requirement #…{{id}}",
     "emptyTitle": "No tags available",
     "emptyDescription": "Tags are created automatically from requirements. Add a tagged requirement to get started.",
     "emptyCta": "New requirement",

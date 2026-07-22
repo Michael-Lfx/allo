@@ -414,6 +414,15 @@ pub struct IdmmState {
     pub config: Option<IdmmConfig>,
 }
 
+/// Lightweight enabled-session row for `GET /api/idmm/bindings` (sidebar hydrate).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdmmBinding {
+    pub kind: IdmmTargetKind,
+    pub target_id: String,
+    pub enabled: bool,
+    pub run_state: IdmmRunState,
+}
+
 impl IdmmState {
     /// Compute the tri-state run state from enabled + intervening flags.
     pub fn run_state(enabled: bool, intervening: bool) -> IdmmRunState {

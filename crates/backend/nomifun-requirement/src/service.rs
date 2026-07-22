@@ -1170,6 +1170,8 @@ impl RequirementService {
                                 row.name.clone()
                             },
                             run_state: AutoWorkRunState::Idle,
+                            current_requirement_id: None,
+                            lease_expires_at: None,
                         });
                     }
                 }
@@ -1197,6 +1199,8 @@ impl RequirementService {
                             row.name.clone()
                         },
                         run_state: AutoWorkRunState::Idle,
+                        current_requirement_id: None,
+                        lease_expires_at: None,
                     });
                 }
             }

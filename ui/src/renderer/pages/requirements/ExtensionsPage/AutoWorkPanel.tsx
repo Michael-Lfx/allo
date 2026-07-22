@@ -174,12 +174,42 @@ const AutoWorkPanel: React.FC = () => {
     },
     {
       title: t('autowork.tagSessions.counts'),
-      width: 120,
-      render: (_: unknown, row: TagRowData) => (
-        <span className='text-t-secondary text-12px'>
-          {t('autowork.tagSessions.countsFmt', { done: row.done, total: row.total })}
-        </span>
-      ),
+      width: 200,
+      render: (_: unknown, row: TagRowData) => {
+        const active = row.bindings.find((b) => b.run_state === 'active' && b.current_requirement_id);
+        const leaseMs = active?.lease_expires_at;
+        const leaseLabel =
+          leaseMs && leaseMs > Date.now()
+            ? t('autowork.tagSessions.leaseRemaining', {
+                sec: Math.max(1, Math.round((leaseMs - Date.now()) / 1000)),
+              })
+            : null;
+        return (
+          <div className='flex flex-col gap-4px min-w-0'>
+            <span className='text-t-secondary text-12px'>
+              {t('autowork.tagSessions.countsFmt', { done: row.done, total: row.total })}
+              {row.pending > 0
+                ? ` · ${t('autowork.tagSessions.pendingFmt', { pending: row.pending })}`
+                : ''}
+            </span>
+            {(active || row.paused) && (
+              <div className='flex flex-wrap items-center gap-4px text-11px text-t-tertiary'>
+                {active?.current_requirement_id ? (
+                  <Tag size='small' color='arcoblue'>
+                    {t('autowork.tagSessions.currentReq', { id: String(active.current_requirement_id).slice(-8) })}
+                  </Tag>
+                ) : null}
+                {leaseLabel ? <span>{leaseLabel}</span> : null}
+                {row.paused ? (
+                  <Tag size='small' color='red'>
+                    {pausedReasonLabel(row.paused_reason)}
+                  </Tag>
+                ) : null}
+              </div>
+            )}
+          </div>
+        );
+      },
     },
     {
       title: t('autowork.tagSessions.boundCount'),
@@ -226,6 +256,20 @@ const AutoWorkPanel: React.FC = () => {
               <Tag size='small' color={isActive ? 'green' : binding.run_state === 'idle' ? 'orange' : 'gray'}>
                 {t(`autowork.runState.${binding.run_state}`)}
               </Tag>
+              {binding.current_requirement_id ? (
+                <span className='text-t-tertiary text-11px truncate'>
+                  {t('autowork.tagSessions.currentReq', {
+                    id: String(binding.current_requirement_id).slice(-8),
+                  })}
+                </span>
+              ) : null}
+              {binding.lease_expires_at && binding.lease_expires_at > Date.now() ? (
+                <span className='text-t-tertiary text-11px'>
+                  {t('autowork.tagSessions.leaseRemaining', {
+                    sec: Math.max(1, Math.round((binding.lease_expires_at - Date.now()) / 1000)),
+                  })}
+                </span>
+              ) : null}
               {/* Unbind button */}
               <Tooltip
                 content={isActive ? t('autowork.tagSessions.activeStopInSession') : undefined}

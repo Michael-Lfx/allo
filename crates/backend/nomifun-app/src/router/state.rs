@@ -1056,6 +1056,8 @@ pub fn build_idmm_state(
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool.clone()));
     let client_prefs: Arc<dyn nomifun_db::IClientPreferenceRepository> =
         Arc::new(SqliteClientPreferenceRepository::new(pool.clone()));
+    let terminal_repo: Arc<dyn nomifun_db::ITerminalRepository> =
+        Arc::new(nomifun_db::SqliteTerminalRepository::new(pool.clone()));
     let records: Arc<dyn IIdmmInterventionRepository> = Arc::new(SqliteIdmmInterventionRepository::new(pool));
     let encryption_key = services.encryption_key;
 
@@ -1073,6 +1075,7 @@ pub fn build_idmm_state(
         conversation_repo: conv_repo,
         terminal_driver,
         runtime_registry: services.agent_runtime_registry.clone(),
+        terminal_repo: Some(terminal_repo),
     });
 
     let emitter = nomifun_idmm::IdmmEventEmitter::new(services.event_bus.clone());

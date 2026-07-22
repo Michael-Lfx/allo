@@ -127,6 +127,12 @@ pub struct TagBinding {
     pub target_id: String,
     pub name: String,
     pub run_state: AutoWorkRunState,
+    /// Requirement currently claimed by this binding's live AutoWork loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_requirement_id: Option<String>,
+    /// When the live claim's lease expires (ms since epoch), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<i64>,
 }
 
 /// All AutoWork bindings for one tag (sessions whose autowork is enabled and

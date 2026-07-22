@@ -104,6 +104,7 @@
     "enabledWithFaultWatch": "自动工作已开启，并已默认开启故障值守",
     "disabledOk": "自动工作已关闭",
     "completedCount": "已完成：{{count}}",
+    "currentRequirement": "当前需求 #…{{id}}",
     "emptyTitle": "还没有可用标签",
     "emptyDescription": "标签会在创建需求后自动生成。先去需求平台添加一条带标签的需求。",
     "emptyCta": "新建需求",

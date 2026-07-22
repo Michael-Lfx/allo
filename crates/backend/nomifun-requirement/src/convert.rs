@@ -20,6 +20,7 @@ pub fn row_to_dto(row: &RequirementRow) -> Requirement {
         created_by: row.created_by.clone(),
         created_at: row.created_at,
         updated_at: row.updated_at,
+        lease_expires_at: row.lease_expires_at,
         attachments: Vec::new(),
     }
 }

@@ -50,6 +50,8 @@ interface AutoWorkControlProps {
   disabledReason?: string;
   /** Optional safety note shown inside the popover (e.g. a non-full-auto terminal). */
   safetyHint?: string;
+  /** When set, enabling AutoWork is refused with this message (e.g. terminal not Full Auto). */
+  blockEnableReason?: string;
   /** When the config takes effect, shown at the panel bottom (draft mode). */
   applyNote?: string;
 }
@@ -61,7 +63,14 @@ interface AutoWorkControlProps {
  * The Guid page renders the same control in `draft` mode to pre-configure a
  * conversation before it exists.
  */
-const AutoWorkControl: React.FC<AutoWorkControlProps> = ({ target, draft, disabledReason, safetyHint, applyNote }) => {
+const AutoWorkControl: React.FC<AutoWorkControlProps> = ({
+  target,
+  draft,
+  disabledReason,
+  safetyHint,
+  blockEnableReason,
+  applyNote,
+}) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { tags, loading: tagsLoading, error: tagsError, refresh: refreshTags } = useRequirementTags();
@@ -212,6 +221,10 @@ const AutoWorkControl: React.FC<AutoWorkControlProps> = ({ target, draft, disabl
       Message.warning(t('requirements.autowork.tagRequired'));
       return;
     }
+    if (next && blockEnableReason) {
+      Message.warning(blockEnableReason);
+      return;
+    }
     if (draft) {
       // Draft mode: just report upward — the parent applies after creation.
       draft.onChange({ enabled: next, tag });
@@ -266,6 +279,13 @@ const AutoWorkControl: React.FC<AutoWorkControlProps> = ({ target, draft, disabl
       {running && state?.completed_count != null ? (
         <div className='text-t-tertiary text-11px'>
           {t('requirements.autowork.completedCount', { count: state.completed_count })}
+        </div>
+      ) : null}
+      {state?.current_requirement_id ? (
+        <div className='text-t-tertiary text-11px'>
+          {t('requirements.autowork.currentRequirement', {
+            id: String(state.current_requirement_id).slice(-8),
+          })}
         </div>
       ) : null}
       {applyNote ? <div className='text-t-quaternary text-11px leading-15px'>{applyNote}</div> : null}

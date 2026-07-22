@@ -145,8 +145,19 @@ async fn list_tag_bindings(
     let mut groups = state.requirement_service.tag_bindings(&user.id).await?;
     for group in &mut groups {
         for binding in &mut group.bindings {
-            if matches!(state.auto_work_runner.live_progress(binding.kind, &binding.target_id), Some((Some(_), _))) {
-                binding.run_state = AutoWorkRunState::Active;
+            if let Some((current, _)) = state
+                .auto_work_runner
+                .live_progress(binding.kind, &binding.target_id)
+            {
+                if current.is_some() {
+                    binding.run_state = AutoWorkRunState::Active;
+                }
+                binding.current_requirement_id = current.clone();
+                if let Some(req_id) = current.as_deref()
+                    && let Ok(req) = state.requirement_service.get(req_id).await
+                {
+                    binding.lease_expires_at = req.lease_expires_at;
+                }
             }
         }
     }

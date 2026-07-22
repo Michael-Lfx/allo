@@ -414,8 +414,9 @@ const TerminalSessionContent: React.FC<{ sessionId: TerminalId }> = ({ sessionId
     : isExited
       ? t('terminal.autowork.terminalExited')
       : undefined;
-  const autoWorkSafetyHint =
-    isAgentCli && session?.mode !== 'full-auto' ? t('terminal.autowork.fullAutoHint') : undefined;
+  const needsFullAuto = isAgentCli && session?.mode !== 'full-auto';
+  const autoWorkSafetyHint = needsFullAuto ? t('terminal.autowork.fullAutoHint') : undefined;
+  const autoWorkBlockEnable = needsFullAuto ? t('terminal.autowork.fullAutoRequired') : undefined;
 
   return (
     // The WHOLE page (both columns) is wrapped in the terminal-scoped
@@ -493,6 +494,7 @@ const TerminalSessionContent: React.FC<{ sessionId: TerminalId }> = ({ sessionId
               target={{ kind: 'terminal', id: sessionId }}
               disabledReason={autoWorkDisabledReason}
               safetyHint={autoWorkSafetyHint}
+              blockEnableReason={autoWorkBlockEnable}
             />
             <IdmmControl target={{ kind: 'terminal', id: sessionId }} />
             {/* Escape hatch for a wedged/garbled claude/codex TUI: always

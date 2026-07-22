@@ -117,7 +117,8 @@
   "autowork": {
     "requiresAgentCli": "自动工作需要 Agent CLI 终端（Claude / Codex，含 stepcode claude 等代理形式）",
     "terminalExited": "终端已退出 —— 请重新启动后再使用自动工作",
-    "fullAutoHint": "当前不是 full-auto 模式：注入的需求可能卡在审批确认。"
+    "fullAutoHint": "当前不是 full-auto 模式：注入的需求可能卡在审批确认。",
+    "fullAutoRequired": "请先以 Full Auto 模式启动该终端，再启用自动工作。"
   },
   "workspace": {
     "title": "项目",
