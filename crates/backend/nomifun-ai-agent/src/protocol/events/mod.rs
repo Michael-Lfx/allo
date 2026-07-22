@@ -20,7 +20,9 @@ pub use tool_call::{
     AcpToolCallContentItem, AcpToolCallEventData, AcpToolCallKind, AcpToolCallLocationItem,
     AcpToolCallSessionUpdateKind, AcpToolCallStatus, AcpToolCallTextBlock, AcpToolCallTextBlockType,
     AcpToolCallUpdateData, ToolCallEventData, ToolCallStatus, ToolGroupEntry,
-    validate_artifact_receipt_integrity, validate_completed_artifact_contract,
+    acp_content_item_dedupe_key, project_acp_tool_call_to_tool_call, should_supersede_preview,
+    validate_artifact_receipt_integrity, validate_completed_acp_artifact_contract,
+    validate_completed_artifact_contract,
 };
 pub(crate) use translate::{
     AcpArtifactDeliveryState, permission_request_to_event_data, session_notification_to_events,

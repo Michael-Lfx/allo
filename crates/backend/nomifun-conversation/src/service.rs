@@ -13,8 +13,7 @@ use std::panic::AssertUnwindSafe;
 
 use crate::response_middleware::ICronService;
 use crate::runtime_state::{
-    AgentTurnHandle, ConversationDeletionGuard, ConversationRuntimeStateService,
-    InMemoryCancelAuthority, RuntimeBuildLease, TurnWireContext,
+    ConversationDeletionGuard, ConversationRuntimeStateService, RuntimeBuildLease, TurnWireContext,
 };
 use crate::ExecutionConversationBoundary;
 use nomifun_api_types::{
@@ -45,6 +44,9 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+#[path = "turn_lifecycle.rs"]
+mod turn_lifecycle;
+
 use crate::convert::{
     TOOL_CONTENT_COMPACT_THRESHOLD_BYTES, message_needs_artifact_history_audit,
     parse_provider_with_model, project_historical_artifact_integrity,
@@ -66,11 +68,11 @@ const TEMP_WORKSPACE_ID_EXTRA_KEY: &str = "temp_workspace_id";
 const RECEIPT_FOREGROUND_BUDGET: Duration = Duration::from_secs(2);
 /// Stop waits for relay/receipt cleanup, then generation-safely releases the
 /// exact cancelled turn so the endpoint itself always remains bounded.
-const CANCEL_RELEASE_GRACE: Duration = Duration::from_secs(3);
-const CANCEL_TEARDOWN_GRACE: Duration = Duration::from_secs(7);
-const CANCEL_COMPLETION_GRACE: Duration = Duration::from_secs(2);
-const CANCEL_HANDLER_GRACE: Duration = Duration::from_secs(11);
-const CANCEL_AUTH_PREFLIGHT_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const CANCEL_RELEASE_GRACE: Duration = Duration::from_secs(3);
+pub(crate) const CANCEL_TEARDOWN_GRACE: Duration = Duration::from_secs(7);
+pub(crate) const CANCEL_COMPLETION_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const CANCEL_HANDLER_GRACE: Duration = Duration::from_secs(11);
+pub(crate) const CANCEL_AUTH_PREFLIGHT_GRACE: Duration = Duration::from_secs(2);
 const TURN_WRITEBACK_GRACE: Duration = Duration::from_secs(5);
 /// One relay terminal may trigger session persistence, failover/image rebuild,
 /// and ACP eviction. They share one deadline so several individually bounded
@@ -939,7 +941,7 @@ impl ConversationService {
             .await
     }
 
-    async fn ensure_not_retained_execution_attempt(
+    pub(crate) async fn ensure_not_retained_execution_attempt(
         &self,
         user_id: &str,
         conversation_id: &str,
@@ -1009,150 +1011,6 @@ impl ConversationService {
         )
     }
 
-    pub async fn complete_turn_with_companion_context(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-        turn_id: &str,
-        companion: bool,
-        companion_id: Option<CompanionId>,
-        origin: Option<String>,
-        channel_platform: Option<String>,
-    ) {
-        // Completion may deliberately hold an admission-only completion fence.
-        // GET must remain busy until the event is published, while the event
-        // itself must carry the post-fence authoritative idle state so clients
-        // can release their queue immediately after receiving it.
-        let runtime = self.final_completion_runtime(conversation_id);
-        StreamRelay::complete_conversation_with_context(
-            &self.conversation_repo,
-            &self.user_events,
-            user_id,
-            conversation_id,
-            Some(turn_id.to_owned()),
-            Some(runtime),
-            companion,
-            companion_id,
-            origin,
-            channel_platform,
-        )
-        .await;
-    }
-
-    fn final_completion_runtime(&self, conversation_id: &str) -> ConversationRuntimeSummary {
-        let agent = self.runtime_registry.get_runtime(conversation_id);
-        ConversationRuntimeSummary {
-            state: nomifun_api_types::ConversationRuntimeStateKind::Idle,
-            can_send_message: true,
-            has_runtime: agent.is_some(),
-            runtime_status: agent.as_ref().and_then(|agent| agent.status()),
-            is_processing: false,
-            pending_confirmations: 0,
-            processing_started_at: None,
-        }
-    }
-
-    async fn release_and_complete_turn(
-        &self,
-        turn_handle: &mut AgentTurnHandle,
-        user_id: &str,
-        conversation_id: &str,
-        turn_id: &str,
-        companion: bool,
-        companion_id: Option<CompanionId>,
-        origin: Option<String>,
-        channel_platform: Option<String>,
-    ) {
-        // Keep admission fenced across exact release -> persisted finished ->
-        // turn.completed. Without this narrow fence a replacement turn could
-        // start in between and be overwritten by the old turn's completion.
-        let completion_fence = self
-            .runtime_state
-            .begin_turn_completion(conversation_id, turn_handle.turn_id());
-        let completion_fence = match completion_fence {
-            Ok(Some(guard)) => Some(guard),
-            Ok(None) => {
-                // A stop/delete won the shared admission ordering. Release is
-                // allowed to signal owner quiescence, but that worker owns the
-                // only terminal completion from here.
-                let _ = turn_handle.release();
-                return;
-            }
-            Err(error) => {
-                warn!(
-                    conversation_id,
-                    error = %ErrorChain(&error),
-                    "Failed to acquire completion admission fence"
-                );
-                None
-            }
-        };
-        if !turn_handle.release() {
-            return;
-        }
-        StreamRelay::persist_conversation_finished(&self.conversation_repo, conversation_id).await;
-        let allowed_completion_owners = usize::from(completion_fence.is_some());
-        let user_events = Arc::clone(&self.user_events);
-        let runtime = self.final_completion_runtime(conversation_id);
-        let completion_published = self
-            .runtime_state
-            .linearize_cleanup_event(
-                conversation_id,
-                0,
-                allowed_completion_owners,
-                CANCEL_TEARDOWN_GRACE,
-                move || {
-                    StreamRelay::broadcast_turn_completed_with_context(
-                        &user_events,
-                        user_id,
-                        conversation_id,
-                        Some(turn_id.to_owned()),
-                        Some(runtime),
-                        companion,
-                        companion_id,
-                        origin,
-                        channel_platform,
-                    );
-                    drop(completion_fence);
-                },
-            )
-            .await;
-        if !completion_published {
-            warn!(
-                conversation_id,
-                turn_id,
-                "Completion event withheld because another cleanup fence remained active"
-            );
-        }
-    }
-
-    async fn broadcast_turn_started_with_context(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-        turn_id: &str,
-        companion: bool,
-        companion_id: Option<CompanionId>,
-        origin: Option<String>,
-        channel_platform: Option<String>,
-    ) {
-        let runtime = self.runtime_summary_for(conversation_id).await;
-        let payload = serde_json::json!({
-            "conversation_id": conversation_id,
-            "turn_id": turn_id,
-            "status": "running",
-            "phase": "starting",
-            "state": "initializing",
-            "can_send_message": runtime.can_send_message,
-            "runtime": runtime,
-            "companion": companion,
-            "companion_id": companion_id,
-            "origin": origin,
-            "channel_platform": channel_platform,
-        });
-        self.user_events
-            .send_to_user(user_id, WebSocketMessage::new("turn.started", payload));
-    }
 }
 
 // ── Conversation CRUD ───────────────────────────────────────────────
@@ -5065,46 +4923,12 @@ impl ConversationService {
         .await
     }
 
-    /// Stop the current streaming response for a conversation.
-    #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id))]
-    pub async fn cancel(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
-    ) -> Result<(), AppError> {
-        self.cancel_with_origin(
-            user_id,
-            conversation_id,
-            runtime_registry,
-            CancelOrigin::User,
-        )
-        .await
-    }
-
-    /// Cancel an Agent Execution attempt without classifying infrastructure
-    /// cleanup (pause/replan/recovery/cancel) as a direct user stop.
-    pub async fn cancel_for_execution(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
-    ) -> Result<(), AppError> {
-        self.cancel_with_origin(
-            user_id,
-            conversation_id,
-            runtime_registry,
-            CancelOrigin::AgentExecution,
-        )
-        .await
-    }
-
     /// Start an independent, generation-scoped stop worker. Once spawned it
     /// continues even if the HTTP request future is disconnected/dropped.
     /// Admission remains closed until the captured runtime's teardown has
     /// completed or hit the hard bound, then the exact turn generation is
     /// released and (for an ordinary stop) completed on the wire.
-    fn spawn_turn_stop_cleanup(
+    pub(crate) fn spawn_turn_stop_cleanup(
         &self,
         user_id: String,
         conversation_id: String,
@@ -5407,124 +5231,6 @@ impl ConversationService {
         result_rx
     }
 
-    async fn cancel_with_origin(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
-        origin: CancelOrigin,
-    ) -> Result<(), AppError> {
-        let conversation_key = parse_conv_id(conversation_id)?;
-        let mut user_cancel_preflight = None;
-        let in_memory_authority = if origin == CancelOrigin::User {
-            let authorization = self
-                .runtime_state
-                .authorize_in_memory_user_cancel(conversation_id, user_id)?;
-            user_cancel_preflight = authorization.preflight_guard;
-            authorization.authority
-        } else if self
-            .runtime_state
-            .active_turn_allows_cancel(conversation_id, user_id, false)
-        {
-            InMemoryCancelAuthority::ActiveTurn
-        } else {
-            InMemoryCancelAuthority::None
-        };
-
-        if let InMemoryCancelAuthority::PublicBuilds(cancelled_build_ids) =
-            &in_memory_authority
-        {
-                // This authority is intentionally narrower than a conversation
-                // stop: an unverified public preparation may cancel only work
-                // initiated by the same authenticated requester, never a
-                // private/durable build or an unrelated idle runtime.
-                self.note_user_cancel(conversation_id);
-                self.runtime_state.forget_cancelled_runtime_builds(
-                    conversation_id,
-                    cancelled_build_ids,
-                );
-                return Ok(());
-        }
-
-        if in_memory_authority != InMemoryCancelAuthority::ActiveTurn {
-            // Idle/cold-runtime stops still need repository authorization, but
-            // it is hard-bounded. A live turn takes the secure cached-owner
-            // fast path above, so a wedged DB actor cannot make its stop button
-            // ineffective.
-            let conversation = tokio::time::timeout(
-                CANCEL_AUTH_PREFLIGHT_GRACE,
-                self.conversation_repo.get(conversation_key),
-            )
-            .await
-            .map_err(|_| {
-                AppError::Timeout(
-                    "conversation stop authorization exceeded its hard bound".to_owned(),
-                )
-            })??
-            .filter(|row| row.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
-
-            // A user stops or decides Attempt work through Agent Execution.
-            // The internal cleanup path keeps using AgentExecution origin and
-            // may cancel retained attempt runtimes.
-            if origin == CancelOrigin::User {
-                tokio::time::timeout(
-                    CANCEL_AUTH_PREFLIGHT_GRACE,
-                    self.ensure_not_retained_execution_attempt(user_id, &conversation.id),
-                )
-                .await
-                .map_err(|_| {
-                    AppError::Timeout(
-                        "conversation stop retention check exceeded its hard bound".to_owned(),
-                    )
-                })??;
-            }
-        }
-
-        // Record the user's intent BEFORE touching the agent: even when no
-        // Agent is live (turn-acquired-but-not-yet-injected AutoWork window), the
-        // stamp tells the owning execution flow this work was deliberately stopped.
-        if origin == CancelOrigin::User {
-            self.note_user_cancel(conversation_id);
-        }
-
-        let result_rx = self.spawn_turn_stop_cleanup(
-            user_id.to_owned(),
-            conversation_id.to_owned(),
-            Arc::clone(runtime_registry),
-            true,
-            false,
-        );
-        // `spawn_turn_stop_cleanup` synchronously establishes the stronger
-        // conversation stop tombstone before returning. Releasing the
-        // requester-scoped preflight here is therefore an atomic fence handoff:
-        // same-user public builds saw either the preflight or the stop, never a
-        // gap between them.
-        drop(user_cancel_preflight);
-        let stop_result = match tokio::time::timeout(CANCEL_HANDLER_GRACE, result_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(AppError::Internal(
-                "conversation stop worker exited before reporting completion".to_owned(),
-            )),
-            Err(_) => {
-                // Admission is already fenced and the detached owner has hard
-                // bounds for every teardown phase. Treat the stop as accepted
-                // instead of making the UI believe manual termination failed
-                // merely because cleanup outlived the HTTP window.
-                warn!(conversation_id, "Conversation stop accepted; bounded cleanup continues in the background");
-                Ok(())
-            }
-        };
-        stop_result?;
-        Ok(())
-    }
-
-    fn note_user_cancel(&self, conversation_id: &str) {
-        if let Ok(mut stamps) = self.user_cancel_stamps.lock() {
-            stamps.insert(conversation_id.to_string(), nomifun_common::now_ms());
-        }
-    }
-
     /// Whether the user cancelled this conversation's streaming response at or
     /// after `since_ms`. Used by AutoWork to classify a turn that ended while
     /// (or right before) a user cancel as a USER INTERRUPT — pause the tag —
@@ -5705,12 +5411,6 @@ impl ConversationService {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CancelOrigin {
-    User,
-    AgentExecution,
-}
-
 // ── Internal Helpers ────────────────────────────────────────────────
 
 impl ConversationService {
@@ -5724,7 +5424,10 @@ impl ConversationService {
     pub(crate) fn build_runtime_options(&self, row: &nomifun_db::models::ConversationRow) -> Result<AgentRuntimeBuildOptions, AppError> {
         let agent_type = string_to_enum(&row.r#type)?;
 
-        let model = crate::runtime_options::provider_model_from_conversation_row(row)?;
+        let model = crate::effective_model::resolve_effective_model(
+            row,
+            crate::effective_model::EffectiveModelLayers::default(),
+        )?;
         if agent_type == AgentType::Nomi && model.is_none() {
             return Err(AppError::BadRequest(
                 "Nomi conversation has no provider/model configured".to_owned(),

@@ -220,6 +220,160 @@ pub enum ToolCallStatus {
     Canceled,
 }
 
+/// Project an ACP tool-call frame onto the canonical [`ToolCallEventData`] shape.
+///
+/// ACP-only fields (`kind`, `locations`, rich `content` blocks beyond artifacts,
+/// `_meta`, `sessionUpdate`) are folded into `output`/`description` where useful
+/// and otherwise dropped. Callers that need lossless ACP UI should keep the
+/// original frame for wire/DB; use this projection for shared terminal gates,
+/// artifact contracts, and channel outbox decisions.
+pub fn project_acp_tool_call_to_tool_call(data: &AcpToolCallEventData) -> ToolCallEventData {
+    let status = match data.update.status {
+        Some(AcpToolCallStatus::Completed) => ToolCallStatus::Completed,
+        Some(AcpToolCallStatus::Failed) => ToolCallStatus::Error,
+        Some(AcpToolCallStatus::Pending | AcpToolCallStatus::InProgress) | None => {
+            ToolCallStatus::Running
+        }
+    };
+    let name = data
+        .update
+        .title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "tool".to_owned());
+    let args = data.update.raw_input.clone().unwrap_or(Value::Null);
+    let artifacts = data
+        .update
+        .content
+        .iter()
+        .flatten()
+        .filter_map(|item| match item {
+            AcpToolCallContentItem::Artifact { artifact, .. } => Some(artifact.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let output = acp_tool_call_output_summary(data);
+    ToolCallEventData {
+        call_id: data.update.tool_call_id.clone(),
+        name,
+        args,
+        status,
+        input: data.update.raw_input.clone(),
+        output,
+        description: data.update.title.clone(),
+        artifacts,
+    }
+}
+
+fn acp_tool_call_output_summary(data: &AcpToolCallEventData) -> Option<String> {
+    if let Some(raw_output) = data.update.raw_output.as_ref() {
+        if let Some(text) = raw_output.as_str() {
+            if !text.is_empty() {
+                return Some(text.to_owned());
+            }
+        }
+        if !raw_output.is_null() {
+            return Some(raw_output.to_string());
+        }
+    }
+    let texts = data
+        .update
+        .content
+        .iter()
+        .flatten()
+        .filter_map(|item| match item {
+            AcpToolCallContentItem::Content { content } => Some(content.text.as_str()),
+            AcpToolCallContentItem::ArtifactError { message } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n"))
+    }
+}
+
+/// Stable dedupe key for ACP content items — avoids `serde_json::to_string` on
+/// the hot merge path.
+pub fn acp_content_item_dedupe_key(item: &AcpToolCallContentItem) -> String {
+    match item {
+        AcpToolCallContentItem::Content { content } => {
+            format!("content:{}:{}", content.text.len(), content.text)
+        }
+        AcpToolCallContentItem::Diff {
+            path,
+            old_text,
+            new_text,
+        } => format!(
+            "diff:{path}:{}:{}:{}",
+            old_text.as_ref().map(|s| s.len()).unwrap_or(0),
+            new_text.len(),
+            new_text
+        ),
+        AcpToolCallContentItem::Artifact { artifact, .. } => {
+            format!("artifact:{}", artifact.id)
+        }
+        AcpToolCallContentItem::ResourceLink { uri, name, .. } => {
+            format!("resource:{name}:{uri}")
+        }
+        AcpToolCallContentItem::Terminal { terminal_id } => {
+            format!("terminal:{terminal_id}")
+        }
+        AcpToolCallContentItem::ArtifactError { message } => {
+            format!("artifact_error:{message}")
+        }
+    }
+}
+
+/// Apply the normalized ToolCall artifact contract to an ACP update via projection.
+pub fn validate_completed_acp_artifact_contract(
+    data: &AcpToolCallEventData,
+) -> Result<(), String> {
+    if data.update.status != Some(AcpToolCallStatus::Completed) {
+        return Ok(());
+    }
+    let projected = project_acp_tool_call_to_tool_call(data);
+    validate_artifact_receipt_integrity("ACP artifact delivery", &projected.artifacts)
+        .map_err(|error| format!("ACP {error}"))?;
+    const IDENTITY_KEYS: &[&str] = &[
+        "tool",
+        "tool_name",
+        "toolName",
+        "name",
+        "operation",
+        "operation_name",
+        "operationName",
+    ];
+    let mut identities = data
+        .update
+        .title
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    for value in [&data.update.raw_input, &data.update.raw_output]
+        .into_iter()
+        .filter_map(Option::as_ref)
+    {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        identities.extend(
+            IDENTITY_KEYS
+                .iter()
+                .filter_map(|key| object.get(*key).and_then(Value::as_str)),
+        );
+    }
+    identities.sort_unstable();
+    identities.dedup();
+    for name in identities {
+        let mut candidate = projected.clone();
+        candidate.name = name.to_owned();
+        validate_completed_artifact_contract(&candidate).map_err(|error| format!("ACP {error}"))?;
+    }
+    Ok(())
+}
+
 /// A single entry in a `ToolGroup` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolGroupEntry {
@@ -500,5 +654,42 @@ mod tests {
             image("/workspace/b.png", "nomifun-artifacts/b.png"),
         ]))
         .unwrap();
+    }
+
+    #[test]
+    fn projects_acp_completed_with_artifacts() {
+        use crate::artifact_store::{ArtifactKind, PersistedArtifact};
+
+        let data = AcpToolCallEventData {
+            session_id: "sess".into(),
+            update: AcpToolCallUpdateData {
+                session_update: AcpToolCallSessionUpdateKind::ToolCallUpdate,
+                tool_call_id: "tool-1".into(),
+                status: Some(AcpToolCallStatus::Completed),
+                title: Some("image_gen".into()),
+                kind: None,
+                raw_input: Some(json!({"count": 1})),
+                raw_output: None,
+                content: Some(vec![AcpToolCallContentItem::Artifact {
+                    artifact: PersistedArtifact {
+                        id: "art-1".into(),
+                        kind: ArtifactKind::Image,
+                        mime_type: "image/png".into(),
+                        path: "/tmp/a.png".into(),
+                        relative_path: "a.png".into(),
+                        size_bytes: 1,
+                        sha256: "00".repeat(32),
+                    },
+                    source_uri: None,
+                }]),
+                locations: None,
+            },
+            meta: None,
+        };
+        let projected = project_acp_tool_call_to_tool_call(&data);
+        assert_eq!(projected.call_id, "tool-1");
+        assert_eq!(projected.name, "image_gen");
+        assert_eq!(projected.status, ToolCallStatus::Completed);
+        assert_eq!(projected.artifacts.len(), 1);
     }
 }

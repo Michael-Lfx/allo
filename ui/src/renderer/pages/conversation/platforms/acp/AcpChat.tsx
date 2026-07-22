@@ -55,7 +55,7 @@ const AcpChat: React.FC<{
   loadedMcpServers,
   loadedMcpStatuses,
 }) => {
-  useMessageLstCache(conversation_id);
+  const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
   usePendingConfirmationsRecovery(conversation_id, { enabled: !readOnly });
   const { checkAndUpdateTitle } = useAutoTitle();
   const addOrUpdateMessage = useAddOrUpdateMessage();
@@ -95,7 +95,13 @@ const AcpChat: React.FC<{
       <ConversationArtifactProvider conversation_id={conversation_id}>
         <div className='flex-1 flex flex-col px-20px min-h-0'>
           <FlexFullContainer>
-            <MessageList className='flex-1' emptySlot={emptySlot} />
+            <MessageList
+              className='flex-1'
+              emptySlot={emptySlot}
+              onLoadOlder={historyPaging.loadOlder}
+              hasMoreOlder={historyPaging.hasMore}
+              loadingOlder={historyPaging.loadingOlder}
+            />
           </FlexFullContainer>
           <AcpE2EStreamInjector conversationId={conversation_id} />
           {!readOnly && !hideSendBox && (

@@ -75,33 +75,38 @@ pub struct ChannelStreamRelay {
 /// A tool call has exactly one terminal projection per turn. Provider retries
 /// and transport reordering must not let a late `Completed` frame reverse a
 /// prior `Error` (or re-open a completed call with a progress frame).
+///
+/// ACP frames are projected onto the canonical ToolCall call_id namespace so
+/// channel outbox and conversation relay share one terminal gate.
 #[derive(Default)]
 struct TerminalToolCallGate {
     tool_calls: std::collections::HashSet<String>,
-    acp_tool_calls: std::collections::HashSet<String>,
 }
 
 impl TerminalToolCallGate {
     fn accepts(&mut self, event: &AgentStreamEvent) -> bool {
-        use nomifun_ai_agent::protocol::events::{AcpToolCallStatus, ToolCallStatus};
+        use nomifun_ai_agent::protocol::events::{
+            ToolCallStatus, project_acp_tool_call_to_tool_call,
+        };
 
         match event {
             AgentStreamEvent::ToolCall(data) => match data.status {
                 ToolCallStatus::Running => !self.tool_calls.contains(&data.call_id),
                 ToolCallStatus::Completed
                 | ToolCallStatus::Error
-                | ToolCallStatus::Canceled => {
-                    self.tool_calls.insert(data.call_id.clone())
-                }
+                | ToolCallStatus::Canceled => self.tool_calls.insert(data.call_id.clone()),
             },
-            AgentStreamEvent::AcpToolCall(data) => match data.update.status {
-                Some(AcpToolCallStatus::Completed | AcpToolCallStatus::Failed) => self
-                    .acp_tool_calls
-                    .insert(data.update.tool_call_id.clone()),
-                Some(AcpToolCallStatus::Pending | AcpToolCallStatus::InProgress) | None => {
-                    !self.acp_tool_calls.contains(&data.update.tool_call_id)
+            AgentStreamEvent::AcpToolCall(data) => {
+                let projected = project_acp_tool_call_to_tool_call(data);
+                match projected.status {
+                    ToolCallStatus::Running => !self.tool_calls.contains(&projected.call_id),
+                    ToolCallStatus::Completed
+                    | ToolCallStatus::Error
+                    | ToolCallStatus::Canceled => {
+                        self.tool_calls.insert(projected.call_id)
+                    }
                 }
-            },
+            }
             _ => true,
         }
     }

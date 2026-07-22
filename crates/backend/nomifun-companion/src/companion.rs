@@ -20,6 +20,7 @@ use nomifun_conversation::ConversationService;
 
 use crate::collector::{self, SharedConfig};
 use crate::events::CompanionEventEmitter;
+use crate::memory_policy::MemoryPolicy;
 use crate::profile::CompanionProfileConfig;
 use crate::registry::CompanionRegistry;
 use crate::store::{CompanionThread, MEMORY_KINDS, MemoryFilter, MemoryScope, CompanionStore};
@@ -27,8 +28,8 @@ use crate::store::{CompanionThread, MEMORY_KINDS, MemoryFilter, MemoryScope, Com
 /// Per-companion runtime-state key holding that companion's active companion thread.
 pub(crate) const ACTIVE_THREAD_KEY: &str = "companion_active_thread";
 
-const MEMORY_CHAR_BUDGET: usize = 6000;
-const MEMORY_PER_KIND: i64 = 5;
+const MEMORY_CHAR_BUDGET: usize = MemoryPolicy::DEFAULT.char_budget;
+const MEMORY_PER_KIND: i64 = MemoryPolicy::DEFAULT.per_kind;
 /// How many recent day-digests to inject into a new window's system prompt, and
 /// the char budget for that block (separate from the memory snapshot budget).
 const DIGEST_INJECT_COUNT: i64 = 3;
@@ -105,14 +106,7 @@ pub async fn build_companion_system_prompt(
     // memories. task/episode/affective entries are stale to-dos that, injected
     // into a remote prompt, drive the partner to re-dispatch old work
     // (badcase 2) — so they are filtered out of the remote snapshot entirely.
-    let memories: Vec<_> = if remote {
-        memories
-            .into_iter()
-            .filter(|m| matches!(m.kind.as_str(), "profile" | "preference" | "knowledge"))
-            .collect()
-    } else {
-        memories
-    };
+    let memories = MemoryPolicy::DEFAULT.filter_for_injection(memories, remote);
     let flavor = crate::prompt::resolve_persona_flavor(&profile.persona);
     // NOTE: the persona prompt deliberately does NOT pin a reply language. The
     // companion must answer in the app's UI language, which is decided live at

@@ -17,6 +17,7 @@ import MessagePermission from './components/MessagePermission';
 import MessageAcpToolCall from '@renderer/pages/conversation/Messages/acp/MessageAcpToolCall';
 import classNames from 'classnames';
 import React, { createContext, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
 import { uuid } from '@renderer/utils/common';
@@ -1010,10 +1011,20 @@ const MessageList: React.FC<{
 
   // ── Windowed history: load older messages on scroll-up with a scroll-anchor ──
   const scrollerElRef = useRef<HTMLDivElement | null>(null);
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
   const lastScrollTopRef = useRef(0);
   // Set when a load-older was triggered; the layout effect below restores the
   // viewport once the prepend grows the content so the position doesn't jump.
   const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
+
+  const combinedScrollerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      handleScrollerRef(el);
+      scrollerElRef.current = el;
+      setScrollParent(el);
+    },
+    [handleScrollerRef]
+  );
 
   const handleScrollWithPaging = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
@@ -1261,7 +1272,7 @@ const MessageList: React.FC<{
       <Image.PreviewGroup actionsLayout={['zoomIn', 'zoomOut', 'originalSize', 'rotateLeft', 'rotateRight']}>
         <ImagePreviewContext.Provider value={{ inPreviewGroup: true }}>
           <div
-            ref={handleScrollerRef}
+            ref={combinedScrollerRef}
             data-testid='message-list-scroller'
             className='flex-1 h-full overflow-y-auto pb-10px box-border'
             style={{ overflowAnchor: 'none' }}
@@ -1270,11 +1281,27 @@ const MessageList: React.FC<{
             onWheel={handleWheel}
           >
             <div ref={handleContentRef} data-testid='message-list-content' style={{ overflowAnchor: 'none' }}>
-              <div className='h-10px' />
-              {displayList.map((item, index) => (
-                <React.Fragment key={item.id}>{renderItem(index, item)}</React.Fragment>
-              ))}
-              <div className='h-20px' />
+              {scrollParent ? (
+                <Virtuoso
+                  data={displayList}
+                  customScrollParent={scrollParent}
+                  computeItemKey={(_index, item) => item.id}
+                  increaseViewportBy={{ top: 800, bottom: 800 }}
+                  components={{
+                    Header: () => <div className='h-10px' />,
+                    Footer: () => <div className='h-20px' />,
+                  }}
+                  itemContent={(index, item) => renderItem(index, item)}
+                />
+              ) : (
+                <>
+                  <div className='h-10px' />
+                  {displayList.map((item, index) => (
+                    <React.Fragment key={item.id}>{renderItem(index, item)}</React.Fragment>
+                  ))}
+                  <div className='h-20px' />
+                </>
+              )}
             </div>
           </div>
         </ImagePreviewContext.Provider>

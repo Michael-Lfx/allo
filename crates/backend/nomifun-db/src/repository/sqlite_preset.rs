@@ -1,7 +1,9 @@
 //! SQLite implementation of the relational preset catalog.
 
+use std::collections::HashMap;
+
 use nomifun_common::now_ms;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 use crate::error::DbError;
 use crate::models::*;
@@ -23,43 +25,230 @@ fn unique_violation(error: &sqlx::Error) -> bool {
     matches!(error, sqlx::Error::Database(e) if e.code().is_some_and(|c| c == "2067" || c == "1555"))
 }
 
+async fn load_records_batch(pool: &SqlitePool, ids: &[String]) -> Result<Vec<PresetRecord>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut presets_query = QueryBuilder::new("SELECT * FROM presets WHERE id IN (");
+    {
+        let mut separated = presets_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    presets_query.push(")");
+    let presets = presets_query
+        .build_query_as::<PresetRow>()
+        .fetch_all(pool)
+        .await?;
+    let presets_by_id: HashMap<_, _> = presets.into_iter().map(|row| (row.id.clone(), row)).collect();
+
+    let mut localizations_query =
+        QueryBuilder::new("SELECT * FROM preset_localizations WHERE preset_id IN (");
+    {
+        let mut separated = localizations_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    localizations_query.push(") ORDER BY locale");
+    let localizations = localizations_query
+        .build_query_as::<PresetLocalizationRow>()
+        .fetch_all(pool)
+        .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct PresetTargetPair {
+        preset_id: String,
+        target_kind: String,
+    }
+
+    let mut targets_query =
+        QueryBuilder::new("SELECT preset_id, target_kind FROM preset_targets WHERE preset_id IN (");
+    {
+        let mut separated = targets_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    targets_query.push(") ORDER BY target_kind");
+    let target_rows = targets_query
+        .build_query_as::<PresetTargetPair>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut agent_prefs_query =
+        QueryBuilder::new("SELECT * FROM preset_agent_preferences WHERE preset_id IN (");
+    {
+        let mut separated = agent_prefs_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    agent_prefs_query.push(") ORDER BY rank");
+    let agent_preferences = agent_prefs_query
+        .build_query_as::<PresetAgentPreferenceRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut model_prefs_query =
+        QueryBuilder::new("SELECT * FROM preset_model_preferences WHERE preset_id IN (");
+    {
+        let mut separated = model_prefs_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    model_prefs_query.push(") ORDER BY rank");
+    let model_preferences = model_prefs_query
+        .build_query_as::<PresetModelPreferenceRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut skills_query =
+        QueryBuilder::new("SELECT * FROM preset_skill_bindings WHERE preset_id IN (");
+    {
+        let mut separated = skills_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    skills_query.push(") ORDER BY binding, sort_order");
+    let skill_bindings = skills_query
+        .build_query_as::<PresetSkillBindingRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut knowledge_policy_query =
+        QueryBuilder::new("SELECT * FROM preset_knowledge_policy WHERE preset_id IN (");
+    {
+        let mut separated = knowledge_policy_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    knowledge_policy_query.push(")");
+    let knowledge_policies = knowledge_policy_query
+        .build_query_as::<PresetKnowledgePolicyRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut knowledge_bases_query =
+        QueryBuilder::new("SELECT * FROM preset_knowledge_bases WHERE preset_id IN (");
+    {
+        let mut separated = knowledge_bases_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    knowledge_bases_query.push(") ORDER BY sort_order");
+    let knowledge_bases = knowledge_bases_query
+        .build_query_as::<PresetKnowledgeBaseRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut examples_query =
+        QueryBuilder::new("SELECT * FROM preset_examples WHERE preset_id IN (");
+    {
+        let mut separated = examples_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    examples_query.push(") ORDER BY locale, sort_order");
+    let examples = examples_query
+        .build_query_as::<PresetExampleRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut tags_query =
+        QueryBuilder::new("SELECT * FROM preset_tag_bindings WHERE preset_id IN (");
+    {
+        let mut separated = tags_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    tags_query.push(") ORDER BY dimension, tag_key");
+    let tag_bindings = tags_query
+        .build_query_as::<PresetTagBindingRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut user_state_query =
+        QueryBuilder::new("SELECT * FROM preset_user_state WHERE preset_id IN (");
+    {
+        let mut separated = user_state_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    user_state_query.push(")");
+    let user_states = user_state_query
+        .build_query_as::<PresetUserStateRow>()
+        .fetch_all(pool)
+        .await?;
+
+    fn group_by_preset_id<T, F>(rows: Vec<T>, key: F) -> HashMap<String, Vec<T>>
+    where
+        F: Fn(&T) -> &str,
+    {
+        let mut map = HashMap::<String, Vec<T>>::new();
+        for row in rows {
+            map.entry(key(&row).to_owned()).or_default().push(row);
+        }
+        map
+    }
+
+    let mut localizations_by = group_by_preset_id(localizations, |row| row.preset_id.as_str());
+    let mut targets_by = HashMap::<String, Vec<String>>::new();
+    for row in target_rows {
+        targets_by
+            .entry(row.preset_id)
+            .or_default()
+            .push(row.target_kind);
+    }
+    let mut agent_by = group_by_preset_id(agent_preferences, |row| row.preset_id.as_str());
+    let mut model_by = group_by_preset_id(model_preferences, |row| row.preset_id.as_str());
+    let mut skills_by = group_by_preset_id(skill_bindings, |row| row.preset_id.as_str());
+    let knowledge_policy_by: HashMap<_, _> = knowledge_policies
+        .into_iter()
+        .map(|row| (row.preset_id.clone(), row))
+        .collect();
+    let mut knowledge_bases_by = group_by_preset_id(knowledge_bases, |row| row.preset_id.as_str());
+    let mut examples_by = group_by_preset_id(examples, |row| row.preset_id.as_str());
+    let mut tags_by = group_by_preset_id(tag_bindings, |row| row.preset_id.as_str());
+    let user_state_by: HashMap<_, _> = user_states
+        .into_iter()
+        .map(|row| (row.preset_id.clone(), row))
+        .collect();
+
+    let mut records = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(preset) = presets_by_id.get(id).cloned() else {
+            continue;
+        };
+        records.push(PresetRecord {
+            preset: Some(preset),
+            localizations: localizations_by.remove(id).unwrap_or_default(),
+            targets: targets_by.remove(id).unwrap_or_default(),
+            agent_preferences: agent_by.remove(id).unwrap_or_default(),
+            model_preferences: model_by.remove(id).unwrap_or_default(),
+            skill_bindings: skills_by.remove(id).unwrap_or_default(),
+            knowledge_policy: knowledge_policy_by.get(id).cloned(),
+            knowledge_bases: knowledge_bases_by.remove(id).unwrap_or_default(),
+            examples: examples_by.remove(id).unwrap_or_default(),
+            tag_bindings: tags_by.remove(id).unwrap_or_default(),
+            user_state: user_state_by.get(id).cloned(),
+        });
+    }
+    Ok(records)
+}
+
 async fn load_record(pool: &SqlitePool, id: &str) -> Result<Option<PresetRecord>, DbError> {
-    let Some(preset) = sqlx::query_as::<_, PresetRow>("SELECT * FROM presets WHERE id = ?")
-        .bind(id).fetch_optional(pool).await? else { return Ok(None); };
-    let localizations = sqlx::query_as::<_, PresetLocalizationRow>(
-        "SELECT * FROM preset_localizations WHERE preset_id = ? ORDER BY locale")
-        .bind(id).fetch_all(pool).await?;
-    let targets = sqlx::query_scalar::<_, String>(
-        "SELECT target_kind FROM preset_targets WHERE preset_id = ? ORDER BY target_kind")
-        .bind(id).fetch_all(pool).await?;
-    let agent_preferences = sqlx::query_as::<_, PresetAgentPreferenceRow>(
-        "SELECT * FROM preset_agent_preferences WHERE preset_id = ? ORDER BY rank")
-        .bind(id).fetch_all(pool).await?;
-    let model_preferences = sqlx::query_as::<_, PresetModelPreferenceRow>(
-        "SELECT * FROM preset_model_preferences WHERE preset_id = ? ORDER BY rank")
-        .bind(id).fetch_all(pool).await?;
-    let skill_bindings = sqlx::query_as::<_, PresetSkillBindingRow>(
-        "SELECT * FROM preset_skill_bindings WHERE preset_id = ? ORDER BY binding, sort_order")
-        .bind(id).fetch_all(pool).await?;
-    let knowledge_policy = sqlx::query_as::<_, PresetKnowledgePolicyRow>(
-        "SELECT * FROM preset_knowledge_policy WHERE preset_id = ?")
-        .bind(id).fetch_optional(pool).await?;
-    let knowledge_bases = sqlx::query_as::<_, PresetKnowledgeBaseRow>(
-        "SELECT * FROM preset_knowledge_bases WHERE preset_id = ? ORDER BY sort_order")
-        .bind(id).fetch_all(pool).await?;
-    let examples = sqlx::query_as::<_, PresetExampleRow>(
-        "SELECT * FROM preset_examples WHERE preset_id = ? ORDER BY locale, sort_order")
-        .bind(id).fetch_all(pool).await?;
-    let tag_bindings = sqlx::query_as::<_, PresetTagBindingRow>(
-        "SELECT * FROM preset_tag_bindings WHERE preset_id = ? ORDER BY dimension, tag_key")
-        .bind(id).fetch_all(pool).await?;
-    let user_state = sqlx::query_as::<_, PresetUserStateRow>(
-        "SELECT * FROM preset_user_state WHERE preset_id = ?")
-        .bind(id).fetch_optional(pool).await?;
-    Ok(Some(PresetRecord {
-        preset: Some(preset), localizations, targets, agent_preferences, model_preferences,
-        skill_bindings, knowledge_policy, knowledge_bases, examples, tag_bindings, user_state,
-    }))
+    let mut records = load_records_batch(pool, &[id.to_owned()]).await?;
+    Ok(records.pop())
 }
 
 async fn replace_bindings(tx: &mut Transaction<'_, Sqlite>, p: &PresetWriteParams) -> Result<(), sqlx::Error> {
@@ -121,9 +310,8 @@ impl IPresetRepository for SqlitePresetRepository {
     async fn list(&self) -> Result<Vec<PresetRecord>, DbError> {
         let ids = sqlx::query_scalar::<_, String>("SELECT id FROM presets ORDER BY updated_at DESC")
             .fetch_all(&self.pool).await?;
-        let mut records = Vec::with_capacity(ids.len());
-        for id in ids { if let Some(record) = load_record(&self.pool, &id).await? { records.push(record); } }
-        Ok(records)
+        tracing::debug!(preset_count = ids.len(), "preset_list_batch_load");
+        load_records_batch(&self.pool, &ids).await
     }
 
     async fn get(&self, id: &str) -> Result<Option<PresetRecord>, DbError> { load_record(&self.pool, id).await }

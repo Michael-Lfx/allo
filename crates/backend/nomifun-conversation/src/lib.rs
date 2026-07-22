@@ -18,11 +18,13 @@ pub mod skill_snapshot;
 pub mod state;
 pub mod stream_relay;
 pub mod runtime_options;
+pub mod effective_model;
 
 pub use response_middleware::{
     CronCommand, CronCommandResult, CronCreateParams, CronUpdateParams, ICronService, MessageMiddleware,
     MiddlewareResult, detect_cron_commands, has_cron_commands, strip_cron_commands, strip_think_tags,
 };
+pub use effective_model::{EffectiveModelLayers, resolve_effective_model};
 pub use failover_seam::FailoverSwitch;
 pub use agent_execution_port::AgentExecutionConversationPort;
 pub use execution_conversation_boundary::{

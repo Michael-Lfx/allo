@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nomifun_ai_agent::{
     AgentSendError, AgentStreamEvent,
@@ -11,9 +11,9 @@ use nomifun_ai_agent::{
     protocol::events::{
         FinishEventData, PlanEventData, ThinkingEventData, TurnStopReason,
         tool_call::{
-            AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData,
-            ToolCallStatus, should_supersede_preview, validate_artifact_receipt_integrity,
-            validate_completed_artifact_contract,
+            AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData, ToolCallStatus,
+            acp_content_item_dedupe_key, should_supersede_preview,
+            validate_completed_acp_artifact_contract, validate_completed_artifact_contract,
         },
     },
 };
@@ -33,6 +33,9 @@ use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
 const FLUSH_INTERVAL: u32 = 20;
+/// Coalesce high-frequency token WS emits (aligned with LeadThinkingThrottle).
+const WS_TEXT_COALESCE_CHARS: usize = 48;
+const WS_TEXT_COALESCE_INTERVAL: Duration = Duration::from_millis(80);
 const TURN_COMPLETION_PERSIST_GRACE: Duration = Duration::from_secs(1);
 const TERMINAL_FINALIZATION_GRACE: Duration = Duration::from_secs(5);
 const ARTIFACT_COMMIT_GRACE: Duration = Duration::from_secs(5);
@@ -60,72 +63,6 @@ fn remember_bounded(set: &mut HashSet<String>, value: String, kind: &'static str
         warn!(kind, max = MAX_TERMINAL_ACTIVE_ITEMS, "Relay terminal deduplication limit reached");
         false
     }
-}
-
-/// Apply the normalized ToolCall artifact contract to an externally-produced
-/// ACP update. Only locally verified `Artifact` receipts count; a remote
-/// ResourceLink is a locator, not proof that a requested image/export exists.
-fn validate_completed_acp_artifact_contract(
-    data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
-) -> Result<(), String> {
-    if data.update.status != Some(AcpToolCallStatus::Completed) {
-        return Ok(());
-    }
-    let artifacts = data
-        .update
-        .content
-        .iter()
-        .flatten()
-        .filter_map(|item| match item {
-            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact {
-                artifact,
-                ..
-            } => Some(artifact.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    validate_artifact_receipt_integrity("ACP artifact delivery", &artifacts)
-        .map_err(|error| format!("ACP {error}"))?;
-    const IDENTITY_KEYS: &[&str] = &[
-        "tool",
-        "tool_name",
-        "toolName",
-        "name",
-        "operation",
-        "operation_name",
-        "operationName",
-    ];
-    let mut identities = data.update.title.iter().map(String::as_str).collect::<Vec<_>>();
-    for value in [&data.update.raw_input, &data.update.raw_output]
-        .into_iter()
-        .filter_map(Option::as_ref)
-    {
-        let Some(object) = value.as_object() else {
-            continue;
-        };
-        identities.extend(
-            IDENTITY_KEYS
-                .iter()
-                .filter_map(|key| object.get(*key).and_then(Value::as_str)),
-        );
-    }
-    identities.sort_unstable();
-    identities.dedup();
-
-    for name in identities {
-        validate_completed_artifact_contract(&ToolCallEventData {
-            call_id: data.update.tool_call_id.clone(),
-            name: name.to_owned(),
-            args: data.update.raw_input.clone().unwrap_or(Value::Null),
-            status: ToolCallStatus::Completed,
-            input: None,
-            output: None,
-            description: None,
-            artifacts: artifacts.clone(),
-        })
-        .map_err(|error| format!("ACP {error}"))?;
-    }
-    Ok(())
 }
 
 /// Materialize a provider's sparse ACP update against the latest lifecycle
@@ -183,13 +120,10 @@ fn effective_acp_tool_call_projection(
             .collect::<Vec<_>>();
         let mut seen = merged
             .iter()
-            .filter_map(|item| serde_json::to_string(item).ok())
+            .map(acp_content_item_dedupe_key)
             .collect::<HashSet<_>>();
         for item in incoming.update.content.iter().flatten() {
-            let duplicate = serde_json::to_string(item)
-                .ok()
-                .is_some_and(|encoded| !seen.insert(encoded));
-            if !duplicate {
+            if seen.insert(acp_content_item_dedupe_key(item)) {
                 merged.push(item.clone());
             }
         }
@@ -258,6 +192,39 @@ struct TextSegmentState {
     created_at: i64,
     record_created: bool,
     flush_counter: u32,
+}
+
+/// Coalesce `message.stream` text frames before WS emit (DB flush stays on FLUSH_INTERVAL).
+#[derive(Debug, Default)]
+struct TextWsCoalesce {
+    pending: String,
+    last_flush: Option<Instant>,
+    emit_count: u64,
+    chunk_count: u64,
+}
+
+impl TextWsCoalesce {
+    fn push(&mut self, chunk: &str) -> bool {
+        if chunk.is_empty() {
+            return false;
+        }
+        self.chunk_count += 1;
+        self.pending.push_str(chunk);
+        let now = Instant::now();
+        self.last_flush
+            .map(|instant| now.duration_since(instant) >= WS_TEXT_COALESCE_INTERVAL)
+            .unwrap_or(true)
+            || self.pending.chars().count() >= WS_TEXT_COALESCE_CHARS
+    }
+
+    fn take(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        self.last_flush = Some(Instant::now());
+        self.emit_count += 1;
+        Some(std::mem::take(&mut self.pending))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -878,6 +845,8 @@ impl StreamRelay {
         let mut full_text_buffer = String::new();
         let mut text_segments: Vec<PersistedTextSegment> = Vec::new();
         let mut active_text: Option<TextSegmentState> = None;
+        let mut text_ws_coalesce = TextWsCoalesce::default();
+        let mut ws_emit_count = 0u64;
         let mut active_thinking: Option<ThinkingSegmentState> = None;
         let mut active_tool_calls: HashMap<String, ToolCallEventData> = HashMap::new();
         let mut pending_superseded_call_ids: HashSet<String> = HashSet::new();
@@ -1045,6 +1014,17 @@ impl StreamRelay {
                             // externally visible — once it streams we are no
                             // longer pre-response, so the failover seam stands down.
                             emitted_response = true;
+                            if let (Some(segment), Some(chunk)) =
+                                (active_text.as_ref(), text_ws_coalesce.take())
+                            {
+                                let coalesced = AgentStreamEvent::Text(
+                                    nomifun_ai_agent::protocol::events::TextEventData {
+                                        content: chunk,
+                                    },
+                                );
+                                self.forward_to_websocket_with_msg_id(&segment.id, &coalesced);
+                                ws_emit_count += 1;
+                            }
                             let _ = self
                                 .bounded_event_side_effect(
                                     event_side_effect_deadline,
@@ -1101,11 +1081,29 @@ impl StreamRelay {
                                 record_created: false,
                                 flush_counter: 0,
                             });
-                            self.forward_to_websocket_with_msg_id(&segment.id, &event);
                             segment.buffer.push_str(&data.content);
                             full_text_buffer.push_str(&data.content);
                             segment.flush_counter += 1;
+                            if text_ws_coalesce.push(&data.content) {
+                                if let Some(chunk) = text_ws_coalesce.take() {
+                                    let coalesced = AgentStreamEvent::Text(
+                                        nomifun_ai_agent::protocol::events::TextEventData {
+                                            content: chunk,
+                                        },
+                                    );
+                                    self.forward_to_websocket_with_msg_id(&segment.id, &coalesced);
+                                    ws_emit_count += 1;
+                                }
+                            }
                             if segment.flush_counter >= FLUSH_INTERVAL {
+                                debug!(
+                                    flush_counter = segment.flush_counter,
+                                    buffer_len = segment.buffer.len(),
+                                    ws_emit_count,
+                                    ws_coalesce_chunks = text_ws_coalesce.chunk_count,
+                                    ws_coalesce_emits = text_ws_coalesce.emit_count,
+                                    "stream_text_coalesce"
+                                );
                                 let _ = self
                                     .bounded_event_side_effect(
                                         event_side_effect_deadline,
@@ -1172,6 +1170,23 @@ impl StreamRelay {
                             } else {
                                 "finish"
                             };
+                            if let (Some(segment), Some(chunk)) =
+                                (active_text.as_ref(), text_ws_coalesce.take())
+                            {
+                                let coalesced = AgentStreamEvent::Text(
+                                    nomifun_ai_agent::protocol::events::TextEventData {
+                                        content: chunk,
+                                    },
+                                );
+                                self.forward_to_websocket_with_msg_id(&segment.id, &coalesced);
+                                ws_emit_count += 1;
+                            }
+                            info!(
+                                ws_emit_count,
+                                ws_coalesce_chunks = text_ws_coalesce.chunk_count,
+                                ws_coalesce_emits = text_ws_coalesce.emit_count,
+                                "stream_text_turn_metrics"
+                            );
                             let (thinking_persistence_complete, text_persistence_complete) = match tokio::time::timeout(
                                 TERMINAL_FINALIZATION_GRACE,
                                 async {
@@ -1624,6 +1639,9 @@ impl StreamRelay {
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
+                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
+                                ws_emit_count += 1;
+                            }
                             let _ = self
                                 .bounded_event_side_effect(
                                     event_side_effect_deadline,
@@ -1851,6 +1869,9 @@ impl StreamRelay {
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
+                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
+                                ws_emit_count += 1;
+                            }
                             let _ = self
                                 .bounded_event_side_effect(
                                     event_side_effect_deadline,
@@ -1999,6 +2020,9 @@ impl StreamRelay {
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
+                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
+                                ws_emit_count += 1;
+                            }
                             let _ = self
                                 .bounded_event_side_effect(
                                     event_side_effect_deadline,
@@ -2044,6 +2068,9 @@ impl StreamRelay {
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
+                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
+                                ws_emit_count += 1;
+                            }
                             let _ = self
                                 .bounded_event_side_effect(
                                     event_side_effect_deadline,
@@ -2216,6 +2243,9 @@ impl StreamRelay {
                             self.retry_terminal_thinking_segment(&mut active_thinking)
                                 .await
                         };
+                        if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
+                            ws_emit_count += 1;
+                        }
                         self.close_active_text_segment(
                             &mut active_text,
                             &mut text_segments,
@@ -3086,6 +3116,26 @@ impl StreamRelay {
         } else {
             true
         }
+    }
+
+    fn flush_text_ws_coalesce(
+        &self,
+        active_text: &Option<TextSegmentState>,
+        coalesce: &mut TextWsCoalesce,
+    ) -> bool {
+        let Some(segment) = active_text.as_ref() else {
+            return false;
+        };
+        let Some(chunk) = coalesce.take() else {
+            return false;
+        };
+        self.forward_to_websocket_with_msg_id(
+            &segment.id,
+            &AgentStreamEvent::Text(nomifun_ai_agent::protocol::events::TextEventData {
+                content: chunk,
+            }),
+        );
+        true
     }
 
     #[tracing::instrument(skip_all)]
@@ -4244,6 +4294,11 @@ impl StreamRelay {
             obj.insert("companion_id".into(), json!(self.companion_id));
             obj.insert("origin".into(), json!(self.origin));
             obj.insert("channel_platform".into(), json!(self.channel_platform));
+        }
+        static WS_STREAM_EMITS: AtomicU64 = AtomicU64::new(0);
+        let total = WS_STREAM_EMITS.fetch_add(1, Ordering::Relaxed) + 1;
+        if total % 64 == 0 {
+            debug!(total_ws_stream_emits = total, "stream_ws_emit_baseline");
         }
         let msg = WebSocketMessage::new("message.stream", payload);
         self.user_events.send_to_user(&self.user_id, msg);
@@ -5509,7 +5564,7 @@ mod tests {
             input: None,
             output: Some("ok".into()),
             description: None,
-            artifacts: Vec::new(),
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Text(TextEventData { content: "After".into() }))
@@ -5655,7 +5710,7 @@ mod tests {
             description: None,
             input: None,
             output: Some("ok".into()),
-            artifacts: Vec::new(),
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -5756,7 +5811,7 @@ mod tests {
                 input: None,
                 output: Some("ok".into()),
                 description: None,
-                artifacts: Vec::new(),
+                artifacts: vec![],
             }))
             .unwrap();
             tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -5808,6 +5863,7 @@ mod tests {
             description: None,
             input: Some(json!({"action": "navigate", "url": "https://example.com"})),
             output: None,
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData {
@@ -5870,6 +5926,7 @@ mod tests {
             description: None,
             input: None,
             output: None,
+            artifacts: vec![],
         };
 
         let mut pending = HashSet::from(["nomi-call_call_race_preview".to_string()]);
@@ -5917,6 +5974,7 @@ mod tests {
             description: None,
             input: None,
             output: None,
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -5927,6 +5985,7 @@ mod tests {
             description: None,
             input: Some(json!({"action": "navigate", "url": "https://example.com"})),
             output: None,
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -5937,6 +5996,7 @@ mod tests {
             description: None,
             input: Some(json!({"action": "navigate", "url": "https://example.com"})),
             output: Some("ok".into()),
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData {
@@ -6007,6 +6067,7 @@ mod tests {
             description: None,
             input: Some(json!({"action": "launch"})),
             output: None,
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -6017,6 +6078,7 @@ mod tests {
             description: None,
             input: None,
             output: Some("Opened page".into()),
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -6027,6 +6089,7 @@ mod tests {
             description: None,
             input: Some(json!({"action": "launch"})),
             output: None,
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -8045,7 +8108,7 @@ mod tests {
             input: None,
             output: Some("contents".into()),
             description: None,
-            artifacts: Vec::new(),
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -8116,7 +8179,7 @@ mod tests {
             input: None,
             output: Some("success".into()),
             description: None,
-            artifacts: Vec::new(),
+            artifacts: vec![],
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();

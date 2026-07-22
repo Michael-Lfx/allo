@@ -525,6 +525,10 @@ export const useAddOrUpdateMessage = () => {
 
   const flush = useCallback(() => {
     rafRef.current = null;
+    const n = pendingRef.current.length;
+    if (n > 0 && typeof performance !== 'undefined') {
+      performance.mark(`message-batch-flush:${n}`);
+    }
     drainPendingMessageUpdates(pendingRef, update);
   }, [update]);
 

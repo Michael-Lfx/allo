@@ -23,6 +23,9 @@ import {
 } from './minimapTypes';
 import { buildTurnPreview, getPanelWidth, isIndexMatch, normalizeText, readPopoverVisualStyle } from './minimapUtils';
 
+/** Minimap lives outside MessageListProvider; load a bounded compact window, never 10k. */
+const MINIMAP_HISTORY_PAGE_SIZE = 200;
+
 // Return type for the useMinimapPanel hook
 type UseMinimapPanelReturn = {
   visible: boolean;
@@ -107,7 +110,6 @@ export const useMinimapPanel = (conversation_id?: ConversationId): UseMinimapPan
     };
   }, []);
 
-  // Fetch data
   const fetchTurnPreview = useCallback(async () => {
     if (!conversation_id) {
       setItems([]);
@@ -117,8 +119,9 @@ export const useMinimapPanel = (conversation_id?: ConversationId): UseMinimapPan
     try {
       const messages = await ipcBridge.database.getConversationMessages.invoke({
         conversation_id: conversation_id,
-        page: 0,
-        page_size: 10000,
+        cursor: '',
+        page_size: MINIMAP_HISTORY_PAGE_SIZE,
+        content_mode: 'compact',
       });
       setItems(buildTurnPreview(messages?.items || []));
     } catch (error) {
