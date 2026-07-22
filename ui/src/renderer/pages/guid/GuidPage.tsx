@@ -52,6 +52,7 @@ import { useExecutionModelPool } from '@/renderer/pages/conversation/execution/u
 import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/conversation/execution/executionModelRefs';
 import CollaborationPolicyControl from '@/renderer/components/collaboration/CollaborationPolicyControl';
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
+import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
 import { useTypewriterPlaceholder } from './hooks/useTypewriterPlaceholder';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
@@ -68,11 +69,9 @@ const GuidPage: React.FC = () => {
   const navigate = useNavigate();
   const pendingConversation = usePendingConversation();
 
-  // Warm the conversation page's lazy chunk while the user is composing, so the
-  // first navigation into a conversation doesn't stall on a cold code-split
-  // load (Suspense AppLoader). Idempotent — React.lazy caches the import.
+  // Warm high-probability commercial path chunks while composing.
   useEffect(() => {
-    void import('@renderer/pages/conversation');
+    preloadCommercialPathChunks();
   }, []);
   const location = useLocation();
   const guidContainerRef = useRef<HTMLDivElement>(null);

@@ -13,6 +13,7 @@ import WindowControls from '@renderer/components/layout/WindowControls';
 import { ipcBridge } from '@/common';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { isDesktopShell, isMacOS } from '@renderer/utils/platform';
+import { flowyTransition, prefersReducedMotion, preloadCommercialPathChunks } from '@renderer/utils/motion/flowyMotion';
 import DotMap from './DotMap';
 import './CloudLoginPage.css';
 import '@renderer/components/layout/Titlebar/titlebar.css';
@@ -70,10 +71,14 @@ const CloudLoginPage: React.FC = () => {
 
   useEffect(() => {
     if (justLoggedInRef.current && status === 'authenticated') {
+      preloadCommercialPathChunks();
       navigate('/guid', { replace: true });
     }
   }, [status, navigate]);
 
+  const reduceMotion = prefersReducedMotion();
+  const shellMotion = reduceMotion ? false : { opacity: 0.92, scale: 0.99 };
+  const panelMotion = reduceMotion ? false : { opacity: 0.94, y: 8 };
   useEffect(() => {
     if (resendCooldown <= 0) return;
     const timer = window.setTimeout(() => {
@@ -212,9 +217,9 @@ const CloudLoginPage: React.FC = () => {
       )}
       <motion.div
         className='cloud-login-shell'
-        initial={{ opacity: 0, scale: 0.97 }}
+        initial={shellMotion}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+        transition={flowyTransition('enter', 'slow')}
       >
         <aside className='cloud-login-brand' aria-hidden={false}>
           <div className='cloud-login-brand__map'>
@@ -223,33 +228,33 @@ const CloudLoginPage: React.FC = () => {
           <div className='cloud-login-brand__content'>
             <motion.div
               className='cloud-login-brand__logo'
-              initial={{ opacity: 0, y: -12 }}
+              initial={reduceMotion ? false : { opacity: 0.9, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.25, duration: 0.4 }}
+              transition={flowyTransition('enter')}
             >
               <img src={appLogo} alt='' />
             </motion.div>
             <motion.h2
               className='cloud-login-brand__title'
-              initial={{ opacity: 0, y: -10 }}
+              initial={reduceMotion ? false : { opacity: 0.9, y: -4 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.35, duration: 0.4 }}
+              transition={flowyTransition('enter')}
             >
               {t('cloudLogin.brand')}
             </motion.h2>
             <motion.p
               className='cloud-login-brand__tagline'
-              initial={{ opacity: 0, y: -8 }}
+              initial={reduceMotion ? false : { opacity: 0.9, y: -4 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.42, duration: 0.4 }}
+              transition={flowyTransition('enter')}
             >
               {t('cloudLogin.brandTagline')}
             </motion.p>
             <motion.ul
               className='cloud-login-brand__points'
-              initial={{ opacity: 0, y: 8 }}
+              initial={reduceMotion ? false : { opacity: 0.9, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5, duration: 0.4 }}
+              transition={flowyTransition('enter')}
             >
               <li>{t('cloudLogin.brandPoints.workspace')}</li>
               <li>{t('cloudLogin.brandPoints.agents')}</li>
@@ -261,9 +266,9 @@ const CloudLoginPage: React.FC = () => {
         <section className='cloud-login-panel'>
           <motion.div
             className='cloud-login-panel__inner'
-            initial={{ opacity: 0, y: 16 }}
+            initial={panelMotion}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.15, duration: 0.4 }}
+            transition={flowyTransition('enter')}
           >
             {isSignedIn ? (
               <>

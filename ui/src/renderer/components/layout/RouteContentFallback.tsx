@@ -14,7 +14,7 @@ import React from 'react';
 const RouteContentFallback: React.FC = () => {
   return (
     <div
-      className='flex flex-col flex-1 min-h-0 w-full size-full bg-base'
+      className='flex flex-col flex-1 min-h-0 w-full size-full bg-base flowy-crossfade'
       data-testid='route-content-fallback'
       aria-busy='true'
       aria-live='polite'

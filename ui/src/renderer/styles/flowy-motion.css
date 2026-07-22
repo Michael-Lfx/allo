@@ -1,0 +1,163 @@
+/**
+ * Flowy motion system — 120 / 180 / 240ms, enter / exit / move easings.
+ * Prefer transform + opacity. No meaningless loops or heavy springs.
+ */
+
+:root {
+  --flowy-motion-fast: 120ms;
+  --flowy-motion-base: 180ms;
+  --flowy-motion-slow: 240ms;
+
+  --flowy-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --flowy-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --flowy-ease-move: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.flowy-enter {
+  animation: flowy-enter var(--flowy-motion-base) var(--flowy-ease-enter) both;
+}
+
+.flowy-exit {
+  animation: flowy-exit var(--flowy-motion-fast) var(--flowy-ease-exit) both;
+}
+
+.flowy-move {
+  transition:
+    transform var(--flowy-motion-base) var(--flowy-ease-move),
+    opacity var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+.flowy-crossfade {
+  animation: flowy-crossfade var(--flowy-motion-base) var(--flowy-ease-enter) both;
+}
+
+/* Task lifecycle — send → steps → tools → files → reveal / fail */
+.flowy-task-send {
+  animation: flowy-task-send var(--flowy-motion-base) var(--flowy-ease-enter) both;
+}
+
+.flowy-task-step-active {
+  transition:
+    opacity var(--flowy-motion-fast) var(--flowy-ease-move),
+    transform var(--flowy-motion-fast) var(--flowy-ease-move);
+}
+
+.flowy-task-tool {
+  animation: flowy-task-tool var(--flowy-motion-base) var(--flowy-ease-enter) both;
+}
+
+.flowy-task-file {
+  animation: flowy-task-file var(--flowy-motion-slow) var(--flowy-ease-enter) both;
+}
+
+.flowy-task-reveal {
+  animation: flowy-task-reveal var(--flowy-motion-slow) var(--flowy-ease-enter) both;
+}
+
+.flowy-task-fail {
+  animation: flowy-task-fail var(--flowy-motion-base) var(--flowy-ease-enter) both;
+}
+
+@keyframes flowy-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes flowy-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes flowy-crossfade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes flowy-task-send {
+  from {
+    opacity: 0.7;
+    transform: translateY(4px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes flowy-task-tool {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes flowy-task-file {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes flowy-task-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes flowy-task-fail {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowy-enter,
+  .flowy-exit,
+  .flowy-crossfade,
+  .flowy-task-send,
+  .flowy-task-tool,
+  .flowy-task-file,
+  .flowy-task-reveal,
+  .flowy-task-fail {
+    animation: none !important;
+  }
+
+  .flowy-move,
+  .flowy-task-step-active {
+    transition: none !important;
+  }
+}

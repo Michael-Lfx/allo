@@ -1,32 +1,36 @@
 .pendingOverlayEnter {
-  animation: pending-overlay-enter 0.2s ease-out both;
+  animation: pending-overlay-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, ease-out) both;
 }
 
 .pendingUserBubbleEnter {
-  animation: pending-user-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pending-user-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, cubic-bezier(0.22, 1, 0.36, 1)) both;
 }
 
 .pendingAssistEnter {
-  animation: pending-assist-enter 0.26s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+  animation: pending-assist-enter var(--flowy-motion-slow, 240ms) var(--flowy-ease-enter, cubic-bezier(0.22, 1, 0.36, 1)) 0.05s both;
 }
 
 .pendingSteps {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--color-text-3, #86909c);
+  gap: var(--flowy-space-2, 8px);
+  font-size: var(--flowy-text-caption, 12px);
+  color: var(--flowy-text-3, var(--color-text-3, #86909c));
 }
 
 .pendingStep {
   opacity: 0.45;
-  transition: opacity 0.2s ease, color 0.2s ease;
+  transition:
+    opacity var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease),
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease),
+    transform var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease);
 }
 
 .pendingStepActive {
   opacity: 1;
-  color: var(--color-text-1, #1d2129);
-  font-weight: 500;
+  color: var(--flowy-text-1, var(--color-text-1, #1d2129));
+  font-weight: var(--flowy-weight-medium, 500);
+  transform: translateY(-0.5px);
 }
 
 .pendingStepDone {
