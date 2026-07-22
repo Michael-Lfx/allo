@@ -6,7 +6,7 @@
 
 import type { IMessageTips } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
-import { Collapse, Tag } from '@arco-design/web-react';
+import { Button, Collapse, Tag } from '@arco-design/web-react';
 import { Attention, CheckOne } from '@icon-park/react';
 import { theme } from '@/platform';
 import classNames from 'classnames';
@@ -15,6 +15,9 @@ import { useTranslation } from 'react-i18next';
 import MarkdownView from '@renderer/components/Markdown';
 import FeedbackButton from '@renderer/components/base/FeedbackButton';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
+import { emitter } from '@renderer/utils/emitter';
+import { useMessageList } from '../hooks';
+import { parseMessageFileMarker } from './messageFileMarker';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 
 const icon = {
@@ -55,6 +58,7 @@ const useFormatContent = (content: string) => {
 
 const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const { t } = useTranslation();
+  const messageList = useMessageList();
   const { type } = message.content;
   const content = toDisplayText(message.content.content);
   const structuredError = type === 'error' ? message.content.error : undefined;
@@ -62,6 +66,26 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
 
   const displayContent = json ? '' : content;
   const shouldShowFeedback = type === 'error';
+
+  const retryPayload = useMemo(() => {
+    if (structuredError?.retryable !== true) return null;
+    const tipIndex = messageList.findIndex((item) => item.id === message.id);
+    const end = tipIndex === -1 ? messageList.length : tipIndex;
+    for (let i = end - 1; i >= 0; i -= 1) {
+      const item = messageList[i];
+      if (item.type !== 'text' || item.position !== 'right') continue;
+      const raw = typeof item.content?.content === 'string' ? item.content.content : '';
+      const { text } = parseMessageFileMarker(raw, 'right');
+      const trimmed = text.trim();
+      if (!trimmed) continue;
+      return {
+        content: trimmed,
+        msgId: item.msg_id,
+        createdAt: item.created_at,
+      };
+    }
+    return null;
+  }, [message.id, messageList, structuredError?.retryable]);
 
   if (structuredError) {
     const code = structuredError.code;
@@ -175,6 +199,22 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                   )}
                   {shouldShowFeedback && (
                     <div className='message-error-note__actions'>
+                      {retryPayload && (
+                        <Button
+                          size='mini'
+                          type='primary'
+                          className='message-error-note__retry'
+                          onClick={() => {
+                            emitter.emit('sendbox.retry', {
+                              content: retryPayload.content,
+                              ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
+                              ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
+                            });
+                          }}
+                        >
+                          {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
+                        </Button>
+                      )}
                       <FeedbackButton
                         module='conversation-session'
                         feedbackTags={feedbackTags}

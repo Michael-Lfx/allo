@@ -28,6 +28,8 @@ describe('MessageTips structured error presentation', () => {
   test('keeps feedback and retry/configuration status close to the diagnosis header', () => {
     expect(source.includes('message-error-note__meta')).toBe(true);
     expect(source.includes('message-error-note__actions')).toBe(true);
+    expect(source.includes('message-error-note__retry')).toBe(true);
+    expect(source.includes("emitter.emit('sendbox.retry'")).toBe(true);
   });
 
   test('aligns readable content on one text axis instead of drifting under the icon', () => {

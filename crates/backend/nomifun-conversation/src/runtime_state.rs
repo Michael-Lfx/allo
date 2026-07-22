@@ -15,6 +15,8 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 use tokio_util::sync::CancellationToken;
 
+use crate::turn_gate::{TurnCommand, derive_turn_phase, turn_command_allowed};
+
 #[derive(Debug)]
 struct ActiveTurn {
     id: u64,
@@ -299,19 +301,9 @@ impl ConversationRuntimeStateService {
         let stop_tombstones = self.stop_tombstones.lock().map_err(|_| {
             AppError::Internal("conversation stop admission lock poisoned".into())
         })?;
-        if stop_tombstones.contains_key(conversation_id) {
-            return Err(AppError::Conflict(format!(
-                "conversation {conversation_id} is stopping"
-            )));
-        }
         let completion_tombstones = self.completion_tombstones.lock().map_err(|_| {
             AppError::Internal("conversation completion admission lock poisoned".into())
         })?;
-        if completion_tombstones.contains_key(conversation_id) {
-            return Err(AppError::Conflict(format!(
-                "conversation {conversation_id} is completing"
-            )));
-        }
         let mut active_turns = self.active_turns.lock().map_err(|_| {
             warn!(
                 conversation_id,
@@ -320,10 +312,19 @@ impl ConversationRuntimeStateService {
             AppError::Internal("conversation runtime state lock poisoned".into())
         })?;
 
-        if active_turns.contains_key(conversation_id) {
-            info!(conversation_id, "conversation runtime turn acquisition rejected");
+        let phase = derive_turn_phase(
+            active_turns.contains_key(conversation_id),
+            stop_tombstones.contains_key(conversation_id),
+            completion_tombstones.contains_key(conversation_id),
+        );
+        if !turn_command_allowed(phase, TurnCommand::Admit) {
+            info!(
+                conversation_id,
+                ?phase,
+                "conversation runtime turn admission rejected by phase matrix"
+            );
             return Err(AppError::Conflict(format!(
-                "conversation {conversation_id} is already running"
+                "conversation {conversation_id} cannot admit a turn while {phase:?}"
             )));
         }
 
@@ -713,10 +714,15 @@ impl ConversationRuntimeStateService {
         let active_turns = self.active_turns.lock().map_err(|_| {
             AppError::Internal("conversation runtime state lock poisoned".into())
         })?;
-        if !active_turns
+        let has_matching_turn = active_turns
             .get(conversation_id)
-            .is_some_and(|turn| turn.id == turn_id && !turn.release_blocked)
-        {
+            .is_some_and(|turn| turn.id == turn_id && !turn.release_blocked);
+        let phase = derive_turn_phase(
+            has_matching_turn,
+            false,
+            tombstones.contains_key(conversation_id),
+        );
+        if !turn_command_allowed(phase, TurnCommand::Finish) || !has_matching_turn {
             return Ok(None);
         }
         let owners = tombstones.entry(conversation_id.to_owned()).or_insert(0);
@@ -914,6 +920,20 @@ impl ConversationRuntimeStateService {
         self.active_turns
             .lock()
             .map(|active_turns| active_turns.contains_key(conversation_id))
+            .unwrap_or(false)
+    }
+
+    pub fn is_stop_in_progress(&self, conversation_id: &str) -> bool {
+        self.stop_tombstones
+            .lock()
+            .map(|fences| fences.contains_key(conversation_id))
+            .unwrap_or(false)
+    }
+
+    pub fn is_completion_in_progress(&self, conversation_id: &str) -> bool {
+        self.completion_tombstones
+            .lock()
+            .map(|fences| fences.contains_key(conversation_id))
             .unwrap_or(false)
     }
 

@@ -114,6 +114,7 @@
     "errorCode": "错误码",
     "retryable": "可重试",
     "notRetryable": "需先处理配置",
+    "retryAction": "重试",
     "resolutionPrefix": "建议：",
     "resolution": {
       "retry": "稍后重试，或重新发送这条消息。",

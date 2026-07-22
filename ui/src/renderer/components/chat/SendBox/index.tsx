@@ -317,6 +317,29 @@ const SendBox: React.FC<{
     [onEditResubmit]
   );
 
+  useAddEventListener(
+    'sendbox.retry',
+    (payload) => {
+      if (disabled || loading || isLoading) return;
+      const content = payload.content?.trim();
+      if (!content) return;
+      void (async () => {
+        setIsLoading(true);
+        try {
+          if (onEditResubmit && payload.msgId && payload.createdAt) {
+            await onEditResubmit(payload.msgId, payload.createdAt, content);
+          } else {
+            setInputRef.current(content);
+            await onSend(content);
+          }
+        } finally {
+          setIsLoading(false);
+        }
+      })();
+    },
+    [disabled, loading, isLoading, onEditResubmit, onSend]
+  );
+
   // 集成预览面板的"添加到聊天"功能 / Integrate preview panel's "Add to chat" functionality
   const { setSendBoxHandler, domSnippets, removeDomSnippet, clearDomSnippets } = usePreviewContext();
 

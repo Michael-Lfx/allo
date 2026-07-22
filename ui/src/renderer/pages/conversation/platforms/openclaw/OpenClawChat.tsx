@@ -13,10 +13,11 @@ import {
   MessageListProvider,
   useMessageLstCache,
 } from '@renderer/pages/conversation/Messages/hooks';
+import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Messages/usePendingConfirmationsRecovery';
+import { useConversationResponseMessages } from '@renderer/pages/conversation/Messages/useConversationResponseMessages';
 import HOC from '@renderer/utils/ui/HOC';
 import React, { useEffect } from 'react';
 import LocalImageView from '@renderer/components/media/LocalImageView';
-import { useConversationResponseMessages } from '@renderer/pages/conversation/Messages/useConversationResponseMessages';
 import OpenClawSendBox from './OpenClawSendBox';
 
 const OpenClawChat: React.FC<{
@@ -29,7 +30,8 @@ const OpenClawChat: React.FC<{
   loadedSkills?: string[];
 }> = ({ conversation_id, workspace, cron_job_id, hideSendBox, readOnly, emptySlot, loadedSkills }) => {
   const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
-  useConversationResponseMessages(conversation_id);
+  usePendingConfirmationsRecovery(conversation_id, { enabled: !readOnly });
+  const turnSurface = useConversationResponseMessages(conversation_id, { stream: 'openclaw' });
   const updateLocalImage = LocalImageView.useUpdateLocalImage();
   useEffect(() => {
     updateLocalImage({ root: workspace });
@@ -43,6 +45,9 @@ const OpenClawChat: React.FC<{
         cron_job_id,
         hideSendBox,
         readOnly,
+        isProcessing: turnSurface.isProcessing,
+        activeTurnId: turnSurface.activeTurnId,
+        activeRequestMessageId: turnSurface.activeRequestMessageId,
         loadedSkills,
       }}
     >

@@ -114,6 +114,7 @@
     "errorCode": "Error code",
     "retryable": "Retryable",
     "notRetryable": "Needs configuration",
+    "retryAction": "Retry",
     "resolutionPrefix": "Suggestion: ",
     "resolution": {
       "retry": "Retry later, or send this message again.",

@@ -1,17 +1,9 @@
 //! Explicit turn admission / cancel / finish authority (TurnLifecycle).
 //!
 //! Runtime fencing lives in [`crate::runtime_state`]. This module owns the
-//! ConversationService orchestration that used to sit only in `service.rs`,
-//! plus a readable state × command matrix for tests and reviewers.
-//!
-//! ```text
-//! Phase \ Command | Admit | Cancel(User) | Cancel(Execution) | Finish
-//! ----------------|-------|--------------|-------------------|-------
-//! Idle            | ok    | no-op        | no-op             | reject
-//! Running         | busy  | ok           | ok (attempt)      | -> Finishing
-//! Finishing       | reject| fence owns   | fence owns        | idle+receipt
-//! Cancelling      | reject| idempotent   | merge             | idle
-//! ```
+//! ConversationService orchestration that used to sit only in `service.rs`.
+//! The phase × command matrix lives in [`crate::turn_gate`] and is enforced on
+//! the admit / finish paths in `runtime_state`.
 
 use std::sync::Arc;
 
@@ -22,6 +14,7 @@ use tracing::warn;
 
 use crate::runtime_state::{AgentTurnHandle, InMemoryCancelAuthority};
 use crate::stream_relay::StreamRelay;
+use crate::turn_gate::{TurnCommand, derive_turn_phase, turn_command_allowed};
 
 use super::{
     CANCEL_AUTH_PREFLIGHT_GRACE, CANCEL_HANDLER_GRACE, CANCEL_TEARDOWN_GRACE, ConversationService,
@@ -34,45 +27,6 @@ use super::{
 pub(crate) enum CancelOrigin {
     User,
     AgentExecution,
-}
-
-/// Coarse turn phase used by the matrix above. Not persisted — derived from
-/// runtime_state admission + in-flight handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Matrix vocabulary for tests and future gate wiring.
-pub(crate) enum TurnPhase {
-    Idle,
-    Running,
-    Finishing,
-    Cancelling,
-}
-
-/// Commands the turn gate accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum TurnCommand {
-    Admit,
-    Cancel(CancelOrigin),
-    Finish,
-}
-
-/// Pure gate: whether `command` is allowed in `phase` without side effects.
-#[allow(dead_code)]
-pub(crate) fn turn_command_allowed(phase: TurnPhase, command: TurnCommand) -> bool {
-    match (phase, command) {
-        (TurnPhase::Idle, TurnCommand::Admit) => true,
-        (TurnPhase::Idle, TurnCommand::Cancel(_)) => true,
-        (TurnPhase::Idle, TurnCommand::Finish) => false,
-        (TurnPhase::Running, TurnCommand::Admit) => false,
-        (TurnPhase::Running, TurnCommand::Cancel(_)) => true,
-        (TurnPhase::Running, TurnCommand::Finish) => true,
-        (TurnPhase::Finishing, TurnCommand::Admit) => false,
-        (TurnPhase::Finishing, TurnCommand::Cancel(_)) => true,
-        (TurnPhase::Finishing, TurnCommand::Finish) => true,
-        (TurnPhase::Cancelling, TurnCommand::Admit) => false,
-        (TurnPhase::Cancelling, TurnCommand::Cancel(_)) => true,
-        (TurnPhase::Cancelling, TurnCommand::Finish) => true,
-    }
 }
 
 impl ConversationService {
@@ -129,6 +83,22 @@ impl ConversationService {
         origin: Option<String>,
         channel_platform: Option<String>,
     ) {
+        let phase = derive_turn_phase(
+            self.runtime_state.has_active_turn(conversation_id),
+            self.runtime_state.is_stop_in_progress(conversation_id),
+            self.runtime_state.is_completion_in_progress(conversation_id),
+        );
+        if !turn_command_allowed(phase, TurnCommand::Finish) {
+            warn!(
+                conversation_id,
+                turn_id,
+                ?phase,
+                "Ignoring finish while turn phase rejects Finish"
+            );
+            let _ = turn_handle.release();
+            return;
+        }
+
         let completion_fence = self
             .runtime_state
             .begin_turn_completion(conversation_id, turn_handle.turn_id());
@@ -224,6 +194,17 @@ impl ConversationService {
         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
         origin: CancelOrigin,
     ) -> Result<(), AppError> {
+        let phase = derive_turn_phase(
+            self.runtime_state.has_active_turn(conversation_id),
+            self.runtime_state.is_stop_in_progress(conversation_id),
+            self.runtime_state.is_completion_in_progress(conversation_id),
+        );
+        if !turn_command_allowed(phase, TurnCommand::Cancel) {
+            return Err(AppError::Conflict(format!(
+                "conversation {conversation_id} cannot cancel while {phase:?}"
+            )));
+        }
+
         let conversation_key = parse_conv_id(conversation_id)?;
         let mut user_cancel_preflight = None;
         let in_memory_authority = if origin == CancelOrigin::User {
@@ -337,30 +318,5 @@ impl ConversationService {
         });
         self.user_events
             .send_to_user(user_id, WebSocketMessage::new("turn.started", payload));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn idle_allows_admit_and_noop_cancel() {
-        assert!(turn_command_allowed(TurnPhase::Idle, TurnCommand::Admit));
-        assert!(turn_command_allowed(
-            TurnPhase::Idle,
-            TurnCommand::Cancel(CancelOrigin::User)
-        ));
-        assert!(!turn_command_allowed(TurnPhase::Idle, TurnCommand::Finish));
-    }
-
-    #[test]
-    fn running_rejects_admit_allows_cancel_and_finish() {
-        assert!(!turn_command_allowed(TurnPhase::Running, TurnCommand::Admit));
-        assert!(turn_command_allowed(
-            TurnPhase::Running,
-            TurnCommand::Cancel(CancelOrigin::AgentExecution)
-        ));
-        assert!(turn_command_allowed(TurnPhase::Running, TurnCommand::Finish));
     }
 }
