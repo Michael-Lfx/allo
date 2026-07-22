@@ -1,0 +1,1 @@
+import{I as i,R as t}from"./index-C17WTOs5.js";const o=i("up",!1,function(e){return t.createElement("svg",{width:e.size,height:e.size,viewBox:"0 0 48 48",fill:"none"},t.createElement("path",{d:"M13 30L25 18L37 30",stroke:e.colors[0],strokeWidth:e.strokeWidth,strokeLinecap:e.strokeLinecap,strokeLinejoin:e.strokeLinejoin}))});export{o as _};

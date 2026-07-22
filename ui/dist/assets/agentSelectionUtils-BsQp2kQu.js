@@ -1,0 +1,5 @@
+import{I as r,R as n,c}from"./index-C17WTOs5.js";const a=r("shield",!1,function(e){return n.createElement("svg",{width:e.size,height:e.size,viewBox:"0 0 48 48",fill:"none"},n.createElement("path",{d:"M6 8.25564L24.0086 3L42 8.25564V19.0337C42 30.3622 34.7502 40.4194 24.0026 44.0005C13.2521 40.4195 6 30.36 6 19.0287V8.25564Z",fill:e.colors[1],stroke:e.colors[0],strokeWidth:e.strokeWidth,strokeLinejoin:e.strokeLinejoin}))});/**
+ * @license
+ * Copyright 2025-2026 Flowy (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */async function d(e,o){try{if(e==="nomi"){const t=c.get("nomi.config");await c.set("nomi.config",{...t,preferredMode:o})}else if(e!=="custom"){const t=c.get("acp.config"),i=(t==null?void 0:t[e])||{};await c.set("acp.config",{...t,[e]:{...i,preferredMode:o}})}}catch{}}async function f(e,o){try{const t=c.get("acp.config"),i=(t==null?void 0:t[e])||{};await c.set("acp.config",{...t,[e]:{...i,preferredModelId:o}})}catch{}}async function l(e,o){try{await c.set("nomi.defaultModel",{id:e,use_model:o})}catch{}}const u=e=>(e.agent_type==="remote"||e.agent_source==="custom")&&e.id?e.id:e.backend||e.agent_type;export{a as _,f as a,l as b,u as g,d as s};
