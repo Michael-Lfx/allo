@@ -974,11 +974,19 @@ impl StreamRelay {
                     }
                 }
                 (Some(cancellation), false) => {
+                    let Some(send_error_rx) = send_error_rx.as_mut() else {
+                        // Defensive: the pending flag says the send-error channel
+                        // exists but the receiver is gone. Degrade to the plain
+                        // receive path instead of panicking on the conversation
+                        // hot path.
+                        send_error_done = true;
+                        continue;
+                    };
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
                         recv = rx.recv() => recv,
-                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                        send_error = send_error_rx => {
                             send_error_done = true;
                             match send_error {
                                 Ok(Err(send_error)) => {
@@ -1002,9 +1010,17 @@ impl StreamRelay {
                 }
                 (None, true) => rx.recv().await,
                 (None, false) => {
+                    let Some(send_error_rx) = send_error_rx.as_mut() else {
+                        // Defensive: the pending flag says the send-error channel
+                        // exists but the receiver is gone. Degrade to the plain
+                        // receive path instead of panicking on the conversation
+                        // hot path.
+                        send_error_done = true;
+                        continue;
+                    };
                     tokio::select! {
                         recv = rx.recv() => recv,
-                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                        send_error = send_error_rx => {
                             send_error_done = true;
                             match send_error {
                                 Ok(Err(send_error)) => {

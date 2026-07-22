@@ -304,7 +304,7 @@ impl LocalAgentInvocationRunner {
             .map(|joined| {
                 joined.unwrap_or_else(|e| AgentInvocationOutput {
                     name: "unknown".to_string(),
-                    text: format!("Task join error: {}", e),
+                    text: format!("Delegation task failed: {}", e),
                     usage: TokenUsage::default(),
                     turns: 0,
                     is_error: true,
@@ -500,10 +500,31 @@ impl TokenBudget {
     }
 }
 
+/// Failure of a bounded delegation task: either the task panicked / was
+/// aborted (join error) or the concurrency semaphore was closed before a
+/// permit could be acquired.
+#[derive(Debug)]
+enum BoundedTaskError {
+    Join(tokio::task::JoinError),
+    SemaphoreClosed,
+}
+
+impl std::fmt::Display for BoundedTaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoundedTaskError::Join(e) => write!(f, "task join error: {e}"),
+            BoundedTaskError::SemaphoreClosed => {
+                f.write_str("delegation concurrency semaphore closed unexpectedly")
+            }
+        }
+    }
+}
+
 /// Execute `tasks` concurrently with at most `semaphore`'s permits in flight at
 /// once. Each task holds a permit for its whole run; excess tasks queue until a
-/// slot frees. Returns each task's output (or its `JoinError` if the task
-/// panicked) — successful results in input order, the rare panics appended.
+/// slot frees. Returns each task's output (or its failure if the task panicked
+/// or the semaphore was closed) — successful results in input order, the rare
+/// failures appended.
 ///
 /// Uses a `JoinSet`, so if THIS future is dropped (e.g. the parent turn is
 /// cancelled while a fan-out is in flight) every still-running delegated Agent task is
@@ -511,7 +532,7 @@ impl TokenBudget {
 async fn execute_bounded<F, T>(
     semaphore: Arc<Semaphore>,
     tasks: Vec<F>,
-) -> Vec<Result<T, tokio::task::JoinError>>
+) -> Vec<Result<T, BoundedTaskError>>
 where
     F: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
@@ -522,27 +543,32 @@ where
         let sem = semaphore.clone();
         set.spawn(async move {
             // Held for the task's whole lifetime; dropped on completion to free
-            // the slot for a queued task.
-            let _permit = sem.acquire_owned().await.expect("delegation semaphore never closed");
-            (idx, task.await)
+            // the slot for a queued task. A closed semaphore is a bug (nothing
+            // closes it in production) but degrades to an error result instead
+            // of panicking inside the spawned task.
+            match sem.acquire_owned().await {
+                Ok(_permit) => Ok((idx, task.await)),
+                Err(_) => Err(BoundedTaskError::SemaphoreClosed),
+            }
         });
     }
 
     let mut slots: Vec<Option<T>> = (0..n).map(|_| None).collect();
-    let mut panics: Vec<tokio::task::JoinError> = Vec::new();
+    let mut failures: Vec<BoundedTaskError> = Vec::new();
     while let Some(joined) = set.join_next().await {
         match joined {
-            Ok((idx, val)) => slots[idx] = Some(val),
+            Ok(Ok((idx, val))) => slots[idx] = Some(val),
+            Ok(Err(e)) => failures.push(e),
             // A panicked task loses its index; collect its error and append it.
-            Err(e) => panics.push(e),
+            Err(e) => failures.push(BoundedTaskError::Join(e)),
         }
     }
 
-    let mut results: Vec<Result<T, tokio::task::JoinError>> = Vec::with_capacity(n);
+    let mut results: Vec<Result<T, BoundedTaskError>> = Vec::with_capacity(n);
     for value in slots.into_iter().flatten() {
         results.push(Ok(value));
     }
-    results.extend(panics.into_iter().map(Err));
+    results.extend(failures.into_iter().map(Err));
     results
 }
 
