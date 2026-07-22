@@ -4,10 +4,10 @@
 @import './base.css';
 
 /* Flowy commercial visual system (Ink Studio) */
-@import './flowy-visual-system.css';
+@import '../flowy-visual-system.css';
 
 /* Motion tokens + lifecycle classes */
-@import './flowy-motion.css';
+@import '../flowy-motion.css';
 
 /* Color Schemes */
 @import './default-color-scheme.css';
