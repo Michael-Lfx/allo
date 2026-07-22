@@ -24,6 +24,7 @@ describe('flowy motion system', () => {
     expect(css.includes('--flowy-motion-slow: 240ms')).toBe(true);
     expect(css.includes('prefers-reduced-motion: reduce')).toBe(true);
     expect(css.includes('flowy-task-reveal')).toBe(true);
-    expect(css.includes('spring')).toBe(false);
+    expect(css.includes('cubic-bezier')).toBe(true);
+    expect(/animation:\s*[^;]*spring/.test(css)).toBe(false);
   });
 });

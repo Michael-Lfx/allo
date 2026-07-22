@@ -457,6 +457,51 @@ body.login-page-active {
   gap: 10px;
 }
 
+.cloud-login-preview {
+  margin-top: 28px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.cloud-login-preview__chrome {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.cloud-login-preview__chrome span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.cloud-login-preview__steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cloud-login-legal {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cloud-login-legal a {
+  color: #0f766e;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 @media (max-width: 767px) {
   .cloud-login-page {
     padding: 16px;

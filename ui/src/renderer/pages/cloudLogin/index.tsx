@@ -87,6 +87,31 @@ const CloudLoginPage: React.FC = () => {
     return () => window.clearTimeout(timer);
   }, [resendCooldown]);
 
+  useEffect(() => {
+    if (!codeSent || typeof window === 'undefined') return undefined;
+    const OTPCredential = (window as Window & { OTPCredential?: unknown }).OTPCredential;
+    if (!OTPCredential || !('credentials' in navigator)) return undefined;
+
+    const ac = new AbortController();
+    void (navigator.credentials as CredentialsContainer & {
+      get: (options: unknown) => Promise<{ code?: string } | null>;
+    })
+      .get({
+        otp: { transport: ['sms'] },
+        signal: ac.signal,
+      } as never)
+      .then((cred) => {
+        const code = cred?.code;
+        if (code) {
+          setOtp(String(code).replace(/\D/g, '').slice(0, 8));
+          window.setTimeout(() => otpRef.current?.focus(), 0);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => ac.abort();
+  }, [codeSent]);
+
   const startResendCooldown = useCallback(() => {
     setResendCooldown(60);
   }, []);
@@ -260,6 +285,18 @@ const CloudLoginPage: React.FC = () => {
               <li>{t('cloudLogin.brandPoints.agents')}</li>
               <li>{t('cloudLogin.brandPoints.ready')}</li>
             </motion.ul>
+            <div className='cloud-login-preview' aria-label={t('cloudLogin.preview.label')}>
+              <div className='cloud-login-preview__chrome'>
+                <span />
+                <span />
+                <span />
+              </div>
+              <ol className='cloud-login-preview__steps'>
+                <li>{t('cloudLogin.preview.home')}</li>
+                <li>{t('cloudLogin.preview.run')}</li>
+                <li>{t('cloudLogin.preview.result')}</li>
+              </ol>
+            </div>
           </div>
         </aside>
 
@@ -350,6 +387,8 @@ const CloudLoginPage: React.FC = () => {
                         className='cloud-login-input'
                         placeholder={t('cloudLogin.login.otpPlaceholder')}
                         autoComplete='one-time-code'
+                        autoFocus={codeSent}
+                        name='one-time-code'
                         maxLength={8}
                         value={otp}
                         onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))}
@@ -427,7 +466,15 @@ const CloudLoginPage: React.FC = () => {
                 <div className='cloud-login-footer'>
                   <span>{t('cloudLogin.footerPrimary')}</span>
                   <span className='cloud-login-footer__dot'>·</span>
-                  <span>{t('cloudLogin.footerSecondary')}</span>
+                  <span className='cloud-login-legal'>
+                    <a href='https://nomifun.com/privacy' target='_blank' rel='noreferrer'>
+                      {t('cloudLogin.legal.privacy')}
+                    </a>
+                    <span>{t('cloudLogin.legal.and')}</span>
+                    <a href='https://nomifun.com/terms' target='_blank' rel='noreferrer'>
+                      {t('cloudLogin.legal.terms')}
+                    </a>
+                  </span>
                 </div>
               </>
             )}

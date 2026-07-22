@@ -43,6 +43,17 @@
   },
   "footerPrimary": "账号保护你的工作区与偏好",
   "footerSecondary": "安全 · 便捷",
+  "legal": {
+    "privacy": "隐私政策",
+    "terms": "服务条款",
+    "and": "与"
+  },
+  "preview": {
+    "label": "产品预览",
+    "home": "单一任务输入",
+    "run": "可预测执行进度",
+    "result": "成果摘要与追问"
+  },
   "errors": {
     "unknown": "登录失败，请稍后再试",
     "invalidCode": "验证码无效或已过期，请重新获取"

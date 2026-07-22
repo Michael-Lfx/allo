@@ -48,6 +48,7 @@ const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/Clo
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
+const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 
 type RouteFallbackProps = {
   Component: React.LazyExoticComponent<React.ComponentType>;
@@ -281,6 +282,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/webhook' element={<Navigate to='/requirements/extensions?tab=notify' replace />} />
           <Route path='/settings' element={<Navigate to='/settings/system' replace />} />
           <Route path='/test/components' element={withRouteFallback(ComponentsShowcase)} />
+          <Route path='/test/commercial-slice' element={withRouteFallback(CommercialSlicePage)} />
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:job_id' element={withRouteFallback(TaskDetailPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}

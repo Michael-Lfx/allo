@@ -43,6 +43,17 @@
   },
   "footerPrimary": "Your account keeps workspace preferences safe",
   "footerSecondary": "Secure · Seamless",
+  "legal": {
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "and": "and"
+  },
+  "preview": {
+    "label": "Product preview",
+    "home": "One task input",
+    "run": "Predictable progress",
+    "result": "Result summary + follow-up"
+  },
   "errors": {
     "unknown": "Sign-in failed. Please try again.",
     "invalidCode": "Invalid or expired code. Please request a new one."
