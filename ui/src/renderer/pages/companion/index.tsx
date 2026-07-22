@@ -662,7 +662,53 @@ const CompanionPage: React.FC = () => {
     const unsubLearnDone = ipcBridge.companion.onLearnFinished.on((run) => {
       if (!isForCompanion(run, companionId)) return;
       setActivity('idle');
-      if (run.summary) popBubble(run.summary);
+      if (run.status === 'model_unconfigured') {
+        popBubble(
+          t('nomi.companion.learnNeedsModel', {
+            defaultValue: '学习已开启，请在伙伴设置里选一个聊天模型作为学习模型。',
+          })
+        );
+        return;
+      }
+      if (run.status !== 'ok') return;
+      const memories = run.memories_added ?? 0;
+      const events = run.events_processed ?? 0;
+      const xp = events + memories * 5;
+      const parts: string[] = [];
+      if (memories > 0) {
+        parts.push(
+          t('nomi.companion.learnMemoriesAdded', {
+            count: memories,
+            defaultValue: `学会了 ${memories} 条记忆`,
+          })
+        );
+      }
+      if (xp > 0) {
+        parts.push(t('nomi.companion.learnXpGained', { xp, defaultValue: `+${xp} XP` }));
+      }
+      if (run.suggestions_added > 0) {
+        parts.push(
+          t('nomi.companion.learnSuggestionsAdded', {
+            count: run.suggestions_added,
+            defaultValue: `${run.suggestions_added} 条建议待审`,
+          })
+        );
+      }
+      if (run.summary) {
+        parts.push(run.summary);
+      }
+      if (parts.length > 0) {
+        popBubble(parts.join(' · '));
+      }
+    });
+    const unsubSkillDraft = ipcBridge.companion.onSkillDrafted.on((evt) => {
+      if (!isForCompanion(evt, companionId)) return;
+      popBubble(
+        t('nomi.companion.skillDraftedToast', {
+          name: evt.skill_name,
+          defaultValue: `新技能草稿：${evt.skill_name}`,
+        })
+      );
     });
     const unsubSuggestion = ipcBridge.companion.onSuggestionCreated.on((s) => {
       if (!isForCompanion(s, companionId)) return;
@@ -961,6 +1007,7 @@ const CompanionPage: React.FC = () => {
       unsubMood();
       unsubLearnStart();
       unsubLearnDone();
+      unsubSkillDraft();
       unsubSuggestion();
       unsubSuggestionDecided();
       unsubConfig();

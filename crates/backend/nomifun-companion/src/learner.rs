@@ -60,10 +60,39 @@ impl SuggestionGate {
         }
     }
 
+    /// First-week cadence: lower evidence / cooldown so users see at least one
+    /// self-evolution signal within a few active sessions.
+    pub fn first_week() -> Self {
+        Self {
+            min_events: 3,
+            cooldown_ms: 60 * 60 * 1000,
+            max_pending: 8,
+            decided_repeat_cooldown_ms: 3 * 24 * 60 * 60 * 1000,
+        }
+    }
+
     /// Gate-open: never throttles insertion and disables the cross-time window.
     /// Used by tests that assert the apply/dedup pipeline directly.
     pub fn open() -> Self {
-        Self { min_events: 0, cooldown_ms: 0, max_pending: i64::MAX, decided_repeat_cooldown_ms: 0 }
+        Self {
+            min_events: 0,
+            cooldown_ms: 0,
+            max_pending: i64::MAX,
+            decided_repeat_cooldown_ms: 0,
+        }
+    }
+
+    /// Prefer first-week thresholds for installs younger than 7 days.
+    pub fn for_install_age(self, install_age_ms: i64) -> Self {
+        if self.min_events == 0 && self.cooldown_ms == 0 {
+            return self;
+        }
+        const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+        if install_age_ms < WEEK_MS {
+            Self::first_week()
+        } else {
+            self
+        }
     }
 }
 
@@ -126,6 +155,34 @@ pub struct Learner {
 }
 
 impl Learner {
+    async fn resolve_learn_model(&self) -> Option<nomifun_common::ProviderWithModel> {
+        let cfg = self.config.read().await;
+        if let Some(model) = cfg.learn.model.clone() {
+            return Some(model);
+        }
+        let default_id = cfg.default_companion_id.clone();
+        drop(cfg);
+        let companion_id = self.registry.resolve_default(default_id.as_deref()).await?;
+        let profile = self.registry.get(&companion_id).await?;
+        profile.model
+    }
+
+    async fn effective_suggestion_gate(&self) -> SuggestionGate {
+        let oldest = self
+            .registry
+            .list()
+            .await
+            .into_iter()
+            .map(|profile| profile.created_at)
+            .filter(|ts| *ts > 0)
+            .min();
+        let install_age = match oldest {
+            Some(ts) => now_ms().saturating_sub(ts),
+            None => 0,
+        };
+        self.gate.for_install_age(install_age)
+    }
+
     /// Spawn the periodic tick loop.
     pub fn spawn(self: Arc<Self>) {
         tokio::spawn(async move {
@@ -160,7 +217,7 @@ impl Learner {
         // Stamp first so a crashed/failed run doesn't hot-loop the scheduler.
         self.store.set_state("last_learn_ts", &started_at.to_string()).await?;
 
-        let model = { self.config.read().await.learn.model.clone() };
+        let model = self.resolve_learn_model().await;
         let mut run = CompanionLearnRun {
             id: generate_prefixed_id("plr"),
             started_at,
@@ -177,6 +234,13 @@ impl Learner {
             run.status = "model_unconfigured".into();
             run.finished_at = Some(now_ms());
             self.store.insert_learn_run(&run).await?;
+            let target = {
+                let did = { self.config.read().await.default_companion_id.clone() };
+                self.registry.resolve_default(did.as_deref()).await
+            };
+            if let Some(target) = target.as_deref() {
+                self.emitter.emit_learn_finished(target, &run);
+            }
             return Ok(run);
         };
 
@@ -220,16 +284,17 @@ impl Learner {
         let last_suggestion_ts = self.store.get_state_i64("last_suggestion_ts").await.unwrap_or(0);
         let prev_events_since = self.store.get_state_i64("events_since_suggestion").await.unwrap_or(0);
         let events_since = prev_events_since + run.events_processed;
-        let cooldown_ok = now_ms().saturating_sub(last_suggestion_ts) >= self.gate.cooldown_ms;
-        let evidence_ok = events_since >= self.gate.min_events;
-        let capacity_ok = pending_new < self.gate.max_pending;
+        let gate = self.effective_suggestion_gate().await;
+        let cooldown_ok = now_ms().saturating_sub(last_suggestion_ts) >= gate.cooldown_ms;
+        let evidence_ok = events_since >= gate.min_events;
+        let capacity_ok = pending_new < gate.max_pending;
         let suggestions_allowed = cooldown_ok && evidence_ok && capacity_ok;
 
         // Recently-decided suggestions feed the model cross-time context (C) so it
         // won't re-raise a just-handled idea, restoring holistic 统筹 while throttled.
         let recently_decided = self
             .store
-            .list_recently_decided_suggestions(self.gate.decided_repeat_cooldown_ms, 30)
+            .list_recently_decided_suggestions(gate.decided_repeat_cooldown_ms, 30)
             .await
             .unwrap_or_default();
 
@@ -352,7 +417,7 @@ impl Learner {
             // accepted or dismissed within the repeat-cooldown window.
             if self
                 .store
-                .find_recent_decided_similar(&s.kind, &s.title, &s.body, self.gate.decided_repeat_cooldown_ms)
+                .find_recent_decided_similar(&s.kind, &s.title, &s.body, gate.decided_repeat_cooldown_ms)
                 .await?
                 .is_some()
             {
@@ -717,5 +782,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn learn_model_falls_back_to_default_companion_chat_model() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_event(dir.path());
+        let mut config = SharedCompanionConfig::default();
+        assert!(config.learn.enabled);
+        assert!(config.learn.model.is_none());
+        let companions_dir = dir.path().join("companions");
+        let shared_dir = dir.path().join("shared");
+        let registry = Arc::new(CompanionRegistry::scan(companions_dir.clone(), shared_dir.clone()));
+        let mut companion = registry.create("测试宠", "ink").await.unwrap();
+        let provider_id = nomifun_common::ProviderId::new().into_string();
+        companion.model = Some(nomifun_common::ProviderWithModel {
+            provider_id: provider_id.clone(),
+            model: "chat-model".into(),
+            use_model: None,
+        });
+        companion.save(&companions_dir.join(&companion.id)).unwrap();
+        let registry = Arc::new(CompanionRegistry::scan(companions_dir, shared_dir));
+        config.default_companion_id = Some(companion.id.clone());
+        let learner = Learner {
+            companion_dir: dir.path().to_path_buf(),
+            config: Arc::new(RwLock::new(config)),
+            store: CompanionStore::open_memory().await.unwrap(),
+            registry,
+            completer: Arc::new(CannedCompleter(
+                r#"{"memories":[],"suggestions":[],"mood":"content","diary":"ok"}"#.into(),
+            )),
+            emitter: CompanionEventEmitter::new(Arc::new(BroadcastEventBus::new(16)), "owner-a"),
+            run_lock: Arc::new(Mutex::new(())),
+            gate: SuggestionGate::open(),
+        };
+        let model = learner.resolve_learn_model().await.expect("fallback model");
+        assert_eq!(model.provider_id, provider_id);
+        assert_eq!(model.model, "chat-model");
+        let run = learner.run_once().await.unwrap();
+        assert_eq!(run.status, "ok");
+    }
+
+    #[test]
+    fn first_week_gate_lowers_thresholds() {
+        let production = SuggestionGate::production();
+        let young = production.for_install_age(2 * 24 * 60 * 60 * 1000);
+        assert_eq!(young.min_events, 3);
+        assert_eq!(young.cooldown_ms, 60 * 60 * 1000);
+        let mature = production.for_install_age(10 * 24 * 60 * 60 * 1000);
+        assert_eq!(mature.min_events, 15);
+        assert_eq!(SuggestionGate::open().for_install_age(0).min_events, 0);
     }
 }

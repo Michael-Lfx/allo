@@ -166,7 +166,7 @@ pub struct SharedLearnConfig {
 impl Default for SharedLearnConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             interval_minutes: 60,
             model: None,
         }
@@ -434,7 +434,7 @@ mod tests {
         let loaded = SharedCompanionConfig::load(dir.path());
         assert_eq!(loaded, SharedCompanionConfig::default());
         assert_eq!(loaded.learn.interval_minutes, 60);
-        assert!(!loaded.learn.enabled);
+        assert!(loaded.learn.enabled);
 
         let mut cfg = SharedCompanionConfig::default();
         cfg.collect.chat_user_messages = true;

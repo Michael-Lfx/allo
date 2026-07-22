@@ -2217,9 +2217,9 @@ mod tests {
     async fn consent_applies_once_and_never_reenables_after_disable() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
-        // fresh: work sources + learn + evolve all off (Default untouched)
+        // fresh: work sources off; learn defaults on (chat-model fallback supplies provider)
         assert!(!svc.config.read().await.collect.tool_calls);
-        assert!(!svc.config.read().await.learn.enabled);
+        assert!(svc.config.read().await.learn.enabled);
 
         // first-launch consent → default-on applied + flag set
         svc.apply_default_on_consent().await.unwrap();
