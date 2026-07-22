@@ -3583,20 +3583,22 @@ fn best_snippet(content: &str, query_lc: &str, terms: &[String]) -> String {
 
 /// Strip a workspace-mount prefix the model may have prepended by mistake,
 /// returning a path relative to the base root. The model sees the mount at
-/// `.nomi/knowledge/{link}/…` but `knowledge_write` expects a base-relative
-/// path; without this, `.nomi/knowledge/Finance/terms.md` would create a new
+/// `.flowy/knowledge/{link}/…` but `knowledge_write` expects a base-relative
+/// path; without this, `.flowy/knowledge/Finance/terms.md` would create a new
 /// nested file instead of updating `terms.md`. Only the unambiguous mount
 /// prefix is stripped — a bare `Finance/x.md` is left to the resolver's
 /// existence/collision logic.
 fn deconfuse_rel_path(rel_path: &str) -> String {
     let normalized = rel_path.trim().replace('\\', "/");
     let p = normalized.strip_prefix("./").unwrap_or(&normalized);
-    if let Some(rest) = p.strip_prefix(&format!("{KB_MOUNT_REL_DIR}/")) {
-        // rest = "{link_name}/…"; drop the mount link segment.
-        return match rest.split_once('/') {
-            Some((_link, tail)) => tail.to_owned(),
-            None => rest.to_owned(),
-        };
+    for prefix in [KB_MOUNT_REL_DIR, ".nomi/knowledge"] {
+        if let Some(rest) = p.strip_prefix(&format!("{prefix}/")) {
+            // rest = "{link_name}/…"; drop the mount link segment.
+            return match rest.split_once('/') {
+                Some((_link, tail)) => tail.to_owned(),
+                None => rest.to_owned(),
+            };
+        }
     }
     p.to_owned()
 }
@@ -6727,8 +6729,9 @@ mod tests {
 
     #[test]
     fn deconfuse_strips_mount_prefix() {
+        assert_eq!(deconfuse_rel_path(".flowy/knowledge/Finance/terms.md"), "terms.md");
         assert_eq!(deconfuse_rel_path(".nomi/knowledge/Finance/terms.md"), "terms.md");
-        assert_eq!(deconfuse_rel_path("./.nomi/knowledge/运维手册/deploy/rollback.md"), "deploy/rollback.md");
+        assert_eq!(deconfuse_rel_path("./.flowy/knowledge/运维手册/deploy/rollback.md"), "deploy/rollback.md");
         assert_eq!(deconfuse_rel_path("deploy/rollback.md"), "deploy/rollback.md");
         assert_eq!(deconfuse_rel_path("terms.md"), "terms.md");
         assert_eq!(deconfuse_rel_path("a\\b.md"), "a/b.md");
@@ -6746,7 +6749,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_mount_prefixed_path_updates_original() {
         let (svc, kb_id, _dir) = test_service_with_file("terms.md", "# 术语").await;
-        let spec = WriteTargetSpec::Path { kb_id: kb_id.clone(), rel_path: ".nomi/knowledge/X/terms.md".into() };
+        let spec = WriteTargetSpec::Path { kb_id: kb_id.clone(), rel_path: ".flowy/knowledge/X/terms.md".into() };
         let res = svc.resolve_write_target(&[kb_id.clone()], &spec).await.unwrap();
         assert_eq!(res.canonical_rel_path, "terms.md", "mount prefix stripped → updates original");
         assert_eq!(res.op, WriteOp::Update);
@@ -6927,7 +6930,7 @@ mod tests {
     async fn mothers_bug_staged_mount_prefixed_path_lands_in_inbox_not_nested() {
         let (svc, kb_id, _dir) = test_service_with_file("terms.md", "ORIGINAL").await;
         let req = WriteRequest {
-            spec: WriteTargetSpec::Path { kb_id: kb_id.clone(), rel_path: ".nomi/knowledge/Finance/terms.md".into() },
+            spec: WriteTargetSpec::Path { kb_id: kb_id.clone(), rel_path: ".flowy/knowledge/Finance/terms.md".into() },
             content: "PROPOSED EDIT".into(),
             policy: WritePolicy { mode: WriteMode::Staged { scope: TEST_CONVERSATION_ID_9.to_owned() }, allow_create: true, surface: WriteSurface::RegularChat },
             bound_kb_ids: vec![kb_id.clone()],
@@ -6941,7 +6944,7 @@ mod tests {
         assert_eq!(out.op, WriteOp::Update);
         assert_eq!(svc.read_file(&kb_id, "terms.md").await.unwrap().content, "ORIGINAL");
         let files = svc.list_files(&kb_id).await.unwrap();
-        assert!(!files.iter().any(|f| f.rel_path.contains(".nomi/knowledge")), "no nested mount-path file: {files:?}");
+        assert!(!files.iter().any(|f| f.rel_path.contains(".flowy/knowledge")), "no nested mount-path file: {files:?}");
     }
 
     #[tokio::test]
@@ -6959,7 +6962,7 @@ mod tests {
                     id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                     name: "领域库".into(),
                     description: "项目复用知识".into(),
-                    rel_path: ".nomi/knowledge/领域库".into(),
+                    rel_path: ".flowy/knowledge/领域库".into(),
                     toc: vec!["terms.md — 术语表".into()],
                     summary: None,
                     live_sources: Vec::new(),
@@ -7015,7 +7018,7 @@ mod tests {
                     id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                     name: "领域库".into(),
                     description: String::new(),
-                    rel_path: ".nomi/knowledge/领域库".into(),
+                    rel_path: ".flowy/knowledge/领域库".into(),
                     toc: Vec::new(),
                     summary: None,
                     live_sources: Vec::new(),
@@ -7057,7 +7060,7 @@ mod tests {
                     id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                     name: "领域库".into(),
                     description: String::new(),
-                    rel_path: ".nomi/knowledge/领域库".into(),
+                    rel_path: ".flowy/knowledge/领域库".into(),
                     toc: Vec::new(),
                     summary: None,
                     live_sources: Vec::new(),
@@ -7101,7 +7104,7 @@ mod tests {
                     id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                     name: "领域库".into(),
                     description: String::new(),
-                    rel_path: ".nomi/knowledge/领域库".into(),
+                    rel_path: ".flowy/knowledge/领域库".into(),
                     toc: vec!["patterns/safe.md — Safe".into()],
                     summary: None,
                     live_sources: Vec::new(),
@@ -7139,7 +7142,7 @@ mod tests {
                 id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                 name: "领域库".into(),
                 description: String::new(),
-                rel_path: ".nomi/knowledge/领域库".into(),
+                rel_path: ".flowy/knowledge/领域库".into(),
                 toc: vec!["patterns/shared.md — Shared".into()],
                 summary: None,
                 live_sources: Vec::new(),
@@ -7197,7 +7200,7 @@ mod tests {
                     id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                     name: "领域库".into(),
                     description: String::new(),
-                    rel_path: ".nomi/knowledge/领域库".into(),
+                    rel_path: ".flowy/knowledge/领域库".into(),
                     toc: Vec::new(),
                     summary: None,
                     live_sources: Vec::new(),
@@ -7270,7 +7273,7 @@ mod tests {
                     id: KnowledgeBaseId::parse(kb_id.clone()).unwrap(),
                     name: "领域库".into(),
                     description: String::new(),
-                    rel_path: ".nomi/knowledge/领域库".into(),
+                    rel_path: ".flowy/knowledge/领域库".into(),
                     toc: Vec::new(),
                     summary: None,
                     live_sources: Vec::new(),

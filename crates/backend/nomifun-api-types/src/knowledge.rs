@@ -121,7 +121,7 @@ pub struct KnowledgeMountInfo {
     pub id: KnowledgeBaseId,
     pub name: String,
     pub description: String,
-    /// Workspace-relative mount path, e.g. `.nomi/knowledge/领域知识`.
+    /// Workspace-relative mount path, e.g. `.flowy/knowledge/领域知识`.
     pub rel_path: String,
     /// Lightweight table of contents — one line per document
     /// (`rel/path.md — first heading`), budgeted at mount time so the prompt
@@ -193,7 +193,7 @@ mod tests {
             "id": 42,
             "name": "docs",
             "description": "",
-            "rel_path": ".nomi/knowledge/docs"
+            "rel_path": ".flowy/knowledge/docs"
         });
         assert!(serde_json::from_value::<KnowledgeMountInfo>(mount).is_err());
     }

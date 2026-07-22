@@ -37,7 +37,7 @@
 //! 4. **Stage** — copy (never move) every keeper entry into
 //!    `<new>/.relocating/`; the legacy dir stays complete the whole time.
 //!    Regenerable trees ([`EXCLUDED_ENTRIES`]) are skipped. Symlinks and
-//!    NTFS junctions (workspace `.claude/skills/*` and `.nomi/knowledge/*`
+//!    NTFS junctions (workspace `.claude/skills/*` and `.flowy/knowledge/*`
 //!    links) are skipped too — see [`copy_dir_recursive`].
 //! 5. **Commit** — rename staged entries into the new root: ordinary entries
 //!    first, then the `.relocated-from` marker, then the database family with
@@ -560,7 +560,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
         // Symlinks and NTFS junctions are SKIPPED, not copied. The legacy
         // tree contains them by design: `conversations/<ws>/.claude/skills/*`
         // (junctions made by nomifun-extension's skill_service via
-        // junction::create) and `<ws>/.nomi/knowledge/*` mounts (plus their
+        // junction::create) and `<ws>/.flowy/knowledge/*` mounts (plus their
         // pre-rename `<ws>/.nomifun/knowledge/*` leftovers — equally links,
         // equally skipped; the mount engine sweeps them at next sync). On
         // Windows a junction reports `is_symlink() == true` and

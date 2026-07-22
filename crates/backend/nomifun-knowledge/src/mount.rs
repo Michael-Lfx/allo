@@ -1,5 +1,5 @@
 //! Platform-aware mount engine: materializes knowledge bases inside a
-//! workspace at `.nomi/knowledge/{link_name}` using NTFS junctions on
+//! workspace at `.flowy/knowledge/{link_name}` using NTFS junctions on
 //! Windows (no privilege required), symlinks on Unix, and a recursive copy
 //! as last-resort fallback (same degradation strategy as the skill linker in
 //! `nomifun-extension`).
@@ -14,9 +14,9 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::{KB_LEGACY_MOUNT_REL_DIR, KB_MOUNT_REL_DIR};
+use crate::{KB_LEGACY_MOUNT_REL_DIRS, KB_MOUNT_REL_DIR};
 
-/// One desired mount: `{workspace}/.nomi/knowledge/{link_name}` → `target`.
+/// One desired mount: `{workspace}/.flowy/knowledge/{link_name}` → `target`.
 #[derive(Debug, Clone)]
 pub struct MountSpec {
     pub link_name: String,
@@ -79,7 +79,7 @@ fn sync_mounts_inner(workspace: &Path, specs: &[MountSpec]) -> Vec<String> {
     // Self-ignore the mount directory: when the workspace is a user git
     // repo, junctions would otherwise expose the knowledge base content as
     // committable project files. The ignore file lives INSIDE
-    // `.nomi/knowledge/` — never at the `.nomi/` root — so committable
+    // `.flowy/knowledge/` — never at the `.flowy/` root — so committable
     // siblings like `.nomi/skills` stay visible to git.
     let gitignore = mount_root.join(".gitignore");
     if !gitignore.exists() {
@@ -153,14 +153,20 @@ fn sync_mounts_inner(workspace: &Path, specs: &[MountSpec]) -> Vec<String> {
     present
 }
 
-/// Best-effort sweep of the pre-`.nomi` mount scaffolding left in workspaces
-/// created before the rename: `{ws}/.nomifun/knowledge/*` links (deleted as
-/// links — never followed into the knowledge bases) plus the self-ignore we
-/// used to write at `{ws}/.nomifun/.gitignore`. The `.nomifun/` directory
-/// itself is only removed when empty, so unrelated user files keep both the
-/// file and the directory alive. Idempotent; failures only warn.
+/// Best-effort sweep of pre-`.flowy` mount scaffolding left in workspaces
+/// created before the rename: legacy `{ws}/…/knowledge/*` links (deleted as
+/// links — never followed into the knowledge bases) plus self-ignore files we
+/// used to write at legacy roots. Legacy directories themselves are only
+/// removed when empty, so unrelated user files keep both the file and the
+/// directory alive. Idempotent; failures only warn.
 fn cleanup_legacy_mount_root(workspace: &Path) {
-    let legacy_mount = workspace.join(KB_LEGACY_MOUNT_REL_DIR);
+    for legacy_rel in KB_LEGACY_MOUNT_REL_DIRS {
+        cleanup_one_legacy_mount_root(workspace, legacy_rel);
+    }
+}
+
+fn cleanup_one_legacy_mount_root(workspace: &Path, legacy_rel: &str) {
+    let legacy_mount = workspace.join(legacy_rel);
     if legacy_mount.exists() {
         if let Ok(entries) = std::fs::read_dir(&legacy_mount) {
             for entry in entries.flatten() {
@@ -356,13 +362,13 @@ mod tests {
         )
         .await;
 
-        // The self-ignore lives INSIDE `.nomi/knowledge/` — pinned to the
+        // The self-ignore lives INSIDE `.flowy/knowledge/` — pinned to the
         // literal path so a constant regression cannot slip through.
-        let inside = ws.path().join(".nomi").join("knowledge").join(".gitignore");
+        let inside = ws.path().join(".flowy").join("knowledge").join(".gitignore");
         assert_eq!(std::fs::read_to_string(&inside).unwrap().trim(), "*");
-        // Never at the `.nomi/` root: that would shadow committable sibling
+        // Never at the `.flowy/` root: that would shadow committable sibling
         // trees like `.nomi/skills` out of the user's git repository.
-        assert!(!ws.path().join(".nomi").join(".gitignore").exists());
+        assert!(!ws.path().join(".flowy").join(".gitignore").exists());
     }
 
     #[tokio::test]

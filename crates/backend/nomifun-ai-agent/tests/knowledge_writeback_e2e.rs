@@ -59,7 +59,7 @@ async fn staged_write_tool_with_mount_prefixed_path_lands_in_inbox_not_nested() 
     let res = tool
         .execute(json!({
             "base": "领域库",
-            "rel_path": ".nomi/knowledge/领域库/terms.md",
+            "rel_path": ".flowy/knowledge/领域库/terms.md",
             "content": "PROPOSED EDIT"
         }))
         .await;
@@ -74,7 +74,7 @@ async fn staged_write_tool_with_mount_prefixed_path_lands_in_inbox_not_nested() 
     // No stray nested file under the mount path.
     let files = svc.list_files(&info.id).await.unwrap();
     assert!(
-        !files.iter().any(|f| f.rel_path.contains(".nomi/knowledge")),
+        !files.iter().any(|f| f.rel_path.contains(".flowy/knowledge")),
         "must not create a nested mount-path file: {files:?}"
     );
 }

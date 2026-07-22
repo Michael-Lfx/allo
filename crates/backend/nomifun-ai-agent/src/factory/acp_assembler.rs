@@ -728,7 +728,7 @@ mod tests {
                 id: nomifun_common::KnowledgeBaseId::new(),
                 name: "领域知识".into(),
                 description: "团队约定".into(),
-                rel_path: ".nomi/knowledge/领域知识".into(),
+                rel_path: ".flowy/knowledge/领域知识".into(),
                 toc: vec!["concepts/术语.md — 术语表".into(), "(+3 more files)".into()],
                 summary: Some("Covers team conventions and domain terms.".into()),
                 live_sources: vec![],
@@ -743,7 +743,7 @@ mod tests {
         let readonly = build_knowledge_context_section(&config, conversation_id).unwrap();
         assert!(readonly.starts_with("## Knowledge bases (extended knowledge source)"));
         assert!(readonly.contains("领域知识"));
-        assert!(readonly.contains(".nomi/knowledge/领域知识"));
+        assert!(readonly.contains(".flowy/knowledge/领域知识"));
         assert!(readonly.contains("团队约定"));
         assert!(readonly.contains("concepts/术语.md — 术语表"));
         assert!(readonly.contains("(+3 more files)"));
@@ -1063,7 +1063,7 @@ mod tests {
             id: nomifun_common::KnowledgeBaseId::parse(id).expect("canonical knowledge base test id"),
             name: "领域知识".into(),
             description: "团队约定".into(),
-            rel_path: format!(".nomi/knowledge/{id}"),
+            rel_path: format!(".flowy/knowledge/{id}"),
             toc: vec![],
             summary: None,
             live_sources: vec![],

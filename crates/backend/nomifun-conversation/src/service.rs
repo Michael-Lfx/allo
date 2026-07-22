@@ -5689,7 +5689,7 @@ impl ConversationService {
     ///
     /// Unlike skill links, this also applies to user-chosen custom
     /// workspaces: the binding is explicit per-session opt-in, and the mounts
-    /// stay confined to the hidden `.nomi/knowledge/` directory. Never
+    /// stay confined to the hidden `.flowy/knowledge/` directory. Never
     /// fails Agent runtime creation — mount errors degrade to warnings.
     ///
     /// Binding target selection (spec §3 ruling 6 / §4.5): a conversation

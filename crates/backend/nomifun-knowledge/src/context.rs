@@ -7,7 +7,7 @@
 //! - `nomifun-ai-agent` factory paths (ACP assembler preset context, nomi
 //!   engine system prompt) via [`KnowledgeContextFormat::PromptSection`];
 //! - the terminal-session task (C1) writes a standalone
-//!   `{cwd}/.nomi/knowledge/README.md` via
+//!   `{cwd}/.flowy/knowledge/README.md` via
 //!   [`KnowledgeContextFormat::TerminalReadme`].
 //!
 //! All agent-facing contract wording is English by project convention.
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn single_base_prompt_section_contract() {
-        let mut m = mount("领域知识", ".nomi/knowledge/领域知识");
+        let mut m = mount("领域知识", ".flowy/knowledge/领域知识");
         m.description = "团队约定".into();
         m.summary = Some("Covers deployment flows and on-call runbooks.".into());
         m.toc = vec!["concepts/术语.md — 术语表".into(), "(+3 more files)".into()];
@@ -518,7 +518,7 @@ mod tests {
         assert!(out.contains("summarizes a folder"), "got: {out}");
         // Per-base section: name, path, description, summary, when-to-consult, TOC.
         assert!(out.contains("### 领域知识"), "got: {out}");
-        assert!(out.contains("`./.nomi/knowledge/领域知识/`"), "got: {out}");
+        assert!(out.contains("`./.flowy/knowledge/领域知识/`"), "got: {out}");
         assert!(out.contains("团队约定"), "got: {out}");
         assert!(out.contains("Covers deployment flows and on-call runbooks."), "got: {out}");
         assert!(out.contains("When to consult"), "got: {out}");
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn empty_description_and_summary_lines_are_omitted() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let out = build_knowledge_context(
             &[m],
             &prompt_opts(false, None, "conv_0190f5fe-7c00-7a00-8000-000000000001"),
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn empty_description_base_surfaces_topic_hints_from_toc() {
-        let mut m = mount("库A", ".nomi/knowledge/库A");
+        let mut m = mount("库A", ".flowy/knowledge/库A");
         m.toc = vec![
             "deploy/rollback.md — 回滚流程".into(),
             "concepts/术语.md — 术语表".into(),
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn described_base_omits_topic_hints() {
-        let mut m = mount("库A", ".nomi/knowledge/库A");
+        let mut m = mount("库A", ".flowy/knowledge/库A");
         m.description = "团队约定".into();
         m.toc = vec!["x.md — 标题".into()];
         let out = build_knowledge_context(
@@ -592,8 +592,8 @@ mod tests {
 
     #[test]
     fn multi_base_renders_protocol_once() {
-        let a = mount("库A", ".nomi/knowledge/库A");
-        let b = mount("库B", ".nomi/knowledge/库B");
+        let a = mount("库A", ".flowy/knowledge/库A");
+        let b = mount("库B", ".flowy/knowledge/库B");
         let out = build_knowledge_context(
             &[a, b],
             &prompt_opts(false, None, "conv_0190f5fe-7c00-7a00-8000-000000000001"),
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn protocol_mentions_search_tool_when_available() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let mut opts = prompt_opts(
             false,
             None,
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn protocol_keeps_grep_wording_without_search_tool() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let out = build_knowledge_context(
             &[m],
             &prompt_opts(false, None, "conv_0190f5fe-7c00-7a00-8000-000000000001"),
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn staged_writeback_scopes_inbox_to_target_id() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         // Default mode (None) is staged.
         let out = build_knowledge_context(
             std::slice::from_ref(&m),
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn direct_writeback_never_mentions_inbox() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let out = build_knowledge_context(
             &[m],
             &prompt_opts(
@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn tool_writeback_contract_directs_handle_use_for_updates() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         // DIRECT + tools available: update via handle, read via knowledge_read.
         let mut direct = prompt_opts(
             true,
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn live_sources_render_realtime_section() {
-        let mut m = mount("接口库", ".nomi/knowledge/接口库");
+        let mut m = mount("接口库", ".flowy/knowledge/接口库");
         m.live_sources = vec![
             KnowledgeSourceEntry {
                 url: "https://example.com/api-docs".into(),
@@ -804,7 +804,7 @@ mod tests {
                 rendered: false,
             },
         ];
-        let plain = mount("普通库", ".nomi/knowledge/普通库");
+        let plain = mount("普通库", ".flowy/knowledge/普通库");
 
         let out = build_knowledge_context(
             &[m, plain],
@@ -844,7 +844,7 @@ mod tests {
     /// never DIRECT (the permissive branch must be opt-in by exact value).
     #[test]
     fn unknown_writeback_mode_renders_staged_contract() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let out = build_knowledge_context(
             &[m],
             &prompt_opts(
@@ -880,7 +880,7 @@ mod tests {
     /// is orthogonal to the staged/direct placement decision.
     #[test]
     fn enabled_writeback_appends_conservative_clause_by_default() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         // Default eagerness (None) under staged mode.
         let staged = build_knowledge_context(
             &[m.clone()],
@@ -907,7 +907,7 @@ mod tests {
     /// The aggressive disposition renders its own clause, independent of mode.
     #[test]
     fn aggressive_eagerness_renders_aggressive_clause_for_both_modes() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let staged = build_knowledge_context(
             &[m.clone()],
             &prompt_opts_eager(
@@ -946,7 +946,7 @@ mod tests {
     /// eagerness is meaningless without write-back.
     #[test]
     fn disabled_writeback_has_no_eagerness_clause() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let out = build_knowledge_context(
             &[m],
             &prompt_opts_eager(
@@ -981,7 +981,7 @@ mod tests {
     /// modes. The model must never be pointed at the generic Write tool.
     #[test]
     fn tool_contract_directs_to_knowledge_write_in_both_modes() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let staged = build_knowledge_context(
             &[m.clone()],
             &prompt_opts_tooled(
@@ -1014,7 +1014,7 @@ mod tests {
     /// Disabled write-back is read-only regardless of has_write_tool.
     #[test]
     fn tool_surface_still_read_only_when_writeback_disabled() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let opts = KnowledgeContextOptions {
             format: KnowledgeContextFormat::PromptSection,
             writeback: false,
@@ -1033,7 +1033,7 @@ mod tests {
     /// eager branch must be opt-in by exact value, never reached by a typo.
     #[test]
     fn unknown_eagerness_renders_conservative_clause() {
-        let m = mount("库A", ".nomi/knowledge/库A");
+        let m = mount("库A", ".flowy/knowledge/库A");
         let out = build_knowledge_context(
             &[m],
             &prompt_opts_eager(
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn terminal_readme_is_a_complete_document() {
-        let mut m = mount("领域知识", ".nomi/knowledge/领域知识");
+        let mut m = mount("领域知识", ".flowy/knowledge/领域知识");
         m.toc = vec!["intro.md — 简介".into()];
         let opts = KnowledgeContextOptions {
             format: KnowledgeContextFormat::TerminalReadme,
@@ -1090,7 +1090,7 @@ mod tests {
             "id": "kb_0190f5fe-7c00-7a00-8000-000000000001",
             "name": "运维手册",
             "description": "",
-            "rel_path": ".nomi/knowledge/运维手册",
+            "rel_path": ".flowy/knowledge/运维手册",
             "toc": ["deploy.md — 部署"],
         });
         let m: KnowledgeMountInfo =
@@ -1099,11 +1099,11 @@ mod tests {
         assert!(m.live_sources.is_empty());
 
         // New fields round-trip, and empty optionals stay off the wire.
-        let bare = serde_json::to_value(mount("库A", ".nomi/knowledge/库A")).unwrap();
+        let bare = serde_json::to_value(mount("库A", ".flowy/knowledge/库A")).unwrap();
         assert!(bare.get("summary").is_none(), "got: {bare}");
         assert!(bare.get("live_sources").is_none(), "got: {bare}");
 
-        let mut rich = mount("库B", ".nomi/knowledge/库B");
+        let mut rich = mount("库B", ".flowy/knowledge/库B");
         rich.summary = Some("s".into());
         rich.live_sources = vec![KnowledgeSourceEntry {
             url: "https://e.com".into(),

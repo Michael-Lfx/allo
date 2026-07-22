@@ -51,7 +51,7 @@ const getTeachRows = (sourceType: StudioSourceType): TeachRow[] => {
           labelKey: 'knowledge.studio.teachUse',
           labelDefault: '怎么用',
           textKey: 'knowledge.studio.blankTeachUse',
-          textDefault: '挂载到任意会话 / 终端 / 数字伙伴，模型即可在 .nomi/knowledge/ 下检索。',
+          textDefault: '挂载到任意会话 / 终端 / 数字伙伴，模型即可在 .flowy/knowledge/ 下检索。',
         },
       ];
     case 'local':

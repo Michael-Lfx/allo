@@ -53,7 +53,7 @@ struct CreateTerminalParams {
     #[serde(default)]
     args: Option<Vec<String>>,
     /// Optional knowledge base ids to bind to this terminal at creation
-    /// (bind-on-create); they are mounted into `.nomi/knowledge/` inside the
+    /// (bind-on-create); they are mounted into `.flowy/knowledge/` inside the
     /// cwd when the terminal starts. Use nomi_knowledge_list_bases for ids.
     #[serde(default)]
     #[schemars(with = "Option<Vec<String>>")]
@@ -107,7 +107,7 @@ async fn create(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: CreateTerminalParams)
     };
 
     // Optional create-time knowledge binding: the bases get bound to this
-    // terminal's WORKPATH (spec §7) and mounted into `{cwd}/.nomi/knowledge/`
+    // terminal's WORKPATH (spec §7) and mounted into `{cwd}/.flowy/knowledge/`
     // when the PTY starts. The mount itself is best-effort downstream (never
     // blocks the launch), so the ids are validated HERE — a typo'd id would
     // otherwise be accepted and silently mount nothing.

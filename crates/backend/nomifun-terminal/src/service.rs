@@ -911,7 +911,7 @@ impl TerminalService {
         }
     }
 
-    /// Sync this terminal's bound knowledge bases into `{cwd}/.nomi/knowledge/`
+    /// Sync this terminal's bound knowledge bases into `{cwd}/.flowy/knowledge/`
     /// and materialize the standalone README contract next to the mounts.
     /// Returns the mounted base ids + write permission that are signed into the
     /// per-child capability. The README's `has_search_tool` claim is honest: it only

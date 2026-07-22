@@ -67,7 +67,7 @@
     "permissionFullAuto": "全自动（跳过确认）",
     "knowledge": "知识库",
     "knowledgePlaceholder": "可选——选择要挂载的知识库",
-    "knowledgeHint": "挂载到工作目录下的 .nomi/knowledge/，会话将其作为扩展知识源读取。",
+    "knowledgeHint": "挂载到工作目录下的 .flowy/knowledge/，会话将其作为扩展知识源读取。",
     "command": "启动命令",
     "commandHint": "可以自定义启动命令，创建终端时自动注入。",
     "mcpPanel": {

@@ -67,7 +67,7 @@
     "permissionFullAuto": "Full auto (skip approvals)",
     "knowledge": "Knowledge bases",
     "knowledgePlaceholder": "Optional — pick knowledge bases to mount",
-    "knowledgeHint": "Mounted into .nomi/knowledge/ under the working directory; the session reads them as an extended knowledge source.",
+    "knowledgeHint": "Mounted into .flowy/knowledge/ under the working directory; the session reads them as an extended knowledge source.",
     "command": "Launch command",
     "commandHint": "You can customize the launch command; it will be injected automatically when the terminal is created.",
     "mcpPanel": {

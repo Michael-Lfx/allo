@@ -108,7 +108,7 @@ async fn fixture_params_with_knowledge(backend: &str) -> Arc<AcpSessionParams> {
             id: nomifun_common::KnowledgeBaseId::new(),
             name: "领域知识".into(),
             description: "团队约定".into(),
-            rel_path: ".nomi/knowledge/领域知识".into(),
+            rel_path: ".flowy/knowledge/领域知识".into(),
             toc: vec!["concepts/术语.md — 术语表".into()],
             summary: Some("Covers domain terms.".into()),
             live_sources: vec![],

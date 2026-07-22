@@ -2163,7 +2163,7 @@ export interface ICreateTerminalParams {
   rows?: number;
   /** 推迟到首个 resize(携带真实尺寸)再 spawn PTY,使全屏 TUI(claude)首帧即按正确尺寸绘制,避免「进入即花屏、需手动调尺寸」 / Defer the PTY spawn until the first resize carries the real size. */
   defer_spawn?: boolean;
-  /** 创建即绑定的知识库 id；启动时挂载到 {cwd}/.nomi/knowledge/ / Knowledge bases bound at creation, mounted before the PTY spawns. */
+  /** 创建即绑定的知识库 id；启动时挂载到 {cwd}/.flowy/knowledge/ / Knowledge bases bound at creation, mounted before the PTY spawns. */
   knowledge_base_ids?: string[];
 }
 

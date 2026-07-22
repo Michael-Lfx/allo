@@ -14,7 +14,7 @@ use crate::error::TerminalError;
 pub struct TerminalDescription {
     pub user_id: String,
     /// Working directory the PTY was launched in. Consumers probe it for the
-    /// `.nomi/knowledge/README.md` contract file to prepend knowledge guidance.
+    /// `.flowy/knowledge/README.md` contract file to prepend knowledge guidance.
     pub cwd: String,
     /// The stored launch program (the `command` column; `$SHELL` sentinel for a
     /// plain shell). With `args` + `backend`, lets the AutoWork gate resolve the

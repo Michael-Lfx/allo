@@ -57,16 +57,15 @@ pub use turn_writeback::{TurnWritebackCandidate, TurnWritebackOutput};
 pub use workpath::{DEFAULT_WORKPATH_KEY, WORKPATH_BINDING_KIND, session_workpath_key, workpath_key};
 
 /// Workspace-relative directory where knowledge bases are mounted. Lives
-/// under the hidden `.nomi/` folder — the same agent-facing namespace as
-/// `.nomi/skills` / `.nomi/plans` — so mounting into a user's own project
+/// under the hidden `.flowy/` folder so mounting into a user's own project
 /// directory stays unobtrusive (the mount dir self-ignores via its own
 /// `.gitignore`, see `mount.rs`).
-pub const KB_MOUNT_REL_DIR: &str = ".nomi/knowledge";
+pub const KB_MOUNT_REL_DIR: &str = ".flowy/knowledge";
 
-/// Pre-`.nomi` mount location. Kept solely so `mount::sync_mounts` can sweep
+/// Pre-`.flowy` mount locations. Kept solely so `mount::sync_mounts` can sweep
 /// leftover links/scaffolding out of workspaces created before the rename —
 /// never mount anything here.
-pub const KB_LEGACY_MOUNT_REL_DIR: &str = ".nomifun/knowledge";
+pub const KB_LEGACY_MOUNT_REL_DIRS: &[&str] = &[".nomifun/knowledge", ".nomi/knowledge"];
 
 /// Subdirectory of the backend data dir that hosts managed base directories:
 /// `{data_dir}/knowledge/{kb_id}/`.

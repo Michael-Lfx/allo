@@ -208,7 +208,7 @@ mod tests {
                 id: nomifun_common::KnowledgeBaseId::new(),
                 name: "Ops".into(),
                 description: String::new(),
-                rel_path: ".nomi/knowledge/Ops".into(),
+                rel_path: ".flowy/knowledge/Ops".into(),
                 toc: vec!["runbook.md — Runbook".into()],
                 summary: None,
                 live_sources: Vec::new(),

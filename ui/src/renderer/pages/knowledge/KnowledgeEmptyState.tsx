@@ -45,7 +45,7 @@ const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onI
       num: 3,
       icon: <FolderOpen theme='outline' size='18' fill='currentColor' className='block' />,
       title: t('knowledge.onboarding.step3Title', { defaultValue: '挂载' }),
-      desc: t('knowledge.onboarding.step3Desc', { defaultValue: '挂载到会话，模型会在 .nomi/knowledge/ 下随时查阅。' }),
+      desc: t('knowledge.onboarding.step3Desc', { defaultValue: '挂载到会话，模型会在 .flowy/knowledge/ 下随时查阅。' }),
     },
   ];
 

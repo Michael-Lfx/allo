@@ -83,7 +83,7 @@ pub struct CreateTerminalRequest {
     #[serde(default)]
     pub defer_spawn: bool,
     /// Knowledge bases to bind to this terminal at creation (`kind="terminal"`
-    /// binding). They are mounted into `{cwd}/.nomi/knowledge/` before the PTY
+    /// binding). They are mounted into `{cwd}/.flowy/knowledge/` before the PTY
     /// spawns; best-effort —mount failures never block the launch.
     #[serde(default)]
     pub knowledge_base_ids: Option<Vec<KnowledgeBaseId>>,

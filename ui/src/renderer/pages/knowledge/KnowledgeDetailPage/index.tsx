@@ -1397,7 +1397,7 @@ const KnowledgeDetailPage: React.FC = () => {
                   </b>
                   <p className='m-0 text-12px leading-relaxed text-[var(--color-text-3)]'>
                     {t('knowledge.detail.use.step2Desc', {
-                      defaultValue: '模型会在 .nomi/knowledge/ 下按需检索，命中的内容用于回答——原文不塞进上下文，省 token。',
+                      defaultValue: '模型会在 .flowy/knowledge/ 下按需检索，命中的内容用于回答——原文不塞进上下文，省 token。',
                     })}
                   </p>
                 </div>
