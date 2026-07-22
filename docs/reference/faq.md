@@ -77,16 +77,24 @@ For lighter-weight remote access from a phone or another laptop without spinning
 
 ## Are there prebuilt installers?
 
-Not yet. Desktop bundles can be built locally, macOS Developer ID signing is
-scripted through `bun run build:signed`, and updater artifacts can be generated
-with `bun run build:updater`; there is not yet an official public release
-channel or registry-backed installer feed. Until then, the supported install
-paths are:
+Yes. Desktop installers are published on
+[GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) (and a
+Baidu Netdisk mirror linked from the README for mainland China). In-app OTA
+uses **ModelScope as the single source of truth**
+(`allo/channels/alpha/latest.json`), configured in
+`apps/desktop/tauri.conf.json`. Release operations follow root
+[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md) (ModelScope upload,
+artifact naming, multi-platform merge). GitHub one-click scripts remain for
+manual installer distribution; see [`RELEASING.md`](../../RELEASING.md).
 
-- **Desktop**: `bun install && bun run build:ui && cargo run -p nomifun-desktop` (or `cargo build --release -p nomifun-desktop`).
-- **Server**: build from source (`cargo build --release -p nomifun-web`) or `docker compose up -d --build`.
+You can still build from source:
 
-When prebuilt installers ship, they will be linked from the project README and the [getting-started guide](../getting-started/).
+- **Desktop**: `bun install && bun run build:ui && cargo run -p nomifun-desktop`
+  (or `cargo build --release -p nomifun-desktop`).
+- **Server**: `cargo build --release -p nomifun-web` or
+  `docker compose up -d --build`.
+
+See [Installation](../getting-started/installation.md).
 
 ## I lost my admin password
 

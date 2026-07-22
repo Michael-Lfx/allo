@@ -106,6 +106,9 @@ $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-update
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
 bun run build:win --config apps/desktop/tauri.updater.conf.json
+# 有 Authenticode 证书时：
+# bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
+# 或：bun run release:win（指纹在环境变量 / .env.release 时自动 --signed）
 ```
 
 **Linux**
@@ -306,4 +309,4 @@ https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&Fil
 | `scripts/run-upload-modelscope.mjs` | 跨平台 Python 启动器 |
 | `apps/desktop/signing/.env.modelscope.example` | Token 配置模板 |
 
-更详细的 updater 机制说明见 `apps/desktop/updater/README.zh-CN.md`（部分内容仍提及 GitHub，以本文为准）。
+更详细的 updater 机制说明见 `apps/desktop/updater/README.zh-CN.md`（以本文为准）。

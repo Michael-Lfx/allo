@@ -1,9 +1,10 @@
 # Installation
 
 Flowy has two host modes that share one Rust backend (see
-[Introduction](introduction.md)). This page covers all three ways to install
-it today:
+[Introduction](introduction.md)). This page covers:
 
+- [Download prebuilt desktop installers](#download-prebuilt-desktop-installers)
+  — recommended for end users.
 - [Desktop app from source](#desktop-app-from-source) — `nomifun-desktop`
   (Tauri shell), desktop local-trust, single-user.
 - [Web server from source](#web-server-from-source) — `nomifun-web`,
@@ -11,12 +12,19 @@ it today:
 - [Docker / Docker Compose](#docker--docker-compose) — the same web server,
   containerised.
 
-> **Official pre-built installers are not yet published.** Desktop bundles,
-> macOS signing, updater artifacts, Docker, and native Linux service files can
-> be built locally; there is not yet an official public release channel. Until
-> then, every install path below builds from source. See
-> [`../contributing/building-and-packaging.md`](../contributing/building-and-packaging.md)
-> for the current packaging notes.
+## Download prebuilt desktop installers
+
+| Channel | Purpose |
+| --- | --- |
+| [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) | Manual installers (`.exe` / `.dmg` / `.AppImage`, …) |
+| Baidu Netdisk mirror linked from the README | Mainland China manual download |
+| ModelScope `allo/channels/alpha/latest.json` | **In-app OTA single source of truth** (configured in `apps/desktop/tauri.conf.json`) |
+
+Release / OTA upload follows root
+[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md). Artifact names must
+use the `Flowy_` / `Flowy.app` prefix. GitHub one-click release scripts are in
+[`RELEASING.md`](../../RELEASING.md). Source build and packaging details:
+[`../contributing/building-and-packaging.md`](../contributing/building-and-packaging.md).
 
 ## Prerequisites
 
@@ -99,12 +107,13 @@ bun run build    # tauri build → installers + standalone binary
 - Platform installers under `target/release/bundle/` — `.exe` (NSIS,
   Windows), `.dmg`/`.app` (macOS), `.deb`/`.AppImage` (Linux).
 
-`bun run build` artifacts are suitable for local testing. For distributable
-macOS builds, configure `apps/desktop/signing/.env.signing` and use
-`bun run build:signed`. Windows signing still requires an external certificate.
-To test the updater scaffold, use `bun run build:updater`, which sets
-`bundle.createUpdaterArtifacts` to true. The updater endpoint and public key in
-`apps/desktop/tauri.conf.json` must be replaced before shipping any update.
+`bun run build` artifacts are suitable for local testing. Public release and
+OTA follow [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md). macOS:
+`bun run build:signed` (Developer ID + notarization). Windows Authenticode:
+`WINDOWS_CERTIFICATE_THUMBPRINT` + `bun run build:win --signed` (`release:win`
+enables this automatically when the thumbprint is available). The updater
+endpoint and pubkey are already configured in `apps/desktop/tauri.conf.json`
+(ModelScope alpha channel).
 
 ### Where data lives (desktop)
 
@@ -127,12 +136,10 @@ shell appends `/Nomi`, so the dir becomes `$NOMIFUN_DATA_DIR/Nomi`.
 > directory is kept as a backup. If the relocation cannot complete, the app
 > starts from the legacy directory and retries on the next launch.
 
-> Note: the app's user-facing name is `Flowy` everywhere — the bundle
-> product name (`apps/desktop/tauri.conf.json`), the runtime window title,
-> and release artifacts. The data folder keeps its existing `/Nomi`
-> suffix for compatibility with current installs. Internal identifiers keep the legacy `nomifun`
-> name by design (crates, `NOMIFUN_*` env vars, the `com.nomifun.*`
-> bundle identifier).
+> Note: the user-facing product name is **Flowy** (`productName` / window
+> title); the data folder remains under `…/Flowy/Nomi`. Internal identifiers
+> keep `nomifun` (crates, `NOMIFUN_*` env vars). The desktop bundle id is
+> `com.flowy.desktop`.
 
 ## Web server from source
 

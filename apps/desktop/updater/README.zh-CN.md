@@ -1,15 +1,16 @@
 # Flowy 桌面端自动更新说明
 
-本文只说明自动更新链路。完整发版操作看根目录 `RELEASING.zh-CN.md`。
+应用内 OTA 的操作真源是根目录 [`BUILD_RELEASE.zh-CN.md`](../../../BUILD_RELEASE.zh-CN.md)
+（ModelScope 渠道）。本文只补充机制与本地命令；若与 `BUILD_RELEASE` 冲突，以
+`BUILD_RELEASE` 为准。GitHub Releases 仍可用于**手动安装包**分发，见
+[`RELEASING.zh-CN.md`](../../../RELEASING.zh-CN.md)。
 
 ## 工作方式
-
-应用内自动更新基于 Tauri 原生 updater：
 
 ```text
 正在运行的 App
   -> 请求 apps/desktop/tauri.conf.json 里的 updater endpoint
-  -> 下载 GitHub Releases 上的 latest.json
+  -> 下载 ModelScope 上的 allo/channels/alpha/latest.json
   -> 判断是否有更高版本
   -> 下载当前平台对应的更新包
   -> 用内置 pubkey 校验 .sig
@@ -19,8 +20,10 @@
 当前 endpoint：
 
 ```text
-https://github.com/nomifun/nomifun-tauri/releases/latest/download/latest.json
+https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
 ```
+
+公钥 keyID：`8600581EC8FDE447`（内嵌于 `tauri.conf.json`）。
 
 ## 密钥区别
 
@@ -43,16 +46,25 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 - Windows SmartScreen / 未知发布者仍需要 Authenticode 签名。
 - 没有 OS 代码签名时，自动更新验签仍可工作，但手动安装体验不够可信。
 
+## 产物命名（强制）
+
+`productName` 为 `Flowy`。updater 清单只接受 `Flowy` 前缀产物（`make:latest`
+会拒绝遗留的 `NomiFun_*` 文件名）：
+
+| 平台键 | 典型 updater 包 |
+| --- | --- |
+| `windows-x86_64` | `Flowy_{version}_x64-setup.exe` |
+| `windows-aarch64` | `Flowy_{version}_aarch64-setup.exe` |
+| `darwin-x86_64` / `darwin-aarch64` | `Flowy.app.tar.gz` 或 `Flowy_{version}_universal.app.tar.gz` |
+| `linux-x86_64` | `Flowy_{version}_amd64.AppImage` 或 `Flowy_{version}_x86_64.AppImage` |
+| `linux-aarch64` | `Flowy_{version}_aarch64.AppImage` 或 `Flowy_{version}_arm64.AppImage` |
+
 ## 构建自动更新产物
 
-仓库内置了一个叠加配置 `apps/desktop/tauri.updater.conf.json`（内容是
-`{"bundle":{"createUpdaterArtifacts":true}}`），用 `--config` 叠加它即可产出 `.sig`。
+仓库内置叠加配置 `apps/desktop/tauri.updater.conf.json`（
+`{"bundle":{"createUpdaterArtifacts":true}}`），用 `--config` 叠加即可产出 `.sig`。
 **务必传文件路径，不要内联 JSON**：Windows PowerShell 5.1 会剥掉内联 `--config '{...}'`
-里的双引号、变成非法 JSON；文件路径没有引号，各平台都稳。
-
-> 新构建机（如这台 Windows）构建前，需先把已被 gitignore 的私钥
-> `apps/desktop/signing/nomifun-updater.key` 从密钥库拷过来，且它必须与 `tauri.conf.json`
-> 内嵌的 `pubkey` 匹配（keyID `F3AA272E60AA7952`），否则已安装的客户端会拒绝更新。
+里的双引号。
 
 macOS：
 
@@ -61,28 +73,18 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
 bun run build:mac --config apps/desktop/tauri.updater.conf.json
-bun run make:latest
+bun run make:latest --host modelscope --channel alpha --collect
 ```
 
-Windows 无 Authenticode 签名：
+Windows（有 Authenticode 时加 `--signed`；`release:win` 在指纹可用时会自动带上）：
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-
-bun run build:win --config apps/desktop/tauri.updater.conf.json
-bun run make:latest
-```
-
-Windows 有 Authenticode 签名（`--signed` 注入证书指纹仍走内联 JSON，需在 pwsh 7+ 下运行）：
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-$env:WINDOWS_CERTIFICATE_THUMBPRINT = "A1B2C3..."
+$env:WINDOWS_CERTIFICATE_THUMBPRINT = "A1B2C3..."   # 可选；有则启用 Authenticode
 
 bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
-bun run make:latest
+bun run make:latest --host modelscope --channel alpha --collect
 ```
 
 Linux：
@@ -92,47 +94,29 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
 bun run build:linux --config apps/desktop/tauri.updater.conf.json
-bun run make:latest
+bun run make:latest --host modelscope --channel alpha --collect
 ```
 
-Linux 会同时产出 `.AppImage`、`.deb`、`.rpm` 时，`latest.json` 的 updater
-条目使用 `.AppImage`；`.deb` / `.rpm` 作为手动下载安装包上传到 Release。
+Linux 同时产出 `.AppImage` / `.deb` / `.rpm` 时，清单 updater 条目选用
+`.AppImage`；其余可作为手动安装包上传。
 
-## latest.json
-
-`bun run make:latest` 会扫描当前机器的 updater 产物和 `.sig`，把对应平台写入：
-
-```text
-apps/desktop/updater/latest.json
-```
-
-同一个版本如果分多台机器构建，需要把最新的 `latest.json` 带到下一台机器继续合并。最终上传到 GitHub Release 的 `latest.json` 必须包含所有已发布平台。
-
-## GitHub Release 资产
-
-macOS 需要同时上传：
-
-```text
-dist/desktop/Flowy_<version>_universal.dmg
-target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz
-target/universal-apple-darwin/release/bundle/macos/Flowy.app.tar.gz.sig
-apps/desktop/updater/latest.json
-```
-
-Windows 上传 `bun run make:latest` 打印的 updater 包、`.sig`、`latest.json`。如果还有额外手动安装包，例如 `.msi`，也上传。
-
-如果 Release 已经存在，补平台时用：
+## latest.json 与 alpha.yml
 
 ```bash
-gh release upload "v<version>" <new-assets...>
-gh release upload "v<version>" apps/desktop/updater/latest.json --clobber
+bun run make:latest --host modelscope --channel alpha --collect
+```
+
+会写入 `apps/desktop/updater/latest.json`，并在 `--collect` 时同步
+`apps/desktop/updater/alpha.yml` 与 `dist/desktop/`。上传：
+
+```bash
+bun run upload:modelscope
+# 后续平台合并远端条目：
+bun run upload:modelscope -- --merge-remote
 ```
 
 ## 验证
 
-```bash
-gh release view "v<version>" --json tagName,assets,url
-curl -fsSL https://github.com/nomifun/nomifun-tauri/releases/latest/download/latest.json
-```
-
-确认 `latest.json` 的版本、平台 key、URL 和 Release 资产一致。
+1. ModelScope 上确认 `allo/v{version}/` 有包与 `.sig`，且
+   `allo/channels/alpha/latest.json` 的 `platforms` URL 指向 ModelScope。
+2. 旧版客户端检查更新，确认能检测到并安装。

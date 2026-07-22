@@ -118,16 +118,19 @@ $ bun run build
 
 ## 更新器状态
 
-Tauri 更新器插件 (`tauri-plugin-updater`) 已接入，渲染进程暴露了 `invoke('check_for_updates')` (返回新版本字符串，若已是最新则返回 `null`)。然而：
+Tauri 更新器插件 (`tauri-plugin-updater`) 已接入；渲染进程可
+`invoke('check_for_updates')`（有新版本返回版本字符串，否则 `null`）。
 
-- 在 `apps/desktop/tauri.conf.json` 中配置的端点 (`plugins.updater.endpoints`) 是一个**占位符** (`https://REPLACE-WITH-YOUR-HOST/...`)。在你将其替换为一个提供已签名的 `latest.json` 的真实 HTTPS URL 之前，更新器检查会失败。
-- 包含的 `pubkey` 是一个为本地测试生成的**开发密钥**。**在任何公开发布前请替换它**，并将私钥存储在 CI 密钥中。
-- `bun run build:updater` 会生成已签名的更新构件 (在每个安装器旁边附带 `.sig` 文件)。
+- **OTA 真源**：`apps/desktop/tauri.conf.json` 的 endpoint 指向 ModelScope
+  `allo/channels/alpha/latest.json`（pubkey keyID `8600581EC8FDE447`）。
+- 发版、产物命名（`Flowy_` 前缀）、多平台合并与上传见根目录
+  [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)。
+- `bun run build:updater` / 各平台 `build:* --config apps/desktop/tauri.updater.conf.json`
+  会产出带 `.sig` 的更新包。
 
-完整 updater 流程（签名环境变量、`latest.json` schema、支持的平台键）在
-`apps/desktop/updater/README.md` 中。OS 级别代码签名/公证是另一层：macOS
-Developer ID 签名与公证已通过 `bun run build:signed` 和
-`apps/desktop/signing/README.md` 接好；Windows 签名仍需要外部代码签名证书。
+OS 代码签名是另一层：macOS 见 `bun run build:signed` 与
+`apps/desktop/signing/README.md`；Windows Authenticode 见
+`WINDOWS_CERTIFICATE_THUMBPRINT` + `build:win --signed` / `release:win`。
 
 ## 故障排查
 

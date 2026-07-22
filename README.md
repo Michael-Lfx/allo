@@ -422,7 +422,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run build:updater` | 打桌面包并产出自更新 .sig 制品 |
 | `bun run make:latest` | 扫描本机更新产物，生成/合并自动更新清单 latest.json |
 | `bun run release:mac` | 一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
-| `bun run release:win` | 一键 Windows 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
+| `bun run release:win` | One-click Windows release: auto APPEND/CREATE; Authenticode when thumbprint is set; `-Signed`/`-NoSigned`; `-DryRun` to preview |
 | `bun run release:linux` | 一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
 | `bun run build:ui` | 前端生产构建 → ui/dist |
 | **运行（组装好的应用）** | |
@@ -469,7 +469,7 @@ Docs are bilingual: every page has an English `*.md` and a Simplified-Chinese `*
 
 ## 🗺️ Coming soon
 
-Flowy is **pre-1.0** and built part-time, so there's a lot still in flight. On the horizon: prebuilt installers, inbound issue-tracker / requirement sources, more knowledge connectors (Feishu, and beyond), official desktop binaries — plus a few surprises we're genuinely excited about. **Stay tuned.** ✨
+Flowy is **pre-1.0** and built part-time, so there's a lot still in flight. On the horizon: inbound issue-tracker / requirement sources, more knowledge connectors (Feishu, and beyond) — plus a few surprises we're genuinely excited about. **Stay tuned.**
 
 ---
 

@@ -1,8 +1,9 @@
 # 安装
 
 Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
-[简介](introduction.zh.md)）。本页覆盖目前可行的全部三种安装方式：
+[简介](introduction.zh.md)）。本页覆盖安装方式：
 
+- [下载预构建桌面安装包](#下载预构建桌面安装包) —— 推荐终端用户路径。
 - [从源码构建桌面应用](#从源码构建桌面应用) —— `nomifun-desktop`
   （Tauri 外壳），桌面本地信任，单用户。
 - [从源码构建 Web 服务](#从源码构建-web-服务) —— `nomifun-web`，
@@ -10,10 +11,18 @@ Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
 - [Docker / Docker Compose](#docker--docker-compose) —— 同一个 Web 服务
   的容器化方案。
 
-> **官方预构建安装包尚未发布。** 桌面包、macOS 签名、updater 产物、Docker
-> 和 native Linux service 都可以本地构建；但还没有官方公开发布渠道。下面所有
-> 安装路径都需要从源码构建。当前打包说明见
-> [`../contributing/building-and-packaging.zh.md`](../contributing/building-and-packaging.zh.md)。
+## 下载预构建桌面安装包
+
+| 渠道 | 用途 |
+| --- | --- |
+| [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) | 手动安装包（`.exe` / `.dmg` / `.AppImage` 等） |
+| README 中的百度网盘镜像 | 中国大陆手动下载 |
+| ModelScope `allo/channels/alpha/latest.json` | **应用内 OTA 唯一真源**（已写入 `apps/desktop/tauri.conf.json`） |
+
+发版与 OTA 上传以根目录 [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)
+为准；产物文件名必须以 `Flowy_` / `Flowy.app` 为前缀。GitHub 一键发版脚本见
+[`RELEASING.zh-CN.md`](../../RELEASING.zh-CN.md)。从源码构建与打包细节见
+[`../contributing/building-and-packaging.zh.md`](../contributing/building-and-packaging.zh.md)。
 
 ## 前置条件
 
@@ -92,11 +101,12 @@ bun run build    # tauri build → 安装包 + 独立二进制
 - 位于 `target/release/bundle/` 下的平台安装包——`.exe`（NSIS，
   Windows）、`.dmg`/`.app`（macOS）、`.deb`/`.AppImage`（Linux）。
 
-`bun run build` 产物适合本地测试。要分发 macOS 构建，请配置
-`apps/desktop/signing/.env.signing` 并使用 `bun run build:signed`。Windows
-签名仍需要外部证书。若要测试 updater 骨架，可使用 `bun run build:updater`，
-它会把 `bundle.createUpdaterArtifacts` 设为 true。发布任何更新前，必须替换
-`apps/desktop/tauri.conf.json` 中的 updater endpoint 与公钥。
+`bun run build` 产物适合本地测试。公开发版与 OTA 见
+[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)。macOS 用
+`bun run build:signed`（Developer ID + 公证）；Windows Authenticode 通过
+`WINDOWS_CERTIFICATE_THUMBPRINT` + `bun run build:win --signed`（`release:win`
+在指纹可用时会自动带上）。updater endpoint 与公钥已配置在
+`apps/desktop/tauri.conf.json`（ModelScope alpha 渠道）。
 
 ### 数据存放位置（桌面端）
 
@@ -118,10 +128,9 @@ bun run build    # tauri build → 安装包 + 独立二进制
 > 并把旧目录保留作备份。若搬迁无法完成，应用会先从旧目录启动，并在
 > 下次启动时重试。
 
-> 提示：应用对用户呈现的名称统一为 `Nomi`——bundle 产品名
-> （`apps/desktop/tauri.conf.json`）、运行时窗口标题、数据文件夹都用
-> `Nomi`。内部标识符按设计仍保留旧的 `nomifun` 名（crate、`NOMIFUN_*`
-> 环境变量、`com.nomifun.*` bundle 标识符）。
+> 提示：面向用户的产品名是 **Flowy**（`productName` / 窗口标题）；数据目录
+> 仍落在 `…/Flowy/Nomi`。内部标识符保留 `nomifun`（crate、`NOMIFUN_*`
+> 环境变量）；桌面 bundle id 为 `com.flowy.desktop`。
 
 ## 从源码构建 Web 服务
 

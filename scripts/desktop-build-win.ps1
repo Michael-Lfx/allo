@@ -23,11 +23,10 @@
 # 签名(--signed)说明:
 #   Windows 用 Authenticode(无 macOS 那种「公证」)。本脚本从环境变量
 #   WINDOWS_CERTIFICATE_THUMBPRINT 读取证书指纹(证书须已装进当前用户的证书库),
-#   并通过 --config 注入 tauri 的 bundle.windows.certificateThumbprint。
+#   并写成临时 JSON 配置文件再通过 --config 注入（避免 PowerShell 5.1 剥掉内联 JSON 引号）。
 #   也可改用 tauri.conf.json 里的 signCommand 走自定义签名(如 azuresigntool)。
 #   未设置该环境变量时,--signed 直接报错提示。
-#   ⚠ 注:--signed 仍走内联 JSON 注入指纹,在 PowerShell 5.1 下会被剥引号而失败,
-#      需在 pwsh 7+ 下运行(或改 signCommand)。本轮未启用 Authenticode,留待有证书时处理。
+#   release:win 在指纹可用时会自动带上 --signed。
 #
 # 注:macOS 包用 build:mac,Linux 包用 build:linux,且都需在对应系统上构建。
 # ============================================================================
@@ -93,8 +92,9 @@ if ($select.Count -eq 0) {
   foreach ($s in $select) { $triples += (Resolve-Triple $s) }
 }
 
-# ── 签名:校验证书指纹环境变量,注入 tauri config ─────────────────────────────
+# ── 签名:校验证书指纹环境变量,写入临时 config 文件再叠加 ────────────────────
 $signConfig = @()
+$signConfigPath = $null
 if ($signed) {
   $thumb = $env:WINDOWS_CERTIFICATE_THUMBPRINT
   if (-not $thumb) {
@@ -103,12 +103,17 @@ if ($signed) {
 
 请先把代码签名证书导入当前用户证书库,然后设置(示例):
   `$env:WINDOWS_CERTIFICATE_THUMBPRINT = 'A1B2C3...'
-或在 tauri.conf.json 的 bundle.windows 里配置 certificateThumbprint / signCommand。
+或在 apps/desktop/signing/.env.release 里填 WINDOWS_CERTIFICATE_THUMBPRINT=...
+也可在 tauri.conf.json 的 bundle.windows 里配置 certificateThumbprint / signCommand。
 "@
     exit 1
   }
-  $cfgJson = '{"bundle":{"windows":{"certificateThumbprint":"' + $thumb + '"}}}'
-  $signConfig = @('--config', $cfgJson)
+  $thumb = $thumb.Trim()
+  $signConfigPath = Join-Path $env:TEMP ("nomifun-win-sign-" + [guid]::NewGuid().ToString('N') + ".json")
+  $signObj = @{ bundle = @{ windows = @{ certificateThumbprint = $thumb } } }
+  $signJson = $signObj | ConvertTo-Json -Depth 5 -Compress
+  [System.IO.File]::WriteAllText($signConfigPath, $signJson, [System.Text.UTF8Encoding]::new($false))
+  $signConfig = @('--config', $signConfigPath)
   Write-Host "▶ 签名: 已启用 (指纹 $($thumb.Substring(0,[Math]::Min(8,$thumb.Length)))...)"
 }
 
@@ -120,6 +125,7 @@ function Ensure-Target($t) {
   }
 }
 
+try {
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -163,3 +169,8 @@ foreach ($f in $collected) {
   Write-Host ("   {0,-44} {1}" -f (Split-Path $f -Leaf), $size)
 }
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+} finally {
+  if ($signConfigPath -and (Test-Path $signConfigPath)) {
+    Remove-Item $signConfigPath -Force -ErrorAction SilentlyContinue
+  }
+}

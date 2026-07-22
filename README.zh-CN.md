@@ -355,7 +355,7 @@ bun run test       # Rust 测试（日常可用 test:fast 跑 nextest）
 | `bun run build:updater` | 打桌面包并产出自更新 .sig 制品 |
 | `bun run make:latest` | 扫描本机更新产物，生成/合并自动更新清单 latest.json |
 | `bun run release:mac` | 一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
-| `bun run release:win` | 一键 Windows 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
+| `bun run release:win` | 一键 Windows 发版：自动判定追加/首发；指纹可用时自动 Authenticode；`-Signed`/`-NoSigned`；首发用 `-Version` + `-NotesFile`/`-Notes`；`-DryRun` 只预检 |
 | `bun run release:linux` | 一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
 | `bun run build:ui` | 前端生产构建 → ui/dist |
 | **运行（组装好的应用）** | |
@@ -400,7 +400,7 @@ bun run test       # Rust 测试（日常可用 test:fast 跑 nextest）
 
 ## 🗺️ 敬请期待
 
-Flowy 目前处于 **pre-1.0**，且为兼职开发，所以还有很多正在路上：预编译安装包、入站 issue / 需求来源接入、更多知识库连接器（飞书及更多）、官方桌面安装包 —— 以及几个我们非常期待的惊喜。**敬请期待。** ✨
+Flowy 目前处于 **pre-1.0**，且为兼职开发，所以还有很多正在路上：入站 issue / 需求来源接入、更多知识库连接器（飞书及更多）—— 以及几个我们非常期待的惊喜。**敬请期待。**
 
 ---
 

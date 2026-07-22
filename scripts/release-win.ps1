@@ -12,7 +12,8 @@
 #   bun run release:win -Notes "- 修复若干问题"   # release note（内联，短说明用）
 #   bun run release:win -DryRun                  # 只读预检并打印计划，不 bump/构建/上传/推送
 #   bun run release:win -NoPush                  # 见下方 -NoPush 语义
-#   bun run release:win -SkipPull                # 跳过 git pull
+#   bun run release:win -Signed                   # 强制 Authenticode（缺指纹则失败）
+#   bun run release:win -NoSigned                 # 强制跳过 Authenticode（即使有指纹）
 #
 # LLM 友好：release note 走命令行，不与 CHANGELOG 耦合。多行说明建议先写到一个 .md 文件，
 #   再用 -NotesFile 传入（PowerShell 传多行参数不稳，脚本内部也用文件中转）。首发若既没
@@ -23,12 +24,14 @@
 #   CREATE：只本地 bump/构建/合并 latest.json，不 commit/tag/push、不建 Release（供离线预演）。
 #
 # 前提（一次性配好即可反复用）：
-#   1) apps/desktop/signing/nomifun-updater.key —— updater 私钥（keyID F3AA272E60AA7952），
+#   1) apps/desktop/signing/nomifun-updater.key —— updater 私钥（keyID 8600581EC8FDE447），
 #      gitignored；必须与 tauri.conf.json 内嵌 pubkey 匹配。
 #   2) apps/desktop/signing/.env.release —— 内含 GH_TOKEN=...（repo 或 Contents:rw 的 PAT），
 #      gitignored；见 .env.release.example。也可先设 $env:GH_TOKEN。
+#   3) （可选）WINDOWS_CERTIFICATE_THUMBPRINT —— Authenticode 证书指纹；可写在环境变量或
+#      .env.release。有指纹且未传 -NoSigned 时，构建自动带 --signed。
 #
-# 说明：本轮不启用 Authenticode；自动更新验签走 Tauri updater 的 minisign 签名，脚本已覆盖。
+# Authenticode 与 Tauri updater minisign 是两套机制；前者影响 SmartScreen，后者负责 OTA 验签。
 # ============================================================================
 param(
   [string]$Version,
@@ -36,7 +39,9 @@ param(
   [string]$NotesFile,
   [switch]$DryRun,
   [switch]$NoPush,
-  [switch]$SkipPull
+  [switch]$SkipPull,
+  [switch]$Signed,
+  [switch]$NoSigned
 )
 $ErrorActionPreference = 'Stop'
 
@@ -69,21 +74,44 @@ function Resolve-Gh {
 $gh = Resolve-Gh
 if (-not $gh) { Fail "未找到 gh CLI。安装：winget install --id GitHub.cli -e --source winget" }
 
-# ── GH_TOKEN：优先环境变量，否则从 .env.release 读 ───────────────────────────
-if (-not $env:GH_TOKEN) {
+# ── GH_TOKEN / Authenticode 指纹：优先环境变量，否则从 .env.release 读 ───────
+if (-not $env:GH_TOKEN -or -not $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
   if (Test-Path $EnvRelease) {
     foreach ($line in Get-Content $EnvRelease) {
       $t = $line.Trim()
       if ($t -eq '' -or $t.StartsWith('#')) { continue }
-      if ($t -match '^\s*GH_TOKEN\s*=\s*(.+)$')      { $env:GH_TOKEN = $Matches[1].Trim() }
-      elseif ($t -match '^(ghp_|github_pat_)')        { $env:GH_TOKEN = $t }
+      if ($t -match '^\s*GH_TOKEN\s*=\s*(.+)$') {
+        if (-not $env:GH_TOKEN) { $env:GH_TOKEN = $Matches[1].Trim() }
+      }
+      elseif ($t -match '^\s*WINDOWS_CERTIFICATE_THUMBPRINT\s*=\s*(.+)$') {
+        if (-not $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+          $env:WINDOWS_CERTIFICATE_THUMBPRINT = $Matches[1].Trim().Trim("'").Trim('"')
+        }
+      }
+      elseif ($t -match '^(ghp_|github_pat_)') {
+        if (-not $env:GH_TOKEN) { $env:GH_TOKEN = $t }
+      }
     }
   }
 }
 if (-not $env:GH_TOKEN) { Fail "缺少 GH_TOKEN。请在 $EnvRelease 里填 GH_TOKEN=...（见 .env.release.example），或先设 `$env:GH_TOKEN。" }
 
+if ($Signed -and $NoSigned) { Fail "不能同时使用 -Signed 与 -NoSigned。" }
+$thumbprint = if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) { $env:WINDOWS_CERTIFICATE_THUMBPRINT.Trim() } else { '' }
+$useAuthenticode = $false
+if ($NoSigned) {
+  $useAuthenticode = $false
+} elseif ($Signed) {
+  if (-not $thumbprint) {
+    Fail "已指定 -Signed，但缺少 WINDOWS_CERTIFICATE_THUMBPRINT（环境变量或 $EnvRelease）。"
+  }
+  $useAuthenticode = $true
+} elseif ($thumbprint) {
+  $useAuthenticode = $true
+}
+
 # ── updater 私钥 ─────────────────────────────────────────────────────────────
-if (-not (Test-Path $KeyFile)) { Fail "缺少 updater 私钥 $KeyFile（从密钥库拷入，keyID F3AA272E60AA7952）。" }
+if (-not (Test-Path $KeyFile)) { Fail "缺少 updater 私钥 $KeyFile（从密钥库拷入，keyID 8600581EC8FDE447）。" }
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $KeyFile -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
@@ -148,6 +176,13 @@ Write-Host "  版本      : $TargetVersion   (tag $Tag)"
 if ($NeedBump) { Write-Host "  版本变更  : $CurVer → $TargetVersion（将执行 bun run bump）" } else { Write-Host "  版本变更  : 无（沿用当前 $CurVer）" }
 Write-Host "  仓库      : $Repo"
 Write-Host "  目标产物  : $Exe (+ .sig)"
+if ($useAuthenticode) {
+  Write-Host "  Authenticode: 开启 (指纹 $($thumbprint.Substring(0,[Math]::Min(8,$thumbprint.Length)))...)"
+} elseif ($Signed) {
+  Write-Host "  Authenticode: 开启（-Signed）"
+} else {
+  Write-Host "  Authenticode: 关闭（设 WINDOWS_CERTIFICATE_THUMBPRINT 或加 -Signed 启用；-NoSigned 可强制跳过）"
+}
 if ($Mode -eq 'CREATE') { Write-Host "  release note: $(if ($NotesFile) { "文件 $NotesFile" } else { '内联 -Notes' })（首发建 Release 用）" }
 elseif ($NotesContent) { Write-Host "  release note: 提供了，将同时更新 Release 正文与 latest.json notes" }
 else { Write-Host "  release note: 未提供，沿用既有（latest.json notes 由 CHANGELOG 当前版本小节兜底）" }
@@ -184,7 +219,11 @@ if (Test-Path $NsisDir) {
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 Write-Host "▶ 构建 Windows 自动更新产物（Rust release，耗时较长）..."
-& bun run build:win --config $UpdaterConf
+if ($useAuthenticode) {
+  & bun run build:win --signed --config $UpdaterConf
+} else {
+  & bun run build:win --config $UpdaterConf
+}
 if ($LASTEXITCODE -ne 0) { Fail "构建失败。" }
 if (-not (Test-Path $Exe)) { Fail "构建后未找到产物: $Exe" }
 if (-not (Test-Path $Sig)) { Fail "构建后未找到 updater 签名: $Sig" }

@@ -50,7 +50,7 @@ reliable desktop installers — build each platform on its own machine.
 The updater private key (`apps/desktop/signing/nomifun-updater.key`) is gitignored
 and lives only in your key store. On a fresh build machine (e.g. a Windows box that
 never generated it) copy it there before building; it must match the `pubkey`
-embedded in `tauri.conf.json` (keyID `F3AA272E60AA7952`), or installed clients
+embedded in `tauri.conf.json` (keyID `8600581EC8FDE447`), or installed clients
 silently reject the update. The `createUpdaterArtifacts` flag is supplied as a
 committed overlay file `apps/desktop/tauri.updater.conf.json` passed with
 `--config <path>` (not inline JSON — Windows PowerShell 5.1 mangles inline
@@ -98,12 +98,17 @@ Use this order for every desktop release.
    ```
 
    Once a Windows code-signing certificate is available, import it into the
-   current user's certificate store and build with Authenticode signing:
+   current user's certificate store and set the thumbprint (`release:win`
+   enables `--signed` automatically when the thumbprint is present):
 
    ```powershell
    $env:WINDOWS_CERTIFICATE_THUMBPRINT = "A1B2C3..."
    bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
+   # or: bun run release:win -Signed
    ```
+
+   The thumbprint is written to a temporary JSON config file (works on
+   PowerShell 5.1 and pwsh 7+).
 
 4. **Build Linux on Linux** if that platform is part of the release.
 
@@ -334,11 +339,10 @@ error on any failure.
 
 Windows without Authenticode signing is acceptable for internal updater testing:
 the Tauri updater `.sig` still protects the automatic update package. It is not
-equivalent to a trusted public Windows installer. For public distribution, obtain
-a Windows code-signing certificate, set `WINDOWS_CERTIFICATE_THUMBPRINT`, and
-rerun `build:win --signed --config apps/desktop/tauri.updater.conf.json` (under
-PowerShell 7+, since the cert injection uses inline JSON) before publishing the
-Windows assets.
+equivalent to a trusted public Windows installer. For public distribution, set
+`WINDOWS_CERTIFICATE_THUMBPRINT` (env or `.env.release`) and run
+`bun run release:win` / `build:win --signed` (thumbprint is injected via a temp
+config file; PowerShell 5.1 and pwsh 7+ both work).
 
 See:
 

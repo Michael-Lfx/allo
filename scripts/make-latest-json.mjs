@@ -18,8 +18,10 @@
  * 流程：
  *   1) 扫 target/**\/release/bundle/ 下的更新产物（每个产物旁有一个 .sig）。
  *   2) 由所在 target triple（或默认 host 构建）推断平台键，读 .sig 内容。
- *   3) url 指向 GitHub Releases 的版本化资产地址。
- *   4) 读入既有 latest.json（保留其它平台条目），更新 version/notes/pub_date + 本机条目，写回。
+ *   3) url 指向 GitHub Releases 或 ModelScope（--host modelscope）的版本化资产地址。
+ *   4) 强制产物名为 Flowy_* / Flowy.app.*（拒绝遗留 NomiFun_*）；平台键必须在 ALL_KEYS 内。
+ *   5) 读入既有 latest.json（保留其它平台条目），更新 version/notes/pub_date + 本机条目，写回。
+ *      --host modelscope 时同步刷新 apps/desktop/updater/alpha.yml；--collect 时一并拷到 dist。
  *
  * 单一真源 = 根 Cargo.toml [workspace.package].version。纯 node:fs，无第三方依赖。
  */
@@ -33,9 +35,72 @@ const DEFAULT_REPO = 'nomifun/nomifun-tauri';
 const DEFAULT_MS_REPO = 'flowy2025/flowyaipc';
 const DEFAULT_MS_PREFIX = 'allo';
 const DEFAULT_MS_CHANNEL = 'alpha';
+const PRODUCT = 'Flowy';
 const ALL_KEYS = ['windows-x86_64', 'windows-aarch64', 'darwin-x86_64', 'darwin-aarch64', 'linux-x86_64', 'linux-aarch64'];
+const ALL_KEYS_SET = new Set(ALL_KEYS);
+const DEFAULT_ALPHA = join(ROOT, 'apps/desktop/updater/alpha.yml');
 
 const rel = (p) => (p.startsWith(ROOT) ? p.slice(ROOT.length + 1) : p);
+
+/** Reject legacy NomiFun_* names; require Flowy product prefix per platform key. */
+function assertFlowyArtifactName(key, name) {
+  if (!ALL_KEYS_SET.has(key)) {
+    throw new Error(`未知平台键 ${key}（允许: ${ALL_KEYS.join(', ')}）`);
+  }
+  if (/^NomiFun/i.test(name)) {
+    throw new Error(
+      `${key} 产物仍为遗留名 ${name}。productName 已是 Flowy，请用当前配置重建（期望 Flowy_* / Flowy.app.*）。`,
+    );
+  }
+  const lower = name.toLowerCase();
+  if (key.startsWith('windows-')) {
+    if (!name.startsWith(`${PRODUCT}_`) || !lower.endsWith('-setup.exe')) {
+      throw new Error(
+        `${key} 产物名非法: ${name}（期望 ${PRODUCT}_{version}_x64-setup.exe 或 …_aarch64-setup.exe）`,
+      );
+    }
+    return;
+  }
+  if (key.startsWith('darwin-')) {
+    if (
+      name === `${PRODUCT}.app.tar.gz` ||
+      (name.startsWith(`${PRODUCT}_`) && lower.endsWith('.app.tar.gz'))
+    ) {
+      return;
+    }
+    throw new Error(
+      `${key} 产物名非法: ${name}（期望 ${PRODUCT}.app.tar.gz 或 ${PRODUCT}_{version}_*.app.tar.gz）`,
+    );
+  }
+  if (key.startsWith('linux-')) {
+    if (!name.startsWith(`${PRODUCT}_`) || !lower.endsWith('.appimage')) {
+      throw new Error(
+        `${key} 产物名非法: ${name}（期望 ${PRODUCT}_{version}_amd64.AppImage / _x86_64.AppImage / _aarch64.AppImage）`,
+      );
+    }
+    return;
+  }
+  throw new Error(`未处理的平台键: ${key}`);
+}
+
+function buildAlphaYml(manifest, channel) {
+  const lines = [
+    `# Alpha channel pointer — updated by make:latest --collect / upload-modelscope-release.py.`,
+    `# Clients read allo/channels/${channel}/latest.json, not this file directly.`,
+    `version: "${manifest.version || ''}"`,
+    `channel: ${channel}`,
+    `pub_date: "${manifest.pub_date || ''}"`,
+    `manifest: channels/${channel}/latest.json`,
+  ];
+  const notes = typeof manifest.notes === 'string' ? manifest.notes.trim() : '';
+  if (notes) {
+    lines.push('notes: |');
+    for (const noteLine of notes.split(/\r?\n/)) lines.push(`  ${noteLine}`);
+  } else {
+    lines.push('notes: ""');
+  }
+  return lines.join('\n') + '\n';
+}
 
 // ── 参数解析（--flag value / 无值开关返回 true） ──────────────────────────────
 const argv = process.argv.slice(2);
@@ -246,6 +311,16 @@ if (foundKeys.length === 0) {
   process.exit(1);
 }
 
+for (const key of foundKeys) {
+  const name = basename(collected[key].artifact);
+  try {
+    assertFlowyArtifactName(key, name);
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    process.exit(1);
+  }
+}
+
 // ── 合并进既有 latest.json（同版本时保留其它平台的真实条目，丢弃占位模板条目）。 ──
 const manifest = { version, notes: '', pub_date: new Date().toISOString(), platforms: {} };
 if (existsSync(out)) {
@@ -257,8 +332,18 @@ if (existsSync(out)) {
     if (prev.version === version) {
       if (!notes && typeof prev.notes === 'string' && prev.notes.trim()) notes = prev.notes.trim();
       for (const [k, v] of Object.entries(prev.platforms || {})) {
+        if (!ALL_KEYS_SET.has(k)) {
+          console.warn(`  ! 丢弃未知平台键: ${k}`);
+          continue;
+        }
         const placeholder = !v?.signature || v.signature.includes('<<') || String(v.url).includes('REPLACE-WITH');
         if (placeholder) continue;
+        const urlName = basename(String(v.url || '').split('?')[0]);
+        // Carry-over entries may still be legacy NomiFun_* until that platform is rebuilt.
+        if (urlName && /^NomiFun/i.test(urlName)) {
+          console.warn(`  ! 丢弃遗留产物名条目 ${k}: ${urlName}（需用 Flowy_* 重建）`);
+          continue;
+        }
         // When targeting ModelScope, do not carry over GitHub-only entries from an old template.
         if (host === 'modelscope' && !String(v.url).includes('modelscope.cn')) continue;
         // When targeting GitHub, do not carry over ModelScope-only entries.
@@ -280,10 +365,16 @@ for (const key of foundKeys) {
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(manifest, null, 2) + '\n');
 
+const alphaYml = buildAlphaYml(manifest, msChannel);
+if (host === 'modelscope') {
+  writeFileSync(DEFAULT_ALPHA, alphaYml);
+}
+
 if (collect) {
   mkdirSync(distDir, { recursive: true });
   for (const f of uploads) copyFileSync(f, join(distDir, basename(f)));
   writeFileSync(join(distDir, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  writeFileSync(join(distDir, 'alpha.yml'), alphaYml);
 }
 
 // ── 汇报 ────────────────────────────────────────────────────────────────────
@@ -310,4 +401,5 @@ console.log(`  ${uploadHint}`);
 for (const f of uploads) console.log(`    ${rel(f)}`);
 console.log(`    ${rel(out)}`);
 if (collect) console.log(`  已拷贝到: ${rel(distDir)}/`);
+if (host === 'modelscope') console.log(`  alpha.yml: ${rel(DEFAULT_ALPHA)}`);
 console.log(line);

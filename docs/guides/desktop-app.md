@@ -122,18 +122,20 @@ If you want to access the same install from another device, do **not** expose th
 
 ## Updater status
 
-The Tauri updater plugin (`tauri-plugin-updater`) is wired in and the renderer exposes `invoke('check_for_updates')` (returns the new version string or `null` if up to date). However:
+The Tauri updater plugin (`tauri-plugin-updater`) is wired in; the renderer can
+`invoke('check_for_updates')` (new version string, or `null` if current).
 
-- The endpoint configured in `apps/desktop/tauri.conf.json` (`plugins.updater.endpoints`) is a **placeholder** (`https://REPLACE-WITH-YOUR-HOST/...`). Until you replace it with a real HTTPS URL serving a signed `latest.json`, the updater check will fail.
-- The included `pubkey` is a **development key** generated for local testing. **Replace it before any public release** and store your private key in a CI secret.
-- `bun run build:updater` produces signed update artifacts (extra `.sig` files next to each installer).
+- **OTA source of truth**: `apps/desktop/tauri.conf.json` points at ModelScope
+  `allo/channels/alpha/latest.json` (pubkey keyID `8600581EC8FDE447`).
+- Release flow, `Flowy_` artifact naming, multi-platform merge, and upload:
+  root [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md).
+- `bun run build:updater` / per-platform
+  `build:* --config apps/desktop/tauri.updater.conf.json` produce `.sig`
+  updater packages.
 
-The full updater flow (signing env vars, `latest.json` schema, supported platform
-keys) is documented in `apps/desktop/updater/README.md`. OS-level code signing /
-notarization is separate. macOS Developer ID signing and notarization are wired
-through `bun run build:signed` and documented in
-`apps/desktop/signing/README.md`; Windows signing still requires an external
-code-signing certificate.
+OS code signing is separate: macOS via `bun run build:signed` and
+`apps/desktop/signing/README.md`; Windows Authenticode via
+`WINDOWS_CERTIFICATE_THUMBPRINT` + `build:win --signed` / `release:win`.
 
 ## Troubleshooting
 

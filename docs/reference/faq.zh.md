@@ -121,17 +121,22 @@ Apache-2.0 条款下使用、修改、再分发，并将代码打包——包括
 
 ## 有预构建安装包吗？
 
-还没有官方公开发布渠道。桌面包可以本地构建，macOS Developer ID 签名已通过
-`bun run build:signed` 脚本接好，updater 产物可用 `bun run build:updater`
-生成；但还没有官方 installer feed 或公开 registry。当前受支持的安装路径是：
+有。桌面安装包通过 [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases)
+分发；中国大陆也可使用 README 中的百度网盘镜像。应用内 OTA 的**唯一真源**是
+ModelScope 渠道清单（`allo/channels/alpha/latest.json`），端点已写在
+`apps/desktop/tauri.conf.json`。发版操作以根目录
+[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md) 为准（ModelScope 上传、
+产物命名、多平台合并）；GitHub 一键脚本仍可用于手动安装包，见
+[`RELEASING.zh-CN.md`](../../RELEASING.zh-CN.md)。
+
+也可以从源码构建：
 
 - **桌面端**：`bun install && bun run build:ui && cargo run -p
   nomifun-desktop`（或 `cargo build --release -p nomifun-desktop`）。
-- **服务端**：从源码构建（`cargo build --release -p nomifun-web`）
-  或 `docker compose up -d --build`。
+- **服务端**：`cargo build --release -p nomifun-web` 或
+  `docker compose up -d --build`。
 
-预构建安装包发布后，会从项目 README 与
-[新手入门指南](../getting-started/) 链接出来。
+安装入口见 [新手入门 · 安装](../getting-started/installation.zh.md)。
 
 ## 我把管理员密码搞丢了
 

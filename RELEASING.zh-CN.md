@@ -47,7 +47,7 @@ tag 统一使用 `vX.Y.Z`，例如 `v0.1.11`。
 一次性配置好后即可反复一键：
 
 1. 从密钥库拷入 updater 私钥 `apps/desktop/signing/nomifun-updater.key`（keyID
-   `F3AA272E60AA7952`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
+   `8600581EC8FDE447`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
 2. 配置 `apps/desktop/signing/.env.signing`，填好 Developer ID 签名与 Apple notarization 信息。
 3. 运行 `gh auth login`，或复制 `apps/desktop/signing/.env.release.example` 为 `.env.release`
    并填入 `GH_TOKEN=...`。
@@ -127,7 +127,7 @@ bun run make:latest
 一次性配置好后即可反复一键：
 
 1. 从密钥库拷入 updater 私钥 `apps/desktop/signing/nomifun-updater.key`（keyID
-   `F3AA272E60AA7952`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
+   `8600581EC8FDE447`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
 2. 复制 `apps/desktop/signing/.env.release.example` 为 `.env.release`（已被 gitignore），
    填入 `GH_TOKEN=...`（`repo` 权限的经典 PAT，或对本仓库 Contents:read/write 的细粒度 PAT）。
 
@@ -164,8 +164,10 @@ bun run release:win -SkipPull   # 跳过 git pull
 `gh release create`）、以 `nomifun` 提交 `latest.json`（首发含 bump）回 `main`、拉取 updater
 端点校验。任何一步失败都会明确报错并中断。
 
-> 未启用 Authenticode 时，手动安装包仍可能触发 SmartScreen / 未知发布者提示；自动更新验签
-> 走 Tauri updater 的 minisign 签名，与 Authenticode 无关，一键脚本已覆盖。
+> Authenticode：在 `.env.release` 或环境变量设置 `WINDOWS_CERTIFICATE_THUMBPRINT` 后，
+> `release:win` 会自动带 `--signed`。强制开启用 `-Signed`（缺指纹失败）；强制跳过用
+> `-NoSigned`。未签名时手动安装包仍可能触发 SmartScreen；OTA 验签走 Tauri updater
+> minisign，与 Authenticode 无关。
 
 ### 手动分步（等价于一键脚本内部流程）
 
@@ -180,9 +182,27 @@ git checkout main
 
 > updater 私钥 `apps/desktop/signing/nomifun-updater.key` 已被 gitignore、只存在于密钥库。
 > 这台 Windows 构建前需先从密钥库把它拷过来，且必须与 `tauri.conf.json` 内嵌的 `pubkey`
-> 匹配（keyID `F3AA272E60AA7952`），否则已安装的客户端会拒绝更新。叠加 `createUpdaterArtifacts`
+> 匹配（keyID `8600581EC8FDE447`），否则已安装的客户端会拒绝更新。叠加 `createUpdaterArtifacts`
 > 用的是仓库内的 `apps/desktop/tauri.updater.conf.json`，以 `--config <文件路径>` 传入——
 > **不要内联 JSON**，PowerShell 5.1 会把内联 `--config '{...}'` 的双引号剥掉变成非法 JSON。
+
+### Authenticode 签名（推荐公开分发）
+
+拿到 Windows 代码签名证书后，导入当前用户证书库，并设置指纹（`release:win` 会自动启用）：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+$env:WINDOWS_CERTIFICATE_THUMBPRINT = "A1B2C3..."
+
+# 或写入 apps/desktop/signing/.env.release 后：
+bun run release:win -Signed
+# 等价手动：
+bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
+bun run make:latest
+```
+
+指纹通过临时 JSON 配置文件注入，PowerShell 5.1 与 pwsh 7+ 均可。
 
 ### 当前无 Authenticode 签名的做法
 
@@ -192,6 +212,7 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
 bun run build:win --config apps/desktop/tauri.updater.conf.json
 bun run make:latest
+# 或：bun run release:win -NoSigned
 ```
 
 这会生成 Windows 自动更新产物和 `.sig`。这种模式下：
@@ -199,22 +220,6 @@ bun run make:latest
 - 自动更新验签可以工作。
 - 手动安装包不是系统代码签名包，用户可能看到 SmartScreen / 未知发布者提示。
 - 适合内部测试或临时发布，不等同于公开可信 Windows 安装包。
-
-### 以后补 Authenticode 签名
-
-拿到 Windows 代码签名证书后，先把证书导入当前用户证书库，再设置证书指纹（`--signed`
-注入指纹仍走内联 JSON，需在 pwsh 7+ 下运行）：
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-$env:WINDOWS_CERTIFICATE_THUMBPRINT = "A1B2C3..."
-
-bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
-bun run make:latest
-```
-
-这才是更接近 macOS Developer ID 签名 / 公证的公开分发状态。
 
 ## Linux 发版
 
