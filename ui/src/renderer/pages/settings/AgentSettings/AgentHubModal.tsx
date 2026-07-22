@@ -1,27 +1,21 @@
 import React from 'react';
-import { Button, Typography, Tooltip, Link } from '@arco-design/web-react';
+import { Button, Typography, Tooltip } from '@arco-design/web-react';
 import { IconDownload, IconRefresh } from '@arco-design/web-react/icon';
 import { useTranslation } from 'react-i18next';
 import ModalWrapper from '@/renderer/components/base/ModalWrapper';
 import { useHubAgents } from '@/renderer/hooks/agent/useHubAgents';
 import type { IHubAgentItem } from '@/common/types/agent/hub';
 import { resolveAgentLogo } from '@renderer/utils/model/agentLogo';
-import { openExternalUrl } from '@/renderer/utils/platform';
 
 interface AgentHubModalProps {
   visible: boolean;
   onCancel: () => void;
 }
 
-const NOMI_HUB_REPO_URL = 'https://github.com/nomifun/NomiHub';
-
 export const AgentHubModal: React.FC<AgentHubModalProps> = ({ visible, onCancel }) => {
   const { t } = useTranslation();
   const { agents, loading, error, install, retryInstall, update } = useHubAgents();
   const actionButtonClassName = '!min-w-80px !rounded-9px !px-10px';
-  const openNomiHubRepo = () => {
-    void openExternalUrl(NOMI_HUB_REPO_URL).catch(console.error);
-  };
 
   const renderActionBtn = (agent: IHubAgentItem) => {
     switch (agent.status) {
@@ -92,19 +86,6 @@ export const AgentHubModal: React.FC<AgentHubModalProps> = ({ visible, onCancel 
       style={{ width: 1000, maxWidth: '96vw' }}
     >
       <div className='max-h-[70vh] overflow-y-auto pr-4px'>
-        <div className='mb-12px flex flex-wrap items-center justify-start gap-x-6px gap-y-2px text-left'>
-          <Typography.Text type='secondary' className='text-12px leading-18px text-t-secondary'>
-            {t('settings.agentManagement.marketContributionHint', {
-              defaultValue: 'Want a new execution engine listed here?',
-            })}
-          </Typography.Text>
-          <Link className='text-12px leading-18px' onClick={openNomiHubRepo}>
-            {t('settings.agentManagement.marketContributionAction', {
-              defaultValue: 'Open a PR on NomiHub',
-            })}
-          </Link>
-        </div>
-
         {loading ? (
           <div className='flex items-center justify-center py-48px'>
             <Typography.Text type='secondary'>

@@ -54,7 +54,7 @@
   flex-shrink: 0 !important;
 }
 
-/* Persistent update affordance beside the NomiFun wordmark. It is rendered
+/* Persistent update affordance beside the Flowy wordmark. It is rendered
    only after an authoritative updater check reports a newer version. */
 .sidebar-update-button {
   position: relative;

@@ -55,7 +55,7 @@ interface DingTalkConfigFormProps {
   onStatusChange: (status: IChannelPluginStatus | null) => void;
 }
 
-const DINGTALK_DEV_DOCS_URL = 'https://github.com/nomifun/nomifun-app/wiki/DingTalk-Bot-Setup-Guide';
+const DINGTALK_DEV_DOCS_URL = 'https://open.dingtalk.com/';
 
 const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
   pluginStatus,

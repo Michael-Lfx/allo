@@ -21,8 +21,6 @@ type UpdateStatus = 'checking' | 'upToDate' | 'available' | 'downloading' | 'dow
 type UpdateInfo = UpdateReleaseInfo;
 
 const BAIDU_RELEASE_MIRROR_URL = 'https://pan.baidu.com/s/5GPonoJNrwJ7GciBSDgXLaA';
-const PRODUCT_WEBSITE_URL = 'https://www.nomifun.com';
-const GITHUB_RELEASES_PAGE = 'https://github.com/nomifun/nomifun-tauri/releases/latest';
 
 const UpdateModal: React.FC = () => {
   const { t } = useTranslation();
@@ -36,7 +34,6 @@ const UpdateModal: React.FC = () => {
   const [progress, setProgress] = useState({ percent: 0, speed: '', total: 0, transferred: 0 });
   const [errorMsg, setErrorMsg] = useState('');
   const [downloadPath, setDownloadPath] = useState('');
-  const [releasePageUrl, setReleasePageUrl] = useState('');
   // Whether electron-updater auto-update is available (determined automatically, not user-controllable)
   const [autoUpdateAvailable, setAutoUpdateAvailable] = useState(false);
   const [autoUpdateInfo, setAutoUpdateInfo] = useState<{ version: string; releaseNotes?: string } | null>(null);
@@ -49,7 +46,6 @@ const UpdateModal: React.FC = () => {
     setProgress({ percent: 0, speed: '', total: 0, transferred: 0 });
     setErrorMsg('');
     setDownloadPath('');
-    setReleasePageUrl('');
     setAutoUpdateAvailable(false);
     setAutoUpdateInfo(null);
   };
@@ -57,22 +53,9 @@ const UpdateModal: React.FC = () => {
   const includePrerelease = useMemo(() => localStorage.getItem('update.includePrerelease') === 'true', [visible]);
   const hasCompatibleManualAsset = Boolean(updateInfo?.recommendedAsset);
 
-  const openReleasePage = () => {
-    const target = releasePageUrl || GITHUB_RELEASES_PAGE;
-    void ipcBridge.shell.openExternal.invoke(target).catch((error) => {
-      console.error('Failed to open release page:', error);
-    });
-  };
-
   const openBaiduReleaseMirror = () => {
     void ipcBridge.shell.openExternal.invoke(BAIDU_RELEASE_MIRROR_URL).catch((error) => {
       console.error('Failed to open Baidu release mirror:', error);
-    });
-  };
-
-  const openProductWebsite = () => {
-    void ipcBridge.shell.openExternal.invoke(PRODUCT_WEBSITE_URL).catch((error) => {
-      console.error('Failed to open product website:', error);
     });
   };
 
@@ -143,7 +126,6 @@ const UpdateModal: React.FC = () => {
         // Auto-update available — use manual check data for display only
         if (res.data?.latest) {
           setUpdateInfo(res.data.latest);
-          setReleasePageUrl(res.data.latest.htmlUrl || '');
         }
         setStatus('available');
         return;
@@ -153,7 +135,6 @@ const UpdateModal: React.FC = () => {
       if (res.data?.updateAvailable && res.data.latest) {
         reportUpdateAvailable(res.data.latest.version);
         setUpdateInfo(res.data.latest);
-        setReleasePageUrl(res.data.latest.htmlUrl || '');
         if (!res.data.latest.recommendedAsset) {
           setErrorMsg(t('update.noCompatibleAssetManual'));
         }
@@ -162,7 +143,6 @@ const UpdateModal: React.FC = () => {
       }
 
       setUpdateInfo(res.data?.latest || null);
-      setReleasePageUrl(res.data?.latest?.htmlUrl || '');
       reportNoUpdateAvailable();
       setStatus('upToDate');
     } catch (err: unknown) {
@@ -173,9 +153,6 @@ const UpdateModal: React.FC = () => {
       } else {
         const errorMessageKey = getUpdateErrorMessageKey(msg);
         setErrorMsg(errorMessageKey === 'update.releaseFeedUnavailable' ? t(errorMessageKey) : msg || t(errorMessageKey));
-        if (errorMessageKey === 'update.releaseFeedUnavailable') {
-          setReleasePageUrl((url) => url || GITHUB_RELEASES_PAGE);
-        }
       }
       setStatus('error');
     }
@@ -403,17 +380,6 @@ const UpdateModal: React.FC = () => {
             {t('update.baiduMirrorLink')}
           </button>
         </div>
-        <div className='mt-4px'>
-          {t('update.productWebsiteHint')}{' '}
-          <button
-            type='button'
-            onClick={openProductWebsite}
-            title={PRODUCT_WEBSITE_URL}
-            className='cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
-          >
-            {PRODUCT_WEBSITE_URL}
-          </button>
-        </div>
       </div>
     );
   };
@@ -469,10 +435,6 @@ const UpdateModal: React.FC = () => {
                 {isNativeUpdater || autoUpdateAvailable ? (
                   <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
                     {t('update.downloadAndInstall')}
-                  </Button>
-                ) : !hasCompatibleManualAsset && releasePageUrl ? (
-                  <Button type='primary' size='small' onClick={openReleasePage} className='!px-16px'>
-                    {t('update.goToRelease')}
                   </Button>
                 ) : (
                   <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
@@ -590,17 +552,7 @@ const UpdateModal: React.FC = () => {
               <Button size='small' onClick={checkForUpdates} icon={<Refresh size='14' />} className='!px-16px'>
                 {t('common.retry')}
               </Button>
-              {!isNativeUpdater && (
-                <>
-                  <Button type='primary' size='small' onClick={openReleasePage} className='!px-16px'>
-                    {t('update.goToRelease')}
-                  </Button>
-                  {renderBaiduManualDownloadButton()}
-                  <Button size='small' onClick={openProductWebsite} className='!px-16px'>
-                    {t('update.productWebsiteLink')}
-                  </Button>
-                </>
-              )}
+              {!isNativeUpdater && renderBaiduManualDownloadButton()}
             </div>
           </div>
         );

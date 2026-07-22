@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('public contact links', () => {
-  test('keeps About and Contact surfaces wired to current public channels', () => {
+  test('does not expose legacy nomifun website or GitHub contact surfaces', () => {
     const aboutSource = readSource(new URL('./AboutModalContent.tsx', import.meta.url));
     const contactSource = readSource(new URL('./FeedbackReportModal.tsx', import.meta.url));
     const combined = `${aboutSource}\n${contactSource}`;
@@ -20,32 +20,26 @@ describe('public contact links', () => {
       'https://www.nomifun.com/contact',
       'https://github.com/nomifun/nomifun-tauri/issues',
       'https://github.com/nomifun/nomifun-tauri/releases',
-      '535526063@qq.com',
     ]) {
-      expect(combined.includes(target)).toBe(true);
+      expect(combined.includes(target)).toBe(false);
     }
-
-    expect(aboutSource.includes('ABOUT_LINK_TARGET')).toBe(false);
-  });
-
-  test('keeps the Baidu manual installer link on About, not in native desktop update modal', () => {
-    const aboutSource = readSource(new URL('./AboutModalContent.tsx', import.meta.url));
-    const contactSource = readSource(new URL('./FeedbackReportModal.tsx', import.meta.url));
-    const updateModalSource = readSource(new URL('../../UpdateModal.tsx', import.meta.url));
-
-    expect(contactSource.includes("baiduPan: 'https://pan.baidu.com/s/5GPonoJNrwJ7GciBSDgXLaA'")).toBe(true);
-    expect(aboutSource.includes('NOMIFUN_PUBLIC_LINKS.baiduPan')).toBe(true);
-    expect(aboutSource.includes('settings.baiduManualDownload')).toBe(true);
-    expect(updateModalSource.includes('isNativeUpdater')).toBe(true);
-    expect(updateModalSource.includes('if (isNativeUpdater) return null')).toBe(true);
   });
 
   test('keeps the Contact modal visually quiet instead of rendering chunky cards', () => {
     const contactSource = readSource(new URL('./FeedbackReportModal.tsx', import.meta.url));
 
-    expect(contactSource.includes("import CopyIconButton from '@/renderer/components/base/CopyIconButton'")).toBe(true);
+    expect(contactSource.includes("import CopyIconButton from '@/renderer/components/base/CopyIconButton'")).toBe(false);
     expect(contactSource.includes("<Info theme='outline' size='28' />")).toBe(false);
     expect(contactSource.includes("bg-fill-2 px-12px py-10px")).toBe(false);
     expect(contactSource.includes('>↗<')).toBe(false);
+  });
+
+  test('does not render external release or website shortcuts in the native update modal', () => {
+    const updateModalSource = readSource(new URL('../../UpdateModal.tsx', import.meta.url));
+
+    expect(updateModalSource.includes('https://www.nomifun.com')).toBe(false);
+    expect(updateModalSource.includes('github.com/nomifun')).toBe(false);
+    expect(updateModalSource.includes('openReleasePage')).toBe(false);
+    expect(updateModalSource.includes('openProductWebsite')).toBe(false);
   });
 });

@@ -83,7 +83,7 @@ const RegisterKnowledgeButton: React.FC<RegisterKnowledgeButtonProps> = ({ cwd, 
       <p className='mb-16px text-12px leading-18px text-t-tertiary'>
         {t('terminal.registerKnowledge.securityDesc', {
           defaultValue:
-            '配置中不会保存端口或凭据。CLI 启动时通过当前系统用户专属的本地安全通道获取工作区权限；NomiFun 需要保持运行。',
+            '配置中不会保存端口或凭据。CLI 启动时通过当前系统用户专属的本地安全通道获取工作区权限；Flowy 需要保持运行。',
         })}
       </p>
       <Radio.Group value={family} onChange={(value) => setFamily(value as AgentFamily)} direction='vertical'>

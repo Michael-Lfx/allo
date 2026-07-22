@@ -894,7 +894,6 @@ export const application = {
 // each call with `isTauriRuntime()`, so the WebUI browser degrades to the safe fallback.
 
 /** Releases page shown in the modal's manual-download fallback (WebUI only). */
-const GITHUB_RELEASES_PAGE = 'https://github.com/nomifun/nomifun-tauri/releases/latest';
 const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo';
 
 export const update = {
@@ -1282,7 +1281,7 @@ export const mode = {
 };
 
 // ---------------------------------------------------------------------------
-// NomiFun-managed free-model service
+// Flowy-managed free-model service
 // ---------------------------------------------------------------------------
 
 export const managedModelService = {
