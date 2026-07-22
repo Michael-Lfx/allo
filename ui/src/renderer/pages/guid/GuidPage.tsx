@@ -35,6 +35,7 @@ import type { AppliedCollaborationTemplate } from '@/renderer/components/collabo
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
+import GuidReadinessStrip from './components/GuidReadinessStrip';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
@@ -53,7 +54,6 @@ import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/conversation
 import CollaborationPolicyControl from '@/renderer/components/collaboration/CollaborationPolicyControl';
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
-import { useTypewriterPlaceholder } from './hooks/useTypewriterPlaceholder';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { ConfigProvider, Message } from '@arco-design/web-react';
@@ -298,6 +298,7 @@ const GuidPage: React.FC = () => {
 
     // Instant "creating conversation" loading overlay (ConversationShell-level)
     beginPending: pendingConversation.begin,
+    advancePending: pendingConversation.advance,
     endPending: pendingConversation.end,
   });
 
@@ -430,8 +431,6 @@ const GuidPage: React.FC = () => {
     ],
   );
 
-  // Typewriter placeholder
-  const typewriterPlaceholder = useTypewriterPlaceholder(t('conversation.welcome.placeholder'));
   const selectedPresetRecord = useMemo(() => {
     if (!agentSelection.is_presetAgent || !agentSelection.selectedAgentInfo?.preset_id) return undefined;
     return agentSelection.presets.find((item) => item.id === agentSelection.selectedAgentInfo?.preset_id);
@@ -697,9 +696,11 @@ const GuidPage: React.FC = () => {
     <GuidActionRow
       files={guidInput.files}
       onFilesUploaded={guidInput.handleFilesUploaded}
-      modelSelectorNode={modelSelectorNode}
+      modelSelectorNode={advancedOpen ? modelSelectorNode : undefined}
       collaboratorSelectorNode={
-        effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled' ? collaboratorSelectorNode : undefined
+        advancedOpen && effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled'
+          ? collaboratorSelectorNode
+          : undefined
       }
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
@@ -773,25 +774,33 @@ const GuidPage: React.FC = () => {
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
               <p className='text-2xl font-semibold mb-0 text-0 text-center'>{t('conversation.welcome.title')}</p>
+              <p className={styles.heroDescription}>{t('conversation.welcome.description')}</p>
             </div>
 
-            {agentSelection.availableAgents === undefined ? (
-              <AgentPillBarSkeleton />
-            ) : agentSelection.availableAgents.length > 0 ? (
-              <AgentPillBar
-                availableAgents={agentSelection.availableAgents}
-                selectedAgentKey={agentSelection.selectedAgentKey}
-                getAgentKey={agentSelection.getAgentKey}
-                onSelectAgent={handleSelectAgentFromPillBar}
-                suppressSelectionAnimation={resetPresetRequested}
-              />
-            ) : null}
-
-            <PoiStarterChips
+            <GuidResourceCards
+              onStartLocalAgent={guidInput.handleTextareaFocus}
               onSetInput={guidInput.setInput}
-              onFocusInput={guidInput.handleTextareaFocus}
             />
 
+            {advancedOpen ? (
+              <div className={styles.guidRunSettingsPanel} data-testid='guid-run-settings-panel'>
+                {agentSelection.availableAgents === undefined ? (
+                  <AgentPillBarSkeleton />
+                ) : agentSelection.availableAgents.length > 0 ? (
+                  <AgentPillBar
+                    availableAgents={agentSelection.availableAgents}
+                    selectedAgentKey={agentSelection.selectedAgentKey}
+                    getAgentKey={agentSelection.getAgentKey}
+                    onSelectAgent={handleSelectAgentFromPillBar}
+                    suppressSelectionAnimation={resetPresetRequested}
+                  />
+                ) : null}
+                <PoiStarterChips
+                  onSetInput={guidInput.setInput}
+                  onFocusInput={guidInput.handleTextareaFocus}
+                />
+              </div>
+            ) : null}
 
             <GuidInputCard
               input={guidInput.input}
@@ -800,7 +809,7 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={`${mention.selectedAgentLabel}, ${typewriterPlaceholder || t('conversation.welcome.placeholder')}`}
+              placeholder={t('conversation.welcome.placeholder')}
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
@@ -826,28 +835,32 @@ const GuidPage: React.FC = () => {
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
-                <ComposerEntryStrip
-                  isPresetAgent={agentSelection.is_presetAgent}
-                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                  presetAvatar={selectedPresetAvatar ?? undefined}
-                  onChoosePreset={() => {
-                    setDrawerMode('preset');
-                    setDrawerOpen(true);
-                  }}
-                  onAdjustSkills={handleOpenSkillsDrawer}
-                  onFree={() => {
-                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                  }}
-                  activeSkillCount={activeSkillCount}
-                  activeSkills={activeSkills}
-                  collaborationPolicyNode={collaborationPolicyNode}
-                />
+                advancedOpen ? (
+                  <ComposerEntryStrip
+                    isPresetAgent={agentSelection.is_presetAgent}
+                    presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                    presetAvatar={selectedPresetAvatar ?? undefined}
+                    onChoosePreset={() => {
+                      setDrawerMode('preset');
+                      setDrawerOpen(true);
+                    }}
+                    onAdjustSkills={handleOpenSkillsDrawer}
+                    onFree={() => {
+                      agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+                    }}
+                    activeSkillCount={activeSkillCount}
+                    activeSkills={activeSkills}
+                    collaborationPolicyNode={collaborationPolicyNode}
+                  />
+                ) : undefined
               }
             />
 
-            <GuidResourceCards
-              onStartLocalAgent={guidInput.handleTextareaFocus}
-              onSetInput={guidInput.setInput}
+            <GuidReadinessStrip
+              agentLabel={mention.selectedAgentLabel}
+              model={modelSelection.current_model}
+              workspaceDir={guidInput.dir}
+              onOpenSettings={() => setAdvancedOpen(true)}
             />
 
             {/* Editor host (modals + example prompts + fallback notice) */}

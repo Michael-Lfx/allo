@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -75,6 +75,26 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     return localUser?.username ?? whoami?.email ?? whoami?.username ?? '';
   }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
+  const [capabilitiesExpanded, setCapabilitiesExpanded] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('flowy.sider.capabilitiesExpanded') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleCapabilities = useCallback(() => {
+    setCapabilitiesExpanded((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem('flowy.sider.capabilitiesExpanded', String(next));
+      } catch {
+        return next;
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
@@ -190,6 +210,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
+            <button
+              type='button'
+              className='mx-8px min-h-30px px-10px flex items-center justify-center rd-8px b-none bg-transparent text-t-secondary text-12px cursor-pointer hover:bg-fill-2 hover:text-t-primary'
+              aria-expanded={capabilitiesExpanded}
+              title={t('common.siderSection.moreCapabilities')}
+              onClick={toggleCapabilities}
+            >
+              {collapsed ? '•••' : t('common.siderSection.moreCapabilities')}
+            </button>
+            {capabilitiesExpanded || !isSessionRoute ? (
+              <>
             {/* Work partner (桌面伙伴) — demo path 2 */}
             <SiderNomiEntry
               isMobile={isMobile}
@@ -263,6 +294,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onSkills={handleSkillsClick}
               onMcp={handleMcpClick}
             />
+              </>
+            ) : null}
           </div>
         )}
       </div>

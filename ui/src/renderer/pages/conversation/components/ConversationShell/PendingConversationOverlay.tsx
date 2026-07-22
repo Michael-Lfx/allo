@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Spin } from '@arco-design/web-react';
 import { Paperclip } from '@icon-park/react';
@@ -33,16 +33,6 @@ import styles from './PendingConversationOverlay.module.css';
 const PendingConversationOverlay: React.FC = () => {
   const { pending } = usePendingConversation();
   const { t } = useTranslation();
-  const [activeStep, setActiveStep] = useState(0);
-
-  useEffect(() => {
-    if (!pending) return;
-    setActiveStep(0);
-    const timer = window.setInterval(() => {
-      setActiveStep((prev) => (prev >= 2 ? 2 : prev + 1));
-    }, 700);
-    return () => window.clearInterval(timer);
-  }, [pending]);
 
   if (!pending) return null;
 
@@ -53,10 +43,17 @@ const PendingConversationOverlay: React.FC = () => {
   const fileCount = pending.files?.length ?? 0;
   const trimmedInput = pending.input.trim();
   const steps = [
-    t('conversation.pending.stepUnderstand', { defaultValue: '理解任务' }),
-    t('conversation.pending.stepPrepare', { defaultValue: '准备执行' }),
-    t('conversation.pending.stepLaunch', { defaultValue: '启动会话' }),
+    t('conversation.pending.stepValidate', { defaultValue: 'Validate' }),
+    t('conversation.pending.stepCreate', { defaultValue: 'Create' }),
+    t('conversation.pending.stepConfigure', { defaultValue: 'Configure' }),
+    t('conversation.pending.stepOpen', { defaultValue: 'Open' }),
   ];
+  const stageIndex = {
+    validating: 0,
+    creating: 1,
+    configuring: 2,
+    opening: 3,
+  }[pending.stage ?? 'validating'];
 
   return (
     <div
@@ -117,8 +114,8 @@ const PendingConversationOverlay: React.FC = () => {
                     <span
                       className={classNames(
                         styles.pendingStep,
-                        index === activeStep && styles.pendingStepActive,
-                        index < activeStep && styles.pendingStepDone
+                        index === stageIndex && styles.pendingStepActive,
+                        index < stageIndex && styles.pendingStepDone
                       )}
                     >
                       {label}

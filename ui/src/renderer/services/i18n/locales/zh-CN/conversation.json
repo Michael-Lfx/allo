@@ -1,7 +1,8 @@
 {
   "welcome": {
-    "title": "Flowy，最懂你的工作台",
-    "placeholder": "发消息、上传文件、打开文件夹或创建定时任务...",
+    "title": "你想让 Flowy 完成什么？",
+    "description": "描述成果，Flowy 会准备合适的 Agent、模型与工具。",
+    "placeholder": "描述你想得到的成果…",
     "linkFolder": "打开文件夹",
     "newConversation": "新会话",
     "selectModel": "选择模型",
@@ -12,11 +13,11 @@
     "clearWorkspace": "移除项目",
     "openFolder": "打开文件夹",
     "none": "无",
-    "quickActionsTitle": "Nomi 能做什么？",
+    "quickActionsTitle": "Flowy 能做什么？",
     "quickActionFeedback": "反馈问题",
     "quickActionCheckUpdate": "检查更新",
     "quickActionStar": "喜欢我们？点个星吧",
-    "skillsMarket": "Nomi Skills Market",
+    "skillsMarket": "Flowy Skills Market",
     "skillsMarketDesc": "按需搜索并调用社区 Skills，一次配置，所有Agent通用。",
     "skillsMarketDetails": "详情 >>"
   },
@@ -113,11 +114,12 @@
     "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
   "createFailed": "创建会话失败",
   "pending": {
-    "creating": "正在创建会话…",
+    "creating": "正在准备任务…",
     "startingAutoWork": "正在启动自动工作…",
-    "stepUnderstand": "理解任务",
-    "stepPrepare": "准备执行",
-    "stepLaunch": "启动会话"
+    "stepValidate": "校验",
+    "stepCreate": "创建",
+    "stepConfigure": "配置",
+    "stepOpen": "打开"
   },
   "createError": {
     "pathVariants": {

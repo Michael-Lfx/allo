@@ -24,7 +24,10 @@ import { type TFunction } from 'i18next';
 import type { NavigateFunction } from 'react-router-dom';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
-import type { PendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
+import type {
+  PendingConversation,
+  PendingConversationStage,
+} from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
@@ -103,6 +106,8 @@ export type GuidSendDeps = {
    * user sends, before the create round-trip resolves. Optional so callers
    * outside the conversation shell degrade gracefully. */
   beginPending?: (payload: PendingConversation) => void;
+  /** Reflect a real create/configure/navigation milestone in the overlay. */
+  advancePending?: (stage: PendingConversationStage) => void;
   /** Tear the loading overlay down (on success after navigate, or on failure). */
   endPending?: () => void;
 };
@@ -157,6 +162,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     t,
     onNeedModel,
     beginPending,
+    advancePending,
     endPending,
   } = deps;
   const sendingRef = useRef(false);
@@ -230,6 +236,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       });
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke(openclawConversationParams);
 
         if (!conversation || !conversation.id) {
@@ -240,6 +247,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
         // conversation page consumes the initial message.
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -256,6 +264,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create OpenClaw conversation:', error);
@@ -285,6 +294,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       });
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke(nanobotConversationParams);
 
         if (!conversation || !conversation.id) {
@@ -295,6 +305,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
         // conversation page consumes the initial message.
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -311,6 +322,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create Nanobot conversation:', error);
@@ -328,6 +340,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       }
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke({
           type: 'nomi',
           name: entryPlan.conversationName,
@@ -363,6 +376,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
         // conversation page consumes the initial message.
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -379,6 +393,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create Nomi conversation:', error);
@@ -441,12 +456,14 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       });
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke(agentConversationParams);
         if (!conversation || !conversation.id) {
           console.error('Failed to create ACP conversation - conversation object is null or missing id');
           return;
         }
 
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -465,6 +482,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create ACP conversation:', error);
@@ -499,10 +517,32 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     navigate,
     t,
     onNeedModel,
+    advancePending,
+  ]);
+
+  const needsModelBeforeSend = useMemo(() => {
+    const agentInfo = selectedAgentInfo ?? findAgentByKey(selectedAgentKey);
+    const isPreset = is_presetAgent || is_presetAgentPending;
+    const effectiveType = getEffectiveAgentType(agentInfo).agent_type;
+    return !current_model && (selectedAgent === 'nomi' || (isPreset && effectiveType === 'nomi'));
+  }, [
+    current_model,
+    findAgentByKey,
+    getEffectiveAgentType,
+    is_presetAgent,
+    is_presetAgentPending,
+    selectedAgent,
+    selectedAgentInfo,
+    selectedAgentKey,
   ]);
 
   const sendMessageHandler = useCallback(() => {
     if (loading || sendingRef.current) return;
+    if (needsModelBeforeSend) {
+      Message.warning(t('conversation.noModelConfigured'));
+      onNeedModel?.();
+      return;
+    }
     sendingRef.current = true;
     setLoading(true);
     // Instant feedback: switch the content region to a conversation-shaped
@@ -554,6 +594,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     autoWork,
     beginPending,
     endPending,
+    needsModelBeforeSend,
+    onNeedModel,
   ]);
 
   // Calculate button disabled state

@@ -52,8 +52,15 @@
     "runSettingsHide": "收起设置"
   },
   "modelProviderSaved": "模型已就绪，可以开始任务",
+  "readiness": {
+    "ready": "{{agent}} 已就绪 · 已选择 {{model}}",
+    "needsModel": "{{agent}} 已就绪 · 添加模型后即可运行",
+    "workspaceLinked": "已关联项目",
+    "workspaceOptional": "项目可选",
+    "openSettings": "打开运行设置"
+  },
   "taskIntents": {
-    "hint": "不知道从哪开始？点一条直接填入输入框：",
+    "hint": "从一个真实任务开始",
     "fixCode": "分析这个项目的失败测试，修好后告诉我根因",
     "summarize": "阅读当前工作区，用要点总结架构与风险",
     "automate": "帮我把重复手工步骤整理成可自动执行的流程"

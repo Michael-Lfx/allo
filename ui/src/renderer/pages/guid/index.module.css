@@ -417,7 +417,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 22px;
+  margin: 0 0 16px;
 }
 
 .guidResourceHint {
@@ -458,6 +458,64 @@
   border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
   background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
   outline: none;
+}
+
+.guidRunSettingsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--flowy-border, var(--color-border-2));
+  border-radius: var(--flowy-radius-lg, 12px);
+  background: var(--flowy-surface-1, var(--color-bg-2));
+  animation: flowy-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, ease-out) both;
+}
+
+.guidReadinessStrip {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--flowy-radius-md, 8px);
+  background: transparent;
+  color: var(--flowy-text-3, var(--color-text-3));
+  font-family: inherit;
+  font-size: var(--flowy-text-caption, 12px);
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
+}
+
+.guidReadinessStrip:hover,
+.guidReadinessStrip:focus-visible {
+  background: var(--flowy-surface-2, var(--color-fill-1));
+  color: var(--flowy-text-1, var(--color-text-1));
+  outline: none;
+}
+
+.guidReadinessStrip:focus-visible {
+  box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring));
+}
+
+.guidReadinessPrimary {
+  color: var(--flowy-text-2, var(--color-text-2));
+  font-weight: var(--flowy-weight-medium, 500);
+}
+
+.guidReadinessMeta {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .guidResourceCard {
@@ -2194,6 +2252,10 @@ button.guidResourceCard:focus-visible {
 
   .guidPrimaryStage .guidLayout {
     margin-top: 0;
+  }
+
+  .guidReadinessMeta {
+    display: none;
   }
 
   .guidDiscoveryArea {

@@ -14,13 +14,18 @@ describe('Guid homepage single-screen layout', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
 
     const inputIndex = source.indexOf('<GuidInputCard');
+    const intentIndex = source.indexOf('<GuidResourceCards');
     const primaryStageIndex = source.indexOf('className={styles.guidPrimaryStage}');
     const editorHostIndex = source.indexOf('<GuidPresetEditorHost', inputIndex);
 
     expect(primaryStageIndex).toBeGreaterThan(-1);
+    expect(intentIndex).toBeGreaterThan(primaryStageIndex);
     expect(inputIndex).toBeGreaterThan(-1);
+    expect(intentIndex).toBeLessThan(inputIndex);
     expect(editorHostIndex).toBeGreaterThan(inputIndex);
     expect(source.includes('GuidResourceCards')).toBe(true);
+    expect(source.includes('GuidReadinessStrip')).toBe(true);
+    expect(source.includes("data-testid='guid-run-settings-panel'")).toBe(true);
     expect(source.includes('guidDiscoveryArea')).toBe(false);
     expect(source.includes('GuidCompanionPosterPreview')).toBe(false);
   });

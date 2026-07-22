@@ -3,13 +3,13 @@
   "brand": "Flowy",
   "brandTagline": "Hand off a task. Get a reviewable result in minutes.",
   "brandPoints": {
-    "workspace": "One workspace for sessions and local work",
-    "agents": "Built-in and external agents, working together",
-    "ready": "Start your first task right after sign-in"
+    "workspace": "Describe the outcome — Flowy prepares the workspace",
+    "agents": "Review every step, file change, and result",
+    "ready": "Keep your context and continue where you left off"
   },
-  "subtitle": "Sign in to your Flowy account to unlock AI and media",
-  "welcomeTitle": "Get started with Flowy",
-  "welcomeDesc": "Sign in with an email code and start your first task",
+  "subtitle": "Turn a task into a reviewable result",
+  "welcomeTitle": "Your first result starts here",
+  "welcomeDesc": "One email code keeps your workspace and results in sync",
   "accountSubtitle": "You're signed in — continue to the app",
   "account": {
     "signedIn": "Signed in"
@@ -18,7 +18,7 @@
     "preparing": "Preparing sign-in…",
     "progressLabel": "Sign-in progress",
     "stepEmail": "Email",
-    "stepOtp": "Enter verification code",
+    "stepOtp": "Verify",
     "emailLabel": "Email address",
     "emailPlaceholder": "you@example.com",
     "emailRequired": "Enter your email address",
@@ -50,9 +50,9 @@
   },
   "preview": {
     "label": "Product preview",
-    "home": "One task input",
-    "run": "Predictable progress",
-    "result": "Result summary + follow-up"
+    "home": "Describe the outcome",
+    "run": "Watch real progress",
+    "result": "Review and continue"
   },
   "errors": {
     "unknown": "Sign-in failed. Please try again.",

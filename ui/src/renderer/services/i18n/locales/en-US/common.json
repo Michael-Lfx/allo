@@ -1,6 +1,7 @@
 {
   "siderSection": {
-    "common": "Common",
+    "common": "Start",
+    "moreCapabilities": "More capabilities",
     "publicService": "Public Service",
     "data": "Data",
     "automation": "Automation",

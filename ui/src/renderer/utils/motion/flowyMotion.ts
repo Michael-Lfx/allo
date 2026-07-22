@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { Transition } from 'framer-motion';
+
 export const FLOWY_MOTION_MS = {
   fast: 120,
   base: 180,
@@ -18,11 +20,14 @@ export const FLOWY_EASE = {
 
 export type FlowyMotionPreset = 'enter' | 'exit' | 'move';
 
-export function flowyTransition(preset: FlowyMotionPreset, duration: keyof typeof FLOWY_MOTION_MS = 'base') {
-  const ease = FLOWY_EASE[preset === 'move' ? 'move' : preset];
+export function flowyTransition(
+  preset: FlowyMotionPreset,
+  duration: keyof typeof FLOWY_MOTION_MS = 'base'
+): Transition {
+  const ease: [number, number, number, number] = [...FLOWY_EASE[preset === 'move' ? 'move' : preset]];
   return {
     duration: FLOWY_MOTION_MS[duration] / 1000,
-    ease: [...ease],
+    ease,
   };
 }
 

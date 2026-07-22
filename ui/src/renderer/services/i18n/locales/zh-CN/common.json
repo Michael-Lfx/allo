@@ -1,6 +1,7 @@
 {
   "siderSection": {
-    "common": "常用",
+    "common": "开始",
+    "moreCapabilities": "更多能力",
     "publicService": "对外服务",
     "data": "数据空间",
     "automation": "自动化",

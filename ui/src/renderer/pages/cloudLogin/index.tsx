@@ -94,9 +94,10 @@ const CloudLoginPage: React.FC = () => {
     if (!OTPCredential || !('credentials' in navigator)) return undefined;
 
     const ac = new AbortController();
-    void (navigator.credentials as CredentialsContainer & {
+    const credentials = navigator.credentials as unknown as {
       get: (options: unknown) => Promise<{ code?: string } | null>;
-    })
+    };
+    void credentials
       .get({
         otp: { transport: ['sms'] },
         signal: ac.signal,
@@ -339,6 +340,36 @@ const CloudLoginPage: React.FC = () => {
               </>
             ) : (
               <>
+                <div
+                  className='cloud-login-progress'
+                  role='list'
+                  aria-label={t('cloudLogin.login.progressLabel')}
+                >
+                  <div
+                    className={`cloud-login-progress__step ${codeSent ? 'is-complete' : 'is-active'}`}
+                    role='listitem'
+                  >
+                    <span className='cloud-login-progress__number'>1</span>
+                    <span>{t('cloudLogin.login.stepEmail')}</span>
+                  </div>
+                  <span className='cloud-login-progress__line' aria-hidden='true' />
+                  <div
+                    className={`cloud-login-progress__step ${codeSent ? 'is-active' : ''}`}
+                    role='listitem'
+                  >
+                    <span className='cloud-login-progress__number'>2</span>
+                    <span>{t('cloudLogin.login.stepOtp')}</span>
+                  </div>
+                </div>
+
+                <div className='cloud-login-mobile-proof'>
+                  <strong>{t('cloudLogin.brandTagline')}</strong>
+                  <span>
+                    {t('cloudLogin.preview.home')} → {t('cloudLogin.preview.run')} →{' '}
+                    {t('cloudLogin.preview.result')}
+                  </span>
+                </div>
+
                 <h1 className='cloud-login-panel__title'>
                   {codeSent ? t('cloudLogin.login.stepOtp') : t('cloudLogin.welcomeTitle')}
                 </h1>

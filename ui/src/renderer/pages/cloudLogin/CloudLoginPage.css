@@ -209,6 +209,66 @@ body.login-page-active {
   max-width: 360px;
 }
 
+.cloud-login-progress {
+  display: flex;
+  align-items: center;
+  margin-bottom: 24px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cloud-login-progress__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.cloud-login-progress__number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.cloud-login-progress__step.is-active {
+  color: #0f172a;
+}
+
+.cloud-login-progress__step.is-active .cloud-login-progress__number {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.cloud-login-progress__step.is-complete {
+  color: #0f766e;
+}
+
+.cloud-login-progress__step.is-complete .cloud-login-progress__number {
+  border-color: #0f766e;
+  color: #0f766e;
+}
+
+.cloud-login-progress__line {
+  flex: 1;
+  min-width: 20px;
+  height: 1px;
+  margin: 0 10px;
+  background: #e2e8f0;
+}
+
+.cloud-login-mobile-proof {
+  display: none;
+}
+
 .cloud-login-panel__title {
   margin: 0 0 6px;
   font-size: 24px;
@@ -514,6 +574,25 @@ body.login-page-active {
 
   .cloud-login-panel {
     padding: 32px 24px;
+  }
+
+  .cloud-login-mobile-proof {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 22px;
+    padding: 12px 14px;
+    border: 1px solid #dbe5e4;
+    border-radius: 10px;
+    background: #f5faf9;
+    color: #475569;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .cloud-login-mobile-proof strong {
+    color: #0f172a;
+    font-size: 13px;
   }
 
   .cloud-login-panel__title {

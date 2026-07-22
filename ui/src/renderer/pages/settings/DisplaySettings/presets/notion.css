@@ -87,6 +87,13 @@ body {
   --workspace-btn-bg: #f7f6f3;
   --color-guid-agent-bar: #fbfbfa;
   --sider-section-title-color: #9b9a97;
+  --control-selected-bg: #2383e2;
+  --control-selected-fg: #ffffff;
+  --control-idle-bg: #ffffff;
+  --control-idle-border: #787774;
+  --control-hover-bg: #efefec;
+  --control-disabled-selected-bg: #9bc8f4;
+  --control-focus-ring: rgba(35, 131, 226, 0.24);
 
   /* Terminal — keep dark */
   --terminal-surface-bg: #1e1e1e;
@@ -242,6 +249,13 @@ body {
   --workspace-btn-bg: #252525;
   --color-guid-agent-bar: #1f1f1f;
   --sider-section-title-color: #9b9a97;
+  --control-selected-bg: #529cca;
+  --control-selected-fg: #ffffff;
+  --control-idle-bg: #252525;
+  --control-idle-border: #9b9a97;
+  --control-hover-bg: #2f2f2f;
+  --control-disabled-selected-bg: #406b87;
+  --control-focus-ring: rgba(82, 156, 202, 0.3);
 
   /* Terminal — keep dark */
   --terminal-surface-bg: #0d0d0d;

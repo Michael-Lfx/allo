@@ -1,7 +1,8 @@
 {
   "welcome": {
-    "title": "Flowy — the workspace that gets you",
-    "placeholder": "Send a message, upload files, open a folder, or create a scheduled task...",
+    "title": "What should Flowy complete for you?",
+    "description": "Describe the outcome. Flowy prepares the right agent, model, and tools.",
+    "placeholder": "Describe the result you want…",
     "linkFolder": "Open Folder",
     "newConversation": "New Chat",
     "selectModel": "Select Model",
@@ -12,11 +13,11 @@
     "clearWorkspace": "Remove project",
     "openFolder": "Open Folder",
     "none": "None",
-    "quickActionsTitle": "What can Nomi do?",
+    "quickActionsTitle": "What can Flowy do?",
     "quickActionFeedback": "Report Issue",
     "quickActionCheckUpdate": "Check updates",
     "quickActionStar": "Like us? Give us a star!",
-    "skillsMarket": "Nomi Skills Market",
+    "skillsMarket": "Flowy Skills Market",
     "skillsMarketDesc": "Search and activate community Skills on demand. Configure once, available for all agents.",
     "skillsMarketDetails": "View More >>"
   },
@@ -113,11 +114,12 @@
   "noModelConfigured": "No model configured yet. Add a provider in the dialog, then send again.",
   "createFailed": "Failed to create conversation",
   "pending": {
-    "creating": "Creating conversation…",
+    "creating": "Preparing your task…",
     "startingAutoWork": "Starting AutoWork…",
-    "stepUnderstand": "Understand",
-    "stepPrepare": "Prepare",
-    "stepLaunch": "Launch"
+    "stepValidate": "Validate",
+    "stepCreate": "Create",
+    "stepConfigure": "Configure",
+    "stepOpen": "Open"
   },
   "createError": {
     "pathVariants": {

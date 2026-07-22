@@ -6,6 +6,8 @@
 
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
+export type PendingConversationStage = 'validating' | 'creating' | 'configuring' | 'opening';
+
 /**
  * Snapshot of the message the user just submitted from the Guid composer, used
  * to render an immediate conversation-shaped loading state while the backend
@@ -22,12 +24,16 @@ export type PendingConversation = {
    * the loading caption differs ("正在启动 AutoWork…" vs "正在创建会话…").
    */
   sendsInitialMessage: boolean;
+  /** Real client-side milestone reached by the create flow. */
+  stage?: PendingConversationStage;
 };
 
 type PendingConversationContextValue = {
   pending: PendingConversation | null;
   /** Show the loading overlay immediately (called synchronously on send). */
   begin: (payload: PendingConversation) => void;
+  /** Advance the overlay only when the corresponding operation actually begins. */
+  advance: (stage: PendingConversationStage) => void;
   /** Tear the overlay down, deferred one frame to hide the mount seam. */
   end: () => void;
 };
@@ -37,6 +43,7 @@ type PendingConversationContextValue = {
 const NOOP_VALUE: PendingConversationContextValue = {
   pending: null,
   begin: () => undefined,
+  advance: () => undefined,
   end: () => undefined,
 };
 
@@ -61,7 +68,11 @@ export const PendingConversationProvider: React.FC<{ children: React.ReactNode }
   const [pending, setPending] = useState<PendingConversation | null>(null);
 
   const begin = useCallback((payload: PendingConversation) => {
-    setPending(payload);
+    setPending({ ...payload, stage: 'validating' });
+  }, []);
+
+  const advance = useCallback((stage: PendingConversationStage) => {
+    setPending((current) => (current ? { ...current, stage } : current));
   }, []);
 
   const end = useCallback(() => {
@@ -74,7 +85,10 @@ export const PendingConversationProvider: React.FC<{ children: React.ReactNode }
     }
   }, []);
 
-  const value = useMemo<PendingConversationContextValue>(() => ({ pending, begin, end }), [pending, begin, end]);
+  const value = useMemo<PendingConversationContextValue>(
+    () => ({ pending, begin, advance, end }),
+    [pending, begin, advance, end]
+  );
 
   return <PendingConversationContext.Provider value={value}>{children}</PendingConversationContext.Provider>;
 };

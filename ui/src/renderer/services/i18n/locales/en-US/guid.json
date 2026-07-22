@@ -30,7 +30,7 @@
     "clearWorkspace": "Clear",
     "specifyWorkspace": "Select project folder",
     "searchPlaceholder": "Search projects…",
-    "defaultWorkspace": "Default workspace (managed by Nomi)"
+    "defaultWorkspace": "Default workspace (managed by Flowy)"
   },
   "scanning": {
     "initialMessage": "Current Agent is unavailable, detecting other available agents...",
@@ -52,8 +52,15 @@
     "runSettingsHide": "Hide settings"
   },
   "modelProviderSaved": "Model ready — you can start the task",
+  "readiness": {
+    "ready": "{{agent}} is ready · {{model}} selected",
+    "needsModel": "{{agent}} is ready · add a model to run",
+    "workspaceLinked": "Project linked",
+    "workspaceOptional": "Project is optional",
+    "openSettings": "Open run settings"
+  },
   "taskIntents": {
-    "hint": "Not sure where to start? Tap one to fill the composer:",
+    "hint": "Start with a real task",
     "fixCode": "Analyze failing tests in this project, fix them, and tell me the root cause",
     "summarize": "Read the workspace and summarize architecture and risks",
     "automate": "Turn my repetitive manual steps into an automatable workflow"

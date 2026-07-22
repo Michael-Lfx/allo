@@ -37,6 +37,14 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
   });
 
+  test('keeps the first-task rail focused and progressively reveals capabilities', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(siderSource.includes('flowy.sider.capabilitiesExpanded')).toBe(true);
+    expect(siderSource.includes('common.siderSection.moreCapabilities')).toBe(true);
+    expect(siderSource.includes('capabilitiesExpanded || !isSessionRoute')).toBe(true);
+  });
+
   test('keeps presets/skills/mcp routes and hosts Open Capabilities as a first-class page', () => {
     const routerSource = readSource(new URL('../Router.tsx', import.meta.url));
     const settingsSiderSource = readSource(
