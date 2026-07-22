@@ -47,7 +47,16 @@
     "applyFailed": "「{{feature}}」设置应用失败，可进入会话后重新开启",
     "draftOn": "已预设 · 创建后启用",
     "draftOff": "未预设",
-    "willMount": "将挂载 {{count}} 个知识库"
+    "willMount": "将挂载 {{count}} 个知识库",
+    "runSettings": "运行设置",
+    "runSettingsHide": "收起设置"
+  },
+  "modelProviderSaved": "模型已就绪，可以开始任务",
+  "taskIntents": {
+    "hint": "不知道从哪开始？点一条直接填入输入框：",
+    "fixCode": "分析这个项目的失败测试，修好后告诉我根因",
+    "summarize": "阅读当前工作区，用要点总结架构与风险",
+    "automate": "帮我把重复手工步骤整理成可自动执行的流程"
   },
   "entry": {
     "free": "自由发挥",

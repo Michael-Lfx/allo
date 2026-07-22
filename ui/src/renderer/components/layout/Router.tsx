@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect } from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
+import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -48,22 +49,29 @@ const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabi
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 
-const RouteFallback: React.FC<{ Component: React.LazyExoticComponent<React.ComponentType> }> = ({ Component }) => {
+type RouteFallbackProps = {
+  Component: React.LazyExoticComponent<React.ComponentType>;
+  /** Full-viewport spinner for routes outside the app shell (login / companion). */
+  fullscreen?: boolean;
+};
+
+const RouteFallback: React.FC<RouteFallbackProps> = ({ Component, fullscreen = false }) => {
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={<AppLoader />}>
+      <Suspense fallback={fullscreen ? <AppLoader /> : <RouteContentFallback />}>
         <Component />
       </Suspense>
     </RouteErrorBoundary>
   );
 };
 
-const withRouteFallback = (Component: React.LazyExoticComponent<React.ComponentType>) => (
-  <RouteFallback Component={Component} />
-);
+const withRouteFallback = (
+  Component: React.LazyExoticComponent<React.ComponentType>,
+  options?: { fullscreen?: boolean }
+) => <RouteFallback Component={Component} fullscreen={options?.fullscreen} />;
 
 const SessionShellRoute: React.FC = () => {
   const location = useLocation();
@@ -71,7 +79,7 @@ const SessionShellRoute: React.FC = () => {
 
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={<AppLoader />}>
+      <Suspense fallback={<RouteContentFallback />}>
         <ConversationShell />
       </Suspense>
     </RouteErrorBoundary>
@@ -208,7 +216,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
             localStatus === 'authenticated' ? (
               <Navigate to={cloudStatus === 'authenticated' ? '/guid' : '/cloud-login'} replace />
             ) : (
-              withRouteFallback(LoginPage)
+              withRouteFallback(LoginPage, { fullscreen: true })
             )
           }
         />
@@ -218,13 +226,13 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
             localStatus !== 'authenticated' ? (
               <Navigate to='/login' replace />
             ) : (
-              withRouteFallback(CloudLoginPage)
+              withRouteFallback(CloudLoginPage, { fullscreen: true })
             )
           }
         />
         {/* The desktop-companion window route: fullscreen transparent, no app layout/sidebar. */}
-        <Route path='/companion' element={withRouteFallback(CompanionPage)} />
-        <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage)} />
+        <Route path='/companion' element={withRouteFallback(CompanionPage, { fullscreen: true })} />
+        <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
         <Route element={<ProtectedLayout layout={layout} />}>
           <Route index element={<Navigate to='/guid' replace />} />
           {/* Models, presets, skills, and MCP are independent top-level capabilities. */}

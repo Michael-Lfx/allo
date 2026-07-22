@@ -4,79 +4,60 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Robot, People, ApiApp } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import styles from '../index.module.css';
 
-const PathCard: React.FC<{
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  action: string;
-  onClick: () => void;
-  testId: string;
-}> = ({ icon, title, description, action, onClick, testId }) => (
-  <button type='button' className={styles.guidResourceCard} onClick={onClick} data-testid={testId}>
-    <span className={styles.guidResourceCardHeader}>
-      <span className={styles.guidResourceIcon}>{icon}</span>
-      <span className={styles.guidResourceTitle}>{title}</span>
-    </span>
-    <span className={styles.guidResourceDescription}>{description}</span>
-    <span className={styles.guidResourceAction}>{action}</span>
-  </button>
-);
+const INTENTS = [
+  {
+    id: 'fix-code',
+    textKey: 'guid.taskIntents.fixCode',
+    defaultText: '分析这个项目的失败测试，修好后告诉我根因',
+  },
+  {
+    id: 'summarize',
+    textKey: 'guid.taskIntents.summarize',
+    defaultText: '阅读当前工作区，用要点总结架构与风险',
+  },
+  {
+    id: 'automate',
+    textKey: 'guid.taskIntents.automate',
+    defaultText: '帮我把重复手工步骤整理成可自动执行的流程',
+  },
+] as const;
 
 type GuidResourceCardsProps = {
   onStartLocalAgent?: () => void;
+  onSetInput?: (text: string) => void;
 };
 
 /**
- * Guid empty-area: three in-app demo paths only (local agent, companion remote, mcp-agent).
+ * Guid empty-area: task intents that fill the composer (first-success path).
  */
-const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({ onStartLocalAgent }) => {
+const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({ onStartLocalAgent, onSetInput }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
 
   return (
     <div className={styles.guidResourceCards} data-testid='guid-resource-cards'>
-      <PathCard
-        testId='guid-path-local-agent'
-        icon={<Robot theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.localAgentTitle', {
-          defaultValue: 'Local agent work',
-        })}
-        description={t('conversation.emptyCards.localAgentDescription', {
-          defaultValue: 'Day-1 path: pick a Preset or Agent below, send a task, watch the session loop.',
-        })}
-        action={t('conversation.emptyCards.localAgentAction', { defaultValue: 'Start below' })}
-        onClick={() => onStartLocalAgent?.()}
-      />
-      <PathCard
-        testId='guid-path-companion'
-        icon={<People theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.companionTitle', {
-          defaultValue: 'Companion remote control',
-        })}
-        description={t('conversation.emptyCards.companionDescription', {
-          defaultValue: 'Bind a channel, then drive this machine from the first IM message.',
-        })}
-        action={t('conversation.emptyCards.companionAction', { defaultValue: 'Open companions' })}
-        onClick={() => void navigate('/nomi')}
-      />
-      <PathCard
-        testId='guid-path-open-caps'
-        icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.openCapsTitle', {
-          defaultValue: 'External agents on /mcp-agent',
-        })}
-        description={t('conversation.emptyCards.openCapsDescription', {
-          defaultValue: 'Open the port, mint a token, paste Cursor/Claude config, call one tool.',
-        })}
-        action={t('conversation.emptyCards.openCapsAction', { defaultValue: 'Open Capabilities' })}
-        onClick={() => void navigate('/open-capabilities')}
-      />
+      <p className={styles.guidResourceHint}>
+        {t('guid.taskIntents.hint', { defaultValue: '不知道从哪开始？点一条直接填入输入框：' })}
+      </p>
+      <div className={styles.guidResourceIntentRow}>
+        {INTENTS.map((intent) => (
+          <button
+            key={intent.id}
+            type='button'
+            className={styles.guidResourceIntentChip}
+            data-testid={`guid-intent-${intent.id}`}
+            onClick={() => {
+              onSetInput?.(t(intent.textKey, { defaultValue: intent.defaultText }));
+              onStartLocalAgent?.();
+            }}
+          >
+            {t(intent.textKey, { defaultValue: intent.defaultText })}
+          </button>
+        ))}
+      </div>
     </div>
   );
 };

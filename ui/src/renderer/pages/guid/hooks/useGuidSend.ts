@@ -95,6 +95,9 @@ export type GuidSendDeps = {
   navigate: NavigateFunction;
   t: TFunction;
 
+  /** When Nomi needs a model and none is configured, open in-place setup instead of only toasting. */
+  onNeedModel?: () => void;
+
   /** Show the instant "creating conversation" loading overlay the moment the
    * user sends, before the create round-trip resolves. Optional so callers
    * outside the conversation shell degrade gracefully. */
@@ -151,6 +154,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     setMentionActiveIndex,
     navigate,
     t,
+    onNeedModel,
     beginPending,
     endPending,
   } = deps;
@@ -318,6 +322,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     if (selectedAgent === 'nomi' || (is_preset && finalEffectiveAgentType === 'nomi')) {
       if (!current_model) {
         Message.warning(t('conversation.noModelConfigured'));
+        onNeedModel?.();
         return;
       }
 
@@ -492,6 +497,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     executionTemplateId,
     navigate,
     t,
+    onNeedModel,
   ]);
 
   const sendMessageHandler = useCallback(() => {

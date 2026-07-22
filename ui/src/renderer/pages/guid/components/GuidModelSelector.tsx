@@ -32,6 +32,9 @@ type GuidModelSelectorProps = {
   currentAcpCachedModelInfo: AcpModelInfo | null;
   selectedAcpModel: string | null;
   setSelectedAcpModel: React.Dispatch<React.SetStateAction<string | null>>;
+
+  /** Prefer in-place provider setup over navigating to /models. */
+  onAddModel?: () => void;
 };
 
 const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
@@ -42,11 +45,19 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   currentAcpCachedModelInfo,
   selectedAcpModel,
   setSelectedAcpModel,
+  onAddModel,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const defaultModelLabel = t('common.defaultModel');
   const providerLabel = useModelSelectorProviderLabel();
+  const openAddModel = () => {
+    if (onAddModel) {
+      onAddModel();
+      return;
+    }
+    void navigate('/models?section=models');
+  };
 
   // 获取模型配置数据（包含健康状态）
   const { data: modelConfig } = useProvidersQuery();
@@ -135,7 +146,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                         <Menu.Item
                           key='add-model'
                           className='text-12px text-t-secondary'
-                          onClick={() => navigate('/models?section=models')}
+                          onClick={openAddModel}
                         >
                           <Plus theme='outline' size='12' />
                           {t('settings.addModel')}
@@ -181,7 +192,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                         <Menu.Item
                           key='add-model'
                           className='text-12px text-t-secondary'
-                          onClick={() => navigate('/models?section=models')}
+                          onClick={openAddModel}
                         >
                           <Plus theme='outline' size='12' />
                           {t('settings.addModel')}

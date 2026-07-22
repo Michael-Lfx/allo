@@ -1,9 +1,15 @@
 {
   "pageTitle": "Flowy - Sign In",
   "brand": "Flowy",
-  "subtitle": "Sign in to your Flowy cloud account to unlock AI and media",
-  "welcomeTitle": "Welcome back",
-  "welcomeDesc": "Enter your email to receive a verification code",
+  "brandTagline": "Hand off a task. Get a reviewable result in minutes.",
+  "brandPoints": {
+    "workspace": "One workspace for sessions and local work",
+    "agents": "Built-in and external agents, working together",
+    "ready": "Start your first task right after sign-in"
+  },
+  "subtitle": "Sign in to your Flowy account to unlock AI and media",
+  "welcomeTitle": "Get started with Flowy",
+  "welcomeDesc": "Sign in with an email code and start your first task",
   "accountSubtitle": "You're signed in — continue to the app",
   "account": {
     "signedIn": "Signed in"
@@ -12,15 +18,15 @@
     "preparing": "Preparing sign-in…",
     "progressLabel": "Sign-in progress",
     "stepEmail": "Email",
-    "stepOtp": "Verify",
+    "stepOtp": "Enter verification code",
     "emailLabel": "Email address",
     "emailPlaceholder": "you@example.com",
     "emailRequired": "Enter your email address",
-  "sendCode": "Send code",
-  "sendingCode": "Sending…",
-  "resendIn": "{{seconds}}s",
-  "codeSent": "Code sent — check your inbox",
-  "sendCodeFirst": "Send the verification code first",
+    "sendCode": "Send code",
+    "sendingCode": "Sending…",
+    "resendIn": "{{seconds}}s",
+    "codeSent": "Code sent — check your inbox",
+    "sendCodeFirst": "Send the verification code first",
     "submit": "Sign in",
     "loggingIn": "Signing in",
     "otpLabel": "Verification code",
@@ -35,7 +41,7 @@
     "logout": "Sign out",
     "loggedOut": "Signed out"
   },
-  "footerPrimary": "Cloud-powered AI",
+  "footerPrimary": "Your account keeps workspace preferences safe",
   "footerSecondary": "Secure · Seamless",
   "errors": {
     "unknown": "Sign-in failed. Please try again.",

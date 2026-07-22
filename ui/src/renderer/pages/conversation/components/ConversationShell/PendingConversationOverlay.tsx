@@ -76,11 +76,20 @@ const PendingConversationOverlay: React.FC = () => {
           {/* Preset loading bubble (left) — same skin as the skeleton bubbles. */}
           <div className='w-full min-w-0 flex justify-start px-8px m-t-10px max-w-full md:max-w-780px mx-auto'>
             <div
-              className='flex items-center gap-10px rd-16px p-14px'
+              className='flex flex-col gap-10px rd-16px p-14px'
               style={{ background: 'var(--color-fill-1)', border: '1px solid var(--color-border-2)' }}
             >
-              <Spin size={16} />
-              <span className='text-t-primary text-14px leading-none'>{caption}</span>
+              <div className='flex items-center gap-10px'>
+                <Spin size={16} />
+                <span className='text-t-primary text-14px leading-none'>{caption}</span>
+              </div>
+              <div className='flex items-center gap-8px text-12px text-t-secondary' aria-hidden='true'>
+                <span>{t('conversation.pending.stepUnderstand', { defaultValue: '理解任务' })}</span>
+                <span>→</span>
+                <span>{t('conversation.pending.stepPrepare', { defaultValue: '准备执行' })}</span>
+                <span>→</span>
+                <span>{t('conversation.pending.stepLaunch', { defaultValue: '启动会话' })}</span>
+              </div>
             </div>
           </div>
         </div>

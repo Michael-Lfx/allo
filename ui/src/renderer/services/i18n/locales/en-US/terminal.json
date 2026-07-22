@@ -23,7 +23,7 @@
     "cwdRequired": "Please select a working directory first",
     "modalDesc": "Choose a CLI and merge the knowledge MCP command into its config without overwriting existing settings.",
     "modalTitle": "Connect Platform Knowledge",
-    "securityDesc": "No port or credential is stored. At startup, the CLI receives workspace-scoped access through a local channel protected for the current OS user; NomiFun must be running.",
+    "securityDesc": "No port or credential is stored. At startup, the CLI receives workspace-scoped access through a local channel protected for the current OS user; Flowy must be running.",
     "codexScope": "Writes user-level config",
     "projectScope": "Writes project config"
   },

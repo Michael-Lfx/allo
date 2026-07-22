@@ -237,6 +237,24 @@ const CloudLoginPage: React.FC = () => {
             >
               {t('cloudLogin.brand')}
             </motion.h2>
+            <motion.p
+              className='cloud-login-brand__tagline'
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.42, duration: 0.4 }}
+            >
+              {t('cloudLogin.brandTagline')}
+            </motion.p>
+            <motion.ul
+              className='cloud-login-brand__points'
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.5, duration: 0.4 }}
+            >
+              <li>{t('cloudLogin.brandPoints.workspace')}</li>
+              <li>{t('cloudLogin.brandPoints.agents')}</li>
+              <li>{t('cloudLogin.brandPoints.ready')}</li>
+            </motion.ul>
           </div>
         </aside>
 
@@ -276,39 +294,49 @@ const CloudLoginPage: React.FC = () => {
               </>
             ) : (
               <>
-                <h1 className='cloud-login-panel__title'>{t('cloudLogin.welcomeTitle')}</h1>
-                <p className='cloud-login-panel__desc'>{t('cloudLogin.welcomeDesc')}</p>
+                <h1 className='cloud-login-panel__title'>
+                  {codeSent ? t('cloudLogin.login.stepOtp') : t('cloudLogin.welcomeTitle')}
+                </h1>
+                <p className='cloud-login-panel__desc'>
+                  {codeSent
+                    ? t('cloudLogin.login.otpSentTo', { email: email.trim() })
+                    : t('cloudLogin.welcomeDesc')}
+                </p>
 
                 <form
                   className='cloud-login-form'
                   onSubmit={(event) => {
                     event.preventDefault();
+                    if (!codeSent) {
+                      void handleSendCode();
+                      return;
+                    }
                     void handleLogin();
                   }}
                 >
-                  <div className='cloud-login-field'>
-                    <label className='cloud-login-label' htmlFor='cloud-email'>
-                      {t('cloudLogin.login.emailLabel')}
-                    </label>
-                    <input
-                      ref={emailRef}
-                      id='cloud-email'
-                      type='email'
-                      className='cloud-login-input'
-                      placeholder={t('cloudLogin.login.emailPlaceholder')}
-                      autoComplete='email'
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      disabled={busy}
-                      aria-required='true'
-                    />
-                  </div>
-
-                  <div className='cloud-login-field'>
-                    <label className='cloud-login-label' htmlFor='cloud-otp'>
-                      {t('cloudLogin.login.otpLabel')}
-                    </label>
-                    <div className='cloud-login-otp-row'>
+                  {!codeSent ? (
+                    <div className='cloud-login-field'>
+                      <label className='cloud-login-label' htmlFor='cloud-email'>
+                        {t('cloudLogin.login.emailLabel')}
+                      </label>
+                      <input
+                        ref={emailRef}
+                        id='cloud-email'
+                        type='email'
+                        className='cloud-login-input'
+                        placeholder={t('cloudLogin.login.emailPlaceholder')}
+                        autoComplete='email'
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        disabled={busy}
+                        aria-required='true'
+                      />
+                    </div>
+                  ) : (
+                    <div className='cloud-login-field'>
+                      <label className='cloud-login-label' htmlFor='cloud-otp'>
+                        {t('cloudLogin.login.otpLabel')}
+                      </label>
                       <input
                         ref={otpRef}
                         id='cloud-otp'
@@ -323,25 +351,40 @@ const CloudLoginPage: React.FC = () => {
                         disabled={busy}
                         aria-required='true'
                       />
-                      <button
-                        type='button'
-                        className='cloud-login-send-btn'
-                        disabled={!canSendCode}
-                        onClick={() => void handleSendCode()}
-                      >
-                        <span className='cloud-login-send-btn__label'>{sendCodeLabel}</span>
-                      </button>
+                      <div className='cloud-login-otp-actions'>
+                        <button
+                          type='button'
+                          className='cloud-login-text-btn'
+                          disabled={busy}
+                          onClick={() => {
+                            setCodeSent(false);
+                            setOtp('');
+                            setMessage(null);
+                            window.setTimeout(() => emailRef.current?.focus(), 0);
+                          }}
+                        >
+                          {t('cloudLogin.login.back')}
+                        </button>
+                        <button
+                          type='button'
+                          className='cloud-login-text-btn'
+                          disabled={!canSendCode}
+                          onClick={() => void handleSendCode()}
+                        >
+                          {sendCodeLabel}
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <motion.button
                     type='submit'
                     className='cloud-login-submit'
-                    disabled={busy || !codeSent}
-                    whileHover={busy || !codeSent ? undefined : { y: -1 }}
-                    whileTap={busy || !codeSent ? undefined : { scale: 0.985 }}
+                    disabled={busy || (!codeSent ? !email.trim() : !otp.trim())}
+                    whileHover={busy ? undefined : { y: -1 }}
+                    whileTap={busy ? undefined : { scale: 0.985 }}
                   >
-                    {loggingIn && (
+                    {(loggingIn || sendingCode) && (
                       <svg className='cloud-login-spinner' viewBox='0 0 24 24' width='18' height='18'>
                         <circle
                           cx='12'
@@ -356,7 +399,15 @@ const CloudLoginPage: React.FC = () => {
                         />
                       </svg>
                     )}
-                    <span>{loggingIn ? t('cloudLogin.login.loggingIn') : t('cloudLogin.login.submit')}</span>
+                    <span>
+                      {loggingIn
+                        ? t('cloudLogin.login.loggingIn')
+                        : sendingCode
+                          ? t('cloudLogin.login.sendingCode')
+                          : codeSent
+                            ? t('cloudLogin.login.verify')
+                            : t('cloudLogin.login.sendCode')}
+                    </span>
                   </motion.button>
 
                   <div

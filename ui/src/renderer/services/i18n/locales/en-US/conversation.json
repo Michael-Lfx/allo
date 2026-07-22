@@ -110,11 +110,14 @@
     "presetPresets": "Presets"
   },
   "noAgentsAvailable": "No agents available",
-  "noModelConfigured": "No model configured. Please configure in settings.",
+  "noModelConfigured": "No model configured yet. Add a provider in the dialog, then send again.",
   "createFailed": "Failed to create conversation",
   "pending": {
     "creating": "Creating conversation…",
-    "startingAutoWork": "Starting AutoWork…"
+    "startingAutoWork": "Starting AutoWork…",
+    "stepUnderstand": "Understand",
+    "stepPrepare": "Prepare",
+    "stepLaunch": "Launch"
   },
   "createError": {
     "pathVariants": {

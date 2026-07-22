@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('Guid homepage single-screen layout', () => {
-  test('keeps the conversation stage and mounts three in-app demo path cards', () => {
+  test('keeps the conversation stage and mounts task-intent cards', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
 
     const inputIndex = source.indexOf('<GuidInputCard');
@@ -33,14 +33,16 @@ describe('Guid homepage single-screen layout', () => {
     expect(block.includes('overflow: hidden')).toBe(false);
   });
 
-  test('GuidResourceCards exposes three in-app CTAs without marketing outbound links', () => {
+  test('GuidResourceCards exposes task intents that fill the composer without outbound marketing links', () => {
     const source = readSource(new URL('./GuidResourceCards.tsx', import.meta.url));
 
-    expect(source.includes('guid-path-local-agent')).toBe(true);
-    expect(source.includes('guid-path-companion')).toBe(true);
-    expect(source.includes('guid-path-open-caps')).toBe(true);
-    expect(source.includes("navigate('/nomi')")).toBe(true);
-    expect(source.includes("navigate('/open-capabilities')")).toBe(true);
+    expect(source.includes("id: 'fix-code'")).toBe(true);
+    expect(source.includes("id: 'summarize'")).toBe(true);
+    expect(source.includes("id: 'automate'")).toBe(true);
+    expect(source.includes('guid-intent-')).toBe(true);
+    expect(source.includes('onSetInput')).toBe(true);
+    expect(source.includes("navigate('/nomi')")).toBe(false);
+    expect(source.includes("navigate('/open-capabilities')")).toBe(false);
     expect(source.includes('https://www.nomifun.com/docs')).toBe(false);
     expect(source.includes('openExternalUrl')).toBe(false);
     expect(source.includes('RECENT_PROMPT_LIMIT')).toBe(false);

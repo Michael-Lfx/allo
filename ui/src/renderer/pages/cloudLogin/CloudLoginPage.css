@@ -129,6 +129,71 @@ body.login-page-active {
   color: #0f172a;
 }
 
+.cloud-login-brand__tagline {
+  margin: 12px 0 0;
+  max-width: 280px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.cloud-login-brand__points {
+  margin: 28px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+  width: 100%;
+  max-width: 280px;
+}
+
+.cloud-login-brand__points li {
+  position: relative;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+.cloud-login-brand__points li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0f172a;
+}
+
+.cloud-login-otp-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.cloud-login-text-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.cloud-login-text-btn:hover:not(:disabled) {
+  color: #0f172a;
+}
+
+.cloud-login-text-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* —— Right form panel —— */
 .cloud-login-panel {
   flex: 1;

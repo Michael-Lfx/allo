@@ -6,11 +6,11 @@
   <img src="docs/images/readme-00-agent-collaboration-hero.png" alt="Flowy Agent collaboration, reusable roles, and execution graph" width="100%">
 </a>
 
-<h3>A no-holds-barred, fully open-source, <em>local-first</em> super AI workstation.</h3>
+<h3>Flowy — the AI workstation that looks sharp and finishes real work.</h3>
 
 <p>
-  Rich, inventive capabilities and serious productivity gains —<br/>
-  with <b>all your data staying on your own machine</b>. Safe for individuals and enterprises, free to commercialize, open to audit.
+  A commercial desktop product for people who want agents, automation, and knowledge<br/>
+  in one fluent app — with freemium access and optional subscription unlocks.
 </p>
 
 <p>
@@ -46,13 +46,11 @@
 ---
 
 > [!IMPORTANT]
-> **Public-interest open-source and data-risk notice**: Flowy is a public-interest open-source project. The maintainers do not assume responsibility for user data loss, corruption, or unrecoverable damage during iteration. Back up your data before upgrades, migrations, experimental features, or real production use.
+> **Product & data notice**: Flowy is an actively shipping commercial product. Back up your data before upgrades, migrations, experimental features, or production use. The maintainers do not assume responsibility for data loss during iteration.
 
 ---
 
-**Flowy** is everything you imagine an AI workstation to be — and it runs on your terms. One React frontend and one Rust backend give you an evolving desktop companion, an unattended automation platform, a unified knowledge base, native computer- and browser-use, and an open capability bus that any agent can drive. No cloud account. No telemetry. No subscription. Your data never leaves your machine except for the LLM calls **you** configure.
-
-> The product name is **Flowy**. Lowercase `nomifun` is used only for code identifiers, crate names, environment variables, and repository paths.
+**Flowy** is a commercial AI workstation: companions, unattended automation, knowledge, native computer/browser use, and an open capability bus — designed to feel premium, stay fluent, and get you to a reviewable result fast. Sign in with your Flowy account. Free tier gets you started; subscription unlocks higher limits and advanced capabilities. Your workspace stays under your control; model calls go to the providers you configure (or Flowy-hosted options when enabled).
 
 ---
 
@@ -60,7 +58,8 @@
 
 |  | |
 |---|---|
-| 🔓 **Open & local** | Source fully open, no reservations. Data lives on your machine and is never sent out on its own. Free for personal **and** commercial use. Open to audit. |
+| ✨ **Commercial polish** | Built as a product people love to open every day — clear hierarchy, smooth motion, and a short path to first success. |
+| 💳 **Freemium + subscription** | Start free. Upgrade when you need higher limits, priority models, or advanced automation. |
 | 🐾 **Evolving companions** | The most complete companion-growth system we know of — it learns how you work and gets better over time. Not just a buddy, a genuine productivity partner. |
 | 🤖 **Unattended automation** | Manage requirements, then just give the order. AutoWork + IDMM keep your sessions alive and working reliably while you're away. |
 | 🌐 **Open capability ecosystem** | Everything is here, everything connects, everything cooperates — and *any* agent can borrow Flowy's powers over MCP / REST. |
@@ -70,14 +69,12 @@
 
 ---
 
-## 🔒 Local-first, by design
+## 🔒 Data & account model
 
-Data security is not a setting in Flowy — it is the architecture.
-
-- **All data is local.** Flowy never proactively sends your data anywhere. The **only** outbound network calls are the LLM requests you explicitly configure to your chosen model provider. There is no other third-party service integration phoning home.
-- **Safe for anyone who cares about data.** Individuals and enterprises with strict data-handling requirements can use it with confidence. The code is **fully open and open to audit**.
-- **We cut features to keep this promise.** To guarantee your data stays yours, we deliberately dropped several advanced, genuinely fun feature designs. Everything here is in service of letting users — and developers — relax.
-- **No ads. No commercialization. No membership tiers.** We promise to *never* charge for any feature of this project. The only thing that costs money is your LLM provider's tokens, which is outside our control. (If finding/serving models is painful, [reach out](#-contact--community) — we're happy to help build a unified model gateway.)
+- **Account unlocks the product.** Flowy uses account sign-in so preferences, plan entitlements, and device continuity stay consistent.
+- **Workspace control.** Your projects and knowledge stay on the surfaces you choose; outbound model traffic goes to providers you configure or Flowy-managed endpoints when you opt in.
+- **Freemium by design.** Core workflows are available on the free tier; subscription plans raise limits and unlock advanced automation / media capabilities.
+- **Transparent about cost.** Provider token usage may still be billed by third-party model vendors even on free Flowy plans.
 
 See [`SECURITY.md`](SECURITY.md) for the deployment threat model and responsible-disclosure policy.
 
@@ -494,17 +491,11 @@ Flowy very much needs your help to grow — code contributions, community buildi
 
 ---
 
-## 💛 A note from the author
+## 💛 Product direction
 
-> This is a part-time effort with limited bandwidth, and many delightful features are still on the way. If this resonates with you, join in any way you like — a line of code, a suggestion, a reshare all mean a lot.
+Flowy is shipping toward a polished commercial experience: beautiful UI, fluent interactions, and a 90-second path from sign-in to a reviewable first result.
 
-Flowy is **completely open source, with nothing held back**. Individuals and enterprises are free to build on it and use it commercially.
-
-- **Forks & commercial use are welcome.** They're also at your own risk — the author and contributors assume no liability for downstream use. Apache-2.0 requires no permission from us.
-- **A friendly heads-up is appreciated, not required.** If you fork or commercialize Flowy, we'd love a note — *not* as a license condition, simply because knowing the project is valued is the kind of recognition that keeps it going.
-- **Some features were intentionally left out of the open-source release** to keep the local-data promise airtight — without the people and funding to guarantee everyone's data security, removing them was the responsible choice. As time and resources allow, we hope to bring more of them to you.
-
-Thank you for being here. 🙏
+Source availability and licensing details remain in [`LICENSE`](LICENSE). Product plans (free vs subscription) are defined by Flowy account entitlements — not by “everything forever free” promises.
 
 ---
 

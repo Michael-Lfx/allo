@@ -414,10 +414,50 @@
 }
 
 .guidResourceCards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin-top: 22px;
+}
+
+.guidResourceHint {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-3);
+}
+
+.guidResourceIntentRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.guidResourceIntentChip {
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-2) 76%, transparent);
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.guidResourceIntentChip:hover,
+.guidResourceIntentChip:focus-visible {
+  color: var(--color-text-1);
+  border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
+  outline: none;
 }
 
 .guidResourceCard {
@@ -2069,6 +2109,35 @@ button.guidResourceCard:focus-visible {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.guidRunSettingsToggle {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  background: var(--color-bg-2, var(--bg-2));
+  color: var(--color-text-2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.guidRunSettingsToggle:hover {
+  color: var(--color-text-1);
+  border-color: var(--color-border-3);
+  background: var(--color-fill-2);
+}
+
+.guidRunSettingsToggle[aria-expanded='true'] {
+  color: rgb(var(--primary-6));
+  border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, transparent);
 }
 
 @media (max-width: 768px) {

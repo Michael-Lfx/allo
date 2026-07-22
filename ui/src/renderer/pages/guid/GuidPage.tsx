@@ -33,6 +33,7 @@ import PoiStarterChips from './components/PoiStarterChips';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
 import GuidModelSelector from './components/GuidModelSelector';
+import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
@@ -76,6 +77,7 @@ const GuidPage: React.FC = () => {
   const location = useLocation();
   const guidContainerRef = useRef<HTMLDivElement>(null);
   const openPresetDetailsRef = useRef<(() => void) | null>(null);
+  const addProviderRef = useRef<GuidAddProviderHandle>(null);
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
 
   const localeKey = resolveLocaleKey(i18n.language);
@@ -83,6 +85,7 @@ const GuidPage: React.FC = () => {
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [delegationPolicy, setDelegationPolicy] = useState<TDelegationPolicy>('automatic');
   const [decisionPolicy, setDecisionPolicy] = useState<TDecisionPolicy>('automatic');
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
@@ -292,6 +295,7 @@ const GuidPage: React.FC = () => {
     // Navigation
     navigate,
     t,
+    onNeedModel: () => addProviderRef.current?.open(),
 
     // Instant "creating conversation" loading overlay (ConversationShell-level)
     beginPending: pendingConversation.begin,
@@ -485,6 +489,7 @@ const GuidPage: React.FC = () => {
       guidInput.setDir('');
     }
     advancedConfig.reset();
+    setAdvancedOpen(false);
   }, [
     guidInput.setDir,
     guidInput.setFiles,
@@ -615,6 +620,7 @@ const GuidPage: React.FC = () => {
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
+      onAddModel={() => addProviderRef.current?.open()}
     />
   );
   const collaboratorSelectorNode = (
@@ -750,7 +756,20 @@ const GuidPage: React.FC = () => {
             the content area's top-right corner — mirroring the active-session
             ChatLayout header placement, and freeing the input box's bottom row.
             Desktop only (hidden on mobile via CSS), matching the session header. */}
-        <div className={styles.guidAdvancedControls}>{advancedControlsNode}</div>
+        <div className={styles.guidAdvancedControls}>
+          <button
+            type='button'
+            className={styles.guidRunSettingsToggle}
+            aria-expanded={advancedOpen}
+            data-testid='guid-run-settings-toggle'
+            onClick={() => setAdvancedOpen((open) => !open)}
+          >
+            {advancedOpen
+              ? t('guid.advanced.runSettingsHide', { defaultValue: 'Hide settings' })
+              : t('guid.advanced.runSettings', { defaultValue: 'Run settings' })}
+          </button>
+          {advancedOpen ? advancedControlsNode : null}
+        </div>
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
@@ -827,7 +846,10 @@ const GuidPage: React.FC = () => {
               }
             />
 
-            <GuidResourceCards onStartLocalAgent={guidInput.handleTextareaFocus} />
+            <GuidResourceCards
+              onStartLocalAgent={guidInput.handleTextareaFocus}
+              onSetInput={guidInput.setInput}
+            />
 
             {/* Editor host (modals + example prompts + fallback notice) */}
             <GuidPresetEditorHost
@@ -866,6 +888,12 @@ const GuidPage: React.FC = () => {
         />
 
         <QuickActionButtons inactiveBorderColor={inactiveBorderColor} activeShadow={activeShadow} />
+        <GuidAddProviderModal
+          ref={addProviderRef}
+          onConfigured={(model) => {
+            void modelSelection.setCurrentModel(model);
+          }}
+        />
       </div>
     </ConfigProvider>
   );

@@ -47,7 +47,16 @@
     "applyFailed": "Failed to apply {{feature}} — you can re-enable it inside the conversation.",
     "draftOn": "Preset · enabled after creation",
     "draftOff": "Not preset",
-    "willMount": "{{count}} base(s) will be mounted"
+    "willMount": "{{count}} base(s) will be mounted",
+    "runSettings": "Run settings",
+    "runSettingsHide": "Hide settings"
+  },
+  "modelProviderSaved": "Model ready — you can start the task",
+  "taskIntents": {
+    "hint": "Not sure where to start? Tap one to fill the composer:",
+    "fixCode": "Analyze failing tests in this project, fix them, and tell me the root cause",
+    "summarize": "Read the workspace and summarize architecture and risks",
+    "automate": "Turn my repetitive manual steps into an automatable workflow"
   },
   "entry": {
     "free": "Free-form",

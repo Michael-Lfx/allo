@@ -110,11 +110,14 @@
     "presetPresets": "设定"
   },
   "noAgentsAvailable": "没有可用的 Agent",
-  "noModelConfigured": "未配置模型，请前往设置页面配置。",
+    "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
   "createFailed": "创建会话失败",
   "pending": {
     "creating": "正在创建会话…",
-    "startingAutoWork": "正在启动自动工作…"
+    "startingAutoWork": "正在启动自动工作…",
+    "stepUnderstand": "理解任务",
+    "stepPrepare": "准备执行",
+    "stepLaunch": "启动会话"
   },
   "createError": {
     "pathVariants": {
