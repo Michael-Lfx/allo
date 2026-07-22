@@ -1511,7 +1511,7 @@ allow_list = ["Read", "Grep", "Glob"]
 
 # Context compaction settings
 # [compact]
-# context_window = 200000        # context window size in tokens
+# context_window = 128000        # context window size in tokens (Claude: 200000, OpenAI: 128000)
 # output_reserve = 20000         # tokens reserved for output
 # autocompact_buffer = 13000     # buffer below effective window for autocompact trigger
 # emergency_buffer = 3000        # tokens from limit for emergency block
