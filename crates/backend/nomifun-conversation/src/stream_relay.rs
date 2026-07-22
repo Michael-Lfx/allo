@@ -29,6 +29,7 @@ use nomifun_db::models::MessageRow;
 use nomifun_realtime::UserEventSink;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
@@ -319,6 +320,26 @@ fn turn_writeback_running_state(status: &str, attempt_id: &str, started_at: i64,
     })
 }
 
+/// Terminal state for a write-back that never produced its own report because
+/// it was cancelled (a new turn / teardown) or exceeded the hard bound. Without
+/// this the assistant row keeps a running `knowledge_writeback` state forever:
+/// the live UI spins with no resolution and a later re-fetch only projects it
+/// as "interrupted" once it goes stale. Emitting a terminal state here resolves
+/// the UI immediately and marks it retryable.
+fn turn_writeback_interrupted_state(attempt_id: &str, started_at: i64, finished_at: i64) -> Value {
+    json!({
+        "status": "interrupted",
+        "attempt_id": attempt_id,
+        "started_at": started_at,
+        "updated_at": finished_at,
+        "finished_at": finished_at,
+        "retryable": true,
+        "candidates": 0,
+        "written": [],
+        "failures": [],
+    })
+}
+
 fn turn_writeback_final_state(
     report: &nomifun_knowledge::TurnWritebackReport,
     status: &str,
@@ -430,6 +451,8 @@ pub(crate) async fn run_turn_writeback_report(
     conversation_id: String,
     msg_id: String,
     final_text: String,
+    turn_token: CancellationToken,
+    hard_bound: Duration,
 ) {
     if final_text.trim().is_empty() {
         return;
@@ -453,29 +476,76 @@ pub(crate) async fn run_turn_writeback_report(
     let progress_conversation_id = conversation_id.clone();
     let progress_msg_id = msg_id.clone();
     let progress_attempt_id = attempt_id.clone();
-    let report = service
-        .finalize_turn_writeback_with_progress(request, move |phase| {
-            let repo = Arc::clone(&progress_repo);
-            let user_events = Arc::clone(&progress_user_events);
-            let user_id = progress_user_id.clone();
-            let conversation_id = progress_conversation_id.clone();
-            let msg_id = progress_msg_id.clone();
-            let attempt_id = progress_attempt_id.clone();
-            let status = turn_writeback_phase_label(phase);
-            async move {
-                let updated_at = now_ms();
-                emit_turn_writeback_state(
-                    &repo,
-                    &user_events,
-                    &user_id,
-                    &conversation_id,
-                    &msg_id,
-                    turn_writeback_running_state(status, &attempt_id, started_at, updated_at),
-                )
-                .await;
+    let finalize = service.finalize_turn_writeback_with_progress(request, move |phase| {
+        let repo = Arc::clone(&progress_repo);
+        let user_events = Arc::clone(&progress_user_events);
+        let user_id = progress_user_id.clone();
+        let conversation_id = progress_conversation_id.clone();
+        let msg_id = progress_msg_id.clone();
+        let attempt_id = progress_attempt_id.clone();
+        let status = turn_writeback_phase_label(phase);
+        async move {
+            let updated_at = now_ms();
+            emit_turn_writeback_state(
+                &repo,
+                &user_events,
+                &user_id,
+                &conversation_id,
+                &msg_id,
+                turn_writeback_running_state(status, &attempt_id, started_at, updated_at),
+            )
+            .await;
+        }
+    });
+    // Bound the write-back and always land on a terminal state. The extraction
+    // (and optional merge) makes LLM calls that can each take tens of seconds,
+    // so a cancellation (new turn / teardown) or the hard bound must still emit
+    // a terminal "interrupted" event — otherwise the row stays "running" and
+    // the UI never resolves.
+    let report = tokio::select! {
+        biased;
+        _ = turn_token.cancelled() => {
+            let finished_at = now_ms();
+            info!(
+                conversation_id = %conversation_id,
+                msg_id = %msg_id,
+                "turn-final knowledge write-back cancelled"
+            );
+            emit_turn_writeback_state(
+                &repo,
+                &user_events,
+                &user_id,
+                &conversation_id,
+                &msg_id,
+                turn_writeback_interrupted_state(&attempt_id, started_at, finished_at),
+            )
+            .await;
+            return;
+        }
+        result = tokio::time::timeout(hard_bound, finalize) => {
+            match result {
+                Ok(report) => report,
+                Err(_) => {
+                    let finished_at = now_ms();
+                    warn!(
+                        conversation_id = %conversation_id,
+                        msg_id = %msg_id,
+                        "turn-final knowledge write-back exceeded the hard bound"
+                    );
+                    emit_turn_writeback_state(
+                        &repo,
+                        &user_events,
+                        &user_id,
+                        &conversation_id,
+                        &msg_id,
+                        turn_writeback_interrupted_state(&attempt_id, started_at, finished_at),
+                    )
+                    .await;
+                    return;
+                }
             }
-        })
-        .await;
+        }
+    };
     let status = turn_writeback_status_label(report.status);
     match report.status {
         nomifun_knowledge::TurnWritebackStatus::Written

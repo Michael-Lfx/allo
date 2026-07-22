@@ -1042,7 +1042,11 @@ async fn get_reports_idle_runtime_when_only_persisted_status_is_running() {
 // ── Boot reconciliation tests ──────────────────────────────────────
 
 #[tokio::test]
-async fn reconcile_marks_running_conversation_finished() {
+async fn reconcile_corrects_leaked_running_marker_without_touching_session() {
+    // A `running` row with no dangling message is a healthy conversation whose
+    // status write leaked on a termination path. Boot must correct the marker
+    // to `finished` but MUST NOT drop its resumable session (doing so was the
+    // regression that made healthy conversations misbehave after a restart).
     let (svc, _broadcaster, repo, _runtime_registry) = make_service();
     let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
     repo.update(
@@ -1055,12 +1059,17 @@ async fn reconcile_marks_running_conversation_finished() {
     .await
     .unwrap();
 
+    let acp_repo_concrete = Arc::new(BootAcpSessionRepo::default());
+    acp_repo_concrete.seed(&created.id, "acp_session_healthy");
     let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
-    let acp_repo: Arc<dyn IAcpSessionRepository> = Arc::new(BootAcpSessionRepo::default());
+    let acp_repo: Arc<dyn IAcpSessionRepository> = acp_repo_concrete.clone();
 
     let reconciled = crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
 
-    assert_eq!(reconciled, 1);
+    // Not a genuine ghost: not counted, session preserved, status corrected.
+    assert_eq!(reconciled, 0);
+    let session = acp_repo.get(&created.id).await.unwrap().expect("session row should exist");
+    assert_eq!(session.session_id.as_deref(), Some("acp_session_healthy"));
     let fetched = svc.get(TEST_USER_1, &created.id).await.unwrap();
     assert_eq!(fetched.status, ConversationStatus::Finished);
 }
@@ -1121,14 +1130,29 @@ async fn reconcile_clears_acp_session() {
     )
     .await
     .unwrap();
+    // A genuine crash artifact must be present for the session to be dropped.
+    repo.insert_message(&MessageRow {
+        id: "msg_thinking_interrupted".into(),
+        conversation_id: created.id.clone(),
+        msg_id: Some("msg_thinking_interrupted".into()),
+        r#type: "thinking".into(),
+        content: json!({ "content": "interrupted", "status": "thinking" }).to_string(),
+        position: Some("left".into()),
+        status: Some("work".into()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
 
     let acp_repo_concrete = Arc::new(BootAcpSessionRepo::default());
     acp_repo_concrete.seed(&created.id, "acp_session_abc");
     let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
     let acp_repo: Arc<dyn IAcpSessionRepository> = acp_repo_concrete.clone();
 
-    crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+    let reconciled = crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
 
+    assert_eq!(reconciled, 1);
     let session = acp_repo.get(&created.id).await.unwrap().expect("session row should exist");
     assert!(session.session_id.is_none());
     assert_eq!(session.session_status, "idle");
@@ -1173,13 +1197,28 @@ async fn persist_conversation_running_writes_running_marker() {
 
 #[tokio::test]
 async fn persist_running_then_reconcile_settles_the_ghost() {
-    // End-to-end of the durable marker + boot sweep: a turn persists `running`,
-    // the process "dies" (no completion writes `finished`), and the next boot's
-    // reconciliation finds the ghost and settles it back to a usable state.
+    // End-to-end of the durable marker + boot sweep: a turn persists `running`
+    // and streams a `thinking` message, the process "dies" (no completion
+    // writes `finished` and the thinking stays mid-stream), and the next boot's
+    // reconciliation finds the ghost — proven by the dangling artifact — and
+    // settles it back to a usable state.
     let (svc, _broadcaster, repo, _runtime_registry) = make_service();
     let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
 
     svc.persist_conversation_running(&created.id).await;
+    repo.insert_message(&MessageRow {
+        id: "msg_ghost_thinking".into(),
+        conversation_id: created.id.clone(),
+        msg_id: Some("msg_ghost_thinking".into()),
+        r#type: "thinking".into(),
+        content: json!({ "content": "mid-stream", "status": "thinking" }).to_string(),
+        position: Some("left".into()),
+        status: Some("work".into()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
 
     let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
     let acp_repo: Arc<dyn IAcpSessionRepository> = Arc::new(BootAcpSessionRepo::default());
@@ -1191,6 +1230,56 @@ async fn persist_running_then_reconcile_settles_the_ghost() {
         svc.get(TEST_USER_1, &created.id).await.unwrap().status,
         ConversationStatus::Finished
     );
+}
+
+#[tokio::test]
+async fn reconcile_clears_session_for_dangling_work_message_without_thinking() {
+    // Broadened crash detection: even when the interrupted turn produced no
+    // `thinking` message, a message stranded at `status = 'work'` is proof of
+    // an interrupted turn and must drop the resumable session.
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let created = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    repo.update(
+        &created.id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    repo.insert_message(&MessageRow {
+        id: "msg_text_work".into(),
+        conversation_id: created.id.clone(),
+        msg_id: Some("msg_text_work".into()),
+        r#type: "content".into(),
+        content: json!({ "content": "partial answer" }).to_string(),
+        position: Some("left".into()),
+        status: Some("work".into()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
+
+    let acp_repo_concrete = Arc::new(BootAcpSessionRepo::default());
+    acp_repo_concrete.seed(&created.id, "acp_session_work");
+    let conv_repo: Arc<dyn IConversationRepository> = repo.clone();
+    let acp_repo: Arc<dyn IAcpSessionRepository> = acp_repo_concrete.clone();
+
+    let reconciled =
+        crate::boot::reconcile_running_conversations_on_boot(&conv_repo, &acp_repo).await;
+
+    assert_eq!(reconciled, 1);
+    let session = acp_repo.get(&created.id).await.unwrap().expect("session row should exist");
+    assert!(session.session_id.is_none());
+    // The stranded work message is terminalized so it stops rendering as live.
+    let message = repo
+        .get_message(&created.id, "msg_text_work")
+        .await
+        .unwrap()
+        .expect("work message should still exist");
+    assert_eq!(message.status.as_deref(), Some("finish"));
 }
 
 #[tokio::test]
