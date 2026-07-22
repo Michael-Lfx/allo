@@ -1209,4 +1209,29 @@ mod tests {
         assert_eq!(raw["status"], "active");
         assert_eq!(raw["payload"]["name"], "daily-report");
     }
+
+    #[test]
+    fn update_conversation_request_rejects_merge_extra_flag() {
+        // Frontend historically forwarded a client-only `merge_extra` hint.
+        // The backend always merges `extra` and uses deny_unknown_fields, so
+        // that flag must never appear on the wire — otherwise PATCH fails and
+        // nomi last_token_usage never persists (empty metrics panel).
+        let rejected = serde_json::from_value::<UpdateConversationRequest>(json!({
+            "extra": { "last_token_usage": { "total_tokens": 42 } },
+            "merge_extra": true
+        }));
+        assert!(
+            rejected.is_err(),
+            "merge_extra must be rejected by deny_unknown_fields"
+        );
+
+        let accepted = serde_json::from_value::<UpdateConversationRequest>(json!({
+            "extra": { "last_token_usage": { "total_tokens": 42 } }
+        }))
+        .expect("extra-only PATCH body must deserialize");
+        assert_eq!(
+            accepted.extra.unwrap()["last_token_usage"]["total_tokens"],
+            42
+        );
+    }
 }

@@ -481,13 +481,15 @@ export const conversation = {
   update: httpPatch<boolean, { id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean }; merge_extra?: boolean }>(
     (p) => `/api/conversations/${p.id}`,
     (p) => {
+      // `merge_extra` is a client-only hint: the backend always merges `extra`
+      // and UpdateConversationRequest uses deny_unknown_fields, so forwarding
+      // the flag makes every metrics / workspace PATCH fail deserialization.
       const updates = p.updates as Record<string, unknown>;
       const { model: rawModel, ...rest } = updates;
       const model = toApiModelOptional(rawModel as TProviderWithModel | undefined);
       return {
         ...rest,
         ...(model ? { model } : {}),
-        merge_extra: p.merge_extra,
       };
     }
   ),

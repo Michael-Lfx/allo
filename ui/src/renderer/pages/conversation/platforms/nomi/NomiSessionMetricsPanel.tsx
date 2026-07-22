@@ -5,6 +5,7 @@
  */
 
 import type { TChatConversation, TokenUsageData } from '@/common/config/storage';
+import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { addEventListener } from '@/renderer/utils/emitter';
 import { Empty } from '@arco-design/web-react';
 import { ChartHistogram, Dashboard, Lightning, Time } from '@icon-park/react';
@@ -98,6 +99,23 @@ const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = (
   useEffect(() => {
     setUsage(getPersistedUsage(conversation));
   }, [conversation]);
+
+  // Metrics tab content mounts only while selected, so live `nomi.usage.updated`
+  // events during a turn are often missed. Re-read the conversation row on mount
+  // (and when switching conversations) to pick up persisted last_token_usage.
+  useEffect(() => {
+    let cancelled = false;
+    void getConversationOrNull(conversation.id).then((latest) => {
+      if (cancelled || !latest) return;
+      const persisted = getPersistedUsage(latest);
+      if (hasUsageData(persisted)) {
+        setUsage(persisted);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation.id]);
 
   useEffect(() => {
     return addEventListener('nomi.usage.updated', ({ conversation_id, tokenUsage }) => {

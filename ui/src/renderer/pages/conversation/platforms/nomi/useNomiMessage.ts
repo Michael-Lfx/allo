@@ -13,7 +13,7 @@ import type { IResponseMessage } from '@/common/adapter/ipcBridge';
 import type { TChatConversation, TokenUsageData } from '@/common/config/storage';
 import { prefixedId, uuid } from '@/common/utils';
 import { useAddOrUpdateMessage } from '@/renderer/pages/conversation/Messages/hooks';
-import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { getConversationOrNull, refreshConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
 import {
   isCompleteMessageProjection,
   isConversationProcessing,
@@ -500,13 +500,21 @@ export const useNomiMessage = (
               setTokenUsage(newTokenUsage);
               if (!readOnly) {
                 emitter.emit('nomi.usage.updated', { conversation_id, tokenUsage: newTokenUsage });
-                void ipcBridge.conversation.update.invoke({
-                  id: conversation_id,
-                  updates: {
-                    extra: { last_token_usage: newTokenUsage } as TChatConversation['extra'],
-                  },
-                  merge_extra: true,
-                });
+                void ipcBridge.conversation.update
+                  .invoke({
+                    id: conversation_id,
+                    updates: {
+                      extra: { last_token_usage: newTokenUsage } as TChatConversation['extra'],
+                    },
+                  })
+                  .then((ok) => {
+                    if (ok) {
+                      void refreshConversationCache(conversation_id);
+                    }
+                  })
+                  .catch((error) => {
+                    console.warn('[nomi] failed to persist last_token_usage', error);
+                  });
               }
             }
           }
