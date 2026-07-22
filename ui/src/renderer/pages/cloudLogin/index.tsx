@@ -14,6 +14,7 @@ import { ipcBridge } from '@/common';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { isDesktopShell, isMacOS } from '@renderer/utils/platform';
 import { flowyTransition, prefersReducedMotion, preloadCommercialPathChunks } from '@renderer/utils/motion/flowyMotion';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import DotMap from './DotMap';
 import './CloudLoginPage.css';
 import '@renderer/components/layout/Titlebar/titlebar.css';
@@ -143,6 +144,7 @@ const CloudLoginPage: React.FC = () => {
         window.setTimeout(() => otpRef.current?.focus(), 0);
       } else if (res.status === 'success') {
         justLoggedInRef.current = true;
+        trackFunnelEvent('auth_completed', { method: 'email' });
         showMessage({ type: 'success', text: t('cloudLogin.login.successRedirect') });
         await refresh();
       } else {
@@ -181,6 +183,7 @@ const CloudLoginPage: React.FC = () => {
       if (res.status === 'success') {
         justLoggedInRef.current = true;
         setOtp('');
+        trackFunnelEvent('auth_completed', { method: 'email_otp' });
         showMessage({ type: 'success', text: t('cloudLogin.login.successRedirect') });
         await refresh();
       } else if (res.status === 'pending') {

@@ -7,6 +7,7 @@
 import React, { useMemo, useState } from 'react';
 import { COMMERCIAL_PATH_FRAMES, type CommercialPathState } from './commercialPathModel';
 import { COMMERCIAL_SLICE_FLAG, isCommercialSliceEnabled } from '@renderer/utils/featureFlags/commercialSlice';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import './commercialSlice.css';
 
 const CommercialSlicePage: React.FC = () => {
@@ -40,7 +41,12 @@ const CommercialSlicePage: React.FC = () => {
             aria-selected={item.state === state}
             className={item.state === state ? 'is-active' : undefined}
             data-testid={`commercial-state-${item.state}`}
-            onClick={() => setState(item.state)}
+            onClick={() => {
+              setState(item.state);
+              if (item.state === 'task_success') {
+                trackFunnelEvent('first_value_confirmed', { source: 'prototype' });
+              }
+            }}
           >
             {item.state}
           </button>

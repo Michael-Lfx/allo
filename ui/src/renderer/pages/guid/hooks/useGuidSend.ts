@@ -25,6 +25,7 @@ import type { NavigateFunction } from 'react-router-dom';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
 import type { PendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import type { AcpModelInfo, AvailableAgent, EffectiveAgentInfo } from '../types';
@@ -513,6 +514,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       files: files.length > 0 ? files : undefined,
       sendsInitialMessage: !isAutoWorkEntry(autoWork),
     });
+    trackFunnelEvent('first_task_started', { source: 'guid' });
     handleSend()
       .then(() => {
         setInput('');

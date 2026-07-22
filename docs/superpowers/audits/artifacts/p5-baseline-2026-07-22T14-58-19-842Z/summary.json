@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-07-22T14:58:19.843Z",
+  "gate": "ux-visual-baseline",
+  "checks": [
+    "ui/src/renderer/styles/flowyVisualSystem.test.ts",
+    "ui/src/renderer/utils/motion/flowyMotion.test.ts",
+    "ui/src/renderer/pages/commercialSlice/commercialPathModel.test.ts",
+    "ui/src/renderer/utils/analytics/productFunnel.test.ts"
+  ],
+  "route": "/#/test/commercial-slice",
+  "releaseCriteria": {
+    "firstTaskCompletionUp": "manual cohort",
+    "ttfvDown": "manual cohort",
+    "noFullscreenRouteFlash": true,
+    "coreAnimation60fps": "manual / probe",
+    "keyboardAndReducedMotion": true
+  }
+}

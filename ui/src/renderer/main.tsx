@@ -57,6 +57,8 @@ import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJo
 
 // Components and utilities
 import AppLoader from './components/layout/AppLoader';
+import { maybeTrackRetention } from './utils/analytics/productFunnel';
+import { maybeTrackRetention } from './utils/analytics/productFunnel';
 import Layout from './components/layout/Layout';
 import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
@@ -151,6 +153,7 @@ const Main = () => {
   useEffect(() => {
     if (!ready || !cloudReady || status !== 'authenticated') return;
     void repairAllCronJobTimeZonesOnce();
+    maybeTrackRetention();
   }, [ready, cloudReady, status]);
 
   const router = (
