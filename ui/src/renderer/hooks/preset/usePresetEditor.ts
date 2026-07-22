@@ -23,7 +23,7 @@ import {
 } from '@/renderer/pages/settings/skill/agentSkillImportUtils';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { parseKnowledgeBaseId, type KnowledgeBaseId } from '@/common/types/ids';
+import { parseKnowledgeBaseId, parseMcpServerId, type KnowledgeBaseId, type McpServerId } from '@/common/types/ids';
 
 type UsePresetEditorParams = {
   localeKey: string;
@@ -72,6 +72,7 @@ export const usePresetEditor = ({
     grounded: false,
   });
   const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<KnowledgeBaseId[]>([]);
+  const [mcpServerIds, setMcpServerIds] = useState<McpServerId[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [promptViewMode, setPromptViewMode] = useState<'edit' | 'preview'>('preview');
@@ -107,6 +108,7 @@ export const usePresetEditor = ({
     setAutoSelectable(preset.auto_selectable);
     setKnowledgePolicy(preset.knowledge_policy);
     setKnowledgeBaseIds(preset.knowledge_bases.map((item) => item.knowledge_base_id));
+    setMcpServerIds((preset.mcp_server_ids ?? []).map(parseMcpServerId));
     setEditAudienceTags(preset.audience_tags ?? []);
     setEditScenarioTags(preset.scenario_tags ?? []);
     setPendingSkills([]);
@@ -153,6 +155,7 @@ export const usePresetEditor = ({
     setAutoSelectable(false);
     setKnowledgePolicy({ enabled: false, mode: 'inherit', writeback: false, grounded: false });
     setKnowledgeBaseIds([]);
+    setMcpServerIds([]);
     setSelectedSkills([]);
     setCustomSkills([]);
     setDisabledBuiltinSkills([]);
@@ -192,6 +195,7 @@ export const usePresetEditor = ({
     setAutoSelectable(preset.auto_selectable);
     setKnowledgePolicy(preset.knowledge_policy);
     setKnowledgeBaseIds(preset.knowledge_bases.map((item) => item.knowledge_base_id));
+    setMcpServerIds((preset.mcp_server_ids ?? []).map(parseMcpServerId));
     setEditAudienceTags(preset.audience_tags ?? []);
     setEditScenarioTags(preset.scenario_tags ?? []);
     setPromptViewMode('edit');
@@ -275,6 +279,7 @@ export const usePresetEditor = ({
           knowledge_base_id: parseKnowledgeBaseId(knowledge_base_id),
           required: false,
         })),
+        mcp_server_ids: mcpServerIds.map(String),
         audience_tags: editAudienceTags,
         scenario_tags: editScenarioTags,
       };
@@ -440,6 +445,8 @@ export const usePresetEditor = ({
     setKnowledgePolicy,
     knowledgeBaseIds,
     setKnowledgeBaseIds,
+    mcpServerIds,
+    setMcpServerIds,
     isCreating,
     deleteConfirmVisible,
     setDeleteConfirmVisible,

@@ -74,6 +74,13 @@ pub struct PresetKnowledgeBaseRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PresetMcpServerRow {
+    pub preset_id: String,
+    pub mcp_server_id: String,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PresetExampleRow {
     pub preset_id: String,
     pub locale: String,
@@ -118,6 +125,7 @@ pub struct PresetRecord {
     pub skill_bindings: Vec<PresetSkillBindingRow>,
     pub knowledge_policy: Option<PresetKnowledgePolicyRow>,
     pub knowledge_bases: Vec<PresetKnowledgeBaseRow>,
+    pub mcp_servers: Vec<PresetMcpServerRow>,
     pub examples: Vec<PresetExampleRow>,
     pub tag_bindings: Vec<PresetTagBindingRow>,
     pub user_state: Option<PresetUserStateRow>,
@@ -147,6 +155,8 @@ pub struct PresetWriteParams {
     pub knowledge_policy: (bool, String, bool, Option<String>, bool),
     /// knowledge_base_id, required
     pub knowledge_bases: Vec<(String, bool)>,
+    /// mcp_server_id values in selection order
+    pub mcp_servers: Vec<String>,
     /// locale, prompt
     pub examples: Vec<(String, String)>,
     /// tag_key, dimension

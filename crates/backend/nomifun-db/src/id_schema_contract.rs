@@ -139,6 +139,8 @@ const ENTITY_REFERENCE_COLUMNS: &[(&str, &str)] = &[
     ("preset_knowledge_bases", "knowledge_base_id"),
     ("preset_knowledge_policy", "preset_id"),
     ("preset_localizations", "preset_id"),
+    ("preset_mcp_servers", "preset_id"),
+    ("preset_mcp_servers", "mcp_server_id"),
     ("preset_model_preferences", "preset_id"),
     ("preset_model_preferences", "provider_id"),
     ("preset_skill_bindings", "preset_id"),

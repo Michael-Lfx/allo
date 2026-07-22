@@ -96,6 +96,7 @@ pub struct PresetResponse {
     #[serde(default)] pub excluded_auto_skills: Vec<String>,
     #[serde(default)] pub knowledge_policy: PresetKnowledgePolicy,
     #[serde(default)] pub knowledge_bases: Vec<KnowledgeBaseBinding>,
+    #[serde(default)] pub mcp_server_ids: Vec<String>,
     #[serde(default)] pub examples: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")] pub examples_i18n: HashMap<String, Vec<String>>,
     #[serde(default)] pub audience_tags: Vec<String>,
@@ -132,6 +133,7 @@ pub struct CreatePresetRequest {
     #[serde(default)] pub excluded_auto_skills: Vec<String>,
     #[serde(default)] pub knowledge_policy: PresetKnowledgePolicy,
     #[serde(default)] pub knowledge_bases: Vec<KnowledgeBaseBinding>,
+    #[serde(default)] pub mcp_server_ids: Vec<String>,
     #[serde(default)] pub examples: Vec<String>,
     #[serde(default)] pub examples_i18n: HashMap<String, Vec<String>>,
     #[serde(default)] pub audience_tags: Vec<String>,
@@ -156,6 +158,7 @@ pub struct UpdatePresetRequest {
     pub excluded_auto_skills: Option<Vec<String>>,
     pub knowledge_policy: Option<PresetKnowledgePolicy>,
     pub knowledge_bases: Option<Vec<KnowledgeBaseBinding>>,
+    pub mcp_server_ids: Option<Vec<String>>,
     pub examples: Option<Vec<String>>,
     pub examples_i18n: Option<HashMap<String, Vec<String>>>,
     pub audience_tags: Option<Vec<String>>,
@@ -197,6 +200,8 @@ pub struct PresetOverrides {
     pub knowledge_policy: Option<PresetKnowledgePolicy>,
     #[serde(default)]
     pub knowledge_base_ids: Option<Vec<KnowledgeBaseId>>,
+    #[serde(default)]
+    pub mcp_server_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +236,8 @@ pub struct ResolvedPresetSnapshot {
     #[serde(default)] pub knowledge_policy: PresetKnowledgePolicy,
     #[serde(default)]
     pub knowledge_base_ids: Vec<KnowledgeBaseId>,
+    #[serde(default)]
+    pub mcp_server_ids: Vec<String>,
     #[serde(default)] pub warnings: Vec<String>,
 }
 
@@ -349,6 +356,35 @@ mod tests {
             "knowledge_base_id": "kb_docs"
         }))
         .is_err());
+    }
+
+    #[test]
+    fn resolved_preset_snapshot_mcp_server_ids_round_trip() {
+        let mcp_a = "mcp_018f1234-5678-7abc-8def-0123456789aa";
+        let mcp_b = "mcp_018f1234-5678-7abc-8def-0123456789bb";
+        let snapshot = ResolvedPresetSnapshot {
+            preset_id: PRESET_ID.into(),
+            preset_revision: 3,
+            preset_name: "Config One".into(),
+            target: PresetTarget::Conversation,
+            routing_description: None,
+            instructions: "use these tools".into(),
+            resolved_agent_id: None,
+            resolved_agent_type: None,
+            resolved_agent_backend: None,
+            resolved_model: None,
+            included_skills: vec![],
+            excluded_auto_skills: vec![],
+            knowledge_policy: PresetKnowledgePolicy::default(),
+            knowledge_base_ids: vec![],
+            mcp_server_ids: vec![mcp_a.into(), mcp_b.into()],
+            warnings: vec![],
+        };
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(value["mcp_server_ids"], json!([mcp_a, mcp_b]));
+        let restored: ResolvedPresetSnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.mcp_server_ids, vec![mcp_a, mcp_b]);
+        assert_eq!(restored, snapshot);
     }
 
     #[test]

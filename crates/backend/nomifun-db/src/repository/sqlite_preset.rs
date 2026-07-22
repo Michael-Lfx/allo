@@ -148,6 +148,20 @@ async fn load_records_batch(pool: &SqlitePool, ids: &[String]) -> Result<Vec<Pre
         .fetch_all(pool)
         .await?;
 
+    let mut mcp_servers_query =
+        QueryBuilder::new("SELECT * FROM preset_mcp_servers WHERE preset_id IN (");
+    {
+        let mut separated = mcp_servers_query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    mcp_servers_query.push(") ORDER BY sort_order");
+    let mcp_servers = mcp_servers_query
+        .build_query_as::<PresetMcpServerRow>()
+        .fetch_all(pool)
+        .await?;
+
     let mut examples_query =
         QueryBuilder::new("SELECT * FROM preset_examples WHERE preset_id IN (");
     {
@@ -217,6 +231,7 @@ async fn load_records_batch(pool: &SqlitePool, ids: &[String]) -> Result<Vec<Pre
         .map(|row| (row.preset_id.clone(), row))
         .collect();
     let mut knowledge_bases_by = group_by_preset_id(knowledge_bases, |row| row.preset_id.as_str());
+    let mut mcp_servers_by = group_by_preset_id(mcp_servers, |row| row.preset_id.as_str());
     let mut examples_by = group_by_preset_id(examples, |row| row.preset_id.as_str());
     let mut tags_by = group_by_preset_id(tag_bindings, |row| row.preset_id.as_str());
     let user_state_by: HashMap<_, _> = user_states
@@ -238,6 +253,7 @@ async fn load_records_batch(pool: &SqlitePool, ids: &[String]) -> Result<Vec<Pre
             skill_bindings: skills_by.remove(id).unwrap_or_default(),
             knowledge_policy: knowledge_policy_by.get(id).cloned(),
             knowledge_bases: knowledge_bases_by.remove(id).unwrap_or_default(),
+            mcp_servers: mcp_servers_by.remove(id).unwrap_or_default(),
             examples: examples_by.remove(id).unwrap_or_default(),
             tag_bindings: tags_by.remove(id).unwrap_or_default(),
             user_state: user_state_by.get(id).cloned(),
@@ -255,7 +271,7 @@ async fn replace_bindings(tx: &mut Transaction<'_, Sqlite>, p: &PresetWriteParam
     for table in [
         "preset_localizations", "preset_targets", "preset_agent_preferences",
         "preset_model_preferences", "preset_skill_bindings", "preset_knowledge_policy",
-        "preset_knowledge_bases", "preset_examples", "preset_tag_bindings",
+        "preset_knowledge_bases", "preset_mcp_servers", "preset_examples", "preset_tag_bindings",
     ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE preset_id = ?"))
             .bind(&p.id).execute(&mut **tx).await?;
@@ -290,6 +306,10 @@ async fn replace_bindings(tx: &mut Transaction<'_, Sqlite>, p: &PresetWriteParam
     for (sort_order, (kb, required)) in p.knowledge_bases.iter().enumerate() {
         sqlx::query("INSERT INTO preset_knowledge_bases (preset_id,knowledge_base_id,sort_order,required) VALUES (?,?,?,?)")
             .bind(&p.id).bind(kb).bind(sort_order as i64).bind(required).execute(&mut **tx).await?;
+    }
+    for (sort_order, mcp_server_id) in p.mcp_servers.iter().enumerate() {
+        sqlx::query("INSERT INTO preset_mcp_servers (preset_id,mcp_server_id,sort_order) VALUES (?,?,?)")
+            .bind(&p.id).bind(mcp_server_id).bind(sort_order as i64).execute(&mut **tx).await?;
     }
     let mut locale_counts = std::collections::HashMap::<&str, i64>::new();
     for (locale, prompt) in &p.examples {
@@ -433,6 +453,7 @@ mod tests {
             skill_bindings: vec![("web-search".into(), "include".into(), true), ("unsafe-auto".into(), "exclude_auto".into(), false)],
             knowledge_policy: (true, "staged".into(), false, Some("conservative".into()), true),
             knowledge_bases: vec![("kb_docs".into(), true)],
+            mcp_servers: vec!["mcp_docs".into()],
             examples: vec![(String::new(), "Research this topic".into())],
             tag_bindings: vec![("audience-engineer".into(), "audience".into())],
         }
@@ -447,6 +468,7 @@ mod tests {
         assert_eq!(created.model_preferences[0].provider_id.as_deref(), Some("prov_x"));
         assert_eq!(created.skill_bindings.len(), 2);
         assert_eq!(created.knowledge_bases[0].knowledge_base_id, "kb_docs");
+        assert_eq!(created.mcp_servers[0].mcp_server_id, "mcp_docs");
         let updated = repo.update("preset_test", &sample("preset_test")).await.unwrap().unwrap();
         assert_eq!(updated.preset.unwrap().revision, 2);
     }
@@ -459,7 +481,7 @@ mod tests {
                 .bind(table).fetch_one(db.pool()).await.unwrap();
             assert_eq!(count, 0, "legacy table {table} must not survive migration");
         }
-        for table in ["presets", "preset_agent_preferences", "preset_model_preferences", "preset_skill_bindings", "preset_knowledge_bases", "preset_user_state"] {
+        for table in ["presets", "preset_agent_preferences", "preset_model_preferences", "preset_skill_bindings", "preset_knowledge_bases", "preset_mcp_servers", "preset_user_state"] {
             let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
                 .bind(table).fetch_one(db.pool()).await.unwrap();
             assert_eq!(count, 1, "preset table {table} must exist");

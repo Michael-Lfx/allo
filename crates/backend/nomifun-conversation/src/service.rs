@@ -1341,6 +1341,29 @@ impl ConversationService {
             Some(obj) => parse_selected_mcp_server_ids(obj)?,
             None => None,
         };
+        // Config One: when the client did not override MCP selection, inject
+        // the preset snapshot's mcp_server_ids as the conversation selection.
+        let selected_mcp_server_ids = if selected_mcp_server_ids.is_none()
+            && let Some(snapshot) = resolved_preset_snapshot.as_ref()
+            && !snapshot.mcp_server_ids.is_empty()
+        {
+            Some(
+                snapshot
+                    .mcp_server_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        McpServerId::parse(id.clone()).map_err(|error| {
+                            AppError::BadRequest(format!(
+                                "preset mcp_server_ids[{index}] is invalid: {error}"
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        } else {
+            selected_mcp_server_ids
+        };
         let selected_session_mcp_servers = match extra.as_object_mut() {
             Some(obj) => match obj.remove("selected_session_mcp_servers") {
                 Some(value) => Some(

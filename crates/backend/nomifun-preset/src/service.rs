@@ -350,13 +350,17 @@ impl PresetService {
                 .map(|binding| binding.knowledge_base_id)
                 .collect(),
         };
+        let mcp_server_ids = match overrides.mcp_server_ids {
+            Some(ids) => ids,
+            None => preset.mcp_server_ids,
+        };
         Ok(ResolvedPresetSnapshot {
             preset_id: preset.id, preset_revision: preset.revision, preset_name: preset.name,
             target, routing_description: preset.routing_description, instructions,
             resolved_agent_id, resolved_agent_type, resolved_agent_backend,
             resolved_model, included_skills: skills,
             excluded_auto_skills: preset.excluded_auto_skills, knowledge_policy,
-            knowledge_base_ids, warnings,
+            knowledge_base_ids, mcp_server_ids, warnings,
         })
     }
 
@@ -487,6 +491,7 @@ impl PresetService {
             model_preferences: item.models.iter().map(|m| ModelPreference { provider_id: None, model: m.clone(), required: false }).collect(),
             included_skills: item.enabled_skills.iter().chain(item.custom_skill_names.iter()).map(|s| SkillBinding { skill_name: s.clone(), required: false }).collect(),
             excluded_auto_skills: item.disabled_builtin_skills.clone(), knowledge_policy: Default::default(), knowledge_bases: vec![],
+            mcp_server_ids: vec![],
             examples: item.prompts.clone(), examples_i18n: item.prompts_i18n.clone(),
             audience_tags: item.audience_tags.clone(), scenario_tags: item.scenario_tags.clone(),
             enabled: true, auto_selectable: false, preferred_agent_id: None,
@@ -605,6 +610,7 @@ fn record_to_response(record: &PresetRecord) -> Result<PresetResponse, AppError>
         included_skills: record.skill_bindings.iter().filter(|v| v.binding == "include").map(|v| SkillBinding { skill_name: v.skill_name.clone(), required: v.required }).collect(),
         excluded_auto_skills: record.skill_bindings.iter().filter(|v| v.binding == "exclude_auto").map(|v| v.skill_name.clone()).collect(),
         knowledge_policy: policy, knowledge_bases,
+        mcp_server_ids: record.mcp_servers.iter().map(|row| row.mcp_server_id.clone()).collect(),
         examples: record.examples.iter().filter(|v| v.locale.is_empty()).map(|v| v.prompt.clone()).collect(),
         examples_i18n: collect_examples_i18n(&record.examples),
         audience_tags: record.tag_bindings.iter().filter(|v| v.dimension == "audience").map(|v| v.tag_key.clone()).collect(),
@@ -624,7 +630,7 @@ fn extension_to_response(item: &ResolvedPreset) -> PresetResponse {
         agent_preferences: item.preferred_agent_id.iter().map(|v| AgentPreference { agent_id: v.clone(), required: false }).collect(),
         model_preferences: item.models.iter().map(|v| ModelPreference { provider_id: None, model: v.clone(), required: false }).collect(),
         included_skills: item.enabled_skills.iter().map(|v| SkillBinding { skill_name: v.clone(), required: false }).collect(), excluded_auto_skills: vec![],
-        knowledge_policy: Default::default(), knowledge_bases: vec![], examples: item.prompts.clone(),
+        knowledge_policy: Default::default(), knowledge_bases: vec![], mcp_server_ids: vec![], examples: item.prompts.clone(),
         examples_i18n: HashMap::new(), audience_tags: vec![], scenario_tags: vec![],
         enabled: true, auto_selectable: false, preferred_agent_id: None,
         sort_order: 0, last_used_at: None,
@@ -638,7 +644,7 @@ fn write_from_create(id: String, r: CreatePresetRequest) -> PresetWriteParams {
         localizations, targets: target_strings(&r.targets), agent_preferences: r.agent_preferences.into_iter().map(|v| (v.agent_id, v.required)).collect(), model_preferences: r.model_preferences.into_iter().map(|v| (v.provider_id, v.model, v.required)).collect(),
         skill_bindings: r.included_skills.into_iter().map(|v| (v.skill_name,"include".into(),v.required)).chain(r.excluded_auto_skills.into_iter().map(|v| (v,"exclude_auto".into(),false))).collect(),
         knowledge_policy: (r.knowledge_policy.enabled,r.knowledge_policy.mode,r.knowledge_policy.writeback,r.knowledge_policy.eagerness,r.knowledge_policy.grounded),
-        knowledge_bases: r.knowledge_bases.into_iter().map(|v| (v.knowledge_base_id.to_string(),v.required)).collect(), examples,
+        knowledge_bases: r.knowledge_bases.into_iter().map(|v| (v.knowledge_base_id.to_string(),v.required)).collect(), mcp_servers: r.mcp_server_ids, examples,
         tag_bindings: r.audience_tags.into_iter().map(|v| (v,"audience".into())).chain(r.scenario_tags.into_iter().map(|v| (v,"scenario".into()))).collect() }
 }
 
@@ -648,7 +654,7 @@ fn write_from_response(r: PresetResponse) -> PresetWriteParams {
     PresetWriteParams { id:r.id.clone(),source_kind:"user".into(),source_key:Some(r.id),name:r.name,description:r.description,routing_description:r.routing_description,instructions:r.instructions,avatar:r.avatar,fallback_allowed:r.fallback_allowed,
         localizations,targets:target_strings(&r.targets),agent_preferences:r.agent_preferences.into_iter().map(|v|(v.agent_id,v.required)).collect(),model_preferences:r.model_preferences.into_iter().map(|v|(v.provider_id,v.model,v.required)).collect(),
         skill_bindings:r.included_skills.into_iter().map(|v|(v.skill_name,"include".into(),v.required)).chain(r.excluded_auto_skills.into_iter().map(|v|(v,"exclude_auto".into(),false))).collect(),
-        knowledge_policy:(r.knowledge_policy.enabled,r.knowledge_policy.mode,r.knowledge_policy.writeback,r.knowledge_policy.eagerness,r.knowledge_policy.grounded),knowledge_bases:r.knowledge_bases.into_iter().map(|v|(v.knowledge_base_id.to_string(),v.required)).collect(),examples,
+        knowledge_policy:(r.knowledge_policy.enabled,r.knowledge_policy.mode,r.knowledge_policy.writeback,r.knowledge_policy.eagerness,r.knowledge_policy.grounded),knowledge_bases:r.knowledge_bases.into_iter().map(|v|(v.knowledge_base_id.to_string(),v.required)).collect(),mcp_servers:r.mcp_server_ids,examples,
         tag_bindings:r.audience_tags.into_iter().map(|v|(v,"audience".into())).chain(r.scenario_tags.into_iter().map(|v|(v,"scenario".into()))).collect() }
 }
 
@@ -657,7 +663,7 @@ fn merge_update(mut p: PresetResponse, r: UpdatePresetRequest) -> PresetResponse
     if let Some(v)=r.instructions{p.instructions=v} if r.avatar.is_some(){p.avatar=r.avatar} if let Some(v)=r.fallback_allowed{p.fallback_allowed=v}
     if let Some(v)=r.targets{p.targets=v} if let Some(v)=r.agent_preferences{p.agent_preferences=v} if let Some(v)=r.model_preferences{p.model_preferences=v}
     if let Some(v)=r.included_skills{p.included_skills=v} if let Some(v)=r.excluded_auto_skills{p.excluded_auto_skills=v} if let Some(v)=r.knowledge_policy{p.knowledge_policy=v}
-    if let Some(v)=r.knowledge_bases{p.knowledge_bases=v} if let Some(v)=r.examples{p.examples=v} if let Some(v)=r.examples_i18n{p.examples_i18n=v} if let Some(v)=r.audience_tags{p.audience_tags=v} if let Some(v)=r.scenario_tags{p.scenario_tags=v}
+    if let Some(v)=r.knowledge_bases{p.knowledge_bases=v} if let Some(v)=r.mcp_server_ids{p.mcp_server_ids=v} if let Some(v)=r.examples{p.examples=v} if let Some(v)=r.examples_i18n{p.examples_i18n=v} if let Some(v)=r.audience_tags{p.audience_tags=v} if let Some(v)=r.scenario_tags{p.scenario_tags=v}
     if let Some(v)=r.name_i18n{p.name_i18n=v} if let Some(v)=r.description_i18n{p.description_i18n=v} if let Some(v)=r.instructions_i18n{p.instructions_i18n=v} p
 }
 

@@ -189,6 +189,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     const selectedSessionMcpServers = availableMcpServers
       .filter((server) => selectedMcpServerIdSet.has(server.id) && server.builtin === true)
       .map((server) => toSessionMcpServer(server));
+    // Config One: omit Guid MCP keys when launching a preset with no local override
+    // so create_inner can inject snapshot.mcp_server_ids.
+    const presetUsesSnapshotMcp = is_preset && selectedUserMcpServerIds.length === 0;
 
     const finalEffectiveAgentType = effectiveAgentType;
 
@@ -334,10 +337,14 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             custom_workspace: isCustomWorkspace,
             preset_enabled_skills: enabled_skills_to_send,
             exclude_auto_inject_skills: excludeBuiltinSkills,
-            selected_mcp_server_ids: selectedUserMcpServerIds,
+            ...(presetUsesSnapshotMcp
+              ? {}
+              : {
+                  selected_mcp_server_ids: selectedUserMcpServerIds,
+                  selected_session_mcp_servers: selectedAllSessionMcpServers,
+                }),
             // Nomi consumes the authoritative session snapshot instead of
             // reloading only user servers from the global MCP repository.
-            selected_session_mcp_servers: selectedAllSessionMcpServers,
             session_mode: selectedMode,
           },
         });
@@ -416,8 +423,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         extra: {
           default_files: files,
           exclude_auto_inject_skills: excludeBuiltinSkills,
-          selected_mcp_server_ids: selectedUserMcpServerIds,
-          selected_session_mcp_servers: selectedSessionMcpServers,
+          ...(presetUsesSnapshotMcp
+            ? {}
+            : {
+                selected_mcp_server_ids: selectedUserMcpServerIds,
+                selected_session_mcp_servers: selectedSessionMcpServers,
+              }),
           // Bare Agents may still carry a one-off skill selection.
           ...(is_preset ? {} : guidEnabledSkills?.length ? { preset_enabled_skills: guidEnabledSkills } : {}),
         },

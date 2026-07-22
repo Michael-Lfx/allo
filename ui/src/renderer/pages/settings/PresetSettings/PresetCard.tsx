@@ -122,6 +122,11 @@ const PresetCard: React.FC<PresetCardProps> = ({
             {preset.knowledge_bases.length} {t('settings.presetKnowledgeShort', { defaultValue: 'Knowledge' })}
           </span>
         )}
+        {(preset.mcp_server_ids?.length ?? 0) > 0 && (
+          <span className='rounded-8px bg-[var(--color-fill-2)] px-7px py-2px'>
+            {preset.mcp_server_ids.length} MCP
+          </span>
+        )}
       </div>
 
       {/* Description — fixed 2-line clamp so cards stay even-height */}

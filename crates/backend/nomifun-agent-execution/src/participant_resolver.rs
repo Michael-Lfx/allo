@@ -560,6 +560,7 @@ mod tests {
             excluded_auto_skills: vec![],
             knowledge_policy: PresetKnowledgePolicy::default(),
             knowledge_base_ids: vec![],
+            mcp_server_ids: vec![],
             warnings: vec![],
         }
     }

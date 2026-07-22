@@ -790,33 +790,24 @@ impl CompanionThreads {
         snapshot: &nomifun_api_types::ResolvedPresetSnapshot,
     ) -> Result<(), AppError> {
         self.assert_owned(companion_id, conversation_id).await?;
+        // Public PATCH rejects skills/MCP snapshot mutation; this is a
+        // trusted in-process rewrite of the preset-derived slice.
         self.conversations
-            .update(
-                self.authoritative_user_id.as_ref(),
+            .update_extra(
                 conversation_id,
-                nomifun_api_types::UpdateConversationRequest {
-                    name: None,
-                    pinned: None,
-                    model: None,
-                    delegation_policy: None,
-                    execution_model_pool: None,
-                    decision_policy: None,
-                    execution_template_id: None,
-                    extra: Some(serde_json::json!({
-                        "system_prompt": system_prompt,
-                        "preset_instructions_embedded": true,
-                        "preset_id": snapshot.preset_id.clone(),
-                        "preset_revision": snapshot.preset_revision,
-                        "preset_snapshot": snapshot,
-                        "skills": snapshot.included_skills.clone(),
-                        "exclude_auto_inject_skills": snapshot.excluded_auto_skills.clone(),
-                        "preset_knowledge_binding": true,
-                    })),
-                },
-                &self.runtime_registry,
+                serde_json::json!({
+                    "system_prompt": system_prompt,
+                    "preset_instructions_embedded": true,
+                    "preset_id": snapshot.preset_id.clone(),
+                    "preset_revision": snapshot.preset_revision,
+                    "preset_snapshot": snapshot,
+                    "skills": snapshot.included_skills.clone(),
+                    "exclude_auto_inject_skills": snapshot.excluded_auto_skills.clone(),
+                    "mcp_server_ids": snapshot.mcp_server_ids.clone(),
+                    "preset_knowledge_binding": true,
+                }),
             )
             .await
-            .map(|_| ())
     }
 }
 

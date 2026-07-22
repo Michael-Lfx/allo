@@ -29,7 +29,7 @@ pub use models::{
 pub use models::{
     CreatePresetTagParams, PresetAgentPreferenceRow, PresetExampleRow,
     PresetKnowledgeBaseRow, PresetKnowledgePolicyRow, PresetLocalizationRow,
-    PresetModelPreferenceRow, PresetRecord, PresetRow, PresetSkillBindingRow,
+    PresetMcpServerRow, PresetModelPreferenceRow, PresetRecord, PresetRow, PresetSkillBindingRow,
     PresetTagBindingRow, PresetTagRow, PresetUserStateRow, PresetWriteParams,
     UpdatePresetTagParams, UpsertPresetStateParams,
 };

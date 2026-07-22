@@ -101,6 +101,7 @@ export interface Preset {
   excluded_auto_skills: string[];
   knowledge_policy: PresetKnowledgePolicy;
   knowledge_bases: KnowledgeBaseBinding[];
+  mcp_server_ids: string[];
   examples: string[];
   examples_i18n: Record<string, string[]>;
   audience_tags: string[];
@@ -126,6 +127,7 @@ export interface CreatePresetRequest {
   excluded_auto_skills?: string[];
   knowledge_policy?: PresetKnowledgePolicy;
   knowledge_bases?: KnowledgeBaseBinding[];
+  mcp_server_ids?: string[];
   examples?: string[];
   examples_i18n?: Record<string, string[]>;
   audience_tags?: string[];
@@ -156,6 +158,7 @@ export interface PresetOverrides {
   exclude_skills?: string[];
   knowledge_policy?: PresetKnowledgePolicy;
   knowledge_base_ids?: KnowledgeBaseId[];
+  mcp_server_ids?: string[];
 }
 
 export interface ResolvePresetRequest {
@@ -180,6 +183,7 @@ export interface ResolvedPresetSnapshot {
   excluded_auto_skills: string[];
   knowledge_policy: PresetKnowledgePolicy;
   knowledge_base_ids: KnowledgeBaseId[];
+  mcp_server_ids: string[];
   warnings: string[];
 }
 

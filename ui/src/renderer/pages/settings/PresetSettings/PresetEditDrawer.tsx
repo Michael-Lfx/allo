@@ -28,7 +28,8 @@ import { Close, Delete, Info, Plus, Robot } from '@icon-park/react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { parseKnowledgeBaseId, parseProviderId, type KnowledgeBaseId } from '@/common/types/ids';
+import { parseKnowledgeBaseId, parseMcpServerId, parseProviderId, type KnowledgeBaseId, type McpServerId } from '@/common/types/ids';
+import { useMcpServers } from '@/renderer/hooks/mcp';
 
 const ANY_PROVIDER_TOKEN = '*';
 
@@ -62,6 +63,8 @@ type PresetEditDrawerProps = {
   setKnowledgePolicy: (v: PresetKnowledgePolicy) => void;
   knowledgeBaseIds: KnowledgeBaseId[];
   setKnowledgeBaseIds: (v: KnowledgeBaseId[]) => void;
+  mcpServerIds: McpServerId[];
+  setMcpServerIds: (v: McpServerId[]) => void;
 
   // Rules / prompt
   editContext: string;
@@ -139,6 +142,8 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   setKnowledgePolicy,
   knowledgeBaseIds,
   setKnowledgeBaseIds,
+  mcpServerIds,
+  setMcpServerIds,
   editContext,
   setEditContext,
   promptViewMode,
@@ -241,6 +246,8 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   }, [providers, getAvailableModels, editModels, providerLabel]);
   const selectedModelValues = editModels.map((item) => `${item.provider_id ?? ANY_PROVIDER_TOKEN}::${item.model}`);
   const { bases: knowledgeBases } = useKnowledgeBases();
+  const { mcpServers } = useMcpServers();
+  const userMcpServers = mcpServers.filter((server) => server.builtin !== true);
 
   const targetOptions: Array<{ value: PresetTarget; label: string }> = [
     { value: 'conversation', label: t('settings.presetTargetConversation', { defaultValue: 'Agent conversation' }) },
@@ -655,6 +662,34 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 )}
               </div>
             )}
+          </div>
+
+          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-border-2 bg-bg-1'>
+            <div>
+              <Typography.Text bold>{t('settings.presetMcp', { defaultValue: 'MCP servers' })}</Typography.Text>
+              <div className='text-12px text-t-secondary mt-2px'>
+                {t('settings.presetMcpHint', {
+                  defaultValue: 'Config One: these servers inject into conversation, companion, and cron launches from this preset.',
+                })}
+              </div>
+            </div>
+            <div className='mt-12px'>
+              <NomiSelect
+                mode='multiple'
+                value={mcpServerIds}
+                onChange={(value) => setMcpServerIds((value as unknown[]).map(parseMcpServerId))}
+                disabled={readOnly}
+                allowClear
+                showSearch
+                placeholder={t('settings.presetMcpPlaceholder', { defaultValue: 'Choose MCP servers' })}
+              >
+                {userMcpServers.map((server) => (
+                  <NomiSelect.Option key={server.id} value={server.id}>
+                    {server.name}
+                  </NomiSelect.Option>
+                ))}
+              </NomiSelect>
+            </div>
           </div>
 
           {/* Tags — audience / scenario chip pickers. Read-only for builtin /

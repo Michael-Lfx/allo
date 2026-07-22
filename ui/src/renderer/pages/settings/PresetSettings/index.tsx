@@ -178,6 +178,8 @@ const PresetSettings: React.FC = () => {
           setKnowledgePolicy={editor.setKnowledgePolicy}
           knowledgeBaseIds={editor.knowledgeBaseIds}
           setKnowledgeBaseIds={editor.setKnowledgeBaseIds}
+          mcpServerIds={editor.mcpServerIds}
+          setMcpServerIds={editor.setMcpServerIds}
           editContext={editor.editContext}
           setEditContext={editor.setEditContext}
           promptViewMode={editor.promptViewMode}
