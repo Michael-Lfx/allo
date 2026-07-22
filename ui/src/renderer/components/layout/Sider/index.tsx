@@ -16,20 +16,17 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge';
 import {
-  SiderAssetLibraryEntry,
-  SiderPresetEntry,
-  SiderSkillsEntry,
+  SiderConfigGroup,
   SiderConversationEntry,
   SiderKnowledgeEntry,
-  SiderMcpEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
+  SiderOpenCapabilitiesEntry,
   SiderPublicServiceEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderSectionHeader,
   SiderVideoGenerationEntry,
-  // SiderWorkshopEntry, // TODO: 暂时隐藏创意工坊，后续开放时取消注释
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
 
@@ -103,11 +100,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleScheduledClick = () => navTo('/scheduled');
   const handleRequirementsClick = () => navTo('/requirements');
   const handleKnowledgeClick = () => navTo('/knowledge');
-  // const handleAssetLibraryClick = () => navTo('/assets'); // TODO: 暂时隐藏资产库
   const handleNomiClick = () => navTo('/nomi');
   const handleVideoGenerationClick = () => navTo('/video-generation');
-  // const handleWorkshopClick = () => navTo('/workshop'); // TODO: 暂时隐藏创意工坊
   const handlePublicServiceClick = () => navTo('/public-companions');
+  const handleOpenCapabilitiesClick = () => navTo('/open-capabilities');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
@@ -194,13 +190,21 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            {/* Work partner (桌面伙伴) */}
+            {/* Work partner (桌面伙伴) — demo path 2 */}
             <SiderNomiEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/nomi')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleNomiClick}
+            />
+            {/* External agents on /mcp-agent — demo path 3 */}
+            <SiderOpenCapabilitiesEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/open-capabilities')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleOpenCapabilitiesClick}
             />
             {/* ViMax video generation */}
             <SiderVideoGenerationEntry
@@ -210,15 +214,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleVideoGenerationClick}
             />
-            {/* TODO: 暂时隐藏创意工坊，后续开放时取消注释
-            <SiderWorkshopEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/workshop')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleWorkshopClick}
-            />
-            */}
             {/* 对外服务 — public-facing customer-service agents (对外伙伴), a domain
                 fully separate from the desktop-companion group above. */}
             <SiderSectionHeader label={t('common.siderSection.publicService')} collapsed={collapsed} />
@@ -229,9 +224,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handlePublicServiceClick}
             />
-            {/* 数据空间 — data & storage (文件管理 reserved for later) */}
+            {/* 数据空间 — knowledge only; workshop/assets stay deferred */}
             <SiderSectionHeader label={t('common.siderSection.data')} collapsed={collapsed} />
-            {/* Knowledge base */}
             <SiderKnowledgeEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/knowledge')}
@@ -240,18 +234,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onClick={handleKnowledgeClick}
               dot={pendingInboxCount > 0}
             />
-            {/* TODO: 暂时隐藏资产库，后续开放时取消注释
-            <SiderAssetLibraryEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/assets')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleAssetLibraryClick}
-            />
-            */}
             {/* 自动化 — automation platforms */}
             <SiderSectionHeader label={t('common.siderSection.automation')} collapsed={collapsed} />
-            {/* Scheduled tasks */}
             <SiderScheduledEntry
               isMobile={isMobile}
               isActive={pathname === '/scheduled'}
@@ -259,7 +243,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleScheduledClick}
             />
-            {/* Requirements platform */}
             <SiderRequirementsEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/requirements')}
@@ -267,30 +250,18 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleRequirementsClick}
             />
-            {/* 增强工具 — extension capabilities */}
-            <SiderSectionHeader label={t('common.siderSection.tools')} collapsed={collapsed} />
-            {/* Presets and skills are separate concepts and destinations. */}
-            <SiderPresetEntry
+            {/* Config One — presets / skills / MCP as secondary under Config */}
+            <SiderSectionHeader label={t('common.siderSection.config', { defaultValue: '配置' })} collapsed={collapsed} />
+            <SiderConfigGroup
               isMobile={isMobile}
-              isActive={pathname.startsWith('/presets')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
-              onClick={handlePresetClick}
-            />
-            <SiderSkillsEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/skills')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleSkillsClick}
-            />
-            {/* MCP — MCP tool server configuration */}
-            <SiderMcpEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/mcp')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleMcpClick}
+              presetsActive={pathname.startsWith('/presets')}
+              skillsActive={pathname.startsWith('/skills')}
+              mcpActive={pathname.startsWith('/mcp')}
+              onPresets={handlePresetClick}
+              onSkills={handleSkillsClick}
+              onMcp={handleMcpClick}
             />
           </div>
         )}

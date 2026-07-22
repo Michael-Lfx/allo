@@ -4,6 +4,7 @@
     "publicService": "Public Service",
     "data": "Data",
     "automation": "Automation",
+    "config": "Config",
     "tools": "Tools",
     "settings": "Settings"
   },

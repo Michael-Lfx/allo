@@ -28,7 +28,6 @@ import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerE
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import { AgentPillBarSkeleton } from './components/GuidSkeleton';
 import GuidActionRow from './components/GuidActionRow';
-import GuidCompanionPosterPreview from './components/GuidCompanionPosterPreview';
 import GuidInputCard from './components/GuidInputCard';
 import PoiStarterChips from './components/PoiStarterChips';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
@@ -828,7 +827,7 @@ const GuidPage: React.FC = () => {
               }
             />
 
-            <GuidResourceCards />
+            <GuidResourceCards onStartLocalAgent={guidInput.handleTextareaFocus} />
 
             {/* Editor host (modals + example prompts + fallback notice) */}
             <GuidPresetEditorHost
@@ -842,10 +841,6 @@ const GuidPage: React.FC = () => {
               onRegisterOpenDetails={handleRegisterOpenDetails}
             />
           </div>
-        </div>
-
-        <div className={styles.guidDiscoveryArea}>
-          <GuidCompanionPosterPreview />
         </div>
 
         {/* PresetPickerDrawer (right-side) */}

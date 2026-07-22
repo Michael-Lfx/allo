@@ -77,6 +77,15 @@
     "untitled": "Untitled conversation"
   },
   "emptyCards": {
+    "localAgentTitle": "Local agent work",
+    "localAgentDescription": "Day-1 path: pick a Preset or Agent below, send a task, and run the session loop.",
+    "localAgentAction": "Start below",
+    "companionTitle": "Companion remote control",
+    "companionDescription": "Bind a channel, then drive this machine from the first IM message.",
+    "companionAction": "Open companions",
+    "openCapsTitle": "External agents on /mcp-agent",
+    "openCapsDescription": "Open the port, mint a token, paste Cursor/Claude config (default /mcp-agent).",
+    "openCapsAction": "Open Capabilities",
     "knowledgeTitle": "Knowledge writeback demo",
     "knowledgeDescription": "Create or sync a base, attach it in a Preset with staged writeback, then merge from the inbox.",
     "knowledgeAction": "Open knowledge",

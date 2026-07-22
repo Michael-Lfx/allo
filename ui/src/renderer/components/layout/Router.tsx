@@ -33,7 +33,7 @@ const KnowledgeListPage = React.lazy(() => import('@renderer/pages/knowledge/Kno
 const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeDetailPage'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
-// TODO: 暂时隐藏创意工坊与资产库，后续开放时取消注释
+// TODO: workshop/assets stay deferred (no routes until explicitly published)
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
 // const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
 // const AssetLibraryPage = React.lazy(() => import('@renderer/pages/assets'));
@@ -290,7 +290,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/knowledge/:id' element={withRouteFallback(KnowledgeDetailPage)} />
           <Route path='/video-generation' element={withRouteFallback(VideoGenerationListPage)} />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
-          {/* TODO: 暂时隐藏资产库与创意工坊，后续开放时取消注释
+          {/* workshop/assets deferred — keep pages in tree but unrouted */}
+          {/*
           <Route path='/assets' element={withRouteFallback(AssetLibraryPage)} />
           <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />
           <Route path='/workshop/:id' element={withRouteFallback(WorkshopCanvasPage)} />

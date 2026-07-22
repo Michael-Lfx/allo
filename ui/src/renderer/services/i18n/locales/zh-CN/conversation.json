@@ -77,6 +77,15 @@
     "untitled": "未命名会话"
   },
   "emptyCards": {
+    "localAgentTitle": "本机 Agent 干活",
+    "localAgentDescription": "Day-1 路径：在下方选 Preset/Agent，发一条任务，跑通会话主循环。",
+    "localAgentAction": "开始输入",
+    "companionTitle": "伙伴远程控机",
+    "companionDescription": "绑定渠道后，用 IM 第一条消息指挥本机。",
+    "companionAction": "打开伙伴",
+    "openCapsTitle": "外部 Agent 调本机能力",
+    "openCapsDescription": "开端口、建 token、粘贴 Cursor/Claude 配置，默认走 /mcp-agent。",
+    "openCapsAction": "打开开放能力",
     "knowledgeTitle": "知识库回写演示",
     "knowledgeDescription": "创建或同步知识库，在预设里挂库并开启 staged 回写，再在待审收件箱合并。",
     "knowledgeAction": "打开知识库",

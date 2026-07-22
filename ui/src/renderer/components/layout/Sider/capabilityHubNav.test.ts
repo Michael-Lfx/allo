@@ -24,34 +24,31 @@ describe('capability hub navigation', () => {
     expect(enSettings.openCapabilities.railTitle).toBe('Remote & Open');
   });
 
-  test('keeps presets, skills, and MCP as independent enhanced-tool destinations', () => {
+  test('collapses presets, skills, and MCP under Config and promotes Open Capabilities', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(siderSource.includes('SiderPresetEntry')).toBe(true);
-    expect(siderSource.includes("navTo('/presets')")).toBe(true);
-    expect(siderSource.includes("pathname.startsWith('/presets')")).toBe(true);
-    expect(siderSource.includes('SiderSkillsEntry')).toBe(true);
-    expect(siderSource.includes("navTo('/skills')")).toBe(true);
-    expect(siderSource.includes("pathname.startsWith('/skills')")).toBe(true);
-    expect(siderSource.includes('SiderMcpEntry')).toBe(true);
-    expect(siderSource.includes("navTo('/mcp')")).toBe(true);
-    expect(siderSource.includes("pathname.startsWith('/mcp')")).toBe(true);
-    expect(siderSource.includes('SiderOpenCapabilitiesEntry')).toBe(false);
-
+    expect(siderSource.includes('SiderConfigGroup')).toBe(true);
+    expect(siderSource.includes('SiderOpenCapabilitiesEntry')).toBe(true);
+    expect(siderSource.includes("navTo('/open-capabilities')")).toBe(true);
+    expect(siderSource.includes('siderSection.config')).toBe(true);
+    expect(siderSource.includes('<SiderPresetEntry')).toBe(false);
+    expect(siderSource.includes('<SiderSkillsEntry')).toBe(false);
+    expect(siderSource.includes('<SiderMcpEntry')).toBe(false);
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
   });
 
-  test('routes Open Capabilities under settings and preserves MCP legacy destinations', () => {
+  test('keeps presets/skills/mcp routes and hosts Open Capabilities as a first-class page', () => {
     const routerSource = readSource(new URL('../Router.tsx', import.meta.url));
-    const settingsSiderSource = readSource(new URL('../../../pages/settings/components/SettingsSider.tsx', import.meta.url));
+    const settingsSiderSource = readSource(
+      new URL('../../../pages/settings/components/SettingsSider.tsx', import.meta.url)
+    );
 
-    expect(routerSource.includes("path='/open-capabilities' element={<Navigate to='/settings/open-capabilities'")).toBe(true);
+    expect(routerSource.includes("path='/open-capabilities'")).toBe(true);
     expect(routerSource.includes("path='/settings/open-capabilities'")).toBe(true);
     expect(settingsSiderSource.includes("'open-capabilities'")).toBe(true);
-    expect(routerSource.includes("path='/settings/webui' element={<Navigate to='/settings/open-capabilities'")).toBe(true);
-    expect(routerSource.includes("path='/settings/tools' element={<Navigate to='/settings/open-capabilities'")).toBe(true);
+    expect(routerSource.includes("path='/settings/webui' element={<Navigate to='/open-capabilities'")).toBe(true);
+    expect(routerSource.includes("path='/settings/tools' element={<Navigate to='/open-capabilities'")).toBe(true);
     expect(routerSource.includes('getHashRouteRedirectUrl')).toBe(true);
-    expect(routerSource.includes("return `${origin}/#${pathname}${search}`")).toBe(true);
     expect(routerSource.includes("path='/mcp'")).toBe(true);
     expect(routerSource.includes("path='/presets'")).toBe(true);
     expect(routerSource.includes("path='/skills'")).toBe(true);

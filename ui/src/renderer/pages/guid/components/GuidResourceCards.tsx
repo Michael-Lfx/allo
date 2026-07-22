@@ -4,26 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BookOne, Comment, PlayOne, Afferent } from '@icon-park/react';
+import { Robot, People, ApiApp } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { openExternalUrl } from '@/renderer/utils/platform';
 import styles from '../index.module.css';
 
-const DOCS_URL = 'https://www.nomifun.com/docs';
-const VIDEO_URL_CN = 'https://www.bilibili.com/video/BV1kwKZ6UE5X/';
-const VIDEO_URL_GLOBAL = 'https://youtu.be/AsEToBDFR9s';
-const FEEDBACK_URL = 'https://www.nomifun.com/contact';
-
-const ResourceLinkCard: React.FC<{
+const PathCard: React.FC<{
   icon: React.ReactNode;
   title: string;
   description: string;
   action: string;
   onClick: () => void;
-}> = ({ icon, title, description, action, onClick }) => (
-  <button type='button' className={styles.guidResourceCard} onClick={onClick}>
+  testId: string;
+}> = ({ icon, title, description, action, onClick, testId }) => (
+  <button type='button' className={styles.guidResourceCard} onClick={onClick} data-testid={testId}>
     <span className={styles.guidResourceCardHeader}>
       <span className={styles.guidResourceIcon}>{icon}</span>
       <span className={styles.guidResourceTitle}>{title}</span>
@@ -33,49 +28,54 @@ const ResourceLinkCard: React.FC<{
   </button>
 );
 
+type GuidResourceCardsProps = {
+  onStartLocalAgent?: () => void;
+};
+
 /**
- * Guid empty-area cards. Includes an in-app knowledge demo path
- * (bind KB via preset → writeback → inbox) plus legacy external links.
+ * Guid empty-area: three in-app demo paths only (local agent, companion remote, mcp-agent).
  */
-const GuidResourceCards: React.FC = () => {
-  const { t, i18n } = useTranslation();
+const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({ onStartLocalAgent }) => {
+  const { t } = useTranslation();
   const navigate = useNavigate();
-  const language = i18n.resolvedLanguage || i18n.language;
-  const videoUrl = language.toLowerCase().startsWith('zh') ? VIDEO_URL_CN : VIDEO_URL_GLOBAL;
 
   return (
     <div className={styles.guidResourceCards} data-testid='guid-resource-cards'>
-      <ResourceLinkCard
-        icon={<Afferent theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.knowledgeTitle', {
-          defaultValue: 'Knowledge writeback demo',
+      <PathCard
+        testId='guid-path-local-agent'
+        icon={<Robot theme='outline' size='18' fill='currentColor' />}
+        title={t('conversation.emptyCards.localAgentTitle', {
+          defaultValue: 'Local agent work',
         })}
-        description={t('conversation.emptyCards.knowledgeDescription', {
-          defaultValue: 'Create or sync a base, attach it in a Preset (staged writeback), then review inbox merges.',
+        description={t('conversation.emptyCards.localAgentDescription', {
+          defaultValue: 'Day-1 path: pick a Preset or Agent below, send a task, watch the session loop.',
         })}
-        action={t('conversation.emptyCards.knowledgeAction', { defaultValue: 'Open knowledge' })}
-        onClick={() => void navigate('/knowledge')}
+        action={t('conversation.emptyCards.localAgentAction', { defaultValue: 'Start below' })}
+        onClick={() => onStartLocalAgent?.()}
       />
-      <ResourceLinkCard
-        icon={<BookOne theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.docsTitle')}
-        description={t('conversation.emptyCards.docsDescription')}
-        action={t('conversation.emptyCards.docsAction')}
-        onClick={() => void openExternalUrl(DOCS_URL)}
+      <PathCard
+        testId='guid-path-companion'
+        icon={<People theme='outline' size='18' fill='currentColor' />}
+        title={t('conversation.emptyCards.companionTitle', {
+          defaultValue: 'Companion remote control',
+        })}
+        description={t('conversation.emptyCards.companionDescription', {
+          defaultValue: 'Bind a channel, then drive this machine from the first IM message.',
+        })}
+        action={t('conversation.emptyCards.companionAction', { defaultValue: 'Open companions' })}
+        onClick={() => void navigate('/nomi')}
       />
-      <ResourceLinkCard
-        icon={<PlayOne theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.videoTitle')}
-        description={t('conversation.emptyCards.videoDescription')}
-        action={t('conversation.emptyCards.videoAction')}
-        onClick={() => void openExternalUrl(videoUrl)}
-      />
-      <ResourceLinkCard
-        icon={<Comment theme='outline' size='18' fill='currentColor' />}
-        title={t('conversation.emptyCards.feedbackTitle')}
-        description={t('conversation.emptyCards.feedbackDescription')}
-        action={t('conversation.emptyCards.feedbackAction')}
-        onClick={() => void openExternalUrl(FEEDBACK_URL)}
+      <PathCard
+        testId='guid-path-open-caps'
+        icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
+        title={t('conversation.emptyCards.openCapsTitle', {
+          defaultValue: 'External agents on /mcp-agent',
+        })}
+        description={t('conversation.emptyCards.openCapsDescription', {
+          defaultValue: 'Open the port, mint a token, paste Cursor/Claude config, call one tool.',
+        })}
+        action={t('conversation.emptyCards.openCapsAction', { defaultValue: 'Open Capabilities' })}
+        onClick={() => void navigate('/open-capabilities')}
       />
     </div>
   );

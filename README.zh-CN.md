@@ -188,7 +188,7 @@
 
 Flowy 的每一项能力都经由单一、强类型的能力注册表对外开放 —— **约 20 个域、150+ 个工具** —— 让你能把 Flowy 接进任何地方。
 
-- **MCP 前门** 位于 `/mcp`（鉴权，Streamable-HTTP）。把 **Claude Code、Cursor 或你自己的智能体**指向它，它们就能像桌面伙伴一样操作 Flowy。
+- **MCP 前门** 默认 `/mcp-agent`（鉴权，Streamable-HTTP；全量 `/mcp` 为高级选项）。把 **Claude Code、Cursor 或你自己的智能体**指向它，它们就能像桌面伙伴一样操作 Flowy。
 - **REST + OpenAPI** 位于 `/v1/tools`，支持流式，并自动生成 `/v1/openapi.json`。
 - 在总线上新增一项能力，会自动同时出现在 MCP **与** REST 上 —— 不漂移。
 
@@ -288,6 +288,16 @@ packaging/      web 宿主的 Linux 部署支持
 ## 🚀 快速开始
 
 > 📦 **下载安装包**：优先使用 [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases)；中国大陆下载可使用 [百度网盘镜像](https://pan.baidu.com/s/5GPonoJNrwJ7GciBSDgXLaA)（分享名：`nomifun`）。也可以从源码安装，或用 Docker 跑服务器。
+
+### 先走通这 3 条演示路径
+
+pre-1.0 信息架构刻意收窄。先记住应用内这三条；其余是二级能力：
+
+1. **本机 Agent 干活** — Guid / 会话主循环（Day-1：选 Preset 或 Agent，发任务）。
+2. **伙伴远程控机** — `/nomi` + 渠道绑定；IM 第一条消息指挥本机。
+3. **外部 Agent 调本机能力** — 开放能力：开端口 → 建 token → 粘贴 Cursor/Claude 配置（默认 `/mcp-agent`）。
+
+Presets / Skills / MCP 收在侧栏 **配置** 二级（Config One）。创意工坊 / 资产库继续延后。
 
 **前置依赖**
 

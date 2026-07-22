@@ -189,7 +189,7 @@ Self-built, **in-process Rust** — no Playwright, no Node, no third-party autom
 
 Every capability Flowy has is exposed through a single, typed capability registry — **~20 domains and 150+ tools** — so you can wire Flowy into anything.
 
-- **MCP front door** at `/mcp` (authenticated, Streamable-HTTP). Point **Claude Code, Cursor, or your own agent** at it and they operate Flowy exactly as the desktop companion does.
+- **MCP front door** at `/mcp-agent` by default (authenticated, Streamable-HTTP; full `/mcp` remains advanced). Point **Claude Code, Cursor, or your own agent** at it and they operate Flowy exactly as the desktop companion does.
 - **REST + OpenAPI** at `/v1/tools`, with streaming and an auto-generated `/v1/openapi.json`.
 - Adding a capability to the bus makes it appear on MCP **and** REST automatically — no drift.
 
@@ -289,6 +289,16 @@ Start with [`docs/architecture/overview.md`](docs/architecture/overview.md) for 
 ## 🚀 Getting started
 
 > 📦 **Installers**: use [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) first. Mainland China users can use the [Baidu Netdisk mirror](https://pan.baidu.com/s/5GPonoJNrwJ7GciBSDgXLaA) (shared as `nomifun`). You can also install from source or run the server with Docker.
+
+### Three demo paths (start here)
+
+Pre-1.0 IA is intentionally narrow. Memorize these three in-app paths; everything else is secondary:
+
+1. **Local agent work** — Guid / session main loop (Day-1: pick Preset or Agent, send a task).
+2. **Companion remote control** — `/nomi` + channel binding; first IM message drives this machine.
+3. **External agents on `/mcp-agent`** — Open Capabilities: open port → mint token → paste Cursor/Claude config.
+
+Presets, Skills, and MCP live under the sider **Config** group (Config One). Workshop / asset library stay deferred.
 
 **Prerequisites**
 
