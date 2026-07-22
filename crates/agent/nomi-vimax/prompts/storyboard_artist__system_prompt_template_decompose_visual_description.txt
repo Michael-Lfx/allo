@@ -34,3 +34,4 @@ Additionally, you will receive a sequence of potential characters, each containi
 - When describing a character, it is necessary to indicate the direction they are facing.
 - The first shot must establish the overall scene environment, using the widest possible shot.
 - Use as few camera positions as possible.
+- Each shot will be rendered as a continuous video of at least 5 seconds. Design motion_desc to fill that duration with meaningful camera and subject motion; do not plan empty holds or micro-cuts that belong in a separate shot.

@@ -16,7 +16,8 @@ You will receive a story within <STORY> and </STORY> tags and a user requirement
 - User Requirement (Optional): A user requirement, which may be empty. The user requirement may include:
     - Target audience (e.g., children, teenagers, adults).
     - Script genre (e.g., micro-film, moive, short drama).
-    - Desired number of scenes (e.g., "divide into 3 scenes").
+    - Desired number of scenes (e.g., "divide into 3 scenes"). CRITICAL: if USER_REQUIREMENT contains [VIDEO_DURATION_CONSTRAINTS], obey the preferred/hard scene counts — fewer compact scenes beat many short ones.
+    - Target finished film duration and pacing notes.
     - Other specific instructions (e.g., emphasize dialogue or action).
 
 [Output]
@@ -24,7 +25,7 @@ You will receive a story within <STORY> and </STORY> tags and a user requirement
 
 [Guidelines]
 - The language of output in values should be same as the input story.
-- Scene Division Principles: Each scene must be based on the same time and location. Start a new scene when the time or location changes. If the user specifies the number of scenes, try to match the requirement. Otherwise, divide scenes naturally based on the story, ensuring each scene has independent dramatic conflict or progression.
+- Scene Division Principles: Each scene must be based on the same time and location. Start a new scene when the time or location changes. If the user specifies the number of scenes (or VIDEO_DURATION_CONSTRAINTS gives a hard upper bound), match it. Prefer fewer, denser scenes so total runtime stays near the target. Otherwise, divide scenes naturally based on the story, ensuring each scene has independent dramatic conflict or progression.
 - Script Formatting Standards: Use standard script formatting: Scene headings in full caps or bold, character names centered or capitalized, dialogue indented, and action descriptions in parentheses.
 - Coherence and Fluidity: Ensure natural transitions between scenes and overall story flow. Avoid abrupt plot jumps.
 - Visual Enhancement Principles: All descriptions must be "filmable". Use concrete actions instead of abstract emotions (e.g., "He turns away to avoid eye contact" instead of "He feels ashamed"). Decribe rich environmental details include lighting, props, weather, etc., to enhance the atmosphere. Visualize character performances such as express internal states through facial expressions, gestures, and movements (e.g., "She bites her lip, her hands trembling" to imply nervousness).

@@ -1,9 +1,10 @@
-//! Flowy video generation → local file (atomic save + global rate-limit gate).
+//! Flowy video generation → local file (strictly serial + cancelable).
 
 use async_trait::async_trait;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 use nomifun_cloud::{
     MODEL_CATEGORY_VIDEO, VideoContentImage, VideoCreateParams, resolve_model_in_catalog,
@@ -13,8 +14,7 @@ use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{is_usable_video_file, write_video_bytes_atomic};
 
-/// Cap concurrent Flowy video create+poll calls process-wide.
-/// Vendor gateways (502) trip easily when many shots/scenes fire together.
+/// Cap concurrent Flowy video create+poll calls process-wide to **one**.
 const GLOBAL_VIDEO_CONCURRENCY: usize = 1;
 
 fn global_video_gate() -> &'static Semaphore {
@@ -25,17 +25,27 @@ fn global_video_gate() -> &'static Semaphore {
 pub struct FlowyVideo {
     services: FlowyVimaxServices,
     model_override: Option<String>,
+    cancel: Option<CancellationToken>,
 }
 
 impl FlowyVideo {
-    pub fn new(services: FlowyVimaxServices, model_override: Option<String>) -> Self {
+    pub fn new(
+        services: FlowyVimaxServices,
+        model_override: Option<String>,
+        cancel: Option<CancellationToken>,
+    ) -> Self {
         Self {
             services,
             model_override: model_override.and_then(|s| {
                 let t = s.trim().to_string();
                 if t.is_empty() { None } else { Some(t) }
             }),
+            cancel,
         }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|t| t.is_cancelled())
     }
 
     async fn resolve_model(&self) -> VimaxResult<String> {
@@ -78,6 +88,9 @@ impl VimaxVideo for FlowyVideo {
         duration_secs: u32,
         out_path: &Path,
     ) -> VimaxResult<()> {
+        if self.is_cancelled() {
+            return Err(VimaxError::Cancelled);
+        }
         // Resume: never re-bill for a clip already on disk.
         if is_usable_video_file(out_path) {
             return Ok(());
@@ -109,9 +122,9 @@ impl VimaxVideo for FlowyVideo {
 
         let aspect = self.services.media.video.default_aspect_ratio.clone();
         let resolution = Some(self.services.media.video.default_resolution.clone());
-        let duration = duration_secs
-            .max(1)
-            .min(self.services.media.video.default_duration.max(10));
+        // Seedance 2.0 / 2.0-fast I2V rejects duration outside [4, 15]; we use ≥5s clips.
+        let max_d = self.services.media.video.default_duration.clamp(5, 15);
+        let duration = duration_secs.clamp(5, max_d);
 
         let params = VideoCreateParams {
             model,
@@ -131,25 +144,47 @@ impl VimaxVideo for FlowyVideo {
         let timeout = self.services.media.video.poll_timeout_seconds.max(600);
         let body = params.to_json();
 
-        // Serialize vendor calls so parallel shot/scene jobs do not stampede into 502.
+        // Strictly one in-flight video API call process-wide.
         let _permit = global_video_gate()
             .acquire()
             .await
             .map_err(|_| VimaxError::Video("video rate-limit gate closed".into()))?;
 
-        // Re-check after waiting in queue — another task may have finished this path.
+        if self.is_cancelled() {
+            return Err(VimaxError::Cancelled);
+        }
         if is_usable_video_file(out_path) {
             return Ok(());
         }
 
+        let cancel = self.cancel.clone();
+        let should_cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> =
+            cancel.map(|t| {
+                Arc::new(move || t.is_cancelled()) as Arc<dyn Fn() -> bool + Send + Sync>
+            });
+
         let record = self
             .services
             .api
-            .generate_video_with_timeout(&self.services.session, body, timeout)
+            .generate_video_with_timeout_and_progress_cancellable(
+                &self.services.session,
+                body,
+                timeout,
+                None,
+                should_cancel,
+                None,
+            )
             .await
             .map_err(|e| {
+                if self.is_cancelled() {
+                    return VimaxError::Cancelled;
+                }
                 map_model_err("video", Some(model_for_err.as_str()), "video_generate", e)
             })?;
+
+        if self.is_cancelled() {
+            return Err(VimaxError::Cancelled);
+        }
 
         let url = record
             .video_url()

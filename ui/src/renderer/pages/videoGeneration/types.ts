@@ -42,8 +42,12 @@ export interface VimaxSession extends SessionSummary {
   image_model?: string | null;
   /** Flowy video model id used during render. */
   video_model?: string | null;
+  /** Target finished video length in seconds (planning + clip allocation). */
+  target_duration_secs?: number | null;
   /** Relative or absolute URL of the finished video when available. */
   final_video?: string | null;
+  /** Relative working dir under data_dir/vimax (e.g. `.working_dir/<id>`). */
+  working_dir?: string | null;
 }
 
 export interface CreateSessionBody {
@@ -60,6 +64,8 @@ export interface PlanBody {
   llm_model?: string;
   image_model?: string;
   video_model?: string;
+  /** Target finished video length in seconds. */
+  target_duration_secs?: number;
 }
 
 export interface RenderBody {
@@ -81,6 +87,10 @@ export interface SessionStatus {
   status: VimaxRunStatus;
   error?: string | null;
   final_video?: string | null;
+  /** Absolute path of the session working directory on disk. */
+  working_dir_abs?: string | null;
+  /** RFC3339 timestamp of last progress update. */
+  updated_at?: string | null;
   /** Recent pipeline progress events (newest may be last). */
   events?: Array<{
     stage: string;

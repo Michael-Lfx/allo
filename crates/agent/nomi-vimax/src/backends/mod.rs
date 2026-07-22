@@ -72,11 +72,19 @@ impl FlowyVimaxServices {
     }
 
     pub fn video(&self) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), None)
+        FlowyVideo::new(self.clone(), None, None)
     }
 
     pub fn video_with_model(&self, model: Option<String>) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model)
+        FlowyVideo::new(self.clone(), model, None)
+    }
+
+    pub fn video_with_model_and_cancel(
+        &self,
+        model: Option<String>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> FlowyVideo {
+        FlowyVideo::new(self.clone(), model, cancel)
     }
 }
 
@@ -97,8 +105,20 @@ pub(crate) fn map_model_err(
         .filter(|s| !s.is_empty())
         .unwrap_or("（默认）");
     let lower = raw.to_ascii_lowercase();
-    let hint = if lower.contains("all channel models failed") {
-        "上游表示该模型当前所有通道均不可用（额度、熔断或临时故障）。请更换模型后重试。"
+    let hint = if lower.contains("datainspectionfailed")
+        || lower.contains("inappropriate content")
+        || lower.contains("不当内容")
+        || lower.contains("内容安全")
+        || lower.contains("敏感内容")
+    {
+        "图片提示词/结果触发了上游内容安全审核。客户端会按 词表清洗→严格清洗→LLM语义重写→极简安全兜底 自动重试；若仍失败，请弱化分镜里的暴力/敏感描写后从断点继续。"
+    } else if lower.contains("all channel models failed") || lower.contains("所有渠道模型均失败")
+    {
+        if lower.contains("datainspection") || lower.contains("inappropriate") {
+            "渠道失败由内容安全审核引起。客户端已做多级提示词安全重写；请检查分镜描述是否含暴力/敏感内容。"
+        } else {
+            "上游表示该模型当前所有通道均不可用（可能是内容审核、额度、熔断或临时故障）。请查看原因中的 upstream 明细，或更换模型后重试。"
+        }
     } else if lower.contains("empty content") {
         if lower.contains("system_len=0") || lower.contains("user_len=0") {
             "请求侧 system/user 提示词为空，不是模型问题。请检查场景脚本是否生成成功。"
@@ -111,6 +131,11 @@ pub(crate) fn map_model_err(
         || lower.contains("refusing multimodal llm call")
     {
         "请求侧提示词为空，不是模型返回问题。请检查上一阶段产物（如 script.txt）是否为空。"
+    } else if lower.contains("privacyinformation")
+        || lower.contains("inputimagesensitivecontent")
+        || lower.contains("may contain real person")
+    {
+        "首帧/参考图被判定含真人肖像。已支持自动 stylize 重试；若仍失败，请换更卡通/插画风格后从断点继续。"
     } else if lower.contains("401") || lower.contains("unauthorized") {
         "鉴权失败，请确认已登录 Flowy 云账号。"
     } else if lower.contains("429") || lower.contains("rate limit") {

@@ -21,24 +21,27 @@ import { useTranslation } from 'react-i18next';
 import {
   Button,
   Input,
+  InputNumber,
+  Popconfirm,
   Result,
   Spin,
   Tag,
   Typography,
 } from '@arco-design/web-react';
-import { ArrowLeft, Play, Refresh, VideoOne } from '@icon-park/react';
+import { ArrowLeft, Delete, Play, Refresh, VideoOne } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
   cancelSession,
+  deleteSession,
   getArtifact,
   getSession,
   getSessionStatus,
   isActiveStatus,
   listArtifacts,
+  loadArtifactMediaUrl,
   planSession,
   renderSession,
-  resolveVimaxUrl,
   reviseSession,
 } from './api';
 import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxWorkflow } from './types';
@@ -68,6 +71,26 @@ function isVideoPath(path: string): boolean {
   return /\.(mp4|webm|mov|avi|mkv)$/i.test(path);
 }
 
+function collectMediaArtifacts(nodes: ArtifactNode[], acc: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.is_dir && n.children) {
+      collectMediaArtifacts(n.children, acc);
+    } else if (!n.is_dir && isMediaPath(n.path)) {
+      // Prefer frames / shot clips / finals for the gallery strip.
+      if (
+        /first_frame|last_frame|video\.mp4|final_video/i.test(n.path) ||
+        /\.(png|jpe?g|webp|mp4)$/i.test(n.path)
+      ) {
+        acc.push(n.path);
+      }
+    }
+  }
+  return acc
+    .filter((p, i, arr) => arr.indexOf(p) === i)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .slice(0, 48);
+}
+
 const WorkspacePage: React.FC = () => {
   const { sessionId = '' } = useParams<{ sessionId: string }>();
   const { t } = useTranslation();
@@ -83,6 +106,7 @@ const WorkspacePage: React.FC = () => {
   const [sourceText, setSourceText] = useState('');
   const [requirement, setRequirement] = useState('');
   const [style, setStyle] = useState('');
+  const [targetDurationSecs, setTargetDurationSecs] = useState<number>(30);
   const [models, setModels] = useState<VimaxModelSelection>({
     llm_model: '',
     image_model: '',
@@ -93,12 +117,14 @@ const WorkspacePage: React.FC = () => {
   const [rendering, setRendering] = useState(false);
   const [revising, setRevising] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [runStatus, setRunStatus] = useState<SessionStatus | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<ArtifactContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [finalBlobUrl, setFinalBlobUrl] = useState<string | null>(null);
 
   const [reviseTarget, setReviseTarget] = useState('');
   const [reviseInstruction, setReviseInstruction] = useState('');
@@ -142,6 +168,11 @@ const WorkspacePage: React.FC = () => {
       setSourceText(s.idea || s.script || s.novel_text || '');
       setRequirement(s.user_requirement || '');
       setStyle(s.style || '');
+      setTargetDurationSecs(
+        typeof s.target_duration_secs === 'number' && s.target_duration_secs > 0
+          ? s.target_duration_secs
+          : 30
+      );
       setModels({
         llm_model: s.llm_model || '',
         image_model: s.image_model || '',
@@ -195,10 +226,12 @@ const WorkspacePage: React.FC = () => {
     void refreshStatus();
   }, [sessionId, loading, loadError, refreshArtifacts, refreshStatus]);
 
-  // Poll while planning / rendering (1s so stage text feels live)
+  // Poll while planning / rendering (1s so stage text feels live).
+  // Also keep a slow poll while failed/idle so a late finish_job is not missed.
   useEffect(() => {
+    if (!sessionId) return;
     const active = isActiveStatus(runStatus?.status);
-    if (!active || !sessionId) return;
+    const ms = active ? 1000 : 5000;
     const timer = window.setInterval(() => {
       void (async () => {
         const st = await refreshStatus();
@@ -206,21 +239,31 @@ const WorkspacePage: React.FC = () => {
           void refreshArtifacts();
         }
       })();
-    }, 1000);
+    }, ms);
     return () => window.clearInterval(timer);
   }, [runStatus?.status, sessionId, refreshStatus, refreshArtifacts]);
 
-  // Load artifact preview when selection changes
+  // Load artifact preview when selection changes (blob URLs for media + auth).
   useEffect(() => {
     if (!sessionId || !selectedPath) {
-      setPreview(null);
+      setPreview((prev) => {
+        if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
+        return null;
+      });
       return;
     }
     let cancelled = false;
     setPreviewLoading(true);
     void getArtifact(sessionId, selectedPath)
       .then((content) => {
-        if (!cancelled) setPreview(content);
+        if (cancelled) {
+          if (content.url?.startsWith('blob:')) URL.revokeObjectURL(content.url);
+          return;
+        }
+        setPreview((prev) => {
+          if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
+          return content;
+        });
       })
       .catch((e) => {
         if (!cancelled) {
@@ -237,6 +280,36 @@ const WorkspacePage: React.FC = () => {
       cancelled = true;
     };
   }, [sessionId, selectedPath]);
+
+  // Final video via authenticated blob URL (relative path is not a public HTTP URL).
+  useEffect(() => {
+    const rel = runStatus?.final_video || session?.final_video;
+    if (!sessionId || !rel) {
+      setFinalBlobUrl((prev) => {
+        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return;
+    }
+    let cancelled = false;
+    void loadArtifactMediaUrl(sessionId, rel)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setFinalBlobUrl((prev) => {
+          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return url;
+        });
+      })
+      .catch((e) => {
+        console.warn('[videoGeneration] final video load failed', e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, runStatus?.final_video, session?.final_video]);
 
   useEffect(() => {
     if (selectedPath) setReviseTarget(selectedPath);
@@ -265,6 +338,7 @@ const WorkspacePage: React.FC = () => {
         [sourceField]: trimmed,
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
+        target_duration_secs: targetDurationSecs,
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
@@ -297,6 +371,7 @@ const WorkspacePage: React.FC = () => {
     sourceField,
     requirement,
     style,
+    targetDurationSecs,
     models,
     message,
     t,
@@ -399,6 +474,23 @@ const WorkspacePage: React.FC = () => {
     }
   }, [sessionId, message, t, refreshStatus]);
 
+  const handleDelete = useCallback(async () => {
+    if (!sessionId || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteSession(sessionId);
+      message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
+      navigate('/video-generation');
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+      setDeleting(false);
+    }
+  }, [sessionId, deleting, message, t, navigate]);
+
   /** Prefer resume render when failure happened in a render-phase stage. */
   const continueAsRender = useMemo(() => {
     const events = runStatus?.events ?? [];
@@ -444,7 +536,7 @@ const WorkspacePage: React.FC = () => {
     session?.status === 'succeeded';
   const canRender = !busy && (hasPlanned || artifacts.length > 0 || isFailed);
   const canContinue = isFailed && !busy;
-  const finalVideoUrl = resolveVimaxUrl(runStatus?.final_video || session?.final_video);
+  const mediaGallery = useMemo(() => collectMediaArtifacts(artifacts), [artifacts]);
 
   const sectionClass =
     'flex flex-col gap-10px rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-16px';
@@ -520,20 +612,36 @@ const WorkspacePage: React.FC = () => {
               </p>
             </div>
           </div>
-          <Button
-            type='outline'
-            size='small'
-            onClick={() => {
-              void loadSession();
-              void refreshArtifacts();
-              void refreshStatus();
-            }}
-          >
-            <span className='inline-flex items-center gap-4px'>
-              <Refresh theme='outline' size={14} fill='currentColor' />
-              {t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
-            </span>
-          </Button>
+          <div className='flex items-center gap-8px shrink-0'>
+            <Button
+              type='outline'
+              size='small'
+              onClick={() => {
+                void loadSession();
+                void refreshArtifacts();
+                void refreshStatus();
+              }}
+            >
+              <span className='inline-flex items-center gap-4px'>
+                <Refresh theme='outline' size={14} fill='currentColor' />
+                {t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
+              </span>
+            </Button>
+            <Popconfirm
+              title={t('videoGeneration.actions.deleteConfirm', {
+                defaultValue: '确定删除该任务？产物将一并清除。',
+              })}
+              disabled={deleting}
+              onOk={() => void handleDelete()}
+            >
+              <Button status='danger' type='outline' size='small' loading={deleting}>
+                <span className='inline-flex items-center gap-4px'>
+                  <Delete theme='outline' size={14} fill='currentColor' />
+                  {t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                </span>
+              </Button>
+            </Popconfirm>
+          </div>
         </div>
 
         {/* Source input */}
@@ -556,7 +664,29 @@ const WorkspacePage: React.FC = () => {
             autoSize={{ minRows: 4, maxRows: 12 }}
             disabled={busy}
           />
-          <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
+          <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-3'}`}>
+            <div className='flex flex-col gap-6px'>
+              <label className='text-12px text-[var(--color-text-3)]'>
+                {t('videoGeneration.workspace.source.durationLabel', {
+                  defaultValue: '目标成片时长（秒）',
+                })}
+              </label>
+              <InputNumber
+                value={targetDurationSecs}
+                onChange={(v) => setTargetDurationSecs(typeof v === 'number' ? v : 30)}
+                min={5}
+                max={180}
+                step={5}
+                disabled={busy}
+                suffix='s'
+                style={{ width: '100%' }}
+              />
+              <span className='text-11px text-[var(--color-text-3)]'>
+                {t('videoGeneration.workspace.source.durationHint', {
+                  defaultValue: '每个镜头视频至少 5 秒；规划会据此控制镜头数量。',
+                })}
+              </span>
+            </div>
             <div className='flex flex-col gap-6px'>
               <label className='text-12px text-[var(--color-text-3)]'>
                 {t('videoGeneration.workspace.source.requirementLabel', {
@@ -568,7 +698,7 @@ const WorkspacePage: React.FC = () => {
                 onChange={setRequirement}
                 disabled={busy}
                 placeholder={t('videoGeneration.workspace.source.requirementPlaceholder', {
-                  defaultValue: '时长、节奏、受众等',
+                  defaultValue: '节奏、受众、风格偏好等',
                 })}
               />
             </div>
@@ -653,25 +783,9 @@ const WorkspacePage: React.FC = () => {
                     />
                   )
                 ) : preview?.text != null ? (
-                  selectedPath && isMediaPath(selectedPath) && !preview.text.includes('\n') ? (
-                    isVideoPath(selectedPath) ? (
-                      <video
-                        src={resolveVimaxUrl(preview.text) ?? preview.text}
-                        controls
-                        className='max-w-full max-h-360px rd-8px'
-                      />
-                    ) : (
-                      <img
-                        src={resolveVimaxUrl(preview.text) ?? preview.text}
-                        alt={selectedPath}
-                        className='max-w-full max-h-360px object-contain rd-8px'
-                      />
-                    )
-                  ) : (
-                    <pre className='m-0 whitespace-pre-wrap break-words text-12px leading-18px text-[var(--color-text-1)] font-mono'>
-                      {preview.text}
-                    </pre>
-                  )
+                  <pre className='m-0 whitespace-pre-wrap break-words text-12px leading-18px text-[var(--color-text-1)] font-mono'>
+                    {preview.text}
+                  </pre>
                 ) : (
                   <div className='text-12px text-[var(--color-text-3)]'>
                     {t('videoGeneration.workspace.artifacts.previewEmpty', {
@@ -682,6 +796,33 @@ const WorkspacePage: React.FC = () => {
               </div>
             </div>
           </div>
+          {mediaGallery.length > 0 ? (
+            <div className='mt-12px flex flex-col gap-8px'>
+              <Typography.Text className='!text-12px !text-[var(--color-text-3)]'>
+                {t('videoGeneration.workspace.artifacts.gallery', {
+                  defaultValue: '关键帧 / 镜头片段快捷预览（点击在上方打开）',
+                })}
+              </Typography.Text>
+              <div className='flex gap-8px overflow-x-auto pb-4px'>
+                {mediaGallery.map((path) => (
+                  <button
+                    key={path}
+                    type='button'
+                    className={[
+                      'shrink-0 max-w-160px px-8px py-6px rd-8px border border-solid text-11px text-left cursor-pointer',
+                      selectedPath === path
+                        ? 'border-[rgb(var(--primary-6))] bg-[var(--color-primary-light-1)] text-[var(--color-text-1)]'
+                        : 'border-[var(--color-border-2)] bg-[var(--color-fill-1)] text-[var(--color-text-2)]',
+                    ].join(' ')}
+                    onClick={() => setSelectedPath(path)}
+                    title={path}
+                  >
+                    {path.split('/').slice(-2).join('/')}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {/* Revise */}
@@ -758,7 +899,7 @@ const WorkspacePage: React.FC = () => {
         </section>
 
         {/* Final video */}
-        {finalVideoUrl ? (
+        {finalBlobUrl ? (
           <section className={sectionClass}>
             <div className='flex items-center gap-8px'>
               <VideoOne theme='outline' size={16} fill='currentColor' className='text-[rgb(var(--primary-6))]' />
@@ -766,7 +907,13 @@ const WorkspacePage: React.FC = () => {
                 {t('videoGeneration.workspace.finalVideo', { defaultValue: '成片' })}
               </Typography.Text>
             </div>
-            <video src={finalVideoUrl} controls className='w-full max-h-480px rd-8px bg-black' />
+            <video
+              key={finalBlobUrl}
+              src={finalBlobUrl}
+              controls
+              playsInline
+              className='w-full max-h-480px rd-8px bg-black'
+            />
           </section>
         ) : null}
       </div>

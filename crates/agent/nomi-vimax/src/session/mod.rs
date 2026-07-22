@@ -51,6 +51,9 @@ pub struct SessionRecord {
     /// Flowy video model id. Empty → media settings / catalog first.
     #[serde(default)]
     pub video_model: String,
+    /// User target for finished video length (seconds). `0` / missing → default in planning.
+    #[serde(default)]
+    pub target_duration_secs: u32,
     #[serde(default = "default_stage")]
     pub stage: String,
     #[serde(default)]
@@ -178,6 +181,7 @@ impl SessionIndex {
             llm_model: String::new(),
             image_model: String::new(),
             video_model: String::new(),
+            target_duration_secs: 0,
             stage: "created".into(),
             summary: String::new(),
             status: RunStatus::Idle,
@@ -222,6 +226,38 @@ impl SessionIndex {
         let out = record.clone();
         self.save(&data)?;
         Ok(out)
+    }
+
+    /// Remove session metadata and delete its working directory (idempotent if already gone).
+    pub fn delete(&self, session_id: &str) -> VimaxResult<()> {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = self.load()?;
+        let Some(record) = data.sessions.remove(session_id) else {
+            return Err(VimaxError::SessionNotFound(session_id.to_string()));
+        };
+        if data.active_session_id == session_id {
+            data.active_session_id = data
+                .sessions
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_default();
+        }
+        self.save(&data)?;
+
+        let path = self.workspace_root.join(&record.working_dir);
+        let working_root = self.workspace_root.join(".working_dir");
+        if path != working_root && path.starts_with(&working_root) && path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                tracing::warn!(
+                    session_id,
+                    path = %path.display(),
+                    error = %e,
+                    "failed to remove vimax session working_dir (index entry already deleted)"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn working_dir(&self, session_id: &str) -> VimaxResult<PathBuf> {

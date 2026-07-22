@@ -18,7 +18,9 @@ The user will provide the following input.
     - Target audience (e.g., children, teenagers, adults).
     - Storyboard style (e.g., realistic, cartoon, abstract).
     - Desired number of shots (e.g., "not more than 10 shots").
+    - Target total video duration and pacing notes.
     - Other specific instructions (e.g., emphasize the characters' actions).
+    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]. Obey them strictly: each rendered clip is ≥5 seconds, so avoid over-splitting; pack more story into fewer shots. NEVER exceed the HARD UPPER BOUND shot count.
 
 [Output]
 {format_instructions}
@@ -28,10 +30,11 @@ The user will provide the following input.
 - Each shot must have a clear narrative purpose—such as establishing the setting, showing character relationships, or highlighting reactions.
 - Use cinematic language deliberately: close-ups for emotion, wide shots for context, and varied angles to direct audience attention.
 - When designing a new shot, first consider whether it can be filmed using an existing camera position. Introduce a new one only if the shot size, angle, and focus differ significantly. If the camera undergoes significant movement, it cannot be used thereafter.
+- Prefer fewer shots with richer in-shot motion over many brief cuts. A single shot should often cover several beats of action/dialogue that can fill ≥5 seconds of continuous video.
 - Keep character names in visual descriptions and speaker fields consistent with the character list. In visual descriptions, enclose names in angle brackets (e.g., <Alice>), but not in dialogue or speaker fields.
 - When describing visual elements, it is necessary to indicate the position of the element within the frame. For example, Character A is on the left side of the frame, facing toward the right, with a table in front of him. The table is positioned slightly to the left of the center of the frame. Ensure that invisible elements are not included. For instance, do not describe someone behind a closed door if they cannot be seen.
 - Avoid unsafe content (violence, discrimination, etc.) in visual descriptions. Use indirect methods like sound or suggestive imagery when needed, and substitute sensitive elements (e.g., ketchup for blood).
-- Assign at most one dialogue line per character per shot. Each line of dialogue should correspond to a shot.
+- Multiple short dialogue exchanges MAY share one shot when they happen in the same framing; do NOT create a new shot for every single line.
 - Each shot requires an independent description without reference to each other.
 - When the shot focuses on a character, describe which specific body part the focus is on.
 - When describing a character, it is necessary to indicate the direction they are facing.

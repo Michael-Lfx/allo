@@ -1,4 +1,4 @@
-//! Flowy image generation → local file.
+//! Flowy image generation → local file (with multi-tier safety rewrite).
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -10,6 +10,11 @@ use nomifun_cloud::{
 
 use super::{FlowyVimaxServices, VimaxImage, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
+use crate::prompt_safety::{
+    finalize_llm_rewrite, is_image_content_inspection_err, llm_rewrite_system_message,
+    llm_rewrite_user_message, sanitize_image_prompt, sanitize_image_prompt_strict,
+    ultra_safe_fallback_prompt,
+};
 
 pub struct FlowyImage {
     services: FlowyVimaxServices,
@@ -22,7 +27,11 @@ impl FlowyImage {
             services,
             model_override: model_override.and_then(|s| {
                 let t = s.trim().to_string();
-                if t.is_empty() { None } else { Some(t) }
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
             }),
         }
     }
@@ -43,7 +52,6 @@ impl FlowyImage {
             if let Some(id) = resolve_model_in_catalog(configured, &catalog.cloud) {
                 return Ok(id);
             }
-            // Explicit session pick: trust the id the user selected.
             if self.model_override.is_some() {
                 return Ok(configured.to_string());
             }
@@ -54,6 +62,66 @@ impl FlowyImage {
             .map(|m| m.id.clone())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| VimaxError::Image("no Flowy image model in catalog".into()))
+    }
+
+    async fn generate_once(
+        &self,
+        model: &str,
+        prompt: &str,
+        image_url: Option<String>,
+        out_path: &Path,
+    ) -> Result<(), nomifun_cloud::ServerClientError> {
+        let req = ImageGenerationRequest {
+            model: model.to_string(),
+            prompt: prompt.to_string(),
+            image_url,
+            extra: Value::Null,
+        };
+        let upstream = self
+            .services
+            .api
+            .generate_image(&self.services.session, &req)
+            .await?;
+        let url = extract_first_image_url(&upstream).ok_or_else(|| {
+            nomifun_cloud::ServerClientError::InvalidResponse("image API returned no URL".into())
+        })?;
+        download_to_path(&url, out_path)
+            .await
+            .map_err(|e| nomifun_cloud::ServerClientError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// LLM rewrite so semantic violence / sensitive framing is removed (not just keywords).
+    async fn rewrite_prompt_with_llm(&self, original: &str) -> Option<String> {
+        let system = llm_rewrite_system_message();
+        let user = llm_rewrite_user_message(original);
+        match self
+            .services
+            .api
+            .chat_completions_text(
+                &self.services.session,
+                system,
+                &user,
+                1024,
+                0.3,
+                None,
+            )
+            .await
+        {
+            Ok(raw) => {
+                let out = finalize_llm_rewrite(&raw, original);
+                tracing::info!(
+                    original_len = original.chars().count(),
+                    rewritten_len = out.chars().count(),
+                    "llm image-prompt safety rewrite ok"
+                );
+                Some(out)
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "llm image-prompt safety rewrite failed");
+                None
+            }
+        }
     }
 }
 
@@ -74,24 +142,89 @@ impl VimaxImage for FlowyImage {
             None
         };
 
-        let req = ImageGenerationRequest {
-            model: model.clone(),
-            prompt: prompt.to_string(),
-            image_url,
-            extra: Value::Null,
-        };
-
-        let upstream = self
-            .services
-            .api
-            .generate_image(&self.services.session, &req)
+        // Tier 1: lexical soften + positive safety prefix (keep refs).
+        let tier1 = sanitize_image_prompt(prompt);
+        let err1 = match self
+            .generate_once(&model, &tier1, image_url.clone(), out_path)
             .await
-            .map_err(|e| map_model_err("image", Some(model.as_str()), "image_generate", e))?;
+        {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
+        };
+        let raw1 = err1.to_string();
+        if !is_image_content_inspection_err(&raw1) {
+            return Err(map_model_err(
+                "image",
+                Some(model.as_str()),
+                "image_generate",
+                err1,
+            ));
+        }
 
-        let url = extract_first_image_url(&upstream)
-            .ok_or_else(|| VimaxError::Image("image API returned no URL".into()))?;
+        // Tier 2: stricter lexical rewrite, drop reference images.
+        tracing::warn!(
+            model = %model,
+            error = %raw1,
+            "image content inspection failed; tier2 strict lexical rewrite"
+        );
+        let tier2 = sanitize_image_prompt_strict(prompt);
+        if let Err(err2) = self.generate_once(&model, &tier2, None, out_path).await {
+            let raw2 = err2.to_string();
+            if !is_image_content_inspection_err(&raw2) {
+                return Err(map_model_err(
+                    "image",
+                    Some(model.as_str()),
+                    "image_generate_safe_retry",
+                    err2,
+                ));
+            }
 
-        download_to_path(&url, out_path).await?;
+            // Tier 3: LLM semantic rewrite.
+            tracing::warn!(
+                model = %model,
+                error = %raw2,
+                "image content inspection failed again; tier3 LLM safety rewrite"
+            );
+            let tier3 = match self.rewrite_prompt_with_llm(prompt).await {
+                Some(p) => p,
+                None => sanitize_image_prompt_strict(&tier2),
+            };
+            if let Err(err3) = self.generate_once(&model, &tier3, None, out_path).await {
+                let raw3 = err3.to_string();
+                if !is_image_content_inspection_err(&raw3) {
+                    return Err(map_model_err(
+                        "image",
+                        Some(model.as_str()),
+                        "image_generate_llm_rewrite",
+                        err3,
+                    ));
+                }
+
+                // Tier 4: ultra-safe fallback (may lose beat fidelity, keeps pipeline moving).
+                tracing::warn!(
+                    model = %model,
+                    error = %raw3,
+                    "image content inspection failed after LLM rewrite; tier4 ultra-safe fallback"
+                );
+                let tier4 = ultra_safe_fallback_prompt(prompt);
+                self.generate_once(&model, &tier4, None, out_path)
+                    .await
+                    .map_err(|err4| {
+                        map_model_err(
+                            "image",
+                            Some(model.as_str()),
+                            "image_generate_ultra_safe_fallback",
+                            nomifun_cloud::ServerClientError::Api {
+                                code: 400,
+                                msg: format!(
+                                    "content inspection persisted after lexical+LLM+ultra-safe retries. first={raw1}; strict={raw2}; llm={raw3}; final={err4}"
+                                ),
+                            },
+                        )
+                    })?;
+            }
+        }
+
         Ok(())
     }
 }

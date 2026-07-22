@@ -1,13 +1,11 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::backends::{VimaxChat, VimaxVideo};
+use crate::backends::VimaxChat;
 use crate::domain::{Camera, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
 use crate::json_util::parse_llm_json;
-use crate::media_local;
 
 use super::formats::CAMERA_TREE;
 
@@ -15,12 +13,11 @@ const CAMERA_TREE_RETRIES: u32 = 2;
 
 pub struct CameraImageGenerator {
     chat: Arc<dyn VimaxChat>,
-    video: Arc<dyn VimaxVideo>,
 }
 
 impl CameraImageGenerator {
-    pub fn new(chat: Arc<dyn VimaxChat>, video: Arc<dyn VimaxVideo>) -> Self {
-        Self { chat, video }
+    pub fn new(chat: Arc<dyn VimaxChat>) -> Self {
+        Self { chat }
     }
 
     pub async fn construct_camera_tree(
@@ -117,6 +114,11 @@ impl CameraImageGenerator {
                 if parent_shot.is_some_and(|idx| !valid_shot_idxs.contains(&idx)) {
                     parent_shot = None;
                 }
+                // parent_shot owned by this same camera → self-wait deadlock.
+                if parent_shot.is_some_and(|idx| cam.active_shot_idxs.contains(&idx)) {
+                    parent_cam = None;
+                    parent_shot = None;
+                }
                 cam.parent_cam_idx = parent_cam;
                 cam.parent_shot_idx = parent_shot;
                 cam.reason = p.reason;
@@ -158,37 +160,6 @@ impl CameraImageGenerator {
             })
             .collect();
         self.construct_camera_tree(cameras, &shots).await
-    }
-
-    pub async fn generate_transition_video(
-        &self,
-        first_shot_visual_desc: &str,
-        second_shot_visual_desc: &str,
-        first_shot_ff_path: &Path,
-        out_path: &Path,
-    ) -> VimaxResult<()> {
-        let prompt = format!(
-            "Two shots. The transition between the shots is a cut to. The style of the two shots should be consistent.\nThe first shot description: {first_shot_visual_desc}.\nThe second shot description: {second_shot_visual_desc}."
-        );
-        self.video
-            .generate(
-                &prompt,
-                Some(first_shot_ff_path),
-                None,
-                &[],
-                5,
-                out_path,
-            )
-            .await
-    }
-
-    /// Extract new camera image from transition video (scene-cut → else last frame).
-    pub async fn get_new_camera_image(
-        &self,
-        transition_video_path: &Path,
-        out_path: &Path,
-    ) -> VimaxResult<()> {
-        media_local::extract_new_camera_frame(transition_video_path, out_path).await
     }
 }
 

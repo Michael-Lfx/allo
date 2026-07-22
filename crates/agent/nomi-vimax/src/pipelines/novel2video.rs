@@ -214,7 +214,19 @@ impl Novel2VideoPipeline {
             .await?;
 
             // Plan script2video text for each scene.
-            for scene in &scenes {
+            let film_total = {
+                let p = self.working_dir.join("target_duration_secs.txt");
+                tokio::fs::read_to_string(&p)
+                    .await
+                    .ok()
+                    .and_then(|t| t.trim().parse::<u32>().ok())
+                    .filter(|&n| n > 0)
+                    .map(|n| crate::planning::normalize_target_duration_secs(Some(n)))
+                    .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS)
+            };
+            let scene_n = scenes.len().max(1);
+            let budgets = crate::planning::allocate_scene_budgets(film_total, scene_n);
+            for (si, scene) in scenes.iter().enumerate() {
                 emit_pct(
                     &progress,
                     "plan_scene",
@@ -231,14 +243,25 @@ impl Novel2VideoPipeline {
                     .join(format!("scene_{}", scene.index));
                 tokio::fs::create_dir_all(&scene_work).await?;
                 write_text_artifact(&scene_work.join("script.txt"), &scene.script).await?;
+                let budget = budgets
+                    .get(si)
+                    .copied()
+                    .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS);
+                write_text_artifact(
+                    &scene_work.join("target_duration_secs.txt"),
+                    &budget.to_string(),
+                )
+                .await?;
+                let scene_req = crate::planning::enrich_requirement_for_scene(
+                    user_requirement,
+                    budget,
+                    si,
+                    scene_n,
+                    film_total,
+                );
                 let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_work);
                 let _ = s2v
-                    .plan_text_artifacts(
-                        &scene.script,
-                        user_requirement,
-                        style,
-                        progress.clone(),
-                    )
+                    .plan_text_artifacts(&scene.script, &scene_req, style, progress.clone())
                     .await?;
             }
         }

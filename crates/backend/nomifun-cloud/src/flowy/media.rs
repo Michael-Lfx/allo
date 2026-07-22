@@ -54,8 +54,9 @@ const FLOWY_IMAGE_TEXT_MAX_CHARS: usize = 800;
 /// - text length ≤ 800 characters
 /// - no image parts in `content` (text-only)
 ///
-/// Reference images are therefore not embedded in the body; callers should fold
-/// consistency hints into the text prompt when needed.
+/// When `image_url` is set and the model is not Z-Image-class, content may
+/// include an image part so img2img / continuity refs actually reach the model.
+/// Reference images for Z-Image are folded into text hints only.
 pub fn build_flowy_image_body(req: &ImageGenerationRequest) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
@@ -75,21 +76,38 @@ pub fn build_flowy_image_body(req: &ImageGenerationRequest) -> Value {
         }
     } else {
         let mut text = req.prompt.trim().to_string();
-        // Side/back portrait calls may pass a reference path; keep a short hint
-        // in text only — Z-Image rejects image parts in `content`.
-        if req.image_url.as_ref().is_some_and(|u| !u.trim().is_empty())
+        let ref_url = req
+            .image_url
+            .as_ref()
+            .map(|u| u.trim())
+            .filter(|u| !u.is_empty());
+        let embed_ref = ref_url.is_some() && model_supports_image_ref(&req.model);
+
+        if ref_url.is_some()
+            && !embed_ref
             && !text.to_ascii_lowercase().contains("same character")
             && !text.to_ascii_lowercase().contains("consistent")
+            && !text.to_ascii_lowercase().contains("continuity")
         {
             text.push_str(" Keep the same character identity, face, outfit, and style.");
         }
         let text = truncate_chars(&text, FLOWY_IMAGE_TEXT_MAX_CHARS);
+
+        let content = if let (Some(url), true) = (ref_url, embed_ref) {
+            json!([
+                { "image": url },
+                { "text": text }
+            ])
+        } else {
+            json!([{ "text": text }])
+        };
+
         body.insert(
             "input".into(),
             json!({
                 "messages": [{
                     "role": "user",
-                    "content": [{ "text": text }]
+                    "content": content
                 }]
             }),
         );
@@ -117,6 +135,12 @@ pub fn build_flowy_image_body(req: &ImageGenerationRequest) -> Value {
     }
 
     Value::Object(body)
+}
+
+fn model_supports_image_ref(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    // Z-Image Turbo rejects image parts in content (exactly one text object).
+    !(m.contains("z-image") || m.contains("zimage"))
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -157,8 +181,8 @@ impl FlowyApiClient {
         req: &ImageGenerationRequest,
     ) -> Result<Value, ServerClientError> {
         let body = build_flowy_image_body(req);
-        // Z-Image / AIPC text-to-image always uses generations; image refs are
-        // folded into text by `build_flowy_image_body` (content must be 1× text).
+        // Z-Image / AIPC text-to-image uses generations; non-Z-Image models may
+        // embed `image_url` in content via `build_flowy_image_body`.
         self.post_upstream_json(&self.llm_transport, "/images/generations", session, body)
             .await
     }
@@ -539,6 +563,20 @@ mod tests {
         let text = content[0]["text"].as_str().unwrap();
         assert!(text.contains("side view"));
         assert!(text.to_ascii_lowercase().contains("same character"));
+    }
+
+    #[test]
+    fn build_flowy_image_body_embeds_reference_for_non_zimage() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-wanx-v1".into(),
+            prompt: "reframe camera".into(),
+            image_url: Some("data:image/png;base64,abc".into()),
+            extra: Value::Null,
+        });
+        let content = body["input"]["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["image"], json!("data:image/png;base64,abc"));
+        assert_eq!(content[1]["text"], json!("reframe camera"));
     }
 
     #[test]

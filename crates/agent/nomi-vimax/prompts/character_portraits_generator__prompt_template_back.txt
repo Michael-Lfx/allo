@@ -1,3 +1,4 @@
 Generate a full-body back-view of {identifier} on a pure white background, wide 16:9 landscape, character centered. Face not visible. Same hair, outfit, and proportions as described.
 Features: {features}
 Style: {style}
+Look: stylized illustration / animated character design, clearly drawn storybook look.

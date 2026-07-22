@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use futures::FutureExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -79,12 +80,19 @@ impl VimaxService {
 
     pub async fn status(&self, id: &str) -> VimaxResult<RenderStatus> {
         let record = self.index.get(id)?;
+        let working_abs = self
+            .index
+            .working_dir(id)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
         let map = self
             .statuses
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Some(s) = map.get(id) {
-            return Ok(s.clone());
+            let mut out = s.clone();
+            out.working_dir_abs = working_abs.or(out.working_dir_abs);
+            return Ok(out);
         }
         Ok(RenderStatus {
             status: record.status,
@@ -93,6 +101,8 @@ impl VimaxService {
             progress: 0.0,
             error: None,
             final_video: record.final_video,
+            working_dir_abs: working_abs,
+            updated_at: record.updated_at,
             events: vec![],
         })
     }
@@ -119,6 +129,22 @@ impl VimaxService {
         Ok(())
     }
 
+    /// Cancel any in-flight work, drop runtime state, and remove session artifacts.
+    pub async fn delete_session(self: &Arc<Self>, id: &str) -> VimaxResult<()> {
+        // Best-effort cancel so a running plan/render stops ASAP.
+        if let Some(token) = self.cancels.lock().await.remove(id) {
+            token.cancel();
+        }
+        {
+            let mut map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.remove(id);
+        }
+        self.index.delete(id)
+    }
+
     pub fn list_artifacts(&self, id: &str) -> VimaxResult<Vec<ArtifactNode>> {
         self.index.list_artifacts(id)
     }
@@ -138,6 +164,7 @@ impl VimaxService {
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
+        target_duration_secs: Option<u32>,
     ) -> VimaxResult<()> {
         self.ensure_idle(id).await?;
         let token = CancellationToken::new();
@@ -150,8 +177,8 @@ impl VimaxService {
         let svc = Arc::clone(self);
         let id = id.to_string();
         tokio::spawn(async move {
-            let result = svc
-                .run_plan(
+            let result = match std::panic::AssertUnwindSafe(
+                svc.run_plan(
                     &id,
                     idea,
                     script,
@@ -161,9 +188,16 @@ impl VimaxService {
                     llm_model,
                     image_model,
                     video_model,
+                    target_duration_secs,
                     token.clone(),
-                )
-                .await;
+                ),
+            )
+            .catch_unwind()
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => Err(VimaxError::msg("planning task panicked")),
+            };
             svc.finish_job(&id, result, &token, JobKind::Plan).await;
         });
         Ok(())
@@ -201,7 +235,13 @@ impl VimaxService {
         let svc = Arc::clone(self);
         let id = id.to_string();
         tokio::spawn(async move {
-            let result = svc.run_render(&id, token.clone()).await;
+            let result = match std::panic::AssertUnwindSafe(svc.run_render(&id, token.clone()))
+                .catch_unwind()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => Err(VimaxError::msg("render task panicked")),
+            };
             svc.finish_job(&id, result, &token, JobKind::Render).await;
         });
         Ok(())
@@ -215,7 +255,7 @@ impl VimaxService {
     ) -> VimaxResult<()> {
         let working = self.index.working_dir(id)?;
         let record = self.index.get(id)?;
-        let backends = self.backends_for(&record).await?;
+        let backends = self.backends_for(&record, None).await?;
         let result = crate::revise::revise_artifact(
             &backends.chat,
             &working,
@@ -335,6 +375,7 @@ impl VimaxService {
                     };
                     st.error = Some(composed.clone());
                     st.message = composed.clone();
+                    st.touch();
                     st.emit("failed", &composed, None);
                 }
             }
@@ -345,7 +386,11 @@ impl VimaxService {
         self.cancels.lock().await.remove(id);
     }
 
-    async fn backends_for(&self, record: &SessionRecord) -> VimaxResult<PipelineBackends> {
+    async fn backends_for(
+        &self,
+        record: &SessionRecord,
+        cancel: Option<CancellationToken>,
+    ) -> VimaxResult<PipelineBackends> {
         let guard = self.flowy.lock().await;
         let flowy = guard.as_ref().ok_or(VimaxError::NotAuthenticated)?;
         let llm = nonempty_opt(&record.llm_model);
@@ -354,8 +399,9 @@ impl VimaxService {
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
             image: Arc::new(flowy.image_with_model(image)),
-            video: Arc::new(flowy.video_with_model(video)),
+            video: Arc::new(flowy.video_with_model_and_cancel(video, cancel.clone())),
             flowy: Some(flowy.clone()),
+            cancel,
         })
     }
 
@@ -370,6 +416,7 @@ impl VimaxService {
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
+        target_duration_secs: Option<u32>,
         token: CancellationToken,
     ) -> VimaxResult<()> {
         if token.is_cancelled() {
@@ -400,15 +447,49 @@ impl VimaxService {
             if let Some(v) = &video_model {
                 r.video_model = v.trim().to_string();
             }
+            if let Some(secs) = target_duration_secs {
+                r.target_duration_secs = secs;
+            }
         })?;
 
-        let backends = self.backends_for(&record).await?;
+        let backends = self.backends_for(&record, Some(token.clone())).await?;
         let work = self
             .index
             .working_dir(id)?
             .join(record.workflow.artifact_root());
         tokio::fs::create_dir_all(&work).await?;
-        let req = record.user_requirement.clone();
+        let target_secs = crate::planning::normalize_target_duration_secs(
+            if record.target_duration_secs > 0 {
+                Some(record.target_duration_secs)
+            } else {
+                target_duration_secs
+            },
+        );
+        // Idea/Novel: film-level scene budget. Script2Video: whole target = one scene.
+        let req = match record.workflow {
+            WorkflowKind::Script2Video => crate::planning::enrich_requirement_for_planning(
+                &record.user_requirement,
+                Some(target_secs),
+            ),
+            WorkflowKind::Idea2Video | WorkflowKind::Novel2Video => {
+                crate::planning::enrich_requirement_for_film(
+                    &record.user_requirement,
+                    Some(target_secs),
+                )
+            }
+        };
+        // Persist so render / child scene dirs can allocate clip lengths.
+        let _ = crate::session::write_text_artifact(
+            &work.join("target_duration_secs.txt"),
+            &target_secs.to_string(),
+        )
+        .await;
+        // Also keep session field in sync when client omitted it.
+        if record.target_duration_secs == 0 {
+            let _ = self
+                .index
+                .update_fields(id, |r| r.target_duration_secs = target_secs);
+        }
         let style_s = if record.style.is_empty() {
             "cinematic".into()
         } else {
@@ -487,12 +568,30 @@ impl VimaxService {
         if token.is_cancelled() {
             return Err(VimaxError::Cancelled);
         }
-        let record = self.index.get(id)?;
-        let backends = self.backends_for(&record).await?;
+        let mut record = self.index.get(id)?;
+        let target_secs = crate::planning::normalize_target_duration_secs(
+            if record.target_duration_secs > 0 {
+                Some(record.target_duration_secs)
+            } else {
+                None
+            },
+        );
+        if record.target_duration_secs == 0 {
+            let _ = self
+                .index
+                .update_fields(id, |r| r.target_duration_secs = target_secs);
+            record.target_duration_secs = target_secs;
+        }
+        let backends = self.backends_for(&record, Some(token.clone())).await?;
         let work = self
             .index
             .working_dir(id)?
             .join(record.workflow.artifact_root());
+        let _ = crate::session::write_text_artifact(
+            &work.join("target_duration_secs.txt"),
+            &target_secs.to_string(),
+        )
+        .await;
         let req = record.user_requirement.clone();
         let style_s = if record.style.is_empty() {
             "cinematic".into()
@@ -500,6 +599,12 @@ impl VimaxService {
             record.style.clone()
         };
         let progress = progress_callback(Arc::clone(self), id);
+
+        // Periodically check cancel while waiting on long video polls is handled
+        // inside FlowyVideo; also check before entering the pipeline.
+        if token.is_cancelled() {
+            return Err(VimaxError::Cancelled);
+        }
 
         let final_video = match record.workflow {
             WorkflowKind::Script2Video => {
