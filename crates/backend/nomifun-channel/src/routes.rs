@@ -182,6 +182,8 @@ struct ChannelPluginStatusView {
     bot_username: Option<String>,
     active_users: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     is_extension: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     extension_meta: Option<ChannelExtensionMetaView>,
@@ -221,6 +223,7 @@ impl ChannelPluginStatusView {
             has_token: status.has_token,
             bot_username: status.bot_username,
             active_users: status.active_users,
+            error: status.error,
             is_extension: extension_meta.as_ref().map(|_| true),
             extension_meta,
         }

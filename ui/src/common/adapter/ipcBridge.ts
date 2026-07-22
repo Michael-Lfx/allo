@@ -2746,6 +2746,7 @@ function toPluginStatus(raw: RawPluginStatus): IChannelPluginStatus {
     connected: (raw.connected ?? false) as boolean,
     status: raw.status as string | undefined,
     last_connected: raw.last_connected as number | undefined,
+    error: raw.error as string | undefined,
     activeUsers: (raw.active_users ?? 0) as number,
     botUsername: raw.bot_username as string | undefined,
     hasToken: (raw.has_token ?? false) as boolean,

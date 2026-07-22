@@ -43,8 +43,9 @@ export const consumePendingDeepLink = (): DeepLinkAddProviderDetail | null => {
 const ALLOWED_NAVIGATE_PATTERNS = [/^\/conversation\/[^/]+$/];
 
 /**
- * Hook to listen for nomifun:// deep link events from main process.
+ * Hook to listen for flowy:// (legacy nomifun://) deep link events from main process.
  * Routes 'add-provider' action to the model settings page.
+ * Routes 'pair' action to channel.approvePairing (owner self-pairing shortcut).
  * Routes 'navigate' action to the specified route (whitelist-validated).
  * The pre-fill data is stored in a module-level variable and consumed
  * by ModelModalContent on mount via consumePendingDeepLink().
@@ -65,6 +66,23 @@ export const useDeepLink = () => {
 
         // Navigate to model settings page; ModelModalContent will pick up the pending data
         void navigate('/settings/model');
+        return;
+      }
+
+      if (payload.action === 'pair') {
+        const code = payload.params.code?.trim();
+        if (!code) {
+          console.warn('[DeepLink] pair action missing code param');
+          return;
+        }
+        void (async () => {
+          try {
+            await ipcBridge.channel.approvePairing.invoke({ code });
+            void navigate('/nomi?tab=remote');
+          } catch (error) {
+            console.error('[DeepLink] pair approve failed:', error);
+          }
+        })();
         return;
       }
 

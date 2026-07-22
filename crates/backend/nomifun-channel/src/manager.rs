@@ -43,6 +43,8 @@ pub struct ChannelManager {
     encryption_key: [u8; 32],
     /// Active plugin instances keyed by the canonical `channel_plugins.id`.
     plugins: DashMap<String, Box<dyn ChannelPlugin>>,
+    /// Last error text per plugin id (DB only stores status=`error`, not the message).
+    last_errors: DashMap<String, String>,
     /// Sender for incoming messages from all plugins, stamped with their
     /// channel row id. The `ChannelMessageLoop` holds the receiving end.
     message_tx: mpsc::Sender<ChannelIncoming>,
@@ -214,6 +216,7 @@ impl ChannelManager {
             user_events,
             encryption_key,
             plugins: DashMap::new(),
+            last_errors: DashMap::new(),
             message_tx,
             confirm_tx,
         }
@@ -419,6 +422,7 @@ impl ChannelManager {
         self.repo.update_plugin_status(&row_id, &params).await?;
 
         // Store active instance
+        self.last_errors.remove(&row_id);
         self.plugins.insert(row_id.clone(), plugin);
 
         info!(plugin_id = %row_id, plugin_type = %plugin_type, "plugin enabled and started");
@@ -1166,6 +1170,7 @@ impl ChannelManager {
         };
         self.repo.update_plugin_status(&row.id, &params).await?;
 
+        self.last_errors.remove(&row.id);
         self.plugins.insert(row.id.clone(), plugin);
         info!(plugin_id = %row.id, "plugin restored");
         self.broadcast_status_change(&row.id).await;
@@ -1197,8 +1202,10 @@ impl ChannelManager {
         });
     }
 
-    /// Updates a plugin to error status in the DB.
-    async fn update_plugin_error(&self, plugin_id: &str, error_msg: &str) {        let params = UpdatePluginStatusParams {
+    /// Updates a plugin to error status in the DB and remembers the message for status views.
+    async fn update_plugin_error(&self, plugin_id: &str, error_msg: &str) {
+        self.last_errors.insert(plugin_id.to_owned(), error_msg.to_owned());
+        let params = UpdatePluginStatusParams {
             status: Some(PluginStatus::Error.to_string()),
             last_connected: None,
             enabled: None,
@@ -1260,6 +1267,11 @@ impl ChannelManager {
     fn row_to_status_response(&self, row: &ChannelPluginRow, live_status: Option<String>) -> PluginStatusResponse {
         let is_running = self.plugins.contains_key(&row.id);
         let has_token = !row.config.is_empty();
+        let live_error = self
+            .plugins
+            .get(&row.id)
+            .and_then(|p| p.last_error().map(str::to_owned));
+        let error = live_error.or_else(|| self.last_errors.get(&row.id).map(|e| e.value().clone()));
         PluginStatusResponse {
             plugin_id: row.id.clone(),
             plugin_type: row.r#type.clone(),
@@ -1276,6 +1288,7 @@ impl ChannelManager {
             has_token,
             bot_username: None,
             active_users: 0,
+            error,
         }
     }
 

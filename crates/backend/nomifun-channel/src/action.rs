@@ -661,12 +661,16 @@ fn short_session_id(id: &str) -> String {
 }
 
 fn build_pairing_response(code: &str) -> ActionResponse {
+    // `flowy://pair?code=` is registered by the desktop deep-link plugin so the
+    // owner can approve without pasting the 6-digit code into Settings.
+    let deep_link = format!("flowy://pair?code={code}");
     ActionResponse {
         text: Some(format!(
             "Welcome! To use this bot, you need authorization.\n\n\
              Your pairing code: *{code}*\n\n\
-             Share this code with the admin, who can approve it in \
-             Settings → Channel → Pairing Requests.\n\
+             Owner shortcut (same machine): open `{deep_link}` \
+             or scan the QR on Nomi → Remote.\n\
+             Or approve under Nomi → Remote → Pending pairings.\n\
              The code expires in 10 minutes."
         )),
         parse_mode: None,

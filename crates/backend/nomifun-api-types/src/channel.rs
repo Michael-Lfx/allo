@@ -173,6 +173,9 @@ pub struct PluginStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bot_username: Option<String>,
     pub active_users: i64,
+    /// Last runtime/startup error when `status` is `error` (or a recent failure).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Result of a plugin credential test.
@@ -538,6 +541,7 @@ mod tests {
             has_token: true,
             bot_username: Some("my_bot".into()),
             active_users: 5,
+        error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["plugin_id"], CHANNEL_ID);
@@ -574,6 +578,7 @@ mod tests {
             has_token: false,
             bot_username: None,
             active_users: 0,
+        error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("status").is_none());
@@ -837,6 +842,7 @@ mod tests {
                 has_token: false,
                 bot_username: None,
                 active_users: 0,
+            error: None,
             },
         };
         let json = serde_json::to_value(&payload).unwrap();
@@ -897,6 +903,7 @@ mod tests {
             has_token: false,
             bot_username: None,
             active_users: 0,
+        error: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: PluginStatusResponse = serde_json::from_str(&json).unwrap();
