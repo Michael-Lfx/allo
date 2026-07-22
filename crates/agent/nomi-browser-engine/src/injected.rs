@@ -465,7 +465,7 @@ impl InjectionManager {
         if frame_id.is_empty() {
             return;
         }
-        let mut g = shared.lock().unwrap();
+        let mut g = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         g.context_ids.insert(frame_id.clone(), id);
         if !unique_id.is_empty() {
             g.unique_to_frame.insert(unique_id, frame_id.clone());
@@ -482,7 +482,7 @@ impl InjectionManager {
         else {
             return;
         };
-        let mut g = shared.lock().unwrap();
+        let mut g = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(frame_id) = g.unique_to_frame.remove(unique_id) {
             g.context_ids.remove(&frame_id);
             g.injected_handles.remove(&frame_id);
@@ -491,7 +491,7 @@ impl InjectionManager {
 
     /// 所有 context 清空（多见于主 frame 跨文档导航）：整表失效，下次用时重建。
     fn on_contexts_cleared(shared: &Mutex<FrameWorldState>) {
-        let mut g = shared.lock().unwrap();
+        let mut g = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         g.context_ids.clear();
         g.unique_to_frame.clear();
         g.injected_handles.clear();
@@ -503,7 +503,7 @@ impl InjectionManager {
     pub fn context_id_for(&self, frame_id: &str) -> Result<i64, InjectError> {
         self.shared
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .context_ids
             .get(frame_id)
             .copied()
@@ -522,7 +522,7 @@ impl InjectionManager {
         if let Some(h) = self
             .shared
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .injected_handles
             .get(frame_id)
             .cloned()
@@ -569,7 +569,7 @@ impl InjectionManager {
 
         self.shared
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .injected_handles
             .insert(frame_id.to_string(), object_id.clone());
         Ok(object_id)
