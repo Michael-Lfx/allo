@@ -3,5 +3,8 @@
 /* Base styles (theme-independent) */
 @import './base.css';
 
+/* Flowy commercial visual system (Ink Studio) */
+@import './flowy-visual-system.css';
+
 /* Color Schemes */
 @import './default-color-scheme.css';

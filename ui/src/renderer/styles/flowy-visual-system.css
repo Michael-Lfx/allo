@@ -1,0 +1,137 @@
+/**
+ * Flowy visual system — Ink Studio direction.
+ * Semantic tokens are identical across light/dark; only surface values change.
+ */
+
+:root {
+  /* Typography */
+  --flowy-font-sans: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
+  --flowy-font-mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+  --flowy-text-display: 28px;
+  --flowy-text-title: 20px;
+  --flowy-text-heading: 16px;
+  --flowy-text-body: 14px;
+  --flowy-text-caption: 12px;
+  --flowy-text-micro: 11px;
+  --flowy-leading-tight: 1.25;
+  --flowy-leading-body: 1.5;
+  --flowy-weight-regular: 400;
+  --flowy-weight-medium: 500;
+  --flowy-weight-semibold: 600;
+
+  /* 4/8 spacing */
+  --flowy-space-1: 4px;
+  --flowy-space-2: 8px;
+  --flowy-space-3: 12px;
+  --flowy-space-4: 16px;
+  --flowy-space-5: 24px;
+  --flowy-space-6: 32px;
+  --flowy-space-7: 40px;
+  --flowy-space-8: 48px;
+
+  /* Radius */
+  --flowy-radius-sm: 6px;
+  --flowy-radius-md: 8px;
+  --flowy-radius-lg: 12px;
+  --flowy-radius-xl: 16px;
+  --flowy-radius-pill: 999px;
+
+  /* Borders */
+  --flowy-border-hairline: 1px;
+  --flowy-border-strong: 1.5px;
+
+  /* Layout density — one primary action per screen */
+  --flowy-density-rail: 184px;
+  --flowy-density-session: 280px;
+  --flowy-density-workspace: 320px;
+  --flowy-density-content-pad: var(--flowy-space-5);
+  --flowy-density-stage-max: 720px;
+
+  /* Accent + status (hue stable; surfaces remap in dark) */
+  --flowy-accent: #0f766e;
+  --flowy-accent-fg: #ffffff;
+  --flowy-accent-muted: color-mix(in srgb, var(--flowy-accent) 14%, transparent);
+  --flowy-ink: #0f172a;
+  --flowy-success: #15803d;
+  --flowy-warning: #b45309;
+  --flowy-danger: #b91c1c;
+  --flowy-info: #0369a1;
+
+  /* Surfaces — light */
+  --flowy-surface-0: #f8fafc;
+  --flowy-surface-1: #ffffff;
+  --flowy-surface-2: #f1f5f9;
+  --flowy-surface-3: #e2e8f0;
+  --flowy-border: color-mix(in srgb, var(--flowy-ink) 10%, transparent);
+  --flowy-border-strong-color: color-mix(in srgb, var(--flowy-ink) 18%, transparent);
+  --flowy-text-1: #0f172a;
+  --flowy-text-2: #475569;
+  --flowy-text-3: #64748b;
+  --flowy-text-4: #94a3b8;
+  --flowy-focus-ring: color-mix(in srgb, var(--flowy-accent) 45%, transparent);
+  --flowy-overlay-scrim: color-mix(in srgb, #020617 45%, transparent);
+
+  /* Ban decorative pink flood fills in commercial slice */
+  --flowy-ban-wash: transparent;
+}
+
+[data-theme='dark'],
+body[arco-theme='dark'] {
+  --flowy-accent: #2dd4bf;
+  --flowy-accent-fg: #042f2e;
+  --flowy-accent-muted: color-mix(in srgb, var(--flowy-accent) 18%, transparent);
+  --flowy-ink: #e2e8f0;
+  --flowy-success: #4ade80;
+  --flowy-warning: #fbbf24;
+  --flowy-danger: #f87171;
+  --flowy-info: #38bdf8;
+
+  --flowy-surface-0: #0b1220;
+  --flowy-surface-1: #111827;
+  --flowy-surface-2: #1f2937;
+  --flowy-surface-3: #334155;
+  --flowy-border: color-mix(in srgb, #e2e8f0 12%, transparent);
+  --flowy-border-strong-color: color-mix(in srgb, #e2e8f0 22%, transparent);
+  --flowy-text-1: #f8fafc;
+  --flowy-text-2: #cbd5e1;
+  --flowy-text-3: #94a3b8;
+  --flowy-text-4: #64748b;
+  --flowy-focus-ring: color-mix(in srgb, var(--flowy-accent) 55%, transparent);
+  --flowy-overlay-scrim: color-mix(in srgb, #000 62%, transparent);
+}
+
+.flowy-type-display {
+  font-family: var(--flowy-font-sans);
+  font-size: var(--flowy-text-display);
+  line-height: var(--flowy-leading-tight);
+  font-weight: var(--flowy-weight-semibold);
+  color: var(--flowy-text-1);
+}
+
+.flowy-type-title {
+  font-family: var(--flowy-font-sans);
+  font-size: var(--flowy-text-title);
+  line-height: var(--flowy-leading-tight);
+  font-weight: var(--flowy-weight-semibold);
+  color: var(--flowy-text-1);
+}
+
+.flowy-type-body {
+  font-family: var(--flowy-font-sans);
+  font-size: var(--flowy-text-body);
+  line-height: var(--flowy-leading-body);
+  font-weight: var(--flowy-weight-regular);
+  color: var(--flowy-text-2);
+}
+
+.flowy-surface-card {
+  background: var(--flowy-surface-1);
+  border: var(--flowy-border-hairline) solid var(--flowy-border);
+  border-radius: var(--flowy-radius-lg);
+}
+
+.flowy-density-shell {
+  --sider-width: var(--flowy-density-rail);
+  --session-sider-width: var(--flowy-density-session);
+  --workspace-sider-width: var(--flowy-density-workspace);
+}

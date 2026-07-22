@@ -294,3 +294,133 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
 .arco-switch:focus-visible {
   box-shadow: 0 0 0 3px var(--control-focus-ring, var(--color-primary-light-3)) !important;
 }
+
+/* —— Flowy commercial control matrix (Button / Input / Select / Card / Tabs / Tooltip / Toast / Skeleton) —— */
+
+.arco-btn {
+  transition:
+    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    box-shadow var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    transform var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out) !important;
+}
+
+.arco-btn:not(.arco-btn-disabled):hover {
+  filter: brightness(1.02);
+}
+
+.arco-btn:not(.arco-btn-disabled):active {
+  transform: translateY(0.5px) scale(0.985);
+}
+
+.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading) {
+  background-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
+  border-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
+  color: var(--flowy-accent-fg, var(--control-selected-fg, #fff)) !important;
+}
+
+.arco-btn-primary.arco-btn-loading,
+.arco-btn[disabled],
+.arco-btn-disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+}
+
+.arco-btn:focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring, var(--color-primary-light-3))) !important;
+}
+
+.arco-input-wrapper,
+.arco-select-view,
+.arco-textarea-wrapper {
+  background-color: var(--flowy-surface-1, var(--color-bg-2)) !important;
+  border-color: var(--flowy-border, var(--control-idle-border, var(--color-border-3))) !important;
+  border-radius: var(--flowy-radius-md, 8px) !important;
+  transition:
+    border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    box-shadow var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out) !important;
+}
+
+.arco-input-wrapper:hover,
+.arco-select-view:hover,
+.arco-textarea-wrapper:hover {
+  border-color: var(--flowy-border-strong-color, var(--control-selected-bg, var(--color-primary))) !important;
+}
+
+.arco-input-wrapper.arco-input-focus,
+.arco-select-view-focus,
+.arco-textarea-wrapper.arco-textarea-focus,
+.arco-input-wrapper:focus-within,
+.arco-textarea-wrapper:focus-within {
+  border-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
+  box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring)) !important;
+}
+
+.arco-input-wrapper.arco-input-error,
+.arco-textarea-wrapper.arco-textarea-error,
+.arco-input-wrapper.arco-input-error:focus-within {
+  border-color: var(--flowy-danger, var(--color-danger-6)) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--flowy-danger, #b91c1c) 28%, transparent) !important;
+}
+
+.arco-input-wrapper.arco-input-disabled,
+.arco-select-view-disabled,
+.arco-textarea-wrapper.arco-textarea-disabled {
+  background-color: var(--flowy-surface-2, var(--color-fill-1)) !important;
+  color: var(--flowy-text-4, var(--color-text-4)) !important;
+  cursor: not-allowed !important;
+}
+
+.arco-card {
+  background-color: var(--flowy-surface-1, var(--color-bg-2)) !important;
+  border: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--color-border-2)) !important;
+  border-radius: var(--flowy-radius-lg, 12px) !important;
+  box-shadow: none !important;
+}
+
+.arco-tooltip-content,
+.arco-trigger-popup .arco-tooltip-content {
+  background-color: var(--flowy-ink, #0f172a) !important;
+  color: var(--flowy-surface-1, #fff) !important;
+  border-radius: var(--flowy-radius-sm, 6px) !important;
+}
+
+.arco-message-wrapper .arco-message,
+.arco-notification-notice {
+  background-color: var(--flowy-surface-1, var(--color-bg-popup)) !important;
+  border: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--color-border-2)) !important;
+  border-radius: var(--flowy-radius-md, 8px) !important;
+}
+
+.arco-message-error,
+.arco-notification-notice-error {
+  border-color: color-mix(in srgb, var(--flowy-danger, #b91c1c) 45%, transparent) !important;
+}
+
+.arco-skeleton-content .arco-skeleton-text-row,
+.arco-skeleton-content .arco-skeleton-image,
+[data-testid='route-content-fallback'] .animate-pulse {
+  background: linear-gradient(
+    90deg,
+    var(--flowy-surface-2, var(--color-fill-2)) 0%,
+    var(--flowy-surface-3, var(--color-fill-3)) 50%,
+    var(--flowy-surface-2, var(--color-fill-2)) 100%
+  ) !important;
+  background-size: 200% 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arco-btn,
+  .arco-input-wrapper,
+  .arco-select-view,
+  .arco-textarea-wrapper {
+    transition: none !important;
+  }
+
+  .arco-btn:not(.arco-btn-disabled):active {
+    transform: none !important;
+  }
+}

@@ -82,6 +82,22 @@ describe('theme control contract', () => {
     }
   });
 
+  test('covers Button Input Select Card Tabs Tooltip Toast Skeleton state matrix', () => {
+    for (const marker of [
+      '.arco-btn:focus-visible',
+      '.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading)',
+      '.arco-input-wrapper.arco-input-error',
+      '.arco-select-view-disabled',
+      '.arco-card',
+      '.arco-tabs-nav-tab-active',
+      '.arco-tooltip-content',
+      '.arco-message-wrapper .arco-message',
+      '.arco-skeleton-content .arco-skeleton-text-row',
+    ]) {
+      expect(controlCss.includes(marker)).toBe(true);
+    }
+  });
+
   test('uses the control palette for custom selected chips and selected source tags', () => {
     for (const source of [
       presetTagPickerSource,

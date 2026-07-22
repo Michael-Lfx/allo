@@ -23,7 +23,7 @@ import PendingConversationOverlay from './PendingConversationOverlay';
 
 const SESSION_SIDER_STORAGE_KEY = 'nomifun:session-sider-collapsed';
 const SESSION_SIDER_WIDTH_STORAGE_KEY = 'nomifun:session-sider-width';
-const SESSION_SIDER_DEFAULT_WIDTH = 300;
+const SESSION_SIDER_DEFAULT_WIDTH = 280;
 const SESSION_SIDER_MIN_WIDTH = 240;
 const SESSION_SIDER_MAX_WIDTH = 480;
 
