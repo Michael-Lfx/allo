@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLatestRef } from '@/renderer/hooks/ui/useLatestRef';

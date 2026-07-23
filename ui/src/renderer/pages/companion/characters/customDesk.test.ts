@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { describe, expect, it } from 'vitest';
 import { customDeskSpec, FIGURE_HEIGHTS, MAX_WINDOW_WIDTH, MIN_WINDOW_WIDTH, SIZE_MIN, SIZE_MAX } from './customDesk';

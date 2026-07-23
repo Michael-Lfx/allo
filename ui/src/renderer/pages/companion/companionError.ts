@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * 把后端的 `AgentErrorCode`(SCREAMING_SNAKE_CASE)映射成桌面伙伴气泡的**可执行**文案 i18n key。

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import type { SessionEntry, SessionKind, WorkpathNode } from './workpathTree';
 import type { ConversationId, TerminalId } from '@/common/types/ids';

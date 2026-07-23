@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 export { default as CronJobIndicator, type CronJobStatus } from './components/CronJobIndicator';
 export { default as CronJobManager } from './components/CronJobManager';

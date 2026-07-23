@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { useFeedback } from '@/renderer/hooks/context/FeedbackContext';
 import { Comment } from '@icon-park/react';

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
 import { IconMoon, IconMoonFill, IconSun, IconSunFill } from '@arco-design/web-react/icon';

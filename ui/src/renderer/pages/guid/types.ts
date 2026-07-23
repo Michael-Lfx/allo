@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import type { AcpModelInfo } from '@/common/types/platform/acpTypes';
 import type { AgentSource } from '@/renderer/utils/model/agentTypes';

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import type { IDirOrFile } from '@/common/adapter/ipcBridge';
 import type { NodeInstance } from '@arco-design/web-react/es/Tree/interface';

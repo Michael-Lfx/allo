@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { GoogleGenAI, type GenerateContentParameters, type GoogleGenAIOptions } from '@google/genai';
 import { AuthType } from '@/common/api/authType';

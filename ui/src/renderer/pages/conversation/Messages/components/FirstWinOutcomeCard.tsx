@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { conversationTarget, type ConversationId } from '@/common/types/ids';
 import { Button } from '@arco-design/web-react';

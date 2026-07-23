@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * Copy text to clipboard with fallback for non-secure contexts (e.g. WebUI over HTTP).

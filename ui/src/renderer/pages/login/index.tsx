@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import FlowyLogo from '@renderer/components/brand/FlowyLogo';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';

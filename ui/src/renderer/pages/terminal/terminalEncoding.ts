@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /** UTF-8 ⇄ base64 helpers for terminal PTY payloads (binary-safe over JSON). */
 

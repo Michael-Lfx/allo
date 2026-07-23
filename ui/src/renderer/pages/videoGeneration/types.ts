@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /** ViMax workflow kinds — chosen at session create and locked thereafter. */
 export type VimaxWorkflow = 'idea2video' | 'script2video' | 'novel2video';

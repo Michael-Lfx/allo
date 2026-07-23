@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { Checkbox, Tooltip } from '@arco-design/web-react';
 import { Plus, Right } from '@icon-park/react';

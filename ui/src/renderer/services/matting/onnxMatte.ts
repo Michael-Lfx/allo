@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * onnxruntime-web (WASM) ML 抠图：MODNet（Xenova/modnet ONNX 移植，Apache-2.0）。

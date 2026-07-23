@@ -1,9 +1,5 @@
 import type { MessageId, RemoteAgentId } from '@/common/types/ids';
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { conversationTarget, type ConversationId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';

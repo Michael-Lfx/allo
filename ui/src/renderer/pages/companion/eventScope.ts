@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * 桌面伙伴窗口共享全局 WS 广播；learn 循环产出的气泡/心情/学习事件由单个伙伴

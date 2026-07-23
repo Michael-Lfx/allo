@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * A canonical prefixed UUIDv7 entity id (`cron_<uuid-v7>`, `kb_<uuid-v7>`,

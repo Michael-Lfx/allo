@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import type { IChannelPairingRequest, IChannelPluginStatus } from '@/common/types/channel/channel';
 import { ipcBridge } from '@/common';

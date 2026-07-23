@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import SpeechInputButton from '@/renderer/components/chat/SpeechInputButton';
 import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';

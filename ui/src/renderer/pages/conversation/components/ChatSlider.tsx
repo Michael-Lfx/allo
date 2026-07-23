@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import type { TChatConversation } from '@/common/config/storage';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * 抠图 Worker：解码 →（透明直通）→ ML / 启发式泛洪 → 失效检测 → 应用 alpha →

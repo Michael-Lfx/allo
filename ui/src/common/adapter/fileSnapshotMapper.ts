@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 Flowy (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import type { CompareResult, FileChangeInfo, FileChangeOperation } from '@/common/types/platform/fileSnapshot';
 
