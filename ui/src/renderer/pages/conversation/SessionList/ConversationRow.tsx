@@ -1,20 +1,17 @@
 
 
-import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { CapabilityIconCluster } from '@/renderer/components/capability/CapabilityIcon';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
-import { usePresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import ConversationHoverCard from '@/renderer/pages/conversation/components/ConversationHoverCard';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { Checkbox, Dropdown, Menu, Popover, Spin, Tooltip } from '@arco-design/web-react';
-import { DeleteOne, EditOne, Export, MessageOne, MoreOne, Pushpin } from '@icon-park/react';
+import { DeleteOne, EditOne, Export, MoreOne, Pushpin } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { ConversationRowProps } from './types';
-import { getBackendKeyFromConversation } from './utils/exportHelpers';
 import { isConversationPinned } from './utils/conversationPinned';
 import { buildSessionCapabilityItems, CAPABILITY_ICON_SIZE } from './utils/sessionCapabilityItems';
 import { formatSessionAgeLabel } from './utils/sessionAge';
@@ -49,7 +46,6 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
     idmmState,
   } = props;
   const { t } = useTranslation();
-  const { info: presetInfo } = usePresetInfo(conversation);
   const isPinned = isConversationPinned(conversation);
   const cronStatus = getJobStatus(conversation.id);
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
@@ -58,50 +54,6 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   // Session-level capability markers (trailing group): 定时任务 → 自动工作 →
   // 智能决策, shared builder with TerminalRow.
   const capabilityItems = buildSessionCapabilityItems(t, { cronStatus, autoworkState, idmmState });
-
-  const renderLeadingIcon = () => {
-    // When the row is pinned, hovering reveals a pushpin marker that overlays
-    // the leading icon. We dim the resting icon on hover so the pin reads cleanly.
-    const pinnedHoverFade = isPinned ? 'group-hover:opacity-0 transition-opacity' : '';
-    const composedClass = classNames(pinnedHoverFade);
-
-    if (presetInfo) {
-      if (presetInfo.isEmoji) {
-        return (
-          <span className={classNames('text-16px leading-none flex-shrink-0', composedClass)}>
-            {presetInfo.logo}
-          </span>
-        );
-      }
-      return (
-        <img
-          src={presetInfo.logo}
-          alt={presetInfo.name}
-          className={classNames('w-16px h-16px rounded-50% flex-shrink-0', composedClass)}
-        />
-      );
-    }
-
-    const backendKey = getBackendKeyFromConversation(conversation);
-    const logo = getAgentLogo(backendKey);
-    if (logo) {
-      return (
-        <img
-          src={logo}
-          alt={`${backendKey || 'agent'} logo`}
-          className={classNames('w-16px h-16px rounded-50% flex-shrink-0', composedClass)}
-        />
-      );
-    }
-
-    return (
-      <MessageOne
-        theme='outline'
-        size='16'
-        className={classNames('line-height-0 flex-shrink-0 text-t-secondary', composedClass)}
-      />
-    );
-  };
 
   const handleRowClick = () => {
     cleanupSiderTooltips();
@@ -162,18 +114,15 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             <Checkbox checked={checked} className='session-batch-selection-checkbox' />
           </span>
         )}
-        <span className='size-22px flex items-center justify-center shrink-0 relative'>
-          {isGenerating && !batchMode ? <Spin size={16} /> : renderLeadingIcon()}
-          {/* Pinned indicator: only visible when row is hovered, overlays leading icon */}
-          {!batchMode && isPinned && !isMobile && !isGenerating && (
-            <span
-              className='absolute inset-0 flex-center text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'
-              style={{ lineHeight: 0 }}
-            >
-              <Pushpin theme='outline' size='14' />
-            </span>
-          )}
-        </span>
+        {isGenerating && !batchMode && <Spin size={16} />}
+        {!batchMode && isPinned && !isMobile && !isGenerating && (
+          <span
+            className='absolute left-10px top-1/2 z-1 -translate-y-1/2 text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'
+            style={{ lineHeight: 0 }}
+          >
+            <Pushpin theme='outline' size='14' />
+          </span>
+        )}
         {/* Capability markers are session identity, so they sit before the text and
             stay visible while hover-only actions appear on the right. */}
         {!batchMode && !collapsed && capabilityItems.length > 0 && (
@@ -182,18 +131,23 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         {/* Name owns the flexible middle; age is a fixed right-aligned marker so
             rows scan cleanly without metadata hugging the title. */}
         <FlexFullContainer
-          className='h-24px min-w-0 flex-1 collapsed-hidden'
+          className={classNames(
+            'h-24px min-w-0 flex-1 collapsed-hidden transition-[padding]',
+            isPinned && !isMobile && !isGenerating && 'group-hover:pl-22px'
+          )}
           containerClassName='flex items-center'
         >
           <span className='chat-history__item-name block overflow-hidden text-ellipsis whitespace-nowrap min-w-0 text-14px font-[500] lh-24px text-t-primary'>
             {conversation.name}
           </span>
         </FlexFullContainer>
+        {/* Keep trailing width in the layout on hover (invisible, not display:none)
+            so the title ellipsis width does not flash wider then narrower. */}
         {showDesktopTrailingMeta && (
           <span
             className={classNames('flex shrink-0 items-center gap-6px', {
-              'group-hover:hidden': !menuVisible,
-              hidden: menuVisible,
+              'group-hover:invisible': !menuVisible,
+              invisible: menuVisible,
             })}
           >
             {showAgeMeta && (
@@ -201,6 +155,10 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             )}
             {showUnreadDot && unreadDot}
           </span>
+        )}
+        {/* When there is no age/unread meta, still reserve the more-button width. */}
+        {!batchMode && !collapsed && !isMobile && !showDesktopTrailingMeta && (
+          <span className='w-20px shrink-0' aria-hidden />
         )}
 
         {showCompactUnreadDot && (

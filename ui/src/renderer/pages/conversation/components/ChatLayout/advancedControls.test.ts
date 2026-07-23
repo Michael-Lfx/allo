@@ -6,6 +6,14 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('ChatLayout advanced controls', () => {
+  test('uses the shared Flowy logo as the default conversation header icon', () => {
+    const source = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(source.includes("import appLogo from '@/renderer/assets/logo.svg';")).toBe(true);
+    expect(source.includes("<img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />")).toBe(true);
+    expect(source.includes('props.headerLeading ??')).toBe(true);
+  });
+
   test('keeps the stable header controls', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 

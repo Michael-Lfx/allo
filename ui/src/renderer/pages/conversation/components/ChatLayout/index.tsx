@@ -1,7 +1,7 @@
 import type { ConversationId } from '@/common/types/ids';
-import { AgentLogoIcon } from '@/renderer/components/agent/AgentBadge';
 import { conversationTarget } from '@/common/types/ids';
 import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
+import appLogo from '@/renderer/assets/logo.svg';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
@@ -25,7 +25,6 @@ import { useWorkspaceCollapse } from '@/renderer/pages/conversation/hooks/useWor
 import { useWorkspacePanelTabs } from '@/renderer/pages/conversation/hooks/useWorkspacePanelTabs';
 import { PreviewPanel, PreviewProvider, usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { dispatchWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';
-import { useConversationAgents } from '@/renderer/pages/conversation/hooks/useConversationAgents';
 import classNames from 'classnames';
 import { isDesktopShell, isMacOS, isWindows } from '@/renderer/utils/platform';
 import {
@@ -104,7 +103,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const { t } = useTranslation();
   const { conversation_id, workspacePath, isTemporaryWorkspace } = props;
   const workspaceTarget = conversation_id != null ? conversationTarget(conversation_id) : undefined;
-  const { backend, preset, agent_name, workspaceEnabled = true } = props;
+  const { workspaceEnabled = true } = props;
   const layout = useLayoutContext();
   // Desktop-shell mac/win runtime. MUST gate on `isDesktopShell()` first
   // (matching Titlebar): the titlebar workspace toggle only exists in the
@@ -169,18 +168,6 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       conversation_id,
       onRename: props.onRenameTitle,
     });
-
-  // Resolve backend display name from detected agents catalog (backend-authoritative).
-  // Custom ACP agents live in the same catalog with `agent_source === 'custom'`,
-  // so we no longer need a separate `acp.customAgents` ConfigStorage fallback.
-  const { cliAgents } = useConversationAgents();
-  const backendAgentName = backend
-    ? cliAgents.find((a) => a.backend === backend || a.agent_type === backend)?.name
-    : undefined;
-  const capitalizedBackend = backend ? backend.charAt(0).toUpperCase() + backend.slice(1) : backend;
-
-  // Compute display name with fallback chain
-  const display_name = preset?.name || agent_name || backendAgentName || capitalizedBackend;
 
   const {
     splitRatio: workspaceWidthPxPref,
@@ -311,14 +298,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           conversation_id={conversation_id}
           leading={
             props.headerLeading ??
-            ((backend || preset) && (
-              <AgentLogoIcon
-                backend={backend}
-                agent_name={display_name}
-                agentLogo={preset?.logo}
-                agentLogoIsEmoji={preset?.isEmoji}
-              />
-            ))
+            (<img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />)
           }
         />
       </FlexFullContainer>
