@@ -16,10 +16,19 @@ describe('NomiChat turn activity ownership', () => {
     expect(chatSource.includes('turnActivity.running')).toBe(true);
     expect(chatSource.includes('isProcessing === true || turnActivity.running')).toBe(true);
     expect(chatSource.includes('turnActivity={turnActivity}')).toBe(true);
+    expect(chatSource.includes('activeTurnId: turnActivity.activeTurnId')).toBe(true);
+    expect(chatSource.includes('activeRequestMessageId: turnActivity.activeRequestMessageId')).toBe(true);
+    expect(chatSource.includes('TurnStatusRail')).toBe(true);
   });
 
   test('does not let the send box own the stream subscription by itself', () => {
     expect(sendBoxSource.includes('useNomiMessage(')).toBe(false);
     expect(sendBoxSource.includes('turnActivity: NomiMessageRuntime')).toBe(true);
+  });
+
+  test('renders an optimistic local user bubble before HTTP accept', () => {
+    expect(sendBoxSource.includes('notifyLocalSubmit')).toBe(true);
+    expect(sendBoxSource.includes('prefixedId(')).toBe(true);
+    expect(sendBoxSource.includes('removeMessageByMsgId(localMsgId)')).toBe(true);
   });
 });

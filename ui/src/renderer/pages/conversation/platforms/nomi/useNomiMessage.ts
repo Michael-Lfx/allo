@@ -27,8 +27,22 @@ import {
   classifyAuthoritativeTurnStart,
   resolveVerifiedAuthoritativeTurnStart,
 } from '../authoritativeTurnLifecyclePolicy';
+import {
+  beginTurnTiming,
+  markTurnAbandonedBeforeFirstToken,
+  markTurnAccepted as markFunnelTurnAccepted,
+  markTurnFirstStatus,
+  markTurnFirstToken,
+  markTurnIdle,
+  markTurnStreamFinished,
+} from '@/renderer/utils/analytics/productFunnel';
 import { processLocalCronResponse } from './localCronCommands';
 import { initialNomiTurnState, isTurnRunning, nomiTurnReducer, type NomiTurnEvent } from './nomiTurnState';
+import {
+  initialTurnPresentationState,
+  turnPresentationReducer,
+  type TurnPresentationEvent,
+} from '../turnPresentationState';
 
 type NomiToolGroupRuntimeTool = {
   status: ReturnType<typeof normalizeToolGroupStatus>;
@@ -96,15 +110,23 @@ export const useNomiMessage = (
   // Single source of truth for the turn's activity state (design §3.2): a pure
   // reducer over lifecycle events replaces three hand-synced booleans.
   const [turnState, dispatchTurn] = useReducer(nomiTurnReducer, initialNomiTurnState);
+  const [presentation, dispatchPresentation] = useReducer(
+    turnPresentationReducer,
+    initialTurnPresentationState
+  );
   const [hasHydratedRunningState, setHasHydratedRunningState] = useState(false);
   const [thought, setThought] = useState<ThoughtData>({
     description: '',
     subject: '',
   });
   const [tokenUsage, setTokenUsage] = useState<TokenUsageData | null>(null);
+  const [activeTurnId, setActiveTurnId] = useState<MessageId | undefined>();
+  const [activeRequestMessageId, setActiveRequestMessageId] = useState<MessageId | undefined>();
   // Current active message ID to filter out events from old requests (prevents aborted request events from interfering with new ones)
   const activeMsgIdRef = useRef<string | null>(null);
   const rootTurnIdRef = useRef<MessageId | null>(null);
+  const timingRequestKeyRef = useRef<string | null>(null);
+  const presentationRef = useRef(presentation);
   const awaitingBackendTurnRef = useRef(false);
   const turnClosedRef = useRef(false);
   const cancelledTurnIdsRef = useRef(new Set<MessageId>());
@@ -135,8 +157,29 @@ export const useNomiMessage = (
   }, [turnState]);
 
   useEffect(() => {
+    presentationRef.current = presentation;
+  }, [presentation]);
+
+  useEffect(() => {
     onConfigChangedRef.current = onConfigChanged;
   }, [onConfigChanged]);
+
+  const dispatchPresentationEvent = useCallback((event: TurnPresentationEvent) => {
+    dispatchPresentation(event);
+  }, []);
+
+  const bindTimingKey = useCallback((requestKey: string | null) => {
+    timingRequestKeyRef.current = requestKey;
+  }, []);
+
+  const resolveTimingKey = useCallback(() => {
+    return (
+      timingRequestKeyRef.current ??
+      presentationRef.current.activeRequestMessageId ??
+      presentationRef.current.localRequestId ??
+      activeMsgIdRef.current
+    );
+  }, []);
 
   // Throttle thought updates to reduce render frequency
   const thoughtThrottleRef = useRef<{
@@ -193,7 +236,71 @@ export const useNomiMessage = (
   // Set current active message ID
   const setActiveMsgId = useCallback((msgId: string | null) => {
     activeMsgIdRef.current = msgId;
+    if (msgId) {
+      try {
+        setActiveRequestMessageId(msgId as MessageId);
+      } catch {
+        setActiveRequestMessageId(undefined);
+      }
+    } else {
+      setActiveRequestMessageId(undefined);
+    }
   }, []);
+
+  const notifyLocalSubmit = useCallback(
+    (localRequestId: string, requestMessageId?: MessageId) => {
+      bindTimingKey(localRequestId);
+      beginTurnTiming(localRequestId, {
+        conversation_type: 'nomi',
+        cold_start: !hasHydratedRunningState,
+      });
+      if (requestMessageId) {
+        setActiveRequestMessageId(requestMessageId);
+        activeMsgIdRef.current = requestMessageId;
+      }
+      dispatchPresentation({
+        type: 'localSubmit',
+        localRequestId,
+        requestMessageId,
+      });
+    },
+    [bindTimingKey, hasHydratedRunningState]
+  );
+
+  const notifyAccepted = useCallback(
+    (requestMessageId: MessageId, turnId?: MessageId) => {
+      const timingKey = resolveTimingKey() ?? requestMessageId;
+      bindTimingKey(timingKey);
+      markFunnelTurnAccepted(timingKey, { conversation_type: 'nomi' });
+      setActiveRequestMessageId(requestMessageId);
+      activeMsgIdRef.current = requestMessageId;
+      if (turnId) {
+        setActiveTurnId(turnId);
+        rootTurnIdRef.current = turnId;
+      }
+      dispatchPresentation({
+        type: 'accepted',
+        requestMessageId,
+        turnId,
+      });
+    },
+    [bindTimingKey, resolveTimingKey]
+  );
+
+  const notifyFailed = useCallback(
+    (detail?: string) => {
+      const timingKey = resolveTimingKey();
+      if (timingKey) {
+        markTurnAbandonedBeforeFirstToken(timingKey);
+        markTurnIdle(timingKey, 'failed');
+        timingRequestKeyRef.current = null;
+      }
+      setActiveTurnId(undefined);
+      setActiveRequestMessageId(undefined);
+      dispatchPresentation({ type: 'failed', detail });
+    },
+    [resolveTimingKey]
+  );
 
   const dispatchTurnIfOpen = useCallback((event: NomiTurnEvent) => {
     if (turnClosedRef.current && !awaitingBackendTurnRef.current) return;
@@ -209,9 +316,17 @@ export const useNomiMessage = (
     turnClosedRef.current = true;
     rejectUnannouncedStartRef.current = false;
     activeMsgIdRef.current = null;
+    setActiveTurnId(undefined);
+    setActiveRequestMessageId(undefined);
     dispatchTurn({ type: 'finish' });
+    const timingKey = resolveTimingKey();
+    if (timingKey) {
+      markTurnIdle(timingKey, 'completed');
+      timingRequestKeyRef.current = null;
+    }
+    dispatchPresentation({ type: 'turnCompleted' });
     setThought({ subject: '', description: '' });
-  }, []);
+  }, [resolveTimingKey]);
 
   const reconcileAfterStreamTerminal = useCallback(() => {
     const generation = turnLifecycleGenerationRef.current;
@@ -333,10 +448,23 @@ export const useNomiMessage = (
       switch (message.type) {
         case 'thought':
           dispatchTurnIfOpen({ type: 'activity' });
+          {
+            const timingKey = resolveTimingKey();
+            if (timingKey) markTurnFirstStatus(timingKey, 'thinking');
+            dispatchPresentationEvent({
+              type: 'thinking',
+              detail: normalizeThoughtData(message.data).description || undefined,
+            });
+          }
           throttledSetThought(normalizeThoughtData(message.data));
           break;
         case 'start':
           dispatchTurnIfOpen({ type: 'activity' });
+          {
+            const timingKey = resolveTimingKey();
+            if (timingKey) markTurnFirstStatus(timingKey, 'preparing');
+            dispatchPresentationEvent({ type: 'preparing' });
+          }
           // Don't reset waitingResponse here - let tool completion flow handle it
           break;
         case 'turn_completed':
@@ -387,6 +515,9 @@ export const useNomiMessage = (
           {
             // Stream completion can precede backend turn-handle release.
             setThought({ subject: '', description: '' });
+            const timingKey = resolveTimingKey();
+            if (timingKey) markTurnStreamFinished(timingKey);
+            dispatchPresentationEvent({ type: 'streamFinished' });
             if (message.msg_id) {
               void processCompletedAssistantMessage(message.msg_id);
             }
@@ -401,6 +532,12 @@ export const useNomiMessage = (
 
             // If tools are awaiting confirmation, update thought hint
             if (toolState.confirmingDescription) {
+              const timingKey = resolveTimingKey();
+              if (timingKey) markTurnFirstStatus(timingKey, 'waiting_permission');
+              dispatchPresentationEvent({
+                type: 'waitingPermission',
+                detail: toolState.confirmingDescription,
+              });
               setThought({
                 subject: 'Awaiting Confirmation',
                 // Prefer the contextual description (file/command/pattern) over the
@@ -408,6 +545,12 @@ export const useNomiMessage = (
                 description: toolState.confirmingDescription,
               });
             } else if (toolState.hasActive) {
+              const timingKey = resolveTimingKey();
+              if (timingKey) markTurnFirstStatus(timingKey, 'tooling');
+              dispatchPresentationEvent({
+                type: 'tooling',
+                detail: toolState.executingDescription,
+              });
               if (toolState.executingDescription) {
                 setThought({
                   subject: 'Executing',
@@ -426,6 +569,11 @@ export const useNomiMessage = (
         case 'permission':
         case 'acp_permission':
           dispatchTurnIfOpen({ type: 'activity' });
+          {
+            const timingKey = resolveTimingKey();
+            if (timingKey) markTurnFirstStatus(timingKey, 'waiting_permission');
+            dispatchPresentationEvent({ type: 'waitingPermission' });
+          }
           // Backend nomi emits wire type 'acp_permission' but the payload is
           // Confirmation-shaped (legacy), which matches MessagePermission, not
           // MessageAcpPermission. Re-tag so transformMessage routes it correctly.
@@ -437,20 +585,40 @@ export const useNomiMessage = (
         default: {
           if (message.type === 'error') {
             setThought({ subject: '', description: '' });
+            const timingKey = resolveTimingKey();
+            if (timingKey) {
+              markTurnIdle(timingKey, 'failed');
+              timingRequestKeyRef.current = null;
+            }
+            dispatchPresentationEvent({
+              type: 'failed',
+              detail: typeof message.data === 'string' ? message.data : undefined,
+            });
             onError?.(message as IResponseMessage);
             reconcileAfterStreamTerminal();
           } else if (message.type === 'content') {
             // A terminal Agent Execution report is a self-contained projection,
             // not a new model stream. Render it without re-raising the send-box
             // busy state; ordinary stream content still marks the turn active.
+            const streamComplete = isCompleteMessageProjection(message);
             dispatchTurnIfOpen({
               type: 'content',
-              streamComplete: isCompleteMessageProjection(message),
+              streamComplete,
             });
+            if (!streamComplete) {
+              const timingKey = resolveTimingKey();
+              if (timingKey) markTurnFirstToken(timingKey);
+              dispatchPresentationEvent({ type: 'streaming' });
+            }
           } else {
             // Any other non-error output: keep the turn marked running (handles
             // events that arrive after a premature finish).
             dispatchTurnIfOpen({ type: 'activity' });
+            if (message.type === 'text') {
+              const timingKey = resolveTimingKey();
+              if (timingKey) markTurnFirstToken(timingKey);
+              dispatchPresentationEvent({ type: 'streaming' });
+            }
           }
           // Backend handles persistence, Frontend only updates UI
           addOrUpdateMessage(transformMessage(message));
@@ -462,11 +630,13 @@ export const useNomiMessage = (
   }, [
     conversation_id,
     addOrUpdateMessage,
+    dispatchPresentationEvent,
     dispatchTurnIfOpen,
     onError,
     processCompletedAssistantMessage,
     readOnly,
     reconcileAfterStreamTerminal,
+    resolveTimingKey,
   ]);
 
   useEffect(() => {
@@ -486,11 +656,21 @@ export const useNomiMessage = (
         turnStartGenerationRef.current += 1;
         turnLifecycleGenerationRef.current += 1;
         rootTurnIdRef.current = event.turn_id ?? null;
+        setActiveTurnId(event.turn_id);
         awaitingBackendTurnRef.current = false;
         turnClosedRef.current = false;
         rejectUnannouncedStartRef.current = false;
         verifyUnannouncedStartRuntimeRef.current = false;
         dispatchTurn({ type: 'activity' });
+        const timingKey = timingRequestKeyRef.current ?? event.turn_id ?? activeMsgIdRef.current;
+        if (timingKey) markTurnFirstStatus(timingKey, event.phase ?? event.state);
+        dispatchPresentation({
+          type: 'turnStarted',
+          turnId: event.turn_id,
+          phase: event.phase,
+          state: event.state,
+          detail: event.detail,
+        });
       };
 
       if (startAction === 'accept') {
@@ -576,11 +756,15 @@ export const useNomiMessage = (
     // running state cannot bleed into this one; the raise-only `hydrate` below
     // then merges the backend status with any send that races the async query.
     dispatchTurn({ type: 'reset' });
+    dispatchPresentation({ type: 'reset' });
     turnLifecycleGenerationRef.current += 1;
     const hydrationGeneration = turnLifecycleGenerationRef.current;
     setThought({ subject: '', description: '' });
     setTokenUsage(null);
     setHasHydratedRunningState(false);
+    setActiveTurnId(undefined);
+    setActiveRequestMessageId(undefined);
+    timingRequestKeyRef.current = null;
     rootTurnIdRef.current = null;
     awaitingBackendTurnRef.current = false;
     turnClosedRef.current = false;
@@ -644,10 +828,19 @@ export const useNomiMessage = (
     rejectUnannouncedStartRef.current = true;
     verifyUnannouncedStartRuntimeRef.current = rootTurnId === null;
     dispatchTurn({ type: 'reset' });
+    const timingKey = resolveTimingKey();
+    if (timingKey) {
+      markTurnAbandonedBeforeFirstToken(timingKey);
+      markTurnIdle(timingKey, 'cancelled');
+      timingRequestKeyRef.current = null;
+    }
+    dispatchPresentation({ type: 'cancelled' });
+    setActiveTurnId(undefined);
+    setActiveRequestMessageId(undefined);
     setThought({ subject: '', description: '' });
     // Clear active message ID to prevent filtering events from new messages after stop
     activeMsgIdRef.current = null;
-  }, []);
+  }, [resolveTimingKey]);
 
   // External setter used by the send box to raise the spinner on submit.
   const setWaitingResponse = useCallback((value: boolean) => {
@@ -655,11 +848,13 @@ export const useNomiMessage = (
     if (value) {
       turnStartGenerationRef.current += 1;
       rootTurnIdRef.current = null;
+      setActiveTurnId(undefined);
       awaitingBackendTurnRef.current = true;
       turnClosedRef.current = false;
       rejectUnannouncedStartRef.current = false;
     } else {
       rootTurnIdRef.current = null;
+      setActiveTurnId(undefined);
       awaitingBackendTurnRef.current = false;
       turnClosedRef.current = true;
       rejectUnannouncedStartRef.current = false;
@@ -676,6 +871,7 @@ export const useNomiMessage = (
     rejectUnannouncedStartRef.current = false;
     verifyUnannouncedStartRuntimeRef.current = false;
     dispatchTurn({ type: 'hydrate', isRunning: true });
+    if (rootTurnId) setActiveTurnId(rootTurnId);
     const generation = turnLifecycleGenerationRef.current;
     const sequence = turnReconcileSequenceRef.current + 1;
     turnReconcileSequenceRef.current = sequence;
@@ -695,7 +891,10 @@ export const useNomiMessage = (
     awaitingBackendTurnRef.current = false;
     turnClosedRef.current = true;
     rejectUnannouncedStartRef.current = false;
+    setActiveTurnId(undefined);
+    setActiveRequestMessageId(undefined);
     dispatchTurn({ type: 'reset' });
+    dispatchPresentation({ type: 'cancelled' });
   }, []);
 
   const getTurnStartGeneration = useCallback(() => turnStartGenerationRef.current, []);
@@ -707,8 +906,14 @@ export const useNomiMessage = (
     running,
     hasHydratedRunningState,
     tokenUsage,
+    presentation,
+    activeTurnId,
+    activeRequestMessageId,
     setActiveMsgId,
     markTurnAccepted,
+    notifyLocalSubmit,
+    notifyAccepted,
+    notifyFailed,
     setWaitingResponse,
     resetState,
     confirmStopped,

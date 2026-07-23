@@ -10,6 +10,8 @@ import type { ConversationContextValue } from '@/renderer/hooks/context/Conversa
 import { ConversationProvider } from '@/renderer/hooks/context/ConversationContext';
 import FlexFullContainer from '@renderer/components/layout/FlexFullContainer';
 import MessageList from '@renderer/pages/conversation/Messages/MessageList';
+import ConversationEmptyPrompt from '@renderer/pages/conversation/Messages/components/ConversationEmptyPrompt';
+import TurnStatusRail from '@renderer/pages/conversation/Messages/components/TurnStatusRail';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
 import {
   MessageListLoadingProvider,
@@ -83,6 +85,7 @@ const NomiChat: React.FC<{
   useEffect(() => {
     updateLocalImage({ root: workspace });
   }, [workspace]);
+  const resolvedEmptySlot = emptySlot ?? <ConversationEmptyPrompt workspace={workspace} />;
   const conversationValue = useMemo<ConversationContextValue>(() => {
     return {
       conversation_id: conversation_id,
@@ -92,6 +95,8 @@ const NomiChat: React.FC<{
       hideSendBox,
       readOnly,
       isProcessing: isProcessing === true || turnActivity.running,
+      activeTurnId: turnActivity.activeTurnId,
+      activeRequestMessageId: turnActivity.activeRequestMessageId,
       loadedSkills,
       loadedMcpServers,
       loadedMcpStatuses,
@@ -104,6 +109,8 @@ const NomiChat: React.FC<{
     readOnly,
     isProcessing,
     turnActivity.running,
+    turnActivity.activeTurnId,
+    turnActivity.activeRequestMessageId,
     loadedSkills,
     loadedMcpServers,
     loadedMcpStatuses,
@@ -116,24 +123,32 @@ const NomiChat: React.FC<{
           <FlexFullContainer>
             <MessageList
               className='flex-1'
-              emptySlot={emptySlot}
+              emptySlot={resolvedEmptySlot}
               onLoadOlder={historyPaging.loadOlder}
               hasMoreOlder={historyPaging.hasMore}
               loadingOlder={historyPaging.loadingOlder}
             />
           </FlexFullContainer>
           {!readOnly && !hideSendBox && (
-            <NomiSendBox
-              conversation_id={conversation_id}
-              modelSelection={modelSelection}
-              session_mode={session_mode}
-              agent_name={agent_name}
-              hideModeSelector={hideModeSelector}
-              collaboratorSelectorNode={collaboratorSelectorNode}
-              extraRightTools={extraRightTools}
-              dynamicModes={dynamicModes}
-              turnActivity={turnActivity}
-            />
+            <>
+              <TurnStatusRail
+                presentation={turnActivity.presentation}
+                completionSummary={{
+                  elapsedMs: turnActivity.tokenUsage?.elapsed_ms,
+                }}
+              />
+              <NomiSendBox
+                conversation_id={conversation_id}
+                modelSelection={modelSelection}
+                session_mode={session_mode}
+                agent_name={agent_name}
+                hideModeSelector={hideModeSelector}
+                collaboratorSelectorNode={collaboratorSelectorNode}
+                extraRightTools={extraRightTools}
+                dynamicModes={dynamicModes}
+                turnActivity={turnActivity}
+              />
+            </>
           )}
         </div>
       </ConversationArtifactProvider>
