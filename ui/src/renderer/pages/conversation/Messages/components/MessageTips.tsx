@@ -68,7 +68,8 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const shouldShowFeedback = type === 'error';
 
   const retryPayload = useMemo(() => {
-    if (structuredError?.retryable !== true) return null;
+    if (type !== 'error') return null;
+    if (structuredError && structuredError.retryable === false) return null;
     const tipIndex = messageList.findIndex((item) => item.id === message.id);
     const end = tipIndex === -1 ? messageList.length : tipIndex;
     for (let i = end - 1; i >= 0; i -= 1) {
@@ -85,7 +86,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
       };
     }
     return null;
-  }, [message.id, messageList, structuredError?.retryable]);
+  }, [message.id, messageList, structuredError, type]);
 
   if (structuredError) {
     const code = structuredError.code;
@@ -245,7 +246,23 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
             </div>
           </div>
           {type === 'error' && (
-            <div className='flex justify-end'>
+            <div className='flex justify-end gap-8px'>
+              {retryPayload && (
+                <Button
+                  size='mini'
+                  type='primary'
+                  className='message-error-note__retry'
+                  onClick={() => {
+                    emitter.emit('sendbox.retry', {
+                      content: retryPayload.content,
+                      ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
+                      ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
+                    });
+                  }}
+                >
+                  {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
+                </Button>
+              )}
               <FeedbackButton module='conversation-session' />
             </div>
           )}
@@ -264,7 +281,23 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
           </div>
         </div>
         {shouldShowFeedback && (
-          <div className='flex justify-end'>
+          <div className='flex justify-end gap-8px'>
+            {retryPayload && (
+              <Button
+                size='mini'
+                type='primary'
+                className='message-error-note__retry'
+                onClick={() => {
+                  emitter.emit('sendbox.retry', {
+                    content: retryPayload.content,
+                    ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
+                    ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
+                  });
+                }}
+              >
+                {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
+              </Button>
+            )}
             <FeedbackButton module='conversation-session' />
           </div>
         )}

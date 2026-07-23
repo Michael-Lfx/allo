@@ -703,13 +703,20 @@ const classifyPersistedSendFailure = (
     return { message, code: persistedCode, ownership: 'user_agent', detail: message, retryable: true };
   }
   if (persistedCode?.startsWith('USER_LLM_PROVIDER_')) {
+    const retryable =
+      persistedCode === 'USER_LLM_PROVIDER_GATEWAY_ERROR' ||
+      persistedCode === 'USER_LLM_PROVIDER_RATE_LIMITED' ||
+      persistedCode === 'USER_LLM_PROVIDER_TIMEOUT' ||
+      persistedCode === 'USER_LLM_PROVIDER_NETWORK_ERROR' ||
+      persistedCode === 'USER_LLM_PROVIDER_EMPTY_RESPONSE';
     return {
       message,
       code: persistedCode,
       ownership: 'user_llm_provider',
       detail: message,
-      retryable: false,
-      feedback_recommended: false,
+      retryable,
+      feedback_recommended: !retryable,
+      ...(retryable ? { resolution: { kind: 'retry' as const } } : {}),
     };
   }
   if (persistedCode === 'UNKNOWN_UPSTREAM_ERROR') {

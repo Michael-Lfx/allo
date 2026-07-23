@@ -204,9 +204,11 @@ const getProcessedItemRole = (item: IRenderableItem): TurnDisclosureInputItem['r
     case 'text':
       return item.position === 'right' ? 'user' : 'assistant';
     case 'tips':
-      // Error tips are failure evidence for the turn banner, not a final answer.
+      // Terminal/provider errors must stay as first-class MessageTips (human
+      // title + retry). Folding them into the process receipt buries recovery.
+      if (item.content.type === 'error') return 'other';
       // Context-compaction tips are process receipts. Other tips stay assistant.
-      if (item.content.type === 'error' || isContextCompressionTip(item)) return 'process';
+      if (isContextCompressionTip(item)) return 'process';
       return 'assistant';
     case 'thinking':
       return 'process_content';
@@ -1281,6 +1283,16 @@ const MessageList: React.FC<{
             onWheel={handleWheel}
           >
             <div ref={handleContentRef} data-testid='message-list-content' style={{ overflowAnchor: 'none' }}>
+              {loadingOlder ? (
+                <div
+                  className='sticky top-0 z-10 py-8px text-center text-12px text-t-secondary bg-base/90'
+                  role='status'
+                  aria-live='polite'
+                  data-testid='message-list-loading-older'
+                >
+                  {t('conversation.historySearch.loadingMore', { defaultValue: 'Loading more…' })}
+                </div>
+              ) : null}
               {scrollParent ? (
                 <Virtuoso
                   data={displayList}

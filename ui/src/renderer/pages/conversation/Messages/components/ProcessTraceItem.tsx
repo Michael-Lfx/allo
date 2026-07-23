@@ -29,6 +29,7 @@ import type { TurnDisclosureProcessState } from '../turnDisclosureModel';
 import type { MessageId } from '@/common/types/ids';
 import { getProcessItemState, mergeProcessStates } from '../turnProcessState';
 import MessageThinking from './MessageThinking';
+import MessageTips from './MessageTips';
 import MessagePermission from './MessagePermission';
 import {
   buildToolReceiptDetailRows,
@@ -724,6 +725,11 @@ const ProcessTraceItem: React.FC<{
             ]}
           />
         );
+      }
+      // Defensive: error tips should not enter the process trail, but if they do,
+      // keep the structured recovery surface instead of a one-line raw message.
+      if (item.content.type === 'error') {
+        return <MessageTips message={item} />;
       }
       return (
         <ProcessTraceRows

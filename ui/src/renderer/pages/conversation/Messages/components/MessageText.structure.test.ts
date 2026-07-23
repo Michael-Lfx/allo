@@ -13,8 +13,9 @@ const typographySource = readFileSync(new URL('../typography.ts', import.meta.ur
 describe('MessageText process action chrome', () => {
   test('can hide the hover copy and timestamp row for process text', () => {
     expect(source.includes('hideActions?: boolean')).toBe(true);
-    expect(source.includes('const shouldShowActions = !hideActions && !isMobile;')).toBe(true);
+    expect(source.includes('const shouldShowActions = !hideActions;')).toBe(true);
     expect(source.includes('{shouldShowActions && (')).toBe(true);
+    expect(source.includes("isMobile ? 'opacity-100'")).toBe(true);
   });
 
   test('uses one body typography contract for plain text and markdown text', () => {

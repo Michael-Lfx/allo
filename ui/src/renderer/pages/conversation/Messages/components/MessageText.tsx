@@ -192,7 +192,7 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
   const conversationContext = useConversationContextSafe();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
-  const shouldShowActions = !hideActions && !isMobile;
+  const shouldShowActions = !hideActions;
   const resolvedFiles = useMemo(
     () => files.map((file_path) => resolveMessageFilePath(file_path, conversationContext?.workspace)),
     [conversationContext?.workspace, files]
@@ -229,13 +229,20 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
 
   const copyButton = (
     <Tooltip content={t('common.copy', { defaultValue: 'Copy' })}>
-      <div
-        className='p-4px rd-4px cursor-pointer hover:bg-3 transition-colors opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+      <button
+        type='button'
+        className={classNames(
+          'p-4px rd-4px cursor-pointer hover:bg-3 transition-colors border-0 bg-transparent',
+          isMobile
+            ? 'opacity-100'
+            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+        )}
         onClick={handleCopy}
         style={{ lineHeight: 0 }}
+        aria-label={t('common.copy', { defaultValue: 'Copy' })}
       >
         <Copy theme='outline' size='16' fill={iconColors.secondary} />
-      </div>
+      </button>
     </Tooltip>
   );
 
@@ -251,13 +258,20 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
 
   const editButton = canEdit ? (
     <Tooltip content={t('conversation.editMessage.action', { defaultValue: 'Edit' })}>
-      <div
-        className='p-4px rd-4px cursor-pointer hover:bg-3 transition-colors opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+      <button
+        type='button'
+        className={classNames(
+          'p-4px rd-4px cursor-pointer hover:bg-3 transition-colors border-0 bg-transparent',
+          isMobile
+            ? 'opacity-100'
+            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+        )}
         onClick={handleEdit}
         style={{ lineHeight: 0 }}
+        aria-label={t('conversation.editMessage.action', { defaultValue: 'Edit' })}
       >
         <Edit theme='outline' size='16' fill={iconColors.secondary} />
-      </div>
+      </button>
     </Tooltip>
   ) : null;
 
@@ -346,8 +360,6 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
           </div>
         )}
         {writebackState && <MessageKnowledgeWriteback state={writebackState} />}
-        {/* Hover-revealed copy + timestamp row. Mobile has no hover affordance,
-            so we drop the row entirely — system-level long-press still copies. */}
         {shouldShowActions && (
           <div
             className={classNames('h-32px flex items-center mt-4px gap-8px', {
@@ -357,7 +369,12 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
             {copyButton}
             {editButton}
             {message.created_at && (
-              <span className='text-12px text-t-secondary opacity-0 group-hover:opacity-100 transition-opacity select-none'>
+              <span
+                className={classNames(
+                  'text-12px text-t-secondary select-none',
+                  isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 transition-opacity'
+                )}
+              >
                 {formatMessageTime(message.created_at)}
               </span>
             )}
