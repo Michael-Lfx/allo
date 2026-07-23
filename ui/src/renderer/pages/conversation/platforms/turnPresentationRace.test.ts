@@ -64,4 +64,14 @@ describe('turn presentation send/stop/retry races', () => {
     expect(state.phase).toBe('completed');
     expect(state.showStatusRail).toBe(false);
   });
+
+  test('stream activity after a terminal segment reopens the presentation', () => {
+    let state = turnPresentationReducer(initialTurnPresentationState, { type: 'streaming' });
+    state = turnPresentationReducer(state, { type: 'streamFinished' });
+    state = turnPresentationReducer(state, { type: 'thinking' });
+
+    expect(state.phase).toBe('thinking');
+    expect(state.streamFinished).toBe(false);
+    expect(state.showStop).toBe(true);
+  });
 });

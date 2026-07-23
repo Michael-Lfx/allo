@@ -531,6 +531,7 @@ export const useNomiMessage = (
           {
             // Stream completion can precede backend turn-handle release.
             setThought({ subject: '', description: '' });
+            dispatchTurnIfOpen({ type: 'finish' });
             const timingKey = resolveTimingKey();
             if (timingKey) markTurnStreamFinished(timingKey);
             dispatchPresentationEvent({ type: 'streamFinished' });
@@ -601,6 +602,7 @@ export const useNomiMessage = (
         default: {
           if (message.type === 'error') {
             setThought({ subject: '', description: '' });
+            dispatchTurnIfOpen({ type: 'error' });
             const timingKey = resolveTimingKey();
             if (timingKey) {
               markTurnIdle(timingKey, 'failed');

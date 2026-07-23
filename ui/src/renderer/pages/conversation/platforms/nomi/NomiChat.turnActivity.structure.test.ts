@@ -9,12 +9,14 @@ import { describe, expect, test } from 'bun:test';
 
 const chatSource = readFileSync(new URL('./NomiChat.tsx', import.meta.url), 'utf8');
 const sendBoxSource = readFileSync(new URL('./NomiSendBox.tsx', import.meta.url), 'utf8');
+const messageSource = readFileSync(new URL('./useNomiMessage.ts', import.meta.url), 'utf8');
 
 describe('NomiChat turn activity ownership', () => {
   test('shares the local stream lifecycle with the message list and send box', () => {
     expect(chatSource.includes('useNomiMessage(conversation_id')).toBe(true);
     expect(chatSource.includes('turnActivity.running')).toBe(true);
     expect(chatSource.includes('isProcessing === true || turnActivity.running')).toBe(true);
+    expect(chatSource.includes('!turnActivity.presentation.streamFinished')).toBe(true);
     expect(chatSource.includes('turnActivity={turnActivity}')).toBe(true);
     expect(chatSource.includes('activeTurnId: turnActivity.activeTurnId')).toBe(true);
     expect(chatSource.includes('activeRequestMessageId: turnActivity.activeRequestMessageId')).toBe(true);
@@ -30,5 +32,17 @@ describe('NomiChat turn activity ownership', () => {
     expect(sendBoxSource.includes('notifyLocalSubmit')).toBe(true);
     expect(sendBoxSource.includes('prefixedId(')).toBe(true);
     expect(sendBoxSource.includes('removeMessageByMsgId(localMsgId)')).toBe(true);
+  });
+
+  test('ends visual turn activity on stream terminal events', () => {
+    const finishHandler = messageSource.indexOf("case 'finish':");
+    const errorHandler = messageSource.indexOf("if (message.type === 'error')");
+
+    expect(messageSource.indexOf("dispatchTurnIfOpen({ type: 'finish' });", finishHandler)).toBeGreaterThan(
+      finishHandler
+    );
+    expect(messageSource.indexOf("dispatchTurnIfOpen({ type: 'error' });", errorHandler)).toBeGreaterThan(
+      errorHandler
+    );
   });
 });

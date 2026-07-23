@@ -94,7 +94,8 @@ const NomiChat: React.FC<{
       cron_job_id,
       hideSendBox,
       readOnly,
-      isProcessing: isProcessing === true || turnActivity.running,
+      isProcessing:
+        !turnActivity.presentation.streamFinished && (isProcessing === true || turnActivity.running),
       activeTurnId: turnActivity.activeTurnId,
       activeRequestMessageId: turnActivity.activeRequestMessageId,
       loadedSkills,
@@ -109,6 +110,7 @@ const NomiChat: React.FC<{
     readOnly,
     isProcessing,
     turnActivity.running,
+    turnActivity.presentation.streamFinished,
     turnActivity.activeTurnId,
     turnActivity.activeRequestMessageId,
     loadedSkills,

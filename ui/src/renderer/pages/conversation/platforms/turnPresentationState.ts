@@ -192,28 +192,40 @@ export function turnPresentationReducer(
       return withBusyFlags(state, mapped, {
         activeTurnId: event.turnId ?? state.activeTurnId,
         detail: event.detail || state.detail,
+        streamFinished: false,
         startedAt: event.at ?? state.startedAt ?? Date.now(),
       });
     }
 
     case 'preparing':
-      return withBusyFlags(state, 'preparing', { detail: event.detail ?? state.detail });
+      return withBusyFlags(state, 'preparing', {
+        detail: event.detail ?? state.detail,
+        streamFinished: false,
+      });
 
     case 'thinking':
-      return withBusyFlags(state, 'thinking', { detail: event.detail ?? state.detail });
+      return withBusyFlags(state, 'thinking', {
+        detail: event.detail ?? state.detail,
+        streamFinished: false,
+      });
 
     case 'streaming':
       return withBusyFlags(state, 'streaming', {
         firstTokenAt: state.firstTokenAt ?? event.at ?? Date.now(),
         detail: undefined,
+        streamFinished: false,
       });
 
     case 'tooling':
-      return withBusyFlags(state, 'tooling', { detail: event.detail ?? state.detail });
+      return withBusyFlags(state, 'tooling', {
+        detail: event.detail ?? state.detail,
+        streamFinished: false,
+      });
 
     case 'waitingPermission':
       return withBusyFlags(state, 'waiting_permission', {
         detail: event.detail ?? state.detail,
+        streamFinished: false,
       });
 
     case 'streamFinished':
