@@ -78,6 +78,10 @@
   background: linear-gradient(90deg, var(--flowy-accent) 0%, var(--flowy-accent) 55%, var(--flowy-surface-3) 55%);
 }
 
+.commercial-slice__outcome {
+  margin-top: 12px;
+}
+
 .commercial-slice__files {
   margin: 16px 0 0;
   padding: 0;

@@ -21,6 +21,18 @@
     "skillsMarketDesc": "按需搜索并调用社区 Skills，一次配置，所有Agent通用。",
     "skillsMarketDetails": "详情 >>"
   },
+  "firstWinOutcome": {
+    "aria": "首个可检查成果",
+    "title": "首个可检查成果",
+    "statusWithChanges": "已验证 · 有可检查的文件变更",
+    "statusAnswer": "已交付 · 可检查的结果摘要",
+    "noFilesHint": "暂无文件变更 · 可复制摘要或继续追问确认价值",
+    "continue": "继续追问",
+    "reviewFiles": "查看变更",
+    "saveFlow": "保存为流程",
+    "confirm": "成果有用",
+    "followUpPrompt": "在刚才的结果上继续："
+  },
   "history": {
     "noHistory": "暂无对话历史",
     "deleteTitle": "删除",

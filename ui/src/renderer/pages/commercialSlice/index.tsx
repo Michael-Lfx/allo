@@ -8,11 +8,25 @@ import React, { useMemo, useState } from 'react';
 import { COMMERCIAL_PATH_FRAMES, type CommercialPathState } from './commercialPathModel';
 import { COMMERCIAL_SLICE_FLAG, isCommercialSliceEnabled } from '@renderer/utils/featureFlags/commercialSlice';
 import { confirmFirstValue, trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
+import { markFirstWinCompleted } from '@renderer/utils/onboarding/firstWinMode';
+import FirstWinOutcomeCard from '@renderer/pages/conversation/Messages/components/FirstWinOutcomeCard';
+import type { FirstWinOutcomeSnapshot } from '@renderer/pages/conversation/Messages/components/firstWinOutcomeModel';
 import './commercialSlice.css';
+
+const PROTOTYPE_OUTCOME: FirstWinOutcomeSnapshot = {
+  status: 'with_changes',
+  summary: '根因是空指针守卫缺失。已补齐校验，相关测试已通过。',
+  files: [
+    { name: 'app.ts', path: 'src/app.ts', insertions: 12, deletions: 3 },
+    { name: 'app.test.ts', path: 'src/app.test.ts', insertions: 8, deletions: 0 },
+  ],
+  hasAssistantAnswer: true,
+};
 
 const CommercialSlicePage: React.FC = () => {
   const enabled = isCommercialSliceEnabled();
   const [state, setState] = useState<CommercialPathState>('returning_user');
+  const [outcomeDismissed, setOutcomeDismissed] = useState(false);
   const frame = useMemo(() => COMMERCIAL_PATH_FRAMES.find((item) => item.state === state)!, [state]);
 
   if (!enabled) {
@@ -45,8 +59,8 @@ const CommercialSlicePage: React.FC = () => {
             data-testid={`commercial-state-${item.state}`}
             onClick={() => {
               setState(item.state);
+              setOutcomeDismissed(false);
               if (item.state === 'task_success') {
-                confirmFirstValue({ source: 'prototype' });
                 trackFunnelEvent('first_artifact_visible', { source: 'prototype' });
               }
             }}
@@ -57,11 +71,13 @@ const CommercialSlicePage: React.FC = () => {
       </div>
 
       <section className='commercial-slice__stage flowy-surface-card flowy-enter' data-scene={frame.scene}>
-        <div className='commercial-slice__preview' aria-hidden='true'>
-          <div className='commercial-slice__preview-rail' />
+        <div className='commercial-slice__preview'>
+          <div className='commercial-slice__preview-rail' aria-hidden='true' />
           <div className='commercial-slice__preview-main'>
             <div className={`commercial-slice__scene commercial-slice__scene--${frame.scene}`}>
-              <span className='commercial-slice__badge'>{frame.scene}</span>
+              <span className='commercial-slice__badge' aria-hidden='true'>
+                {frame.scene}
+              </span>
               {frame.statusChips ? (
                 <div className='commercial-slice__chips' data-testid='commercial-status-chips'>
                   {frame.statusChips.map((chip) => (
@@ -76,17 +92,22 @@ const CommercialSlicePage: React.FC = () => {
                   {frame.planPreview}
                 </p>
               ) : null}
-              {frame.scene === 'execution' ? <div className='commercial-slice__progress' /> : null}
-              {frame.scene === 'result' ? (
-                <ul className='commercial-slice__files flowy-task-reveal'>
-                  <li>verified · tests green</li>
-                  <li>diff · src/app.ts</li>
-                  <li>summary · 根因与修复说明</li>
-                </ul>
+              {frame.scene === 'execution' ? <div className='commercial-slice__progress' aria-hidden='true' /> : null}
+              {frame.scene === 'result' && !outcomeDismissed ? (
+                <div className='commercial-slice__outcome'>
+                  <FirstWinOutcomeCard
+                    snapshot={PROTOTYPE_OUTCOME}
+                    onDismiss={() => {
+                      confirmFirstValue({ source: 'prototype' });
+                      markFirstWinCompleted();
+                      setOutcomeDismissed(true);
+                    }}
+                  />
+                </div>
               ) : null}
             </div>
           </div>
-          <div className='commercial-slice__preview-workspace' />
+          <div className='commercial-slice__preview-workspace' aria-hidden='true' />
         </div>
 
         <div className='commercial-slice__copy'>

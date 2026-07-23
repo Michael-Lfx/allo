@@ -37,6 +37,11 @@ import MessageSkillSuggest from './components/MessageSkillSuggest';
 import MessageText from './components/MessageText';
 import MessageThinking from './components/MessageThinking';
 import MessageListSkeleton from './components/MessageListSkeleton';
+import FirstWinOutcomeCard from './components/FirstWinOutcomeCard';
+import {
+  buildFirstWinOutcomeSnapshot,
+  shouldShowFirstWinOutcomeCard,
+} from './components/firstWinOutcomeModel';
 import TurnProcessDisclosure from './components/TurnProcessDisclosure';
 import TurnProcessReceipt, { type TurnProcessReceiptIcon } from './components/TurnProcessReceipt';
 import {
@@ -48,6 +53,7 @@ import {
 import ProcessTraceItem, { type ProcessTraceItemExpansionControls } from './components/ProcessTraceItem';
 import { isContextCompressionTip } from './processTipModel';
 import { formatFileTargetPreview, splitToolReceiptTargets } from './processFileTargetLabel';
+import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
 import type { WriteFileResult } from './types';
 import { useAutoScroll } from './useAutoScroll';
 import { useAutoPreviewOfficeFiles } from '@/renderer/hooks/file/useAutoPreviewOfficeFiles';
@@ -764,6 +770,8 @@ const MessageList: React.FC<{
   const isMessageListLoading = useMessageListLoading();
   const artifacts = useConversationArtifacts();
   const conversationContext = useConversationContextSafe();
+  const { isFirstWin } = useFirstWinMode();
+  const [outcomeDismissed, setOutcomeDismissed] = useState(false);
   useKnowledgeWritebackEvents(conversationContext?.conversation_id);
   useAutoPreviewOfficeFiles(conversationContext);
   const workspaceRoots = useMemo(
@@ -1038,6 +1046,21 @@ const MessageList: React.FC<{
     [conversationContext?.isProcessing, lastUserTextIndex]
   );
 
+  const firstWinOutcomeSnapshot = useMemo(
+    () => buildFirstWinOutcomeSnapshot(displayList),
+    [displayList]
+  );
+  const showFirstWinOutcome = shouldShowFirstWinOutcomeCard({
+    isFirstWin,
+    isProcessing: conversationContext?.isProcessing === true,
+    snapshot: firstWinOutcomeSnapshot,
+    dismissed: outcomeDismissed,
+  });
+
+  useEffect(() => {
+    setOutcomeDismissed(false);
+  }, [conversationContext?.conversation_id]);
+
   // Use auto-scroll hook
   const {
     handleScrollerRef,
@@ -1210,6 +1233,17 @@ const MessageList: React.FC<{
     );
   };
 
+  const firstWinOutcomeFooter =
+    showFirstWinOutcome && firstWinOutcomeSnapshot ? (
+      <div className='px-8px max-w-full md:max-w-780px mx-auto' data-testid='first-win-outcome-footer'>
+        <FirstWinOutcomeCard
+          snapshot={firstWinOutcomeSnapshot}
+          conversationId={conversationContext?.conversation_id}
+          onDismiss={() => setOutcomeDismissed(true)}
+        />
+      </div>
+    ) : null;
+
   const renderItem = (_index: number, item: (typeof displayList)[0]) => {
     const highlighted = matchesTargetMessage(item, highlightedMessageId);
     if ('type' in item && item.type === 'turn_process_disclosure') {
@@ -1321,7 +1355,12 @@ const MessageList: React.FC<{
                   increaseViewportBy={{ top: 800, bottom: 800 }}
                   components={{
                     Header: () => <div className='h-10px' />,
-                    Footer: () => <div className='h-20px' />,
+                    Footer: () => (
+                      <>
+                        {firstWinOutcomeFooter}
+                        <div className='h-20px' />
+                      </>
+                    ),
                   }}
                   itemContent={(index, item) => renderItem(index, item)}
                 />
@@ -1331,6 +1370,7 @@ const MessageList: React.FC<{
                   {displayList.map((item, index) => (
                     <React.Fragment key={item.id}>{renderItem(index, item)}</React.Fragment>
                   ))}
+                  {firstWinOutcomeFooter}
                   <div className='h-20px' />
                 </>
               )}

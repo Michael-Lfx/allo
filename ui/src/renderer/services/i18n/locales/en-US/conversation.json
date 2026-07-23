@@ -21,6 +21,18 @@
     "skillsMarketDesc": "Search and activate community Skills on demand. Configure once, available for all agents.",
     "skillsMarketDetails": "View More >>"
   },
+  "firstWinOutcome": {
+    "aria": "First reviewable result",
+    "title": "First reviewable result",
+    "statusWithChanges": "Verified · reviewable file changes",
+    "statusAnswer": "Delivered · reviewable answer summary",
+    "noFilesHint": "No file changes yet · copy the summary or ask a follow-up to confirm value",
+    "continue": "Ask a follow-up",
+    "reviewFiles": "Review changes",
+    "saveFlow": "Save as flow",
+    "confirm": "This helped",
+    "followUpPrompt": "Continue from that result:"
+  },
   "history": {
     "noHistory": "No chat history",
     "deleteTitle": "Delete",
