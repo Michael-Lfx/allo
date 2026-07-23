@@ -43,10 +43,10 @@ const PendingConversationOverlay: React.FC = () => {
   const fileCount = pending.files?.length ?? 0;
   const trimmedInput = pending.input.trim();
   const steps = [
-    t('conversation.pending.stepValidate', { defaultValue: 'Validate' }),
-    t('conversation.pending.stepCreate', { defaultValue: 'Create' }),
-    t('conversation.pending.stepConfigure', { defaultValue: 'Configure' }),
-    t('conversation.pending.stepOpen', { defaultValue: 'Open' }),
+    t('conversation.pending.stepValidate', { defaultValue: '核对任务' }),
+    t('conversation.pending.stepCreate', { defaultValue: '创建会话' }),
+    t('conversation.pending.stepConfigure', { defaultValue: '准备工具' }),
+    t('conversation.pending.stepOpen', { defaultValue: '开始执行' }),
   ];
   const stageIndex = {
     validating: 0,

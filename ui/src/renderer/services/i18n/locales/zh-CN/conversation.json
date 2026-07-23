@@ -116,10 +116,10 @@
   "pending": {
     "creating": "正在准备任务…",
     "startingAutoWork": "正在启动自动工作…",
-    "stepValidate": "校验",
-    "stepCreate": "创建",
-    "stepConfigure": "配置",
-    "stepOpen": "打开"
+    "stepValidate": "核对任务",
+    "stepCreate": "创建会话",
+    "stepConfigure": "准备工具",
+    "stepOpen": "开始执行"
   },
   "createError": {
     "pathVariants": {

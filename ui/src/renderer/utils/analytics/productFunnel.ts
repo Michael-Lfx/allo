@@ -6,7 +6,13 @@
 
 export type FunnelEventName =
   | 'auth_completed'
+  | 'home_interactive'
+  | 'task_drafted'
+  | 'prerequisite_resolved'
+  | 'task_accepted'
   | 'first_task_started'
+  | 'first_artifact_visible'
+  | 'answer_completed'
   | 'first_value_confirmed'
   | 'd1_retained'
   | 'd7_retained'
@@ -79,17 +85,43 @@ export function getFunnelCohort(): 'A' | 'B' {
   return memoryCohort;
 }
 
+/** Stable A/B stratification dims for login→first-task analysis. */
+export function getFunnelSegmentProps(): FunnelEvent['props'] {
+  const desktopShell =
+    typeof window !== 'undefined' && Boolean((window as { __backendPort?: number }).__backendPort);
+  const mobileViewport =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 768px)').matches;
+  let firstWinCompleted = false;
+  if (canUseStorage()) {
+    try {
+      firstWinCompleted = window.localStorage.getItem('flowy.firstWin.completed.v1') === '1';
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    runtime: desktopShell ? 'desktop' : 'webui',
+    viewport: mobileViewport ? 'mobile' : 'desktop',
+    first_win_stage: firstWinCompleted ? 'completed' : 'active',
+  };
+}
+
 export function trackFunnelEvent(name: FunnelEventName, props?: FunnelEvent['props']): FunnelEvent {
   const event: FunnelEvent = {
     name,
     at: new Date().toISOString(),
-    props,
+    props: {
+      ...getFunnelSegmentProps(),
+      ...props,
+    },
     cohort: getFunnelCohort(),
   };
   const events = readEvents();
   events.push(event);
   writeEvents(events);
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(new CustomEvent('flowy:funnel', { detail: event }));
   }
   return event;
@@ -130,6 +162,15 @@ export function maybeTrackRetention(now = Date.now()): FunnelEvent[] {
     emitted.push(trackFunnelEvent('d7_retained'));
   }
   return emitted;
+}
+
+/**
+ * User-confirmed first value (open artifact / copy / follow-up / explicit confirm).
+ * First token alone is never enough.
+ */
+export function confirmFirstValue(props?: FunnelEvent['props']): FunnelEvent | null {
+  if (hasFunnelEvent('first_value_confirmed')) return null;
+  return trackFunnelEvent('first_value_confirmed', props);
 }
 
 export type TurnTimingProps = {
@@ -200,14 +241,6 @@ export function markTurnFirstToken(requestKey: string): number | null {
     conversation_type: session.props.conversation_type ?? null,
     cold_start: session.props.cold_start ?? null,
   });
-  if (!hasFunnelEvent('first_value_confirmed')) {
-    trackFunnelEvent('first_value_confirmed', {
-      source: 'chat',
-      request_key: requestKey,
-      ttft_ms: ttftMs,
-      conversation_type: session.props.conversation_type ?? null,
-    });
-  }
   return ttftMs;
 }
 
@@ -240,6 +273,21 @@ export function markTurnIdle(requestKey: string, outcome: 'completed' | 'failed'
     cold_start: session.props.cold_start ?? null,
     error_code: session.props.error_code ?? null,
   });
+  if (outcome === 'completed') {
+    if (!hasFunnelEvent('answer_completed')) {
+      trackFunnelEvent('answer_completed', {
+        request_key: requestKey,
+        conversation_type: session.props.conversation_type ?? null,
+      });
+    }
+    if (!hasFunnelEvent('first_artifact_visible')) {
+      trackFunnelEvent('first_artifact_visible', {
+        request_key: requestKey,
+        source: 'answer',
+        conversation_type: session.props.conversation_type ?? null,
+      });
+    }
+  }
   turnTimingSessions.delete(requestKey);
   return totalMs;
 }

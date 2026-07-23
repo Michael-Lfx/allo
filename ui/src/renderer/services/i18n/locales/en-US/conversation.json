@@ -116,10 +116,10 @@
   "pending": {
     "creating": "Preparing your task…",
     "startingAutoWork": "Starting AutoWork…",
-    "stepValidate": "Validate",
-    "stepCreate": "Create",
-    "stepConfigure": "Configure",
-    "stepOpen": "Open"
+    "stepValidate": "Check task",
+    "stepCreate": "Create chat",
+    "stepConfigure": "Prepare tools",
+    "stepOpen": "Start run"
   },
   "createError": {
     "pathVariants": {
