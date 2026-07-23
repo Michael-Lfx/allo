@@ -329,7 +329,6 @@ export const useNomiMessage = (
     const timingKey = resolveTimingKey();
     if (timingKey) {
       markTurnIdle(timingKey, 'completed');
-      markFirstWinCompleted();
       timingRequestKeyRef.current = null;
     }
     dispatchPresentation({ type: 'turnCompleted' });

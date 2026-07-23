@@ -30,13 +30,12 @@ function readCompleted(): boolean {
   return false;
 }
 
+/**
+ * First-win ends only when the user confirms value (copy / follow-up /
+ * outcome card), not when the first token or answer stream finishes.
+ */
 export function isFirstWinCompleted(): boolean {
-  return (
-    readCompleted() ||
-    hasFunnelEvent('first_value_confirmed') ||
-    hasFunnelEvent('answer_completed') ||
-    hasFunnelEvent('first_artifact_visible')
-  );
+  return readCompleted() || hasFunnelEvent('first_value_confirmed');
 }
 
 export function markFirstWinCompleted(): void {

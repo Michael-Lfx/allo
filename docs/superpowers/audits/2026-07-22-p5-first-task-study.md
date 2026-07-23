@@ -40,4 +40,4 @@
 
 `auth_completed` → `home_interactive` → `task_drafted` → `prerequisite_resolved` → `task_accepted` / `first_task_started` → `first_token` → `first_artifact_visible` / `answer_completed` → `first_value_confirmed`（用户确认：追问 / 复制 / 打开产物）→ `d1_retained` / `d7_retained`
 
-注意：`first_token` 只衡量响应开始，不算激活。
+注意：`first_token` 只衡量响应开始，不算激活。`answer_completed` / `first_artifact_visible` 也不结束首胜聚焦；只有 `first_value_confirmed`（成果卡确认 / 复制 / 追问）才算激活。
