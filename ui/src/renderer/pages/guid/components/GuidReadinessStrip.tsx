@@ -5,11 +5,15 @@
  */
 
 import type { TProviderWithModel } from '@/common/config/storage';
-import { CheckOne, SettingConfig } from '@icon-park/react';
-import React from 'react';
+import { Attention, CheckOne, SettingConfig } from '@icon-park/react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
-import type { GuidReadinessResult, GuidTaskReceipt } from '../readiness/guidReadiness';
+import {
+  buildGuidStatusChips,
+  type GuidReadinessResult,
+  type GuidTaskReceipt,
+} from '../readiness/guidReadiness';
 
 type GuidReadinessStripProps = {
   agentLabel: string;
@@ -17,6 +21,7 @@ type GuidReadinessStripProps = {
   workspaceDir?: string;
   readiness: GuidReadinessResult;
   receipt: GuidTaskReceipt | null;
+  hasDraft: boolean;
   onOpenSettings: () => void;
   onAddModel: () => void;
   onLinkWorkspace: () => void;
@@ -28,12 +33,17 @@ const GuidReadinessStrip: React.FC<GuidReadinessStripProps> = ({
   workspaceDir,
   readiness,
   receipt,
+  hasDraft,
   onOpenSettings,
   onAddModel,
   onLinkWorkspace,
 }) => {
   const { t } = useTranslation();
   const modelLabel = model?.use_model || model?.name;
+  const chips = useMemo(
+    () => buildGuidStatusChips({ readiness, hasDraft: hasDraft || Boolean(receipt) }),
+    [hasDraft, readiness, receipt]
+  );
 
   const handleClick = () => {
     switch (readiness.primaryAction) {
@@ -90,6 +100,19 @@ const GuidReadinessStrip: React.FC<GuidReadinessStripProps> = ({
 
   return (
     <div className={styles.guidReadinessBlock} data-testid='guid-readiness-block'>
+      <div className={styles.guidStatusChips} data-testid='guid-status-chips' aria-label={t('guid.status.rowAria', { defaultValue: '任务就绪状态' })}>
+        {chips.map((chip) => (
+          <span
+            key={chip.id}
+            className={`${styles.guidStatusChip} ${styles[`guidStatusChip_${chip.state}`]}`}
+            data-testid={`guid-status-${chip.id}`}
+            data-state={chip.state}
+          >
+            {t(chip.labelKey, { defaultValue: chip.defaultLabel })}
+          </span>
+        ))}
+      </div>
+
       {receipt ? (
         <div className={styles.guidTaskReceipt} data-testid='guid-task-receipt'>
           <div className={styles.guidTaskReceiptRow}>
@@ -100,12 +123,12 @@ const GuidReadinessStrip: React.FC<GuidReadinessStripProps> = ({
           </div>
           <div className={styles.guidTaskReceiptRow}>
             <span className={styles.guidTaskReceiptLabel}>
-              {t('guid.taskReceipt.context', { defaultValue: '上下文' })}
+              {t('guid.taskReceipt.plan', { defaultValue: '执行方案' })}
             </span>
-            <span className={styles.guidTaskReceiptValue}>
-              {receipt.context === 'workspace'
-                ? t('guid.taskReceipt.contextWorkspace', { defaultValue: '已关联项目' })
-                : t('guid.taskReceipt.contextNone', { defaultValue: '默认工作区' })}
+            <span className={styles.guidTaskReceiptValue} data-testid='guid-execution-preview'>
+              {receipt.planSteps
+                .map((step) => t(step.key, { defaultValue: step.defaultLabel }))
+                .join(' → ')}
             </span>
           </div>
           <div className={styles.guidTaskReceiptRow}>
@@ -118,6 +141,7 @@ const GuidReadinessStrip: React.FC<GuidReadinessStripProps> = ({
           </div>
         </div>
       ) : null}
+
       <button
         type='button'
         className={`${styles.guidReadinessStrip}${readiness.ready ? '' : ` ${styles.guidReadinessStripBlocked}`}`}
@@ -128,10 +152,14 @@ const GuidReadinessStrip: React.FC<GuidReadinessStripProps> = ({
             ? t('guid.readiness.addModelAria', { defaultValue: '添加模型' })
             : readiness.primaryAction === 'linkWorkspace'
               ? t('guid.readiness.linkWorkspaceAria', { defaultValue: '选择项目文件夹' })
-              : t('guid.readiness.openSettings')
+              : t('guid.readiness.openPlan', { defaultValue: '打开执行方案详情' })
         }
       >
-        <CheckOne theme='filled' size='14' fill='currentColor' />
+        {readiness.ready ? (
+          <CheckOne theme='filled' size='14' fill='currentColor' />
+        ) : (
+          <Attention theme='filled' size='14' fill='currentColor' />
+        )}
         <span className={styles.guidReadinessPrimary}>{primaryText}</span>
         <span className={styles.guidReadinessMeta}>{metaText}</span>
         <SettingConfig theme='outline' size='14' fill='currentColor' />

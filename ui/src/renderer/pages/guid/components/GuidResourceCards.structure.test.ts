@@ -40,12 +40,14 @@ describe('Guid homepage single-screen layout', () => {
 
   test('GuidResourceCards exposes task intents that fill the composer without outbound marketing links', () => {
     const source = readSource(new URL('./GuidResourceCards.tsx', import.meta.url));
+    const readiness = readSource(new URL('../readiness/guidReadiness.ts', import.meta.url));
 
-    expect(source.includes("id: 'fix-code'")).toBe(true);
-    expect(source.includes("id: 'summarize'")).toBe(true);
-    expect(source.includes("id: 'automate'")).toBe(true);
+    expect(readiness.includes("id: 'fix-code'")).toBe(true);
+    expect(readiness.includes("id: 'summarize'")).toBe(true);
+    expect(readiness.includes("id: 'automate'")).toBe(true);
     expect(source.includes('guid-intent-')).toBe(true);
     expect(source.includes('onSetInput')).toBe(true);
+    expect(source.includes('intentsForWorkspace')).toBe(true);
     expect(source.includes("navigate('/nomi')")).toBe(false);
     expect(source.includes("navigate('/open-capabilities')")).toBe(false);
     expect(source.includes('https://www.nomifun.com/docs')).toBe(false);

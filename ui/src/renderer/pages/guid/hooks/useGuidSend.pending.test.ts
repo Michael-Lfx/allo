@@ -20,10 +20,11 @@ describe('useGuidSend pending preset guard', () => {
   test('preflights a missing model before loading or beginning the pending overlay', () => {
     const source = readSource(new URL('./useGuidSend.ts', import.meta.url));
     const handler = source.slice(source.indexOf('const sendMessageHandler'), source.indexOf('// Calculate button'));
+    const gate = handler.indexOf("readinessBlocker === 'model' || needsModelBeforeSend");
 
-    expect(handler.indexOf('if (needsModelBeforeSend)')).toBeGreaterThan(-1);
-    expect(handler.indexOf('if (needsModelBeforeSend)')).toBeLessThan(handler.indexOf('setLoading(true)'));
-    expect(handler.indexOf('if (needsModelBeforeSend)')).toBeLessThan(handler.indexOf('beginPending?.'));
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(handler.indexOf('setLoading(true)'));
+    expect(gate).toBeLessThan(handler.indexOf('beginPending?.'));
   });
 
   test('advances pending progress from real create milestones', () => {

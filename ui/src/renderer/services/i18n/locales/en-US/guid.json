@@ -48,8 +48,8 @@
     "draftOn": "Preset · enabled after creation",
     "draftOff": "Not preset",
     "willMount": "{{count}} base(s) will be mounted",
-    "runSettings": "Run settings",
-    "runSettingsHide": "Hide settings"
+    "runSettings": "Execution plan",
+    "runSettingsHide": "Hide plan"
   },
   "modelProviderSaved": "Model ready — you can start the task",
   "readiness": {
@@ -62,12 +62,24 @@
     "workspaceOptional": "Project is optional",
     "workspaceRequired": "Project folder required",
     "openSettings": "Open run settings",
+    "openPlan": "Open execution plan details",
     "addModelAria": "Add a model",
     "linkWorkspaceAria": "Choose a project folder"
+  },
+  "status": {
+    "rowAria": "Task readiness",
+    "projectReady": "Project recognized",
+    "projectBlocked": "Project needed",
+    "projectOptional": "Project optional",
+    "planReady": "Plan ready",
+    "planBlocked": "Model required",
+    "planIdle": "Waiting for a goal",
+    "permissionAsk": "Ask before risky actions"
   },
   "taskReceipt": {
     "goal": "Goal",
     "context": "Context",
+    "plan": "Plan",
     "artifact": "Expected result",
     "contextWorkspace": "Project linked",
     "contextNone": "Default workspace",
@@ -75,14 +87,37 @@
       "fixCode": "Fixed tests and a root-cause note",
       "summarize": "Architecture summary and risk list",
       "automate": "Draft of an automatable workflow",
+      "research": "Conclusions and next steps",
       "freeform": "A reviewable task result"
     }
+  },
+  "plan": {
+    "readProject": "Read project",
+    "locateFailure": "Locate failure",
+    "fixVerify": "Fix and verify",
+    "reportRootCause": "Report root cause",
+    "mapArchitecture": "Map architecture",
+    "flagRisks": "Flag risks",
+    "writeBrief": "Write brief",
+    "clarifySteps": "Clarify steps",
+    "designFlow": "Design flow",
+    "draftAutomation": "Draft automation",
+    "handoff": "Hand off reusable plan",
+    "clarifyQuestion": "Clarify question",
+    "gatherContext": "Gather context",
+    "synthesize": "Synthesize",
+    "nextSteps": "Propose next steps",
+    "understandGoal": "Understand goal",
+    "chooseTools": "Choose tools",
+    "execute": "Execute and check",
+    "deliver": "Deliver result"
   },
   "taskIntents": {
     "hint": "Start with a real task",
     "fixCode": "Analyze failing tests in this project, fix them, and tell me the root cause",
     "summarize": "Read the workspace and summarize architecture and risks",
-    "automate": "Turn my repetitive manual steps into an automatable workflow"
+    "automate": "Turn my repetitive manual steps into an automatable workflow",
+    "research": "Research this question and give conclusions plus next steps"
   },
   "entry": {
     "free": "Free-form",

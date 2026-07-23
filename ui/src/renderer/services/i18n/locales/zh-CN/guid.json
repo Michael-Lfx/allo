@@ -48,8 +48,8 @@
     "draftOn": "已预设 · 创建后启用",
     "draftOff": "未预设",
     "willMount": "将挂载 {{count}} 个知识库",
-    "runSettings": "运行设置",
-    "runSettingsHide": "收起设置"
+    "runSettings": "执行方案",
+    "runSettingsHide": "收起方案"
   },
   "modelProviderSaved": "模型已就绪，可以开始任务",
   "readiness": {
@@ -62,12 +62,24 @@
     "workspaceOptional": "项目可选",
     "workspaceRequired": "需要项目文件夹",
     "openSettings": "打开运行设置",
+    "openPlan": "打开执行方案详情",
     "addModelAria": "添加模型",
     "linkWorkspaceAria": "选择项目文件夹"
+  },
+  "status": {
+    "rowAria": "任务就绪状态",
+    "projectReady": "项目已识别",
+    "projectBlocked": "项目待选择",
+    "projectOptional": "项目可选",
+    "planReady": "执行方案已准备",
+    "planBlocked": "需连接模型",
+    "planIdle": "等待描述目标",
+    "permissionAsk": "权限按需询问"
   },
   "taskReceipt": {
     "goal": "目标",
     "context": "上下文",
+    "plan": "执行方案",
     "artifact": "预计产物",
     "contextWorkspace": "已关联项目",
     "contextNone": "默认工作区",
@@ -75,14 +87,37 @@
       "fixCode": "修复后的测试结果与根因说明",
       "summarize": "架构摘要与风险清单",
       "automate": "可执行流程草案",
+      "research": "结论与下一步建议",
       "freeform": "可检查的任务成果"
     }
+  },
+  "plan": {
+    "readProject": "读取项目",
+    "locateFailure": "定位失败",
+    "fixVerify": "修改并验证",
+    "reportRootCause": "汇报根因",
+    "mapArchitecture": "梳理架构",
+    "flagRisks": "标出风险",
+    "writeBrief": "输出摘要",
+    "clarifySteps": "澄清步骤",
+    "designFlow": "设计流程",
+    "draftAutomation": "起草自动化",
+    "handoff": "交付可复用方案",
+    "clarifyQuestion": "澄清问题",
+    "gatherContext": "收集上下文",
+    "synthesize": "综合结论",
+    "nextSteps": "给出下一步",
+    "understandGoal": "理解目标",
+    "chooseTools": "选择工具",
+    "execute": "执行并检查",
+    "deliver": "交付成果"
   },
   "taskIntents": {
     "hint": "从一个真实任务开始",
     "fixCode": "分析这个项目的失败测试，修好后告诉我根因",
     "summarize": "阅读当前工作区，用要点总结架构与风险",
-    "automate": "帮我把重复手工步骤整理成可自动执行的流程"
+    "automate": "帮我把重复手工步骤整理成可自动执行的流程",
+    "research": "把这个问题调研清楚，给出结论与下一步建议"
   },
   "entry": {
     "free": "自由发挥",

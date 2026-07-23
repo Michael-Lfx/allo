@@ -473,6 +473,42 @@
   margin-top: 10px;
 }
 
+.guidStatusChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.guidStatusChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-text-2);
+  background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+}
+
+.guidStatusChip_ready {
+  color: rgb(var(--success-6));
+  border-color: color-mix(in srgb, rgb(var(--success-6)) 28%, transparent);
+  background: color-mix(in srgb, rgb(var(--success-6)) 8%, transparent);
+}
+
+.guidStatusChip_blocked {
+  color: rgb(var(--warning-6));
+  border-color: color-mix(in srgb, rgb(var(--warning-6)) 32%, transparent);
+  background: color-mix(in srgb, rgb(var(--warning-6)) 10%, transparent);
+}
+
+.guidStatusChip_optional {
+  color: var(--color-text-3);
+}
+
 .guidTaskReceipt {
   display: flex;
   flex-direction: column;
@@ -481,6 +517,13 @@
   border: 1px solid var(--color-border-2);
   border-radius: var(--flowy-radius-md, 8px);
   background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+  animation: flowy-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guidTaskReceipt {
+    animation: none;
+  }
 }
 
 .guidTaskReceiptRow {

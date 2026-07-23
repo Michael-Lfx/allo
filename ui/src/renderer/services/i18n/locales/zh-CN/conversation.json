@@ -1,7 +1,7 @@
 {
   "welcome": {
-    "title": "你想让 Flowy 完成什么？",
-    "description": "描述成果，Flowy 会准备合适的 Agent、模型与工具。",
+    "title": "告诉 Flowy 你要的结果",
+    "description": "描述成果即可。Flowy 会自行组织执行过程，只在需要时询问你。",
     "placeholder": "描述你想得到的成果…",
     "linkFolder": "打开文件夹",
     "newConversation": "新会话",

@@ -7,6 +7,7 @@
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { emitter } from '@/renderer/utils/emitter';
+import { intentsForWorkspace } from '@/renderer/pages/guid/readiness/guidReadiness';
 
 type ConversationEmptyPromptProps = {
   workspace?: string;
@@ -14,37 +15,22 @@ type ConversationEmptyPromptProps = {
 
 const ConversationEmptyPrompt: React.FC<ConversationEmptyPromptProps> = ({ workspace }) => {
   const { t } = useTranslation();
+  const hasWorkspace = Boolean(workspace?.trim());
 
   const prompts = useMemo(() => {
-    const folderHint = workspace
-      ? t('conversation.emptyPrompt.workspaceHint', {
-          defaultValue: 'in this project',
-        })
-      : t('conversation.emptyPrompt.generalHint', { defaultValue: 'for this chat' });
-    return [
-      t('conversation.emptyPrompt.explore', {
-        defaultValue: 'Summarize the current workspace {{hint}}',
-        hint: folderHint,
-      }),
-      t('conversation.emptyPrompt.fix', {
-        defaultValue: 'Find and fix the most likely bug {{hint}}',
-        hint: folderHint,
-      }),
-      t('conversation.emptyPrompt.plan', {
-        defaultValue: 'Propose a next-step plan {{hint}}',
-        hint: folderHint,
-      }),
-    ];
-  }, [t, workspace]);
+    return intentsForWorkspace(hasWorkspace).map((intent) =>
+      t(intent.textKey, { defaultValue: intent.defaultText })
+    );
+  }, [hasWorkspace, t]);
 
   return (
     <div className='w-full max-w-640px px-20px text-center' data-testid='conversation-empty-prompt'>
       <div className='text-16px font-medium text-t-primary mb-8px'>
-        {t('conversation.emptyPrompt.title', { defaultValue: 'Start with something concrete' })}
+        {t('conversation.emptyPrompt.title', { defaultValue: '从一个具体任务开始' })}
       </div>
       <div className='text-13px text-t-secondary mb-16px'>
         {t('conversation.emptyPrompt.subtitle', {
-          defaultValue: 'These fill the composer only — you decide when to send.',
+          defaultValue: '点击只填充输入框，由你决定何时发送。',
         })}
       </div>
       <div className='flex flex-col gap-8px'>

@@ -4,28 +4,31 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
-import { GUID_TASK_INTENTS, type GuidTaskIntentId } from '../readiness/guidReadiness';
+import { intentsForWorkspace, type GuidTaskIntentId } from '../readiness/guidReadiness';
 
 type GuidResourceCardsProps = {
   onStartLocalAgent?: () => void;
   onSetInput?: (text: string) => void;
   onSelectIntent?: (intentId: GuidTaskIntentId) => void;
   activeIntentId?: GuidTaskIntentId;
+  hasWorkspace?: boolean;
 };
 
 /**
- * Guid empty-area: task intents that fill the composer (first-success path).
+ * Guid empty-area: context-aware task intents that fill the composer.
  */
 const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({
   onStartLocalAgent,
   onSetInput,
   onSelectIntent,
   activeIntentId,
+  hasWorkspace = false,
 }) => {
   const { t } = useTranslation();
+  const intents = useMemo(() => intentsForWorkspace(hasWorkspace), [hasWorkspace]);
 
   return (
     <div className={styles.guidResourceCards} data-testid='guid-resource-cards'>
@@ -33,7 +36,7 @@ const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({
         {t('guid.taskIntents.hint', { defaultValue: '从一个真实任务开始' })}
       </p>
       <div className={styles.guidResourceIntentRow}>
-        {GUID_TASK_INTENTS.map((intent) => (
+        {intents.map((intent) => (
           <button
             key={intent.id}
             type='button'
@@ -41,8 +44,9 @@ const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({
             data-testid={`guid-intent-${intent.id}`}
             aria-pressed={activeIntentId === intent.id}
             onClick={() => {
+              const text = t(intent.textKey, { defaultValue: intent.defaultText });
+              onSetInput?.(text);
               onSelectIntent?.(intent.id);
-              onSetInput?.(t(intent.textKey, { defaultValue: intent.defaultText }));
               onStartLocalAgent?.();
             }}
           >

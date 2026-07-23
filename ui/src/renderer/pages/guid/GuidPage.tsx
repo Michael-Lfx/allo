@@ -108,6 +108,8 @@ const GuidPage: React.FC = () => {
     useState<AppliedCollaborationTemplate | null>(null);
   const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
   const pendingAutoSendRef = useRef(false);
+  const sendRef = useRef<(() => void) | null>(null);
+  const inputSnapshotRef = useRef('');
 
   // --- Skills state ---
   // All available skills (builtin auto-injected + user-imported custom) merged
@@ -299,6 +301,12 @@ const GuidPage: React.FC = () => {
         addRecentWorkspace(next);
         guidInput.setDir(next);
         trackFunnelEvent('prerequisite_resolved', { kind: 'workspace' });
+        if (pendingAutoSendRef.current && inputSnapshotRef.current.trim()) {
+          pendingAutoSendRef.current = false;
+          window.setTimeout(() => {
+            sendRef.current?.();
+          }, 0);
+        }
       })
       .catch((error) => {
         console.error('[GuidPage] Failed to open workspace dialog:', error);
@@ -365,6 +373,9 @@ const GuidPage: React.FC = () => {
     advancePending: pendingConversation.advance,
     endPending: pendingConversation.end,
   });
+
+  sendRef.current = send.sendMessageHandler;
+  inputSnapshotRef.current = guidInput.input;
 
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleInputChange = useCallback(
@@ -837,27 +848,40 @@ const GuidPage: React.FC = () => {
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
-              <p className='text-2xl font-semibold mb-0 text-0 text-center'>{t('conversation.welcome.title')}</p>
-              <p className={styles.heroDescription}>{t('conversation.welcome.description')}</p>
+              <p className='text-2xl font-semibold mb-0 text-0 text-center'>
+                {t('conversation.welcome.title', { defaultValue: '告诉 Flowy 你要的结果' })}
+              </p>
+              <p className={styles.heroDescription}>
+                {t('conversation.welcome.description', {
+                  defaultValue: '描述成果即可。Flowy 会自行组织执行过程，只在需要时询问你。',
+                })}
+              </p>
             </div>
 
             <GuidResourceCards
               onStartLocalAgent={guidInput.handleTextareaFocus}
-              onSetInput={guidInput.setInput}
+              hasWorkspace={Boolean(guidInput.dir.trim())}
               activeIntentId={activeIntentId}
               onSelectIntent={(intentId) => {
                 setActiveIntentId(intentId);
                 trackFunnelEvent('task_drafted', { intent: intentId });
-                if (
-                  resolveGuidReadiness({
-                    intentId,
-                    hasModel: Boolean(modelSelection.current_model),
-                    workspaceDir: guidInput.dir,
-                    needsModelForAgent,
-                  }).blocker === 'workspace'
-                ) {
+                const nextReadiness = resolveGuidReadiness({
+                  intentId,
+                  hasModel: Boolean(modelSelection.current_model),
+                  workspaceDir: guidInput.dir,
+                  needsModelForAgent,
+                });
+                if (nextReadiness.blocker === 'workspace') {
+                  pendingAutoSendRef.current = true;
                   handleLinkWorkspace();
+                } else if (nextReadiness.blocker === 'model') {
+                  pendingAutoSendRef.current = true;
+                  addProviderRef.current?.open();
                 }
+              }}
+              onSetInput={(text) => {
+                inputSnapshotRef.current = text;
+                guidInput.setInput(text);
               }}
             />
 
@@ -941,12 +965,16 @@ const GuidPage: React.FC = () => {
               workspaceDir={guidInput.dir}
               readiness={readiness}
               receipt={taskReceipt}
+              hasDraft={hasDraft}
               onOpenSettings={() => setAdvancedOpen(true)}
               onAddModel={() => {
                 pendingAutoSendRef.current = Boolean(guidInput.input.trim());
                 addProviderRef.current?.open();
               }}
-              onLinkWorkspace={handleLinkWorkspace}
+              onLinkWorkspace={() => {
+                pendingAutoSendRef.current = Boolean(guidInput.input.trim());
+                handleLinkWorkspace();
+              }}
             />
 
             {/* Editor host (modals + example prompts + fallback notice) */}

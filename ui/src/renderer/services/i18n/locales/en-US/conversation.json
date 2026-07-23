@@ -1,7 +1,7 @@
 {
   "welcome": {
-    "title": "What should Flowy complete for you?",
-    "description": "Describe the outcome. Flowy prepares the right agent, model, and tools.",
+    "title": "Tell Flowy the outcome you want",
+    "description": "Describe the result. Flowy organizes the work and only asks when needed.",
     "placeholder": "Describe the result you want…",
     "linkFolder": "Open Folder",
     "newConversation": "New Chat",
