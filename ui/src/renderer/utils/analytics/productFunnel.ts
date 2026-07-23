@@ -94,9 +94,18 @@ export function getFunnelSegmentProps(): FunnelEvent['props'] {
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(max-width: 768px)').matches;
   let firstWinCompleted = false;
+  let launchpadVariant: string | null = null;
   if (canUseStorage()) {
     try {
       firstWinCompleted = window.localStorage.getItem('flowy.firstWin.completed.v1') === '1';
+      const stored = window.localStorage.getItem('flowy.experiment.launchpad.v1');
+      if (stored === 'control' || stored === 'launchpad') {
+        launchpadVariant = stored;
+      } else {
+        // Mirror launchpadExperiment assignment without importing it (cycle-safe).
+        launchpadVariant = getFunnelCohort() === 'A' ? 'launchpad' : 'control';
+        window.localStorage.setItem('flowy.experiment.launchpad.v1', launchpadVariant);
+      }
     } catch {
       // ignore
     }
@@ -105,6 +114,7 @@ export function getFunnelSegmentProps(): FunnelEvent['props'] {
     runtime: desktopShell ? 'desktop' : 'webui',
     viewport: mobileViewport ? 'mobile' : 'desktop',
     first_win_stage: firstWinCompleted ? 'completed' : 'active',
+    launchpad_variant: launchpadVariant,
   };
 }
 

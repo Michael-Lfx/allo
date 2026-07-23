@@ -25,6 +25,8 @@ import { stripThinkTags, hasThinkTags } from '@renderer/utils/chat/thinkTagFilte
 import { stripSkillSuggest, hasSkillSuggest } from '@renderer/utils/chat/skillSuggestParser';
 import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { parseMessageFileMarker } from './messageFileMarker';
+import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
+import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 
 /**
  * Format a timestamp for message display.
@@ -221,6 +223,10 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
       .then(() => {
         setShowCopyAlert(true);
         setTimeout(() => setShowCopyAlert(false), 2000);
+        if (!isUserMessage) {
+          confirmFirstValue({ source: 'copy_answer' });
+          markFirstWinCompleted();
+        }
       })
       .catch(() => {
         Message.error(t('common.copyFailed'));
