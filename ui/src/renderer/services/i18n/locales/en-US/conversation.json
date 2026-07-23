@@ -262,7 +262,7 @@
       },
       "USER_LLM_PROVIDER_GATEWAY_ERROR": {
         "title": "Model provider service is unavailable",
-        "body": "The provider returned a gateway or service error. Retry later or use another provider."
+        "body": "All available model channels failed. Retry shortly, or switch to another provider/model and send again."
       },
       "USER_LLM_PROVIDER_PERMISSION_DENIED": {
         "title": "Model provider permission denied",
@@ -411,6 +411,9 @@
     "noModelSelected": "No model selected for current session, cannot send message",
     "modelHealedToDefault": "Switched to your default model {{model}}",
     "sendMessageTo": "Send message to {{model}}",
+    "send": "Send",
+    "stop": "Stop generating",
+    "queueNext": "Queue as next step",
     "processing": "Processing...",
     "quotaExceededTitle": "Model quota reached",
     "quotaExceededBody": "The current model quota is exhausted. Switch to {{model}} to continue?",
@@ -583,6 +586,30 @@
   "steer": {
     "button": "Send now (interject into the running reply)",
     "fallbackQueued": "This engine can't interject mid-reply — added to the queue instead."
+  },
+  "turnStatus": {
+    "sending": "Sending…",
+    "preparing": "Preparing…",
+    "thinking": "Thinking…",
+    "streaming": "Writing…",
+    "tooling": "Working…",
+    "waitingPermission": "Waiting for your confirmation",
+    "finalizing": "Saving result…",
+    "completed": "Done",
+    "failed": "Failed",
+    "cancelled": "Stopped",
+    "completedIn": "Done in {{time}}",
+    "changedFiles": "Changed {{count}} files",
+    "toolsUsed": "{{count}} tools"
+  },
+  "emptyPrompt": {
+    "title": "Start with something concrete",
+    "subtitle": "These fill the composer only — you decide when to send.",
+    "workspaceHint": "in this project",
+    "generalHint": "for this chat",
+    "explore": "Summarize the current workspace {{hint}}",
+    "fix": "Find and fix the most likely bug {{hint}}",
+    "plan": "Propose a next-step plan {{hint}}"
   },
   "editMessage": {
     "action": "Edit",

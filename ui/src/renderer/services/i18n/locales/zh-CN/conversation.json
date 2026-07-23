@@ -262,7 +262,7 @@
       },
       "USER_LLM_PROVIDER_GATEWAY_ERROR": {
         "title": "模型服务商暂不可用",
-        "body": "服务商返回了网关或服务异常。请稍后重试，或切换到其他服务商。"
+        "body": "当前可用模型通道全部失败。请稍后重试，或切换到其他服务商/模型后再发送。"
       },
       "USER_LLM_PROVIDER_PERMISSION_DENIED": {
         "title": "模型服务商无权处理请求",
@@ -411,6 +411,9 @@
     "noModelSelected": "当前会话未选择模型，无法发送消息",
     "modelHealedToDefault": "已回退到默认模型 {{model}}",
     "sendMessageTo": "发送消息到 {{model}}",
+    "send": "发送",
+    "stop": "停止生成",
+    "queueNext": "加入下一步队列",
     "processing": "正在处理中……",
     "quotaExceededTitle": "模型额度已用尽",
     "quotaExceededBody": "当前模型额度已用尽，是否切换到 {{model}}？",
@@ -583,6 +586,30 @@
   "steer": {
     "button": "立刻发送（插入正在生成的回复）",
     "fallbackQueued": "该引擎不支持回复中插话，已改为加入队列。"
+  },
+  "turnStatus": {
+    "sending": "正在发送…",
+    "preparing": "正在准备…",
+    "thinking": "正在思考…",
+    "streaming": "正在撰写…",
+    "tooling": "正在执行…",
+    "waitingPermission": "等待你的确认",
+    "finalizing": "正在保存结果…",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已停止",
+    "completedIn": "完成于 {{time}}",
+    "changedFiles": "修改 {{count}} 个文件",
+    "toolsUsed": "{{count}} 个工具"
+  },
+  "emptyPrompt": {
+    "title": "从一个具体任务开始",
+    "subtitle": "点击只填充输入框，由你决定何时发送。",
+    "workspaceHint": "在当前项目中",
+    "generalHint": "在本会话中",
+    "explore": "总结当前工作区 {{hint}}",
+    "fix": "找出并修复最可能的问题 {{hint}}",
+    "plan": "给出下一步计划 {{hint}}"
   },
   "editMessage": {
     "action": "编辑",

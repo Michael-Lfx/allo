@@ -98,6 +98,8 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
           onClick={onStop}
           data-testid='composer-stop-btn'
+          aria-label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
+          title={t('conversation.chat.stop', { defaultValue: 'Stop generating' })}
         />
       ) : null}
 
@@ -108,6 +110,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           disabled={sendDisabled}
           className='send-button-custom sendbox-steer-button'
           title={t('conversation.steer.button')}
+          aria-label={t('conversation.steer.button')}
           icon={<Lightning theme='filled' size='14' fill='white' strokeWidth={5} />}
           onClick={onSteer}
           data-testid='composer-steer-btn'
@@ -139,6 +142,16 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
           onClick={onSend}
           data-testid={sendTestId}
+          aria-label={
+            showSteer
+              ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
+              : t('conversation.chat.send', { defaultValue: 'Send' })
+          }
+          title={
+            showSteer
+              ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
+              : t('conversation.chat.send', { defaultValue: 'Send' })
+          }
         />
       ) : null}
 
