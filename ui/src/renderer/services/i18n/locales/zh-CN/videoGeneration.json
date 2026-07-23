@@ -150,6 +150,42 @@
       "errorDetail": "查看原始错误"
     }
   },
+  "studio": {
+    "stageLabel": "影片制作进度",
+    "stages": {
+      "brief": "创意",
+      "storyboard": "分镜",
+      "render": "渲染",
+      "film": "成片"
+    },
+    "briefTitle": "把故事交给 Nomi",
+    "briefHint": "生成的是可修改分镜，不会直接开始高成本渲染。",
+    "briefAndModels": "创意简报与模型设置",
+    "modelSettings": "模型设置",
+    "filmReady": "成片已就绪",
+    "filmReadyHint": "播放检查，或下载到本地继续发布。",
+    "download": "下载成片",
+    "reviseTitle": "想怎样修改这个镜头？",
+    "reviseHint": "直接描述结果，不需要填写技术文件路径。",
+    "revisePlaceholder": "例如：让镜头更紧张，加入快速推镜和更强的雨势",
+    "renderTitle": "分镜确认了吗？",
+    "renderHint": "渲染会生成关键帧、镜头视频并自动拼接成片。",
+    "renderCta": "生成成片",
+    "technicalDetails": "技术产物与运行文件",
+    "storyboard": {
+      "title": "故事分镜",
+      "hint": "逐镜头检查叙事和画面，满意后再生成成片。",
+      "editable": "可编辑",
+      "preparing": "正在整理分镜画面",
+      "preparingHint": "规划完成后，镜头会按故事顺序出现在这里。",
+      "shotAlt": "镜头 {{number}}",
+      "shotNumber": "镜头 {{number}}",
+      "visualDirection": "画面描述",
+      "visualPending": "画面生成后将在这里展示。",
+      "reviseShot": "修改这个镜头",
+      "filmstrip": "分镜胶片"
+    }
+  },
   "time": {
     "justNow": "刚刚",
     "minutesAgo": "{{count}} 分钟前",

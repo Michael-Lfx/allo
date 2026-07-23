@@ -150,6 +150,42 @@
       "errorDetail": "Show raw error"
     }
   },
+  "studio": {
+    "stageLabel": "Film production progress",
+    "stages": {
+      "brief": "Creative",
+      "storyboard": "Storyboard",
+      "render": "Render",
+      "film": "Film"
+    },
+    "briefTitle": "Give Nomi your story",
+    "briefHint": "This creates an editable storyboard before any expensive rendering starts.",
+    "briefAndModels": "Creative brief & model settings",
+    "modelSettings": "Model settings",
+    "filmReady": "Your film is ready",
+    "filmReadyHint": "Review playback or download it for publishing.",
+    "download": "Download film",
+    "reviseTitle": "How should this shot change?",
+    "reviseHint": "Describe the outcome directly. No technical file paths needed.",
+    "revisePlaceholder": "For example: make it more tense with a fast push-in and heavier rain",
+    "renderTitle": "Happy with the storyboard?",
+    "renderHint": "Rendering creates keyframes, shot videos, and assembles the final film.",
+    "renderCta": "Generate film",
+    "technicalDetails": "Technical artifacts & run files",
+    "storyboard": {
+      "title": "Story storyboard",
+      "hint": "Review the story and visuals shot by shot, then render when it feels right.",
+      "editable": "Editable",
+      "preparing": "Preparing storyboard visuals",
+      "preparingHint": "Shots will appear here in story order when planning is complete.",
+      "shotAlt": "Shot {{number}}",
+      "shotNumber": "Shot {{number}}",
+      "visualDirection": "Visual direction",
+      "visualPending": "The visual will appear here when it is generated.",
+      "reviseShot": "Revise this shot",
+      "filmstrip": "Storyboard filmstrip"
+    }
+  },
   "time": {
     "justNow": "just now",
     "minutesAgo": "{{count}}m ago",

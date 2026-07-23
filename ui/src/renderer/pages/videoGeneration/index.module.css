@@ -127,16 +127,223 @@
     linear-gradient(155deg, var(--color-fill-2), var(--color-bg-2));
 }
 
+.studioPage {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 50% -12rem, rgba(var(--primary-6), 0.09), transparent 38rem),
+    var(--color-bg-1);
+}
+
+.stageRail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--color-border-2);
+  border-radius: 14px;
+  background: var(--color-bg-2);
+}
+
+.stageItem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.stageItem + .stageItem::before {
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  left: 0;
+  width: 1px;
+  background: var(--color-border-2);
+  content: '';
+}
+
+.stageDot {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-fill-2);
+  color: var(--color-text-3);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.stageItemActive {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+.stageItemActive .stageDot,
+.stageItemDone .stageDot {
+  color: white;
+  background: rgb(var(--primary-6));
+}
+
+.stageItemCurrent .stageDot {
+  box-shadow: 0 0 0 5px rgba(var(--primary-6), 0.12);
+}
+
+.studioPanel {
+  border: 1px solid var(--color-border-2);
+  border-radius: 16px;
+  background: var(--color-bg-2);
+  box-shadow: 0 14px 44px rgba(15, 23, 42, 0.05);
+}
+
+.storyStage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.55fr);
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 14px;
+  background: #080b12;
+}
+
+.storyMedia {
+  position: relative;
+  display: grid;
+  min-height: 360px;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(var(--primary-6), 0.24), transparent 38%),
+    linear-gradient(145deg, #161b29, #080b12);
+}
+
+.storyMedia::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  content: '';
+  pointer-events: none;
+}
+
+.storyInspector {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 22px;
+  color: rgba(255, 255, 255, 0.92);
+  background: linear-gradient(160deg, #171c29, #0e1119);
+}
+
+.filmstrip {
+  display: grid;
+  grid-auto-columns: minmax(156px, 190px);
+  grid-auto-flow: column;
+  gap: 9px;
+  overflow-x: auto;
+  padding: 4px 2px 9px;
+  scroll-snap-type: x proximity;
+}
+
+.shotCard {
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 11px;
+  color: var(--color-text-2);
+  background: var(--color-bg-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.shotCard:hover {
+  border-color: rgba(var(--primary-6), 0.42);
+  transform: translateY(-2px);
+}
+
+.shotCardActive {
+  border-color: rgb(var(--primary-6));
+  box-shadow: 0 0 0 2px rgba(var(--primary-6), 0.1);
+}
+
+.shotThumb {
+  position: relative;
+  display: grid;
+  aspect-ratio: 16 / 9;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(var(--primary-6), 0.2), transparent 40%),
+    var(--color-fill-2);
+}
+
+.progressGlow {
+  position: relative;
+  overflow: hidden;
+}
+
+.progressGlow::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgba(var(--primary-6), 0.08) 50%,
+    transparent 65%
+  );
+  content: '';
+  transform: translateX(-100%);
+  animation: studio-shimmer 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes studio-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (max-width: 760px) {
+  .stageItem {
+    justify-content: center;
+    padding-inline: 6px;
+  }
+
+  .stageLabel {
+    display: none;
+  }
+
+  .storyStage {
+    grid-template-columns: 1fr;
+  }
+
+  .storyMedia {
+    min-height: 240px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .modeButton,
   .composer,
   .exampleChip,
-  .projectCard {
+  .projectCard,
+  .shotCard {
     transition: none;
   }
 
   .exampleChip:hover,
-  .projectCard:hover {
+  .projectCard:hover,
+  .shotCard:hover {
     transform: none;
+  }
+
+  .progressGlow::after {
+    animation: none;
   }
 }
