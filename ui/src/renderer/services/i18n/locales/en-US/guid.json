@@ -54,10 +54,29 @@
   "modelProviderSaved": "Model ready — you can start the task",
   "readiness": {
     "ready": "{{agent}} is ready · {{model}} selected",
+    "readyNoModel": "{{agent}} is ready · you can send",
     "needsModel": "{{agent}} is ready · add a model to run",
+    "needsModelCta": "{{agent}} needs a model · connect here",
+    "needsWorkspaceCta": "This task needs a project · choose a folder",
     "workspaceLinked": "Project linked",
     "workspaceOptional": "Project is optional",
-    "openSettings": "Open run settings"
+    "workspaceRequired": "Project folder required",
+    "openSettings": "Open run settings",
+    "addModelAria": "Add a model",
+    "linkWorkspaceAria": "Choose a project folder"
+  },
+  "taskReceipt": {
+    "goal": "Goal",
+    "context": "Context",
+    "artifact": "Expected result",
+    "contextWorkspace": "Project linked",
+    "contextNone": "Default workspace",
+    "artifacts": {
+      "fixCode": "Fixed tests and a root-cause note",
+      "summarize": "Architecture summary and risk list",
+      "automate": "Draft of an automatable workflow",
+      "freeform": "A reviewable task result"
+    }
   },
   "taskIntents": {
     "hint": "Start with a real task",

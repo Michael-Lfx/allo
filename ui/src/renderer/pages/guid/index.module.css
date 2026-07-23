@@ -460,6 +460,52 @@
   outline: none;
 }
 
+.guidResourceIntentChipActive {
+  color: var(--color-text-1);
+  border-color: color-mix(in srgb, rgb(var(--primary-6)) 45%, transparent);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, transparent);
+}
+
+.guidReadinessBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.guidTaskReceipt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-2);
+  border-radius: var(--flowy-radius-md, 8px);
+  background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+}
+
+.guidTaskReceiptRow {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.guidTaskReceiptLabel {
+  flex: 0 0 56px;
+  color: var(--color-text-3);
+}
+
+.guidTaskReceiptValue {
+  min-width: 0;
+  flex: 1;
+  color: var(--color-text-2);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .guidRunSettingsPanel {
   display: flex;
   flex-direction: column;
@@ -478,7 +524,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 0;
   padding: 7px 10px;
   border: 0;
   border-radius: var(--flowy-radius-md, 8px);
@@ -492,6 +538,12 @@
   transition:
     background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
     color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
+}
+
+.guidReadinessStripBlocked {
+  color: var(--color-text-1);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
+  border: 1px solid color-mix(in srgb, rgb(var(--primary-6)) 28%, transparent);
 }
 
 .guidReadinessStrip:hover,

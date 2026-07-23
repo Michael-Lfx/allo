@@ -101,6 +101,11 @@ export type GuidSendDeps = {
 
   /** When Nomi needs a model and none is configured, open in-place setup instead of only toasting. */
   onNeedModel?: () => void;
+  /** When the selected intent requires a workspace, open the folder picker instead of sending. */
+  onNeedWorkspace?: () => void;
+  /** Unified readiness gate from Guid readiness resolver. */
+  readinessReady?: boolean;
+  readinessBlocker?: 'model' | 'workspace' | null;
 
   /** Show the instant "creating conversation" loading overlay the moment the
    * user sends, before the create round-trip resolves. Optional so callers
@@ -161,6 +166,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     navigate,
     t,
     onNeedModel,
+    onNeedWorkspace,
+    readinessReady,
+    readinessBlocker,
     beginPending,
     advancePending,
     endPending,
@@ -538,25 +546,33 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
   const sendMessageHandler = useCallback(() => {
     if (loading || sendingRef.current) return;
-    if (needsModelBeforeSend) {
+    if (readinessBlocker === 'model' || needsModelBeforeSend) {
+      trackFunnelEvent('task_drafted', { blocker: 'model' });
       Message.warning(t('conversation.noModelConfigured'));
       onNeedModel?.();
       return;
     }
+    if (readinessBlocker === 'workspace' || readinessReady === false) {
+      if (readinessBlocker === 'workspace') {
+        trackFunnelEvent('task_drafted', { blocker: 'workspace' });
+        onNeedWorkspace?.();
+        return;
+      }
+    }
+    if (input.trim()) {
+      trackFunnelEvent('task_drafted', { source: 'guid' });
+    }
     sendingRef.current = true;
     setLoading(true);
-    // Instant feedback: switch the content region to a conversation-shaped
-    // loading overlay (echoed message + "creating…") the moment the user sends,
-    // BEFORE the create round-trip resolves. Captured here because `.then` below
-    // clears `input`. AutoWork entries send no first message → different caption.
     beginPending?.({
       input,
       files: files.length > 0 ? files : undefined,
       sendsInitialMessage: !isAutoWorkEntry(autoWork),
     });
-    trackFunnelEvent('first_task_started', { source: 'guid' });
     handleSend()
       .then(() => {
+        trackFunnelEvent('task_accepted', { source: 'guid' });
+        trackFunnelEvent('first_task_started', { source: 'guid' });
         setInput('');
         setMentionOpen(false);
         setMentionQuery(null);
@@ -572,9 +588,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       .finally(() => {
         sendingRef.current = false;
         setLoading(false);
-        // Tear down the overlay: on success the real conversation page has
-        // already been navigated to (deferred one frame inside `end`); on
-        // failure we uncover the composer with the input preserved.
         endPending?.();
       });
   }, [
@@ -596,6 +609,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     endPending,
     needsModelBeforeSend,
     onNeedModel,
+    onNeedWorkspace,
+    readinessReady,
+    readinessBlocker,
   ]);
 
   // Calculate button disabled state

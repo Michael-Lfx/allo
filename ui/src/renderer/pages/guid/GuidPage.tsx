@@ -56,6 +56,13 @@ import { usePendingConversation } from '@/renderer/pages/conversation/components
 import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
+import { addRecentWorkspace } from '@/renderer/components/workspace';
+import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import {
+  buildGuidTaskReceipt,
+  resolveGuidReadiness,
+  type GuidTaskIntentId,
+} from './readiness/guidReadiness';
 import { ConfigProvider, Message } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -73,6 +80,13 @@ const GuidPage: React.FC = () => {
   useEffect(() => {
     preloadCommercialPathChunks();
   }, []);
+
+  useEffect(() => {
+    if (!hasFunnelEvent('home_interactive')) {
+      trackFunnelEvent('home_interactive', { source: 'guid' });
+    }
+  }, []);
+
   const location = useLocation();
   const guidContainerRef = useRef<HTMLDivElement>(null);
   const openPresetDetailsRef = useRef<(() => void) | null>(null);
@@ -92,6 +106,8 @@ const GuidPage: React.FC = () => {
   );
   const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
     useState<AppliedCollaborationTemplate | null>(null);
+  const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
+  const pendingAutoSendRef = useRef(false);
 
   // --- Skills state ---
   // All available skills (builtin auto-injected + user-imported custom) merged
@@ -247,6 +263,48 @@ const GuidPage: React.FC = () => {
     selectedAgentInfo: agentSelection.selectedAgentInfo,
   });
 
+  const needsModelForAgent = useMemo(() => {
+    const effectiveType = agentSelection.is_presetAgent
+      ? agentSelection.currentEffectiveAgentInfo.agent_type
+      : agentSelection.selectedAgent;
+    return effectiveType === 'nomi';
+  }, [
+    agentSelection.currentEffectiveAgentInfo.agent_type,
+    agentSelection.is_presetAgent,
+    agentSelection.selectedAgent,
+  ]);
+
+  const readiness = useMemo(
+    () =>
+      resolveGuidReadiness({
+        intentId: activeIntentId,
+        hasModel: Boolean(modelSelection.current_model),
+        workspaceDir: guidInput.dir,
+        needsModelForAgent,
+      }),
+    [activeIntentId, guidInput.dir, modelSelection.current_model, needsModelForAgent]
+  );
+
+  const taskReceipt = useMemo(
+    () => buildGuidTaskReceipt(activeIntentId, guidInput.input, guidInput.dir),
+    [activeIntentId, guidInput.dir, guidInput.input]
+  );
+
+  const handleLinkWorkspace = useCallback(() => {
+    ipcBridge.dialog.showOpen
+      .invoke({ properties: ['openDirectory', 'createDirectory'] })
+      .then((dirs) => {
+        const next = dirs?.[0];
+        if (!next) return;
+        addRecentWorkspace(next);
+        guidInput.setDir(next);
+        trackFunnelEvent('prerequisite_resolved', { kind: 'workspace' });
+      })
+      .catch((error) => {
+        console.error('[GuidPage] Failed to open workspace dialog:', error);
+      });
+  }, [guidInput.setDir]);
+
   const send = useGuidSend({
     // Input state
     input: guidInput.input,
@@ -294,7 +352,13 @@ const GuidPage: React.FC = () => {
     // Navigation
     navigate,
     t,
-    onNeedModel: () => addProviderRef.current?.open(),
+    onNeedModel: () => {
+      pendingAutoSendRef.current = true;
+      addProviderRef.current?.open();
+    },
+    onNeedWorkspace: handleLinkWorkspace,
+    readinessReady: readiness.ready,
+    readinessBlocker: readiness.blocker,
 
     // Instant "creating conversation" loading overlay (ConversationShell-level)
     beginPending: pendingConversation.begin,
@@ -780,6 +844,21 @@ const GuidPage: React.FC = () => {
             <GuidResourceCards
               onStartLocalAgent={guidInput.handleTextareaFocus}
               onSetInput={guidInput.setInput}
+              activeIntentId={activeIntentId}
+              onSelectIntent={(intentId) => {
+                setActiveIntentId(intentId);
+                trackFunnelEvent('task_drafted', { intent: intentId });
+                if (
+                  resolveGuidReadiness({
+                    intentId,
+                    hasModel: Boolean(modelSelection.current_model),
+                    workspaceDir: guidInput.dir,
+                    needsModelForAgent,
+                  }).blocker === 'workspace'
+                ) {
+                  handleLinkWorkspace();
+                }
+              }}
             />
 
             {advancedOpen ? (
@@ -860,7 +939,14 @@ const GuidPage: React.FC = () => {
               agentLabel={mention.selectedAgentLabel}
               model={modelSelection.current_model}
               workspaceDir={guidInput.dir}
+              readiness={readiness}
+              receipt={taskReceipt}
               onOpenSettings={() => setAdvancedOpen(true)}
+              onAddModel={() => {
+                pendingAutoSendRef.current = Boolean(guidInput.input.trim());
+                addProviderRef.current?.open();
+              }}
+              onLinkWorkspace={handleLinkWorkspace}
             />
 
             {/* Editor host (modals + example prompts + fallback notice) */}
@@ -903,7 +989,15 @@ const GuidPage: React.FC = () => {
         <GuidAddProviderModal
           ref={addProviderRef}
           onConfigured={(model) => {
-            void modelSelection.setCurrentModel(model);
+            void modelSelection.setCurrentModel(model).then(() => {
+              trackFunnelEvent('prerequisite_resolved', { kind: 'model' });
+              if (pendingAutoSendRef.current) {
+                pendingAutoSendRef.current = false;
+                window.setTimeout(() => {
+                  send.sendMessageHandler();
+                }, 0);
+              }
+            });
           }}
         />
       </div>

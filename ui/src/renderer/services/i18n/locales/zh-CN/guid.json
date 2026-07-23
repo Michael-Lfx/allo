@@ -54,10 +54,29 @@
   "modelProviderSaved": "模型已就绪，可以开始任务",
   "readiness": {
     "ready": "{{agent}} 已就绪 · 已选择 {{model}}",
+    "readyNoModel": "{{agent}} 已就绪 · 可以发送",
     "needsModel": "{{agent}} 已就绪 · 添加模型后即可运行",
+    "needsModelCta": "{{agent}} 需要模型 · 点此原位连接",
+    "needsWorkspaceCta": "此任务需要项目 · 点此选择文件夹",
     "workspaceLinked": "已关联项目",
     "workspaceOptional": "项目可选",
-    "openSettings": "打开运行设置"
+    "workspaceRequired": "需要项目文件夹",
+    "openSettings": "打开运行设置",
+    "addModelAria": "添加模型",
+    "linkWorkspaceAria": "选择项目文件夹"
+  },
+  "taskReceipt": {
+    "goal": "目标",
+    "context": "上下文",
+    "artifact": "预计产物",
+    "contextWorkspace": "已关联项目",
+    "contextNone": "默认工作区",
+    "artifacts": {
+      "fixCode": "修复后的测试结果与根因说明",
+      "summarize": "架构摘要与风险清单",
+      "automate": "可执行流程草案",
+      "freeform": "可检查的任务成果"
+    }
   },
   "taskIntents": {
     "hint": "从一个真实任务开始",

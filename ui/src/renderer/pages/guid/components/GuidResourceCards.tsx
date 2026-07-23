@@ -7,49 +7,41 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
-
-const INTENTS = [
-  {
-    id: 'fix-code',
-    textKey: 'guid.taskIntents.fixCode',
-    defaultText: '分析这个项目的失败测试，修好后告诉我根因',
-  },
-  {
-    id: 'summarize',
-    textKey: 'guid.taskIntents.summarize',
-    defaultText: '阅读当前工作区，用要点总结架构与风险',
-  },
-  {
-    id: 'automate',
-    textKey: 'guid.taskIntents.automate',
-    defaultText: '帮我把重复手工步骤整理成可自动执行的流程',
-  },
-] as const;
+import { GUID_TASK_INTENTS, type GuidTaskIntentId } from '../readiness/guidReadiness';
 
 type GuidResourceCardsProps = {
   onStartLocalAgent?: () => void;
   onSetInput?: (text: string) => void;
+  onSelectIntent?: (intentId: GuidTaskIntentId) => void;
+  activeIntentId?: GuidTaskIntentId;
 };
 
 /**
  * Guid empty-area: task intents that fill the composer (first-success path).
  */
-const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({ onStartLocalAgent, onSetInput }) => {
+const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({
+  onStartLocalAgent,
+  onSetInput,
+  onSelectIntent,
+  activeIntentId,
+}) => {
   const { t } = useTranslation();
 
   return (
     <div className={styles.guidResourceCards} data-testid='guid-resource-cards'>
       <p className={styles.guidResourceHint}>
-        {t('guid.taskIntents.hint', { defaultValue: '不知道从哪开始？点一条直接填入输入框：' })}
+        {t('guid.taskIntents.hint', { defaultValue: '从一个真实任务开始' })}
       </p>
       <div className={styles.guidResourceIntentRow}>
-        {INTENTS.map((intent) => (
+        {GUID_TASK_INTENTS.map((intent) => (
           <button
             key={intent.id}
             type='button'
-            className={styles.guidResourceIntentChip}
+            className={`${styles.guidResourceIntentChip}${activeIntentId === intent.id ? ` ${styles.guidResourceIntentChipActive}` : ''}`}
             data-testid={`guid-intent-${intent.id}`}
+            aria-pressed={activeIntentId === intent.id}
             onClick={() => {
+              onSelectIntent?.(intent.id);
               onSetInput?.(t(intent.textKey, { defaultValue: intent.defaultText }));
               onStartLocalAgent?.();
             }}
