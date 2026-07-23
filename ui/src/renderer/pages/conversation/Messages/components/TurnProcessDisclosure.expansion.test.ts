@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
-import { shouldResetTurnProcessDisclosureExpansion } from './TurnProcessDisclosure';
+import {
+  shouldResetTurnProcessDisclosureExpansion,
+  stabilizeTurnProcessDisclosureKeys,
+} from './TurnProcessDisclosure';
 
 describe('TurnProcessDisclosure expansion state', () => {
   test('does not reset the same turn when only defaultCollapsed changes', () => {
@@ -28,5 +31,17 @@ describe('TurnProcessDisclosure expansion state', () => {
         { itemId: 'turn-disclosure-1', hasProcessItems: true }
       )
     ).toBe(true);
+  });
+
+  test('reuses the previous keys array when membership is unchanged', () => {
+    const previous = ['thinking-1', 'thinking-2'];
+    const next = ['thinking-1', 'thinking-2'];
+    expect(stabilizeTurnProcessDisclosureKeys(previous, next)).toBe(previous);
+  });
+
+  test('returns the next keys array when membership changes', () => {
+    const previous = ['thinking-1'];
+    const next = ['thinking-1', 'thinking-2'];
+    expect(stabilizeTurnProcessDisclosureKeys(previous, next)).toBe(next);
   });
 });

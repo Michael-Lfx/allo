@@ -70,7 +70,8 @@ describe('turn process disclosure content layout', () => {
     expect(disclosureSource.includes('turn-process-disclosure__expand-thinking')).toBe(true);
     expect(disclosureSource.includes('const hasExpandableProcessItems = expandableProcessItemKeys.length > 0')).toBe(true);
     expect(disclosureSource.includes('const allExpandableProcessItemsExpanded =')).toBe(true);
-    expect(disclosureSource.includes('setExpandAllProcessItemKeys(new Set())')).toBe(true);
+    expect(disclosureSource.includes('stabilizeTurnProcessDisclosureKeys')).toBe(true);
+    expect(disclosureSource.includes('previous.size > 0 ? new Set() : previous')).toBe(true);
     expect(disclosureSource.includes('turn-process-disclosure__header-actions')).toBe(true);
     expect(disclosureSource.includes('turn-process-disclosure__toggle')).toBe(true);
     expect(disclosureSource.includes("messages.turnProcess.expandAllThinkingProcess")).toBe(true);
@@ -83,6 +84,7 @@ describe('turn process disclosure content layout', () => {
     );
     expect(cssSource.includes('.turn-process-disclosure__header-actions')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure__toggle')).toBe(true);
+    expect(messageListSource.includes('TurnProcessDisclosureHost')).toBe(true);
     expect(messageListSource.includes('isExpandableThinkingProcessItem(processItem, getDisclosureProcessItemState(processItem))')).toBe(true);
     expect(disclosureSource.includes('expanded: expandAllProcessItemKeys.has(itemKey)')).toBe(true);
     expect(messageListSource.includes('expansionControls')).toBe(true);

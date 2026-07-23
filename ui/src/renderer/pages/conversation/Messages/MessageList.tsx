@@ -643,6 +643,49 @@ const getProcessItemLayoutKind = (item: IRenderableItem): string => {
   return 'other';
 };
 
+/** Isolates disclosure callbacks so streaming parent re-renders don't churn effect deps. */
+const TurnProcessDisclosureHost: React.FC<{
+  item: ITurnProcessDisclosureVO;
+  highlighted: boolean;
+  workspaceRoots: string[];
+}> = React.memo(function TurnProcessDisclosureHost({ item, highlighted, workspaceRoots }) {
+  const getDisclosureProcessItemState = useCallback(
+    (processItem: IRenderableItem): TurnDisclosureProcessState =>
+      item.processItemStates[getProcessedItemAnchorId(processItem)] ?? getProcessItemState(processItem),
+    [item.processItemStates]
+  );
+
+  const getProcessItemCanExpandAll = useCallback(
+    (processItem: IRenderableItem) =>
+      isExpandableThinkingProcessItem(processItem, getDisclosureProcessItemState(processItem)),
+    [getDisclosureProcessItemState]
+  );
+
+  const renderProcessItem = useCallback(
+    (processItem: IRenderableItem, expansionControls?: ProcessTraceItemExpansionControls) =>
+      renderProcessTraceItem(
+        processItem,
+        'list',
+        workspaceRoots,
+        getDisclosureProcessItemState(processItem),
+        expansionControls
+      ),
+    [getDisclosureProcessItemState, workspaceRoots]
+  );
+
+  return (
+    <TurnProcessDisclosure
+      item={item}
+      highlighted={highlighted}
+      renderProcessItem={renderProcessItem}
+      getProcessItemKey={getProcessedItemAnchorId}
+      getProcessItemState={getDisclosureProcessItemState}
+      getProcessItemLayoutKind={getProcessItemLayoutKind}
+      getProcessItemCanExpandAll={getProcessItemCanExpandAll}
+    />
+  );
+});
+
 const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActions?: boolean }> = React.memo(
   HOC((props) => {
     const { message, highlighted } = props as { message: TMessage; highlighted?: boolean; hideActions?: boolean };
@@ -1153,32 +1196,9 @@ const MessageList: React.FC<{
     scrollToBottom('smooth');
   };
 
-  const renderTurnDisclosure = (item: ITurnProcessDisclosureVO, highlighted: boolean) => {
-    const getDisclosureProcessItemState = (processItem: IRenderableItem): TurnDisclosureProcessState =>
-      item.processItemStates[getProcessedItemAnchorId(processItem)] ?? getProcessItemState(processItem);
-
-    return (
-      <TurnProcessDisclosure
-        item={item}
-        highlighted={highlighted}
-        renderProcessItem={(processItem, expansionControls) =>
-          renderProcessTraceItem(
-            processItem,
-            'list',
-            workspaceRoots,
-            getDisclosureProcessItemState(processItem),
-            expansionControls
-          )
-        }
-        getProcessItemKey={getProcessedItemAnchorId}
-        getProcessItemState={getDisclosureProcessItemState}
-        getProcessItemLayoutKind={getProcessItemLayoutKind}
-        getProcessItemCanExpandAll={(processItem) =>
-          isExpandableThinkingProcessItem(processItem, getDisclosureProcessItemState(processItem))
-        }
-      />
-    );
-  };
+  const renderTurnDisclosure = (item: ITurnProcessDisclosureVO, highlighted: boolean) => (
+    <TurnProcessDisclosureHost item={item} highlighted={highlighted} workspaceRoots={workspaceRoots} />
+  );
 
   const renderProcessReceipt = (item: IProcessReceiptVO, highlighted: boolean) => {
     return (

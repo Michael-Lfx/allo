@@ -59,8 +59,18 @@ const defaultLabelByState: Record<TurnDisclosureProcessState, string> = {
 
 const sanitizeDomId = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, '_');
 
+const EMPTY_PROCESS_ITEM_KEYS: string[] = [];
+
 const getDefaultExpanded = (hasProcessItems: boolean, defaultCollapsed: boolean): boolean =>
   hasProcessItems && !defaultCollapsed;
+
+const areSameStringLists = (left: readonly string[], right: readonly string[]): boolean => {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+};
 
 export function shouldResetTurnProcessDisclosureExpansion(
   previous: TurnProcessDisclosureExpansionSnapshot,
@@ -69,6 +79,13 @@ export function shouldResetTurnProcessDisclosureExpansion(
   if (previous.itemId !== next.itemId) return true;
   if (previous.hasProcessItems !== next.hasProcessItems) return true;
   return false;
+}
+
+export function stabilizeTurnProcessDisclosureKeys(
+  previous: readonly string[],
+  next: readonly string[]
+): readonly string[] {
+  return areSameStringLists(previous, next) ? previous : next;
 }
 
 const formatTurnDuration = (ms: number, t: ReturnType<typeof useTranslation>['t']): string => {
@@ -105,6 +122,8 @@ function TurnProcessDisclosure<T>({
     hasProcessItems,
   });
 
+  const expandableProcessItemKeysRef = useRef<readonly string[]>(EMPTY_PROCESS_ITEM_KEYS);
+
   useEffect(() => {
     const nextSnapshot: TurnProcessDisclosureExpansionSnapshot = { itemId: item.id, hasProcessItems };
     const shouldReset = shouldResetTurnProcessDisclosureExpansion(expansionSnapshotRef.current, nextSnapshot);
@@ -112,7 +131,8 @@ function TurnProcessDisclosure<T>({
 
     if (shouldReset) {
       setExpanded(getDefaultExpanded(hasProcessItems, item.defaultCollapsed));
-      setExpandAllProcessItemKeys(new Set());
+      // Bail out when already empty — `new Set()` is always a new reference.
+      setExpandAllProcessItemKeys((previous) => (previous.size > 0 ? new Set() : previous));
     }
   }, [hasProcessItems, item.defaultCollapsed, item.id]);
 
@@ -153,9 +173,15 @@ function TurnProcessDisclosure<T>({
     [getProcessItemState, item.processItems]
   );
 
+  // Parent often passes fresh callback identities each render; keep a stable
+  // keys array when the computed membership is unchanged so sync effects bail out.
   const expandableProcessItemKeys = useMemo(() => {
-    if (!getProcessItemCanExpandAll) return [];
-    return item.processItems.filter(getProcessItemCanExpandAll).map(getProcessItemKey);
+    const nextKeys = !getProcessItemCanExpandAll
+      ? EMPTY_PROCESS_ITEM_KEYS
+      : item.processItems.filter(getProcessItemCanExpandAll).map(getProcessItemKey);
+    const stabilized = stabilizeTurnProcessDisclosureKeys(expandableProcessItemKeysRef.current, nextKeys);
+    expandableProcessItemKeysRef.current = stabilized;
+    return stabilized;
   }, [getProcessItemCanExpandAll, getProcessItemKey, item.processItems]);
 
   useEffect(() => {
@@ -177,10 +203,18 @@ function TurnProcessDisclosure<T>({
 
   const handleToggleAllProcessItems = useCallback(() => {
     if (allExpandableProcessItemsExpanded) {
-      setExpandAllProcessItemKeys(new Set());
+      setExpandAllProcessItemKeys((previous) => (previous.size > 0 ? new Set() : previous));
       return;
     }
-    setExpandAllProcessItemKeys(new Set(expandableProcessItemKeys));
+    setExpandAllProcessItemKeys((previous) => {
+      if (
+        previous.size === expandableProcessItemKeys.length &&
+        expandableProcessItemKeys.every((key) => previous.has(key))
+      ) {
+        return previous;
+      }
+      return new Set(expandableProcessItemKeys);
+    });
   }, [allExpandableProcessItemsExpanded, expandableProcessItemKeys]);
 
   const getExpansionControls = useCallback(
@@ -188,6 +222,8 @@ function TurnProcessDisclosure<T>({
       expanded: expandAllProcessItemKeys.has(itemKey),
       onExpandedChange: (nextExpanded) => {
         setExpandAllProcessItemKeys((previous) => {
+          const hasKey = previous.has(itemKey);
+          if (nextExpanded === hasKey) return previous;
           const next = new Set(previous);
           if (nextExpanded) {
             next.add(itemKey);
