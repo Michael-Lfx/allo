@@ -210,6 +210,11 @@ impl TextWsCoalesce {
         }
         self.chunk_count += 1;
         self.pending.push_str(chunk);
+        // First visible assistant text must not wait on the coalesce timer —
+        // TTFT is user-visible. Later chunks keep merging to limit render churn.
+        if self.emit_count == 0 {
+            return true;
+        }
         let now = Instant::now();
         self.last_flush
             .map(|instant| now.duration_since(instant) >= WS_TEXT_COALESCE_INTERVAL)
@@ -4516,6 +4521,15 @@ mod tests {
 
     fn test_conversation_id() -> String {
         ConversationId::new().into_string()
+    }
+
+    #[test]
+    fn text_ws_coalesce_flushes_first_visible_chunk_immediately() {
+        let mut coalesce = TextWsCoalesce::default();
+        assert!(coalesce.push("Hi"));
+        assert_eq!(coalesce.take().as_deref(), Some("Hi"));
+        assert!(!coalesce.push(" next"));
+        assert_eq!(coalesce.take().as_deref(), Some(" next"));
     }
 
     fn test_artifact(id: &str) -> nomifun_ai_agent::artifact_store::PersistedArtifact {

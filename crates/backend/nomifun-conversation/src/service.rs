@@ -3469,56 +3469,13 @@ impl ConversationService {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
 
-        let mut runtime_options = match self.build_runtime_options(&row) {
-            Ok(opts) => opts,
-            Err(err) => {
-                error!(
-                    error_code = err.error_code(),
-                    error = %ErrorChain(&err),
-                    "Failed to build runtime options for message send"
-                );
-                let _ = self.persist_send_failure_tip(conversation_id, None, &err).await;
-                let receipt_error = format!("{}", ErrorChain(&err));
-                if let Some(delivery) = durable_delivery.as_ref() {
-                    delivery.handoff_receipt();
-                }
-                Self::complete_delivery_receipt_before_release(
-                    &self.conversation_repo,
-                    user_id,
-                    &conversation_key,
-                    durable_operation_id,
-                    false,
-                    None,
-                    Some(&receipt_error),
-                    &CancellationToken::new(),
-                    durable_guard.as_ref().map(|(key, generation)| {
-                        (&self.durable_operations_in_flight, key.as_str(), *generation)
-                    }),
-                )
-                .await;
-                return Err(err);
-            }
-        };
-        self.ensure_auto_workspace_skill_links(&row, &runtime_options)
-            .await?;
-        if let Some(lease) = runtime_build_lease.as_ref() {
-            lease.ensure_active()?;
-        }
+        // Accept boundary: validate + admit + persist first. Runtime options,
+        // knowledge mounts, and agent build continue in the owner task so the
+        // client can render the user bubble without waiting on cold prep.
+        let first_turn_msg_id = Self::mint_msg_id();
         let preparation_token = runtime_build_lease
             .as_ref()
             .map(RuntimeBuildLease::cancellation_token);
-        self.apply_knowledge_mounts(
-            &row,
-            &mut runtime_options,
-            preparation_token.as_ref(),
-        )
-        .await;
-        if let Some(lease) = runtime_build_lease.as_ref() {
-            lease.ensure_active()?;
-        }
-        let stored_workspace = runtime_options.workspace.clone();
-
-        let first_turn_msg_id = Self::mint_msg_id();
         let mut turn_handle = self
             .runtime_state
             .try_acquire_turn_with_wire_context_at_epoch_and_owner(
@@ -3672,6 +3629,7 @@ impl ConversationService {
         // mid-turn, and `perform_model_failover` re-fetches the row for the
         // freshly-written model when it rebuilds.
         let failover_extra_json = row.extra.clone();
+        let row_for_runtime = row.clone();
 
         // Send message to the agent in a background task.
         // prompt() blocks until the PromptResponse arrives (turn completed),
@@ -3714,6 +3672,133 @@ impl ConversationService {
             let mut turn_cancellation = turn_cancellation;
             let build_started_at = now_ms();
             info!(conversation_id = %conv_id, "Agent runtime build started");
+
+            let mut runtime_options = match service.build_runtime_options(&row_for_runtime) {
+                Ok(opts) => opts,
+                Err(err) => {
+                    let cancelled = turn_token.is_cancelled();
+                    if !cancelled {
+                        error!(
+                            conversation_id = %conv_id,
+                            error_code = err.error_code(),
+                            error = %ErrorChain(&err),
+                            "Failed to build runtime options for message send"
+                        );
+                        service
+                            .persist_and_broadcast_send_failure_tip(
+                                &user_id_owned,
+                                &conv_id,
+                                Some(&stable_turn_id),
+                                &err,
+                            )
+                            .await;
+                    }
+                    let receipt_error = format!("{}", ErrorChain(&err));
+                    Self::complete_delivery_receipt_before_release(
+                        &repo,
+                        &user_id_owned,
+                        &conversation_key,
+                        durable_operation_id.as_deref(),
+                        false,
+                        None,
+                        Some(&receipt_error),
+                        &turn_token,
+                        durable_guard.as_ref().map(|(key, generation)| {
+                            (&service.durable_operations_in_flight, key.as_str(), *generation)
+                        }),
+                    )
+                    .await;
+                    service
+                        .release_and_complete_turn(
+                            &mut turn_handle,
+                            &user_id_owned,
+                            &conv_id,
+                            &stable_turn_id,
+                            companion,
+                            companion_id.clone(),
+                            origin.clone(),
+                            channel_platform.clone(),
+                        )
+                        .await;
+                    return;
+                }
+            };
+            if let Err(err) = service
+                .ensure_auto_workspace_skill_links(&row_for_runtime, &runtime_options)
+                .await
+            {
+                let cancelled = turn_token.is_cancelled();
+                if !cancelled {
+                    error!(
+                        conversation_id = %conv_id,
+                        error_code = err.error_code(),
+                        error = %ErrorChain(&err),
+                        "Failed to ensure workspace skill links for message send"
+                    );
+                    service
+                        .persist_and_broadcast_send_failure_tip(
+                            &user_id_owned,
+                            &conv_id,
+                            Some(&stable_turn_id),
+                            &err,
+                        )
+                        .await;
+                }
+                let receipt_error = format!("{}", ErrorChain(&err));
+                Self::complete_delivery_receipt_before_release(
+                    &repo,
+                    &user_id_owned,
+                    &conversation_key,
+                    durable_operation_id.as_deref(),
+                    false,
+                    None,
+                    Some(&receipt_error),
+                    &turn_token,
+                    durable_guard.as_ref().map(|(key, generation)| {
+                        (&service.durable_operations_in_flight, key.as_str(), *generation)
+                    }),
+                )
+                .await;
+                service
+                    .release_and_complete_turn(
+                        &mut turn_handle,
+                        &user_id_owned,
+                        &conv_id,
+                        &stable_turn_id,
+                        companion,
+                        companion_id.clone(),
+                        origin.clone(),
+                        channel_platform.clone(),
+                    )
+                    .await;
+                return;
+            }
+            service
+                .apply_knowledge_mounts(
+                    &row_for_runtime,
+                    &mut runtime_options,
+                    Some(&turn_token),
+                )
+                .await;
+            if turn_token.is_cancelled() {
+                Self::complete_delivery_receipt_before_release(
+                    &repo,
+                    &user_id_owned,
+                    &conversation_key,
+                    durable_operation_id.as_deref(),
+                    false,
+                    None,
+                    Some("Agent turn cancelled during preparation"),
+                    &turn_token,
+                    durable_guard.as_ref().map(|(key, generation)| {
+                        (&service.durable_operations_in_flight, key.as_str(), *generation)
+                    }),
+                )
+                .await;
+                let _ = turn_handle.release();
+                return;
+            }
+            let stored_workspace = runtime_options.workspace.clone();
             let knowledge_extra = runtime_options.extra.clone();
             let mut agent = match runtime_registry
                 .get_or_create_runtime_for_turn(

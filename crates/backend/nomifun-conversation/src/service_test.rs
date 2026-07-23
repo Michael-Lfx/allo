@@ -3423,14 +3423,13 @@ async fn send_message_rejects_pathological_workspace_with_runtime_error_code() {
     .await
     .unwrap();
 
-    let err = svc
+    // Acceptance returns before runtime prep; the pathological workspace fails
+    // asynchronously as a structured turn tip rather than a sync HTTP error.
+    let msg_id = svc
         .send_message(TEST_USER_1, &conv.id, make_send_req(), &runtime_registry)
         .await
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported(message) if message == "/tmp/my project "
-    ));
+        .unwrap();
+    assert!(!msg_id.is_empty());
 
     let messages = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
