@@ -13,13 +13,44 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
-import { Plus, Search, VideoOne } from '@icon-park/react';
+import { Search, VideoOne } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
-import { createSession, deleteSession, listSessions } from './api';
-import type { SessionSummary, VimaxWorkflow } from './types';
+import { createSession, deleteSession, listSessions, planSession } from './api';
+import type { PlanBody, SessionSummary } from './types';
 import SessionCard from './components/SessionCard';
-import WorkflowPicker from './components/WorkflowPicker';
+import VideoCreateComposer, {
+  clearVideoCreateDraft,
+  type VideoCreateDraft,
+} from './components/VideoCreateComposer';
+import styles from './index.module.css';
+
+function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
+  const common: PlanBody = {
+    user_requirement: draft.requirement.trim() || undefined,
+    style: draft.style.trim() || undefined,
+    target_duration_secs: draft.targetDurationSecs,
+    llm_model: draft.models.llm_model,
+    image_model: draft.models.image_model || undefined,
+    video_model: draft.models.video_model || undefined,
+  };
+  switch (draft.workflow) {
+    case 'idea2video':
+      return { ...common, idea: draft.sourceText };
+    case 'script2video':
+      return { ...common, script: draft.sourceText };
+    case 'novel2video':
+      return { ...common, novel_text: draft.sourceText };
+    default: {
+      const exhaustive: never = draft.workflow;
+      return exhaustive;
+    }
+  }
+}
+
+function titleForDraft(draft: VideoCreateDraft): string {
+  return draft.sourceText.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
+}
 
 const VideoGenerationListPage: React.FC = () => {
   const { t } = useTranslation();
@@ -32,7 +63,6 @@ const VideoGenerationListPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -65,12 +95,28 @@ const VideoGenerationListPage: React.FC = () => {
   }, [sessions, searchQuery]);
 
   const handleCreate = useCallback(
-    async (workflow: VimaxWorkflow, title?: string) => {
+    async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
       try {
-        const created = await createSession({ workflow, title });
-        setPickerOpen(false);
+        const created = await createSession({
+          workflow: draft.workflow,
+          title: titleForDraft(draft) || undefined,
+        });
+        try {
+          await planSession(created.id, sourceBodyForDraft(draft));
+          clearVideoCreateDraft();
+        } catch (planError) {
+          message.error(
+            `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${
+              planError instanceof Error ? planError.message : String(planError)
+            }`
+          );
+          navigate(`/video-generation/${created.id}`, {
+            state: { launchDraft: draft, launchError: true },
+          });
+          return;
+        }
         navigate(`/video-generation/${created.id}`);
       } catch (e) {
         message.error(
@@ -114,60 +160,47 @@ const VideoGenerationListPage: React.FC = () => {
   return (
     <div
       className={[
+        styles.page,
         'size-full box-border overflow-y-auto',
-        isMobile ? 'px-16px py-14px' : 'px-12px py-24px md:px-40px md:py-32px',
+        isMobile ? 'px-12px py-12px' : 'px-16px py-24px md:px-36px md:py-32px',
       ].join(' ')}
     >
       {messageHolder}
-      <div className='mx-auto flex w-full max-w-1180px box-border flex-col gap-16px'>
-        {/* Header */}
-        <div className='flex w-full flex-wrap items-start justify-between gap-x-20px gap-y-12px'>
-          <div className='flex items-start gap-12px min-w-0'>
-            <span
-              className='flex items-center justify-center w-40px h-40px rd-11px shrink-0 text-[rgb(var(--primary-6))]'
-              style={{
-                background: 'rgba(var(--primary-6),0.1)',
-                border: '1px solid rgba(var(--primary-6),0.18)',
-              }}
-            >
-              <VideoOne theme='outline' size='22' fill='currentColor' className='block' style={{ lineHeight: 0 }} />
-            </span>
-            <div className='min-w-0'>
-              <h1 className='m-0 mb-3px text-22px font-bold text-[var(--color-text-1)] tracking-tight'>
-                {t('videoGeneration.title', { defaultValue: '视频生成' })}
-              </h1>
-              <p className='m-0 text-13px text-[var(--color-text-3)] leading-19px max-w-560px'>
-                {t('videoGeneration.subtitle', {
-                  defaultValue: '从灵感、剧本或小说出发，规划产物并渲染成片。',
+      <div className='mx-auto flex w-full max-w-1180px box-border flex-col gap-26px'>
+        <VideoCreateComposer loading={creating} onSubmit={(draft) => void handleCreate(draft)} />
+
+        <section className='flex flex-col gap-12px'>
+          <div className='flex flex-wrap items-center justify-between gap-12px'>
+            <div>
+              <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.list.recentTitle', { defaultValue: '最近创作' })}
+              </h2>
+              <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                {t('videoGeneration.list.recentSubtitle', {
+                  defaultValue: '继续分镜、渲染或查看已经完成的影片。',
                 })}
               </p>
             </div>
-          </div>
-
-          {!error && (sessions.length > 0 || loading) && (
-            <div className='flex items-center gap-10px'>
-              <div className='flex items-center gap-8px bg-[var(--color-fill-2)] border border-solid border-[var(--color-border-3)] rd-10px px-12px py-8px w-200px'>
-                <Search theme='outline' size={14} className='text-[var(--color-text-3)] flex-none' />
+            {!error && sessions.length > 0 ? (
+              <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
+                <Search
+                  theme='outline'
+                  size={14}
+                  className='flex-none text-[var(--color-text-3)]'
+                />
                 <input
-                  className='border-none bg-transparent outline-none text-[var(--color-text-1)] text-13px w-full font-[inherit] placeholder:text-[var(--color-text-3)]'
+                  className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
                   placeholder={t('videoGeneration.list.searchPlaceholder', {
-                    defaultValue: '搜索任务...',
+                    defaultValue: '搜索项目...',
                   })}
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(event) => setSearchQuery(event.target.value)}
                 />
               </div>
-              <Button type='primary' className='shrink-0' onClick={() => setPickerOpen(true)}>
-                <span className='inline-flex items-center gap-6px'>
-                  <Plus theme='outline' size='15' fill='currentColor' className='block' style={{ lineHeight: 0 }} />
-                  {t('videoGeneration.list.newSession', { defaultValue: '新建任务' })}
-                </span>
-              </Button>
-            </div>
-          )}
-        </div>
+            ) : null}
+          </div>
 
-        {error ? (
+          {error ? (
           <Result
             status='error'
             title={t('videoGeneration.list.loadError', { defaultValue: '加载失败' })}
@@ -179,40 +212,31 @@ const VideoGenerationListPage: React.FC = () => {
             }
           />
         ) : loading ? (
-          <div className='flex justify-center py-56px'>
+          <div className='flex justify-center py-38px'>
             <Spin />
           </div>
         ) : sessions.length === 0 ? (
-          <div className='flex flex-col items-center gap-14px rd-16px border border-dashed border-[var(--color-border-2)] bg-fill-1 px-20px py-52px text-center'>
-            <span
-              className='flex items-center justify-center w-56px h-56px rd-16px text-[rgb(var(--primary-6))]'
-              style={{
-                background: 'rgba(var(--primary-6),0.1)',
-                border: '1px solid rgba(var(--primary-6),0.18)',
-              }}
-            >
-              <VideoOne theme='outline' size='28' fill='currentColor' className='block' style={{ lineHeight: 0 }} />
+          <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+            <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
+              <VideoOne theme='outline' size={19} fill='currentColor' />
             </span>
-            <div className='flex flex-col gap-4px'>
-              <span className='text-15px font-600 text-[var(--color-text-1)]'>
-                {t('videoGeneration.list.empty.title', { defaultValue: '还没有视频任务' })}
-              </span>
-              <span className='text-13px text-[var(--color-text-3)] max-w-[440px]'>
+            <div>
+              <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                {t('videoGeneration.list.empty.title', { defaultValue: '你的第一支影片从上方开始' })}
+              </div>
+              <div className='mt-2px text-12px text-[var(--color-text-3)]'>
                 {t('videoGeneration.list.empty.desc', {
-                  defaultValue: '选择一种工作流，开始你的第一段成片。',
+                  defaultValue: '写下一个画面或故事，Nomi 会先给你一版可编辑分镜。',
                 })}
-              </span>
+              </div>
             </div>
-            <Button type='primary' onClick={() => setPickerOpen(true)}>
-              <span className='inline-flex items-center gap-6px'>
-                <Plus theme='outline' size='15' fill='currentColor' className='block' style={{ lineHeight: 0 }} />
-                {t('videoGeneration.list.createFirst', { defaultValue: '新建第一个任务' })}
-              </span>
-            </Button>
           </div>
         ) : (
           <>
-            <div className='grid gap-12px' style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))' }}>
+            <div
+              className='grid gap-12px'
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))' }}
+            >
               {displayed.map((session) => (
                 <SessionCard
                   key={session.id}
@@ -230,14 +254,8 @@ const VideoGenerationListPage: React.FC = () => {
             )}
           </>
         )}
+        </section>
       </div>
-
-      <WorkflowPicker
-        visible={pickerOpen}
-        loading={creating}
-        onCancel={() => setPickerOpen(false)}
-        onConfirm={(wf, title) => void handleCreate(wf, title)}
-      />
     </div>
   );
 };

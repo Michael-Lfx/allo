@@ -8,13 +8,15 @@
     "searchPlaceholder": "Search sessions...",
     "newSession": "New session",
     "createFirst": "Create your first session",
+    "recentTitle": "Recent projects",
+    "recentSubtitle": "Continue storyboarding, rendering, or revisit a finished film.",
     "loadError": "Failed to load",
     "retry": "Retry",
     "filterEmpty": "No matching sessions",
     "untitled": "Untitled session",
     "empty": {
-      "title": "No video sessions yet",
-      "desc": "Pick a workflow to create your first video."
+      "title": "Your first film starts above",
+      "desc": "Describe a scene or story and Nomi will create an editable storyboard first."
     },
     "card": {
       "updatedAt": "Updated {{time}}",
@@ -26,7 +28,30 @@
     "hint": "Choose a workflow. It cannot be changed after creation.",
     "confirm": "Create & open",
     "titleLabel": "Title (optional)",
-    "titlePlaceholder": "Name this generation"
+    "titlePlaceholder": "Name this generation",
+    "eyebrow": "AI narrative director",
+    "heroTitle": "Turn one idea into a complete film",
+    "heroSubtitle": "Create an editable storyboard first, then render after the story and visuals feel right.",
+    "advanced": "Style & models",
+    "generateStoryboard": "Generate storyboard",
+    "modelRequired": "A planning model is required before generating a storyboard.",
+    "configureModels": "Open Model Hub",
+    "tryExample": "Try:",
+    "modes": {
+      "idea": "One idea",
+      "script": "Full script",
+      "novel": "Novel text"
+    },
+    "composer": {
+      "ideaPlaceholder": "Describe the story, mood, or product visuals you want to see…",
+      "scriptPlaceholder": "Paste a script and Nomi will turn it into editable shots…",
+      "novelPlaceholder": "Paste a novel excerpt and Nomi will shape the story into shots…"
+    },
+    "examples": {
+      "product": "Create a 30-second launch film for a minimal coffee machine",
+      "story": "The last train arrives at an empty station on a rainy night",
+      "brand": "Tell a day in the life of a running shoe with cinematic shots"
+    }
   },
   "workflow": {
     "idea2video": {

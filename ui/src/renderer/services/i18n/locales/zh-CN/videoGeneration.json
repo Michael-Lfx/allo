@@ -8,13 +8,15 @@
     "searchPlaceholder": "搜索任务...",
     "newSession": "新建任务",
     "createFirst": "新建第一个任务",
+    "recentTitle": "最近创作",
+    "recentSubtitle": "继续分镜、渲染或查看已经完成的影片。",
     "loadError": "加载失败",
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
     "untitled": "未命名任务",
     "empty": {
-      "title": "还没有视频任务",
-      "desc": "选择一种工作流，开始你的第一段成片。"
+      "title": "你的第一支影片从上方开始",
+      "desc": "写下一个画面或故事，Nomi 会先给你一版可编辑分镜。"
     },
     "card": {
       "updatedAt": "{{time}} 更新",
@@ -26,7 +28,30 @@
     "hint": "选择一种工作流。创建后工作流类型不可更改。",
     "confirm": "创建并打开",
     "titleLabel": "标题（可选）",
-    "titlePlaceholder": "给这次生成起个名字"
+    "titlePlaceholder": "给这次生成起个名字",
+    "eyebrow": "AI 叙事导演",
+    "heroTitle": "一个想法，变成一支完整影片",
+    "heroSubtitle": "先生成可编辑分镜，确认故事与画面后再渲染成片。",
+    "advanced": "风格与模型",
+    "generateStoryboard": "生成分镜",
+    "modelRequired": "生成分镜前需要一个可用的规划模型。",
+    "configureModels": "前往模型中心",
+    "tryExample": "试试：",
+    "modes": {
+      "idea": "一个想法",
+      "script": "完整剧本",
+      "novel": "小说文本"
+    },
+    "composer": {
+      "ideaPlaceholder": "描述你想看到的故事、情绪或产品画面…",
+      "scriptPlaceholder": "粘贴剧本，Nomi 会自动拆成可编辑镜头…",
+      "novelPlaceholder": "粘贴小说片段，Nomi 会提炼剧情并设计分镜…"
+    },
+    "examples": {
+      "product": "为一款极简咖啡机制作 30 秒发布短片",
+      "story": "雨夜里，最后一班列车驶入无人车站",
+      "brand": "用电影感镜头讲述一双跑鞋的一天"
+    }
   },
   "workflow": {
     "idea2video": {

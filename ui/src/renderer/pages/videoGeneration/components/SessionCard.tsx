@@ -10,6 +10,7 @@ import type { TFunction } from 'i18next';
 import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
+import styles from '../index.module.css';
 
 function toEpochMs(value: string | number | null | undefined): number | null {
   if (value == null) return null;
@@ -106,10 +107,8 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
       role='button'
       tabIndex={0}
       className={[
-        'group relative flex flex-col overflow-hidden rd-12px border border-solid',
-        'border-[var(--color-border-2)] bg-[var(--color-bg-2)] box-border cursor-pointer',
-        'transition-all duration-160',
-        'hover:border-[var(--color-border-3)] hover:bg-[var(--color-fill-1)]',
+        styles.projectCard,
+        'group relative flex flex-col overflow-hidden box-border cursor-pointer',
       ].join(' ')}
       onClick={() => onOpen(session)}
       onKeyDown={(e) => {
@@ -119,26 +118,22 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
         }
       }}
     >
-      <div className='flex items-start gap-12px p-16px'>
-        <span
-          className='flex items-center justify-center w-40px h-40px rd-10px shrink-0 text-[rgb(var(--primary-6))]'
-          style={{
-            background: 'rgba(var(--primary-6),0.1)',
-            border: '1px solid rgba(var(--primary-6),0.18)',
-          }}
-        >
-          <VideoOne theme='outline' size={20} fill='currentColor' className='block' style={{ lineHeight: 0 }} />
+      <div className={`${styles.projectCover} flex h-58px items-end justify-between px-14px pb-9px`}>
+        <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'>
+          <VideoOne theme='outline' size={15} fill='currentColor' />
         </span>
+        <Tag size='small' color={statusTagColor(session.status)} className='shrink-0'>
+          {statusLabel(session.status, t)}
+        </Tag>
+      </div>
 
+      <div className='flex items-start gap-12px p-14px'>
         <div className='min-w-0 flex-1 flex flex-col gap-6px'>
           <div className='flex items-start justify-between gap-8px'>
             <div className='truncate text-15px font-600 leading-[1.3] text-[var(--color-text-1)]'>
               {session.title || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
             </div>
             <div className='flex items-center gap-6px shrink-0'>
-              <Tag size='small' color={statusTagColor(session.status)} className='shrink-0'>
-                {statusLabel(session.status, t)}
-              </Tag>
               {onDelete ? (
                 <Popconfirm
                   title={t('videoGeneration.actions.deleteConfirm', {

@@ -1,0 +1,142 @@
+.page {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(var(--primary-6), 0.08), transparent 34rem),
+    var(--color-bg-1);
+}
+
+.launchpad {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--color-bg-2) 94%, rgb(var(--primary-6)) 6%);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+}
+
+.launchpad::after {
+  position: absolute;
+  top: -9rem;
+  right: -7rem;
+  width: 22rem;
+  height: 22rem;
+  border: 1px solid rgba(var(--primary-6), 0.12);
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(var(--primary-6), 0.12), transparent 68%);
+  content: '';
+  pointer-events: none;
+}
+
+.modeButton {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--color-text-2);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.modeButton:hover {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+}
+
+.modeButton:active {
+  transform: scale(0.98);
+}
+
+.modeButtonActive {
+  border-color: rgba(var(--primary-6), 0.28);
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.1);
+}
+
+.composer {
+  position: relative;
+  z-index: 1;
+  border: 1px solid var(--color-border-2);
+  border-radius: 16px;
+  background: var(--color-bg-2);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.composer:focus-within {
+  border-color: rgba(var(--primary-6), 0.55);
+  box-shadow:
+    0 0 0 3px rgba(var(--primary-6), 0.1),
+    0 18px 44px rgba(15, 23, 42, 0.08);
+}
+
+.exampleChip {
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: var(--color-text-2);
+  background: var(--color-fill-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.exampleChip:hover {
+  border-color: rgba(var(--primary-6), 0.4);
+  color: rgb(var(--primary-6));
+  transform: translateY(-1px);
+}
+
+.projectCard {
+  min-height: 134px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 16px;
+  background: var(--color-bg-2);
+  transition:
+    border-color 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.projectCard:hover {
+  border-color: rgba(var(--primary-6), 0.32);
+  transform: translateY(-2px);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+}
+
+.projectCover {
+  background:
+    linear-gradient(135deg, rgba(var(--primary-6), 0.18), transparent 58%),
+    linear-gradient(155deg, var(--color-fill-2), var(--color-bg-2));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modeButton,
+  .composer,
+  .exampleChip,
+  .projectCard {
+    transition: none;
+  }
+
+  .exampleChip:hover,
+  .projectCard:hover {
+    transform: none;
+  }
+}
