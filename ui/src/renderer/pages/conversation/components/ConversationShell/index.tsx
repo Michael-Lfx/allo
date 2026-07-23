@@ -20,12 +20,14 @@ import { SESSION_SIDER_TOGGLE_EVENT, dispatchSessionSiderStateEvent } from '@ren
 import SessionCreateBar from './SessionCreateBar';
 import { PendingConversationProvider } from './PendingConversationContext';
 import PendingConversationOverlay from './PendingConversationOverlay';
+import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
 
 const SESSION_SIDER_STORAGE_KEY = 'nomifun:session-sider-collapsed';
 const SESSION_SIDER_WIDTH_STORAGE_KEY = 'nomifun:session-sider-width';
 const SESSION_SIDER_DEFAULT_WIDTH = 280;
 const SESSION_SIDER_MIN_WIDTH = 240;
 const SESSION_SIDER_MAX_WIDTH = 480;
+const SESSION_SIDER_FOCUS_DEFAULT_KEY = 'nomifun:session-sider-focus-defaulted';
 
 /**
  * ConversationShell — the layout route wrapping the session section
@@ -38,6 +40,8 @@ const SESSION_SIDER_MAX_WIDTH = 480;
  * Collapse behavior:
  *  - Desktop: inline panel; collapse state persists via `useContentSiderCollapse`.
  *  - Mobile: overlay drawer with a backdrop, kept closed by default.
+ *  - First-win focus: default the session list collapsed once so the Guid
+ *    launchpad owns the first-task viewport.
  *
  * The collapse toggle is owned by the titlebar (a stable, always-present
  * control mirroring the workspace panel) and reaches us over the
@@ -49,12 +53,24 @@ const ConversationShell: React.FC = () => {
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const navigate = useNavigate();
+  const { isFirstWin } = useFirstWinMode();
 
   // Desktop collapse: persisted. Mobile open: transient (overlay), never
   // persisted so it can't leak across form factors.
   const desktop = useContentSiderCollapse(SESSION_SIDER_STORAGE_KEY, false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
+
+  useEffect(() => {
+    if (!isFirstWin || isMobile || typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem(SESSION_SIDER_FOCUS_DEFAULT_KEY) === '1') return;
+      window.localStorage.setItem(SESSION_SIDER_FOCUS_DEFAULT_KEY, '1');
+      desktop.setCollapsed(true);
+    } catch {
+      desktop.setCollapsed(true);
+    }
+  }, [desktop, isFirstWin, isMobile]);
   const {
     preferences: displayPreferences,
     applyPreset: applyDisplayPreset,

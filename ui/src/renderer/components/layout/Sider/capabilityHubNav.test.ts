@@ -42,7 +42,9 @@ describe('capability hub navigation', () => {
 
     expect(siderSource.includes('flowy.sider.capabilitiesExpanded')).toBe(true);
     expect(siderSource.includes('common.siderSection.moreCapabilities')).toBe(true);
-    expect(siderSource.includes('capabilitiesExpanded || !isSessionRoute')).toBe(true);
+    expect(siderSource.includes('useFirstWinMode')).toBe(true);
+    expect(siderSource.includes('showCapabilityHub')).toBe(true);
+    expect(siderSource.includes('sider-conversation-entry')).toBe(false);
   });
 
   test('keeps presets/skills/mcp routes and hosts Open Capabilities as a first-class page', () => {

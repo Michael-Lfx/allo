@@ -29,6 +29,7 @@ import {
   SiderVideoGenerationEntry,
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
+import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -57,6 +58,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const location = useLocation();
   const { pathname, search, hash } = location;
   const { count: pendingInboxCount } = useKnowledgeInboxPending();
+  const { isFirstWin } = useFirstWinMode();
 
   const navigate = useNavigate();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
@@ -83,6 +85,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       return false;
     }
   });
+
+  // The "会话" entry stays active across every route owned by ConversationShell.
+  const isSessionRoute =
+    pathname === '/guid' ||
+    pathname.startsWith('/conversation/') ||
+    pathname === '/terminal-new' ||
+    pathname.startsWith('/terminal/');
+
+  // First-win focus: keep the rail on New Task + essentials until the user
+  // confirms a reviewable result. Returning users always see the full rail.
+  const showCapabilityHub = !isFirstWin || capabilitiesExpanded || !isSessionRoute;
 
   const toggleCapabilities = useCallback(() => {
     setCapabilitiesExpanded((current) => {
@@ -183,13 +196,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const tooltipEnabled = collapsed && !isMobile;
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
-  // The "会话" entry stays active across every route owned by ConversationShell.
-  const isSessionRoute =
-    pathname === '/guid' ||
-    pathname.startsWith('/conversation/') ||
-    pathname === '/terminal-new' ||
-    pathname.startsWith('/terminal/');
-
   return (
     <div className='size-full flex flex-col'>
       {/* Main content area */}
@@ -210,16 +216,19 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            <button
-              type='button'
-              className='mx-8px min-h-30px px-10px flex items-center justify-center rd-8px b-none bg-transparent text-t-secondary text-12px cursor-pointer hover:bg-fill-2 hover:text-t-primary'
-              aria-expanded={capabilitiesExpanded}
-              title={t('common.siderSection.moreCapabilities')}
-              onClick={toggleCapabilities}
-            >
-              {collapsed ? '•••' : t('common.siderSection.moreCapabilities')}
-            </button>
-            {capabilitiesExpanded || !isSessionRoute ? (
+            {isFirstWin ? (
+              <button
+                type='button'
+                className='mx-8px min-h-30px px-10px flex items-center justify-center rd-8px b-none bg-transparent text-t-secondary text-12px cursor-pointer hover:bg-fill-2 hover:text-t-primary'
+                aria-expanded={capabilitiesExpanded}
+                title={t('common.siderSection.moreCapabilities')}
+                onClick={toggleCapabilities}
+                data-testid='sider-more-capabilities'
+              >
+                {collapsed ? '•••' : t('common.siderSection.moreCapabilities')}
+              </button>
+            ) : null}
+            {showCapabilityHub ? (
               <>
             {/* Work partner (桌面伙伴) — demo path 2 */}
             <SiderNomiEntry

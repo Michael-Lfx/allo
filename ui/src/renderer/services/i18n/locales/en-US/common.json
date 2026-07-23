@@ -9,6 +9,8 @@
     "tools": "Tools",
     "settings": "Settings"
   },
+  "navExpand": "Expand app navigation",
+  "navCollapse": "Collapse app navigation",
   "send": "Send",
   "cancel": "Cancel",
   "save": "Save",

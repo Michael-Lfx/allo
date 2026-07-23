@@ -9,6 +9,8 @@
     "tools": "增强工具",
     "settings": "设置"
   },
+  "navExpand": "展开应用导航",
+  "navCollapse": "收起应用导航",
   "send": "发送",
   "cancel": "取消",
   "save": "保存",

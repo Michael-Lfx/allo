@@ -150,8 +150,8 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const showSiderToggle = Boolean(layout?.setSiderCollapsed) && !(layout?.isMobile && isSettingsRoute);
   const showBackToChatButton = Boolean(layout?.isMobile && isSettingsRoute);
   const siderTooltip = layout?.siderCollapsed
-    ? t('common.expandMore', { defaultValue: 'Expand sidebar' })
-    : t('common.collapse', { defaultValue: 'Collapse sidebar' });
+    ? t('common.navExpand', { defaultValue: '展开应用导航' })
+    : t('common.navCollapse', { defaultValue: '收起应用导航' });
   // 前进/后退仅在桌面端显示（移动端空间有限，保留原有的返回到聊天按钮）
   // Show back/forward on desktop only; mobile keeps the existing back-to-chat button.
   const showHistoryNav = Boolean(navigationHistory) && !layout?.isMobile;
@@ -166,8 +166,8 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     location.pathname === '/terminal-new' ||
     location.pathname.startsWith('/terminal/');
   const sessionToggleTooltip = sessionSiderCollapsed
-    ? t('sessionList.expandList', { defaultValue: 'Show conversations' })
-    : t('sessionList.collapseList', { defaultValue: 'Hide conversations' });
+    ? t('sessionList.expandList', { defaultValue: '展开会话列表' })
+    : t('sessionList.collapseList', { defaultValue: '收起会话列表' });
 
   const handleSiderToggle = () => {
     if (!showSiderToggle || !layout?.setSiderCollapsed) return;
