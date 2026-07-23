@@ -96,6 +96,43 @@
   background: var(--flowy-surface-2);
 }
 
+.commercial-slice__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.commercial-slice__chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--flowy-border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--flowy-text-2);
+  background: var(--flowy-surface-2);
+}
+
+.commercial-slice__chip.is-ready {
+  color: var(--flowy-accent);
+  border-color: color-mix(in srgb, var(--flowy-accent) 30%, transparent);
+}
+
+.commercial-slice__chip.is-blocked {
+  color: #b45309;
+  border-color: color-mix(in srgb, #b45309 35%, transparent);
+}
+
+.commercial-slice__plan {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--flowy-text-2);
+}
+
 .commercial-slice__actions {
   display: flex;
   flex-wrap: wrap;

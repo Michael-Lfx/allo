@@ -7,12 +7,12 @@
 import React, { useMemo, useState } from 'react';
 import { COMMERCIAL_PATH_FRAMES, type CommercialPathState } from './commercialPathModel';
 import { COMMERCIAL_SLICE_FLAG, isCommercialSliceEnabled } from '@renderer/utils/featureFlags/commercialSlice';
-import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
+import { confirmFirstValue, trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import './commercialSlice.css';
 
 const CommercialSlicePage: React.FC = () => {
   const enabled = isCommercialSliceEnabled();
-  const [state, setState] = useState<CommercialPathState>('first_user');
+  const [state, setState] = useState<CommercialPathState>('returning_user');
   const frame = useMemo(() => COMMERCIAL_PATH_FRAMES.find((item) => item.state === state)!, [state]);
 
   if (!enabled) {
@@ -28,8 +28,10 @@ const CommercialSlicePage: React.FC = () => {
   return (
     <div className='commercial-slice flowy-density-shell' data-testid='commercial-slice'>
       <header className='commercial-slice__header'>
-        <h1 className='flowy-type-title'>核心链路高保真原型</h1>
-        <p className='flowy-type-body'>覆盖首次 / 回访 / 缺模型 / 网络失败 / 模型失败 / 成功六态，不单做理想路径。</p>
+        <h1 className='flowy-type-title'>成果启动台高保真原型</h1>
+        <p className='flowy-type-body'>
+          覆盖就绪 / 缺模型 / 缺项目 / 执行失败 / 首个成果。验证前置预检与自动续接，而非理想路径演示。
+        </p>
       </header>
 
       <div className='commercial-slice__tabs' role='tablist' aria-label='Path states'>
@@ -44,7 +46,8 @@ const CommercialSlicePage: React.FC = () => {
             onClick={() => {
               setState(item.state);
               if (item.state === 'task_success') {
-                trackFunnelEvent('first_value_confirmed', { source: 'prototype' });
+                confirmFirstValue({ source: 'prototype' });
+                trackFunnelEvent('first_artifact_visible', { source: 'prototype' });
               }
             }}
           >
@@ -59,11 +62,26 @@ const CommercialSlicePage: React.FC = () => {
           <div className='commercial-slice__preview-main'>
             <div className={`commercial-slice__scene commercial-slice__scene--${frame.scene}`}>
               <span className='commercial-slice__badge'>{frame.scene}</span>
+              {frame.statusChips ? (
+                <div className='commercial-slice__chips' data-testid='commercial-status-chips'>
+                  {frame.statusChips.map((chip) => (
+                    <span key={chip.id} className={`commercial-slice__chip is-${chip.state}`}>
+                      {chip.label}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {frame.planPreview ? (
+                <p className='commercial-slice__plan' data-testid='commercial-plan-preview'>
+                  {frame.planPreview}
+                </p>
+              ) : null}
               {frame.scene === 'execution' ? <div className='commercial-slice__progress' /> : null}
               {frame.scene === 'result' ? (
                 <ul className='commercial-slice__files flowy-task-reveal'>
+                  <li>verified · tests green</li>
                   <li>diff · src/app.ts</li>
-                  <li>summary · 首任务成果</li>
+                  <li>summary · 根因与修复说明</li>
                 </ul>
               ) : null}
             </div>
