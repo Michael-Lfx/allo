@@ -47,6 +47,7 @@ import { allSupportedExts } from '@renderer/services/FileService';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory, isCaretOnFirstLine } from '@/renderer/utils/chat/messageHistory';
+import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
 import './sendbox.css';
@@ -332,12 +333,17 @@ const SendBox: React.FC<{
             setInputRef.current(content);
             await onSend(content);
           }
+          markRetrySucceeded(payload.msgId ?? `retry-${Date.now()}`, {
+            conversation_type: conversationContext?.type,
+          });
+        } catch {
+          setInput(content);
         } finally {
           setIsLoading(false);
         }
       })();
     },
-    [disabled, loading, isLoading, onEditResubmit, onSend]
+    [conversationContext?.type, disabled, loading, isLoading, onEditResubmit, onSend]
   );
 
   // 集成预览面板的"添加到聊天"功能 / Integrate preview panel's "Add to chat" functionality
@@ -1324,12 +1330,18 @@ const SendBox: React.FC<{
       const finalMessage = input;
       const targetId = editingMsgId;
       const targetCreatedAt = editingCreatedAtRef.current;
+      const previousDraft = editPrevDraftRef.current ?? '';
       setEditingMsgId(null);
       editPrevDraftRef.current = null;
       setInput('');
       setIsLoading(true);
       onEditResubmit(targetId, targetCreatedAt, finalMessage)
-        .catch(() => {})
+        .catch(() => {
+          setInput(finalMessage);
+          editPrevDraftRef.current = previousDraft;
+          setEditingMsgId(targetId);
+          editingCreatedAtRef.current = targetCreatedAt;
+        })
         .finally(() => {
           setIsLoading(false);
         });
@@ -1394,7 +1406,9 @@ const SendBox: React.FC<{
     if (finalMessage == null) return;
 
     onSend(finalMessage)
-      .catch(() => {})
+      .catch(() => {
+        setInput(finalMessage);
+      })
       .finally(() => {
         setIsLoading(false);
       });
@@ -1406,7 +1420,9 @@ const SendBox: React.FC<{
     if (finalMessage == null) return;
     setIsLoading(true);
     onSteer(finalMessage)
-      .catch(() => {})
+      .catch(() => {
+        setInput(finalMessage);
+      })
       .finally(() => {
         setIsLoading(false);
       });

@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { conversationTarget, type ConversationId, type MessageId } from '@/common/types/ids';
+import { conversationTarget, type ConversationId, type MessageId, parseMessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
+import { prefixedId } from '@/common/utils';
 import type { IConversationMcpStatus } from '@/common/config/storage';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
@@ -158,8 +159,12 @@ const NomiSendBox: React.FC<{
     running,
     hasHydratedRunningState,
     tokenUsage,
+    presentation,
     setActiveMsgId,
     markTurnAccepted,
+    notifyLocalSubmit,
+    notifyAccepted,
+    notifyFailed,
     setWaitingResponse,
     resetState,
     confirmStopped,
@@ -215,7 +220,11 @@ const NomiSendBox: React.FC<{
   const removeMessagesFrom = useRemoveMessagesFrom();
   const { setSendBoxHandler } = usePreviewContext();
   const [isStopping, setIsStopping] = useState(false);
-  const isBusy = running || isStopping;
+  const showStrongBusy =
+    (running || presentation.phase === 'local_pending' || presentation.phase === 'accepted') &&
+    presentation.showStop !== false &&
+    presentation.phase !== 'finalizing';
+  const isBusy = showStrongBusy || isStopping;
   const { beginStopAttempt, getStopAttemptStatus } = useConversationStopAttemptGuard(
     conversation_id,
     getTurnStartGeneration,
@@ -270,13 +279,24 @@ const NomiSendBox: React.FC<{
       setWaitingResponse(true);
 
       const displayMessage = buildDisplayMessage(input, files, workspacePath);
+      const localMsgId = parseMessageId(prefixedId('msg'));
+      notifyLocalSubmit(localMsgId, localMsgId);
+      addOrUpdateMessage({
+        id: localMsgId,
+        msg_id: localMsgId,
+        type: 'text',
+        position: 'right',
+        conversation_id,
+        content: {
+          content: displayMessage,
+        },
+        created_at: Date.now(),
+      });
+      setActiveMsgId(localMsgId);
+
       let msg_id: MessageId | null = null;
       try {
         void checkAndUpdateTitle(conversation_id, input);
-        // Wait for the server-assigned msg_id before rendering the optimistic
-        // user bubble so the local row uses the same id as the DB row and
-        // subsequent WebSocket stream events — avoids duplicate bubbles when
-        // useMessageLstCache reloads.
         const res = await ipcBridge.conversation.sendMessage.invoke({
           input: displayMessage,
           conversation_id,
@@ -285,30 +305,33 @@ const NomiSendBox: React.FC<{
         if (execution && !execution.isCurrent()) return;
         msg_id = res.msg_id;
         markTurnAccepted();
+        notifyAccepted(msg_id);
         setActiveMsgId(msg_id);
-        // Use add=false (compose mode) so composeMessageWithIndex can de-dup
-        // by msg_id — this prevents a duplicate bubble if useMessageLstCache
-        // already inserted the DB row for this same msg_id.
-        addOrUpdateMessage({
-          id: msg_id,
-          msg_id,
-          type: 'text',
-          position: 'right',
-          conversation_id,
-          content: {
-            content: displayMessage,
-          },
-          created_at: Date.now(),
-        });
+        if (msg_id !== localMsgId) {
+          removeMessageByMsgId(localMsgId);
+          addOrUpdateMessage({
+            id: msg_id,
+            msg_id,
+            type: 'text',
+            position: 'right',
+            conversation_id,
+            content: {
+              content: displayMessage,
+            },
+            created_at: Date.now(),
+          });
+        }
         emitter.emit('chat.history.refresh');
         if (files.length > 0) {
           emitter.emit('nomi.workspace.refresh');
         }
       } catch (error) {
         if (execution && !execution.isCurrent()) return;
-        if (msg_id) removeMessageByMsgId(msg_id);
+        removeMessageByMsgId(localMsgId);
+        if (msg_id && msg_id !== localMsgId) removeMessageByMsgId(msg_id);
         setActiveMsgId(null);
         setWaitingResponse(false);
+        notifyFailed(getConversationRuntimeWorkspaceErrorMessage(error, t));
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
         throw error;
       }
@@ -319,6 +342,9 @@ const NomiSendBox: React.FC<{
       conversation_id,
       current_model?.use_model,
       markTurnAccepted,
+      notifyAccepted,
+      notifyFailed,
+      notifyLocalSubmit,
       setActiveMsgId,
       removeMessageByMsgId,
       setWaitingResponse,
@@ -399,8 +425,6 @@ const NomiSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
-    clearFiles();
-    emitter.emit('nomi.selected.file.clear');
 
     if (
       shouldEnqueueConversationCommand({
@@ -409,11 +433,19 @@ const NomiSendBox: React.FC<{
         hasPendingCommands,
       })
     ) {
+      clearFiles();
+      emitter.emit('nomi.selected.file.clear');
       enqueue({ input: message, files: filesToSend });
       return;
     }
 
-    await executeCommand({ input: message, files: filesToSend });
+    try {
+      await executeCommand({ input: message, files: filesToSend });
+      clearFiles();
+      emitter.emit('nomi.selected.file.clear');
+    } catch {
+      // Keep draft attachments; SendBox restores the text input on failure.
+    }
   };
 
   // 编辑最近一条用户消息并截断重跑：先本地移除被编辑消息及其后内容（在新 turn 流式
