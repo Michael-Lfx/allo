@@ -334,7 +334,7 @@ const RemoteConnectSection: React.FC<{ companionId: CompanionId; companionName: 
     [refreshStatuses, t]
   );
 
-  const isErrorStatus = (row: IChannelPluginStatus | null) =>
+  const isErrorStatus = (row: IChannelPluginStatus | null | undefined) =>
     Boolean(row && (row.status === 'error' || row.error));
 
   // ── Row presentation helpers ──
