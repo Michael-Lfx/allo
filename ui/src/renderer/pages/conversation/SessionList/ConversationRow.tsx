@@ -93,7 +93,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           'chat-history__item h-34px rd-8px flex items-center group cursor-pointer relative overflow-hidden shrink-0 conversation-item [&.conversation-item+&.conversation-item]:mt-2px min-w-0 transition-colors',
           collapsed ? 'justify-center px-0' : 'justify-start gap-8px pr-16px',
           // dimIcon means this row sits inside a project/cron parent — visually indent the row content while keeping the bg full-width
-          !collapsed && (dimIcon ? 'pl-34px' : 'pl-10px'),
+          !collapsed && (dimIcon ? 'pl-42px' : 'pl-18px'),
           {
             'hover:bg-fill-3': !batchMode && !selected,
             '!bg-primary-1 !text-primary-6': selected,
@@ -117,7 +117,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         {isGenerating && !batchMode && <Spin size={16} />}
         {!batchMode && isPinned && !isMobile && !isGenerating && (
           <span
-            className='absolute left-10px top-1/2 z-1 -translate-y-1/2 text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'
+            className='absolute left-18px top-1/2 z-1 -translate-y-1/2 text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'
             style={{ lineHeight: 0 }}
           >
             <Pushpin theme='outline' size='14' />

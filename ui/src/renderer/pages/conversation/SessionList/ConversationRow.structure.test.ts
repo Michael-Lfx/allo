@@ -17,6 +17,11 @@ describe('ConversationRow structure', () => {
     expect(source.includes("{isGenerating && !batchMode && <Spin size={16} />}")).toBe(true);
   });
 
+  test('gives conversation titles balanced left spacing', () => {
+    expect(source.includes("dimIcon ? 'pl-42px' : 'pl-18px'")).toBe(true);
+    expect(source.includes('absolute left-18px')).toBe(true);
+  });
+
   test('keeps trailing meta width stable so hover does not reflow the title', () => {
     expect(source.includes('hover:pr-40px')).toBe(false);
     expect(source.includes("'group-hover:hidden': !menuVisible")).toBe(false);
