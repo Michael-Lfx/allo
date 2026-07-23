@@ -16,7 +16,7 @@
     "untitled": "未命名任务",
     "empty": {
       "title": "你的第一支影片从上方开始",
-      "desc": "写下一个画面或故事，Nomi 会先给你一版可编辑分镜。"
+      "desc": "写下一个画面或故事，Flowy 会先给你一版可编辑分镜。"
     },
     "card": {
       "updatedAt": "{{time}} 更新",
@@ -44,8 +44,8 @@
     },
     "composer": {
       "ideaPlaceholder": "描述你想看到的故事、情绪或产品画面…",
-      "scriptPlaceholder": "粘贴剧本，Nomi 会自动拆成可编辑镜头…",
-      "novelPlaceholder": "粘贴小说片段，Nomi 会提炼剧情并设计分镜…"
+      "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
+      "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…"
     },
     "examples": {
       "product": "为一款极简咖啡机制作 30 秒发布短片",
@@ -100,6 +100,7 @@
     "progressIdle": "尚未开始。提交规划后将显示进度。",
     "artifactsEmpty": "规划完成后，产物将显示在这里。",
     "source": {
+      "durationLabel": "目标成片时长（秒）",
       "title": "输入素材",
       "ideaLabel": "灵感",
       "scriptLabel": "剧本",
@@ -158,7 +159,7 @@
       "render": "渲染",
       "film": "成片"
     },
-    "briefTitle": "把故事交给 Nomi",
+    "briefTitle": "把故事交给 Flowy",
     "briefHint": "生成的是可修改分镜，不会直接开始高成本渲染。",
     "briefAndModels": "创意简报与模型设置",
     "modelSettings": "模型设置",
