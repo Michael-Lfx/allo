@@ -4,11 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, InputNumber } from '@arco-design/web-react';
 import { BookOpen, FileText, Lightning, SettingTwo, VideoOne } from '@icon-park/react';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import type { VimaxWorkflow } from '../types';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
 import styles from '../index.module.css';
@@ -83,6 +84,7 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
   const [draft, setDraft] = useState<VideoCreateDraft>(loadDraft);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [modelMissing, setModelMissing] = useState(false);
+  const draftedTracked = useRef(false);
 
   useEffect(() => {
     try {
@@ -95,6 +97,15 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
   useEffect(() => {
     if (draft.models.llm_model) setModelMissing(false);
   }, [draft.models.llm_model]);
+
+  useEffect(() => {
+    if (!draft.sourceText.trim() || draftedTracked.current) return;
+    draftedTracked.current = true;
+    trackFunnelEvent('task_drafted', {
+      feature: 'video_generation',
+      workflow: draft.workflow,
+    });
+  }, [draft.sourceText, draft.workflow]);
 
   const modes = useMemo(
     () => [

@@ -16,6 +16,7 @@ import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, VideoOne } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { createSession, deleteSession, listSessions, planSession } from './api';
 import type { PlanBody, SessionSummary } from './types';
 import SessionCard from './components/SessionCard';
@@ -103,8 +104,18 @@ const VideoGenerationListPage: React.FC = () => {
           workflow: draft.workflow,
           title: titleForDraft(draft) || undefined,
         });
+        trackFunnelEvent('task_accepted', {
+          feature: 'video_generation',
+          workflow: draft.workflow,
+          session_id: created.id,
+        });
         try {
           await planSession(created.id, sourceBodyForDraft(draft));
+          trackFunnelEvent('first_task_started', {
+            feature: 'video_generation',
+            workflow: draft.workflow,
+            session_id: created.id,
+          });
           clearVideoCreateDraft();
         } catch (planError) {
           message.error(

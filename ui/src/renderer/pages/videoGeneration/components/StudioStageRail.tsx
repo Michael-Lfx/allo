@@ -17,6 +17,18 @@ interface StudioStageRailProps {
   hasFinalVideo: boolean;
 }
 
+export function studioStageIndex({
+  status,
+  stage,
+  hasStoryboard,
+  hasFinalVideo,
+}: StudioStageRailProps): number {
+  if (hasFinalVideo) return 3;
+  if (status === 'rendering') return 2;
+  if (hasStoryboard || stage === 'planned') return 1;
+  return 0;
+}
+
 const StudioStageRail: React.FC<StudioStageRailProps> = ({
   status,
   stage,
@@ -24,13 +36,7 @@ const StudioStageRail: React.FC<StudioStageRailProps> = ({
   hasFinalVideo,
 }) => {
   const { t } = useTranslation();
-  const activeIndex = hasFinalVideo
-    ? 3
-    : status === 'rendering'
-      ? 2
-      : hasStoryboard || stage === 'planned'
-        ? 1
-        : 0;
+  const activeIndex = studioStageIndex({ status, stage, hasStoryboard, hasFinalVideo });
   const labels = [
     t('videoGeneration.studio.stages.brief', { defaultValue: '创意' }),
     t('videoGeneration.studio.stages.storyboard', { defaultValue: '分镜' }),

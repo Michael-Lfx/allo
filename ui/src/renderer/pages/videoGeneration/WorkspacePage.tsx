@@ -15,7 +15,7 @@
  * 5. Render + progress polling (2s while planning/rendering)
  * 6. Final video player when done
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -30,6 +30,10 @@ import {
 import { ArrowLeft, Delete, Download, Play, Refresh, VideoOne } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
+import {
+  confirmFirstValue,
+  trackFunnelEvent,
+} from '@renderer/utils/analytics/productFunnel';
 import {
   cancelSession,
   deleteSession,
@@ -111,6 +115,7 @@ const WorkspacePage: React.FC = () => {
   const [reviseTarget, setReviseTarget] = useState('');
   const [reviseInstruction, setReviseInstruction] = useState('');
   const [revisionOpen, setRevisionOpen] = useState(false);
+  const storyboardVisibleTracked = useRef(false);
 
   const launchDraft = (
     location.state as { launchDraft?: VideoCreateDraft; launchError?: boolean } | null
@@ -385,6 +390,11 @@ const WorkspacePage: React.FC = () => {
         revision_instruction: instruction,
       });
       message.success(t('videoGeneration.workspace.revise.ok', { defaultValue: '已提交修订' }));
+      confirmFirstValue({
+        feature: 'video_generation',
+        source: 'storyboard_revision',
+        session_id: sessionId,
+      });
       setReviseInstruction('');
       setRevisionOpen(false);
       const st = await refreshStatus();
@@ -523,11 +533,16 @@ const WorkspacePage: React.FC = () => {
 
   const handleDownload = useCallback(() => {
     if (!finalBlobUrl) return;
+    confirmFirstValue({
+      feature: 'video_generation',
+      source: 'film_download',
+      session_id: sessionId,
+    });
     const anchor = document.createElement('a');
     anchor.href = finalBlobUrl;
     anchor.download = `${session?.title || 'nomi-video'}.mp4`;
     anchor.click();
-  }, [finalBlobUrl, session?.title]);
+  }, [finalBlobUrl, session?.title, sessionId]);
 
   const busy = isActiveStatus(runStatus?.status) || planning || rendering;
   const hasStoryboard =
@@ -540,6 +555,16 @@ const WorkspacePage: React.FC = () => {
   const canRender = !busy && (hasStoryboard || isFailed);
   const canContinue = isFailed && !busy;
   const currentStatus = runStatus?.status ?? session?.status;
+
+  useEffect(() => {
+    if (!hasStoryboard || storyboardVisibleTracked.current) return;
+    storyboardVisibleTracked.current = true;
+    trackFunnelEvent('first_artifact_visible', {
+      feature: 'video_generation',
+      artifact: 'storyboard',
+      session_id: sessionId,
+    });
+  }, [hasStoryboard, sessionId]);
 
   if (loading) {
     return (
@@ -681,6 +706,13 @@ const WorkspacePage: React.FC = () => {
               src={finalBlobUrl}
               controls
               playsInline
+              onPlay={() =>
+                confirmFirstValue({
+                  feature: 'video_generation',
+                  source: 'film_play',
+                  session_id: sessionId,
+                })
+              }
               className='block w-full max-h-620px bg-black'
             />
           </section>

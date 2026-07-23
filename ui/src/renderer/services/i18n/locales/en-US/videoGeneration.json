@@ -173,7 +173,7 @@
     "renderCta": "Generate film",
     "technicalDetails": "Technical artifacts & run files",
     "storyboard": {
-      "title": "Story storyboard",
+      "title": "Storyboard",
       "hint": "Review the story and visuals shot by shot, then render when it feels right.",
       "editable": "Editable",
       "preparing": "Preparing storyboard visuals",
