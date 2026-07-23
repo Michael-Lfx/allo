@@ -144,6 +144,8 @@
     "retryable": "Retryable",
     "notRetryable": "Needs configuration",
     "retryAction": "Retry",
+    "fixConfigAction": "Fix setup",
+    "changeModelAction": "Change model",
     "resolutionPrefix": "Suggestion: ",
     "resolution": {
       "retry": "Retry later, or send this message again.",

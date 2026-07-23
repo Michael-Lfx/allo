@@ -144,6 +144,8 @@
     "retryable": "可重试",
     "notRetryable": "需先处理配置",
     "retryAction": "重试",
+    "fixConfigAction": "去修复配置",
+    "changeModelAction": "更换模型",
     "resolutionPrefix": "建议：",
     "resolution": {
       "retry": "稍后重试，或重新发送这条消息。",

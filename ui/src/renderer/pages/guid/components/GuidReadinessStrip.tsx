@@ -90,6 +90,16 @@ const GuidReadinessStrip: React.FC<GuidReadinessStripProps> = ({
   })();
 
   const metaText = (() => {
+    if (hasDraft && readiness.blocker === 'model') {
+      return t('guid.readiness.draftHeldModel', {
+        defaultValue: '草稿已保留 · 连接模型后将自动继续',
+      });
+    }
+    if (hasDraft && readiness.blocker === 'workspace') {
+      return t('guid.readiness.draftHeldWorkspace', {
+        defaultValue: '草稿已保留 · 选择项目后将自动继续',
+      });
+    }
     if (receipt) {
       return t(receipt.expectedArtifactKey, { defaultValue: receipt.expectedArtifactDefault });
     }

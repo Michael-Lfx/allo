@@ -19,6 +19,23 @@ import { emitter } from '@renderer/utils/emitter';
 import { useMessageList } from '../hooks';
 import { parseMessageFileMarker } from './messageFileMarker';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
+import { useNavigate } from 'react-router-dom';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+
+const MODEL_RECOVERY_KINDS = new Set([
+  'change_model',
+  'check_provider_credentials',
+  'check_provider_billing',
+  'check_provider_base_url',
+]);
+
+const AGENT_RECOVERY_KINDS = new Set([
+  'reconnect_agent',
+  'check_agent_login',
+  'check_agent_installation',
+  'check_agent_version',
+  'check_local_command',
+]);
 
 const icon = {
   success: <CheckOne theme='filled' size='16' fill={theme.Color.FunctionalColor.success} className='m-t-2px' />,
@@ -58,6 +75,7 @@ const useFormatContent = (content: string) => {
 
 const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const messageList = useMessageList();
   const { type } = message.content;
   const content = toDisplayText(message.content.content);
@@ -87,6 +105,26 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
     }
     return null;
   }, [message.id, messageList, structuredError, type]);
+
+  const recoveryAction = useMemo(() => {
+    const kind = structuredError?.resolution?.kind;
+    if (!kind) return null;
+    if (MODEL_RECOVERY_KINDS.has(kind) || structuredError?.code === 'PROVIDER_UNAVAILABLE') {
+      return {
+        label: t('conversation.agentError.changeModelAction', { defaultValue: 'Change model' }),
+        href: '/models?section=models',
+        source: 'change_model',
+      };
+    }
+    if (AGENT_RECOVERY_KINDS.has(kind)) {
+      return {
+        label: t('conversation.agentError.fixConfigAction', { defaultValue: 'Fix setup' }),
+        href: '/models?section=agents',
+        source: 'fix_agent_config',
+      };
+    }
+    return null;
+  }, [structuredError?.code, structuredError?.resolution?.kind, t]);
 
   if (structuredError) {
     const code = structuredError.code;
@@ -216,6 +254,22 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
                         </Button>
                       )}
+                      {recoveryAction && (
+                        <Button
+                          size='mini'
+                          className='message-error-note__recovery'
+                          data-testid='message-error-recovery'
+                          onClick={() => {
+                            trackFunnelEvent('prerequisite_resolved', {
+                              kind: recoveryAction.source,
+                              source: 'error_recovery',
+                            });
+                            navigate(recoveryAction.href);
+                          }}
+                        >
+                          {recoveryAction.label}
+                        </Button>
+                      )}
                       <FeedbackButton
                         module='conversation-session'
                         feedbackTags={feedbackTags}
@@ -263,6 +317,22 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                   {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
                 </Button>
               )}
+              {recoveryAction && (
+                <Button
+                  size='mini'
+                  className='message-error-note__recovery'
+                  data-testid='message-error-recovery'
+                  onClick={() => {
+                    trackFunnelEvent('prerequisite_resolved', {
+                      kind: recoveryAction.source,
+                      source: 'error_recovery',
+                    });
+                    navigate(recoveryAction.href);
+                  }}
+                >
+                  {recoveryAction.label}
+                </Button>
+              )}
               <FeedbackButton module='conversation-session' />
             </div>
           )}
@@ -296,6 +366,22 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 }}
               >
                 {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
+              </Button>
+            )}
+            {recoveryAction && (
+              <Button
+                size='mini'
+                className='message-error-note__recovery'
+                data-testid='message-error-recovery'
+                onClick={() => {
+                  trackFunnelEvent('prerequisite_resolved', {
+                    kind: recoveryAction.source,
+                    source: 'error_recovery',
+                  });
+                  navigate(recoveryAction.href);
+                }}
+              >
+                {recoveryAction.label}
               </Button>
             )}
             <FeedbackButton module='conversation-session' />

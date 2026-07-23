@@ -58,6 +58,8 @@
     "needsModel": "{{agent}} 已就绪 · 添加模型后即可运行",
     "needsModelCta": "{{agent}} 需要模型 · 点此原位连接",
     "needsWorkspaceCta": "此任务需要项目 · 点此选择文件夹",
+    "draftHeldModel": "草稿已保留 · 连接模型后将自动继续",
+    "draftHeldWorkspace": "草稿已保留 · 选择项目后将自动继续",
     "workspaceLinked": "已关联项目",
     "workspaceOptional": "项目可选",
     "workspaceRequired": "需要项目文件夹",

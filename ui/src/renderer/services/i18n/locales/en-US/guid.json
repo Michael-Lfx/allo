@@ -58,6 +58,8 @@
     "needsModel": "{{agent}} is ready · add a model to run",
     "needsModelCta": "{{agent}} needs a model · connect here",
     "needsWorkspaceCta": "This task needs a project · choose a folder",
+    "draftHeldModel": "Draft kept · connect a model to resume automatically",
+    "draftHeldWorkspace": "Draft kept · choose a project to resume automatically",
     "workspaceLinked": "Project linked",
     "workspaceOptional": "Project is optional",
     "workspaceRequired": "Project folder required",
