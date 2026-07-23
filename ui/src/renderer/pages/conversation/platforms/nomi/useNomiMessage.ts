@@ -29,6 +29,7 @@ import {
 } from '../authoritativeTurnLifecyclePolicy';
 import {
   beginTurnTiming,
+  confirmFirstValue,
   markTurnAbandonedBeforeFirstToken,
   markTurnAccepted as markFunnelTurnAccepted,
   markTurnFirstStatus,
@@ -36,6 +37,7 @@ import {
   markTurnIdle,
   markTurnStreamFinished,
 } from '@/renderer/utils/analytics/productFunnel';
+import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { processLocalCronResponse } from './localCronCommands';
 import { initialNomiTurnState, isTurnRunning, nomiTurnReducer, type NomiTurnEvent } from './nomiTurnState';
 import {
@@ -250,10 +252,15 @@ export const useNomiMessage = (
   const notifyLocalSubmit = useCallback(
     (localRequestId: string, requestMessageId?: MessageId) => {
       bindTimingKey(localRequestId);
+      const coldStart = !hasHydratedRunningState;
       beginTurnTiming(localRequestId, {
         conversation_type: 'nomi',
-        cold_start: !hasHydratedRunningState,
+        cold_start: coldStart,
       });
+      if (!coldStart) {
+        confirmFirstValue({ source: 'follow_up', conversation_type: 'nomi' });
+        markFirstWinCompleted();
+      }
       if (requestMessageId) {
         setActiveRequestMessageId(requestMessageId);
         activeMsgIdRef.current = requestMessageId;
@@ -322,6 +329,7 @@ export const useNomiMessage = (
     const timingKey = resolveTimingKey();
     if (timingKey) {
       markTurnIdle(timingKey, 'completed');
+      markFirstWinCompleted();
       timingRequestKeyRef.current = null;
     }
     dispatchPresentation({ type: 'turnCompleted' });
