@@ -36,10 +36,11 @@
     "verify": "验证并登录",
     "verifying": "验证中…",
     "back": "← 更换邮箱",
-    "successRedirect": "登录成功，正在进入…",
+    "successRedirect": "登录成功，正在准备你的首个任务…",
     "continue": "进入应用",
     "logout": "退出登录",
-    "loggedOut": "已退出登录"
+    "loggedOut": "已退出登录",
+    "preparingFirstTask": "正在验证并准备你的首个任务…"
   },
   "footerPrimary": "账号保护你的工作区与偏好",
   "footerSecondary": "安全 · 便捷",

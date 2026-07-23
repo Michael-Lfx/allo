@@ -8,6 +8,7 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { requiresCloudAuthGate, resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
@@ -132,13 +133,16 @@ const getHashRouteRedirectUrl = () => {
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
   const { status: localStatus } = useAuth();
   const { status: cloudStatus, ready: cloudReady } = useCloudAuth();
-  const authChecking = localStatus === 'checking' || !cloudReady || cloudStatus === 'checking';
+  const cloudGate = requiresCloudAuthGate();
+  const authChecking =
+    localStatus === 'checking' || (cloudGate && (!cloudReady || cloudStatus === 'checking'));
 
   if (!authChecking && localStatus !== 'authenticated') {
     return <Navigate to='/login' replace />;
   }
 
-  if (!authChecking && cloudStatus !== 'authenticated') {
+  // Desktop: Flowy account is the product key. WebUI: local instance admin is enough.
+  if (cloudGate && !authChecking && cloudStatus !== 'authenticated') {
     return <Navigate to='/cloud-login' replace />;
   }
 
@@ -222,7 +226,10 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           path='/login'
           element={
             localStatus === 'authenticated' ? (
-              <Navigate to={cloudStatus === 'authenticated' ? '/guid' : '/cloud-login'} replace />
+              <Navigate
+                to={resolvePostLocalAuthPath(cloudStatus === 'authenticated')}
+                replace
+              />
             ) : (
               withRouteFallback(LoginPage, { fullscreen: true })
             )
@@ -233,6 +240,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           element={
             localStatus !== 'authenticated' ? (
               <Navigate to='/login' replace />
+            ) : !requiresCloudAuthGate() ? (
+              <Navigate to='/guid' replace />
             ) : (
               withRouteFallback(CloudLoginPage, { fullscreen: true })
             )
@@ -321,9 +330,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
               to={
                 localStatus !== 'authenticated'
                   ? '/login'
-                  : cloudStatus !== 'authenticated'
-                    ? '/cloud-login'
-                    : '/guid'
+                  : resolvePostLocalAuthPath(cloudStatus === 'authenticated')
               }
               replace
             />

@@ -36,6 +36,7 @@ const CloudLoginPage: React.FC = () => {
   const [resendCooldown, setResendCooldown] = useState(0);
   const justLoggedInRef = useRef(false);
   const initStartedRef = useRef(false);
+  const autoVerifyRef = useRef<string | null>(null);
   const emailRef = useRef<HTMLInputElement | null>(null);
   const otpRef = useRef<HTMLInputElement | null>(null);
 
@@ -158,13 +159,14 @@ const CloudLoginPage: React.FC = () => {
     }
   }, [email, ensureSession, refresh, resendCooldown, sendingCode, showMessage, startResendCooldown, t]);
 
-  const handleLogin = useCallback(async () => {
+  const handleLogin = useCallback(async (codeOverride?: string) => {
     const trimmedEmail = email.trim();
+    const code = (codeOverride ?? otp).trim();
     if (!trimmedEmail) {
       showMessage({ type: 'error', text: t('cloudLogin.login.emailRequired') });
       return;
     }
-    if (!otp.trim()) {
+    if (!code) {
       showMessage({ type: 'error', text: t('cloudLogin.login.otpRequired') });
       return;
     }
@@ -172,13 +174,14 @@ const CloudLoginPage: React.FC = () => {
       showMessage({ type: 'error', text: t('cloudLogin.login.sendCodeFirst') });
       return;
     }
+    if (loggingIn) return;
 
     setLoggingIn(true);
-    showMessage(null);
+    showMessage({ type: 'info', text: t('cloudLogin.login.preparingFirstTask') });
     try {
       const res = await ipcBridge.cloud.loginContinue.invoke({
         pendingId,
-        input: { type: 'otp_code', code: otp.trim() },
+        input: { type: 'otp_code', code },
       });
 
       if (res.status === 'success') {
@@ -195,14 +198,28 @@ const CloudLoginPage: React.FC = () => {
         setCodeSent(false);
         setPendingId(null);
         initStartedRef.current = false;
+        autoVerifyRef.current = null;
         void ensureSession();
       }
     } catch (e) {
       showMessage({ type: 'error', text: String(e) });
+      autoVerifyRef.current = null;
     } finally {
       setLoggingIn(false);
     }
-  }, [email, otp, pendingId, refresh, ensureSession, showMessage, t]);
+  }, [email, otp, pendingId, refresh, ensureSession, showMessage, t, loggingIn]);
+
+  useEffect(() => {
+    if (!codeSent || loggingIn || sendingCode) return;
+    const digits = otp.replace(/\D/g, '');
+    if (digits.length < 6) {
+      autoVerifyRef.current = null;
+      return;
+    }
+    if (autoVerifyRef.current === digits) return;
+    autoVerifyRef.current = digits;
+    void handleLogin(digits);
+  }, [codeSent, otp, loggingIn, sendingCode, handleLogin]);
 
   const handleLogout = useCallback(async () => {
     setLoggingIn(true);

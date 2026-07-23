@@ -12,6 +12,8 @@ import { useNavigate } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import { PreviewClose, PreviewOpen, Lock, User } from '@icon-park/react';
 import { useAuth } from '../../hooks/context/AuthContext';
+import { useCloudAuth } from '../../hooks/context/CloudAuthContext';
+import { resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
 import LanMesh from './LanMesh';
 import './LoginPage.css';
 
@@ -22,28 +24,14 @@ type MessageState = {
 
 const REMEMBER_ME_KEY = 'rememberMe';
 const REMEMBERED_USERNAME_KEY = 'rememberedUsername';
-const REMEMBERED_PASSWORD_KEY = 'rememberedPassword';
-
-// Simple obfuscation for stored credentials (not cryptographically secure, but prevents plain text storage)
-const obfuscate = (text: string): string => {
-  const encoded = btoa(encodeURIComponent(text));
-  return encoded.split('').reverse().join('');
-};
-
-const deobfuscate = (text: string): string => {
-  try {
-    const reversed = text.split('').reverse().join('');
-    return decodeURIComponent(atob(reversed));
-  } catch {
-    return '';
-  }
-};
+const LEGACY_REMEMBERED_PASSWORD_KEY = 'rememberedPassword';
 
 const LoginPage: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const reduceMotion = useReducedMotion();
   const { status, login, setup, needsSetup } = useAuth();
+  const { status: cloudStatus } = useCloudAuth();
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -51,6 +39,7 @@ const LoginPage: React.FC = () => {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [message, setMessage] = useState<MessageState | null>(null);
   const [loading, setLoading] = useState(false);
+  const navigatingRef = useRef(false);
 
   const usernameRef = useRef<HTMLInputElement | null>(null);
   const passwordRef = useRef<HTMLInputElement | null>(null);
@@ -75,12 +64,12 @@ const LoginPage: React.FC = () => {
   }, [i18n.language]);
 
   useEffect(() => {
+    // Never keep passwords in localStorage. Clear any legacy obfuscated copy.
+    localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
     const isRememberMe = localStorage.getItem(REMEMBER_ME_KEY) === 'true';
     if (isRememberMe) {
       const storedUsername = localStorage.getItem(REMEMBERED_USERNAME_KEY);
-      const storedPassword = localStorage.getItem(REMEMBERED_PASSWORD_KEY);
-      if (storedUsername) setUsername(deobfuscate(storedUsername));
-      if (storedPassword) setPassword(deobfuscate(storedPassword));
+      if (storedUsername) setUsername(storedUsername);
       setRememberMe(true);
     }
     window.setTimeout(() => {
@@ -94,11 +83,17 @@ const LoginPage: React.FC = () => {
     };
   }, []);
 
+  const goAfterLocalAuth = useCallback(() => {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+    void navigate(resolvePostLocalAuthPath(cloudStatus === 'authenticated'), { replace: true });
+  }, [cloudStatus, navigate]);
+
   useEffect(() => {
     if (status === 'authenticated') {
-      void navigate('/guid', { replace: true });
+      goAfterLocalAuth();
     }
-  }, [navigate, status]);
+  }, [goAfterLocalAuth, status]);
 
   const clearMessageLater = useCallback(() => {
     if (messageTimer.current) {
@@ -147,8 +142,6 @@ const LoginPage: React.FC = () => {
       setLoading(true);
       setMessage(null);
 
-      // First run: the typed credentials BECOME the initial admin. Otherwise
-      // this is a normal sign-in.
       const result = needsSetup
         ? await setup({ username: trimmedUsername, password })
         : await login({ username: trimmedUsername, password, remember: rememberMe });
@@ -156,20 +149,18 @@ const LoginPage: React.FC = () => {
       if (result.success) {
         if (!needsSetup && rememberMe) {
           localStorage.setItem(REMEMBER_ME_KEY, 'true');
-          localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
-          localStorage.setItem(REMEMBERED_PASSWORD_KEY, obfuscate(password));
+          localStorage.setItem(REMEMBERED_USERNAME_KEY, trimmedUsername);
         } else if (!needsSetup) {
           localStorage.removeItem(REMEMBER_ME_KEY);
           localStorage.removeItem(REMEMBERED_USERNAME_KEY);
-          localStorage.removeItem(REMEMBERED_PASSWORD_KEY);
         }
+        localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
 
-        const successText = needsSetup ? t('login.setupSuccess') : t('login.success');
-        showMessage({ type: 'success', text: successText });
-
-        window.setTimeout(() => {
-          void navigate('/guid', { replace: true });
-        }, 600);
+        showMessage({
+          type: 'success',
+          text: needsSetup ? t('login.setupSuccess') : t('login.success'),
+        });
+        goAfterLocalAuth();
       } else {
         const errorText = (() => {
           switch (result.code) {
@@ -181,6 +172,7 @@ const LoginPage: React.FC = () => {
               return t('login.errors.networkError');
             case 'serverError':
               return t('login.errors.serverError');
+            case 'csrfError':
             case 'unknown':
             default:
               return result.message ?? t('login.errors.unknown');
@@ -192,10 +184,9 @@ const LoginPage: React.FC = () => {
 
       setLoading(false);
     },
-    [login, setup, needsSetup, navigate, password, rememberMe, showMessage, t, username]
+    [goAfterLocalAuth, login, setup, needsSetup, password, rememberMe, showMessage, t, username]
   );
 
-  // Route Suspense already shows fullscreen AppLoader; avoid a second viewport swap.
   if (status === 'checking') {
     return null;
   }

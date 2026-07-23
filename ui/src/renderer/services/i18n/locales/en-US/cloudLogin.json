@@ -36,10 +36,11 @@
     "verify": "Verify & sign in",
     "verifying": "Verifying…",
     "back": "← Use a different email",
-    "successRedirect": "Signed in — opening app…",
+    "successRedirect": "Signed in — preparing your first task…",
     "continue": "Continue to app",
     "logout": "Sign out",
-    "loggedOut": "Signed out"
+    "loggedOut": "Signed out",
+    "preparingFirstTask": "Verifying and preparing your first task…"
   },
   "footerPrimary": "Your account keeps workspace preferences safe",
   "footerSecondary": "Secure · Seamless",
