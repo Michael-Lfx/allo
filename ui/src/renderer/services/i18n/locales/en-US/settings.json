@@ -1158,7 +1158,7 @@
   "agentManagement": {
     "localAgents": "Local",
     "remoteAgents": "Remote",
-    "localAgentsDescription": "Nomi ships with Flowy. Engines such as Claude Code and Codex require their command-line tool to be installed before Flowy can detect them.",
+    "localAgentsDescription": "Flowy CLI ships with Flowy. Engines such as Claude Code and Codex require their command-line tool to be installed before Flowy can detect them.",
     "localAgentsSetupLink": "Setup guide",
     "goToChat": "New Conversation",
     "remoteAgentsDescription": "Remote execution engines run on another device or service. OpenClaw is supported today, with more connection types in development.",

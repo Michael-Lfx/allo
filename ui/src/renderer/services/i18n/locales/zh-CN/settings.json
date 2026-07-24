@@ -1159,7 +1159,7 @@
   "agentManagement": {
     "localAgents": "本机",
     "remoteAgents": "远程",
-    "localAgentsDescription": "Nomi 已随 Flowy 内置；Claude Code、Codex 等执行引擎需要先安装对应命令行工具，Flowy 会自动检测。",
+    "localAgentsDescription": "Flowy CLI 已随 Flowy 内置；Claude Code、Codex 等执行引擎需要先安装对应命令行工具，Flowy 会自动检测。",
     "localAgentsSetupLink": "查看安装指南",
     "goToChat": "新建会话",
     "remoteAgentsDescription": "远程执行引擎运行在其他设备或服务中。目前支持 OpenClaw，其他接入方式正在开发。",

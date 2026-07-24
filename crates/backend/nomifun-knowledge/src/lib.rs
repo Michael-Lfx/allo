@@ -1,7 +1,7 @@
-//! `nomifun-knowledge` — the Knowledge Base platform domain: user-curated
+//! the Knowledge Base platform domain: user-curated
 //! directories of markdown documents, registered globally and mounted
 //! (junction/symlink) into session workspaces as an extended knowledge
-//! source. Sessions with the write-back ("回血") switch enabled are told via
+//! source. Sessions with the write-back switch enabled are told via
 //! prompt contract that they may persist new knowledge back into the mounted
 //! directories.
 //!
