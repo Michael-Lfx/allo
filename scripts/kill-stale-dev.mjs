@@ -36,6 +36,7 @@ function staleProcesses(name) {
       const ps = `Get-CimInstance Win32_Process -Filter "Name='${name}.exe'" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress`;
       const out = execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, {
         encoding: "utf8",
+        windowsHide: true,
       }).trim();
       if (!out) return [];
       const rows = JSON.parse(out);
@@ -64,7 +65,7 @@ function staleProcesses(name) {
 function kill(pid) {
   try {
     // /T also takes the process tree — bridges hang off third-party CLIs.
-    if (isWin) execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" });
+    if (isWin) execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore", windowsHide: true });
     else execSync(`kill -9 ${pid}`, { stdio: "ignore" });
     return true;
   } catch (e) {
@@ -92,7 +93,7 @@ for (const name of names) {
 // Best-effort like everything here — this script must never break the chain.
 if (killedAny && isWin) {
   try {
-    execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 400"', { stdio: "ignore" });
+    execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 400"', { stdio: "ignore", windowsHide: true });
   } catch {
     /* ignore */
   }

@@ -232,8 +232,11 @@ fn read_cpu_chip_id() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn run_powershell(script: &str) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     if !out.status.success() {
