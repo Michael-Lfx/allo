@@ -37,7 +37,6 @@ describe('capability hub navigation', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(siderSource.includes('flowy.sider.capabilitiesExpanded')).toBe(true);
-    expect(siderSource.includes('common.siderSection.moreCapabilities')).toBe(true);
     expect(siderSource.includes('useFirstWinMode')).toBe(true);
     expect(siderSource.includes('showCapabilityHub')).toBe(true);
     expect(siderSource.includes('sider-conversation-entry')).toBe(false);

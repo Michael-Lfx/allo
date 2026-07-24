@@ -212,18 +212,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            {isFirstWin ? (
-              <button
-                type='button'
-                className='mx-8px min-h-30px px-10px flex items-center justify-center rd-8px b-none bg-transparent text-t-secondary text-12px cursor-pointer hover:bg-fill-2 hover:text-t-primary'
-                aria-expanded={capabilitiesExpanded}
-                title={t('common.siderSection.moreCapabilities')}
-                onClick={toggleCapabilities}
-                data-testid='sider-more-capabilities'
-              >
-                {collapsed ? '•••' : t('common.siderSection.moreCapabilities')}
-              </button>
-            ) : null}
             {showCapabilityHub ? (
               <>
             {/* Work partner (桌面伙伴) — demo path 2 */}

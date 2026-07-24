@@ -552,7 +552,6 @@ export type I18nKey =
   | 'common.siderSection.common'
   | 'common.siderSection.config'
   | 'common.siderSection.data'
-  | 'common.siderSection.moreCapabilities'
   | 'common.siderSection.publicService'
   | 'common.siderSection.settings'
   | 'common.siderSection.tools'
