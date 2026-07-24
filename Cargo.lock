@@ -5739,6 +5739,7 @@ dependencies = [
  "uuid",
  "which 7.0.3",
  "windows-sys 0.61.2",
+ "zip 2.4.2",
 ]
 
 [[package]]

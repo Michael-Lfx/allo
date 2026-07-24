@@ -140,6 +140,10 @@ fn read_description_handles_binary() {
         desc.to_lowercase().contains("binary"),
         "Read description should mention binary file handling"
     );
+    assert!(
+        desc.to_lowercase().contains("docx"),
+        "Read description should mention docx text extraction"
+    );
 }
 
 // --- TC-4.2-03: Edit tool description contains preconditions ---

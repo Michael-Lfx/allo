@@ -7,7 +7,10 @@ description: "Use this skill any time a .docx file is involved -- as input, outp
 
 ## Setup
 
-If `officecli` is missing:
+If `officecli` is missing and you only need to **read / summarize** body text
+from an existing `.docx`, use the `Read` tool instead of installing anything.
+
+If `officecli` is missing and you need to **create or edit** Office files:
 
 - **macOS / Linux**: `curl -fsSL https://d.officecli.ai/install.sh | bash`
 - **Windows (PowerShell)**: `irm https://d.officecli.ai/install.ps1 | iex`
@@ -119,6 +122,11 @@ officecli validate "$FILE"
 Verified: `validate` returns `no errors found`; `get /footer[1] --depth 3` shows the 5-run PAGE field chain (the begin / instrText / separate / cached value / end runs that wrap the live field), not a static `"Page"` string; for the raw `<w:fldChar>` XML behind those runs, use `officecli raw "$FILE" "/footer[1]" | grep fldChar`. This is the shape of every build: open → structure → content → format → footer/fields → close → validate.
 
 ## Reading & Analysis
+
+For **plain-text content / summarization** of an existing `.docx`, prefer the
+`Read` tool first. It extracts body paragraphs without requiring `officecli`.
+Reach for `officecli view` / `get` / `query` when you need structure (styles,
+comments, tracked changes, headers/footers), visual QA, or when editing/creating.
 
 Start wide, then narrow. `outline` tells you what structure is already there; jump into `view text` / `get` / `query` only once you know where to look.
 

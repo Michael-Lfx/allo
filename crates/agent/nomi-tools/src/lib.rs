@@ -14,6 +14,7 @@ pub mod persistent_shell;
 pub mod process_store;
 #[cfg(test)]
 pub mod pty;
+mod docx_text;
 pub mod read;
 pub mod registry;
 pub mod tool_search;

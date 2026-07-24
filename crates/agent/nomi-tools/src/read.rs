@@ -11,6 +11,7 @@ use nomi_types::file_state::FileState;
 use nomi_types::tool::{JsonSchema, ToolImage, ToolResult};
 
 use crate::Tool;
+use crate::docx_text::{extract_docx_text, is_docx_path};
 use crate::file_cache::{FileStateCache, file_mtime_ms};
 use crate::output_truncation::{TruncationBudget, truncate_middle};
 
@@ -243,16 +244,37 @@ impl ReadTool {
             };
         }
 
-        // Check if binary.
-        if content.iter().take(8192).any(|&b| b == 0) {
+        // `.docx` is a ZIP (NUL bytes in the first 8KiB), so extract body text
+        // before the generic binary stub. Plain-text reads still use the path below.
+        let owned_text;
+        let text = if is_docx_path(file_path) {
+            match extract_docx_text(&content) {
+                Ok(extracted) => {
+                    owned_text = extracted;
+                    owned_text.as_str()
+                }
+                Err(error) => {
+                    return ToolResult {
+                        content: format!(
+                            "(docx file, {} bytes; text extraction failed: {error})",
+                            content.len()
+                        ),
+                        is_error: false,
+                        images: Vec::new(),
+                    };
+                }
+            }
+        } else if content.iter().take(8192).any(|&b| b == 0) {
             return ToolResult {
                 content: format!("(binary file, {} bytes)", content.len()),
                 is_error: false,
                 images: Vec::new(),
             };
-        }
+        } else {
+            owned_text = String::from_utf8_lossy(&content).into_owned();
+            owned_text.as_str()
+        };
 
-        let text = String::from_utf8_lossy(&content);
         let lines: Vec<&str> = text.lines().collect();
 
         let effective_offset = offset.unwrap_or(0);
@@ -395,7 +417,9 @@ impl Tool for ReadTool {
          - Prefer absolute paths; relative paths are resolved against the session working directory.\n\
          - By default, it reads the entire file. Use offset and limit for partial reads on large files.\n\
          - Results are returned with line numbers (1-based) followed by a tab and the line content.\n\
-         - Image files (jpg/png/gif/webp) are returned as viewable images. Other binary files return \"(binary file, N bytes)\".\n\
+         - Image files (jpg/png/gif/webp) are returned as viewable images.\n\
+         - Word `.docx` files return extracted body text (paragraphs). Prefer this over shell/officecli when the user only needs content or a summary.\n\
+         - Other binary files return \"(binary file, N bytes)\".\n\
          - This tool can only read files, not directories. To list a directory, use Bash with ls."
     }
 
@@ -813,6 +837,40 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.images.is_empty());
         assert!(result.content.contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn read_docx_returns_extracted_body_text() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("note.docx");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>使用团队协作办公</w:t></w:r></w:p>
+    <w:p><w:r><w:t>创建协作团队</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        {
+            let file = std::fs::File::create(&file_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+
+        let tool = ReadTool::new(None, None);
+        let result = tool
+            .execute(json!({ "file_path": file_path.to_str().unwrap() }))
+            .await;
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        assert!(!result.content.contains("(binary file"), "docx must not use binary stub");
+        assert!(result.content.contains("使用团队协作办公"));
+        assert!(result.content.contains("创建协作团队"));
     }
 
     #[tokio::test]
