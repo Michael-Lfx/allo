@@ -184,7 +184,7 @@ impl SessionRegistry {
     pub fn register_session(&self, session_id: impl Into<String>, target_type: impl Into<String>) {
         let session_id = session_id.into();
         let target_type = target_type.into();
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         g.sessions
             .entry(session_id.clone())
             .and_modify(|s| s.target_type = target_type.clone())
@@ -193,14 +193,14 @@ impl SessionRegistry {
 
     /// 该 session 当前是否已登记。
     pub fn has_session(&self, session_id: &str) -> bool {
-        self.inner.lock().unwrap().sessions.contains_key(session_id)
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).sessions.contains_key(session_id)
     }
 
     /// 该 session 的 target 类型（未登记 → None）。
     pub fn target_type(&self, session_id: &str) -> Option<String> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .sessions
             .get(session_id)
             .map(|s| s.target_type.clone())
@@ -216,7 +216,7 @@ impl SessionRegistry {
     pub fn session_ids_of_type(&self, ty: &str) -> Vec<String> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .sessions
             .iter()
             .filter(|(_, s)| s.target_type == ty)
@@ -226,7 +226,7 @@ impl SessionRegistry {
 
     /// 整个连接是否已关闭。
     pub fn is_connection_closed(&self) -> bool {
-        self.inner.lock().unwrap().connection_closed
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).connection_closed
     }
 
     /// 订阅某 method（可选限定 session）的事件流。返回 broadcast 接收端。
@@ -237,7 +237,7 @@ impl SessionRegistry {
         session_id: Option<&str>,
     ) -> broadcast::Receiver<CdpEvent> {
         let key: SubKey = (method.into(), session_id.map(|s| s.to_string()));
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = g
             .subscriptions
             .entry(key)
@@ -255,7 +255,7 @@ impl SessionRegistry {
         session_id: &str,
         call_id: CallId,
     ) -> Result<oneshot::Receiver<CommandResult>, TransportError> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if g.connection_closed {
             return Err(TransportError::Closed);
         }
@@ -273,7 +273,7 @@ impl SessionRegistry {
 
     /// 取消一个已登记但未投递的命令回调（命令发送失败 / 超时清理时调）。
     pub fn cancel_command(&self, session_id: &str, call_id: CallId) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(s) = g.sessions.get_mut(session_id) {
             s.callbacks.remove(&call_id);
         }
@@ -326,7 +326,7 @@ impl SessionRegistry {
 
     /// 投递命令回包到对应回调。找不到回调（已超时清理 / 未知 id）则静默丢弃。
     fn deliver_response(&self, session_key: &str, call_id: CallId, result: CommandResult) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(session) = g.sessions.get_mut(session_key)
             && let Some(tx) = session.callbacks.remove(&call_id)
         {
@@ -367,7 +367,7 @@ impl SessionRegistry {
     /// 广播一个事件给：① 精确 (method, session) 订阅者；② 通配 (method, None) 订阅者。
     /// 无人订阅 → 静默丢弃（合法：不是所有事件都有人关心）。
     fn broadcast_event(&self, event: CdpEvent) {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let exact: SubKey = (event.method.clone(), Some(event.session_id.clone()));
         let wildcard: SubKey = (event.method.clone(), None);
         if let Some(tx) = g.subscriptions.get(&exact) {
@@ -381,7 +381,7 @@ impl SessionRegistry {
     /// 标记某 session 死亡（崩溃或关闭），并 drain 其所有挂起回调为对应错误，
     /// 使等待中的 `send` 立即解除（绝不悬挂）。粘性：之后该 session 上 `send` 短路。
     pub fn fail_session(&self, session_id: &str, crashed: bool) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(session) = g.sessions.get_mut(session_id) {
             if crashed {
                 session.crashed = true;
@@ -398,7 +398,7 @@ impl SessionRegistry {
     /// 标记整个连接关闭（WS 断开）：drain 所有 session 的所有挂起回调为 `Closed`，
     /// 并置 `connection_closed`，使之后所有 `register_command` 短路 `Closed`。
     pub fn fail_connection(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         g.connection_closed = true;
         for session in g.sessions.values_mut() {
             session.closed = true;

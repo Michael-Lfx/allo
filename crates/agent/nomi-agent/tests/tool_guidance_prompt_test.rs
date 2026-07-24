@@ -116,7 +116,6 @@ fn tool_guidance_routes_directory_listing_to_glob() {
         None,
         false,
         false,
-        false, // browser_enabled
     );
     let lower = result.to_lowercase();
 
@@ -181,7 +180,6 @@ fn tc_4_3_03b_failure_checkpoint_guidance() {
         None,
         false,
         false,
-        false, // browser_enabled
     );
     assert!(
         result.contains("hard checkpoint"),
@@ -203,7 +201,6 @@ fn tool_call_efficiency_guidance_routes_batches_without_removing_checkpoints() {
         &[],
         None,
         None,
-        false,
         false,
         false,
     );

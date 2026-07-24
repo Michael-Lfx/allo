@@ -94,7 +94,7 @@ impl Progress {
     /// 之后到来的 race 同样立即返回（已取消是粘性的）。
     pub fn abort(&self, reason: AbortReason) {
         // 先记录原因再取消，确保被唤醒的 race 一定能读到原因。
-        *self.reason.lock().unwrap() = Some(reason);
+        *self.reason.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
         self.token.cancel();
     }
 
@@ -102,7 +102,7 @@ impl Progress {
     fn abort_reason(&self) -> AbortReason {
         self.reason
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
             .unwrap_or(AbortReason::Cancelled)
     }

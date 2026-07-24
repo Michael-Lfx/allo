@@ -589,7 +589,9 @@ fn clean_orphaned_tool_calls(messages: &mut [Value]) {
                     .unwrap_or(true)
             });
             if tcs.is_empty() {
-                msg.as_object_mut().unwrap().remove("tool_calls");
+                if let Some(obj) = msg.as_object_mut() {
+                    obj.remove("tool_calls");
+                }
             }
         }
     }
@@ -637,13 +639,11 @@ fn merge_consecutive_assistant(messages: &mut Vec<Value>) {
 
             // Merge tool_calls
             if let Some(next_tcs) = next["tool_calls"].as_array() {
-                let curr_tcs = messages[i]
-                    .as_object_mut()
-                    .unwrap()
-                    .entry("tool_calls")
-                    .or_insert_with(|| json!([]));
-                if let Some(arr) = curr_tcs.as_array_mut() {
-                    arr.extend(next_tcs.iter().cloned());
+                if let Some(obj) = messages[i].as_object_mut() {
+                    let curr_tcs = obj.entry("tool_calls").or_insert_with(|| json!([]));
+                    if let Some(arr) = curr_tcs.as_array_mut() {
+                        arr.extend(next_tcs.iter().cloned());
+                    }
                 }
             }
 

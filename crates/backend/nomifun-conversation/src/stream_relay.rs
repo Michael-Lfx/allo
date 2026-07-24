@@ -29,6 +29,7 @@ use nomifun_db::models::MessageRow;
 use nomifun_realtime::UserEventSink;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
@@ -319,6 +320,26 @@ fn turn_writeback_running_state(status: &str, attempt_id: &str, started_at: i64,
     })
 }
 
+/// Terminal state for a write-back that never produced its own report because
+/// it was cancelled (a new turn / teardown) or exceeded the hard bound. Without
+/// this the assistant row keeps a running `knowledge_writeback` state forever:
+/// the live UI spins with no resolution and a later re-fetch only projects it
+/// as "interrupted" once it goes stale. Emitting a terminal state here resolves
+/// the UI immediately and marks it retryable.
+fn turn_writeback_interrupted_state(attempt_id: &str, started_at: i64, finished_at: i64) -> Value {
+    json!({
+        "status": "interrupted",
+        "attempt_id": attempt_id,
+        "started_at": started_at,
+        "updated_at": finished_at,
+        "finished_at": finished_at,
+        "retryable": true,
+        "candidates": 0,
+        "written": [],
+        "failures": [],
+    })
+}
+
 fn turn_writeback_final_state(
     report: &nomifun_knowledge::TurnWritebackReport,
     status: &str,
@@ -430,6 +451,8 @@ pub(crate) async fn run_turn_writeback_report(
     conversation_id: String,
     msg_id: String,
     final_text: String,
+    turn_token: CancellationToken,
+    hard_bound: Duration,
 ) {
     if final_text.trim().is_empty() {
         return;
@@ -453,29 +476,76 @@ pub(crate) async fn run_turn_writeback_report(
     let progress_conversation_id = conversation_id.clone();
     let progress_msg_id = msg_id.clone();
     let progress_attempt_id = attempt_id.clone();
-    let report = service
-        .finalize_turn_writeback_with_progress(request, move |phase| {
-            let repo = Arc::clone(&progress_repo);
-            let user_events = Arc::clone(&progress_user_events);
-            let user_id = progress_user_id.clone();
-            let conversation_id = progress_conversation_id.clone();
-            let msg_id = progress_msg_id.clone();
-            let attempt_id = progress_attempt_id.clone();
-            let status = turn_writeback_phase_label(phase);
-            async move {
-                let updated_at = now_ms();
-                emit_turn_writeback_state(
-                    &repo,
-                    &user_events,
-                    &user_id,
-                    &conversation_id,
-                    &msg_id,
-                    turn_writeback_running_state(status, &attempt_id, started_at, updated_at),
-                )
-                .await;
+    let finalize = service.finalize_turn_writeback_with_progress(request, move |phase| {
+        let repo = Arc::clone(&progress_repo);
+        let user_events = Arc::clone(&progress_user_events);
+        let user_id = progress_user_id.clone();
+        let conversation_id = progress_conversation_id.clone();
+        let msg_id = progress_msg_id.clone();
+        let attempt_id = progress_attempt_id.clone();
+        let status = turn_writeback_phase_label(phase);
+        async move {
+            let updated_at = now_ms();
+            emit_turn_writeback_state(
+                &repo,
+                &user_events,
+                &user_id,
+                &conversation_id,
+                &msg_id,
+                turn_writeback_running_state(status, &attempt_id, started_at, updated_at),
+            )
+            .await;
+        }
+    });
+    // Bound the write-back and always land on a terminal state. The extraction
+    // (and optional merge) makes LLM calls that can each take tens of seconds,
+    // so a cancellation (new turn / teardown) or the hard bound must still emit
+    // a terminal "interrupted" event — otherwise the row stays "running" and
+    // the UI never resolves.
+    let report = tokio::select! {
+        biased;
+        _ = turn_token.cancelled() => {
+            let finished_at = now_ms();
+            info!(
+                conversation_id = %conversation_id,
+                msg_id = %msg_id,
+                "turn-final knowledge write-back cancelled"
+            );
+            emit_turn_writeback_state(
+                &repo,
+                &user_events,
+                &user_id,
+                &conversation_id,
+                &msg_id,
+                turn_writeback_interrupted_state(&attempt_id, started_at, finished_at),
+            )
+            .await;
+            return;
+        }
+        result = tokio::time::timeout(hard_bound, finalize) => {
+            match result {
+                Ok(report) => report,
+                Err(_) => {
+                    let finished_at = now_ms();
+                    warn!(
+                        conversation_id = %conversation_id,
+                        msg_id = %msg_id,
+                        "turn-final knowledge write-back exceeded the hard bound"
+                    );
+                    emit_turn_writeback_state(
+                        &repo,
+                        &user_events,
+                        &user_id,
+                        &conversation_id,
+                        &msg_id,
+                        turn_writeback_interrupted_state(&attempt_id, started_at, finished_at),
+                    )
+                    .await;
+                    return;
+                }
             }
-        })
-        .await;
+        }
+    };
     let status = turn_writeback_status_label(report.status);
     match report.status {
         nomifun_knowledge::TurnWritebackStatus::Written
@@ -904,11 +974,19 @@ impl StreamRelay {
                     }
                 }
                 (Some(cancellation), false) => {
+                    let Some(send_error_rx) = send_error_rx.as_mut() else {
+                        // Defensive: the pending flag says the send-error channel
+                        // exists but the receiver is gone. Degrade to the plain
+                        // receive path instead of panicking on the conversation
+                        // hot path.
+                        send_error_done = true;
+                        continue;
+                    };
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
                         recv = rx.recv() => recv,
-                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                        send_error = send_error_rx => {
                             send_error_done = true;
                             match send_error {
                                 Ok(Err(send_error)) => {
@@ -932,9 +1010,17 @@ impl StreamRelay {
                 }
                 (None, true) => rx.recv().await,
                 (None, false) => {
+                    let Some(send_error_rx) = send_error_rx.as_mut() else {
+                        // Defensive: the pending flag says the send-error channel
+                        // exists but the receiver is gone. Degrade to the plain
+                        // receive path instead of panicking on the conversation
+                        // hot path.
+                        send_error_done = true;
+                        continue;
+                    };
                     tokio::select! {
                         recv = rx.recv() => recv,
-                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                        send_error = send_error_rx => {
                             send_error_done = true;
                             match send_error {
                                 Ok(Err(send_error)) => {
@@ -3369,18 +3455,30 @@ impl StreamRelay {
         } else {
             let superseded = pending_superseded_call_ids.remove(&data.call_id);
             let row_status = if superseded { "finish" } else { status };
-            let mut persisted = data.clone();
-            if superseded {
-                persisted.status = ToolCallStatus::Completed;
-            }
-            let content = serde_json::to_string(&persisted).unwrap_or_default();
+            // Persist the same enriched projection the update path writes — the
+            // `turn_id`, artifact-delivery marker, and normalized `artifacts` —
+            // instead of a bare re-serialization that silently drops them from a
+            // first-seen row. A superseded preview still resolves to Completed.
+            let insert_content = if superseded {
+                let mut value = content_value;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "status".to_owned(),
+                        serde_json::to_value(ToolCallStatus::Completed)
+                            .unwrap_or_else(|_| json!("completed")),
+                    );
+                }
+                value.to_string()
+            } else {
+                content
+            };
 
             let row = MessageRow {
                 id: message_id.clone(),
                 conversation_id: self.conversation_id.clone(),
                 msg_id: Some(self.root_turn_id.clone()),
                 r#type: "tool_call".into(),
-                content,
+                content: insert_content,
                 position: Some("left".into()),
                 status: Some(row_status.to_owned()),
                 hidden: hidden || superseded,
@@ -5889,10 +5987,16 @@ mod tests {
         let outcome = relay.consume(rx).await;
         assert_eq!(outcome.terminal, RelayTerminal::Finish);
 
+        let inserts = repo.take_inserts();
+        let browser_id = inserts
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .map(|row| row.id.clone())
+            .expect("active Browser call should be persisted before cancellation");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == "asst-1:tool:tc-browser")
+            .find(|(id, _)| id == &browser_id)
             .expect("active Browser call should be marked canceled on end_turn");
         assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
@@ -6022,8 +6126,18 @@ mod tests {
         let outcome = relay.consume(rx).await;
         assert_eq!(outcome.terminal, RelayTerminal::Finish);
 
+        let inserts = repo.take_inserts();
+        let preview_id = inserts
+            .iter()
+            .find(|row| {
+                row.r#type == "tool_call"
+                    && serde_json::from_str::<ToolCallEventData>(&row.content)
+                        .is_ok_and(|data| data.call_id == "nomi-call_call_fbb31e380c974b268f4561c1")
+            })
+            .map(|row| row.id.clone())
+            .expect("preview Browser call should be persisted before it is superseded");
+        let preview_id = preview_id.as_str();
         let updates = repo.take_updates();
-        let preview_id = "asst-1:tool:nomi-call_call_fbb31e380c974b268f4561c1";
         assert!(
             updates
                 .iter()
@@ -6114,10 +6228,21 @@ mod tests {
 
         relay.consume(rx).await;
 
+        let inserts = repo.take_inserts();
+        let computer_id = inserts
+            .iter()
+            .find(|row| {
+                row.r#type == "tool_call"
+                    && serde_json::from_str::<ToolCallEventData>(&row.content)
+                        .is_ok_and(|data| data.call_id == "tc-computer")
+            })
+            .map(|row| row.id.clone())
+            .expect("settled Computer call should be persisted before the terminal error");
+        let computer_id = computer_id.as_str();
         let updates = repo.take_updates();
         assert!(
             !updates.iter().any(|(id, update)| {
-                id == "asst-1:tool:tc-computer"
+                id == computer_id
                     && update
                         .content
                         .as_deref()

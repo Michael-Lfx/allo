@@ -11,7 +11,7 @@ use nomi_config::config::ConfigFile;
 #[test]
 fn tc_2_2_01_compact_config_defaults() {
     let cfg = CompactConfig::default();
-    assert_eq!(cfg.context_window, 200_000);
+    assert_eq!(cfg.context_window, 128_000);
     assert_eq!(cfg.output_reserve, 20_000);
     assert_eq!(cfg.autocompact_buffer, 13_000);
     assert_eq!(cfg.emergency_buffer, 3_000);

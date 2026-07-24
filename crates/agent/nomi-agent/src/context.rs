@@ -851,7 +851,6 @@ mod tests {
             None,
             false,
             false,
-            false,
         );
 
         let custom = result.find("CUSTOM_PROMPT_MARKER").unwrap();

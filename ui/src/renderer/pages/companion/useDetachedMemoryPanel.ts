@@ -30,7 +30,7 @@ export interface DetachedMemoryPanelController { phase: MemoryPanelPhase; isExpa
 export function useDetachedMemoryPanel(options: {
   companionId: CompanionId | null;
   suggestions: ICompanionSuggestion[];
-  onActivate: (suggestion: ICompanionSuggestion) => Promise<void>;
+  onActivate: (suggestion: ICompanionSuggestion | undefined) => Promise<void>;
   onFallback: () => Promise<void>;
   badgeRef: React.RefObject<HTMLButtonElement | null>;
 }): DetachedMemoryPanelController {
@@ -41,6 +41,12 @@ export function useDetachedMemoryPanel(options: {
   const fallbackRef = useRef(options.onFallback);
   const probeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ownerWindowLabelRef = useRef('');
+  /** Suggestions included in the last snapshot sent to the panel window. The
+   *  panel renders THIS list, which can lag behind the live `suggestionsRef`
+   *  (e.g. a suggestion decided in the main window is removed from live state
+   *  before the panel receives the updated snapshot). Activate lookups must
+   *  fall back to it so clicking a visible item never dead-ends. */
+  const panelSnapshotSuggestionsRef = useRef<ICompanionSuggestion[]>([]);
   suggestionsRef.current = options.suggestions;
   activateRef.current = options.onActivate;
   fallbackRef.current = options.onFallback;
@@ -117,6 +123,7 @@ export function useDetachedMemoryPanel(options: {
         stopProbe();
         const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
         const snapshot: MemoryPanelSnapshotPayload = { requestId: payload.requestId, ownerCompanionId: current.ownerCompanionId, ownerWindowLabel: ownerWindowLabelRef.current, suggestions: suggestionsRef.current, theme, customCss: String(configService.get('customCss') || '') };
+        panelSnapshotSuggestionsRef.current = snapshot.suggestions;
         void emitToMemoryPanel(MEMORY_PANEL_EVENTS.snapshot, snapshot);
       }),
       listenCurrentWindow<MemoryPanelMeasuredPayload>(MEMORY_PANEL_EVENTS.measured, (payload) => {
@@ -159,11 +166,19 @@ export function useDetachedMemoryPanel(options: {
       }),
       listenCurrentWindow<MemoryPanelActivatePayload>(MEMORY_PANEL_EVENTS.activate, (payload) => {
         if (payload.requestId !== stateRef.current.requestId) return;
-        const suggestion = suggestionsRef.current.find((item) => item.id === payload.suggestionId);
+        // The panel renders the last snapshot, which can lag behind the live
+        // list (a suggestion decided elsewhere is removed from live state
+        // before the panel receives the refreshed snapshot). Fall back to the
+        // snapshot so clicking a visible item always navigates; if neither
+        // source has it, still open the default suggestions page.
+        const suggestion =
+          suggestionsRef.current.find((item) => item.id === payload.suggestionId) ??
+          panelSnapshotSuggestionsRef.current.find((item) => item.id === payload.suggestionId);
         void (async () => {
           let ok = false;
           try {
-            if (suggestion) { await activateRef.current(suggestion); ok = true; }
+            await activateRef.current(suggestion);
+            ok = true;
           } catch {
             ok = false;
           } finally {
@@ -194,6 +209,7 @@ export function useDetachedMemoryPanel(options: {
       theme,
       customCss: String(configService.get('customCss') || ''),
     };
+    panelSnapshotSuggestionsRef.current = snapshot.suggestions;
     void emitToMemoryPanel(MEMORY_PANEL_EVENTS.snapshot, snapshot);
   }, [options.suggestions]);
   useEffect(() => { if (options.suggestions.length === 0) close('empty'); }, [close, options.suggestions.length]);

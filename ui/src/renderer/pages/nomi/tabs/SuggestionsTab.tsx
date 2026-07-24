@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { Button, Empty, Message, Pagination, Radio, Spin, Tag } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import type { ICompanionSuggestion } from '@/common/adapter/ipcBridge';
@@ -19,7 +18,6 @@ const KIND_EMOJI: Record<string, string> = {
 
 const SuggestionsTab: React.FC = () => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const [filter, setFilter] = useState('new');
   const [items, setItems] = useState<ICompanionSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,10 +72,15 @@ const SuggestionsTab: React.FC = () => {
     async (s: ICompanionSuggestion, accept: boolean) => {
       try {
         await ipcBridge.companion.decideSuggestion.invoke({ id: s.id, accept });
+        // Stay on the approval list after deciding — this is a review surface,
+        // users work through suggestions in a row. Refresh drops the card from
+        // the "new" filter (or flips its status tag) in place. We deliberately
+        // do NOT navigate to `s.action.to` here: those model-authored targets
+        // are unvalidated (unlike the deep-link whitelist), so an unmatched
+        // route falls through the router catch-all to /guid — the reported
+        // "采纳后回到主页" jump. The post-accept destination, when wanted, is
+        // reachable from its own page, not by yanking the reviewer away.
         void refresh();
-        if (accept && s.action?.type === 'navigate' && s.action.to) {
-          void navigate(s.action.to);
-        }
       } catch (e) {
         // Refresh too — drops a stale card instead of leaving it clickable to
         // re-fail. (Backend decide is idempotent, so "already decided" no
@@ -86,7 +89,7 @@ const SuggestionsTab: React.FC = () => {
         Message.error(String(e));
       }
     },
-    [navigate, refresh]
+    [refresh]
   );
 
   const handlePageChange = useCallback(

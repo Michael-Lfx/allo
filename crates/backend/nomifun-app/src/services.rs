@@ -717,6 +717,25 @@ impl AppServices {
         // and be mistaken for an orphan by detached boot cleanup.
         creation_service.reconcile_on_boot().await;
 
+        // Conversation boot reconciliation: settle ghost 'running' conversations
+        // left by a process killed mid-turn. At boot no runtime is live, so any
+        // persisted 'running' row is a crash remnant. This finalizes dangling
+        // 'thinking' messages, clears the resumable ACP session (so warmup opens
+        // a fresh session instead of replaying the interrupted turn), and flips
+        // the row to 'finished' — all before any router/warmup can observe it.
+        let reconciled_conversations =
+            nomifun_conversation::reconcile_running_conversations_on_boot(
+                &conversation_repo,
+                &acp_session_repo,
+            )
+            .await;
+        if reconciled_conversations > 0 {
+            tracing::info!(
+                reconciled = reconciled_conversations,
+                "conversation boot reconciliation: ghost 'running' sessions settled"
+            );
+        }
+
         // Headless seed: bind a Remote access token to the default companion so an
         // operator can configure the front door via env on a headless server.
         // (Desktop mints per-companion tokens via /api/webui/companions/{id}/access-token.)

@@ -20,7 +20,25 @@ type MessageState = {
 
 const REMEMBER_ME_KEY = 'rememberMe';
 const REMEMBERED_USERNAME_KEY = 'rememberedUsername';
+// Legacy key from older versions that persisted the password; kept only so
+// any value stored by those versions is wiped on load. Passwords are never
+// written to localStorage anymore.
 const LEGACY_REMEMBERED_PASSWORD_KEY = 'rememberedPassword';
+
+// Simple obfuscation for the stored username (not cryptographically secure, but prevents plain text storage)
+const obfuscate = (text: string): string => {
+  const encoded = btoa(encodeURIComponent(text));
+  return encoded.split('').reverse().join('');
+};
+
+const deobfuscate = (text: string): string => {
+  try {
+    const reversed = text.split('').reverse().join('');
+    return decodeURIComponent(atob(reversed));
+  } catch {
+    return '';
+  }
+};
 
 const LoginPage: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -65,9 +83,11 @@ const LoginPage: React.FC = () => {
     const isRememberMe = localStorage.getItem(REMEMBER_ME_KEY) === 'true';
     if (isRememberMe) {
       const storedUsername = localStorage.getItem(REMEMBERED_USERNAME_KEY);
-      if (storedUsername) setUsername(storedUsername);
+      if (storedUsername) setUsername(deobfuscate(storedUsername));
       setRememberMe(true);
     }
+    // One-time cleanup of passwords persisted by older versions.
+    localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
     window.setTimeout(() => {
       usernameRef.current?.focus();
     }, 0);
@@ -145,7 +165,7 @@ const LoginPage: React.FC = () => {
       if (result.success) {
         if (!needsSetup && rememberMe) {
           localStorage.setItem(REMEMBER_ME_KEY, 'true');
-          localStorage.setItem(REMEMBERED_USERNAME_KEY, trimmedUsername);
+          localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
         } else if (!needsSetup) {
           localStorage.removeItem(REMEMBER_ME_KEY);
           localStorage.removeItem(REMEMBERED_USERNAME_KEY);

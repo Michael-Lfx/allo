@@ -243,6 +243,7 @@ async fn try_grep(
     case_insensitive: bool,
     context_lines: usize,
 ) -> ToolResult {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = if cfg!(windows) {
         // findstr has no glob-include or context-line support; those refinements
         // are silently unavailable on the Windows fallback path.

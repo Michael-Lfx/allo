@@ -13,7 +13,10 @@ fn tc_2_5_01_below_emergency_threshold() {
     // context_window=200_000, emergency_buffer=3_000
     // emergency_limit = 200k - 3k = 197k
     // 190k < 197k → false
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
     assert!(
         !is_at_emergency_limit(190_000, &config),
         "190k tokens should be below the 197k emergency limit"
@@ -24,8 +27,12 @@ fn tc_2_5_01_below_emergency_threshold() {
 
 #[test]
 fn tc_2_5_02_above_emergency_threshold() {
+    // context_window=200_000, emergency_buffer=3_000
     // 198k >= 197k → true
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
     assert!(
         is_at_emergency_limit(198_000, &config),
         "198k tokens should exceed the 197k emergency limit"
@@ -36,8 +43,12 @@ fn tc_2_5_02_above_emergency_threshold() {
 
 #[test]
 fn tc_2_5_03_at_exact_emergency_threshold() {
+    // context_window=200_000, emergency_buffer=3_000
     // 197k >= 197k → true
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
     assert!(
         is_at_emergency_limit(197_000, &config),
         "197k tokens should trigger at exactly the emergency limit"
@@ -69,6 +80,7 @@ fn emergency_check_ignores_enabled_flag() {
     // Emergency is the safety net — it fires even when compact is disabled
     let config = CompactConfig {
         enabled: false,
+        context_window: 200_000,
         ..CompactConfig::default()
     };
     assert!(
@@ -96,9 +108,14 @@ fn autocompact_fires_before_emergency() {
     // so autocompact gets a chance to run before the safety net kicks in.
     use nomi_agent::compact::auto::should_autocompact;
 
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
 
     // Pick a token count that triggers autocompact but not emergency
+    // autocompact threshold = 200k - 20k - 13k = 167k
+    // emergency limit = 200k - 3k = 197k
     let token_count: u64 = 170_000;
     let autocompact_triggers = should_autocompact(token_count, &config);
     let emergency_triggers = is_at_emergency_limit(token_count, &config);
@@ -115,7 +132,10 @@ fn both_trigger_near_limit() {
     // When very close to the limit, both autocompact and emergency should fire
     use nomi_agent::compact::auto::should_autocompact;
 
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
     let token_count: u64 = 198_000;
 
     assert!(should_autocompact(token_count, &config));
