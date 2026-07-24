@@ -223,13 +223,13 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onClick={handleNomiClick}
             />
             {/* External agents on /mcp-agent — demo path 3 */}
-            <SiderOpenCapabilitiesEntry
+            {/* <SiderOpenCapabilitiesEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/open-capabilities')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleOpenCapabilitiesClick}
-            />
+            /> */}
             {/* ViMax video generation */}
             <SiderVideoGenerationEntry
               isMobile={isMobile}
