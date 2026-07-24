@@ -6,10 +6,11 @@ import { Button, Spin } from '@arco-design/web-react';
 import { Edit, Music, VideoOne } from '@icon-park/react';
 import { getArtifact, loadArtifactMediaUrl } from '../api';
 import {
-  buildStoryboardScenes,
-  findStoryboardPath,
+  buildStoryboardScenesFromStoryboards,
+  findStoryboardPaths,
   parseStoryboard,
   type StoryboardScene,
+  type StoryboardShot,
 } from '../artifactPresentation';
 import type { ArtifactNode } from '../types';
 import styles from '../index.module.css';
@@ -92,36 +93,38 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   onReviseScene,
 }) => {
   const { t } = useTranslation();
-  const storyboardPath = useMemo(() => findStoryboardPath(artifacts), [artifacts]);
-  const [storyboardText, setStoryboardText] = useState<string>();
+  const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
+  const [storyboardEntries, setStoryboardEntries] = useState<
+    Array<{ path: string; shots: StoryboardShot[] }>
+  >([]);
   const [activeSceneId, setActiveSceneId] = useState<string>();
 
   useEffect(() => {
-    if (!storyboardPath) {
-      setStoryboardText(undefined);
+    if (!storyboardPaths.length) {
+      setStoryboardEntries([]);
       return;
     }
     let cancelled = false;
-    void getArtifact(sessionId, storyboardPath)
-      .then((content) => {
-        if (!cancelled) setStoryboardText(content.text);
+    void Promise.all(
+      storyboardPaths.map(async (path) => {
+        try {
+          const content = await getArtifact(sessionId, path);
+          return { path, shots: parseStoryboard(content.text) };
+        } catch {
+          return { path, shots: [] as StoryboardShot[] };
+        }
       })
-      .catch(() => {
-        if (!cancelled) setStoryboardText(undefined);
-      });
+    ).then((entries) => {
+      if (!cancelled) setStoryboardEntries(entries);
+    });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, storyboardPath]);
+  }, [sessionId, storyboardPaths]);
 
   const scenes = useMemo(
-    () =>
-      buildStoryboardScenes(
-        artifacts,
-        parseStoryboard(storyboardText),
-        storyboardPath
-      ).slice(0, 30),
-    [artifacts, storyboardPath, storyboardText]
+    () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries).slice(0, 60),
+    [artifacts, storyboardEntries]
   );
   const activeScene =
     scenes.find((scene) => scene.id === activeSceneId) ??

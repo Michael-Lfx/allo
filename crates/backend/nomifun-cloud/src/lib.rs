@@ -37,8 +37,8 @@ pub use error::{CloudError, ServerClientError};
 pub use flowy::{
     ClawModelEntry, CreateVideoTaskResponse, CreditsBalance, CreditsCheckinResponse,
     FlowyApiClient, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
-    MODEL_CATEGORY_VIDEO, UserMe,
-    VideoContentImage, VideoCreateParams, VideoTaskRecord, resolve_model_in_catalog,
+    MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, UserMe, VideoContentImage,
+    VideoCreateParams, VideoTaskRecord, resolve_model_in_catalog,
 };
 pub use llm::ServerLlmProvider;
 pub use profile::ProfileStore;

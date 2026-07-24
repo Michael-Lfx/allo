@@ -16,6 +16,10 @@ use crate::prompt_safety::{
     ultra_safe_fallback_prompt,
 };
 
+/// Prefer true multi-ref URL arrays for Seedream-class models; fall back to a
+/// composed strip only when OSS upload fails or the model cannot take multi-image.
+const MAX_MULTI_REF_IMAGES: usize = 8;
+
 pub struct FlowyImage {
     services: FlowyVimaxServices,
     model_override: Option<String>,
@@ -68,13 +72,14 @@ impl FlowyImage {
         &self,
         model: &str,
         prompt: &str,
-        image_url: Option<String>,
+        image_urls: &[String],
         out_path: &Path,
     ) -> Result<(), nomifun_cloud::ServerClientError> {
         let req = ImageGenerationRequest {
             model: model.to_string(),
             prompt: prompt.to_string(),
-            image_url,
+            image_url: None,
+            image_urls: image_urls.to_vec(),
             extra: Value::Null,
         };
         let upstream = self
@@ -123,6 +128,60 @@ impl FlowyImage {
             }
         }
     }
+
+    /// Resolve local refs → HTTPS public URLs (preferred) or a single data-URL strip fallback.
+    async fn resolve_reference_urls(
+        &self,
+        ref_image_paths: &[&Path],
+        out_path: &Path,
+    ) -> VimaxResult<Vec<String>> {
+        if ref_image_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut urls = Vec::new();
+        for (i, path) in ref_image_paths
+            .iter()
+            .take(MAX_MULTI_REF_IMAGES)
+            .enumerate()
+        {
+            match self
+                .services
+                .upload_image_public_url(path, &format!("img_ref_{i}"))
+                .await
+            {
+                Ok(url) => urls.push(url),
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "OSS upload for image ref failed; will try strip/data-url fallback"
+                    );
+                    urls.clear();
+                    break;
+                }
+            }
+        }
+        if !urls.is_empty() {
+            return Ok(urls);
+        }
+
+        // Fallback: single-slot APIs / OSS outage — compose a strip, send as data URL.
+        if ref_image_paths.len() == 1 {
+            return Ok(vec![path_to_data_url(ref_image_paths[0]).await?]);
+        }
+        let composed_path = out_path.with_extension("ref_strip.png");
+        let paths_for_blocking: Vec<PathBuf> =
+            ref_image_paths.iter().map(|p| (*p).to_path_buf()).collect();
+        let dest = composed_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let refs: Vec<&Path> = paths_for_blocking.iter().map(|p| p.as_path()).collect();
+            crate::media_local::compose_reference_strip(&refs, &dest)
+        })
+        .await
+        .map_err(|e| VimaxError::Image(format!("compose ref strip join: {e}")))??;
+        Ok(vec![path_to_data_url(&composed_path).await?])
+    }
 }
 
 #[async_trait]
@@ -135,33 +194,14 @@ impl VimaxImage for FlowyImage {
     ) -> VimaxResult<()> {
         self.services.require_token().await?;
         let model = self.resolve_model().await?;
-
-        // Multi-ref → compose a single strip so single-slot img2img APIs still see
-        // character bible + empty set / prop (order preserved by caller).
-        let composed_path;
-        let image_url = if ref_image_paths.is_empty() {
-            None
-        } else if ref_image_paths.len() == 1 {
-            Some(path_to_data_url(ref_image_paths[0]).await?)
-        } else {
-            composed_path = out_path.with_extension("ref_strip.png");
-            let paths_owned: Vec<&Path> = ref_image_paths.to_vec();
-            let dest = composed_path.clone();
-            let paths_for_blocking: Vec<PathBuf> =
-                paths_owned.iter().map(|p| (*p).to_path_buf()).collect();
-            tokio::task::spawn_blocking(move || {
-                let refs: Vec<&Path> = paths_for_blocking.iter().map(|p| p.as_path()).collect();
-                crate::media_local::compose_reference_strip(&refs, &dest)
-            })
-            .await
-            .map_err(|e| VimaxError::Image(format!("compose ref strip join: {e}")))??;
-            Some(path_to_data_url(&composed_path).await?)
-        };
+        let image_urls = self
+            .resolve_reference_urls(ref_image_paths, out_path)
+            .await?;
 
         // Tier 1: lexical soften + positive safety prefix (keep refs).
         let tier1 = sanitize_image_prompt(prompt);
         let err1 = match self
-            .generate_once(&model, &tier1, image_url.clone(), out_path)
+            .generate_once(&model, &tier1, &image_urls, out_path)
             .await
         {
             Ok(()) => return Ok(()),
@@ -183,12 +223,13 @@ impl VimaxImage for FlowyImage {
         tracing::warn!(
             model = %model,
             error = %raw1,
-            keep_refs = image_url.is_some(),
+            keep_refs = !image_urls.is_empty(),
+            ref_count = image_urls.len(),
             "image content inspection failed; tier2 strict lexical rewrite"
         );
         let tier2 = sanitize_image_prompt_strict(prompt);
         if let Err(err2) = self
-            .generate_once(&model, &tier2, image_url.clone(), out_path)
+            .generate_once(&model, &tier2, &image_urls, out_path)
             .await
         {
             let raw2 = err2.to_string();
@@ -212,7 +253,7 @@ impl VimaxImage for FlowyImage {
                 None => sanitize_image_prompt_strict(&tier2),
             };
             if let Err(err3) = self
-                .generate_once(&model, &tier3, image_url.clone(), out_path)
+                .generate_once(&model, &tier3, &image_urls, out_path)
                 .await
             {
                 let raw3 = err3.to_string();
@@ -232,7 +273,7 @@ impl VimaxImage for FlowyImage {
                     "image content inspection failed after LLM rewrite; tier4 ultra-safe fallback"
                 );
                 let tier4 = ultra_safe_fallback_prompt(prompt);
-                self.generate_once(&model, &tier4, image_url.clone(), out_path)
+                self.generate_once(&model, &tier4, &image_urls, out_path)
                     .await
                     .map_err(|err4| {
                         map_model_err(
@@ -271,59 +312,62 @@ async fn path_to_data_url(path: &Path) -> VimaxResult<String> {
     Ok(format!("data:{mime};base64,{b64}"))
 }
 
-fn extract_first_image_url(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) if s.starts_with("http") || s.starts_with("data:image/") => Some(s.clone()),
-        Value::Array(arr) => arr.iter().find_map(extract_first_image_url),
-        Value::Object(map) => {
-            for key in ["url", "image_url", "image", "b64_json"] {
-                if let Some(v) = map.get(key) {
-                    if key == "b64_json" {
-                        if let Some(b64) = v.as_str() {
-                            return Some(format!("data:image/png;base64,{b64}"));
-                        }
-                    } else if let Some(s) = v.as_str() {
-                        if !s.is_empty() {
-                            return Some(s.to_string());
-                        }
-                    }
+fn extract_first_image_url(v: &Value) -> Option<String> {
+    if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+        for item in arr {
+            if let Some(u) = item.get("url").and_then(|x| x.as_str()) {
+                if !u.trim().is_empty() {
+                    return Some(u.to_string());
                 }
             }
-            map.values().find_map(extract_first_image_url)
+            if let Some(u) = item.get("b64_json").and_then(|x| x.as_str()) {
+                if !u.trim().is_empty() {
+                    return Some(format!("data:image/png;base64,{u}"));
+                }
+            }
         }
-        _ => None,
     }
+    if let Some(u) = v.pointer("/output/results/0/url").and_then(|x| x.as_str()) {
+        return Some(u.to_string());
+    }
+    if let Some(u) = v.pointer("/output/choices/0/message/content/0/image").and_then(|x| x.as_str())
+    {
+        return Some(u.to_string());
+    }
+    None
 }
 
-async fn download_to_path(url: &str, out_path: &Path) -> VimaxResult<()> {
-    if let Some(parent) = out_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    if let Some(b64) = url.strip_prefix("data:image/") {
-        let data = b64.split_once(',').map(|(_, d)| d).unwrap_or(b64);
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
-            .map_err(|e| VimaxError::Image(format!("bad data URL: {e}")))?;
-        // Always normalize to real PNG — Seedream often returns JPEG data URLs.
-        crate::media_local::write_image_bytes_as_png(&bytes, out_path)
-            .map_err(|e| VimaxError::Image(e.to_string()))?;
+async fn download_to_path(url: &str, out_path: &Path) -> Result<(), String> {
+    if let Some(rest) = url.strip_prefix("data:") {
+        let b64 = rest.split(',').nth(1).ok_or("invalid data url")?;
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+            .map_err(|e| e.to_string())?;
+        if let Some(parent) = out_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        tokio::fs::write(out_path, bytes)
+            .await
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
     let resp = reqwest::Client::new()
         .get(url)
         .send()
         .await
-        .map_err(|e| VimaxError::Image(e.to_string()))?;
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(VimaxError::Image(format!(
-            "download failed: HTTP {}",
-            resp.status()
-        )));
+        return Err(format!("download failed: HTTP {}", resp.status()));
     }
-    let bytes = resp
-        .bytes()
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tokio::fs::write(out_path, &bytes)
         .await
-        .map_err(|e| VimaxError::Image(e.to_string()))?;
-    crate::media_local::write_image_bytes_as_png(&bytes, out_path)
-        .map_err(|e| VimaxError::Image(e.to_string()))?;
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

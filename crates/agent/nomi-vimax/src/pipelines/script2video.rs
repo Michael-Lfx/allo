@@ -185,6 +185,8 @@ impl Script2VideoPipeline {
         self.generate_videos_sequential(
             &plan.shot_descriptions,
             &plan.characters,
+            &registry,
+            &world_pairs,
             &style,
             &progress,
         )
@@ -629,6 +631,8 @@ impl Script2VideoPipeline {
         &self,
         shots: &[ShotDescription],
         characters: &[CharacterInScene],
+        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        world_pairs: &[(PathBuf, String)],
         style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
@@ -652,7 +656,15 @@ impl Script2VideoPipeline {
                 pct,
             );
             match self
-                .generate_video_for_shot(shot, shots.len(), characters, style, progress)
+                .generate_video_for_shot(
+                    shot,
+                    shots.len(),
+                    characters,
+                    registry,
+                    world_pairs,
+                    style,
+                    progress,
+                )
                 .await
             {
                 Ok(()) => {
@@ -733,7 +745,7 @@ impl Script2VideoPipeline {
             available.extend(rank_world_pairs_for_frame(
                 &first_shot.ff_desc,
                 world_pairs,
-                3,
+                4,
             ));
 
             // Prefer image continuity from parent frame over a billed transition video.
@@ -794,7 +806,7 @@ impl Script2VideoPipeline {
                 available.extend(rank_world_pairs_for_frame(
                     &first_shot.lf_desc,
                     world_pairs,
-                    3,
+                    4,
                 ));
                 available.push((
                     continuity.path.clone(),
@@ -838,7 +850,7 @@ impl Script2VideoPipeline {
                 // frame makes Seedance I2V freeze on the same opening for ~4s.
                 let mut available =
                     portrait_pairs(characters, &shot.ff_vis_char_idxs, registry);
-                available.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 3));
+                available.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 4));
                 available.push((
                     continuity.path.clone(),
                     format!(
@@ -865,7 +877,7 @@ impl Script2VideoPipeline {
                 if !lf.exists() {
                     let mut available =
                         portrait_pairs(characters, &shot.lf_vis_char_idxs, registry);
-                    available.extend(rank_world_pairs_for_frame(&shot.lf_desc, world_pairs, 3));
+                    available.extend(rank_world_pairs_for_frame(&shot.lf_desc, world_pairs, 4));
                     available.push((
                         ff.clone(),
                         format!(
@@ -975,7 +987,7 @@ impl Script2VideoPipeline {
                 3u8
             }
         });
-        let portrait_budget = vis_char_idxs.len().clamp(1, 2);
+        let portrait_budget = vis_char_idxs.len().clamp(1, MAX_FRAME_PORTRAIT_REFS);
         pairs = pick_frame_ref_strip(pairs, portrait_budget);
 
         let identity = character_identity_clause(characters, vis_char_idxs, style);
@@ -996,9 +1008,13 @@ impl Script2VideoPipeline {
             .map(|(_, t)| t.chars().take(60).collect::<String>())
             .unwrap_or_default();
         let mut prefix = String::new();
-        for (i, (_, text)) in pairs.iter().enumerate() {
-            let hint: String = text.chars().take(80).collect();
-            prefix.push_str(&format!("Ref{i}:{hint}. "));
+        for (i, (path, text)) in pairs.iter().enumerate() {
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("ref.png");
+            let hint: String = text.chars().take(100).collect();
+            prefix.push_str(&format!("[{name}] (image #{i}): {hint}. "));
         }
         let continuity_hint = if pairs
             .iter()
@@ -1008,16 +1024,13 @@ impl Script2VideoPipeline {
         } else {
             ""
         };
-        let strip_hint = if pairs.len() > 1 {
-            "Reference strip L→R: cast bible (three-view), empty set plate, prop/continuity. Match faces/wardrobe from cast panel; copy architecture/lighting from empty set; place cast INTO that set (do not invent a new location or new characters). "
-        } else if pairs
-            .iter()
-            .any(|(p, _)| {
-                let s = p.to_string_lossy().to_ascii_lowercase();
-                s.contains("character_portrait") || s.contains("three_view")
-            })
-        {
-            "Match face/hair/outfit from the cast three-view reference. "
+        let multi_ref_hint = if pairs.len() > 1 {
+            "Multi-reference img2img: each [filename] above is a separate input image — match faces/wardrobe from *_three_view.png, architecture/lighting from *_environment_plate.png, objects from *_prop.png, and continuity from shot frames. Place the cast INTO the referenced set; do not invent a new location or new characters. "
+        } else if pairs.iter().any(|(p, _)| {
+            let s = p.to_string_lossy().to_ascii_lowercase();
+            s.contains("character_portrait") || s.contains("three_view")
+        }) {
+            "Match face/hair/outfit from the cast three-view reference file named above. "
         } else {
             ""
         };
@@ -1033,7 +1046,7 @@ impl Script2VideoPipeline {
         };
         // Plot + identity + set first — selector text alone often drifts off story.
         let full_prompt = format!(
-            "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity}{set_clause}{prop_clause}{strip_hint}{continuity_hint}{prefix}Scene: {prompt}"
+            "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity}{set_clause}{prop_clause}{multi_ref_hint}{continuity_hint}{prefix}Scene: {prompt}"
         );
         let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
         self.backends
@@ -1053,6 +1066,8 @@ impl Script2VideoPipeline {
         shot: &ShotDescription,
         shot_count: usize,
         characters: &[CharacterInScene],
+        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        world_pairs: &[(PathBuf, String)],
         style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
@@ -1077,18 +1092,30 @@ impl Script2VideoPipeline {
         }
         let lf = shot_dir.join("last_frame.png");
         let use_last = matches!(shot.variation_type.as_str(), "medium" | "large") && lf.exists();
-        // Seedance I2V locks cast via first/last frame. Do NOT attach three-view sheets as
-        // reference_image — multi-MB data-URL payloads make Flowy return an empty body
-        // ("not valid Flowy JSON envelope: expected value at line 1 column 1").
-        let prompt = i2v_motion_prompt(shot, characters, style);
+        // Cast three-views + matched env/prop plates as video reference_image (OSS HTTPS URLs).
+        let mut vis_idxs: Vec<i32> = shot.ff_vis_char_idxs.clone();
+        for idx in &shot.lf_vis_char_idxs {
+            if !vis_idxs.contains(idx) {
+                vis_idxs.push(*idx);
+            }
+        }
+        let mut ref_pairs = portrait_pairs(characters, &vis_idxs, registry);
+        ref_pairs.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 3));
+        // Prefer cast → env → prop; hard-cap for Seedance payload/latency.
+        ref_pairs = pick_video_ref_strip(ref_pairs);
+        let cast_ref_paths: Vec<PathBuf> = ref_pairs.iter().map(|(p, _)| p.clone()).collect();
+        let cast_ref_slices: Vec<&Path> = cast_ref_paths.iter().map(|p| p.as_path()).collect();
+        let prompt = i2v_motion_prompt(shot, characters, style, &ref_pairs);
         let target = load_target_duration_secs(&self.working_dir).await;
         let duration_secs = crate::planning::clip_duration_secs(target, shot_count);
         emit(
             progress,
             "video_clip_start",
             &format!(
-                "Generating shot {} video ({}s; may queue / rate-limit)",
-                shot.idx, duration_secs
+                "Generating shot {} video ({}s; {} ref image(s); may queue / rate-limit)",
+                shot.idx,
+                duration_secs,
+                cast_ref_slices.len()
             ),
         );
 
@@ -1100,7 +1127,7 @@ impl Script2VideoPipeline {
                 &prompt,
                 Some(&ff),
                 last_ref,
-                &[],
+                &cast_ref_slices,
                 duration_secs,
                 &video_path,
             )
@@ -1132,7 +1159,14 @@ impl Script2VideoPipeline {
             let retry_i2v = self
                 .backends
                 .video
-                .generate(&prompt, Some(&ff), None, &[], duration_secs, &video_path)
+                .generate(
+                    &prompt,
+                    Some(&ff),
+                    None,
+                    &cast_ref_slices,
+                    duration_secs,
+                    &video_path,
+                )
                 .await;
 
             if let Err(retry_err) = retry_i2v {
@@ -1231,13 +1265,18 @@ fn portrait_pairs(
                 // Prefer the single three-view sheet (one plate per character).
                 if let Some(sheet) = views.get("sheet").or_else(|| views.get("front")) {
                     if let Some(p) = sheet.get("path") {
+                        let path = PathBuf::from(p);
+                        let file_name = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("three_view.png");
                         let desc = sheet.get("description").cloned().unwrap_or_else(|| {
                             format!(
-                                "GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
+                                "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
                                 ch.identifier_in_scene
                             )
                         });
-                        available.push((PathBuf::from(p), desc));
+                        available.push((path, desc));
                         continue;
                     }
                 }
@@ -1310,12 +1349,45 @@ fn character_identity_clause(characters: &[CharacterInScene], idxs: &[i32], styl
     out
 }
 
-/// Build at most 3 refs: up to `portrait_budget` cast bibles + empty set (+ prop/continuity).
+/// Build multi-ref strip for frame img2img: cast bibles + env/prop plates + continuity.
+/// Seedream-class models accept an image URL array; keep a hard cap for latency/cost.
+const MAX_FRAME_REF_IMAGES: usize = 8;
+const MAX_FRAME_PORTRAIT_REFS: usize = 4;
+const MAX_FRAME_ENV_REFS: usize = 2;
+const MAX_FRAME_PROP_REFS: usize = 1;
+const MAX_VIDEO_REF_IMAGES: usize = 6;
+const MAX_VIDEO_CAST_REFS: usize = 4;
+
+fn pick_video_ref_strip(pairs: Vec<(PathBuf, String)>) -> Vec<(PathBuf, String)> {
+    let mut portraits = Vec::new();
+    let mut envs = Vec::new();
+    let mut props = Vec::new();
+    for (p, t) in pairs {
+        let s = p.to_string_lossy().to_ascii_lowercase();
+        if s.contains("character_portrait") || s.contains("three_view") {
+            portraits.push((p, t));
+        } else if s.contains("environments") || s.contains("environment_plate") {
+            envs.push((p, t));
+        } else if s.contains("props") || s.contains("_prop") {
+            props.push((p, t));
+        }
+    }
+    let mut out = Vec::new();
+    out.extend(portraits.drain(..).take(MAX_VIDEO_CAST_REFS));
+    if out.len() < MAX_VIDEO_REF_IMAGES {
+        out.extend(envs.drain(..).take((MAX_VIDEO_REF_IMAGES - out.len()).min(2)));
+    }
+    if out.len() < MAX_VIDEO_REF_IMAGES {
+        out.extend(props.drain(..).take(1.min(MAX_VIDEO_REF_IMAGES - out.len())));
+    }
+    out
+}
+
 fn pick_frame_ref_strip(
     pairs: Vec<(PathBuf, String)>,
     portrait_budget: usize,
 ) -> Vec<(PathBuf, String)> {
-    let portrait_budget = portrait_budget.clamp(1, 2);
+    let portrait_budget = portrait_budget.clamp(1, MAX_FRAME_PORTRAIT_REFS);
     let mut portraits = Vec::new();
     let mut envs = Vec::new();
     let mut props = Vec::new();
@@ -1334,18 +1406,19 @@ fn pick_frame_ref_strip(
     }
     let mut out = Vec::new();
     out.extend(portraits.drain(..).take(portrait_budget));
-    // Prefer keeping an empty-set plate when we still have slots.
-    if out.len() < 3 {
-        out.extend(envs.drain(..).take(1));
+    out.extend(envs.drain(..).take(MAX_FRAME_ENV_REFS));
+    if out.len() < MAX_FRAME_REF_IMAGES {
+        out.extend(
+            props
+                .drain(..)
+                .take(MAX_FRAME_PROP_REFS.min(MAX_FRAME_REF_IMAGES - out.len())),
+        );
     }
-    if out.len() < 3 {
-        out.extend(props.drain(..).take(1));
+    if out.len() < MAX_FRAME_REF_IMAGES {
+        out.extend(rest.drain(..).take(MAX_FRAME_REF_IMAGES - out.len()));
     }
-    if out.len() < 3 {
-        out.extend(rest.drain(..).take(3 - out.len()));
-    }
-    if out.len() < 3 {
-        out.extend(portraits.drain(..).take(3 - out.len()));
+    if out.len() < MAX_FRAME_REF_IMAGES {
+        out.extend(portraits.drain(..).take(MAX_FRAME_REF_IMAGES - out.len()));
     }
     out
 }
@@ -1364,7 +1437,7 @@ fn ensure_frame_refs(
     };
     let mentions_id = |text: &str, id: &str| text.to_ascii_lowercase().contains(&id.to_ascii_lowercase());
 
-    // Re-insert missing three-views for every visible cast member (up to 2 kept later).
+    // Re-insert missing three-views for every visible cast member.
     for &ci in vis_char_idxs {
         let Some(ch) = characters.iter().find(|c| c.idx == ci) else {
             continue;
@@ -1453,7 +1526,12 @@ fn enforce_max_shots(shots: &mut Vec<ShotBriefDescription>, max_shots: usize) ->
     true
 }
 
-fn i2v_motion_prompt(shot: &ShotDescription, characters: &[CharacterInScene], style: &str) -> String {
+fn i2v_motion_prompt(
+    shot: &ShotDescription,
+    characters: &[CharacterInScene],
+    style: &str,
+    ref_pairs: &[(PathBuf, String)],
+) -> String {
     let motion = shot.motion_desc.trim();
     let audio = shot.audio_desc.as_deref().unwrap_or("").trim();
     let style_clause = crate::planning::style_prompt_clause(style);
@@ -1467,9 +1545,26 @@ fn i2v_motion_prompt(shot: &ShotDescription, characters: &[CharacterInScene], st
             shot.lf_desc.chars().take(120).collect::<String>()
         )
     };
+    let mut ref_bind = String::new();
+    for (i, (path, text)) in ref_pairs.iter().enumerate() {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("ref.png");
+        let hint: String = text.chars().take(90).collect();
+        ref_bind.push_str(&format!("[{name}] (reference_image #{i}): {hint}. "));
+    }
+    let ref_clause = if ref_bind.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "REFERENCE BINDINGS (match these named reference images): {ref_bind}\
+Use *_three_view.png for cast identity, *_environment_plate.png for location, *_prop.png for objects. "
+        )
+    };
     format!(
-        "{style_clause} {identity}PLOT LOCK: stay on this scene — {plot}.{end_plot} \
-Do not invent new characters, locations, outfits, or story beats. Match faces/wardrobe to cast three-view references when provided. \
+        "{style_clause} {identity}{ref_clause}PLOT LOCK: stay on this scene — {plot}.{end_plot} \
+Do not invent new characters, locations, outfits, or story beats. \
 Continuous motion for the full clip; camera and subjects must clearly move and progress; do not freeze or loop the opening pose.\n\
 Motion: {motion}\nAudio: {audio}"
     )
