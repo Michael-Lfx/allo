@@ -1,9 +1,10 @@
 //! Idea2Video — develop story → multi-scene scripts → per-scene Script2Video.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::agents::{CharacterExtractor, CharacterPortraitsGenerator, Screenwriter};
+use crate::agents::{CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, WorldAssetsPlanner};
 use crate::error::VimaxResult;
 use crate::media_local;
 use crate::planning::{
@@ -11,7 +12,7 @@ use crate::planning::{
     DEFAULT_TARGET_DURATION_SECS,
 };
 use crate::progress::ProgressCallback;
-use crate::session::{write_json_artifact, write_text_artifact};
+use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
 use super::script2video::Script2VideoPipeline;
 use super::{PipelineBackends, emit_pct, load_or_write_json, load_or_write_text, safe_component};
@@ -93,6 +94,14 @@ impl Idea2VideoPipeline {
             )
             .await?;
         }
+        let root_world = self.working_dir.join("world_assets_registry.json");
+        if root_world.exists() {
+            tokio::fs::copy(
+                &root_world,
+                scene_dir.join("world_assets_registry.json"),
+            )
+            .await?;
+        }
         // Portraits live only at film root — drop any leftover scene-local sheets.
         let local_portraits = scene_dir.join("character_portraits");
         if local_portraits.is_dir() {
@@ -119,13 +128,86 @@ impl Idea2VideoPipeline {
         })
         .await?;
 
-        emit_pct(&progress, "extract_characters", "正在从故事中提取角色", 30.0);
-        let _characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
-            self.character_extractor.extract_characters(&story).await
+        let style = crate::planning::resolve_visual_style(style);
+        let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
+
+        emit_pct(&progress, "extract_characters", "正在从故事中提取角色", 25.0);
+        let characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
+            self.character_extractor
+                .extract_characters(&story, &style)
+                .await
         })
         .await?;
 
-        emit_pct(&progress, "write_script", "正在撰写分场剧本", 50.0);
+        // Global cast bible during planning (before per-scene storyboards).
+        emit_pct(
+            &progress,
+            "character_portraits_start",
+            "正在生成全局角色定妆图",
+            35.0,
+        );
+        {
+            let registry_path = self.working_dir.join("character_portraits_registry.json");
+            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
+                if registry_path.exists() {
+                    read_json_artifact(&registry_path).await.unwrap_or_default()
+                } else {
+                    HashMap::new()
+                };
+            for character in &characters {
+                if !character.is_visible {
+                    continue;
+                }
+                if crate::agents::has_usable_portrait_sheet(
+                    &registry,
+                    &character.identifier_in_scene,
+                ) {
+                    continue;
+                }
+                registry.remove(&character.identifier_in_scene);
+                let dir = self.working_dir.join("character_portraits").join(format!(
+                    "{}_{}",
+                    character.idx,
+                    safe_component(&character.identifier_in_scene)
+                ));
+                let entry = self
+                    .portraits
+                    .generate_all_views(character, &style, &story, &dir)
+                    .await?;
+                registry.extend(entry);
+                write_json_artifact(&registry_path, &registry).await?;
+            }
+            write_json_artifact(&registry_path, &registry).await?;
+            emit_pct(
+                &progress,
+                "character_portraits_done",
+                "全局角色定妆图已就绪",
+                42.0,
+            );
+        }
+
+        emit_pct(
+            &progress,
+            "world_assets_start",
+            "正在生成全局环境与道具参考图",
+            45.0,
+        );
+        {
+            let planner = WorldAssetsPlanner::new(
+                Arc::clone(&self.backends.chat),
+                Arc::clone(&self.backends.image),
+            );
+            // Prefer full story for location/prop coverage across scenes.
+            let _ = planner.ensure(&self.working_dir, &story, &style).await?;
+            emit_pct(
+                &progress,
+                "world_assets_done",
+                "全局环境与道具参考图已就绪",
+                48.0,
+            );
+        }
+
+        emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
         let scenes: Vec<String> =
             load_or_write_json(&self.working_dir.join("script.json"), || async {
                 self.screenwriter
@@ -205,6 +287,8 @@ impl Idea2VideoPipeline {
         progress: Option<ProgressCallback>,
     ) -> VimaxResult<PathBuf> {
         emit_pct(&progress, "render_start", "开始渲染灵感成片", 2.0);
+        let style = crate::planning::resolve_visual_style(style);
+        let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
         let story_path = self.working_dir.join("story.txt");
         let script_path = self.working_dir.join("script.json");
         if story_path.exists() && script_path.exists() {
@@ -215,7 +299,7 @@ impl Idea2VideoPipeline {
                 8.0,
             );
         } else {
-            self.plan_text_artifacts(idea, user_requirement, style, progress.clone())
+            self.plan_text_artifacts(idea, user_requirement, &style, progress.clone())
                 .await?;
         }
 
@@ -226,34 +310,60 @@ impl Idea2VideoPipeline {
 
         // Global portraits at idea root — single source of truth for all scenes.
         let registry_path = self.working_dir.join("character_portraits_registry.json");
-        if !registry_path.exists() {
-            emit_pct(
-                &progress,
-                "character_portraits_start",
-                "正在生成角色定妆图（图片模型）",
-                12.0,
-            );
-            let mut registry = serde_json::Map::new();
+        {
+            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
+                if registry_path.exists() {
+                    read_json_artifact(&registry_path).await.unwrap_or_default()
+                } else {
+                    HashMap::new()
+                };
+            let mut missing = false;
             for character in &characters {
                 if !character.is_visible {
                     continue;
                 }
-                let dir = self.working_dir.join("character_portraits").join(format!(
-                    "{}_{}",
-                    character.idx,
-                    safe_component(&character.identifier_in_scene)
-                ));
-                let entry = self
-                    .portraits
-                    .generate_all_views(character, style, &dir)
-                    .await?;
-                for (k, v) in entry {
-                    registry.insert(k, serde_json::to_value(v)?);
+                if crate::agents::has_usable_portrait_sheet(
+                    &registry,
+                    &character.identifier_in_scene,
+                ) {
+                    continue;
                 }
+                missing = true;
+                break;
             }
-            write_json_artifact(&registry_path, &registry).await?;
+            if missing {
+                emit_pct(
+                    &progress,
+                    "character_portraits_start",
+                    "正在生成角色定妆图（图片模型）",
+                    12.0,
+                );
+                for character in &characters {
+                    if !character.is_visible {
+                        continue;
+                    }
+                    if crate::agents::has_usable_portrait_sheet(
+                        &registry,
+                        &character.identifier_in_scene,
+                    ) {
+                        continue;
+                    }
+                    registry.remove(&character.identifier_in_scene);
+                    let dir = self.working_dir.join("character_portraits").join(format!(
+                        "{}_{}",
+                        character.idx,
+                        safe_component(&character.identifier_in_scene)
+                    ));
+                    let entry = self
+                        .portraits
+                        .generate_all_views(character, &style, &story, &dir)
+                        .await?;
+                    registry.extend(entry);
+                    write_json_artifact(&registry_path, &registry).await?;
+                }
+                write_json_artifact(&registry_path, &registry).await?;
+            }
         }
-        let _ = story;
 
         let scenes: Vec<String> =
             serde_json::from_str(&tokio::fs::read_to_string(&script_path).await?)?;
@@ -302,7 +412,7 @@ impl Idea2VideoPipeline {
             );
             let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_dir);
             match s2v
-                .render(scene_script, &scene_req, style, progress.clone())
+                .render(scene_script, &scene_req, &style, progress.clone())
                 .await
             {
                 Ok(video) => {
@@ -319,14 +429,14 @@ impl Idea2VideoPipeline {
                         &progress,
                         "render_scene_failed",
                         &format!(
-                            "场景 {}/{scene_total} 失败；已完成 {} 个场景已落盘，可从断点继续",
+                            "Scene {}/{scene_total} failed; {} scene(s) already on disk — resume from checkpoint",
                             i + 1,
                             scene_videos.len()
                         ),
                         pct,
                     );
                     return Err(crate::error::VimaxError::Video(format!(
-                        "场景 {}/{scene_total} 渲染失败（此前已完成 {} 个场景已落盘，可从断点继续）：{e}",
+                        "Scene {}/{scene_total} render failed ({} scene(s) already on disk — resume from checkpoint): {e}",
                         i + 1,
                         scene_videos.len()
                     )));

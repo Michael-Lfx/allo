@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nomifun_cloud::{
     ImageGenerationRequest, MODEL_CATEGORY_IMAGE, resolve_model_in_catalog,
@@ -136,10 +136,26 @@ impl VimaxImage for FlowyImage {
         self.services.require_token().await?;
         let model = self.resolve_model().await?;
 
-        let image_url = if let Some(first) = ref_image_paths.first() {
-            Some(path_to_data_url(first).await?)
-        } else {
+        // Multi-ref → compose a single strip so single-slot img2img APIs still see
+        // character bible + empty set / prop (order preserved by caller).
+        let composed_path;
+        let image_url = if ref_image_paths.is_empty() {
             None
+        } else if ref_image_paths.len() == 1 {
+            Some(path_to_data_url(ref_image_paths[0]).await?)
+        } else {
+            composed_path = out_path.with_extension("ref_strip.png");
+            let paths_owned: Vec<&Path> = ref_image_paths.to_vec();
+            let dest = composed_path.clone();
+            let paths_for_blocking: Vec<PathBuf> =
+                paths_owned.iter().map(|p| (*p).to_path_buf()).collect();
+            tokio::task::spawn_blocking(move || {
+                let refs: Vec<&Path> = paths_for_blocking.iter().map(|p| p.as_path()).collect();
+                crate::media_local::compose_reference_strip(&refs, &dest)
+            })
+            .await
+            .map_err(|e| VimaxError::Image(format!("compose ref strip join: {e}")))??;
+            Some(path_to_data_url(&composed_path).await?)
         };
 
         // Tier 1: lexical soften + positive safety prefix (keep refs).
@@ -161,14 +177,20 @@ impl VimaxImage for FlowyImage {
             ));
         }
 
-        // Tier 2: stricter lexical rewrite, drop reference images.
+        // Tier 2+: rewrite prompt text but KEEP reference images when present.
+        // Dropping refs on portrait side/back / three-view expand causes identity drift
+        // (three different people stitched into one sheet).
         tracing::warn!(
             model = %model,
             error = %raw1,
+            keep_refs = image_url.is_some(),
             "image content inspection failed; tier2 strict lexical rewrite"
         );
         let tier2 = sanitize_image_prompt_strict(prompt);
-        if let Err(err2) = self.generate_once(&model, &tier2, None, out_path).await {
+        if let Err(err2) = self
+            .generate_once(&model, &tier2, image_url.clone(), out_path)
+            .await
+        {
             let raw2 = err2.to_string();
             if !is_image_content_inspection_err(&raw2) {
                 return Err(map_model_err(
@@ -179,7 +201,7 @@ impl VimaxImage for FlowyImage {
                 ));
             }
 
-            // Tier 3: LLM semantic rewrite.
+            // Tier 3: LLM semantic rewrite (still keep refs).
             tracing::warn!(
                 model = %model,
                 error = %raw2,
@@ -189,7 +211,10 @@ impl VimaxImage for FlowyImage {
                 Some(p) => p,
                 None => sanitize_image_prompt_strict(&tier2),
             };
-            if let Err(err3) = self.generate_once(&model, &tier3, None, out_path).await {
+            if let Err(err3) = self
+                .generate_once(&model, &tier3, image_url.clone(), out_path)
+                .await
+            {
                 let raw3 = err3.to_string();
                 if !is_image_content_inspection_err(&raw3) {
                     return Err(map_model_err(
@@ -200,14 +225,14 @@ impl VimaxImage for FlowyImage {
                     ));
                 }
 
-                // Tier 4: ultra-safe fallback (may lose beat fidelity, keeps pipeline moving).
+                // Tier 4: ultra-safe fallback — keep refs if we have them for identity.
                 tracing::warn!(
                     model = %model,
                     error = %raw3,
                     "image content inspection failed after LLM rewrite; tier4 ultra-safe fallback"
                 );
                 let tier4 = ultra_safe_fallback_prompt(prompt);
-                self.generate_once(&model, &tier4, None, out_path)
+                self.generate_once(&model, &tier4, image_url.clone(), out_path)
                     .await
                     .map_err(|err4| {
                         map_model_err(
@@ -278,7 +303,9 @@ async fn download_to_path(url: &str, out_path: &Path) -> VimaxResult<()> {
         let data = b64.split_once(',').map(|(_, d)| d).unwrap_or(b64);
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
             .map_err(|e| VimaxError::Image(format!("bad data URL: {e}")))?;
-        tokio::fs::write(out_path, bytes).await?;
+        // Always normalize to real PNG — Seedream often returns JPEG data URLs.
+        crate::media_local::write_image_bytes_as_png(&bytes, out_path)
+            .map_err(|e| VimaxError::Image(e.to_string()))?;
         return Ok(());
     }
     let resp = reqwest::Client::new()
@@ -296,6 +323,7 @@ async fn download_to_path(url: &str, out_path: &Path) -> VimaxResult<()> {
         .bytes()
         .await
         .map_err(|e| VimaxError::Image(e.to_string()))?;
-    tokio::fs::write(out_path, &bytes).await?;
+    crate::media_local::write_image_bytes_as_png(&bytes, out_path)
+        .map_err(|e| VimaxError::Image(e.to_string()))?;
     Ok(())
 }

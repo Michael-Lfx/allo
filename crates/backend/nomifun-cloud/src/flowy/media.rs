@@ -38,6 +38,17 @@ fn is_retryable_video_upstream_err(err: &ServerClientError) -> bool {
                 || lower.contains("timeout")
                 || lower.contains("temporarily unavailable")
         }
+        ServerClientError::InvalidResponse(msg) => {
+            let lower = msg.to_ascii_lowercase();
+            // Empty/non-JSON bodies are often transient gateway faults on large payloads.
+            lower.contains("<empty body>")
+                || lower.contains("expected value at line 1 column 1")
+                || (lower.contains("not valid flowy json envelope")
+                    && (lower.contains("http 502")
+                        || lower.contains("http 503")
+                        || lower.contains("http 504")
+                        || lower.contains("http 413")))
+        }
         _ => false,
     }
 }
@@ -46,92 +57,163 @@ pub type VideoTaskProgressFn = Box<dyn FnMut(&VideoTaskRecord, u64) + Send>;
 
 /// Max prompt length for Flowy AIPC image models (Z-Image Turbo docs: ≤800).
 const FLOWY_IMAGE_TEXT_MAX_CHARS: usize = 800;
+/// Seedream / OpenAI-style image models allow longer prompts than Z-Image.
+const OPENAI_STYLE_IMAGE_TEXT_MAX_CHARS: usize = 2400;
 
-/// Build DashScope multimodal-generation body expected by Flowy image proxy.
+/// Build image-generation body for the Flowy `/images/generations` proxy.
 ///
-/// Z-Image Turbo (and similar AIPC text-to-image models) require:
-/// - `input.messages[0].content` = **exactly one** `{ "text": "…" }` object
-/// - text length ≤ 800 characters
-/// - no image parts in `content` (text-only)
+/// Flowy forwards JSON as-is; body shape must match the **upstream channel**:
+/// - **DashScope multimodal** (Z-Image / wanx-class): `input.messages[0].content`
+/// - **OpenAI / Seedream** (Volcengine Ark style): top-level `prompt` (+ optional `image`)
 ///
-/// When `image_url` is set and the model is not Z-Image-class, content may
-/// include an image part so img2img / continuity refs actually reach the model.
-/// Reference images for Z-Image are folded into text hints only.
+/// Sending DashScope `input.messages` to Seedream yields
+/// `MissingParameter: missing prompt` (upstream 400).
 pub fn build_flowy_image_body(req: &ImageGenerationRequest) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
 
-    // Caller-supplied `extra.input` wins (advanced / already-shaped payloads).
-    let has_input = req
-        .extra
-        .as_object()
-        .and_then(|o| o.get("input"))
-        .is_some();
+    // Caller-supplied `extra.input` or `extra.prompt` wins (already-shaped payloads).
+    let extra_obj = req.extra.as_object();
+    let has_shaped_input = extra_obj.and_then(|o| o.get("input")).is_some();
+    let has_shaped_prompt = extra_obj
+        .and_then(|o| o.get("prompt"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
 
-    if has_input {
+    if has_shaped_input || has_shaped_prompt {
         if let Value::Object(extra) = &req.extra {
             for (k, v) in extra {
                 body.insert(k.clone(), v.clone());
             }
         }
-    } else {
-        let mut text = req.prompt.trim().to_string();
-        let ref_url = req
-            .image_url
-            .as_ref()
-            .map(|u| u.trim())
-            .filter(|u| !u.is_empty());
-        let embed_ref = ref_url.is_some() && model_supports_image_ref(&req.model);
-
-        if ref_url.is_some()
-            && !embed_ref
-            && !text.to_ascii_lowercase().contains("same character")
-            && !text.to_ascii_lowercase().contains("consistent")
-            && !text.to_ascii_lowercase().contains("continuity")
-        {
-            text.push_str(" Keep the same character identity, face, outfit, and style.");
+        // Ensure required OpenAI-style `prompt` is present when only `input` was shaped
+        // for DashScope — callers that set both are left alone.
+        if uses_openai_style_image_body(&req.model) && !body.contains_key("prompt") {
+            let text = truncate_chars(req.prompt.trim(), OPENAI_STYLE_IMAGE_TEXT_MAX_CHARS);
+            body.insert("prompt".into(), json!(text));
         }
-        let text = truncate_chars(&text, FLOWY_IMAGE_TEXT_MAX_CHARS);
+        return Value::Object(body);
+    }
 
-        let content = if let (Some(url), true) = (ref_url, embed_ref) {
-            json!([
-                { "image": url },
-                { "text": text }
-            ])
-        } else {
-            json!([{ "text": text }])
-        };
+    if uses_openai_style_image_body(&req.model) {
+        return build_openai_style_image_body(req);
+    }
 
+    build_dashscope_multimodal_image_body(req)
+}
+
+/// Seedream / GPT-Image / DALL·E expect OpenAI Images API fields.
+fn uses_openai_style_image_body(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("seedream")
+        || m.contains("gpt-image")
+        || m.contains("dall-e")
+        || m.contains("dalle")
+}
+
+fn build_openai_style_image_body(req: &ImageGenerationRequest) -> Value {
+    let mut body = Map::new();
+    body.insert("model".into(), json!(req.model));
+
+    let mut text = req.prompt.trim().to_string();
+    let ref_url = req
+        .image_url
+        .as_ref()
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty());
+    if ref_url.is_some()
+        && !text.to_ascii_lowercase().contains("same character")
+        && !text.to_ascii_lowercase().contains("consistent")
+        && !text.to_ascii_lowercase().contains("continuity")
+    {
+        text.push_str(" Keep the same character identity, face, outfit, and style.");
+    }
+    let text = truncate_chars(&text, OPENAI_STYLE_IMAGE_TEXT_MAX_CHARS);
+    body.insert("prompt".into(), json!(text));
+
+    // Seedream accepts `image` as string or string[]; ViMax uses an array.
+    if let Some(url) = ref_url {
+        body.insert("image".into(), json!([url]));
+    }
+
+    body.insert("response_format".into(), json!("url"));
+    body.insert("watermark".into(), json!(false));
+    // Resolution tier — works across Seedream 4.x/5.x (incl. lite); avoid `*` DashScope sizes.
+    body.insert("size".into(), json!("2K"));
+    body.insert("sequential_image_generation".into(), json!("disabled"));
+
+    if let Value::Object(extra) = &req.extra {
+        for (k, v) in extra {
+            if k == "model" || k == "input" || k == "prompt" || k == "image_url" {
+                continue;
+            }
+            body.insert(k.clone(), v.clone());
+        }
+    }
+
+    Value::Object(body)
+}
+
+fn build_dashscope_multimodal_image_body(req: &ImageGenerationRequest) -> Value {
+    let mut body = Map::new();
+    body.insert("model".into(), json!(req.model));
+
+    let mut text = req.prompt.trim().to_string();
+    let ref_url = req
+        .image_url
+        .as_ref()
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty());
+    let embed_ref = ref_url.is_some() && model_supports_image_ref(&req.model);
+
+    if ref_url.is_some()
+        && !embed_ref
+        && !text.to_ascii_lowercase().contains("same character")
+        && !text.to_ascii_lowercase().contains("consistent")
+        && !text.to_ascii_lowercase().contains("continuity")
+    {
+        text.push_str(" Keep the same character identity, face, outfit, and style.");
+    }
+    let text = truncate_chars(&text, FLOWY_IMAGE_TEXT_MAX_CHARS);
+
+    let content = if let (Some(url), true) = (ref_url, embed_ref) {
+        json!([
+            { "image": url },
+            { "text": text }
+        ])
+    } else {
+        json!([{ "text": text }])
+    };
+
+    body.insert(
+        "input".into(),
+        json!({
+            "messages": [{
+                "role": "user",
+                "content": content
+            }]
+        }),
+    );
+
+    if let Value::Object(extra) = &req.extra {
+        for (k, v) in extra {
+            if k == "model" || k == "input" || k == "prompt" || k == "image_url" {
+                continue;
+            }
+            body.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+
+    if !body.contains_key("parameters") {
+        // Landscape default matches ViMax portrait prompts (16:9 wide canvas).
         body.insert(
-            "input".into(),
+            "parameters".into(),
             json!({
-                "messages": [{
-                    "role": "user",
-                    "content": content
-                }]
+                "prompt_extend": false,
+                "watermark": false,
+                "size": "1280*720"
             }),
         );
-
-        if let Value::Object(extra) = &req.extra {
-            for (k, v) in extra {
-                if k == "model" || k == "input" || k == "prompt" || k == "image_url" {
-                    continue;
-                }
-                body.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-        }
-
-        if !body.contains_key("parameters") {
-            // Landscape default matches ViMax portrait prompts (16:9 wide canvas).
-            body.insert(
-                "parameters".into(),
-                json!({
-                    "prompt_extend": false,
-                    "watermark": false,
-                    "size": "1280*720"
-                }),
-            );
-        }
     }
 
     Value::Object(body)
@@ -171,18 +253,14 @@ impl FlowyApiClient {
             .await
     }
 
-    /// Flowy image generation for DashScope multimodal-generation upstream.
-    ///
-    /// Upstream requires `input.messages`; Flowy proxies the JSON as-is and does
-    /// **not** convert OpenAI-style `{prompt}` bodies.
+    /// Flowy image generation — body shape depends on model family
+    /// (see [`build_flowy_image_body`]). Flowy proxies JSON as-is.
     pub async fn generate_image(
         &self,
         session: &ServerSession,
         req: &ImageGenerationRequest,
     ) -> Result<Value, ServerClientError> {
         let body = build_flowy_image_body(req);
-        // Z-Image / AIPC text-to-image uses generations; non-Z-Image models may
-        // embed `image_url` in content via `build_flowy_image_body`.
         self.post_upstream_json(&self.llm_transport, "/images/generations", session, body)
             .await
     }
@@ -577,6 +655,36 @@ mod tests {
         assert_eq!(content.len(), 2);
         assert_eq!(content[0]["image"], json!("data:image/png;base64,abc"));
         assert_eq!(content[1]["text"], json!("reframe camera"));
+    }
+
+    #[test]
+    fn build_flowy_image_body_seedream_uses_top_level_prompt() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-doubao-seedream-5-0-lite-260128".into(),
+            prompt: "a red fox in snow".into(),
+            image_url: None,
+            extra: Value::Null,
+        });
+        assert_eq!(body["prompt"], json!("a red fox in snow"));
+        assert!(body.get("input").is_none(), "Seedream must not use DashScope input.messages");
+        assert_eq!(body["size"], json!("2K"));
+        assert_eq!(body["response_format"], json!("url"));
+    }
+
+    #[test]
+    fn build_flowy_image_body_seedream_embeds_reference_as_image_array() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-doubao-seedream-5-0-lite-260128".into(),
+            prompt: "same character, side view".into(),
+            image_url: Some("data:image/png;base64,abc".into()),
+            extra: Value::Null,
+        });
+        assert_eq!(body["prompt"], json!("same character, side view"));
+        assert_eq!(
+            body["image"],
+            json!(["data:image/png;base64,abc"])
+        );
+        assert!(body.get("input").is_none());
     }
 
     #[test]

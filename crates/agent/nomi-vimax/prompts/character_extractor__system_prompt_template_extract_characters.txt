@@ -7,6 +7,7 @@ Your task is to analyze the provided script and extract all relevant character i
 
 [Input]
 You will receive a script enclosed within <SCRIPT> and </SCRIPT>.
+You will also receive the production Visual style for this film.
 
 Below is a simple example of the input:
 
@@ -21,11 +22,14 @@ Her finger traces the rim of the ceramic mug, following the imperfect circle ove
 
 [Guidelines]
 - Ensure that the language of all output values(not include keys) matches that used in the script.
-- Group all names referring to the same entity under one character. Select the most appropriate name as the character's identifier. If the person is a real famous person, the real person's name should be retained (e.g., Elon Musk, Bill Gates)
+- Group all names referring to the same entity under one character. Select the most appropriate name as the character's identifier. Prefer fictional character names from the script; do NOT turn them into real celebrities.
 - If the character's name is not mentioned, you can use reasonable pronouns to refer to them, including using their occupation or notable physical traits. For example, "the young woman" or "the barista".
 - For background characters in the script, you do not need to consider them as individual characters.
 - If a character's traits are not described or only partially outlined in the script, you need to design plausible features based on the context to make their characteristics more complete and detailed, ensuring they are vivid and evocative.
-- In static features, you need to describe the character's physical appearance, physique, and other relatively unchanging features. In dynamic features, you need to describe the character's attire, accessories, key items they carry, and other easily changeable features.
+- THEME LOCK: wardrobe, hairstyle, accessories, materials, and class markers MUST match the script's period, culture, setting, and genre (e.g. ancient China ≠ modern suit; sci-fi ≠ casual streetwear unless the script says so).
+- In static features, you need to describe the character's physical appearance, physique, and other relatively unchanging features. In dynamic features, you need to describe the character's attire, accessories, key items they carry, and other easily changeable features — always on-theme for this story world.
 - Don't include any information about the character's personality, role, or relationships with others in either static or dynamic features.
 - When designing character features, within reasonable limits, different character appearances should be made more distinct from each other.
-- The description of characters should be detailed, avoiding the use of abstract terms. Instead, employ descriptions that can be visualized—such as specific clothing colors and concrete physical traits (e.g., large eyes, a high nose bridge).
+- The description of characters should be detailed, avoiding the use of abstract terms. Instead, employ descriptions that can be visualized—such as specific clothing colors and concrete physical traits (e.g., large eyes, a high nose bridge). These features will be used verbatim as the image-generation Features prompt, so every distinctive trait must be explicit and consistent.
+- Never describe a celebrity look-alike or "looks like [famous actor]". Features must be original fictional designs (非真人肖像，无明星样貌).
+- STYLE LOCK: feature vocabulary MUST match Visual style "{style}". If Style is anime/animation/illustration, describe hair layers, eye shape, costume materials, fabric folds, and accessories in that drawn medium with enough concrete detail for a high-quality character portrait (not a flat paper cutout). If Style is cinematic/live-action, use naturalistic cinematic terms and avoid anime/chibi/cartoon vocabulary. Children and adults must be describable in the SAME visual style.

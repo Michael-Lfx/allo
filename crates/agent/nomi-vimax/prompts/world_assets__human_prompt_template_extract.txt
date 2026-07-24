@@ -1,0 +1,8 @@
+Visual style: {style}
+
+Extract vacant environments and signature props that faithfully match this story's world/theme.
+Descriptions must be EMPTY-SET / object-only (no people).
+
+<TEXT>
+{text}
+</TEXT>

@@ -113,3 +113,11 @@ pub struct CloudDeviceActivationStatusResponse {
 pub struct CloudDeviceActivationRetryResponse {
     pub reported: bool,
 }
+
+/// Result of syncing the Flowy chat model catalog into the local builtin provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudSyncModelsResponse {
+    /// True when the upstream catalog was fetched and written to the local provider row.
+    pub synced: bool,
+}

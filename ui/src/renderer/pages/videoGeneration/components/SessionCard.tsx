@@ -6,6 +6,7 @@ import type { TFunction } from 'i18next';
 import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
+import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
 function toEpochMs(value: string | number | null | undefined): number | null {
@@ -171,7 +172,7 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
           {session.stage ? (
             <div className='text-12px text-[var(--color-text-3)] truncate'>
               {t('videoGeneration.list.card.stage', {
-                stage: session.stage,
+                stage: stageLabel(session.stage, t),
                 defaultValue: '阶段：{{stage}}',
               })}
             </div>

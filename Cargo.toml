@@ -215,7 +215,7 @@ crossterm = "0.29"
 is-terminal = "0.4"
 
 # --- Computer / browser use ---
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 xcap = "0.9"
 enigo = "0.6"
 # In-process self-hosted CDP browser engine (nomi-browser-engine). 0.9.1 has NO

@@ -1,0 +1,8 @@
+Wide 16:9 vacant location plate. Completely unoccupied.
+HARD: zero people, zero humans, zero faces, zero silhouettes, zero hands, zero body parts, zero mannequins. Empty architecture only.
+Theme: {theme}
+Location: {slugline}
+Set (empty): {description}
+CRITICAL Visual style (MUST MATCH): {style}
+If Style is anime/animation/illustration, draw as animated/illustrated background art — NOT a photoreal scout photo.
+Output: vacant location plate matching Style — furniture/lighting/weather only, no people.

@@ -10,10 +10,11 @@ mod reference_image_selector;
 mod scene_extractor;
 mod screenwriter;
 mod storyboard_artist;
+mod world_assets;
 
 pub use camera_image_generator::CameraImageGenerator;
 pub use character_extractor::CharacterExtractor;
-pub use character_portraits_generator::CharacterPortraitsGenerator;
+pub use character_portraits_generator::{CharacterPortraitsGenerator, has_usable_portrait_sheet};
 pub use event_extractor::EventExtractor;
 pub use global_information_planner::GlobalInformationPlanner;
 pub use novel_compressor::NovelCompressor;
@@ -21,6 +22,9 @@ pub use reference_image_selector::{ReferenceImageSelector, SelectorOutput};
 pub use scene_extractor::{SceneExtractor, rank_chunks_by_keyword_overlap};
 pub use screenwriter::Screenwriter;
 pub use storyboard_artist::StoryboardArtist;
+pub use world_assets::{
+    WorldAssetRegistry, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
+};
 
 /// Concise JSON schema strings substituted for `{format_instructions}`.
 pub mod formats {
@@ -63,4 +67,8 @@ active_scenes maps scene index (string keys ok) to the name used in that scene."
     pub const CHARACTERS_IN_NOVEL: &str = r#"Return a JSON object:
 {"characters":[{"index":0,"identifier_in_novel":"string","active_events":{"0":"name"},"static_features":"string"}]}
 Merge event characters into the novel-level list without duplicates."#;
+
+    pub const WORLD_ASSETS: &str = r#"Return a JSON object:
+{"environments":[{"idx":0,"slugline":"INT. PLACE - TIME","description":"empty set details"}],"props":[{"idx":0,"name":"string","description":"appearance details"}]}
+environments: distinct locations, no people. props: key recurring objects only. Keep lists short."#;
 }

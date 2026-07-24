@@ -18,15 +18,22 @@ impl CharacterExtractor {
         Self { chat }
     }
 
-    pub async fn extract_characters(&self, script: &str) -> VimaxResult<Vec<CharacterInScene>> {
+    pub async fn extract_characters(
+        &self,
+        script: &str,
+        style: &str,
+    ) -> VimaxResult<Vec<CharacterInScene>> {
+        let style = crate::planning::resolve_visual_style(style);
         let system = include_str!(
             "../../prompts/character_extractor__system_prompt_template_extract_characters.txt"
         )
-        .replace("{format_instructions}", CHARACTERS);
+        .replace("{format_instructions}", CHARACTERS)
+        .replace("{style}", &style);
         let user = include_str!(
             "../../prompts/character_extractor__human_prompt_template_extract_characters.txt"
         )
-        .replace("{script}", script);
+        .replace("{script}", script)
+        .replace("{style}", &style);
 
         let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]

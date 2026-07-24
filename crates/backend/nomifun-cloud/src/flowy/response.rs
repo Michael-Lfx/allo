@@ -103,15 +103,29 @@ pub fn handle_http_and_envelope(
             "HTTP 401 unauthorized".into(),
         ));
     }
-    let env = FlowyEnvelope::parse_body(body)?;
-    if http_status >= 400 && env.code == 200 {
-        return Err(ServerClientError::from_http_status(
-            http_status,
-            body.to_string(),
-            None,
-        ));
+    match FlowyEnvelope::parse_body(body) {
+        Ok(env) => {
+            if http_status >= 400 && env.code == 200 {
+                return Err(ServerClientError::from_http_status(
+                    http_status,
+                    body.to_string(),
+                    None,
+                ));
+            }
+            Ok(env)
+        }
+        Err(_) => {
+            let trimmed = body.trim();
+            let preview = if trimmed.is_empty() {
+                "<empty body>".to_string()
+            } else {
+                trimmed.chars().take(180).collect::<String>().replace('\n', " ")
+            };
+            Err(ServerClientError::InvalidResponse(format!(
+                "not valid Flowy JSON envelope (HTTP {http_status}): {preview}"
+            )))
+        }
     }
-    Ok(env)
 }
 
 #[cfg(test)]
@@ -131,5 +145,13 @@ mod tests {
         let env = FlowyEnvelope::parse_body(body).unwrap();
         let err = env.into_data::<String>().unwrap_err();
         assert!(matches!(err, ServerClientError::Api { code: 400, .. }));
+    }
+
+    #[test]
+    fn empty_body_reports_http_status() {
+        let err = handle_http_and_envelope(502, "").unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("HTTP 502"), "{s}");
+        assert!(s.contains("<empty body>"), "{s}");
     }
 }

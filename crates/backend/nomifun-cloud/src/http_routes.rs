@@ -9,8 +9,10 @@ use axum::routing::{get, post};
 use nomifun_api_types::{
     ApiResponse, CloudDeviceActivationRetryResponse, CloudDeviceActivationStatusResponse,
     CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
-    CloudServerSettingsResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    CloudServerSettingsResponse, CloudSyncModelsResponse, CloudWhoamiResponse,
+    UpdateCloudServerSettingsRequest,
 };
+use tracing::warn;
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
 use nomifun_db::IProviderRepository;
@@ -48,6 +50,7 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .route("/api/cloud/login/start", post(login_start))
         .route("/api/cloud/login/continue", post(login_continue))
         .route("/api/cloud/logout", post(logout))
+        .route("/api/cloud/sync-models", post(sync_models))
         .with_state(state)
 }
 
@@ -137,4 +140,31 @@ async fn logout(
         .await
         .map_err(|e| AppError::Internal(e))?;
     Ok(Json(ApiResponse::ok(removed)))
+}
+
+/// Re-fetch the Flowy chat model catalog and upsert the builtin provider row.
+/// Used when entering pages with a model selector so the UI sees the latest list.
+/// Not-logged-in is a soft no-op (`synced: false`) rather than an error.
+async fn sync_models(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<CloudSyncModelsResponse>>, AppError> {
+    let cfg = state.service.gateway_config_snapshot();
+    match sync_flowy_builtin_provider(
+        &state.provider_repo,
+        &state.encryption_key,
+        &cfg.server,
+        state.service.data_dir(),
+    )
+    .await
+    {
+        Ok(()) => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse { synced: true }))),
+        Err(e) if e.contains("not logged in") => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse {
+            synced: false,
+        }))),
+        Err(e) => {
+            warn!(error = %e, "Failed to sync Flowy chat model catalog");
+            Err(AppError::Internal(format!("sync Flowy provider: {e}")))
+        }
+    }
 }

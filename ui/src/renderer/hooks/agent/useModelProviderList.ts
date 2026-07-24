@@ -2,11 +2,12 @@ import { ipcBridge } from '@/common';
 import { FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID, SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import type { IProvider } from '@/common/config/storage';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import useSWR, { type SWRConfiguration } from 'swr';
+import useSWR, { mutate, type SWRConfiguration } from 'swr';
 import { useGoogleAuthModels } from './useGoogleAuthModels';
 import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabilities';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
+import { clearAvailableModelsCache } from '@/renderer/pages/guid/utils/modelUtils';
 
 export interface ModelProviderListResult {
   providers: IProvider[];
@@ -19,16 +20,59 @@ export interface ModelProviderListResult {
 export const PROVIDERS_SWR_KEY = 'providers';
 
 // Provider config is local application state. Keep it stable after the initial
-// load and refresh only through explicit mutate() calls after CRUD operations.
+// load and refresh only through explicit mutate() calls after CRUD operations,
+// plus the mount-time catalog refresh below (model selector pages).
 export const PROVIDERS_SWR_OPTIONS: SWRConfiguration<IProvider[], Error> = {
   revalidateOnFocus: false,
   revalidateOnReconnect: false,
   shouldRetryOnError: false,
 };
 
+let providersAutoRefreshPromise: Promise<IProvider[] | void> | null = null;
+
 export const fetchProviders = async (): Promise<IProvider[]> => {
   return (await ipcBridge.mode.listProviders.invoke()) ?? [];
 };
+
+/**
+ * Sync Flowy chat catalog → local builtin provider (full replace on success),
+ * then replace the shared providers SWR cache. Soft-fails when not logged in.
+ *
+ * Uses `{ revalidate: false }` after writing so an in-flight stale
+ * `GET /api/providers` cannot overwrite the freshly synced projection.
+ */
+export async function refreshProvidersCatalog(): Promise<IProvider[]> {
+  try {
+    await ipcBridge.cloud.syncModels.invoke();
+  } catch (error) {
+    console.warn('[providers] Failed to sync Flowy chat model catalog:', error);
+  }
+  const providers = await fetchProviders();
+  clearAvailableModelsCache();
+  await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
+  return providers;
+}
+
+/**
+ * Mount-time refresh for pages with a model selector.
+ * In-flight dedupe only — every page enter must hit upstream so delisted
+ * models are dropped from the local SQLite projection.
+ */
+export async function refreshProvidersCatalogIfStale(): Promise<void> {
+  if (providersAutoRefreshPromise) {
+    await providersAutoRefreshPromise;
+    return;
+  }
+
+  providersAutoRefreshPromise = refreshProvidersCatalog()
+    .catch((error) => {
+      console.error('[providers] Failed to refresh model catalog:', error);
+    })
+    .finally(() => {
+      providersAutoRefreshPromise = null;
+    });
+  await providersAutoRefreshPromise;
+}
 
 export const useProvidersQuery = () => {
   return useSWR<IProvider[]>(PROVIDERS_SWR_KEY, fetchProviders, PROVIDERS_SWR_OPTIONS);
@@ -37,11 +81,18 @@ export const useProvidersQuery = () => {
 /**
  * Shared hook that builds the provider list (including Google Auth)
  * and exposes helpers consumed by both conversation and channel settings.
+ *
+ * On mount, re-syncs the Flowy chat catalog and refreshes the local SWR cache
+ * so model selectors always see the latest server list when entering a page.
  */
 export const useModelProviderList = (): ModelProviderListResult => {
   const { isGoogleAuth, isLoading: isGoogleAuthLoading } = useGoogleAuthModels();
 
   const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery();
+
+  useEffect(() => {
+    void refreshProvidersCatalogIfStale();
+  }, []);
 
   // Mutable cache for available-model filtering
   const available_modelsCacheRef = useRef(new Map<string, string[]>());

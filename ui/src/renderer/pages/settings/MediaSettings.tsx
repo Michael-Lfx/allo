@@ -14,7 +14,8 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
-import type { IMediaCredits, IMediaModelList, IMediaSettings, IMediaWorkflowHistoryItem } from '@/common/adapter/ipcBridge';
+import type { IMediaCredits, IMediaSettings, IMediaWorkflowHistoryItem } from '@/common/adapter/ipcBridge';
+import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
@@ -22,30 +23,29 @@ const MediaSettings: React.FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<IMediaSettings | null>(null);
   const [credits, setCredits] = useState<IMediaCredits | null>(null);
-  const [models, setModels] = useState<IMediaModelList | null>(null);
   const [history, setHistory] = useState<IMediaWorkflowHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const { imageModels, videoModels, revalidate: revalidateMediaModels } = useMediaModels();
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, c, m, h] = await Promise.all([
+      const [s, c, h] = await Promise.all([
         ipcBridge.media.getSettings.invoke(),
         ipcBridge.media.getCredits.invoke(),
-        ipcBridge.media.listModels.invoke(),
         ipcBridge.media.workflowHistory.invoke({ limit: 50 }),
+        revalidateMediaModels(),
       ]);
       setSettings(s);
       setCredits(c);
-      setModels(m);
       setHistory(h.runs);
     } catch (e) {
       Message.error(String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [revalidateMediaModels]);
 
   useEffect(() => {
     void refresh();
@@ -53,19 +53,19 @@ const MediaSettings: React.FC = () => {
 
   const imageModelOptions = useMemo(
     () =>
-      (models?.image_models ?? []).map((id) => ({
+      imageModels.map((id) => ({
         label: formatCloudModelLabel(id),
         value: id,
       })),
-    [models]
+    [imageModels]
   );
   const videoModelOptions = useMemo(
     () =>
-      (models?.video_models ?? []).map((id) => ({
+      videoModels.map((id) => ({
         label: formatCloudModelLabel(id),
         value: id,
       })),
-    [models]
+    [videoModels]
   );
 
   const save = async () => {

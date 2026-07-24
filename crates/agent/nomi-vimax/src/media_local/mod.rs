@@ -7,9 +7,120 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use image::imageops::FilterType;
+use image::{DynamicImage, Rgba, RgbaImage};
 use tokio::process::Command;
 
 use crate::error::{VimaxError, VimaxResult};
+
+/// PNG / JPEG / WEBP magic — used to reject HTML error bodies saved as `.png`.
+pub fn image_magic_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+        Some("png")
+    } else if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
+        Some("jpeg")
+    } else if bytes.len() >= 12
+        && &bytes[0..4] == b"RIFF"
+        && &bytes[8..12] == b"WEBP"
+    {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// True when path exists and decodes as a real raster image (not HTML/JSON mislabeled as PNG).
+pub fn is_usable_image_file(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    if bytes.len() < 24 || image_magic_kind(&bytes).is_none() {
+        return false;
+    }
+    image::load_from_memory(&bytes).is_ok()
+}
+
+/// Decode arbitrary image bytes (JPEG/PNG/WEBP) and write a real PNG to `out_path`.
+/// Seedream often returns JPEG URLs while callers always use `.png` destinations.
+pub fn write_image_bytes_as_png(bytes: &[u8], out_path: &Path) -> VimaxResult<()> {
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    if image_magic_kind(bytes).is_none() {
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(80)]);
+        return Err(VimaxError::Media(format!(
+            "downloaded image is not PNG/JPEG/WEBP (head={head:?})"
+        )));
+    }
+    let img = image::load_from_memory(bytes).map_err(|e| {
+        VimaxError::Media(format!("decode image for {}: {e}", out_path.display()))
+    })?;
+    img.save_with_format(out_path, image::ImageFormat::Png)
+        .map_err(|e| VimaxError::Media(format!("save png {}: {e}", out_path.display())))?;
+    Ok(())
+}
+
+/// Tile up to 3 reference images into one horizontal strip (for single-slot img2img APIs).
+/// Panel order should be: character bible → empty set plate → prop/continuity.
+pub fn compose_reference_strip(paths: &[&Path], out_path: &Path) -> VimaxResult<()> {
+    if paths.is_empty() {
+        return Err(VimaxError::Media("compose_reference_strip: no images".into()));
+    }
+    if paths.len() == 1 {
+        // Normalize JPEG-as-.png (and similar) into a real PNG for downstream APIs.
+        let bytes = std::fs::read(paths[0]).map_err(|e| VimaxError::Media(e.to_string()))?;
+        if image_magic_kind(&bytes) == Some("png") {
+            std::fs::write(out_path, &bytes).map_err(|e| VimaxError::Media(e.to_string()))?;
+        } else {
+            write_image_bytes_as_png(&bytes, out_path)?;
+        }
+        return Ok(());
+    }
+
+    const PANEL_H: u32 = 512;
+    const GAP: u32 = 8;
+    let mut panels: Vec<RgbaImage> = Vec::new();
+    for p in paths.iter().take(3) {
+        let bytes = std::fs::read(p)
+            .map_err(|e| VimaxError::Media(format!("read ref {}: {e}", p.display())))?;
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| {
+                VimaxError::Media(format!(
+                    "open ref {} ({} bytes, magic={:?}): {e}",
+                    p.display(),
+                    bytes.len(),
+                    image_magic_kind(&bytes)
+                ))
+            })?
+            .into_rgba8();
+        let (w, h) = img.dimensions();
+        if w == 0 || h == 0 {
+            continue;
+        }
+        let new_w = ((w as f32) * (PANEL_H as f32) / (h as f32)).round().max(1.0) as u32;
+        let resized = image::imageops::resize(&img, new_w, PANEL_H, FilterType::Triangle);
+        panels.push(resized);
+    }
+    if panels.is_empty() {
+        return Err(VimaxError::Media("compose_reference_strip: all panels empty".into()));
+    }
+
+    let total_w: u32 = panels.iter().map(|p| p.width()).sum::<u32>()
+        + GAP * (panels.len().saturating_sub(1) as u32);
+    let mut canvas = RgbaImage::from_pixel(total_w, PANEL_H, Rgba([24, 24, 28, 255]));
+    let mut x = 0u32;
+    for panel in &panels {
+        image::imageops::overlay(&mut canvas, panel, x as i64, 0);
+        x += panel.width() + GAP;
+    }
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    DynamicImage::ImageRgba8(canvas)
+        .save(out_path)
+        .map_err(|e| VimaxError::Media(format!("save strip {}: {e}", out_path.display())))?;
+    Ok(())
+}
 
 fn require_ffmpeg() -> VimaxResult<PathBuf> {
     nomi_config::resolve_ffmpeg_executable().ok_or_else(|| {
@@ -313,6 +424,60 @@ mod tests {
         assert!(!is_usable_video_file(&path));
         scrub_unusable_video(&path).await.unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn compose_strip_writes_png() {
+        use image::{Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.png");
+        let b = dir.path().join("b.png");
+        RgbImage::from_pixel(40, 30, Rgb([255, 0, 0]))
+            .save(&a)
+            .unwrap();
+        RgbImage::from_pixel(50, 20, Rgb([0, 255, 0]))
+            .save(&b)
+            .unwrap();
+        let out = dir.path().join("strip.png");
+        compose_reference_strip(&[a.as_path(), b.as_path()], &out).unwrap();
+        assert!(out.exists());
+        let img = image::open(&out).unwrap();
+        assert_eq!(img.height(), 512);
+        assert!(img.width() > 40);
+    }
+
+    #[test]
+    fn jpeg_bytes_saved_as_png_extension_still_compose() {
+        use image::{ImageFormat, Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let jpeg_as_png = dir.path().join("three_view.png");
+        let mut jpeg_bytes = Vec::new();
+        RgbImage::from_pixel(32, 24, Rgb([10, 20, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut jpeg_bytes), ImageFormat::Jpeg)
+            .unwrap();
+        assert_eq!(image_magic_kind(&jpeg_bytes), Some("jpeg"));
+        std::fs::write(&jpeg_as_png, &jpeg_bytes).unwrap();
+        assert!(is_usable_image_file(&jpeg_as_png));
+
+        let out = dir.path().join("normalized.png");
+        write_image_bytes_as_png(&jpeg_bytes, &out).unwrap();
+        assert_eq!(
+            image_magic_kind(&std::fs::read(&out).unwrap()),
+            Some("png")
+        );
+
+        let strip = dir.path().join("strip.png");
+        compose_reference_strip(&[jpeg_as_png.as_path(), out.as_path()], &strip).unwrap();
+        assert!(strip.exists());
+    }
+
+    #[test]
+    fn rejects_html_as_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("fake.png");
+        std::fs::write(&p, b"<html>error</html>").unwrap();
+        assert!(!is_usable_image_file(&p));
+        assert!(image_magic_kind(b"<html>error</html>").is_none());
     }
 }
 

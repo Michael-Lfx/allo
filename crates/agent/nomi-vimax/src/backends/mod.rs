@@ -103,7 +103,7 @@ pub(crate) fn map_model_err(
     let model_label = model
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("（默认）");
+        .unwrap_or("(default)");
     let lower = raw.to_ascii_lowercase();
     let hint = if lower.contains("datainspectionfailed")
         || lower.contains("inappropriate content")
@@ -111,45 +111,50 @@ pub(crate) fn map_model_err(
         || lower.contains("内容安全")
         || lower.contains("敏感内容")
     {
-        "图片提示词/结果触发了上游内容安全审核。客户端会按 词表清洗→严格清洗→LLM语义重写→极简安全兜底 自动重试；若仍失败，请弱化分镜里的暴力/敏感描写后从断点继续。"
+        "Upstream content safety rejected the prompt/result. The client auto-retries with safer prompts; if it still fails, soften violent/sensitive shot wording and resume."
+    } else if lower.contains("not valid flowy json envelope")
+        || lower.contains("expected value at line 1 column 1")
+        || lower.contains("<empty body>")
+    {
+        "The Flowy video API returned an empty or non-JSON body (often oversized data-URL images, gateway timeout, or channel fault). Retry with first/last frame only, or switch video model and resume."
     } else if lower.contains("all channel models failed") || lower.contains("所有渠道模型均失败")
     {
         if lower.contains("datainspection") || lower.contains("inappropriate") {
-            "渠道失败由内容安全审核引起。客户端已做多级提示词安全重写；请检查分镜描述是否含暴力/敏感内容。"
+            "Channel failure was caused by content safety. Soften shot wording and resume."
         } else {
-            "上游表示该模型当前所有通道均不可用（可能是内容审核、额度、熔断或临时故障）。请查看原因中的 upstream 明细，或更换模型后重试。"
+            "Upstream reports all channels for this model are unavailable (safety, quota, breaker, or outage). Check upstream detail or switch model."
         }
     } else if lower.contains("empty content") {
         if lower.contains("system_len=0") || lower.contains("user_len=0") {
-            "请求侧 system/user 提示词为空，不是模型问题。请检查场景脚本是否生成成功。"
+            "Request system/user prompt was empty — not a model outage. Check whether the scene script was generated."
         } else if lower.contains("finish_reason=length") {
-            "模型输出被截断（思考过程占满 token）。请换非思考型模型，或稍后从断点继续。"
+            "Model output was truncated (reasoning used the token budget). Switch to a non-reasoning model, or resume later."
         } else {
-            "上游返回了空正文（常见于思考型模型把内容放在 reasoning 字段）。已尝试兼容解析；请换模型或从断点继续。错误详情中的 system_len/user_len 可确认请求并非空提示。"
+            "Upstream returned empty content (common with reasoning models). Switch model or resume."
         }
     } else if lower.contains("refusing llm call with empty prompt")
         || lower.contains("refusing multimodal llm call")
     {
-        "请求侧提示词为空，不是模型返回问题。请检查上一阶段产物（如 script.txt）是否为空。"
+        "Request prompt was empty — check prior artifacts (e.g. script.txt)."
     } else if lower.contains("privacyinformation")
         || lower.contains("inputimagesensitivecontent")
         || lower.contains("may contain real person")
     {
-        "首帧/参考图被判定含真人肖像。已支持自动 stylize 重试；若仍失败，请换更卡通/插画风格后从断点继续。"
+        "Input frame/reference was flagged as a real-person likeness. A stylized redraw retry is available; if it still fails, use a more illustrated style and resume."
     } else if lower.contains("401") || lower.contains("unauthorized") {
-        "鉴权失败，请确认已登录 Flowy 云账号。"
+        "Auth failed — confirm you are signed in to Flowy cloud."
     } else if lower.contains("429") || lower.contains("rate limit") {
-        "请求过于频繁，请稍后重试。"
+        "Rate limited — retry shortly."
     } else {
-        "请检查所选模型是否可用，或稍后从断点继续。"
+        "Check that the selected model is available, or resume from checkpoint later."
     };
     let kind_label = match kind {
-        "image" => "图片生成",
-        "video" => "视频生成",
-        _ => "聊天模型（LLM）",
+        "image" => "Image generation",
+        "video" => "Video generation",
+        _ => "Chat model (LLM)",
     };
     let msg = format!(
-        "{kind_label}失败\n模型：{model_label}\n阶段：{stage_hint}\n原因：{raw}\n建议：{hint}"
+        "{kind_label} failed\nModel: {model_label}\nStage: {stage_hint}\nCause: {raw}\nHint: {hint}"
     );
     match kind {
         "image" => crate::error::VimaxError::Image(msg),

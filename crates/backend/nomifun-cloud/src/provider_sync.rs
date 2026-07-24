@@ -1,4 +1,11 @@
 //! Sync the logged-in Flowy JWT and server model catalog into the built-in provider row.
+//!
+//! The local `providers.models` JSON is a **projection** of the upstream
+//! `availableListClaw` catalog. On a successful catalog fetch it is fully
+//! replaced (delisted models must disappear). Transient fetch failures must
+//! **not** wipe or invent models — that left stale delisted entries in place
+//! when callers ignored soft errors, and previously also re-injected a config
+//! default that the server no longer lists.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,21 +43,48 @@ pub async fn sync_flowy_builtin_provider(
     let api_key_encrypted =
         encrypt_string(&token, encryption_key).map_err(|e| format!("encrypt token: {e}"))?;
 
-    let catalog = fetch_chat_models(server, &session, data_dir).await;
-    let (model_ids, model_descriptions_json) = match catalog {
-        Ok(entries) if !entries.is_empty() => build_model_fields(&entries, server),
+    // Only replace the local model projection when the upstream catalog fetch
+    // succeeds. On failure, still refresh JWT/base_url but leave models alone
+    // so a blip cannot silently leave callers believing a soft-failed sync
+    // "updated" anything — and so we never invent a fake one-model catalog
+    // that masks the real failure mode (stale DB until the next success).
+    let catalog_fields = match fetch_chat_models(server, &session, data_dir).await {
+        Ok(entries) if !entries.is_empty() => Some(build_model_fields(&entries, server)),
         Ok(_) => {
-            warn!("Flowy server returned empty chat model catalog; using default model only");
-            fallback_model_fields(server)
+            warn!(
+                "Flowy server returned empty chat model catalog; clearing local projection to default model only"
+            );
+            Some(fallback_model_fields(server))
         }
         Err(e) => {
-            warn!("Failed to fetch Flowy chat model catalog: {e}; using default model only");
-            fallback_model_fields(server)
+            warn!(
+                "Failed to fetch Flowy chat model catalog: {e}; keeping existing local model list"
+            );
+            None
         }
     };
 
-    let models_json =
-        serde_json::to_string(&model_ids).map_err(|e| format!("serialize models: {e}"))?;
+    let models_json = catalog_fields
+        .as_ref()
+        .map(|(ids, _)| serde_json::to_string(ids))
+        .transpose()
+        .map_err(|e| format!("serialize models: {e}"))?;
+    let descriptions_json = catalog_fields
+        .as_ref()
+        .map(|(_, desc)| desc.as_str());
+
+    // Drop per-model enable flags for ids no longer in the catalog so delisted
+    // models cannot linger in auxiliary maps after a successful replace.
+    let pruned_enabled_json = if let Some((ids, _)) = catalog_fields.as_ref() {
+        let existing_enabled = provider_repo
+            .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
+            .await
+            .map_err(|e| e.to_string())?
+            .and_then(|row| row.model_enabled);
+        Some(prune_model_enabled_json(existing_enabled.as_deref(), ids)?)
+    } else {
+        None
+    };
 
     if provider_repo
         .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
@@ -66,10 +100,13 @@ pub async fn sync_flowy_builtin_provider(
                     name: Some("Flowy Cloud"),
                     base_url: Some(&base_url),
                     api_key_encrypted: Some(&api_key_encrypted),
-                    models: Some(&models_json),
+                    models: models_json.as_deref(),
                     enabled: Some(true),
                     capabilities: Some(FLOWY_CAPABILITIES_JSON),
-                    model_descriptions: Some(Some(model_descriptions_json.as_str())),
+                    model_descriptions: descriptions_json.map(Some),
+                    model_enabled: pruned_enabled_json
+                        .as_deref()
+                        .map(|s| if s == "{}" { None } else { Some(s) }),
                     is_full_url: Some(false),
                     sort_order: Some(0),
                     ..Default::default()
@@ -78,6 +115,19 @@ pub async fn sync_flowy_builtin_provider(
             .await
             .map_err(|e| e.to_string())?;
     } else {
+        let (models, descriptions) = match &catalog_fields {
+            Some((ids, desc)) => (
+                serde_json::to_string(ids).map_err(|e| format!("serialize models: {e}"))?,
+                desc.clone(),
+            ),
+            None => {
+                let (ids, desc) = fallback_model_fields(server);
+                (
+                    serde_json::to_string(&ids).map_err(|e| format!("serialize models: {e}"))?,
+                    desc,
+                )
+            }
+        };
         provider_repo
             .create(CreateProviderParams {
                 id: Some(FLOWY_BUILTIN_PROVIDER_ID),
@@ -85,13 +135,13 @@ pub async fn sync_flowy_builtin_provider(
                 name: "Flowy Cloud",
                 base_url: &base_url,
                 api_key_encrypted: &api_key_encrypted,
-                models: &models_json,
+                models: &models,
                 enabled: true,
                 capabilities: FLOWY_CAPABILITIES_JSON,
                 context_limit: None,
                 model_context_limits: None,
                 model_protocols: None,
-                model_descriptions: Some(model_descriptions_json.as_str()),
+                model_descriptions: Some(descriptions.as_str()),
                 model_enabled: None,
                 model_health: None,
                 bedrock_config: None,
@@ -103,8 +153,13 @@ pub async fn sync_flowy_builtin_provider(
     }
 
     disable_non_flowy_providers(provider_repo).await?;
+    let model_count = catalog_fields
+        .as_ref()
+        .map(|(ids, _)| ids.len())
+        .unwrap_or(0);
     info!(
-        flowy_models = model_ids.len(),
+        flowy_models = model_count,
+        catalog_replaced = catalog_fields.is_some(),
         "Synced Flowy Cloud provider from server catalog"
     );
     Ok(())
@@ -132,6 +187,7 @@ fn build_model_fields(
     let mut model_ids: Vec<String> = entries.iter().map(|e| e.api_model_id()).collect();
     model_ids.sort();
     model_ids.dedup();
+    model_ids.retain(|m| !m.trim().is_empty());
 
     promote_default_model(&mut model_ids, &default_model);
 
@@ -177,15 +233,31 @@ fn display_name_for_id(id: &str) -> String {
         .to_string()
 }
 
+/// Move the configured default to the front **only if it is already in the
+/// server catalog**. Never invent / re-inject a delisted model id.
 fn promote_default_model(model_ids: &mut Vec<String>, default_model: &str) {
     if default_model.trim().is_empty() {
         return;
     }
+    if !model_ids.iter().any(|m| m == default_model) {
+        return;
+    }
     model_ids.retain(|m| m != default_model);
     model_ids.insert(0, default_model.to_string());
-    if model_ids.len() > 1 {
-        model_ids.retain(|m| !m.trim().is_empty());
-    }
+}
+
+fn prune_model_enabled_json(
+    existing: Option<&str>,
+    keep_ids: &[String],
+) -> Result<String, String> {
+    let Some(raw) = existing.map(str::trim).filter(|s| !s.is_empty() && *s != "null") else {
+        return Ok("{}".to_string());
+    };
+    let mut map: HashMap<String, bool> =
+        serde_json::from_str(raw).map_err(|e| format!("parse model_enabled: {e}"))?;
+    let keep: std::collections::HashSet<&str> = keep_ids.iter().map(String::as_str).collect();
+    map.retain(|k, _| keep.contains(k.as_str()));
+    serde_json::to_string(&map).map_err(|e| format!("serialize model_enabled: {e}"))
 }
 
 async fn disable_non_flowy_providers(
@@ -234,4 +306,74 @@ pub async fn disable_flowy_builtin_provider(
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn promote_default_model_reorders_when_present() {
+        let mut ids = vec!["AIPC-b".into(), "AIPC-a".into(), "AIPC-glm-4.7".into()];
+        promote_default_model(&mut ids, "AIPC-glm-4.7");
+        assert_eq!(
+            ids,
+            vec![
+                "AIPC-glm-4.7".to_string(),
+                "AIPC-b".to_string(),
+                "AIPC-a".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn promote_default_model_does_not_reinject_delisted_default() {
+        let mut ids = vec!["AIPC-b".into(), "AIPC-a".into()];
+        promote_default_model(&mut ids, "AIPC-glm-4.7");
+        assert_eq!(ids, vec!["AIPC-b".to_string(), "AIPC-a".to_string()]);
+    }
+
+    #[test]
+    fn build_model_fields_drops_ids_not_in_server_catalog() {
+        let server = ServerConfig {
+            llm: nomi_config::ServerLlmConfig {
+                default_model: "AIPC-delisted".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let entries = vec![
+            ClawModelEntry {
+                id: "AIPC-keep".into(),
+                name: "Keep".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+            },
+            ClawModelEntry {
+                id: "AIPC-also".into(),
+                name: "Also".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+            },
+        ];
+        let (ids, _) = build_model_fields(&entries, &server);
+        assert_eq!(ids, vec!["AIPC-also".to_string(), "AIPC-keep".to_string()]);
+        assert!(!ids.iter().any(|id| id == "AIPC-delisted"));
+    }
+
+    #[test]
+    fn prune_model_enabled_removes_delisted_keys() {
+        let raw = r#"{"AIPC-keep":true,"AIPC-gone":false}"#;
+        let pruned = prune_model_enabled_json(Some(raw), &["AIPC-keep".into()]).unwrap();
+        let map: HashMap<String, bool> = serde_json::from_str(&pruned).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("AIPC-keep"), Some(&true));
+        assert!(!map.contains_key("AIPC-gone"));
+    }
 }
