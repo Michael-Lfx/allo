@@ -6,11 +6,11 @@
  * - Image + Video (render)
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select, Spin } from '@arco-design/web-react';
-import { ipcBridge } from '@/common';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
+import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 
 export interface VimaxModelSelection {
@@ -34,34 +34,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
 }) => {
   const { t } = useTranslation();
   const llmModels = useGeneratorModels('text');
-  const [mediaLoading, setMediaLoading] = useState(true);
-  const [imageModels, setImageModels] = useState<string[]>([]);
-  const [videoModels, setVideoModels] = useState<string[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setMediaLoading(true);
-    ipcBridge.media.listModels
-      .invoke()
-      .then((list) => {
-        if (cancelled) return;
-        setImageModels(list?.image_models ?? []);
-        setVideoModels(list?.video_models ?? []);
-      })
-      .catch((e) => {
-        console.warn('[videoGeneration] list media models failed', e);
-        if (!cancelled) {
-          setImageModels([]);
-          setVideoModels([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setMediaLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels();
 
   const llmOptions = useMemo(() => {
     const seen = new Set<string>();

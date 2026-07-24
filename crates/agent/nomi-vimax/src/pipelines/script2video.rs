@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::agents::{
     CameraImageGenerator, CharacterExtractor, CharacterPortraitsGenerator, ReferenceImageSelector,
-    StoryboardArtist,
+    StoryboardArtist, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
@@ -59,21 +59,50 @@ impl Script2VideoPipeline {
         &self,
         script: &str,
         user_requirement: &str,
-        _style: &str,
+        style: &str,
         progress: Option<ProgressCallback>,
     ) -> VimaxResult<PlanArtifacts> {
         tokio::fs::create_dir_all(&self.working_dir).await?;
         write_text_artifact(&self.working_dir.join("script.txt"), script).await?;
+        let style = crate::planning::resolve_visual_style(style);
+        let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
 
-        emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 15.0);
-        let characters = self.extract_characters(script).await?;
+        emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
+        let characters = self.extract_characters(script, &style).await?;
 
-        emit_pct(&progress, "design_storyboard", "正在设计分镜表", 35.0);
+        // Global cast bible during planning (ViMax generates before frames; we also
+        // expose portraits as plan artifacts so users can review identity early).
+        emit_pct(
+            &progress,
+            "character_portraits_start",
+            "正在生成全局角色定妆图",
+            22.0,
+        );
+        let _ = self
+            .generate_character_portraits(&characters, &style, script, &progress)
+            .await?;
+
+        emit_pct(
+            &progress,
+            "world_assets_start",
+            "正在生成全局环境与道具参考图",
+            30.0,
+        );
+        {
+            let film_root = resolve_film_root(&self.working_dir);
+            let planner = WorldAssetsPlanner::new(
+                Arc::clone(&self.backends.chat),
+                Arc::clone(&self.backends.image),
+            );
+            let _ = planner.ensure(&film_root, script, &style).await?;
+        }
+
+        emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
         let storyboard = self
             .design_storyboard(script, &characters, user_requirement)
             .await?;
 
-        emit_pct(&progress, "decompose_shots", "正在分解镜头视觉描述", 60.0);
+        emit_pct(&progress, "decompose_shots", "正在分解镜头视觉描述", 62.0);
         let shot_descriptions = self
             .decompose_visual_descriptions(&storyboard, &characters)
             .await?;
@@ -81,7 +110,7 @@ impl Script2VideoPipeline {
         emit_pct(&progress, "construct_camera_tree", "正在构建机位树", 85.0);
         let camera_tree = self.construct_camera_tree(&shot_descriptions).await?;
 
-        emit_pct(&progress, "planned", "文本规划完成", 100.0);
+        emit_pct(&progress, "planned", "文本规划完成（含全局定妆图）", 100.0);
         Ok(PlanArtifacts {
             characters,
             storyboard,
@@ -98,6 +127,8 @@ impl Script2VideoPipeline {
         progress: Option<ProgressCallback>,
     ) -> VimaxResult<PathBuf> {
         emit(&progress, "render_start", "开始渲染脚本成片");
+        let style = crate::planning::resolve_visual_style(style);
+        let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
         let final_path = self.working_dir.join("final_video.mp4");
         media_local::scrub_unusable_video(&final_path).await?;
         if media_local::is_usable_video_file(&final_path) {
@@ -110,17 +141,27 @@ impl Script2VideoPipeline {
         }
 
         let plan = self
-            .plan_text_artifacts(script, user_requirement, style, progress.clone())
+            .plan_text_artifacts(script, user_requirement, &style, progress.clone())
             .await?;
 
         emit(
             &progress,
             "character_portraits_start",
-            "正在生成角色定妆图",
+            "正在确认全局角色定妆图",
         );
         let registry = self
-            .generate_character_portraits(&plan.characters, style, &progress)
+            .generate_character_portraits(&plan.characters, &style, script, &progress)
             .await?;
+
+        let world_pairs = {
+            let film_root = resolve_film_root(&self.working_dir);
+            let planner = WorldAssetsPlanner::new(
+                Arc::clone(&self.backends.chat),
+                Arc::clone(&self.backends.image),
+            );
+            let reg = planner.ensure(&film_root, script, &style).await?;
+            world_asset_pairs(&reg)
+        };
 
         for shot in &plan.shot_descriptions {
             let shot_dir = self.working_dir.join("shots").join(shot.idx.to_string());
@@ -134,13 +175,20 @@ impl Script2VideoPipeline {
             &plan.shot_descriptions,
             &plan.characters,
             &registry,
+            &world_pairs,
+            &style,
             &progress,
         )
         .await?;
 
         emit(&progress, "video_clips_start", "正在串行生成镜头视频（一次一个）");
-        self.generate_videos_sequential(&plan.shot_descriptions, &progress)
-            .await?;
+        self.generate_videos_sequential(
+            &plan.shot_descriptions,
+            &plan.characters,
+            &style,
+            &progress,
+        )
+        .await?;
 
         if media_local::is_usable_video_file(&final_path) {
             emit(&progress, "final_video_exists", "场景成片已存在");
@@ -169,7 +217,11 @@ impl Script2VideoPipeline {
         Ok(final_path)
     }
 
-    async fn extract_characters(&self, script: &str) -> VimaxResult<Vec<CharacterInScene>> {
+    async fn extract_characters(
+        &self,
+        script: &str,
+        style: &str,
+    ) -> VimaxResult<Vec<CharacterInScene>> {
         let film_root = resolve_film_root(&self.working_dir);
         let film_chars = film_root.join("characters.json");
         let path = self.working_dir.join("characters.json");
@@ -186,8 +238,12 @@ impl Script2VideoPipeline {
                 }
             }
         }
+        let style = style.to_string();
+        let script = script.to_string();
         load_or_write_json(&path, || async {
-            self.character_extractor.extract_characters(script).await
+            self.character_extractor
+                .extract_characters(&script, &style)
+                .await
         })
         .await
     }
@@ -316,10 +372,13 @@ impl Script2VideoPipeline {
 
     /// Load/create portraits only under the **film root**. Every scene/shot reuses the
     /// same registry paths so identity stays consistent across the final cut.
+    ///
+    /// `theme_source` is the script/story text used for THEME LOCK on wardrobe/era.
     async fn generate_character_portraits(
         &self,
         characters: &[CharacterInScene],
         style: &str,
+        theme_source: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
         let film_root = resolve_film_root(&self.working_dir);
@@ -334,15 +393,19 @@ impl Script2VideoPipeline {
                 HashMap::new()
             };
 
+        let theme = crate::planning::portrait_theme_excerpt(theme_source);
         let mut set = tokio::task::JoinSet::new();
         let sem = Arc::new(tokio::sync::Semaphore::new(4));
         for character in characters {
             if !character.is_visible {
                 continue;
             }
-            if registry.contains_key(&character.identifier_in_scene) {
+            // Skip only when a usable single three-view sheet already exists.
+            if crate::agents::has_usable_portrait_sheet(&registry, &character.identifier_in_scene) {
                 continue;
             }
+            // Drop stale multi-view registry rows so we rewrite to sheet-only.
+            registry.remove(&character.identifier_in_scene);
             emit(
                 progress,
                 "character_portrait_start",
@@ -359,6 +422,7 @@ impl Script2VideoPipeline {
             let portraits = CharacterPortraitsGenerator::new(Arc::clone(&self.backends.image));
             let character = character.clone();
             let style = style.to_string();
+            let theme = theme.clone();
             let permit = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = permit
@@ -366,7 +430,7 @@ impl Script2VideoPipeline {
                     .await
                     .map_err(|_| VimaxError::msg("semaphore closed"))?;
                 portraits
-                    .generate_all_views(&character, &style, &dir)
+                    .generate_all_views(&character, &style, &theme, &dir)
                     .await
             });
         }
@@ -401,6 +465,8 @@ impl Script2VideoPipeline {
         shots: &[ShotDescription],
         characters: &[CharacterInScene],
         registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        world_pairs: &[(PathBuf, String)],
+        style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         use std::collections::HashSet;
@@ -477,7 +543,15 @@ impl Script2VideoPipeline {
                     ),
                     pct,
                 );
-                self.generate_frames_for_camera(&cam, shots, characters, registry, progress)
+                self.generate_frames_for_camera(
+                    &cam,
+                    shots,
+                    characters,
+                    registry,
+                    world_pairs,
+                    style,
+                    progress,
+                )
                     .await?;
                 for &idx in &cam.active_shot_idxs {
                     let ff = self
@@ -511,7 +585,15 @@ impl Script2VideoPipeline {
                 pct,
             );
 
-            self.generate_frames_for_camera(&camera, shots, characters, registry, progress)
+            self.generate_frames_for_camera(
+                &camera,
+                shots,
+                characters,
+                registry,
+                world_pairs,
+                style,
+                progress,
+            )
                 .await?;
 
             for &idx in &camera.active_shot_idxs {
@@ -546,6 +628,8 @@ impl Script2VideoPipeline {
     async fn generate_videos_sequential(
         &self,
         shots: &[ShotDescription],
+        characters: &[CharacterInScene],
+        style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         let total = shots.len().max(1);
@@ -568,7 +652,7 @@ impl Script2VideoPipeline {
                 pct,
             );
             match self
-                .generate_video_for_shot(shot, shots.len(), progress)
+                .generate_video_for_shot(shot, shots.len(), characters, style, progress)
                 .await
             {
                 Ok(()) => {
@@ -576,18 +660,18 @@ impl Script2VideoPipeline {
                     emit_pct(
                         progress,
                         "video_clip_done",
-                        &format!("镜头 {} 已就绪（完成 {}/{}）", shot.idx, ok, total),
+                        &format!("Shot {} ready ({ok}/{total})", shot.idx),
                         55.0 + 40.0 * ((i + 1) as f32 / total as f32),
                     );
                 }
                 Err(e) => {
-                    errors.push(format!("镜头 {}: {e}", shot.idx));
+                    errors.push(format!("Shot {}: {e}", shot.idx));
                     emit_pct(
                         progress,
                         "video_clips_partial",
                         &format!(
-                            "镜头 {} 失败；已成功 {}/{}。停止后续提交，可从断点继续。",
-                            shot.idx, ok, total
+                            "Shot {} failed; succeeded {ok}/{total}. Stopping further submits — resume from checkpoint.",
+                            shot.idx
                         ),
                         pct,
                     );
@@ -598,7 +682,7 @@ impl Script2VideoPipeline {
 
         if !errors.is_empty() {
             return Err(VimaxError::Video(format!(
-                "镜头视频生成失败：成功 {ok}/{}，未再提交后续镜头。已保存成功片段，请从断点继续（不会重复扣已成功镜头的积分）。\n{}",
+                "Shot video generation failed: succeeded {ok}/{}; further shots not submitted. Successful clips were kept — resume from checkpoint (no re-bill for those).\n{}",
                 shots.len(),
                 errors.join("\n")
             )));
@@ -606,7 +690,7 @@ impl Script2VideoPipeline {
         emit_pct(
             progress,
             "video_clips_done",
-            &format!("全部镜头视频已就绪（{ok}/{}）", shots.len()),
+            &format!("All shot videos ready ({ok}/{})", shots.len()),
             95.0,
         );
         Ok(())
@@ -618,6 +702,8 @@ impl Script2VideoPipeline {
         shots: &[ShotDescription],
         characters: &[CharacterInScene],
         registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        world_pairs: &[(PathBuf, String)],
+        style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         if camera.active_shot_idxs.is_empty() {
@@ -644,6 +730,11 @@ impl Script2VideoPipeline {
             );
             let mut available: Vec<(PathBuf, String)> =
                 portrait_pairs(characters, &first_shot.ff_vis_char_idxs, registry);
+            available.extend(rank_world_pairs_for_frame(
+                &first_shot.ff_desc,
+                world_pairs,
+                3,
+            ));
 
             // Prefer image continuity from parent frame over a billed transition video.
             if let Some(parent_shot_idx) = camera.parent_shot_idx {
@@ -677,6 +768,9 @@ impl Script2VideoPipeline {
                 "first_frame",
                 &first_shot.ff_desc,
                 &available,
+                characters,
+                &first_shot.ff_vis_char_idxs,
+                style,
                 &first_ff,
                 progress,
             )
@@ -697,6 +791,11 @@ impl Script2VideoPipeline {
             if !lf.exists() {
                 let mut available =
                     portrait_pairs(characters, &first_shot.lf_vis_char_idxs, registry);
+                available.extend(rank_world_pairs_for_frame(
+                    &first_shot.lf_desc,
+                    world_pairs,
+                    3,
+                ));
                 available.push((
                     continuity.path.clone(),
                     format!(
@@ -709,6 +808,9 @@ impl Script2VideoPipeline {
                     "last_frame",
                     &first_shot.lf_desc,
                     &available,
+                    characters,
+                    &first_shot.lf_vis_char_idxs,
+                    style,
                     &lf,
                     progress,
                 )
@@ -736,6 +838,7 @@ impl Script2VideoPipeline {
                 // frame makes Seedance I2V freeze on the same opening for ~4s.
                 let mut available =
                     portrait_pairs(characters, &shot.ff_vis_char_idxs, registry);
+                available.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 3));
                 available.push((
                     continuity.path.clone(),
                     format!(
@@ -748,6 +851,9 @@ impl Script2VideoPipeline {
                     "first_frame",
                     &shot.ff_desc,
                     &available,
+                    characters,
+                    &shot.ff_vis_char_idxs,
+                    style,
                     &ff,
                     progress,
                 )
@@ -759,6 +865,7 @@ impl Script2VideoPipeline {
                 if !lf.exists() {
                     let mut available =
                         portrait_pairs(characters, &shot.lf_vis_char_idxs, registry);
+                    available.extend(rank_world_pairs_for_frame(&shot.lf_desc, world_pairs, 3));
                     available.push((
                         ff.clone(),
                         format!(
@@ -771,6 +878,9 @@ impl Script2VideoPipeline {
                         "last_frame",
                         &shot.lf_desc,
                         &available,
+                        characters,
+                        &shot.lf_vis_char_idxs,
+                        style,
                         &lf,
                         progress,
                     )
@@ -801,11 +911,14 @@ impl Script2VideoPipeline {
         frame_type: &str,
         frame_desc: &str,
         available: &[(PathBuf, String)],
+        characters: &[CharacterInScene],
+        vis_char_idxs: &[i32],
+        style: &str,
         out_path: &Path,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         let selector_path = shot_dir.join(format!("{frame_type}_selector_output.json"));
-        let (pairs, prompt) = if selector_path.exists() {
+        let (mut pairs, prompt) = if selector_path.exists() {
             #[derive(serde::Deserialize)]
             struct Saved {
                 reference_image_path_and_text_pairs: Vec<(String, String)>,
@@ -846,32 +959,83 @@ impl Script2VideoPipeline {
             (sel.reference_image_path_and_text_pairs, sel.text_prompt)
         };
 
-        let mut prefix = String::new();
-        // Prefer shot continuity frames as Image 0 so the text-only image model
-        // sees the temporal-continuity hint before the 800-char truncate.
-        let mut ordered = pairs;
-        ordered.sort_by_key(|(p, _)| {
-            let s = p.to_string_lossy();
-            if s.contains("shots") {
+        // Always keep cast portraits + matched empty-set / prop plates (selector may drop them).
+        ensure_frame_refs(&mut pairs, available, characters, vis_char_idxs);
+
+        // Order for ref strip compose: portraits → env/prop → continuity shots.
+        pairs.sort_by_key(|(p, _)| {
+            let s = p.to_string_lossy().to_ascii_lowercase();
+            if s.contains("character_portrait") || s.contains("three_view") {
                 0u8
-            } else {
+            } else if s.contains("environments") || s.contains("props") {
                 1u8
+            } else if s.contains("shots") {
+                2u8
+            } else {
+                3u8
             }
         });
-        for (i, (_, text)) in ordered.iter().enumerate() {
-            prefix.push_str(&format!("Image {i}: {text}\n"));
+        let portrait_budget = vis_char_idxs.len().clamp(1, 2);
+        pairs = pick_frame_ref_strip(pairs, portrait_budget);
+
+        let identity = character_identity_clause(characters, vis_char_idxs, style);
+        let style_clause = crate::planning::style_prompt_clause(style);
+        let plot_lock: String = frame_desc.chars().take(220).collect();
+        let set_lock = pairs
+            .iter()
+            .find(|(p, _)| {
+                p.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("environments")
+            })
+            .map(|(_, t)| t.chars().take(90).collect::<String>())
+            .unwrap_or_default();
+        let prop_lock = pairs
+            .iter()
+            .find(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains("props"))
+            .map(|(_, t)| t.chars().take(60).collect::<String>())
+            .unwrap_or_default();
+        let mut prefix = String::new();
+        for (i, (_, text)) in pairs.iter().enumerate() {
+            let hint: String = text.chars().take(80).collect();
+            prefix.push_str(&format!("Ref{i}:{hint}. "));
         }
-        let continuity_hint = if ordered.is_empty() {
+        let continuity_hint = if pairs
+            .iter()
+            .any(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains("shots"))
+        {
+            "Keep temporal continuity with the latest prior shot frame. "
+        } else {
+            ""
+        };
+        let strip_hint = if pairs.len() > 1 {
+            "Reference strip L→R: cast bible (three-view), empty set plate, prop/continuity. Match faces/wardrobe from cast panel; copy architecture/lighting from empty set; place cast INTO that set (do not invent a new location or new characters). "
+        } else if pairs
+            .iter()
+            .any(|(p, _)| {
+                let s = p.to_string_lossy().to_ascii_lowercase();
+                s.contains("character_portrait") || s.contains("three_view")
+            })
+        {
+            "Match face/hair/outfit from the cast three-view reference. "
+        } else {
+            ""
+        };
+        let set_clause = if set_lock.is_empty() {
             String::new()
         } else {
-            "Match identity/style of Image 0; keep temporal continuity with the latest prior frame. "
-                .to_string()
+            format!("SET LOCK: {set_lock}. ")
         };
-        // Seedance rejects photoreal faces (PrivacyInformation). Force stylized look.
-        let style_guard =
-            "Stylized cinematic illustration / animated film look, clearly drawn characters. ";
-        let full_prompt = format!("{style_guard}{continuity_hint}{prefix}\n{prompt}");
-        let refs: Vec<&Path> = ordered.iter().map(|(p, _)| p.as_path()).collect();
+        let prop_clause = if prop_lock.is_empty() {
+            String::new()
+        } else {
+            format!("PROP LOCK: {prop_lock}. ")
+        };
+        // Plot + identity + set first — selector text alone often drifts off story.
+        let full_prompt = format!(
+            "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity}{set_clause}{prop_clause}{strip_hint}{continuity_hint}{prefix}Scene: {prompt}"
+        );
+        let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
         self.backends
             .image
             .generate(&full_prompt, &refs, out_path)
@@ -888,6 +1052,8 @@ impl Script2VideoPipeline {
         &self,
         shot: &ShotDescription,
         shot_count: usize,
+        characters: &[CharacterInScene],
+        style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         let shot_dir = self.working_dir.join("shots").join(shot.idx.to_string());
@@ -898,7 +1064,7 @@ impl Script2VideoPipeline {
             emit(
                 progress,
                 "video_clip_exists",
-                &format!("镜头 {} 视频已存在，跳过生成（不重复计费）", shot.idx),
+                &format!("Shot {} video exists — skipping (no re-bill)", shot.idx),
             );
             return Ok(());
         }
@@ -911,14 +1077,17 @@ impl Script2VideoPipeline {
         }
         let lf = shot_dir.join("last_frame.png");
         let use_last = matches!(shot.variation_type.as_str(), "medium" | "large") && lf.exists();
-        let prompt = i2v_motion_prompt(shot);
+        // Seedance I2V locks cast via first/last frame. Do NOT attach three-view sheets as
+        // reference_image — multi-MB data-URL payloads make Flowy return an empty body
+        // ("not valid Flowy JSON envelope: expected value at line 1 column 1").
+        let prompt = i2v_motion_prompt(shot, characters, style);
         let target = load_target_duration_secs(&self.working_dir).await;
         let duration_secs = crate::planning::clip_duration_secs(target, shot_count);
         emit(
             progress,
             "video_clip_start",
             &format!(
-                "正在生成镜头 {} 视频（{}s，排队/限流中可能稍慢）",
+                "Generating shot {} video ({}s; may queue / rate-limit)",
                 shot.idx, duration_secs
             ),
         );
@@ -927,7 +1096,14 @@ impl Script2VideoPipeline {
         let first_err = match self
             .backends
             .video
-            .generate(&prompt, Some(&ff), last_ref, &[], duration_secs, &video_path)
+            .generate(
+                &prompt,
+                Some(&ff),
+                last_ref,
+                &[],
+                duration_secs,
+                &video_path,
+            )
             .await
         {
             Ok(()) => None,
@@ -940,7 +1116,7 @@ impl Script2VideoPipeline {
                 progress,
                 "video_clip_start",
                 &format!(
-                    "镜头 {} 疑似首帧真人/隐私拦截（{}）。正在用插画风文本重绘首帧后重试…",
+                    "Shot {}: possible real-person / privacy block on frame ({}). Redrawing stylized first frame…",
                     shot.idx,
                     truncate_err(&err, 120)
                 ),
@@ -950,7 +1126,8 @@ impl Script2VideoPipeline {
                 let bak = shot_dir.join("last_frame.privacy_bak.png");
                 let _ = tokio::fs::rename(&lf, &bak).await;
             }
-            self.regenerate_stylized_first_frame(shot, &ff).await?;
+            self.regenerate_stylized_first_frame(shot, &ff, style, characters)
+                .await?;
 
             let retry_i2v = self
                 .backends
@@ -969,13 +1146,15 @@ impl Script2VideoPipeline {
                     progress,
                     "video_clip_start",
                     &format!(
-                        "镜头 {} 插画首帧仍被拦截，降级为无参考图文生视频（绕过真人图检测）…",
+                        "Shot {}: stylized frame still blocked; falling back to text-to-video…",
                         shot.idx
                     ),
                 );
                 let t2v_prompt = format!(
-                    "{}\nOpening scene (stylized animated illustration): {}",
-                    prompt, shot.ff_desc
+                    "{}\n{}\nOpening scene: {}",
+                    crate::planning::style_prompt_clause(style),
+                    prompt,
+                    shot.ff_desc
                 );
                 self.backends
                     .video
@@ -983,7 +1162,7 @@ impl Script2VideoPipeline {
                     .await
                     .map_err(|t2v_err| {
                         VimaxError::Video(format!(
-                            "镜头 {} 视频生成失败（首帧真人拦截 → 插画重绘 → 无图降级均失败）。首次：{}；最终：{t2v_err}",
+                            "Shot {} video failed (privacy → stylize → text-to-video). First: {}; Final: {t2v_err}",
                             shot.idx,
                             truncate_err(&err, 160)
                         ))
@@ -993,30 +1172,35 @@ impl Script2VideoPipeline {
 
         if !media_local::is_usable_video_file(&video_path) {
             return Err(VimaxError::Video(format!(
-                "镜头 {} 视频生成后文件无效",
+                "Shot {} video file invalid after generation",
                 shot.idx
             )));
         }
         emit(
             progress,
             "video_clip_done",
-            &format!("镜头 {} 视频已保存", shot.idx),
+            &format!("Shot {} video saved", shot.idx),
         );
         Ok(())
     }
 
-    /// Text-only redraw — Z-Image cannot img2img, so restyle-from-ref is useless.
+    /// Text-only redraw when privacy filter rejects photoreal I2V — honor user style.
     async fn regenerate_stylized_first_frame(
         &self,
         shot: &ShotDescription,
         frame_path: &Path,
+        style: &str,
+        characters: &[CharacterInScene],
     ) -> VimaxResult<()> {
         if frame_path.exists() {
             let bak = frame_path.with_extension("privacy_bak.png");
             let _ = tokio::fs::rename(frame_path, &bak).await;
         }
+        let style_clause = crate::planning::style_prompt_clause(style);
+        let identity = character_identity_clause(characters, &shot.ff_vis_char_idxs, style);
+        let plot_lock: String = shot.ff_desc.chars().take(220).collect();
         let prompt = format!(
-            "Stylized cinematic illustration / animated film still, clearly drawn painted characters, anime or storybook look. Wide 16:9. Scene: {}",
+            "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity} Wide 16:9. Scene: {}",
             shot.ff_desc
         );
         self.backends
@@ -1043,12 +1227,26 @@ fn portrait_pairs(
     for &ci in idxs {
         if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
             if let Some(views) = registry.get(&ch.identifier_in_scene) {
+                let feats = ch.static_features.trim();
+                // Prefer the single three-view sheet (one plate per character).
+                if let Some(sheet) = views.get("sheet").or_else(|| views.get("front")) {
+                    if let Some(p) = sheet.get("path") {
+                        let desc = sheet.get("description").cloned().unwrap_or_else(|| {
+                            format!(
+                                "GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
+                                ch.identifier_in_scene
+                            )
+                        });
+                        available.push((PathBuf::from(p), desc));
+                        continue;
+                    }
+                }
                 for (view, item) in views {
                     if let Some(p) = item.get("path") {
                         available.push((
                             PathBuf::from(p),
                             format!(
-                                "GLOBAL character bible ({view} view) for <{}>. Lock face, hair, age, body type, wardrobe colors, and art style to this sheet across every scene and shot. Do not redesign the character.",
+                                "GLOBAL character bible ({view}) <{}>: {feats}.",
                                 ch.identifier_in_scene
                             ),
                         ));
@@ -1058,6 +1256,153 @@ fn portrait_pairs(
         }
     }
     available
+}
+
+/// Compact character identity text for Z-Image (refs often ignored — features must be in prompt).
+fn character_identity_clause(characters: &[CharacterInScene], idxs: &[i32], style: &str) -> String {
+    let mut parts = Vec::new();
+    let mut has_child = false;
+    for &ci in idxs {
+        if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
+            if !ch.is_visible {
+                continue;
+            }
+            let static_f = ch.static_features.trim();
+            let dynamic_f = ch.dynamic_features.as_deref().unwrap_or("").trim();
+            if crate::planning::looks_like_child_character(&ch.identifier_in_scene, static_f) {
+                has_child = true;
+            }
+            let mut desc = String::new();
+            if !static_f.is_empty() {
+                desc.push_str(&static_f.chars().take(120).collect::<String>());
+            }
+            if !dynamic_f.is_empty() {
+                if !desc.is_empty() {
+                    desc.push_str("; ");
+                }
+                desc.push_str(&dynamic_f.chars().take(80).collect::<String>());
+            }
+            if desc.is_empty() {
+                parts.push(format!("<{}>", ch.identifier_in_scene));
+            } else {
+                parts.push(format!("<{}>: {desc}", ch.identifier_in_scene));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "CAST LOCK (must match three-view bible): {}. Do not invent new faces/outfits. ",
+        parts.join("; ")
+    );
+    if has_child {
+        if crate::planning::wants_stylized_non_photoreal(style) {
+            out.push_str(
+                "Children share the SAME animation/illustration Style as adults (do not mix photoreal). ",
+            );
+        } else {
+            out.push_str(
+                "Children share the SAME cinematic style as adults (not anime/chibi). ",
+            );
+        }
+    }
+    out
+}
+
+/// Build at most 3 refs: up to `portrait_budget` cast bibles + empty set (+ prop/continuity).
+fn pick_frame_ref_strip(
+    pairs: Vec<(PathBuf, String)>,
+    portrait_budget: usize,
+) -> Vec<(PathBuf, String)> {
+    let portrait_budget = portrait_budget.clamp(1, 2);
+    let mut portraits = Vec::new();
+    let mut envs = Vec::new();
+    let mut props = Vec::new();
+    let mut rest = Vec::new();
+    for (p, t) in pairs {
+        let s = p.to_string_lossy().to_ascii_lowercase();
+        if s.contains("character_portrait") || s.contains("three_view") {
+            portraits.push((p, t));
+        } else if s.contains("environments") {
+            envs.push((p, t));
+        } else if s.contains("props") {
+            props.push((p, t));
+        } else {
+            rest.push((p, t));
+        }
+    }
+    let mut out = Vec::new();
+    out.extend(portraits.drain(..).take(portrait_budget));
+    // Prefer keeping an empty-set plate when we still have slots.
+    if out.len() < 3 {
+        out.extend(envs.drain(..).take(1));
+    }
+    if out.len() < 3 {
+        out.extend(props.drain(..).take(1));
+    }
+    if out.len() < 3 {
+        out.extend(rest.drain(..).take(3 - out.len()));
+    }
+    if out.len() < 3 {
+        out.extend(portraits.drain(..).take(3 - out.len()));
+    }
+    out
+}
+
+/// Ensure each visible cast portrait and at least one world plate survive selector drops.
+fn ensure_frame_refs(
+    pairs: &mut Vec<(PathBuf, String)>,
+    available: &[(PathBuf, String)],
+    characters: &[CharacterInScene],
+    vis_char_idxs: &[i32],
+) {
+    let path_key = |p: &Path| p.to_string_lossy().to_ascii_lowercase();
+    let is_portrait = |p: &Path| {
+        let s = path_key(p);
+        s.contains("character_portrait") || s.contains("three_view")
+    };
+    let mentions_id = |text: &str, id: &str| text.to_ascii_lowercase().contains(&id.to_ascii_lowercase());
+
+    // Re-insert missing three-views for every visible cast member (up to 2 kept later).
+    for &ci in vis_char_idxs {
+        let Some(ch) = characters.iter().find(|c| c.idx == ci) else {
+            continue;
+        };
+        let id = &ch.identifier_in_scene;
+        let already = pairs.iter().any(|(p, t)| {
+            is_portrait(p) && (mentions_id(t, id) || path_key(p).contains(&id.to_ascii_lowercase()))
+        });
+        if already {
+            continue;
+        }
+        if let Some((p, t)) = available.iter().find(|(p, t)| {
+            is_portrait(p) && (mentions_id(t, id) || path_key(p).contains(&id.to_ascii_lowercase()))
+        }) {
+            pairs.insert(0, (p.clone(), t.clone()));
+        }
+    }
+    // Fallback: at least one portrait if none survived.
+    if !vis_char_idxs.is_empty() && !pairs.iter().any(|(p, _)| is_portrait(p)) {
+        if let Some((p, t)) = available.iter().find(|(p, _)| is_portrait(p)) {
+            pairs.insert(0, (p.clone(), t.clone()));
+        }
+    }
+
+    if !pairs
+        .iter()
+        .any(|(p, _)| path_key(p).contains("environments"))
+    {
+        if let Some((p, t)) = available.iter().find(|(p, _)| path_key(p).contains("environments"))
+        {
+            pairs.push((p.clone(), t.clone()));
+        }
+    }
+    if !pairs.iter().any(|(p, _)| path_key(p).contains("props")) {
+        if let Some((p, t)) = available.iter().find(|(p, _)| path_key(p).contains("props")) {
+            pairs.push((p.clone(), t.clone()));
+        }
+    }
 }
 
 struct ContinuityRef {
@@ -1108,11 +1453,25 @@ fn enforce_max_shots(shots: &mut Vec<ShotBriefDescription>, max_shots: usize) ->
     true
 }
 
-fn i2v_motion_prompt(shot: &ShotDescription) -> String {
+fn i2v_motion_prompt(shot: &ShotDescription, characters: &[CharacterInScene], style: &str) -> String {
     let motion = shot.motion_desc.trim();
     let audio = shot.audio_desc.as_deref().unwrap_or("").trim();
+    let style_clause = crate::planning::style_prompt_clause(style);
+    let identity = character_identity_clause(characters, &shot.ff_vis_char_idxs, style);
+    let plot: String = shot.ff_desc.chars().take(180).collect();
+    let end_plot: String = if shot.lf_desc.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            " End beat: {}.",
+            shot.lf_desc.chars().take(120).collect::<String>()
+        )
+    };
     format!(
-        "Continuous cinematic motion for the full clip. Camera and subjects must clearly move and progress; do not freeze or loop the opening pose; do not hold a static first-frame look.\nMotion: {motion}\nAudio: {audio}"
+        "{style_clause} {identity}PLOT LOCK: stay on this scene — {plot}.{end_plot} \
+Do not invent new characters, locations, outfits, or story beats. Match faces/wardrobe to cast three-view references when provided. \
+Continuous motion for the full clip; camera and subjects must clearly move and progress; do not freeze or loop the opening pose.\n\
+Motion: {motion}\nAudio: {audio}"
     )
 }
 

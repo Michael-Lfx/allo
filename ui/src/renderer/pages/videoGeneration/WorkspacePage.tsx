@@ -53,6 +53,7 @@ import StudioStageRail from './components/StudioStageRail';
 import type { VideoCreateDraft } from './components/VideoCreateComposer';
 import type { StoryboardScene } from './artifactPresentation';
 import { findStoryboardPath } from './artifactPresentation';
+import { progressStatusText } from './stageI18n';
 import styles from './index.module.css';
 
 const TextArea = Input.TextArea;
@@ -625,8 +626,7 @@ const WorkspacePage: React.FC = () => {
                 </Tag>
               </div>
               <p className='m-0 mt-4px text-12px text-[var(--color-text-3)]'>
-                {runStatus?.message ||
-                  session?.stage ||
+                {progressStatusText(runStatus?.stage ?? session?.stage, runStatus?.message, t) ||
                   t('videoGeneration.workspace.workflowLocked', {
                     defaultValue: '工作流在创建后已锁定，不可更改。',
                   })}
@@ -782,18 +782,76 @@ const WorkspacePage: React.FC = () => {
                   })}
                 />
               </label>
-              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+              <label
+                className={`flex flex-col gap-6px text-12px text-[var(--color-text-3)] ${
+                  isMobile ? '' : 'col-span-3'
+                }`}
+              >
                 {t('videoGeneration.workspace.source.styleLabel', {
-                  defaultValue: '视觉风格（可选）',
+                  defaultValue: '视觉风格（人物与成片）',
                 })}
+                <div className='flex flex-wrap gap-6px'>
+                  {(
+                    [
+                      {
+                        key: 'realistic',
+                        label: t('videoGeneration.workspace.source.stylePresets.realistic', {
+                          defaultValue: '写实电影',
+                        }),
+                        value:
+                          'cinematic film look, believable designed characters, natural wardrobe and lighting, gently softened facial skin with clear readable features',
+                      },
+                      {
+                        key: 'documentary',
+                        label: t('videoGeneration.workspace.source.stylePresets.documentary', {
+                          defaultValue: '纪录片',
+                        }),
+                        value:
+                          'documentary cinema look, natural ambient light, gently softened faces with clear features',
+                      },
+                      {
+                        key: 'illustration',
+                        label: t('videoGeneration.workspace.source.stylePresets.illustration', {
+                          defaultValue: '插画',
+                        }),
+                        value:
+                          'painted illustration style, detailed brushwork, cinematic composition (not anime)',
+                      },
+                      {
+                        key: 'anime',
+                        label: t('videoGeneration.workspace.source.stylePresets.anime', {
+                          defaultValue: '动画',
+                        }),
+                        value:
+                          'theatrical anime / animated-film character design, clear volume and soft painted shading, detailed hair strands and fabric folds, rich wardrobe materials, storybook colors — NOT flat paper-doll cel cutout, NOT photoreal live-action',
+                      },
+                    ] as const
+                  ).map((preset) => (
+                    <Button
+                      key={preset.key}
+                      size='mini'
+                      type={style === preset.value ? 'primary' : 'outline'}
+                      disabled={busy}
+                      onClick={() => setStyle(preset.value)}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
                 <Input
                   value={style}
                   onChange={setStyle}
                   disabled={busy}
                   placeholder={t('videoGeneration.workspace.source.stylePlaceholder', {
-                    defaultValue: '如：电影写实、复古胶片',
+                    defaultValue: '默认：电影感。可点预设或自定义…',
                   })}
                 />
+                <span className='text-11px text-[var(--color-text-4)]'>
+                  {t('videoGeneration.workspace.source.styleHint', {
+                    defaultValue:
+                      '定妆为单张三视图；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。',
+                  })}
+                </span>
               </label>
             </div>
             <details className='mt-14px rd-10px bg-[var(--color-fill-1)] px-12px py-9px'>

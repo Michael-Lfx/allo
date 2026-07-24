@@ -2,9 +2,11 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Progress, Button, Tag, Spin } from '@arco-design/web-react';
 import type { SessionStatus, VimaxRunStatus } from '../types';
 import { statusLabel, statusTagColor } from './SessionCard';
+import { stageLabel } from '../stageI18n';
 
 interface ProgressTimelineProps {
   status: SessionStatus | null;
@@ -18,73 +20,20 @@ interface ProgressTimelineProps {
   };
 }
 
-const STEPS: { key: VimaxRunStatus; labelKey: string; labelDefault: string }[] = [
-  { key: 'idle', labelKey: 'videoGeneration.status.idle', labelDefault: '待命' },
-  { key: 'planning', labelKey: 'videoGeneration.status.planning', labelDefault: '规划中' },
-  { key: 'rendering', labelKey: 'videoGeneration.status.rendering', labelDefault: '渲染中' },
-  { key: 'succeeded', labelKey: 'videoGeneration.status.succeeded', labelDefault: '已完成' },
+const STEPS: { key: VimaxRunStatus; labelKey: string }[] = [
+  { key: 'idle', labelKey: 'videoGeneration.status.idle' },
+  { key: 'planning', labelKey: 'videoGeneration.status.planning' },
+  { key: 'rendering', labelKey: 'videoGeneration.status.rendering' },
+  { key: 'succeeded', labelKey: 'videoGeneration.status.succeeded' },
 ];
-
-/** Human-readable labels for pipeline stage keys. */
-const STAGE_LABELS: Record<string, string> = {
-  planning: '准备规划',
-  rendering: '准备渲染',
-  save_novel: '保存并切分小说',
-  compress_novel: '压缩小说分片',
-  compress_aggregate: '汇总压缩结果',
-  extract_events: '提取事件',
-  event_rag: '检索相关片段',
-  extract_scenes: '提取场景',
-  merge_characters: '合并角色信息',
-  plan_scene: '规划场景产物',
-  develop_story: '扩写故事',
-  extract_characters: '提取角色',
-  write_script: '撰写剧本',
-  design_storyboard: '设计分镜',
-  decompose_shots: '分解镜头',
-  construct_camera_tree: '构建机位树',
-  planned: '规划完成',
-  reuse_plan: '复用规划产物',
-  character_portraits_start: '生成角色定妆图',
-  render_start: '开始渲染',
-  render_scene: '渲染场景',
-  render_scene_skip: '跳过已完成场景',
-  render_scene_done: '场景渲染完成',
-  render_scene_failed: '场景渲染失败',
-  render_resume: '从断点继续渲染',
-  frames_start: '生成关键帧',
-  frame_camera_start: '生成机位关键帧',
-  frame_camera_done: '机位关键帧完成',
-  frames_done: '关键帧全部完成',
-  frames_cancelled: '关键帧已取消',
-  frame_start: '生成镜头首帧',
-  frame_prompt_start: '选择参考图并生成提示',
-  frame_done: '关键帧已生成',
-  video_clips_start: '生成视频片段',
-  video_clip_exists: '跳过已有视频',
-  video_clip_start: '生成镜头视频',
-  video_clip_done: '镜头视频已保存',
-  video_clips_partial: '部分镜头视频失败',
-  video_clips_done: '镜头视频全部完成',
-  concat_start: '拼接成片',
-  concat_done: '拼接完成',
-  render_done: '渲染完成',
-  final_video_exists: '成片已存在',
-  failed: '失败',
-  cancelled: '已取消',
-};
-
-function stageLabel(stage: string | null | undefined): string {
-  if (!stage) return '';
-  return STAGE_LABELS[stage] ?? stage;
-}
 
 type FailureKind = 'llm' | 'image' | 'video' | 'unknown';
 
 function classifyFailure(
   error: string,
   stage: string | null | undefined,
-  events: SessionStatus['events']
+  events: SessionStatus['events'],
+  t: TFunction
 ): { kind: FailureKind; title: string; hint: string } {
   const lower = error.toLowerCase();
   const isChannel = lower.includes('all channel models failed');
@@ -121,6 +70,7 @@ function classifyFailure(
   ]);
   const imageStages = new Set([
     'character_portraits_start',
+    'world_assets_start',
     'frames_start',
     'frame_camera_start',
     'frame_start',
@@ -129,15 +79,25 @@ function classifyFailure(
   ]);
   const videoStages = new Set(['video_clips_start', 'video_generate', 'concat_start']);
 
-  const looksLikeLlm =
+  let looksLikeLlm =
     lower.includes('llm failed') ||
     lower.includes('规划模型') ||
     lower.includes('聊天模型') ||
     lower.includes('chat_completions') ||
     lower.includes('empty content');
 
+  const looksLikeBadImage =
+    lower.includes('invalid png') ||
+    lower.includes('open ref') ||
+    lower.includes('decode image') ||
+    lower.includes('downloaded image is not') ||
+    (lower.includes('media processing') &&
+      (lower.includes('.png') || lower.includes('three_view') || lower.includes('character_portrait')));
+
   let kind: FailureKind = 'unknown';
-  if (looksLikeLlm || planningLlmStages.has(stageKey) || renderLlmStages.has(stageKey)) {
+  if (looksLikeBadImage) {
+    kind = 'image';
+  } else if (looksLikeLlm || planningLlmStages.has(stageKey) || renderLlmStages.has(stageKey)) {
     kind = 'llm';
   } else if (lower.includes('image') || lower.includes('图片') || imageStages.has(stageKey)) {
     kind = 'image';
@@ -159,43 +119,43 @@ function classifyFailure(
     return {
       kind,
       title: inRenderPhase
-        ? '渲染阶段聊天模型（LLM）调用失败'
+        ? t('videoGeneration.workspace.failure.llmRenderTitle')
         : isCameraTree
-          ? '机位树规划结果不完整'
-          : '规划模型（LLM）调用失败',
+          ? t('videoGeneration.workspace.failure.llmCameraTreeTitle')
+          : t('videoGeneration.workspace.failure.llmPlanTitle'),
       hint: isCameraTree
-        ? '模型返回的机位父子关系条数与镜头机位数量不一致。已支持自动补齐；请重启后端后点「从断点继续」。若仍失败可换规划模型。'
+        ? t('videoGeneration.workspace.failure.llmCameraTreeHint')
         : isChannel
-        ? inRenderPhase
-          ? '这不是视频生成模型失败。渲染过程中的分镜/参考图选择也需要聊天模型。请更换「规划模型（LLM）」后点击「从断点继续」。'
-          : '这不是视频生成模型失败。Flowy 上游表示当前所选聊天模型的通道全部不可用。请更换「规划模型（LLM）」后重新点「开始规划」或「从断点继续」。'
-        : inRenderPhase
-          ? '渲染过程中调用聊天模型失败（如分镜提示、参考图选择）。已保留现场产物，请更换模型或稍后点击「从断点继续」。'
-          : '文本规划阶段调用聊天模型失败。请更换规划模型，或稍后点击「从断点继续」。',
+          ? inRenderPhase
+            ? t('videoGeneration.workspace.failure.llmChannelRenderHint')
+            : t('videoGeneration.workspace.failure.llmChannelPlanHint')
+          : inRenderPhase
+            ? t('videoGeneration.workspace.failure.llmRenderHint')
+            : t('videoGeneration.workspace.failure.llmPlanHint'),
     };
   }
   if (kind === 'image') {
     return {
       kind,
-      title: '图片模型调用失败',
+      title: t('videoGeneration.workspace.failure.imageTitle'),
       hint: isChannel
-        ? '生成定妆图/关键帧时图片通道不可用。请更换「图片模型」后点击「从断点继续」。'
-        : '请检查图片模型是否可用。已保留现场，可点击「从断点继续」。',
+        ? t('videoGeneration.workspace.failure.imageChannelHint')
+        : t('videoGeneration.workspace.failure.imageHint'),
     };
   }
   if (kind === 'video') {
     return {
       kind,
-      title: '视频模型调用失败',
+      title: t('videoGeneration.workspace.failure.videoTitle'),
       hint: isChannel
-        ? '生成镜头成片时视频通道不可用。请更换「视频模型」后点击「从断点继续」。'
-        : '请检查视频模型是否可用。已保留现场，可点击「从断点继续」。',
+        ? t('videoGeneration.workspace.failure.videoChannelHint')
+        : t('videoGeneration.workspace.failure.videoHint'),
     };
   }
   return {
     kind,
-    title: '执行失败',
-    hint: '现场产物已保留。若错误含 All channel models failed，请更换对应模型后点击「从断点继续」。',
+    title: t('videoGeneration.workspace.failure.unknownTitle'),
+    hint: t('videoGeneration.workspace.failure.unknownHint'),
   };
 }
 
@@ -230,8 +190,8 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
 
   const failure = useMemo(() => {
     if (!status?.error) return null;
-    return classifyFailure(status.error, status.stage, status.events);
-  }, [status?.error, status?.stage, status?.events]);
+    return classifyFailure(status.error, status.stage, status.events, t);
+  }, [status?.error, status?.stage, status?.events, t]);
 
   const staleHint = useMemo(() => {
     if (!status || (status.status !== 'planning' && status.status !== 'rendering')) {
@@ -243,18 +203,13 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
     if (Number.isNaN(ts)) return null;
     const ageSec = (Date.now() - ts) / 1000;
     if (ageSec < 90) return null;
-    return t('videoGeneration.workspace.progress.stale', {
-      defaultValue:
-        '进度已超过 90 秒未更新。若上游已失败，请点取消后「从断点继续」；成功片段不会重复扣费。',
-    });
+    return t('videoGeneration.workspace.progress.stale');
   }, [status, t]);
 
   if (!status) {
     return (
       <div className='text-12px text-[var(--color-text-3)] py-8px'>
-        {t('videoGeneration.workspace.progressIdle', {
-          defaultValue: '尚未开始。提交规划后将显示进度。',
-        })}
+        {t('videoGeneration.workspace.progressIdle')}
       </div>
     );
   }
@@ -262,8 +217,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   const active = stepIndex(status.status, status.stage);
   const busy = status.status === 'planning' || status.status === 'rendering';
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
-  const currentStage = stageLabel(status.stage);
-  const currentMessage = status.message?.trim() || '';
+  const currentStage = stageLabel(status.stage, t);
 
   const relatedModel =
     failure?.kind === 'llm'
@@ -285,7 +239,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
         </div>
         {busy && onCancel ? (
           <Button size='mini' status='danger' loading={cancelling} onClick={onCancel}>
-            {t('videoGeneration.workspace.cancel', { defaultValue: '取消' })}
+            {t('videoGeneration.workspace.cancel')}
           </Button>
         ) : null}
       </div>
@@ -299,19 +253,14 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
         ].join(' ')}
       >
         <div className='text-11px text-[var(--color-text-3)] mb-2px'>
-          {t('videoGeneration.workspace.progress.now', { defaultValue: '当前步骤' })}
+          {t('videoGeneration.workspace.progress.now')}
         </div>
         <div className='text-14px font-600 text-[var(--color-text-1)] leading-22px'>
           {currentStage ||
             (busy
-              ? t('videoGeneration.workspace.progress.working', { defaultValue: '处理中…' })
-              : t('videoGeneration.workspace.progress.idleStep', { defaultValue: '待命' }))}
+              ? t('videoGeneration.workspace.progress.working')
+              : t('videoGeneration.workspace.progress.idleStep'))}
         </div>
-        {currentMessage && !status.error ? (
-          <div className='text-12px leading-18px text-[var(--color-text-2)] mt-4px'>
-            {currentMessage}
-          </div>
-        ) : null}
         {staleHint ? (
           <div className='text-12px leading-18px text-[rgb(var(--warning-6))] mt-6px'>
             {staleHint}
@@ -321,10 +270,10 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
 
       {status.working_dir_abs ? (
         <div className='text-11px text-[var(--color-text-3)] break-all'>
-          {t('videoGeneration.workspace.progress.workdir', {
-            defaultValue: '工作目录',
+          {t('videoGeneration.workspace.progress.workdirLine', {
+            path: status.working_dir_abs,
+            defaultValue: '工作目录：{{path}}',
           })}
-          ：{status.working_dir_abs}
         </div>
       ) : null}
 
@@ -343,14 +292,12 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           <div className='text-12px leading-18px text-[var(--color-text-1)]'>{failure.hint}</div>
           {relatedModel ? (
             <div className='text-11px text-[var(--color-text-3)]'>
-              当前选用：{relatedModel}
+              {t('videoGeneration.workspace.progress.currentModel', { model: relatedModel })}
             </div>
           ) : null}
           <details className='text-11px text-[var(--color-text-3)]'>
             <summary className='cursor-pointer select-none'>
-              {t('videoGeneration.workspace.progress.errorDetail', {
-                defaultValue: '查看原始错误',
-              })}
+              {t('videoGeneration.workspace.progress.errorDetail')}
             </summary>
             <pre className='m-0 mt-6px whitespace-pre-wrap break-all font-mono leading-16px text-[rgb(var(--danger-6))]'>
               {status.error}
@@ -396,7 +343,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
                       : 'text-[var(--color-text-3)]',
                   ].join(' ')}
                 >
-                  {t(step.labelKey, { defaultValue: step.labelDefault })}
+                  {t(step.labelKey)}
                 </span>
               </div>
             </React.Fragment>
@@ -407,29 +354,30 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
       {events.length > 0 ? (
         <div className='flex flex-col gap-4px'>
           <div className='text-11px text-[var(--color-text-3)]'>
-            {t('videoGeneration.workspace.progress.log', { defaultValue: '最近动态' })}
+            {t('videoGeneration.workspace.progress.log')}
           </div>
           <div className='max-h-160px overflow-y-auto rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-10px py-8px flex flex-col gap-6px'>
-            {events.map((ev, idx) => (
-              <div key={`${ev.at}-${ev.stage}-${idx}`} className='flex gap-8px text-11px leading-16px'>
-                <span className='shrink-0 text-[var(--color-text-3)] tabular-nums'>
-                  {formatEventTime(ev.at)}
-                </span>
-                <span
-                  className={[
-                    'shrink-0 font-500',
-                    ev.stage === 'failed'
-                      ? 'text-[rgb(var(--danger-6))]'
-                      : 'text-[rgb(var(--primary-6))]',
-                  ].join(' ')}
-                >
-                  {stageLabel(ev.stage)}
-                </span>
-                <span className='min-w-0 text-[var(--color-text-2)] break-all line-clamp-3'>
-                  {ev.message}
-                </span>
-              </div>
-            ))}
+            {events.map((ev, idx) => {
+              const label = stageLabel(ev.stage, t);
+              // Never show backend Chinese messages in the activity log — stage label is enough.
+              return (
+                <div key={`${ev.at}-${ev.stage}-${idx}`} className='flex gap-8px text-11px leading-16px'>
+                  <span className='shrink-0 text-[var(--color-text-3)] tabular-nums'>
+                    {formatEventTime(ev.at)}
+                  </span>
+                  <span
+                    className={[
+                      'shrink-0 font-500',
+                      ev.stage === 'failed'
+                        ? 'text-[rgb(var(--danger-6))]'
+                        : 'text-[rgb(var(--primary-6))]',
+                    ].join(' ')}
+                  >
+                    {label}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : null}

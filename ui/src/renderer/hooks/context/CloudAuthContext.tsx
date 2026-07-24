@@ -1,8 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { mutate } from 'swr';
 import { ipcBridge } from '@/common';
 import type { ICloudWhoami } from '@/common/adapter/ipcBridge';
-import { fetchProviders, PROVIDERS_SWR_KEY } from '@renderer/hooks/agent/useModelProviderList';
+import { refreshProvidersCatalog } from '@renderer/hooks/agent/useModelProviderList';
 import { useAuth } from './AuthContext';
 
 export type CloudAuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
@@ -43,7 +42,7 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
       setWhoami(profile);
       setStatus(profile.authenticated ? 'authenticated' : 'unauthenticated');
       if (profile.authenticated) {
-        void mutate(PROVIDERS_SWR_KEY, fetchProviders(), { revalidate: true });
+        void refreshProvidersCatalog();
       }
     } catch (error) {
       if (controller.signal.aborted) return;

@@ -5693,6 +5693,10 @@ export interface ICloudDeviceActivationRetryResponse {
   reported: boolean;
 }
 
+export interface ICloudSyncModelsResponse {
+  synced: boolean;
+}
+
 export interface ICloudLoginStartResponse {
   pendingId: string;
   method: string;
@@ -5744,4 +5748,6 @@ export const cloud = {
     (p) => ({ pendingId: p.pendingId, input: p.input })
   ),
   logout: httpPost<boolean, void>('/api/cloud/logout'),
+  /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
+  syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
 };

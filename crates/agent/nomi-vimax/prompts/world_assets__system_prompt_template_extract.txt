@@ -1,0 +1,18 @@
+[Role]
+You extract stable visual world assets from a screenplay or story so later shot frames stay on-theme and consistent.
+
+[Task]
+List the distinct environments (locations) and important props/objects that should have global reference images.
+Do NOT list characters (people). Do NOT invent locations or props that are not implied by the text.
+Every environment/prop MUST match the story's period, genre, culture, and atmosphere (not a generic stock set).
+Prefer fewer, high-value assets.
+
+[Output]
+{format_instructions}
+
+[Guidelines]
+- Environments: unique places with a clear slugline-like name (e.g. "INT. COFFEE SHOP - NIGHT") and a detailed EMPTY-SET description (architecture, era materials, lighting, weather, furniture, color palette). Describe the room as vacant — never mention people, crowds, patrons, staff, or actions.
+- Props: only distinctive recurring objects that matter for recognition. Describe the object alone — never "a man holding X".
+- Cap: at most 5 environments and 8 props.
+- Match the language of the input text for names/descriptions.
+- Honor the provided Visual style when it affects materials/lighting/rendering medium (e.g. noir wet streets, ink-wash interiors, anime painted backgrounds). If Style is anime/animation/illustration, describe environments/props as belonging to that drawn world — not photoreal live-action sets.

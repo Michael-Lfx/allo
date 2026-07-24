@@ -1,4 +1,0 @@
-Generate a full-body left side-view of {identifier} on a pure white background, wide 16:9 landscape, character centered. Same identity, face, hair, and outfit as described. Arms relaxed.
-Features: {features}
-Style: {style}
-Look: stylized illustration / animated character design, clearly drawn storybook look.

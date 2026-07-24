@@ -8,6 +8,11 @@ import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabili
  */
 const available_modelsCache = new Map<string, string[]>();
 
+/** Drop Guid-side filter cache after a catalog sync so delisted models cannot linger. */
+export const clearAvailableModelsCache = (): void => {
+  available_modelsCache.clear();
+};
+
 /**
  * Get all available primary models for a provider (with cache).
  * Filters out disabled models based on model_enabled state.

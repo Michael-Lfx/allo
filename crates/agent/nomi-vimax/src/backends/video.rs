@@ -196,8 +196,43 @@ impl VimaxVideo for FlowyVideo {
 
 async fn path_as_upload_url(path: &Path) -> VimaxResult<String> {
     let bytes = tokio::fs::read(path).await?;
+    // Keep data-URL payloads small — oversized JSON bodies make Flowy return empty responses.
+    let (bytes, mime) = tokio::task::spawn_blocking(move || prepare_video_frame_upload(bytes))
+        .await
+        .map_err(|e| VimaxError::Video(format!("frame encode join: {e}")))??;
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-    Ok(format!("data:image/png;base64,{b64}"))
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
+/// Cap Seedance frame uploads (~1.2MB raw ≈ ~1.6MB base64) and prefer JPEG for size.
+fn prepare_video_frame_upload(bytes: Vec<u8>) -> VimaxResult<(Vec<u8>, &'static str)> {
+    const MAX_BYTES: usize = 1_200_000;
+    let kind = crate::media_local::image_magic_kind(&bytes);
+    if bytes.len() <= MAX_BYTES {
+        let mime = match kind {
+            Some("jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("png") => "image/png",
+            _ => {
+                return Err(VimaxError::Video(
+                    "video frame is not a decodable PNG/JPEG/WEBP".into(),
+                ));
+            }
+        };
+        return Ok((bytes, mime));
+    }
+
+    let img = image::load_from_memory(&bytes)
+        .map_err(|e| VimaxError::Video(format!("decode video frame: {e}")))?;
+    let img = img.resize(1280, 720, image::imageops::FilterType::Triangle);
+    let mut out = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut out);
+    img.write_to(&mut cursor, image::ImageFormat::Jpeg)
+        .map_err(|e| VimaxError::Video(format!("re-encode video frame jpeg: {e}")))?;
+    if out.is_empty() {
+        return Err(VimaxError::Video("re-encoded video frame is empty".into()));
+    }
+    Ok((out, "image/jpeg"))
 }
 
 async fn download_video(url: &str, out_path: &Path) -> VimaxResult<()> {

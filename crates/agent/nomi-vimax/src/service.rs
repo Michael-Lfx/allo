@@ -341,10 +341,10 @@ impl VimaxService {
                                 // Plan done ≠ final video done — return to idle so UI can render.
                                 st.status = RunStatus::Idle;
                                 st.stage = "planned".into();
-                                st.message = "规划完成，可以开始渲染".into();
+                                st.message = "Planning complete — ready to render".into();
                                 st.progress = 100.0;
                                 st.error = None;
-                                st.emit("planned", "规划完成，可以开始渲染", None);
+                                st.emit("planned", "Planning complete — ready to render", None);
                             }
                             JobKind::Render => {
                                 st.status = RunStatus::Succeeded;
@@ -370,7 +370,7 @@ impl VimaxService {
                         detail.clone()
                     } else {
                         format!(
-                            "失败于步骤「{prev_stage}」\n上一状态：{prev_message}\n\n{detail}"
+                            "Failed at stage `{prev_stage}`\nPrevious status: {prev_message}\n\n{detail}"
                         )
                     };
                     st.error = Some(composed.clone());
@@ -490,11 +490,19 @@ impl VimaxService {
                 .index
                 .update_fields(id, |r| r.target_duration_secs = target_secs);
         }
-        let style_s = if record.style.is_empty() {
-            "cinematic".into()
+        let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
+            ""
         } else {
-            record.style.clone()
-        };
+            record.style.as_str()
+        });
+        let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
+        // Keep session field in sync when client omitted style.
+        if record.style.is_empty() {
+            let style_persist = style_s.clone();
+            let _ = self
+                .index
+                .update_fields(id, |r| r.style = style_persist);
+        }
         let progress = progress_callback(Arc::clone(self), id);
 
         match record.workflow {
@@ -593,11 +601,12 @@ impl VimaxService {
         )
         .await;
         let req = record.user_requirement.clone();
-        let style_s = if record.style.is_empty() {
-            "cinematic".into()
+        let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
+            ""
         } else {
-            record.style.clone()
-        };
+            record.style.as_str()
+        });
+        let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
         let progress = progress_callback(Arc::clone(self), id);
 
         // Periodically check cancel while waiting on long video polls is handled

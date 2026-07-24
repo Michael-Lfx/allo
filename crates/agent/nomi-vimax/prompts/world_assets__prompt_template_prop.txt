@@ -1,0 +1,8 @@
+Wide 16:9 isolated object / prop bible on clean neutral studio backdrop.
+HARD: zero people, zero humans, zero faces, zero hands, zero body parts. Object alone only.
+Theme: {theme}
+Prop: {name}
+Object only: {description}
+CRITICAL Visual style (MUST MATCH): {style}
+If Style is anime/animation/illustration, draw the prop in that look — NOT photoreal product photography.
+Output: prop bible plate matching Style — object alone, no people.

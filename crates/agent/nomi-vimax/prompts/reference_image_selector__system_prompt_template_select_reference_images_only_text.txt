@@ -41,5 +41,10 @@ You need to select up to 8 of the most relevant reference images based on the us
 - The images from prior frames are arranged in chronological order. Give higher priority to more recent images (those closer to the end of the sequence).
 - Choose reference image descriptions that are as concise as possible and avoid including duplicate information. For example, if Image 3 depicts the facial features of Bob from the front, and Image 1 also depicts Bob's facial features from the front-view portrait, then Image 1 is redundant and should not be selected.
 - When a new character appears in the frame description, prioritize selecting their portrait image description (if available) to ensure accurate depiction of their appearance. Pay attention to whether the character is facing the camera from the front, side, or back. Choose the most suitable view as the reference image for the character.
-- For character portraits, you can only select at most one image from multiple views (front, side, back). Choose the most appropriate one based on the frame description. For example, when depicting a character from the side, choose the side view of the character.
+- For character portraits, prefer the three-view character bible sheet when available (one image with front/side/back panels). If only separate views exist, select at most one view that matches the frame angle.
+- MUST include a GLOBAL character bible/portrait for every visible named character in the frame description when such an image is in the library.
+- MUST include the matching GLOBAL EMPTY environment plate when one exists for the frame's location. Prefer empty-set plates over inventing a new background.
+- Include GLOBAL prop bibles when the frame mentions those signature objects.
+- Never prefer a prior-frame image that would replace the correct empty-set location with a wrong place.
 - Select at most **8** optimal reference image descriptions.
+- In text_prompt, explicitly say which Image N locks faces, which locks the empty set, and place characters INTO that set.

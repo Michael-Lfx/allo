@@ -109,8 +109,8 @@ pub use cloud::{
     CloudDeviceActivationRetryResponse, CloudDeviceActivationStatusResponse,
     CloudLoginContinueRequest, CloudLoginFailedResponse, CloudLoginInput,
     CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
-    CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudWhoamiResponse,
-    UpdateCloudServerSettingsRequest,
+    CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudSyncModelsResponse,
+    CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
 };
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,

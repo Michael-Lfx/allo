@@ -1,0 +1,14 @@
+Character: <{identifier}>
+Features (FOLLOW EXACTLY — hair, face, body type, outfit colors and materials; do NOT substitute a generic costume): {features}
+Style: {style}
+{medium_lock}
+
+Generate ONE wide 16:9 three-panel character turnaround sheet of this SAME person (not three different people).
+Panels left → right on a single image:
+  1) FRONT — facing camera, arms relaxed, natural expression, full body head-to-toe
+  2) LEFT PROFILE — true profile facing left, full body head-to-toe
+  3) BACK — back to camera, face not visible, full body head-to-toe
+HARD IDENTITY LOCK: identical face, hair, body, wardrobe, and colors in all three panels. One character only.
+Clean white / light-gray studio backdrop. Thin vertical gaps between panels OK.
+非真人肖像，无明星样貌 — fictional designed character only, not a celebrity likeness.
+Output a single three-view continuity plate.
