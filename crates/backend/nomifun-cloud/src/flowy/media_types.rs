@@ -183,8 +183,67 @@ impl VideoCreateParams {
 pub struct ImageGenerationRequest {
     pub model: String,
     pub prompt: String,
+    /// Single reference (legacy). Prefer [`Self::image_urls`] for multi-ref img2img.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+    /// Extra reference images for multi-ref img2img (Seedream `image: string[]`, etc.).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_urls: Vec<String>,
     #[serde(flatten)]
     pub extra: Value,
+}
+
+impl ImageGenerationRequest {
+    /// Combined reference URLs (`image_url` first, then `image_urls`, de-duplicated).
+    pub fn reference_urls(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        if let Some(u) = self
+            .image_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            out.push(u);
+        }
+        for u in &self.image_urls {
+            let t = u.trim();
+            if !t.is_empty() && !out.iter().any(|x| *x == t) {
+                out.push(t);
+            }
+        }
+        out
+    }
+}
+
+/// `POST /uploads/oss/presignPut` request body.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OssPresignPutRequest {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub file_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_seconds: Option<u64>,
+}
+
+/// `POST /uploads/oss/presignPut` success `data`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OssPresignPutData {
+    /// Usually `"PUT"`.
+    #[serde(default)]
+    pub method: String,
+    /// Presigned upload URL (query-signed; short-lived). Do **not** pass to video API.
+    pub url: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// Headers that must be sent verbatim on the upload PUT (at least `Content-Type`).
+    #[serde(default)]
+    pub required_headers: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub object_key: Option<String>,
+    /// HTTPS download URL for video/image generation `content[].image_url.url`.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }

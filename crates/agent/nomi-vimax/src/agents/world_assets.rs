@@ -121,7 +121,12 @@ impl WorldAssetsPlanner {
             }
             let dir = env_root.join(format!("{}_{}", env.idx, safe_component(&key)));
             tokio::fs::create_dir_all(&dir).await?;
-            let out = dir.join("plate.png");
+            let plate_name = format!("{}_environment_plate.png", safe_component(&key));
+            let out = dir.join(&plate_name);
+            let legacy = dir.join("plate.png");
+            if !out.exists() && legacy.exists() {
+                let _ = tokio::fs::rename(&legacy, &out).await;
+            }
             if !out.exists() {
                 let desc = strip_people_mentions(&env.description);
                 let style_clause = crate::planning::style_prompt_clause(&style);
@@ -143,7 +148,7 @@ impl WorldAssetsPlanner {
                 asset_item(
                     &out,
                     &format!(
-                        "GLOBAL EMPTY environment plate (no people): {key}. {detail}. Lock architecture, lighting, set dressing only."
+                        "File [{plate_name}] = GLOBAL EMPTY environment plate (no people): {key}. {detail}. Lock architecture, lighting, set dressing only."
                     ),
                 ),
             );
@@ -157,7 +162,12 @@ impl WorldAssetsPlanner {
             }
             let dir = prop_root.join(format!("{}_{}", prop.idx, safe_component(&key)));
             tokio::fs::create_dir_all(&dir).await?;
-            let out = dir.join("prop.png");
+            let prop_name = format!("{}_prop.png", safe_component(&key));
+            let out = dir.join(&prop_name);
+            let legacy = dir.join("prop.png");
+            if !out.exists() && legacy.exists() {
+                let _ = tokio::fs::rename(&legacy, &out).await;
+            }
             if !out.exists() {
                 let desc = strip_people_mentions(&prop.description);
                 let style_clause = crate::planning::style_prompt_clause(&style);
@@ -177,7 +187,7 @@ impl WorldAssetsPlanner {
                 asset_item(
                     &out,
                     &format!(
-                        "GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors."
+                        "File [{prop_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors."
                     ),
                 ),
             );
@@ -438,15 +448,17 @@ mod tests {
     fn ranks_matching_environment_higher() {
         let pairs = vec![
             (
-                PathBuf::from("environments/0_INT_OFFICE/plate.png"),
+                PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
                 "GLOBAL EMPTY environment plate (no people): INT. OFFICE - DAY.".into(),
             ),
             (
-                PathBuf::from("environments/1_INT_COFFEE_SHOP/plate.png"),
+                PathBuf::from(
+                    "environments/1_INT_COFFEE_SHOP/INT_COFFEE_SHOP_environment_plate.png",
+                ),
                 "GLOBAL EMPTY environment plate (no people): INT. COFFEE SHOP - NIGHT.".into(),
             ),
             (
-                PathBuf::from("props/0_mug/prop.png"),
+                PathBuf::from("props/0_mug/mug_prop.png"),
                 "GLOBAL prop bible (object only, no people): <mug>.".into(),
             ),
         ];

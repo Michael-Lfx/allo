@@ -7,7 +7,9 @@ import { Button, Input, InputNumber } from '@arco-design/web-react';
 import { BookOpen, FileText, Lightning, SettingTwo, VideoOne } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import type { VimaxWorkflow } from '../types';
+import { DEFAULT_VISUAL_STYLE_PROMPT } from '../visualStylePresets';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
+import VisualStyleSelect from './VisualStyleSelect';
 import styles from '../index.module.css';
 
 const TextArea = Input.TextArea;
@@ -38,7 +40,7 @@ function loadDraft(): VideoCreateDraft {
     workflow: 'idea2video',
     sourceText: '',
     requirement: '',
-    style: '',
+    style: DEFAULT_VISUAL_STYLE_PROMPT,
     targetDurationSecs: 30,
     models: EMPTY_MODELS,
   };
@@ -52,7 +54,10 @@ function loadDraft(): VideoCreateDraft {
       workflow,
       sourceText: typeof parsed.sourceText === 'string' ? parsed.sourceText : '',
       requirement: typeof parsed.requirement === 'string' ? parsed.requirement : '',
-      style: typeof parsed.style === 'string' ? parsed.style : '',
+      style:
+        typeof parsed.style === 'string' && parsed.style.trim()
+          ? parsed.style
+          : DEFAULT_VISUAL_STYLE_PROMPT,
       targetDurationSecs:
         typeof parsed.targetDurationSecs === 'number' ? parsed.targetDurationSecs : 30,
       models: {
@@ -261,17 +266,16 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                     disabled={loading}
                   />
                 </label>
-                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.workspace.source.styleLabel', { defaultValue: '视觉风格' })}
-                  <Input
+                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                  <span>
+                    {t('videoGeneration.workspace.source.styleLabel', { defaultValue: '视觉风格' })}
+                  </span>
+                  <VisualStyleSelect
                     value={draft.style}
                     onChange={(style) => setDraft((current) => ({ ...current, style }))}
-                    placeholder={t('videoGeneration.workspace.source.stylePlaceholder', {
-                      defaultValue: '如：电影写实、复古胶片',
-                    })}
                     disabled={loading}
                   />
-                </label>
+                </div>
                 <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.workspace.source.requirementLabel', {
                     defaultValue: '额外要求',

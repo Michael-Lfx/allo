@@ -173,13 +173,23 @@
       "requirementLabel": "Extra requirements (optional)",
       "requirementPlaceholder": "Duration, pacing, audience…",
       "styleLabel": "Visual style (cast & film)",
-      "stylePlaceholder": "Default: cinematic. Preset or custom…",
+      "stylePlaceholder": "Select a visual style",
       "styleHint": "Portraits are a single three-view sheet with gently softened but sharp faces. Planning also builds global environment and prop plates.",
       "stylePresets": {
-        "realistic": "Cinematic",
+        "cinematic": "Cinematic realism",
         "documentary": "Documentary",
-        "illustration": "Illustration",
-        "anime": "Anime"
+        "vintageFilm": "Vintage film",
+        "noir": "Film noir",
+        "cyberpunk": "Cyberpunk",
+        "commercial": "Commercial / ads",
+        "anime": "Anime",
+        "ghibli": "Ghibli-inspired",
+        "pixar3d": "3D animated film",
+        "illustration": "Storybook illustration",
+        "watercolor": "Watercolor",
+        "comic": "Comic / graphic novel",
+        "custom": "Custom style",
+        "realistic": "Cinematic"
       },
       "required": "Please enter source content first"
     },

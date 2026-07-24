@@ -116,12 +116,8 @@ fn build_openai_style_image_body(req: &ImageGenerationRequest) -> Value {
     body.insert("model".into(), json!(req.model));
 
     let mut text = req.prompt.trim().to_string();
-    let ref_url = req
-        .image_url
-        .as_ref()
-        .map(|u| u.trim())
-        .filter(|u| !u.is_empty());
-    if ref_url.is_some()
+    let ref_urls = req.reference_urls();
+    if !ref_urls.is_empty()
         && !text.to_ascii_lowercase().contains("same character")
         && !text.to_ascii_lowercase().contains("consistent")
         && !text.to_ascii_lowercase().contains("continuity")
@@ -131,9 +127,9 @@ fn build_openai_style_image_body(req: &ImageGenerationRequest) -> Value {
     let text = truncate_chars(&text, OPENAI_STYLE_IMAGE_TEXT_MAX_CHARS);
     body.insert("prompt".into(), json!(text));
 
-    // Seedream accepts `image` as string or string[]; ViMax uses an array.
-    if let Some(url) = ref_url {
-        body.insert("image".into(), json!([url]));
+    // Seedream accepts `image` as string or string[]; pass all refs as an array.
+    if !ref_urls.is_empty() {
+        body.insert("image".into(), json!(ref_urls));
     }
 
     body.insert("response_format".into(), json!("url"));
@@ -144,7 +140,8 @@ fn build_openai_style_image_body(req: &ImageGenerationRequest) -> Value {
 
     if let Value::Object(extra) = &req.extra {
         for (k, v) in extra {
-            if k == "model" || k == "input" || k == "prompt" || k == "image_url" {
+            if k == "model" || k == "input" || k == "prompt" || k == "image_url" || k == "image_urls"
+            {
                 continue;
             }
             body.insert(k.clone(), v.clone());
@@ -159,14 +156,10 @@ fn build_dashscope_multimodal_image_body(req: &ImageGenerationRequest) -> Value 
     body.insert("model".into(), json!(req.model));
 
     let mut text = req.prompt.trim().to_string();
-    let ref_url = req
-        .image_url
-        .as_ref()
-        .map(|u| u.trim())
-        .filter(|u| !u.is_empty());
-    let embed_ref = ref_url.is_some() && model_supports_image_ref(&req.model);
+    let ref_urls = req.reference_urls();
+    let embed_ref = !ref_urls.is_empty() && model_supports_image_ref(&req.model);
 
-    if ref_url.is_some()
+    if !ref_urls.is_empty()
         && !embed_ref
         && !text.to_ascii_lowercase().contains("same character")
         && !text.to_ascii_lowercase().contains("consistent")
@@ -176,11 +169,13 @@ fn build_dashscope_multimodal_image_body(req: &ImageGenerationRequest) -> Value 
     }
     let text = truncate_chars(&text, FLOWY_IMAGE_TEXT_MAX_CHARS);
 
-    let content = if let (Some(url), true) = (ref_url, embed_ref) {
-        json!([
-            { "image": url },
-            { "text": text }
-        ])
+    let content = if embed_ref {
+        let mut parts = Vec::with_capacity(ref_urls.len() + 1);
+        for url in &ref_urls {
+            parts.push(json!({ "image": url }));
+        }
+        parts.push(json!({ "text": text }));
+        Value::Array(parts)
     } else {
         json!([{ "text": text }])
     };
@@ -197,7 +192,8 @@ fn build_dashscope_multimodal_image_body(req: &ImageGenerationRequest) -> Value 
 
     if let Value::Object(extra) = &req.extra {
         for (k, v) in extra {
-            if k == "model" || k == "input" || k == "prompt" || k == "image_url" {
+            if k == "model" || k == "input" || k == "prompt" || k == "image_url" || k == "image_urls"
+            {
                 continue;
             }
             body.entry(k.clone()).or_insert_with(|| v.clone());
@@ -617,6 +613,7 @@ mod tests {
             model: "AIPC-z-image-turbo".into(),
             prompt: "a cat".into(),
             image_url: None,
+            image_urls: vec![],
             extra: Value::Null,
         });
         assert_eq!(body["model"], json!("AIPC-z-image-turbo"));
@@ -633,6 +630,7 @@ mod tests {
             model: "AIPC-z-image-turbo".into(),
             prompt: "side view".into(),
             image_url: Some("data:image/png;base64,abc".into()),
+            image_urls: vec![],
             extra: Value::Null,
         });
         let content = body["input"]["messages"][0]["content"].as_array().unwrap();
@@ -649,6 +647,7 @@ mod tests {
             model: "AIPC-wanx-v1".into(),
             prompt: "reframe camera".into(),
             image_url: Some("data:image/png;base64,abc".into()),
+            image_urls: vec![],
             extra: Value::Null,
         });
         let content = body["input"]["messages"][0]["content"].as_array().unwrap();
@@ -663,6 +662,7 @@ mod tests {
             model: "AIPC-doubao-seedream-5-0-lite-260128".into(),
             prompt: "a red fox in snow".into(),
             image_url: None,
+            image_urls: vec![],
             extra: Value::Null,
         });
         assert_eq!(body["prompt"], json!("a red fox in snow"));
@@ -677,6 +677,7 @@ mod tests {
             model: "AIPC-doubao-seedream-5-0-lite-260128".into(),
             prompt: "same character, side view".into(),
             image_url: Some("data:image/png;base64,abc".into()),
+            image_urls: vec![],
             extra: Value::Null,
         });
         assert_eq!(body["prompt"], json!("same character, side view"));
@@ -688,12 +689,34 @@ mod tests {
     }
 
     #[test]
+    fn build_flowy_image_body_seedream_embeds_multiple_reference_urls() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-doubao-seedream-5-0-lite-260128".into(),
+            prompt: "same cast in the empty set".into(),
+            image_url: None,
+            image_urls: vec![
+                "https://cdn.example/cast.png".into(),
+                "https://cdn.example/set.png".into(),
+            ],
+            extra: Value::Null,
+        });
+        assert_eq!(
+            body["image"],
+            json!([
+                "https://cdn.example/cast.png",
+                "https://cdn.example/set.png"
+            ])
+        );
+    }
+
+    #[test]
     fn build_flowy_image_body_truncates_long_prompt() {
         let long = "字".repeat(900);
         let body = build_flowy_image_body(&ImageGenerationRequest {
             model: "AIPC-z-image-turbo".into(),
             prompt: long,
             image_url: None,
+            image_urls: vec![],
             extra: Value::Null,
         });
         let text = body["input"]["messages"][0]["content"][0]["text"]
@@ -708,6 +731,7 @@ mod tests {
             model: "AIPC-z-image-turbo".into(),
             prompt: "ignored".into(),
             image_url: None,
+            image_urls: vec![],
             extra: json!({
                 "input": {
                     "messages": [{

@@ -106,7 +106,7 @@ const ArtifactTree: React.FC<ArtifactTreeProps> = ({ tree, selectedPath, onSelec
   }
 
   return (
-    <div className='flex flex-col gap-1px py-4px overflow-y-auto'>
+    <div className='h-full min-h-0 flex-1 overflow-y-auto overscroll-contain flex flex-col gap-1px py-4px'>
       {nodes.map((node) => (
         <TreeRow
           key={node.path}

@@ -60,8 +60,8 @@ pub fn write_image_bytes_as_png(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     Ok(())
 }
 
-/// Tile up to 3 reference images into one horizontal strip (for single-slot img2img APIs).
-/// Panel order should be: character bible → empty set plate → prop/continuity.
+/// Tile reference images into one horizontal strip (fallback for single-slot img2img APIs).
+/// Panel order should be: character bible(s) → empty set plate → prop/continuity.
 pub fn compose_reference_strip(paths: &[&Path], out_path: &Path) -> VimaxResult<()> {
     if paths.is_empty() {
         return Err(VimaxError::Media("compose_reference_strip: no images".into()));
@@ -79,8 +79,9 @@ pub fn compose_reference_strip(paths: &[&Path], out_path: &Path) -> VimaxResult<
 
     const PANEL_H: u32 = 512;
     const GAP: u32 = 8;
+    const MAX_PANELS: usize = 8;
     let mut panels: Vec<RgbaImage> = Vec::new();
-    for p in paths.iter().take(3) {
+    for p in paths.iter().take(MAX_PANELS) {
         let bytes = std::fs::read(p)
             .map_err(|e| VimaxError::Media(format!("read ref {}: {e}", p.display())))?;
         let img = image::load_from_memory(&bytes)

@@ -209,6 +209,41 @@ impl HttpTransport {
 
         Ok(response)
     }
+
+    /// PUT raw bytes to an absolute URL (e.g. OSS presigned PUT).
+    ///
+    /// Does **not** inject Flowy `Authorization` / `token` headers — only the
+    /// caller-supplied headers (typically `requiredHeaders` from presign).
+    pub async fn put_bytes_absolute(
+        &self,
+        url: &str,
+        required_headers: &std::collections::HashMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<Response, ServerClientError> {
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(ServerClientError::Http("empty OSS put url".into()));
+        }
+
+        let mut headers = HeaderMap::new();
+        for (key, value) in required_headers {
+            let name = HeaderName::from_bytes(key.as_bytes())
+                .map_err(|e| ServerClientError::Http(format!("OSS header name `{key}`: {e}")))?;
+            let val = HeaderValue::from_str(value)
+                .map_err(|e| ServerClientError::Http(format!("OSS header value `{key}`: {e}")))?;
+            headers.insert(name, val);
+        }
+
+        debug!(%url, bytes = body.len(), "external http PUT (presigned)");
+
+        self.client
+            .put(url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| ServerClientError::Http(e.to_string()))
+    }
 }
 
 #[cfg(test)]

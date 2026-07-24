@@ -75,6 +75,11 @@ impl FlowyVideo {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| VimaxError::Video("no Flowy video model in catalog".into()))
     }
+
+    /// Read a local frame, optionally shrink it, upload via OSS presign PUT, return `publicUrl`.
+    async fn frame_public_url(&self, path: &Path, role: &str) -> VimaxResult<String> {
+        self.services.upload_image_public_url(path, role).await
+    }
 }
 
 #[async_trait]
@@ -100,22 +105,30 @@ impl VimaxVideo for FlowyVideo {
         let model = self.resolve_model().await?;
         let model_for_err = model.clone();
 
+        // Upload frames to OSS first so the create-task JSON only carries short HTTPS URLs
+        // (avoids base64-bloated bodies that break Flowy / Seedance).
         let mut images = Vec::new();
         if let Some(path) = first_frame {
             images.push(VideoContentImage {
-                url: path_as_upload_url(path).await?,
+                url: self.frame_public_url(path, "first_frame").await?,
                 role: "first_frame".into(),
             });
         }
         if let Some(path) = last_frame {
             images.push(VideoContentImage {
-                url: path_as_upload_url(path).await?,
+                url: self.frame_public_url(path, "last_frame").await?,
                 role: "last_frame".into(),
             });
         }
-        for path in ref_images {
+        for (i, path) in ref_images.iter().enumerate() {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("reference_image_{i}"));
             images.push(VideoContentImage {
-                url: path_as_upload_url(path).await?,
+                url: self.frame_public_url(path, &stem).await?,
                 role: "reference_image".into(),
             });
         }
@@ -192,47 +205,6 @@ impl VimaxVideo for FlowyVideo {
 
         download_video(&url, out_path).await
     }
-}
-
-async fn path_as_upload_url(path: &Path) -> VimaxResult<String> {
-    let bytes = tokio::fs::read(path).await?;
-    // Keep data-URL payloads small — oversized JSON bodies make Flowy return empty responses.
-    let (bytes, mime) = tokio::task::spawn_blocking(move || prepare_video_frame_upload(bytes))
-        .await
-        .map_err(|e| VimaxError::Video(format!("frame encode join: {e}")))??;
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-    Ok(format!("data:{mime};base64,{b64}"))
-}
-
-/// Cap Seedance frame uploads (~1.2MB raw ≈ ~1.6MB base64) and prefer JPEG for size.
-fn prepare_video_frame_upload(bytes: Vec<u8>) -> VimaxResult<(Vec<u8>, &'static str)> {
-    const MAX_BYTES: usize = 1_200_000;
-    let kind = crate::media_local::image_magic_kind(&bytes);
-    if bytes.len() <= MAX_BYTES {
-        let mime = match kind {
-            Some("jpeg") => "image/jpeg",
-            Some("webp") => "image/webp",
-            Some("png") => "image/png",
-            _ => {
-                return Err(VimaxError::Video(
-                    "video frame is not a decodable PNG/JPEG/WEBP".into(),
-                ));
-            }
-        };
-        return Ok((bytes, mime));
-    }
-
-    let img = image::load_from_memory(&bytes)
-        .map_err(|e| VimaxError::Video(format!("decode video frame: {e}")))?;
-    let img = img.resize(1280, 720, image::imageops::FilterType::Triangle);
-    let mut out = Vec::new();
-    let mut cursor = std::io::Cursor::new(&mut out);
-    img.write_to(&mut cursor, image::ImageFormat::Jpeg)
-        .map_err(|e| VimaxError::Video(format!("re-encode video frame jpeg: {e}")))?;
-    if out.is_empty() {
-        return Err(VimaxError::Video("re-encoded video frame is empty".into()));
-    }
-    Ok((out, "image/jpeg"))
 }
 
 async fn download_video(url: &str, out_path: &Path) -> VimaxResult<()> {

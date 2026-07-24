@@ -49,6 +49,7 @@ impl ImageGenBackend for FlowyImageGenBackend {
             model: model.clone(),
             prompt: request.prompt.clone(),
             image_url: request.image_url.clone(),
+            image_urls: vec![],
             extra: request.extra.unwrap_or(Value::Null),
         };
 

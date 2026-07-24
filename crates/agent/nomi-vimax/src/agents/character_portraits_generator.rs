@@ -42,7 +42,7 @@ impl CharacterPortraitsGenerator {
         }
     }
 
-    /// One character → one `three_view.png` (no separate front plate).
+    /// One character → one `{id}_three_view.png` (meaningful name for multi-ref prompts).
     pub async fn generate_all_views(
         &self,
         character: &CharacterInScene,
@@ -51,10 +51,17 @@ impl CharacterPortraitsGenerator {
         character_dir: &Path,
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
         tokio::fs::create_dir_all(character_dir).await?;
-        let sheet = character_dir.join("three_view.png");
+        let id_safe = safe_file_stem(&character.identifier_in_scene);
+        let sheet_name = format!("{id_safe}_three_view.png");
+        let sheet = character_dir.join(&sheet_name);
 
         // Drop leftover discrete views from older pipelines.
         Self::cleanup_legacy_files(character_dir).await;
+        // Migrate legacy generic `three_view.png` → meaningful name.
+        let legacy = character_dir.join("three_view.png");
+        if !sheet.exists() && legacy.exists() {
+            let _ = tokio::fs::rename(&legacy, &sheet).await;
+        }
 
         if !sheet.exists() {
             let features = Self::features_line(character);
@@ -89,7 +96,7 @@ impl CharacterPortraitsGenerator {
                 view_item(
                     &sheet,
                     &format!(
-                        "GLOBAL three-view character bible for <{id}> (left=front, center=side, right=back). Features: {feat_hint}. Lock identity to this sheet."
+                        "File [{sheet_name}] = GLOBAL three-view character bible for <{id}> (left=front, center=side, right=back). Features: {feat_hint}. Lock identity to this sheet."
                     ),
                 ),
             );
@@ -103,6 +110,25 @@ impl CharacterPortraitsGenerator {
         let mut registry = HashMap::new();
         registry.insert(character.identifier_in_scene.clone(), views);
         Ok(registry)
+    }
+}
+
+fn safe_file_stem(s: &str) -> String {
+    let raw: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = raw.trim_matches('_');
+    if trimmed.is_empty() {
+        "asset".into()
+    } else {
+        trimmed.chars().take(48).collect()
     }
 }
 

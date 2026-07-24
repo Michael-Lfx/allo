@@ -173,13 +173,23 @@
       "requirementLabel": "额外要求（可选）",
       "requirementPlaceholder": "时长、节奏、受众等",
       "styleLabel": "视觉风格（人物与成片）",
-      "stylePlaceholder": "默认：电影感。可点预设或自定义…",
+      "stylePlaceholder": "选择视觉风格",
       "styleHint": "定妆为单张三视图；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。",
       "stylePresets": {
-        "realistic": "电影感",
+        "cinematic": "电影写实",
         "documentary": "纪录片",
-        "illustration": "插画",
-        "anime": "动画"
+        "vintageFilm": "复古胶片",
+        "noir": "黑色电影",
+        "cyberpunk": "赛博朋克",
+        "commercial": "商业广告",
+        "anime": "日式动画",
+        "ghibli": "吉卜力风",
+        "pixar3d": "3D 动画电影",
+        "illustration": "绘本插画",
+        "watercolor": "水彩手绘",
+        "comic": "漫画分镜",
+        "custom": "自定义风格",
+        "realistic": "电影感"
       },
       "required": "请先填写输入内容"
     },

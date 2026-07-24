@@ -5,6 +5,7 @@ mod llm_chat;
 mod media;
 mod media_types;
 mod model_resolve;
+mod oss;
 mod response;
 mod types;
 
@@ -14,9 +15,9 @@ pub use media::{
 };
 pub use media_types::{
     CreateVideoTaskResponse, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
-    MODEL_CATEGORY_VIDEO, VIDEO_TASK_STATUS_CANCELLED, VIDEO_TASK_STATUS_EXPIRED,
-    VIDEO_TASK_STATUS_FAILED, VIDEO_TASK_STATUS_SUCCEEDED, VideoContentImage, VideoCreateParams,
-    VideoTaskRecord,
+    MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, VIDEO_TASK_STATUS_CANCELLED,
+    VIDEO_TASK_STATUS_EXPIRED, VIDEO_TASK_STATUS_FAILED, VIDEO_TASK_STATUS_SUCCEEDED,
+    VideoContentImage, VideoCreateParams, VideoTaskRecord,
 };
 pub use model_resolve::resolve_model_in_catalog;
 pub use response::{FlowyEnvelope, handle_http_and_envelope};

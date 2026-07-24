@@ -86,6 +86,108 @@ impl FlowyVimaxServices {
     ) -> FlowyVideo {
         FlowyVideo::new(self.clone(), model, cancel)
     }
+
+    /// Upload a local image via OSS presign PUT and return the HTTPS `publicUrl`.
+    ///
+    /// `role` is a fallback stem; the local file stem is preferred so multi-ref
+    /// models can bind prompts to meaningful names (e.g. `Alice_three_view.jpg`).
+    pub async fn upload_image_public_url(
+        &self,
+        path: &std::path::Path,
+        role: &str,
+    ) -> Result<String, crate::error::VimaxError> {
+        use tracing::debug;
+
+        let bytes = tokio::fs::read(path).await?;
+        let (bytes, mime) =
+            tokio::task::spawn_blocking(move || prepare_media_image_upload(bytes))
+                .await
+                .map_err(|e| {
+                    crate::error::VimaxError::msg(format!("image encode join: {e}"))
+                })??;
+
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(role);
+        let safe_stem: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let safe_stem = {
+            let t = safe_stem.trim_matches('_');
+            if t.is_empty() {
+                role.to_string()
+            } else {
+                t.chars().take(64).collect()
+            }
+        };
+
+        let file_name = match mime {
+            "image/jpeg" => format!("{safe_stem}.jpg"),
+            "image/webp" => format!("{safe_stem}.webp"),
+            _ => format!("{safe_stem}.png"),
+        };
+
+        debug!(
+            role = %safe_stem,
+            path = %path.display(),
+            bytes = bytes.len(),
+            mime,
+            "uploading media image to OSS"
+        );
+
+        self.api
+            .upload_bytes_via_oss(&self.session, &bytes, &file_name, mime)
+            .await
+            .map_err(|e| {
+                crate::error::VimaxError::msg(format!(
+                    "OSS upload failed ({safe_stem}): {e}"
+                ))
+            })
+    }
+}
+
+/// Cap oversized images before OSS upload (shared by image + video backends).
+pub(crate) fn prepare_media_image_upload(
+    bytes: Vec<u8>,
+) -> Result<(Vec<u8>, &'static str), crate::error::VimaxError> {
+    const MAX_BYTES: usize = 1_200_000;
+    let kind = crate::media_local::image_magic_kind(&bytes);
+    if bytes.len() <= MAX_BYTES {
+        let mime = match kind {
+            Some("jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("png") => "image/png",
+            _ => {
+                return Err(crate::error::VimaxError::msg(
+                    "image is not a decodable PNG/JPEG/WEBP".to_string(),
+                ));
+            }
+        };
+        return Ok((bytes, mime));
+    }
+
+    let img = ::image::load_from_memory(&bytes)
+        .map_err(|e| crate::error::VimaxError::msg(format!("decode image: {e}")))?;
+    let img = img.resize(1280, 720, ::image::imageops::FilterType::Triangle);
+    let mut out = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut out);
+    img.write_to(&mut cursor, ::image::ImageFormat::Jpeg)
+        .map_err(|e| crate::error::VimaxError::msg(format!("re-encode image jpeg: {e}")))?;
+    if out.is_empty() {
+        return Err(crate::error::VimaxError::msg(
+            "re-encoded image is empty".to_string(),
+        ));
+    }
+    Ok((out, "image/jpeg"))
 }
 
 pub(crate) fn map_server_err(err: nomifun_cloud::ServerClientError) -> crate::error::VimaxError {
@@ -112,11 +214,17 @@ pub(crate) fn map_model_err(
         || lower.contains("敏感内容")
     {
         "Upstream content safety rejected the prompt/result. The client auto-retries with safer prompts; if it still fails, soften violent/sensitive shot wording and resume."
+    } else if lower.contains("publicurl")
+        || lower.contains("presign_not_configured")
+        || lower.contains("oss put failed")
+        || (lower.contains("oss") && lower.contains("presign"))
+    {
+        "Frame OSS upload failed. Confirm you are signed in with JWT (not API Key only), and that the server has OSS + CDN (publicUrl) configured."
     } else if lower.contains("not valid flowy json envelope")
         || lower.contains("expected value at line 1 column 1")
         || lower.contains("<empty body>")
     {
-        "The Flowy video API returned an empty or non-JSON body (often oversized data-URL images, gateway timeout, or channel fault). Retry with first/last frame only, or switch video model and resume."
+        "The Flowy video API returned an empty or non-JSON body (gateway timeout or channel fault). Frames are uploaded via OSS URLs; retry or switch video model and resume."
     } else if lower.contains("all channel models failed") || lower.contains("所有渠道模型均失败")
     {
         if lower.contains("datainspection") || lower.contains("inappropriate") {

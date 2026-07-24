@@ -50,10 +50,12 @@ import ProgressTimeline from './components/ProgressTimeline';
 import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
 import StoryboardBoard from './components/StoryboardBoard';
 import StudioStageRail from './components/StudioStageRail';
+import VisualStyleSelect from './components/VisualStyleSelect';
 import type { VideoCreateDraft } from './components/VideoCreateComposer';
 import type { StoryboardScene } from './artifactPresentation';
 import { findStoryboardPath } from './artifactPresentation';
 import { progressStatusText } from './stageI18n';
+import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import styles from './index.module.css';
 
 const TextArea = Input.TextArea;
@@ -88,7 +90,7 @@ const WorkspacePage: React.FC = () => {
 
   const [sourceText, setSourceText] = useState('');
   const [requirement, setRequirement] = useState('');
-  const [style, setStyle] = useState('');
+  const [style, setStyle] = useState(DEFAULT_VISUAL_STYLE_PROMPT);
   const [targetDurationSecs, setTargetDurationSecs] = useState<number>(30);
   const [models, setModels] = useState<VimaxModelSelection>({
     llm_model: '',
@@ -156,7 +158,7 @@ const WorkspacePage: React.FC = () => {
       setSession(s);
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
-      setStyle(s.style || launchDraft?.style || '');
+      setStyle(s.style?.trim() || launchDraft?.style?.trim() || DEFAULT_VISUAL_STYLE_PROMPT);
       setTargetDurationSecs(
         typeof s.target_duration_secs === 'number' && s.target_duration_secs > 0
           ? s.target_duration_secs
@@ -782,77 +784,24 @@ const WorkspacePage: React.FC = () => {
                   })}
                 />
               </label>
-              <label
+              <div
                 className={`flex flex-col gap-6px text-12px text-[var(--color-text-3)] ${
                   isMobile ? '' : 'col-span-3'
                 }`}
               >
-                {t('videoGeneration.workspace.source.styleLabel', {
-                  defaultValue: '视觉风格（人物与成片）',
-                })}
-                <div className='flex flex-wrap gap-6px'>
-                  {(
-                    [
-                      {
-                        key: 'realistic',
-                        label: t('videoGeneration.workspace.source.stylePresets.realistic', {
-                          defaultValue: '写实电影',
-                        }),
-                        value:
-                          'cinematic film look, believable designed characters, natural wardrobe and lighting, gently softened facial skin with clear readable features',
-                      },
-                      {
-                        key: 'documentary',
-                        label: t('videoGeneration.workspace.source.stylePresets.documentary', {
-                          defaultValue: '纪录片',
-                        }),
-                        value:
-                          'documentary cinema look, natural ambient light, gently softened faces with clear features',
-                      },
-                      {
-                        key: 'illustration',
-                        label: t('videoGeneration.workspace.source.stylePresets.illustration', {
-                          defaultValue: '插画',
-                        }),
-                        value:
-                          'painted illustration style, detailed brushwork, cinematic composition (not anime)',
-                      },
-                      {
-                        key: 'anime',
-                        label: t('videoGeneration.workspace.source.stylePresets.anime', {
-                          defaultValue: '动画',
-                        }),
-                        value:
-                          'theatrical anime / animated-film character design, clear volume and soft painted shading, detailed hair strands and fabric folds, rich wardrobe materials, storybook colors — NOT flat paper-doll cel cutout, NOT photoreal live-action',
-                      },
-                    ] as const
-                  ).map((preset) => (
-                    <Button
-                      key={preset.key}
-                      size='mini'
-                      type={style === preset.value ? 'primary' : 'outline'}
-                      disabled={busy}
-                      onClick={() => setStyle(preset.value)}
-                    >
-                      {preset.label}
-                    </Button>
-                  ))}
-                </div>
-                <Input
-                  value={style}
-                  onChange={setStyle}
-                  disabled={busy}
-                  placeholder={t('videoGeneration.workspace.source.stylePlaceholder', {
-                    defaultValue: '默认：电影感。可点预设或自定义…',
+                <span>
+                  {t('videoGeneration.workspace.source.styleLabel', {
+                    defaultValue: '视觉风格（人物与成片）',
                   })}
-                />
+                </span>
+                <VisualStyleSelect value={style} onChange={setStyle} disabled={busy} />
                 <span className='text-11px text-[var(--color-text-4)]'>
                   {t('videoGeneration.workspace.source.styleHint', {
                     defaultValue:
                       '定妆为单张三视图；面部轻微柔化但五官清晰。规划阶段也会生成全局环境与道具参考图。',
                   })}
                 </span>
-              </label>
+              </div>
             </div>
             <details className='mt-14px rd-10px bg-[var(--color-fill-1)] px-12px py-9px'>
               <summary className='cursor-pointer text-12px font-600 text-[var(--color-text-2)]'>
@@ -1029,7 +978,7 @@ const WorkspacePage: React.FC = () => {
                 isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
               ].join(' ')}
             >
-              <div className='max-h-420px min-h-200px overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
+              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
                 <ArtifactTree
                   tree={artifacts}
                   selectedPath={selectedPath}
