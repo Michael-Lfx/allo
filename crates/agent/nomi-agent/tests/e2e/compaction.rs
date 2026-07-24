@@ -60,6 +60,7 @@ fn openai_config(api_key: &str) -> Config {
         vertex: None,
         mcp: McpConfig::default(),
         logging: nomi_config::logging::LoggingConfig::default(),
+        memory: nomi_config::config::MemoryConfig::default(),
     }
 }
 

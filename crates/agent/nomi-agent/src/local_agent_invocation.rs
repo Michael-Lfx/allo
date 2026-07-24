@@ -1024,6 +1024,7 @@ mod phase7_tests {
             vertex: None,
             mcp: Default::default(),
             logging: Default::default(),
+            memory: Default::default(),
         }
     }
 

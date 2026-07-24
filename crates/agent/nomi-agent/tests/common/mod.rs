@@ -271,6 +271,7 @@ pub fn test_config() -> Config {
         vertex: None,
         mcp: McpConfig::default(),
         logging: nomi_config::logging::LoggingConfig::default(),
+        memory: nomi_config::config::MemoryConfig::default(),
     }
 }
 
