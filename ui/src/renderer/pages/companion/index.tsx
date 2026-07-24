@@ -1218,8 +1218,18 @@ const CompanionPage: React.FC = () => {
       const { emitTo } = await import('@tauri-apps/api/event');
       const { Window } = await import('@tauri-apps/api/window');
       await emitTo('main', 'companion-navigate', path);
+      // Bring the main window fully forward before/while it routes. setFocus()
+      // alone can't reveal a window that's hidden-to-tray or minimized (the
+      // common case: the companion floats while the main window is tucked away),
+      // so the navigation lands invisibly and reads as "点了没跳转". Mirror the
+      // Rust show_main_window helper: show → unminimize → focus. Each step is
+      // best-effort so one failing (e.g. already visible) still runs the rest.
       const main = await Window.getByLabel('main');
-      await main?.setFocus();
+      if (main) {
+        await main.show().catch(() => {});
+        await main.unminimize().catch(() => {});
+        await main.setFocus().catch(() => {});
+      }
     } catch (e) {
       console.error('companion→main navigate failed:', e);
     }
@@ -1228,7 +1238,14 @@ const CompanionPage: React.FC = () => {
   const memoryPanel = useDetachedMemoryPanel({
     companionId,
     suggestions,
-    onActivate: async (suggestion) => openMainAt(suggestion.action?.to || '/nomi?tab=suggestions'),
+    // Clicking a suggestion in the panel opens the approval page — the badge
+    // counts suggestions awaiting a decision, so a click means "take me to
+    // review it". Do NOT use `suggestion.action?.to`: that is the POST-ACCEPT
+    // destination (e.g. a milestone insight points at /nomi?tab=memories, a
+    // create_skill at /nomi?tab=skills), which is only followed after the user
+    // accepts in SuggestionsTab. Routing the panel click there sent users to
+    // the memory/skill page instead of the approval list.
+    onActivate: async () => openMainAt('/nomi?tab=suggestions'),
     onFallback: async () => openMainAt('/nomi?tab=suggestions'),
     badgeRef: unreadBadgeRef,
   });
