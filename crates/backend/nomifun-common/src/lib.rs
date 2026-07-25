@@ -54,6 +54,8 @@ pub use id::{
     ConversationExecutionLinkId, ConversationId, CreationTaskId, CronJobId, CronJobRunId,
     EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID, IdPrefixError,
     IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId, MAX_ID_PREFIX_LEN, McpServerId,
+    LearningActivityId, LearningAttemptId, LearningConceptId, LearningCourseId,
+    LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId,
     MessageId, PrefixedIdError, PresetId, PresetTagId, ProviderId, PublicAgentAuditEntryId,
     PublicAgentId, RemoteAgentId, RequirementId, TerminalId, UUID_STRING_LEN, UuidV7Error, UserId,
     WebhookId, WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,

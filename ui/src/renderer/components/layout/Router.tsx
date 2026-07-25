@@ -34,6 +34,7 @@ const PublicCompanionRosterPage = React.lazy(() => import('@renderer/pages/publi
 const PublicAgentDetailPage = React.lazy(() => import('@renderer/pages/publicCompanion/PublicAgentDetailPage'));
 const KnowledgeListPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeListPage'));
 const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeDetailPage'));
+const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 // TODO: workshop/assets stay deferred (no routes until explicitly published)
@@ -314,6 +315,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/public-companions/:id' element={withRouteFallback(PublicAgentDetailPage)} />
           <Route path='/knowledge' element={withRouteFallback(KnowledgeListPage)} />
           <Route path='/knowledge/:id' element={withRouteFallback(KnowledgeDetailPage)} />
+          <Route path='/learn' element={withRouteFallback(LearningPage)} />
+          <Route path='/learn/:id' element={withRouteFallback(LearningPage)} />
           <Route path='/video-generation' element={withRouteFallback(VideoGenerationListPage)} />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
           {/* workshop/assets deferred — keep pages in tree but unrouted */}

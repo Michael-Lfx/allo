@@ -408,6 +408,46 @@ define_entity_id!(
     "kb"
 );
 define_entity_id!(
+    /// Globally unique learning-course identifier.
+    LearningCourseId,
+    "lcourse"
+);
+define_entity_id!(
+    /// Globally unique module identifier within a learning course.
+    LearningModuleId,
+    "lmodule"
+);
+define_entity_id!(
+    /// Globally unique lesson identifier within a learning course.
+    LearningLessonId,
+    "llesson"
+);
+define_entity_id!(
+    /// Globally unique concept identifier within a learning course.
+    LearningConceptId,
+    "lconcept"
+);
+define_entity_id!(
+    /// Globally unique learner enrollment identifier.
+    LearningEnrollmentId,
+    "lenroll"
+);
+define_entity_id!(
+    /// Globally unique learning-activity identifier.
+    LearningActivityId,
+    "lactivity"
+);
+define_entity_id!(
+    /// Globally unique activity-attempt identifier.
+    LearningAttemptId,
+    "lattempt"
+);
+define_entity_id!(
+    /// Globally unique spaced-review item identifier.
+    LearningReviewItemId,
+    "lreview"
+);
+define_entity_id!(
     /// Globally unique attachment identifier.
     AttachmentId,
     "att"
@@ -749,6 +789,14 @@ mod tests {
             PresetTagId::PREFIX,
             MessageId::PREFIX,
             KnowledgeBaseId::PREFIX,
+            LearningCourseId::PREFIX,
+            LearningModuleId::PREFIX,
+            LearningLessonId::PREFIX,
+            LearningConceptId::PREFIX,
+            LearningEnrollmentId::PREFIX,
+            LearningActivityId::PREFIX,
+            LearningAttemptId::PREFIX,
+            LearningReviewItemId::PREFIX,
             AttachmentId::PREFIX,
             ConnectorCredentialId::PREFIX,
             CronJobId::PREFIX,

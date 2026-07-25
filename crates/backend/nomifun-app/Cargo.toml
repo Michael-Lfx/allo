@@ -68,6 +68,7 @@ nomifun-cron.workspace = true
 nomifun-requirement.workspace = true
 nomifun-idmm.workspace = true
 nomifun-knowledge.workspace = true
+nomifun-learning.workspace = true
 nomifun-poi.workspace = true
 nomifun-insights.workspace = true
 nomifun-media.workspace = true

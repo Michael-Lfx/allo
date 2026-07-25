@@ -29,6 +29,7 @@ use nomifun_extension::{extension_routes, hub_routes, skill_routes};
 use nomifun_file::file_routes;
 use nomifun_idmm::idmm_routes;
 use nomifun_knowledge::knowledge_routes;
+use nomifun_learning::learning_routes;
 use nomifun_poi::poi_routes;
 use nomifun_insights::insights_routes;
 use nomifun_media::media_routes;
@@ -639,6 +640,11 @@ pub fn create_router_with_all_state(
         &auth_mw_state,
         &instance_owner_state,
     );
+    let learning_authenticated = protect_instance_owner(
+        learning_routes(states.learning),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
 
     let poi_authenticated = poi_routes(states.poi)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -861,6 +867,7 @@ pub fn create_router_with_all_state(
         .merge(workshop_authenticated)
         .merge(creation_authenticated)
         .merge(knowledge_authenticated)
+        .merge(learning_authenticated)
         .merge(poi_authenticated)
         .merge(insights_authenticated)
         .merge(media_authenticated)

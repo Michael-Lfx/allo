@@ -1,0 +1,21 @@
+[package]
+name = "nomifun-learning"
+description = "Domain-neutral learning engine over knowledge bases"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomifun-api-types.workspace = true
+nomifun-auth.workspace = true
+nomifun-common.workspace = true
+nomifun-db.workspace = true
+nomifun-knowledge.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

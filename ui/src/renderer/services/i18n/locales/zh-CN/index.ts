@@ -28,6 +28,7 @@ import webhook from './webhook.json';
 import autowork from './autowork.json';
 import nomi from './nomi.json';
 import knowledge from './knowledge.json';
+import learning from './learning.json';
 import publicCompanion from './publicCompanion.json';
 import assetLibrary from './assetLibrary.json';
 import sessionList from './sessionList.json';
@@ -72,6 +73,7 @@ export default {
   autowork,
   nomi,
   knowledge,
+  learning,
   publicCompanion,
   assetLibrary,
   sessionList,

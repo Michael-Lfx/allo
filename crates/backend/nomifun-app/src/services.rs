@@ -136,6 +136,8 @@ pub struct AppServices {
     /// the `/api/knowledge/*` routes and the `ConversationService`, which
     /// mounts bound bases into session workspaces at task start.
     pub knowledge_service: Arc<nomifun_knowledge::KnowledgeService>,
+    /// Domain-neutral courses, learner progress, mastery and review scheduling.
+    pub learning_service: Arc<nomifun_learning::LearningService>,
     /// Local user interest (POI) topic store and settings.
     pub poi_service: Arc<nomifun_poi::PoiService>,
     /// De-identified insights contribution pipeline.
@@ -508,11 +510,13 @@ impl AppServices {
         // (`LiveKnowledgeCompleter` resolves the first enabled provider/model
         // per call, so it tolerates providers configured after boot). NOTE:
         // `provider_repo` is moved into `build_agent_factory` below — clone.
-        knowledge_service.set_completer(Arc::new(nomifun_ai_agent::LiveKnowledgeCompleter {
-            provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
-            encryption_key,
-            workspace: data_dir.clone(),
-        }));
+        let knowledge_completer: Arc<dyn nomifun_knowledge::KnowledgeCompleter> =
+            Arc::new(nomifun_ai_agent::LiveKnowledgeCompleter {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                encryption_key,
+                workspace: data_dir.clone(),
+            });
+        knowledge_service.set_completer(knowledge_completer.clone());
         // P3-K2: late-wire the rendering page-fetch backend (the engine-backed
         // `BrowserFetcher`) so the knowledge layer CAN fetch JS-rendered pages.
         // Feature-gated: only when `browser-use` is compiled in (desktop host).
@@ -553,6 +557,13 @@ impl AppServices {
         // persisted unstamped before fetching). Spawned after the completer
         // wiring so the chained autogen works; never blocks startup.
         tokio::spawn(Arc::clone(&knowledge_service).resume_pending_source_fetches());
+        let learning_service = Arc::new(nomifun_learning::LearningService::new(
+            database.pool().clone(),
+        ));
+        learning_service.set_generation_dependencies(
+            knowledge_service.clone(),
+            knowledge_completer,
+        );
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases
         // search/read and policy-gated write tools over a stdio bridge. It owns
@@ -958,6 +969,7 @@ impl AppServices {
             workshop_service,
             creation_service,
             knowledge_service,
+            learning_service,
             poi_service,
             insights_service,
             media_service,

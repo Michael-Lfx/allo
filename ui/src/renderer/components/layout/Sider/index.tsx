@@ -15,6 +15,7 @@ import {
   SiderConfigGroup,
   SiderConversationEntry,
   SiderKnowledgeEntry,
+  SiderLearningEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
   SiderOpenCapabilitiesEntry,
@@ -42,7 +43,7 @@ interface SiderProps {
  * content-area secondary sidebar (`ConversationShell` / `ContentSider`),
  * reached via the "会话" entry. The rail holds top-level destinations grouped
  * by small-text section headers (`SiderSectionHeader`): 常用 (会话 / 桌面伙伴),
- * 对外服务 (对外伙伴), 数据空间 (知识库), 自动化 (定时任务 / 需求平台),
+ * 对外服务 (对外伙伴), 数据空间 (学习 / 知识库), 自动化 (定时任务 / 需求平台),
  * 增强工具 (设定 / Skill / MCP), and a bottom-pinned 设置 group
  * (模型管理 + the footer). Execution engines live as an independent tab
  * inside Settings rather than being mixed into model management.
@@ -129,6 +130,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleScheduledClick = () => navTo('/scheduled');
   const handleRequirementsClick = () => navTo('/requirements');
   const handleKnowledgeClick = () => navTo('/knowledge');
+  const handleLearningClick = () => navTo('/learn');
   const handleNomiClick = () => navTo('/nomi');
   const handleVideoGenerationClick = () => navTo('/video-generation');
   const handlePublicServiceClick = () => navTo('/public-companions');
@@ -248,8 +250,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handlePublicServiceClick}
             />
-            {/* 数据空间 — knowledge only; workshop/assets stay deferred */}
+            {/* 数据空间 — learning and knowledge; workshop/assets stay deferred */}
             <SiderSectionHeader label={t('common.siderSection.data')} collapsed={collapsed} />
+            <SiderLearningEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/learn')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleLearningClick}
+            />
             <SiderKnowledgeEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/knowledge')}

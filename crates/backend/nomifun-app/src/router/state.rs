@@ -31,6 +31,7 @@ use nomifun_extension::{
 use nomifun_file::{FileRouterState, FileService, FileWatchService, SnapshotService};
 use nomifun_idmm::{IdmmManager, IdmmRouterState};
 use nomifun_knowledge::KnowledgeRouterState;
+use nomifun_learning::LearningRouterState;
 use nomifun_poi::PoiRouterState;
 use nomifun_insights::InsightsRouterState;
 use nomifun_media::MediaRouterState;
@@ -85,6 +86,7 @@ pub struct ModuleStates {
     pub requirement: RequirementRouterState,
     pub idmm: IdmmRouterState,
     pub knowledge: KnowledgeRouterState,
+    pub learning: LearningRouterState,
     pub poi: PoiRouterState,
     pub insights: InsightsRouterState,
     pub media: MediaRouterState,
@@ -239,6 +241,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         requirement: requirement_state,
         idmm: idmm_state,
         knowledge: KnowledgeRouterState::new(services.knowledge_service.clone()),
+        learning: LearningRouterState::new(services.learning_service.clone()),
         poi: PoiRouterState::new(services.poi_service.clone()),
         insights: InsightsRouterState::new(
             services.insights_service.clone(),
