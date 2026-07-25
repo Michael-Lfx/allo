@@ -35,13 +35,23 @@ describe('Nomi sendbox control layout', () => {
     expect(sendBoxSource.includes("data-testid='sendbox-top-right-tools'")).toBe(false);
     expect(contextRingSource.includes("data-testid='nomi-context-usage-ring'")).toBe(true);
     expect(contextRingSource.includes("data-testid='nomi-context-usage-popover'")).toBe(true);
+    expect(contextRingSource.includes("data-testid='nomi-context-usage-bar'")).toBe(true);
+    expect(contextRingSource.includes("data-testid='nomi-context-usage-summarized-props'")).toBe(true);
     expect(contextRingSource.includes("trigger='click'")).toBe(true);
     expect(contextRingSource.includes('conic-gradient')).toBe(true);
     expect(contextRingSource.includes('h-22px w-22px')).toBe(true);
-    expect(contextRingSource.includes('formatTokenCount(used)')).toBe(true);
-    expect(contextRingSource.includes('formatTokenCount(max)')).toBe(true);
+    expect(contextRingSource.includes('w-320px')).toBe(true);
+    expect(contextRingSource.includes('formatContextTokenAbbrev')).toBe(true);
+    expect(contextRingSource.includes('buildContextBreakdownViewModel')).toBe(true);
+    expect(contextRingSource.includes('percentFull')).toBe(true);
+    expect(contextRingSource.includes('tokenSummary')).toBe(true);
+    expect(contextRingSource.includes('System prompt')).toBe(true);
+    expect(contextRingSource.includes('Tool definitions')).toBe(true);
+    expect(contextRingSource.includes('MCP & dynamic tools')).toBe(true);
+    expect(contextRingSource.includes('Summarized conversation')).toBe(true);
     expect(contextRingSource.includes("data-testid='nomi-context-usage'")).toBe(false);
     expect(contextRingSource.includes('rd-999px b b-solid px-10px')).toBe(false);
+    expect(source.includes('breakdown={tokenUsage?.context_breakdown}')).toBe(true);
   });
 
   test('keeps collaborator models next to the main model and collaboration policy next to permission', () => {

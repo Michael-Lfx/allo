@@ -1,4 +1,5 @@
 use nomi_types::message::{ContentBlock, Message};
+use nomi_types::tool::ToolDef;
 
 const CHARS_PER_TOKEN_TEXT: usize = 4;
 
@@ -9,35 +10,63 @@ const CHARS_PER_TOKEN_JSON: usize = 3;
 /// compaction triggering early rather than late.
 const TOKENS_PER_IMAGE: usize = 1600;
 
+/// Estimate tokens for plain text using the same ratio as message estimation.
+pub fn estimate_tokens_from_text(text: &str) -> u64 {
+    (text.len() / CHARS_PER_TOKEN_TEXT) as u64
+}
+
+/// Estimate tokens for JSON / schema payloads.
+pub fn estimate_tokens_from_json_text(text: &str) -> u64 {
+    (text.len() / CHARS_PER_TOKEN_JSON) as u64
+}
+
+/// Estimate tokens for one tool definition as sent to the provider.
+///
+/// Deferred tools only expose a stub description and empty parameters, matching
+/// the OpenAI adapter's request shaping.
+pub fn estimate_tokens_from_tool_def(tool: &ToolDef) -> u64 {
+    let schema_text = if tool.deferred {
+        String::new()
+    } else {
+        serde_json::to_string(&tool.input_schema).unwrap_or_default()
+    };
+    estimate_tokens_from_text(&tool.name)
+        .saturating_add(estimate_tokens_from_text(&tool.description))
+        .saturating_add(estimate_tokens_from_json_text(&schema_text))
+}
+
 /// Estimate the total token count for a slice of messages.
 ///
 /// Intentionally conservative (slightly over-estimates) to ensure
 /// compaction triggers rather than being skipped.
 pub fn estimate_tokens_from_messages(messages: &[Message]) -> u64 {
+    messages.iter().map(estimate_tokens_from_message).sum()
+}
+
+/// Estimate tokens for a single message.
+pub fn estimate_tokens_from_message(message: &Message) -> u64 {
     let mut total_chars: usize = 0;
     let mut json_chars: usize = 0;
     let mut image_tokens: usize = 0;
 
-    for msg in messages {
-        for block in &msg.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    total_chars += text.len();
-                }
-                ContentBlock::Thinking { thinking, .. } => {
-                    total_chars += thinking.len();
-                }
-                ContentBlock::ToolUse { name, input, .. } => {
-                    let input_str = input.to_string();
-                    json_chars += name.len() + input_str.len();
-                }
-                ContentBlock::ToolResult { content, images, .. } => {
-                    total_chars += content.len();
-                    image_tokens += images.len() * TOKENS_PER_IMAGE;
-                }
-                ContentBlock::Image { .. } => {
-                    image_tokens += TOKENS_PER_IMAGE;
-                }
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => {
+                total_chars += text.len();
+            }
+            ContentBlock::Thinking { thinking, .. } => {
+                total_chars += thinking.len();
+            }
+            ContentBlock::ToolUse { name, input, .. } => {
+                let input_str = input.to_string();
+                json_chars += name.len() + input_str.len();
+            }
+            ContentBlock::ToolResult { content, images, .. } => {
+                total_chars += content.len();
+                image_tokens += images.len() * TOKENS_PER_IMAGE;
+            }
+            ContentBlock::Image { .. } => {
+                image_tokens += TOKENS_PER_IMAGE;
             }
         }
     }

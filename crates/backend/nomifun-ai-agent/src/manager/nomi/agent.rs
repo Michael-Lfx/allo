@@ -1023,6 +1023,9 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 // absorbing Finished state before the real `Finish` below.
                 let context_tokens = engine.context_tokens();
                 let context_window = engine.context_window();
+                let context_breakdown = engine
+                    .context_breakdown()
+                    .map(crate::protocol::events::ContextBreakdownData::from);
                 self.runtime.emit(AgentStreamEvent::TurnCompleted(TurnCompletedEventData {
                     elapsed_ms,
                     input_tokens: agent_result.usage.input_tokens,
@@ -1032,6 +1035,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     context_tokens,
                     context_window,
                     stop_reason: Some(stop_reason),
+                    context_breakdown,
                 }));
 
                 // —— Post-session memory distillation (fire-and-forget) ——

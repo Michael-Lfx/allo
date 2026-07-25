@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  buildContextBreakdownViewModel,
   calculateCacheHitRatePercent,
   calculateContextUsagePercent,
   calculateContextUsageSegments,
+  CONTEXT_USAGE_CATEGORY_ORDER,
+  formatContextTokenAbbrev,
   formatPercent,
   formatTokenCount,
   formatTurnDuration,
@@ -25,6 +28,16 @@ describe('formatTokenCount', () => {
   test('renders millions with an m suffix', () => {
     expect(formatTokenCount(1_000_000)).toBe('1.0m');
     expect(formatTokenCount(2_300_000)).toBe('2.3m');
+  });
+});
+
+describe('formatContextTokenAbbrev', () => {
+  test('matches Cursor-style uppercase abbreviations', () => {
+    expect(formatContextTokenAbbrev(451)).toBe('451');
+    expect(formatContextTokenAbbrev(2900)).toBe('2.9K');
+    expect(formatContextTokenAbbrev(95_400)).toBe('95.4K');
+    expect(formatContextTokenAbbrev(272_000)).toBe('272K');
+    expect(formatContextTokenAbbrev(1_000_000)).toBe('1.0M');
   });
 });
 
@@ -108,5 +121,43 @@ describe('calculateContextUsageSegments', () => {
 
   test('returns null without a usable context window', () => {
     expect(calculateContextUsageSegments({ contextTokens: 10_000, contextWindow: 0 })).toBeNull();
+  });
+});
+
+describe('buildContextBreakdownViewModel', () => {
+  test('renders Cursor category order and hides zero rows', () => {
+    const view = buildContextBreakdownViewModel({
+      used: 95_400,
+      max: 272_000,
+      breakdown: {
+        system_prompt: 2_900,
+        tool_definitions: 12_200,
+        rules: 451,
+        skills: 2_200,
+        mcp_and_dynamic_tools: 856,
+        subagent_definitions: 1_000,
+        summarized_conversation: 7_200,
+        conversation: 68_500,
+      },
+      summarized: {
+        trigger: 'auto',
+        pre_compact_tokens: 120_000,
+        messages_summarized: 18,
+      },
+    });
+    expect(view?.mode).toBe('categories');
+    expect(view?.listSegments.map((segment) => segment.key)).toEqual([...CONTEXT_USAGE_CATEGORY_ORDER]);
+    expect(view?.summarizedProps?.messages_summarized).toBe(18);
+    expect(view?.barSegments.at(-1)?.key).toBe('remaining');
+  });
+
+  test('falls back to legacy cached/fresh segments without breakdown', () => {
+    const view = buildContextBreakdownViewModel({
+      used: 120_000,
+      max: 200_000,
+      cacheReadTokens: 50_000,
+    });
+    expect(view?.mode).toBe('legacy');
+    expect(view?.listSegments.map((segment) => segment.key)).toEqual(['cached', 'fresh']);
   });
 });

@@ -139,7 +139,7 @@ struct CompactionPlan {
 
 /// Check if a message is a compaction artifact (boundary marker or summary
 /// from a prior compaction). These are kept verbatim and never re-summarized.
-fn is_compaction_artifact(msg: &Message) -> bool {
+pub fn is_compaction_artifact(msg: &Message) -> bool {
     msg.content.iter().any(|block| {
         if let ContentBlock::Text { text } = block {
             text.starts_with(BOUNDARY_PREFIX)

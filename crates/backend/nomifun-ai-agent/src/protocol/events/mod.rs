@@ -120,6 +120,84 @@ pub struct FinishEventData {
     pub stop_reason: Option<TurnStopReason>,
 }
 
+/// Optional metadata for the most recent conversation compaction.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct SummarizedConversationPropertiesData {
+    #[serde(default)]
+    pub trigger: Option<CompactTriggerData>,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub pre_compact_tokens: Option<u64>,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub messages_summarized: Option<usize>,
+}
+
+/// How a compaction was triggered (wire mirror of nomi-types CompactTrigger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTriggerData {
+    Auto,
+    Manual,
+}
+
+/// Cursor-style context occupancy categories for one provider request.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct ContextBreakdownData {
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub system_prompt: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub tool_definitions: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub rules: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub skills: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub mcp_and_dynamic_tools: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub subagent_definitions: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub summarized_conversation: u64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub conversation: u64,
+    #[serde(default)]
+    pub summarized: Option<SummarizedConversationPropertiesData>,
+}
+
+impl From<&nomi_types::context_usage::ContextUsageBreakdown> for ContextBreakdownData {
+    fn from(value: &nomi_types::context_usage::ContextUsageBreakdown) -> Self {
+        Self {
+            system_prompt: value.system_prompt,
+            tool_definitions: value.tool_definitions,
+            rules: value.rules,
+            skills: value.skills,
+            mcp_and_dynamic_tools: value.mcp_and_dynamic_tools,
+            subagent_definitions: value.subagent_definitions,
+            summarized_conversation: value.summarized_conversation,
+            conversation: value.conversation,
+            summarized: value.summarized.as_ref().map(|meta| SummarizedConversationPropertiesData {
+                trigger: meta.trigger.map(|trigger| match trigger {
+                    nomi_types::compact::CompactTrigger::Auto => CompactTriggerData::Auto,
+                    nomi_types::compact::CompactTrigger::Manual => CompactTriggerData::Manual,
+                }),
+                pre_compact_tokens: meta.pre_compact_tokens,
+                messages_summarized: meta.messages_summarized,
+            }),
+        }
+    }
+}
+
 /// Data for the `TurnCompleted` event — aggregate metrics for one turn.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
@@ -150,6 +228,9 @@ pub struct TurnCompletedEventData {
     /// Why the turn ended (mirrors Finish), for a single self-contained record.
     #[serde(default)]
     pub stop_reason: Option<TurnStopReason>,
+    /// Cursor-style category breakdown for the last provider request.
+    #[serde(default)]
+    pub context_breakdown: Option<ContextBreakdownData>,
 }
 
 /// Cross-backend normalized "why did the turn end" reason. Deliberately NOT the
@@ -2441,6 +2522,21 @@ mod tests {
             context_tokens: 8000,
             context_window: 100_000,
             stop_reason: Some(TurnStopReason::EndTurn),
+            context_breakdown: Some(ContextBreakdownData {
+                system_prompt: 100,
+                tool_definitions: 200,
+                rules: 50,
+                skills: 25,
+                mcp_and_dynamic_tools: 25,
+                subagent_definitions: 10,
+                summarized_conversation: 90,
+                conversation: 7500,
+                summarized: Some(SummarizedConversationPropertiesData {
+                    trigger: Some(CompactTriggerData::Auto),
+                    pre_compact_tokens: Some(120_000),
+                    messages_summarized: Some(18),
+                }),
+            }),
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "turn_completed");
@@ -2452,6 +2548,8 @@ mod tests {
         assert_eq!(json["data"]["context_tokens"], 8000);
         assert_eq!(json["data"]["context_window"], 100_000);
         assert_eq!(json["data"]["stop_reason"], "end_turn");
+        assert_eq!(json["data"]["context_breakdown"]["conversation"], 7500);
+        assert_eq!(json["data"]["context_breakdown"]["summarized"]["trigger"], "auto");
 
         // Back-compat: an old payload with no stop_reason / context fields
         // deserializes to defaults (None / 0) via `#[serde(default)]`.
@@ -2463,7 +2561,10 @@ mod tests {
         assert!(matches!(
             back,
             AgentStreamEvent::TurnCompleted(d)
-                if d.stop_reason.is_none() && d.context_tokens == 0 && d.context_window == 0
+                if d.stop_reason.is_none()
+                    && d.context_tokens == 0
+                    && d.context_window == 0
+                    && d.context_breakdown.is_none()
         ));
     }
 

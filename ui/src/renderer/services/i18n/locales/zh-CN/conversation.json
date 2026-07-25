@@ -501,10 +501,34 @@
   },
   "contextUsage": {
     "contextUsed": "上下文已使用",
-    "title": "背景信息窗口",
+    "title": "上下文用量",
+    "close": "关闭",
+    "percentFull": "{{pct}}% 已满",
     "percentLine": "已用 {{pct}}%（剩余 {{remaining}}%）",
-    "tokenLine": "已用 {{used}} 标记，共 {{max}}",
-    "tooltip": "上下文 {{used}} / {{max}} tokens（{{pct}}%）。接近上限将自动压缩。"
+    "tokenSummary": "~{{used}} / {{max}} Tokens",
+    "tokenLine": "已用 {{used}} tokens，共 {{max}}",
+    "tooltip": "上下文 {{used}} / {{max}} tokens（{{pct}}%）。接近上限将自动压缩。",
+    "cached": "缓存命中",
+    "fresh": "会话内容",
+    "used": "上下文",
+    "remaining": "剩余",
+    "categories": {
+      "systemPrompt": "系统提示",
+      "toolDefinitions": "工具定义",
+      "rules": "规则",
+      "skills": "技能",
+      "mcpDynamicTools": "MCP 与动态工具",
+      "subagentDefinitions": "子代理定义",
+      "summarizedConversation": "摘要会话",
+      "conversation": "会话内容"
+    },
+    "summarizedProperties": {
+      "trigger": "触发方式：{{value}}",
+      "triggerAuto": "自动",
+      "triggerManual": "手动",
+      "preCompactTokens": "压缩前：{{value}}",
+      "messagesSummarized": "已摘要消息：{{count}}"
+    }
   },
   "sessionMetrics": {
     "tab": "指标",

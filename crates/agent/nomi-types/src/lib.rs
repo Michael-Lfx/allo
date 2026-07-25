@@ -3,6 +3,7 @@
 
 pub mod agent_tool;
 pub mod compact;
+pub mod context_usage;
 pub mod agent;
 pub mod file_state;
 pub mod llm;
@@ -10,6 +11,8 @@ pub mod message;
 pub mod skill_types;
 pub mod tool;
 pub mod tool_progress;
+
+pub use context_usage::{ContextUsageBreakdown, SummarizedConversationProperties};
 
 pub use agent_tool::{
     JsonSchema, StructuredJsonSchema, ToolError, ToolHandler, ToolSchema, tool_schema,

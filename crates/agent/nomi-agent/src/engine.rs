@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ use nomi_config::hooks::HookEngine;
 use nomi_protocol::events::ToolCategory;
 use nomi_providers::{LlmProvider, ProviderError, create_provider};
 use nomi_tools::registry::ToolRegistry;
+use nomi_types::context_usage::ContextUsageBreakdown;
 use nomi_types::llm::{LlmEvent, LlmRequest};
 use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomi_types::skill_types::{ContextModifier, PlanModeTransition, effort_to_string};
@@ -348,6 +349,11 @@ pub struct AgentEngine {
     /// 用户消息重跑）。压缩会重写整个 messages 使下标失效，故压缩时清空；
     /// clear_context 时一并清空。仅内存态，不持久化到 session。
     last_turn_start_len: Option<usize>,
+    /// Cache-stable system-prompt sections captured at bootstrap for Cursor-style
+    /// context usage bucketing. Empty for engines constructed without bootstrap.
+    system_prompt_sections: HashMap<&'static str, String>,
+    /// Calibrated breakdown for the most recent provider request.
+    last_context_breakdown: Option<ContextUsageBreakdown>,
 }
 
 impl AgentEngine {
@@ -421,6 +427,8 @@ impl AgentEngine {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 
@@ -501,6 +509,8 @@ impl AgentEngine {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 
@@ -587,6 +597,16 @@ impl AgentEngine {
     /// Denominator for the gauge. = CompactConfig.context_window.
     pub fn context_window(&self) -> u64 {
         self.compact_config.context_window as u64
+    }
+
+    /// Cursor-style category breakdown for the last provider request, if any.
+    pub fn context_breakdown(&self) -> Option<&ContextUsageBreakdown> {
+        self.last_context_breakdown.as_ref()
+    }
+
+    /// Install bootstrap-captured system prompt sections used for category bucketing.
+    pub fn set_system_prompt_sections(&mut self, sections: HashMap<&'static str, String>) {
+        self.system_prompt_sections = sections;
     }
 
     /// Install (or clear) the steering inbox used for mid-turn interjections.
@@ -1005,7 +1025,7 @@ impl AgentEngine {
                 }
             }
             let turn_tail =
-                crate::context_contributor::build_turn_tail_context(turn_tail_extras);
+                crate::context_contributor::build_turn_tail_context(turn_tail_extras.clone());
             // Hot-path note: `LlmRequest` owns its message array across the
             // provider trait boundary, so the turn-tail injection must operate
             // on a clone of the history. `inject_turn_tail_context` only
@@ -1019,6 +1039,19 @@ impl AgentEngine {
 
             // Record prompt state for cache diagnostics (system prompt is stable)
             self.cache_detector.record_request(&system, &tools);
+
+            // Capture a raw category estimate for this exact request. After the
+            // provider reports input tokens we calibrate it to the occupancy gauge.
+            let mut request_breakdown = crate::context_usage::estimate_context_usage(
+                crate::context_usage::ContextUsageRequest {
+                    system_prompt: &system,
+                    system_prompt_sections: &self.system_prompt_sections,
+                    tools: &tools,
+                    messages: &self.messages,
+                    plan_mode_active: self.plan_state.is_active,
+                    turn_tail_extras: &turn_tail_extras,
+                },
+            );
 
             let request = LlmRequest {
                 model: self.model.clone(),
@@ -1385,6 +1418,9 @@ impl AgentEngine {
             }
 
             self.compact_state.last_input_tokens = effective_watermark;
+
+            request_breakdown.calibrate_to(effective_watermark);
+            self.last_context_breakdown = Some(request_breakdown);
 
             // Cache break detection
             let cache_stats = CacheStats {
@@ -3111,6 +3147,8 @@ mod set_config_tests {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: std::collections::HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 
@@ -4516,6 +4554,8 @@ mod phase6_tests {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: std::collections::HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 
@@ -4790,6 +4830,8 @@ mod compact_tests {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: std::collections::HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 
@@ -5335,6 +5377,8 @@ mod plan_mode_tests {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: std::collections::HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 
@@ -5554,6 +5598,8 @@ mod handle_command_tests {
             steering_inbox: None,
             process_supervisor: None,
             last_turn_start_len: None,
+            system_prompt_sections: std::collections::HashMap::new(),
+            last_context_breakdown: None,
         }
     }
 

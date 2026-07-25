@@ -50,6 +50,7 @@ import { Message, Tag } from '@arco-design/web-react';
 import { Brain, MagicHat, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ContextUsageRing } from '../nomi/ContextUsageRing';
 import type { UseAcpMessageReturn } from './useAcpMessage';
 
 const useAcpSendBoxDraft = getSendBoxDraftHook('acp', {
@@ -115,7 +116,11 @@ const AcpSendBox: React.FC<{
     getTurnStartGeneration,
     getTurnCompletionGeneration,
     slashCommands,
+    tokenUsage,
+    context_limit,
   } = messageState;
+  const hasContextUsage =
+    context_limit > 0 && typeof tokenUsage?.total_tokens === 'number';
   const { t } = useTranslation();
   const showModeSelector = true;
   const { checkAndUpdateTitle } = useAutoTitle();
@@ -625,6 +630,13 @@ Please check your local CLI tool authentication status`,
         }
         rightTools={
           <div className='flex items-center gap-2 min-w-0' data-testid='acp-sendbox-config-group'>
+            {hasContextUsage && (
+              <ContextUsageRing
+                used={tokenUsage?.total_tokens}
+                max={context_limit}
+                cacheReadTokens={tokenUsage?.cache_read_tokens}
+              />
+            )}
             <AcpModelSelector
               conversation_id={conversation_id}
               backend={backend}

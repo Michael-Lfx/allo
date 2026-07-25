@@ -877,7 +877,14 @@ const NomiSendBox: React.FC<{
         rightTools={
           hideModeSelector ? undefined : (
             <div className='flex items-center gap-2 min-w-0' data-testid='nomi-sendbox-config-group'>
-              {hasContextUsage && <ContextUsageRing used={tokenUsage?.context_tokens} max={tokenUsage?.context_window} />}
+              {hasContextUsage && (
+                <ContextUsageRing
+                  used={tokenUsage?.context_tokens}
+                  max={tokenUsage?.context_window}
+                  cacheReadTokens={tokenUsage?.cache_read_tokens}
+                  breakdown={tokenUsage?.context_breakdown}
+                />
+              )}
               <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
               {collaboratorSelectorNode}
               {extraRightTools}

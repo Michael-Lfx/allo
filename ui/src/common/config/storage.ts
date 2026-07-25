@@ -218,6 +218,26 @@ interface IChatConversation<T, Extra> {
   execution_attempt_id?: ExecutionAttemptId;
 }
 
+export type CompactTriggerData = 'auto' | 'manual';
+
+export type SummarizedConversationProperties = {
+  trigger?: CompactTriggerData | null;
+  pre_compact_tokens?: number | null;
+  messages_summarized?: number | null;
+};
+
+export type ContextBreakdownData = {
+  system_prompt?: number;
+  tool_definitions?: number;
+  rules?: number;
+  skills?: number;
+  mcp_and_dynamic_tools?: number;
+  subagent_definitions?: number;
+  summarized_conversation?: number;
+  conversation?: number;
+  summarized?: SummarizedConversationProperties | null;
+};
+
 // Token 使用统计数据类型
 export interface TokenUsageData {
   total_tokens: number;
@@ -236,6 +256,8 @@ export interface TokenUsageData {
   context_tokens?: number;
   /** Effective context budget (gauge denominator). */
   context_window?: number;
+  /** Cursor-style category breakdown for the last provider request. */
+  context_breakdown?: ContextBreakdownData | null;
 }
 
 export type TChatConversation =

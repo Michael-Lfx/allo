@@ -501,10 +501,34 @@
   },
   "contextUsage": {
     "contextUsed": "context used",
-    "title": "Context window",
+    "title": "Context Usage",
+    "close": "Close",
+    "percentFull": "{{pct}}% Full",
     "percentLine": "{{pct}}% used ({{remaining}}% remaining)",
+    "tokenSummary": "~{{used}} / {{max}} Tokens",
     "tokenLine": "{{used}} tokens used, {{max}} total",
-    "tooltip": "Context {{used}} / {{max}} tokens ({{pct}}%). Auto-compacts near the limit."
+    "tooltip": "Context {{used}} / {{max}} tokens ({{pct}}%). Auto-compacts near the limit.",
+    "cached": "Cache hit",
+    "fresh": "Conversation",
+    "used": "Context",
+    "remaining": "Remaining",
+    "categories": {
+      "systemPrompt": "System prompt",
+      "toolDefinitions": "Tool definitions",
+      "rules": "Rules",
+      "skills": "Skills",
+      "mcpDynamicTools": "MCP & dynamic tools",
+      "subagentDefinitions": "Subagent definitions",
+      "summarizedConversation": "Summarized conversation",
+      "conversation": "Conversation"
+    },
+    "summarizedProperties": {
+      "trigger": "Trigger: {{value}}",
+      "triggerAuto": "Auto",
+      "triggerManual": "Manual",
+      "preCompactTokens": "Before compact: {{value}}",
+      "messagesSummarized": "Messages summarized: {{count}}"
+    }
   },
   "sessionMetrics": {
     "tab": "Metrics",

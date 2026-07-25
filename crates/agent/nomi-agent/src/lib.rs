@@ -9,6 +9,7 @@ pub mod companion_tools;
 pub mod confirm;
 pub mod context;
 pub mod context_contributor;
+pub mod context_usage;
 pub mod cron_tools;
 pub mod memory_tools;
 pub mod engine;

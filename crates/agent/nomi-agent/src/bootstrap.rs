@@ -843,6 +843,7 @@ impl AgentBootstrap {
         };
         engine.set_plan_active_flag(plan_active_flag);
         engine.set_process_supervisor(Arc::clone(&process_supervisor));
+        engine.set_system_prompt_sections(prompt_cache.sections);
         if let Some(spec) = self.goal {
             engine.set_goal(spec.objective, spec.max_auto_continuations);
         }

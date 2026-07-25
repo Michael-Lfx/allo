@@ -485,6 +485,7 @@ export const useNomiMessage = (
                   cache_read_tokens?: number;
                   context_tokens?: number;
                   context_window?: number;
+                  context_breakdown?: TokenUsageData['context_breakdown'];
                 }
               | undefined;
             if (metrics && typeof metrics === 'object') {
@@ -499,6 +500,7 @@ export const useNomiMessage = (
                 elapsed_ms: metrics.elapsed_ms,
                 context_tokens: metrics.context_tokens,
                 context_window: metrics.context_window,
+                context_breakdown: metrics.context_breakdown,
               };
               setTokenUsage(newTokenUsage);
               if (!readOnly) {
