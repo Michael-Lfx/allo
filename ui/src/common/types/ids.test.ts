@@ -85,7 +85,10 @@ describe('entity ids', () => {
   test('provider parser accepts reserved system singletons', () => {
     expect(parseProviderId(FLOWY_BUILTIN_PROVIDER_ID)).toBe(FLOWY_BUILTIN_PROVIDER_ID);
     expect(parseProviderId(GOOGLE_AUTH_PROVIDER_ID)).toBe(GOOGLE_AUTH_PROVIDER_ID);
+    expect(parseProviderId('flowy-cloud')).toBe(FLOWY_BUILTIN_PROVIDER_ID);
+    expect(parseProviderId('google-auth-gemini')).toBe(GOOGLE_AUTH_PROVIDER_ID);
     expect(isReservedProviderId(FLOWY_BUILTIN_PROVIDER_ID)).toBe(true);
+    expect(isReservedProviderId('flowy-cloud')).toBe(true);
     expect(isReservedProviderId('custom-cloud')).toBe(false);
 
     let error: unknown;

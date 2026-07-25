@@ -54,21 +54,24 @@ const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(150);
 /// losing process, so a breadcrumb stored inside the lock file could never
 /// reach the error message that needs it.
 const SERVER_LOCK_INFO_FILE: &str = "server.lock.info";
-const CANONICAL_SERVER_DATABASE_FILE: &str = "nomifun-backend.db";
 
 fn is_canonical_server_database_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name() else {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
+    let candidates = [
+        nomifun_common::storage_paths::DATABASE_FILE,
+        nomifun_common::storage_paths::LEGACY_DATABASE_FILE,
+    ];
     #[cfg(windows)]
     {
-        file_name
-            .to_string_lossy()
-            .eq_ignore_ascii_case(CANONICAL_SERVER_DATABASE_FILE)
+        candidates
+            .iter()
+            .any(|candidate| file_name.eq_ignore_ascii_case(candidate))
     }
     #[cfg(not(windows))]
     {
-        file_name == std::ffi::OsStr::new(CANONICAL_SERVER_DATABASE_FILE)
+        candidates.iter().any(|candidate| file_name == *candidate)
     }
 }
 
@@ -492,9 +495,9 @@ mod tests {
         let other_dir = root.path().join("other");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(&other_dir).unwrap();
-        let database_path = data_dir.join("nomifun-backend.db");
+        let database_path = data_dir.join(nomifun_common::storage_paths::DATABASE_FILE);
         let other_file_path = data_dir.join("other.db");
-        let other_dir_path = other_dir.join("nomifun-backend.db");
+        let other_dir_path = other_dir.join(nomifun_common::storage_paths::DATABASE_FILE);
         let database = nomifun_db::init_database(&database_path).await.unwrap();
         let other_file = nomifun_db::init_database(&other_file_path).await.unwrap();
         let other_database = nomifun_db::init_database(&other_dir_path).await.unwrap();
@@ -541,7 +544,7 @@ mod tests {
 
         let hardlink_dir = root.path().join("hardlink-outside-lock");
         std::fs::create_dir_all(&hardlink_dir).unwrap();
-        let external_hardlink = hardlink_dir.join("nomifun-backend.db");
+        let external_hardlink = hardlink_dir.join(nomifun_common::storage_paths::DATABASE_FILE);
         std::fs::hard_link(&database_path, &external_hardlink)
             .expect("test filesystem must support a same-volume database hardlink");
         let hardlink_database = nomifun_db::init_database(&external_hardlink).await.unwrap();

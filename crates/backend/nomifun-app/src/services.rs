@@ -220,7 +220,7 @@ impl AppServices {
             && authority
                 .protects_database(
                     &self.database,
-                    &self.data_dir.join("nomifun-backend.db"),
+                    &nomifun_common::storage_paths::resolve_database_path(&self.data_dir),
                 )
                 .await?)
     }

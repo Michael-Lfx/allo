@@ -62,7 +62,13 @@ macro_rules! define_entity_id {
     ($(#[$meta:meta])* $name:ident) => {
         define_entity_id!($(#[$meta])* $name, reserved: []);
     };
+    ($(#[$meta:meta])* $name:ident, aliases: [$($alias:literal => $canonical:literal),* $(,)?]) => {
+        define_entity_id!($(#[$meta])* $name, reserved: [], aliases: [$($alias => $canonical),*]);
+    };
     ($(#[$meta:meta])* $name:ident, reserved: [$($reserved:literal),* $(,)?]) => {
+        define_entity_id!($(#[$meta])* $name, reserved: [$($reserved),*], aliases: []);
+    };
+    ($(#[$meta:meta])* $name:ident, reserved: [$($reserved:literal),* $(,)?], aliases: [$($alias:literal => $canonical:literal),* $(,)?]) => {
         $(#[$meta])*
         #[derive(
             Clone,
@@ -89,9 +95,15 @@ macro_rules! define_entity_id {
             /// Parse and validate a canonical lowercase UUIDv7.
             ///
             /// When this entity declares reserved singletons, those exact
-            /// literals are also accepted.
+            /// literals are also accepted. Alias literals are normalized to
+            /// their canonical reserved UUIDv7 values.
             pub fn parse(value: impl Into<String>) -> Result<Self, UuidV7Error> {
                 let value = value.into();
+                $(
+                    if value == $alias {
+                        return Ok(Self($canonical.to_owned()));
+                    }
+                )*
                 $(
                     if value == $reserved {
                         return Ok(Self(value));
@@ -193,14 +205,27 @@ macro_rules! define_entity_id {
 }
 
 /// Built-in Flowy Cloud provider row id synced after server login.
-pub const FLOWY_BUILTIN_PROVIDER_ID: &str = "flowy-cloud";
+///
+/// Stable UUIDv7 so the row satisfies the v3 `providers.provider_id` CHECK.
+/// Legacy wire/storage literal `flowy-cloud` is accepted by [`ProviderId::parse`]
+/// and normalized to this value.
+pub const FLOWY_BUILTIN_PROVIDER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000201";
 
 /// Virtual Google Auth provider id synthesized by the client catalog.
-pub const GOOGLE_AUTH_PROVIDER_ID: &str = "google-auth-gemini";
+///
+/// Legacy wire/storage literal `google-auth-gemini` normalizes to this UUIDv7.
+pub const GOOGLE_AUTH_PROVIDER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000202";
 
-/// Return true when `value` is a reserved system provider singleton.
+/// Return true when `value` is a reserved system provider singleton or a
+/// legacy alias that canonicalizes to one.
 pub fn is_reserved_provider_id(value: &str) -> bool {
-    matches!(value, FLOWY_BUILTIN_PROVIDER_ID | GOOGLE_AUTH_PROVIDER_ID)
+    matches!(
+        value,
+        FLOWY_BUILTIN_PROVIDER_ID
+            | GOOGLE_AUTH_PROVIDER_ID
+            | "flowy-cloud"
+            | "google-auth-gemini"
+    )
 }
 
 define_entity_id!(
@@ -222,11 +247,15 @@ define_entity_id!(
 define_entity_id!(
     /// Globally unique provider configuration identifier.
     ///
-    /// Accepts bare UUIDv7 values plus stable reserved literals
-    /// (`flowy-cloud`, `google-auth-gemini`) so cloud sync and virtual Google
-    /// Auth stay addressable across installs.
+    /// Accepts bare UUIDv7 values. Legacy reserved literals `flowy-cloud` and
+    /// `google-auth-gemini` are normalized to the stable UUIDv7 constants so
+    /// cloud sync and virtual Google Auth remain addressable across installs
+    /// while satisfying the v3 database CHECK contract.
     ProviderId,
-    reserved: ["flowy-cloud", "google-auth-gemini"]
+    aliases: [
+        "flowy-cloud" => "0190f5fe-7c00-7a00-8000-000000000201",
+        "google-auth-gemini" => "0190f5fe-7c00-7a00-8000-000000000202"
+    ]
 );
 define_entity_id!(
     /// Globally unique agent identifier.
@@ -543,6 +572,15 @@ mod tests {
                 parsed
             );
         }
+        assert_eq!(
+            ProviderId::parse("flowy-cloud").unwrap().as_str(),
+            FLOWY_BUILTIN_PROVIDER_ID
+        );
+        assert_eq!(
+            ProviderId::parse("google-auth-gemini").unwrap().as_str(),
+            GOOGLE_AUTH_PROVIDER_ID
+        );
+        assert!(is_reserved_provider_id("flowy-cloud"));
         assert!(ProviderId::parse("custom-cloud").is_err());
         assert!(!is_reserved_provider_id("0190f5fe-7c00-7a00-8000-000000000001"));
     }

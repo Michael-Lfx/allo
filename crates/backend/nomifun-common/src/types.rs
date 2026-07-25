@@ -101,6 +101,7 @@ pub struct ConfirmationOption {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FLOWY_BUILTIN_PROVIDER_ID;
 
     #[test]
     fn test_provider_with_model_serde() {
@@ -132,7 +133,7 @@ mod tests {
     fn provider_with_model_accepts_reserved_flowy_cloud_id() {
         let json = r#"{"provider_id":"flowy-cloud","model":"default","use_model":"AIPC-glm-4.7"}"#;
         let parsed: ProviderWithModel = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.provider_id, "flowy-cloud");
+        assert_eq!(parsed.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
         assert_eq!(parsed.use_model.as_deref(), Some("AIPC-glm-4.7"));
         parsed.validate().unwrap();
     }
