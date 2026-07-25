@@ -59,19 +59,13 @@ fn is_canonical_server_database_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let candidates = [
-        nomifun_common::storage_paths::DATABASE_FILE,
-        nomifun_common::storage_paths::LEGACY_DATABASE_FILE,
-    ];
     #[cfg(windows)]
     {
-        candidates
-            .iter()
-            .any(|candidate| file_name.eq_ignore_ascii_case(candidate))
+        file_name.eq_ignore_ascii_case(nomifun_common::storage_paths::DATABASE_FILE)
     }
     #[cfg(not(windows))]
     {
-        candidates.iter().any(|candidate| file_name == *candidate)
+        file_name == nomifun_common::storage_paths::DATABASE_FILE
     }
 }
 
