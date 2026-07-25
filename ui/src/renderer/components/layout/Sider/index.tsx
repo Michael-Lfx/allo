@@ -1,6 +1,5 @@
 
-
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -18,7 +17,6 @@ import {
   SiderLearningEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
-  SiderOpenCapabilitiesEntry,
   SiderPublicServiceEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
@@ -26,7 +24,6 @@ import {
   SiderVideoGenerationEntry,
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
-import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -55,7 +52,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const location = useLocation();
   const { pathname, search, hash } = location;
   const { count: pendingInboxCount } = useKnowledgeInboxPending();
-  const { isFirstWin } = useFirstWinMode();
 
   const navigate = useNavigate();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
@@ -74,14 +70,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     return localUser?.username ?? whoami?.email ?? whoami?.username ?? '';
   }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
-  const [capabilitiesExpanded, setCapabilitiesExpanded] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      return window.localStorage.getItem('flowy.sider.capabilitiesExpanded') === 'true';
-    } catch {
-      return false;
-    }
-  });
 
   // The "会话" entry stays active across every route owned by ConversationShell.
   const isSessionRoute =
@@ -89,22 +77,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     pathname.startsWith('/conversation/') ||
     pathname === '/terminal-new' ||
     pathname.startsWith('/terminal/');
-
-  // First-win focus: keep the rail on New Task + essentials until the user
-  // confirms a reviewable result. Returning users always see the full rail.
-  const showCapabilityHub = !isFirstWin || capabilitiesExpanded || !isSessionRoute;
-
-  const toggleCapabilities = useCallback(() => {
-    setCapabilitiesExpanded((current) => {
-      const next = !current;
-      try {
-        window.localStorage.setItem('flowy.sider.capabilitiesExpanded', String(next));
-      } catch {
-        return next;
-      }
-      return next;
-    });
-  }, []);
 
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
@@ -134,7 +106,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleNomiClick = () => navTo('/nomi');
   const handleVideoGenerationClick = () => navTo('/video-generation');
   const handlePublicServiceClick = () => navTo('/public-companions');
-  const handleOpenCapabilitiesClick = () => navTo('/open-capabilities');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
@@ -214,8 +185,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            {showCapabilityHub ? (
-              <>
             {/* Work partner (桌面伙伴) — demo path 2 */}
             <SiderNomiEntry
               isMobile={isMobile}
@@ -224,14 +193,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleNomiClick}
             />
-            {/* External agents on /mcp-agent — demo path 3 */}
-            {/* <SiderOpenCapabilitiesEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/open-capabilities')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleOpenCapabilitiesClick}
-            /> */}
             {/* ViMax video generation */}
             <SiderVideoGenerationEntry
               isMobile={isMobile}
@@ -296,8 +257,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onSkills={handleSkillsClick}
               onMcp={handleMcpClick}
             />
-              </>
-            ) : null}
           </div>
         )}
       </div>

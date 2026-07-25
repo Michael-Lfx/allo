@@ -6,12 +6,10 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('capability hub navigation', () => {
-  test('collapses presets, skills, and MCP under Config and promotes Open Capabilities', () => {
+  test('collapses presets, skills, and MCP under Config', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(siderSource.includes('SiderConfigGroup')).toBe(true);
-    expect(siderSource.includes('SiderOpenCapabilitiesEntry')).toBe(true);
-    expect(siderSource.includes("navTo('/open-capabilities')")).toBe(true);
     expect(siderSource.includes('siderSection.config')).toBe(true);
     expect(siderSource.includes('<SiderPresetEntry')).toBe(false);
     expect(siderSource.includes('<SiderSkillsEntry')).toBe(false);
@@ -19,12 +17,15 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
   });
 
-  test('keeps the first-task rail focused and progressively reveals capabilities', () => {
+  test('shows the full capability rail without first-win collapse', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(siderSource.includes('flowy.sider.capabilitiesExpanded')).toBe(true);
-    expect(siderSource.includes('useFirstWinMode')).toBe(true);
-    expect(siderSource.includes('showCapabilityHub')).toBe(true);
+    expect(siderSource.includes('useFirstWinMode')).toBe(false);
+    expect(siderSource.includes('showCapabilityHub')).toBe(false);
+    expect(siderSource.includes('sider-more-capabilities')).toBe(false);
+    expect(siderSource.includes('SiderLearningEntry')).toBe(true);
+    expect(siderSource.includes('SiderKnowledgeEntry')).toBe(true);
+    expect(siderSource.includes('SiderVideoGenerationEntry')).toBe(true);
     expect(siderSource.includes('sider-conversation-entry')).toBe(false);
   });
 
