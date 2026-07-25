@@ -8,15 +8,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nomifun_common::{AppError, generate_id, now_ms};
+use nomifun_common::{AppError, CompanionSkillId, generate_id, now_ms};
 use nomifun_extension::constants::SKILL_MANIFEST_FILE;
 use nomifun_extension::skill_service::{self, SkillDraftInput, SkillPaths, SkillScope};
 use tokio::sync::Mutex;
 
-use crate::collector::{CollectedEvent, SharedConfig, read_events_since};
+use crate::collector::{SharedConfig, read_events_since};
 use crate::events::CompanionEventEmitter;
 use crate::evolution::miner::{mine_patterns, mine_reflection_candidates, MinedPattern};
-use crate::evolution::prompt::{self, DraftOutput, SkillDigest};
+use crate::evolution::prompt::{self, DraftOutput};
 use crate::evolution::transcript::{render_transcript, TranscriptAnchor, TranscriptSource};
 use crate::learner::CompanionCompleter;
 use crate::registry::CompanionRegistry;
@@ -24,24 +24,20 @@ use crate::store::{CompanionSkill, CompanionStore};
 
 const MAX_EVENTS_PER_RUN: usize = 500;
 const TICK_SECONDS: u64 = 60;
-const DRAFT_MAX_TOKENS: u32 = 2400;
+const DRAFT_MAX_TOKENS: u32 = 1200;
 const CRITIC_MAX_TOKENS: u32 = 256;
 /// 一次最多起草几个新技能（避免单轮爆量骚扰）。
 const MAX_DRAFTS_PER_RUN: usize = 3;
-/// 语义判重时喂给 LLM 的已有技能摘要上限（控 token；按 strength/更新时间取前 N）。
-const MAX_DEDUP_CANDIDATES: usize = 30;
-/// 存量技能整合巡检的最小间隔（控成本：每天至多跑一次，由 state 时间戳门控）。
-const CONSOLIDATE_MIN_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 /// 任务后反思的最小步数门槛（单会话工具序列折叠后 ≥ 此值才作反思候选）。
 const REFLECT_MIN_STEPS: usize = 4;
-/// 重水合转录行的单行字符上限（控 drafter 上下文成本；多轮任务需保留足够推理/细节）。
-const DRAFT_LINE_CHARS: usize = 400;
-/// 喂给 drafter 的转录行数上限（窗口可能跨多轮；足以包住一次多轮探索/迭代的完整任务弧）。
-const DRAFT_MAX_LINES: usize = 120;
+/// 重水合转录行的单行字符上限（控 drafter 上下文成本）。
+const DRAFT_LINE_CHARS: usize = 240;
+/// 喂给 drafter 的转录行数上限（窗口可能跨多轮）。
+const DRAFT_MAX_LINES: usize = 40;
 /// 一次进化运行的小结（P1 仅返回，不落表）。
 #[derive(Debug, Clone)]
 pub struct EvolveRun {
-    pub id: String,
+    pub evolve_run_id: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
     pub status: String,
@@ -135,41 +131,23 @@ impl EvolutionEngine {
             let cfg = self.config.read().await;
             (cfg.evolve.skill_half_life_days, cfg.evolve.skill_archive_threshold)
         };
-        if let Ok(n) = self.store.decay_skills(half_life, archive_threshold).await {
-            if n > 0 {
+        if let Ok(archived) = self.store.decay_skills(half_life, archive_threshold).await {
+            for skill in archived {
                 let owner = {
                     let did = { self.config.read().await.default_companion_id.clone() };
                     self.registry.resolve_default(did.as_deref()).await
                 };
                 if let Some(owner) = owner.as_deref() {
-                    self.emitter.emit_skill_archived(owner, "");
+                    self.emitter.emit_skill_archived(
+                        owner,
+                        &skill.companion_skill_id,
+                        &skill.skill_name,
+                    );
                 }
             }
         }
 
-        // Skill promotion pass (optimization 4): promote high-usage, high-strength
-        // mined companion skills to Shared scope so they become available to all
-        // conversations. Runs every tick after decay; fire-and-forget, never emit_error.
-        if let Ok(promotable) = self.store.list_promotable_skills().await {
-            for (companion_id, skill_name) in promotable {
-                let from = SkillScope::Companion(companion_id.clone());
-                let to = SkillScope::Shared;
-                match skill_service::copy_skill(&self.skill_paths, &from, &to, &skill_name).await {
-                    Ok(()) => {
-                        if let Err(e) = self.store.mark_skill_scope_shared(&companion_id, &skill_name).await {
-                            tracing::warn!(error = %e, skill = %skill_name, "promotion DB update failed");
-                        } else {
-                            tracing::info!(skill = %skill_name, companion = %companion_id, "skill promoted to Shared scope");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, skill = %skill_name, "promotion file copy failed; skill may already be shared");
-                    }
-                }
-            }
-        }
-
-        let (model, min_count, min_distinct, reflect_enabled, auto_activate, auto_threshold, consolidate_enabled) = {
+        let (model, min_count, min_distinct, reflect_enabled, auto_activate, auto_threshold) = {
             let cfg = self.config.read().await;
             // One model for the whole flywheel: fall back to the learn model when no
             // dedicated evolve model is configured, so default-on works out of the box
@@ -182,14 +160,13 @@ impl EvolutionEngine {
                 cfg.evolve.reflect_enabled,
                 cfg.evolve.auto_activate,
                 cfg.evolve.auto_threshold,
-                cfg.evolve.consolidate_enabled,
             )
         };
         let mut run = EvolveRun {
             // This summary is returned to the current caller only. It is not
             // persisted, exported, or referenced after the call, so use an
             // operation token rather than registering a durable entity type.
-            id: generate_id(),
+            evolve_run_id: generate_id(),
             started_at,
             finished_at: None,
             status: "ok".into(),
@@ -215,28 +192,9 @@ impl EvolutionEngine {
             return Ok(run);
         };
 
-        // Skill consolidation pass: periodically review ALL existing skills and fold
-        // semantically-redundant ones into a single canonical skill (archiving the rest,
-        // superseded_by recorded). Needs the LLM, so it runs after the model gate; gated by
-        // config + a 24h cadence (state timestamp). Fire-and-forget: a provider error is
-        // swallowed to a warn here (background side-task red line — never emit_error).
-        if consolidate_enabled {
-            let last = self.store.get_state_i64("last_consolidate_ts").await.unwrap_or(0);
-            if now_ms() - last >= CONSOLIDATE_MIN_INTERVAL_MS {
-                self.store.set_state("last_consolidate_ts", &now_ms().to_string()).await.ok();
-                match self.consolidate_skills(&owner, &model.provider_id, &model.model).await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!(merged = n, "skill consolidation folded redundant skills");
-                        self.emitter.emit_skill_archived(&owner, "");
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!(error = %e, "skill consolidation run failed"),
-                }
-            }
-        }
-
         let cursor = self.store.get_state_i64("evolve_cursor_ts").await?;
-        let (events, _truncated) = read_events_since(&self.companion_dir, cursor, MAX_EVENTS_PER_RUN);
+        let (events, _truncated) =
+            read_events_since(&self.companion_dir, cursor, MAX_EVENTS_PER_RUN)?;
         if events.is_empty() {
             run.status = "no_events".into();
             run.finished_at = Some(now_ms());
@@ -262,7 +220,7 @@ impl EvolutionEngine {
                 break;
             }
             match self
-                .process_candidate(&p, &owner, &model.provider_id, &model.model, min_distinct, auto_activate, auto_threshold, &events)
+                .process_candidate(&p, &owner, &model.provider_id, &model.model, min_distinct, auto_activate, auto_threshold)
                 .await
             {
                 Ok(true) => run.drafts_created += 1,
@@ -302,17 +260,31 @@ impl EvolutionEngine {
         min_distinct: usize,
         auto_activate: bool,
         auto_threshold: f64,
-        events: &[CollectedEvent],
     ) -> Result<bool, AppError> {
         // Skip rejected (negative-sample) or already-drafted signatures.
         if self.store.is_signature_rejected(&p.signature).await.unwrap_or(false) {
             return Ok(false);
         }
-        if matches!(self.store.pattern_status(&p.signature).await.unwrap_or(None).as_deref(), Some("drafted")) {
+        if matches!(
+            self.store
+                .find_pattern_by_signature(&p.signature)
+                .await
+                .unwrap_or(None)
+                .map(|pattern| pattern.status),
+            Some(status) if status == "drafted"
+        ) {
             return Ok(false);
         }
-        let anchor = p.example_event_ids.first().cloned().unwrap_or_default();
-        let _ = self.store.bump_pattern(&p.signature, owner, &anchor, now_ms()).await;
+        let anchor = p.example_event_ids.first().cloned().ok_or_else(|| {
+            AppError::Internal(format!(
+                "mined pattern {:?} has no example event id",
+                p.signature
+            ))
+        })?;
+        let pattern = self
+            .store
+            .bump_pattern(&p.signature, &p.anchor.conversation_id, &anchor, now_ms())
+            .await?;
 
         // Draft (1 retry). A completer error → Err (caller terminates + keeps cursor).
         // Rehydrate the real (redacted) transcript window for this pattern so the drafter
@@ -342,7 +314,10 @@ impl EvolutionEngine {
             Err(e) => return Err(e),
         };
         // Mark drafted (approved or not) so the same signature isn't re-judged every run.
-        self.store.mark_pattern_status(&p.signature, "drafted").await.ok();
+        self.store
+            .mark_pattern_status(&pattern.skill_pattern_id, "drafted")
+            .await
+            .ok();
         if !approved {
             return Ok(false);
         }
@@ -353,18 +328,49 @@ impl EvolutionEngine {
         }
         let scope = SkillScope::Companion(owner.to_owned());
 
-        // Dedup gate (name-based safety net + LLM semantic judge): if the draft is a
-        // near-duplicate of an existing active/draft skill, MERGE into it (improve +
-        // version bump) instead of creating a near-duplicate. Provider error → Err
-        // (terminate + keep cursor); a soft merge failure skips creation to avoid a dupe.
-        match self.resolve_duplicate_target(owner, provider_id, model, &draft, &name).await {
-            Ok(Some(existing)) => {
-                return self
-                    .merge_draft_into(owner, &scope, &existing, &draft, p, provider_id, model)
-                    .await;
+        // Evolve-in-place: if a near-identically-named active/draft skill exists, MERGE into it
+        // (improve + version bump) instead of creating a near-duplicate (P5 T2-A). Provider error
+        // → Err (terminate); any other failure degrades to the normal create path below.
+        if let Ok(Some(existing)) = self.store.find_similar_skill(owner, &name).await {
+            if let Ok(Some(row)) = self.store.get_skill(&existing.companion_skill_id).await {
+                let draft_dir = row.status == "draft";
+                if let Ok(dir) =
+                    skill_service::skill_dir_for(&self.skill_paths, &scope, &existing.skill_name, draft_dir)
+                {
+                    if let Ok(existing_body) = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await {
+                        let merge_user = prompt::build_merge_prompt(&existing_body, &draft, p);
+                        match self.completer.complete(provider_id, model, prompt::MERGE_SYSTEM, &merge_user, DRAFT_MAX_TOKENS).await {
+                            Ok(raw) => {
+                                if let Ok(merged) = prompt::parse_draft_output(&raw) {
+                                    if !merged.description.trim().is_empty() && !merged.body.trim().is_empty() {
+                                        let merged_input = SkillDraftInput {
+                                            name: existing.skill_name.clone(),
+                                            description: merged.description,
+                                            when_to_use: merged.when_to_use,
+                                            allowed_tools: None,
+                                            paths: None,
+                                            body: merged.body,
+                                        };
+                                        let md = skill_service::build_skill_md(&merged_input);
+                                        if crate::skill_io::write_skill(&self.skill_paths, &scope, draft_dir, &existing.skill_name, &md).await.is_ok() {
+                                            let _ = self.store.bump_skill_version(&existing.companion_skill_id).await;
+                                            self.emitter.emit_skill_learned(
+                                                owner,
+                                                &existing.companion_skill_id,
+                                                &existing.skill_name,
+                                            );
+                                            self.store.mark_pattern_status(&pattern.skill_pattern_id, "drafted").await.ok();
+                                            return Ok(true);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
             }
-            Ok(None) => {}
-            Err(e) => return Err(e),
+            // merge attempt failed softly → fall through to normal create.
         }
 
         let input = SkillDraftInput {
@@ -375,34 +381,28 @@ impl EvolutionEngine {
             paths: None,
             body: draft.body.clone(),
         };
-        let confidence = {
-            let base = ((p.distinct_sessions as f64) / ((min_distinct + 2) as f64)).clamp(0.3, 0.95);
-            // Optimization 3: apply verdict-based confidence boost from resolution
-            // signals in collected_events. If resolution events are present for the
-            // pattern's originating sessions, adjust confidence accordingly.
-            let boost = verdict_confidence_boost(&events, &p.example_event_ids);
-            (base * boost).clamp(0.1, 0.99)
-        };
+        let confidence = ((p.distinct_sessions as f64) / ((min_distinct + 2) as f64)).clamp(0.3, 0.95);
         // High-confidence auto-activation only when the user opted in AND confidence clears
         // the bar (repetition-derived; single-session reflections never reach it).
         let auto = auto_activate && confidence >= auto_threshold;
 
-        if let Err(e) = skill_service::create_skill(&self.skill_paths, &scope, /* draft= */ !auto, &input).await {
+        if let Err(e) = crate::skill_io::create_skill(&self.skill_paths, &scope, /* draft= */ !auto, &input).await {
             tracing::warn!(error = %e, skill = %name, "evolution failed to write skill");
             return Ok(false);
         }
         let now = now_ms();
         let skill = CompanionSkill {
+            companion_skill_id: CompanionSkillId::new().into_string(),
             skill_name: name.clone(),
             scope_kind: "companion".into(),
             scope_companion_id: Some(owner.to_owned()),
             status: if auto { "active".into() } else { "draft".into() },
             source: "mined".into(),
             confidence,
-            provenance: p.example_event_ids.clone(),
+            provenance_event_ids: p.example_event_ids.clone(),
             strength: 1.0,
             version: 1,
-            superseded_by: None,
+            skill_pattern_id: Some(pattern.skill_pattern_id.clone()),
             usage_count: 0,
             last_used_at: None,
             created_at: now,
@@ -410,6 +410,20 @@ impl EvolutionEngine {
             signature: p.signature.clone(),
         };
         if let Err(e) = self.store.insert_skill(&skill).await {
+            if let Err(cleanup_error) = crate::fsio::remove_path_entry(
+                &skill_service::skill_dir_for(&self.skill_paths, &scope, &name, !auto)
+                    .map_err(|path_error| {
+                        AppError::Internal(format!(
+                            "resolve failed skill write for cleanup: {path_error}"
+                        ))
+                    })?,
+            ) {
+                tracing::error!(
+                    error = %cleanup_error,
+                    skill = %name,
+                    "evolution failed to roll back orphaned skill directory"
+                );
+            }
             tracing::warn!(error = %e, "evolution failed to insert skill row");
             return Ok(false);
         }
@@ -417,244 +431,28 @@ impl EvolutionEngine {
         if auto {
             // Auto-activated: no review card, but emit skill-learned so the UI toasts and
             // the skill shows as active (the user can still archive it — "see + undo").
-            self.emitter.emit_skill_learned(owner, &name);
+                self.emitter.emit_skill_learned(
+                    owner,
+                    &skill.companion_skill_id,
+                    &skill.skill_name,
+                );
         } else {
             let action = serde_json::json!({
                 "type": "create_skill",
-                "name": name,
+                "companion_skill_id": skill.companion_skill_id,
                 "companion_id": owner,
-                "signature": p.signature,
             });
             let title = format!("我学会了一个新技能：{name}");
             let body = format!("你做过「{}」这套操作，我把它固化成了技能，采纳后我就能自动帮你做。", draft.description);
-            // Dedup: if a similar pending suggestion exists, touch it instead of duplicating.
-            if let Ok(Some(existing_id)) = self.store.find_similar_suggestion("create_skill", &title, &body).await {
-                let _ = self.store.touch_suggestion(&existing_id).await;
-            } else if let Ok(created) = self.store.insert_suggestion(Some(owner), "create_skill", &title, &body, Some(&action)).await {
+            if let Ok(created) = self.store.insert_suggestion("create_skill", &title, &body, Some(&action)).await {
                 self.emitter.emit_suggestion_created(&owner, &created);
             }
-            self.emitter.emit_skill_drafted(owner, &name);
+            self.emitter.emit_skill_drafted(
+                owner,
+                &skill.companion_skill_id,
+                &skill.skill_name,
+            );
         }
-        Ok(true)
-    }
-
-    /// Gather (name, description) digests for the owner's active+draft skills, reading
-    /// each SKILL.md's frontmatter description from disk. Ordered by strength/recency
-    /// (from `list_skills`) and capped at `MAX_DEDUP_CANDIDATES` to bound token cost.
-    /// Restricted to owner-scoped skills so a merge target stays scope-correct.
-    async fn collect_skill_digests(&self, owner: &str) -> Vec<SkillDigest> {
-        let skills = self.store.list_skills(owner, false).await.unwrap_or_default();
-        let scope = SkillScope::Companion(owner.to_owned());
-        let mut out = Vec::new();
-        for s in skills.into_iter().filter(|s| s.status == "active" || s.status == "draft") {
-            if out.len() >= MAX_DEDUP_CANDIDATES {
-                break;
-            }
-            let draft_dir = s.status == "draft";
-            if let Ok(dir) = skill_service::skill_dir_for(&self.skill_paths, &scope, &s.skill_name, draft_dir) {
-                let desc = skill_service::read_skill_info(&dir).await.map(|(_, d)| d).unwrap_or_default();
-                out.push(SkillDigest { name: s.skill_name, description: desc, when_to_use: None });
-            }
-        }
-        out
-    }
-
-    /// Decide whether `draft` duplicates an existing owner skill: first a cheap name-based
-    /// safety net ([`CompanionStore::find_similar_skill`]), then an LLM semantic judge over
-    /// the existing-skill digests. Returns the existing skill name to merge into, or `None`
-    /// to create fresh. Provider error → `Err` (caller terminates + keeps cursor). An empty
-    /// digest list or an unparseable/invented verdict degrades to `None` (create fresh).
-    async fn resolve_duplicate_target(
-        &self,
-        owner: &str,
-        provider_id: &str,
-        model: &str,
-        draft: &DraftOutput,
-        name: &str,
-    ) -> Result<Option<String>, AppError> {
-        // 1) Cheap name-based safety net.
-        if let Ok(Some(existing)) = self.store.find_similar_skill(owner, name).await {
-            return Ok(Some(existing));
-        }
-        // 2) Semantic gate against existing owner-scoped skill digests.
-        let digests = self.collect_skill_digests(owner).await;
-        if digests.is_empty() {
-            return Ok(None);
-        }
-        let dedup_user = prompt::build_dedup_prompt(draft, &digests);
-        let raw = self
-            .completer
-            .complete(provider_id, model, prompt::DEDUP_SYSTEM, &dedup_user, CRITIC_MAX_TOKENS)
-            .await?;
-        let verdict = match prompt::parse_dedup_output(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!(error = %e, "dedup verdict unparseable; treating as no-duplicate");
-                return Ok(None);
-            }
-        };
-        let Some(dup) = verdict.duplicate_of.filter(|s| !s.trim().is_empty()) else {
-            return Ok(None);
-        };
-        // The model must pick a name from the provided list — never invent one.
-        if digests.iter().any(|d| d.name == dup) {
-            Ok(Some(dup))
-        } else {
-            tracing::debug!(claimed = %dup, "dedup returned unknown skill name; ignoring");
-            Ok(None)
-        }
-    }
-
-    /// Merge a `draft` into an existing skill in place (improve + version bump) instead of
-    /// creating a near-duplicate. Returns `Ok(true)` on a successful merge, `Ok(false)` on a
-    /// soft failure (skip creation to avoid a dupe; retried next tick), and `Err` ONLY on
-    /// provider failure. Never `emit_error`.
-    #[allow(clippy::too_many_arguments)]
-    async fn merge_draft_into(
-        &self,
-        owner: &str,
-        scope: &SkillScope,
-        existing: &str,
-        draft: &DraftOutput,
-        p: &MinedPattern,
-        provider_id: &str,
-        model: &str,
-    ) -> Result<bool, AppError> {
-        if let Ok(Some(row)) = self.store.get_skill(owner, existing).await {
-            let draft_dir = row.status == "draft";
-            if let Ok(dir) = skill_service::skill_dir_for(&self.skill_paths, scope, existing, draft_dir) {
-                if let Ok(existing_body) = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await {
-                    let merge_user = prompt::build_merge_prompt(&existing_body, draft, p);
-                    match self.completer.complete(provider_id, model, prompt::MERGE_SYSTEM, &merge_user, DRAFT_MAX_TOKENS).await {
-                        Ok(raw) => {
-                            if let Ok(merged) = prompt::parse_draft_output(&raw) {
-                                if !merged.description.trim().is_empty() && !merged.body.trim().is_empty() {
-                                    let merged_input = SkillDraftInput {
-                                        name: existing.to_owned(),
-                                        description: merged.description,
-                                        when_to_use: merged.when_to_use,
-                                        allowed_tools: None,
-                                        paths: None,
-                                        body: merged.body,
-                                    };
-                                    let md = skill_service::build_skill_md(&merged_input);
-                                    if skill_service::write_skill(&self.skill_paths, scope, draft_dir, existing, &md).await.is_ok() {
-                                        let _ = self.store.bump_skill_version(owner, existing).await;
-                                        self.emitter.emit_skill_learned(owner, existing);
-                                        if !p.signature.is_empty() {
-                                            self.store.mark_pattern_status(&p.signature, "drafted").await.ok();
-                                        }
-                                        return Ok(true);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-        }
-        // Merge attempt failed softly → skip creation, don't duplicate. Retried next tick.
-        tracing::info!(existing = %existing, "merge_draft_into: merge failed, skipping new skill creation to avoid duplicate");
-        Ok(false)
-    }
-
-    /// Periodic consolidation巡检: review ALL existing owner skills, ask the LLM to cluster
-    /// semantically-redundant ones, and fold each redundant group into a single canonical
-    /// skill (merge bodies + version bump), archiving the rest (`superseded_by = canonical`).
-    /// Returns the number of skills archived. A provider error → `Err` (caller warns + keeps
-    /// going). An empty/unparseable plan degrades to 0. Never `emit_error`.
-    async fn consolidate_skills(&self, owner: &str, provider_id: &str, model: &str) -> Result<usize, AppError> {
-        let digests = self.collect_skill_digests(owner).await;
-        if digests.len() < 2 {
-            return Ok(0); // nothing to consolidate
-        }
-        let user = prompt::build_consolidate_prompt(&digests);
-        let raw = self
-            .completer
-            .complete(provider_id, model, prompt::CONSOLIDATE_SYSTEM, &user, DRAFT_MAX_TOKENS)
-            .await?;
-        let plan = match prompt::parse_consolidate_output(&raw) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::debug!(error = %e, "consolidation plan unparseable; skipping");
-                return Ok(0);
-            }
-        };
-        let scope = SkillScope::Companion(owner.to_owned());
-        // Only names actually present in the digest list are eligible (never invent/act on a
-        // hallucinated name). Track folded names so a skill can't be both canonical and dup.
-        let known: std::collections::HashSet<&str> = digests.iter().map(|d| d.name.as_str()).collect();
-        let mut folded: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut archived = 0usize;
-        for group in plan.groups {
-            let canonical = group.canonical.trim().to_owned();
-            if canonical.is_empty() || !known.contains(canonical.as_str()) || folded.contains(&canonical) {
-                continue;
-            }
-            for dup in group.duplicates {
-                let dup = dup.trim().to_owned();
-                if dup.is_empty() || dup == canonical || !known.contains(dup.as_str()) || folded.contains(&dup) {
-                    continue;
-                }
-                match self.fold_skill_into(owner, &scope, &canonical, &dup, provider_id, model).await {
-                    Ok(true) => {
-                        folded.insert(dup);
-                        archived += 1;
-                    }
-                    Ok(false) => {}
-                    Err(e) => return Err(e), // provider failure → bubble up (caller warns)
-                }
-            }
-        }
-        Ok(archived)
-    }
-
-    /// Fold one existing `duplicate` skill into `canonical` (merge its body in + version bump
-    /// via [`merge_draft_into`]), then archive the now-redundant duplicate recording what
-    /// superseded it. Returns `Ok(true)` when the duplicate was folded + archived, `Ok(false)`
-    /// on a soft failure (missing row/file/merge), `Err` ONLY on provider failure.
-    async fn fold_skill_into(
-        &self,
-        owner: &str,
-        scope: &SkillScope,
-        canonical: &str,
-        duplicate: &str,
-        provider_id: &str,
-        model: &str,
-    ) -> Result<bool, AppError> {
-        // Read the duplicate's on-disk body/description to fold into the canonical.
-        let Ok(Some(dup_row)) = self.store.get_skill(owner, duplicate).await else { return Ok(false) };
-        let dup_draft_dir = dup_row.status == "draft";
-        let Ok(dup_dir) = skill_service::skill_dir_for(&self.skill_paths, scope, duplicate, dup_draft_dir) else {
-            return Ok(false);
-        };
-        let Ok(dup_body) = tokio::fs::read_to_string(dup_dir.join(SKILL_MANIFEST_FILE)).await else {
-            return Ok(false);
-        };
-        let dup_desc = skill_service::read_skill_info(&dup_dir).await.map(|(_, d)| d).unwrap_or_default();
-        // Present the duplicate's content as a "new observation" folded into the canonical.
-        let draft = DraftOutput {
-            name: canonical.to_owned(),
-            description: dup_desc,
-            when_to_use: None,
-            body: dup_body,
-        };
-        let synthetic = MinedPattern {
-            signature: String::new(), // empty → merge_draft_into skips pattern bookkeeping
-            steps: Vec::new(),
-            count: 0,
-            distinct_sessions: 0,
-            example_event_ids: Vec::new(),
-            anchor: TranscriptAnchor::default(),
-        };
-        if !self.merge_draft_into(owner, scope, canonical, &draft, &synthetic, provider_id, model).await? {
-            return Ok(false); // merge failed softly → leave the duplicate as-is, retry next cadence
-        }
-        // Archive the folded duplicate, recording what superseded it (restorable in the UI).
-        self.store.supersede_skill(owner, duplicate, canonical).await.ok();
-        self.emitter.emit_skill_archived(owner, duplicate);
-        tracing::info!(duplicate = %duplicate, canonical = %canonical, "consolidation: folded skill into canonical and archived it");
         Ok(true)
     }
 
@@ -711,38 +509,6 @@ impl EvolutionEngine {
         if name.is_empty() {
             return Ok(None);
         }
-        // Dedup gate (name-based + LLM semantic): if this demonstration duplicates an
-        // existing skill, MERGE the demonstrated content into it (improve + version bump)
-        // instead of creating a near-duplicate — honoring "optimize the existing skill".
-        match self
-            .resolve_duplicate_target(owner, &model.provider_id, &model.model, &draft, &name)
-            .await
-        {
-            Ok(Some(existing)) => {
-                self.merge_draft_into(
-                    owner,
-                    &SkillScope::Companion(owner.to_owned()),
-                    &existing,
-                    &draft,
-                    &p,
-                    &model.provider_id,
-                    &model.model,
-                )
-                .await?;
-                tracing::info!(new_name = %name, existing = %existing, "draft_from_episode: merged demonstration into existing skill");
-                return Ok(Some(existing));
-            }
-            Ok(None) => {}
-            Err(e) => return Err(e),
-        }
-        // Dedup: if a similar pending suggestion exists, touch it instead of duplicating.
-        let sug_title = format!("我学会了你示范的技能：{name}");
-        let sug_body = format!("照你示范的「{}」整理成了技能，采纳后我就能复用。", draft.description);
-        if let Ok(Some(existing_id)) = self.store.find_similar_suggestion("create_skill", &sug_title, &sug_body).await {
-            let _ = self.store.touch_suggestion(&existing_id).await;
-            tracing::info!(name = %name, "draft_from_episode skipped: similar pending suggestion exists");
-            return Ok(Some(name));
-        }
         let input = SkillDraftInput {
             name: name.clone(),
             description: draft.description.clone(),
@@ -752,99 +518,70 @@ impl EvolutionEngine {
             body: draft.body.clone(),
         };
         let scope = SkillScope::Companion(owner.to_owned());
-        skill_service::create_skill(&self.skill_paths, &scope, true, &input)
+        crate::skill_io::create_skill(&self.skill_paths, &scope, true, &input)
             .await
             .map_err(|e| AppError::Internal(format!("write demonstrated skill: {e}")))?;
         let now = now_ms();
-        self.store
+        if let Err(error) = self
+            .store
             .insert_skill(&CompanionSkill {
+                companion_skill_id: CompanionSkillId::new().into_string(),
                 skill_name: name.clone(),
                 scope_kind: "companion".into(),
                 scope_companion_id: Some(owner.to_owned()),
                 status: "draft".into(),
                 source: "demonstrated".into(),
                 confidence: 0.5,
-                provenance: vec![],
+                provenance_event_ids: vec![],
                 strength: 1.0,
                 version: 1,
-                superseded_by: None,
+                skill_pattern_id: None,
                 usage_count: 0,
                 last_used_at: None,
                 created_at: now,
                 updated_at: now,
                 signature: String::new(),
             })
-            .await?;
-        let action = serde_json::json!({ "type": "create_skill", "name": name, "companion_id": owner, "signature": "" });
+            .await
+        {
+            let draft_dir = skill_service::skill_dir_for(&self.skill_paths, &scope, &name, true)
+                .map_err(|path_error| {
+                    AppError::Internal(format!(
+                        "resolve demonstrated skill for rollback: {path_error}"
+                    ))
+                })?;
+            crate::fsio::remove_path_entry(&draft_dir).map_err(|cleanup_error| {
+                AppError::Internal(format!(
+                    "{error}; additionally failed to remove orphaned demonstrated skill {}: {cleanup_error}",
+                    draft_dir.display()
+                ))
+            })?;
+            return Err(error);
+        }
+        let companion_skill_id = self
+            .store
+            .find_owned_skill_by_name(owner, &name)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal("demonstrated skill row disappeared after insert".into())
+            })?
+            .companion_skill_id;
+        let action = serde_json::json!({
+            "type": "create_skill",
+            "companion_skill_id": companion_skill_id,
+            "companion_id": owner,
+        });
         let title = format!("我学会了你示范的技能：{name}");
         let body = format!("照你示范的「{}」整理成了技能，采纳后我就能复用。", draft.description);
-        if let Ok(created) = self.store.insert_suggestion(Some(owner), "create_skill", &title, &body, Some(&action)).await {
+        if let Ok(created) = self
+            .store
+            .insert_suggestion("create_skill", &title, &body, Some(&action))
+            .await
+        {
             self.emitter.emit_suggestion_created(&owner, &created);
         }
-        self.emitter.emit_skill_drafted(owner, &name);
+        self.emitter.emit_skill_drafted(owner, &companion_skill_id, &name);
         Ok(Some(name))
-    }
-}
-
-/// Verdict-based confidence boost for skill mining (optimization 3).
-///
-/// Resolution signals from session-end analysis adjust how confidently a mined
-/// pattern is turned into a skill suggestion:
-/// - `solved_confirmed` sessions had explicit positive feedback → boost (×1.5)
-/// - `solved_inferred` sessions had tool success without corrections → neutral (×1.0)
-/// - `failed` sessions with correction loops → strongly suppress (×0.3) — the user
-///   had to fix things, so the tool pattern may be error-prone
-/// - `failed` sessions without corrections → suppress (×0.5)
-/// - unknown / no resolution data → neutral (×1.0)
-fn confidence_boost(verdict: &str, correction_loops: u32) -> f64 {
-    match verdict {
-        "solved_confirmed" => 1.5,
-        "solved_inferred" => 1.0,
-        "failed" if correction_loops > 0 => 0.3,
-        "failed" => 0.5,
-        _ => 1.0,
-    }
-}
-
-/// Scan collected_events for `conversation_lifecycle.resolution` events that match
-/// any of the pattern's example session IDs, and return the average confidence
-/// boost across all matching verdicts. Returns 1.0 (neutral) when no resolution
-/// events are found — graceful degradation when the resolution pipeline hasn't
-/// written events yet.
-fn verdict_confidence_boost(events: &[CollectedEvent], example_event_ids: &[String]) -> f64 {
-    // Extract conversation IDs from the pattern's example event IDs.
-    // Event IDs are formatted as "{conversation_id}::{event_id}" (collector convention).
-    let conv_ids: Vec<&str> = example_event_ids
-        .iter()
-        .filter_map(|id| id.split("::").next())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if conv_ids.is_empty() {
-        return 1.0;
-    }
-
-    let mut boosts = Vec::new();
-    for event in events {
-        if event.source != "conversation_lifecycle" || event.name != "resolution" {
-            continue;
-        }
-        let event_conv = event.data.get("conversation_id").and_then(|v| v.as_str()).unwrap_or("");
-        if !conv_ids.iter().any(|c| *c == event_conv) {
-            continue;
-        }
-        let verdict = event.data.get("verdict").and_then(|v| v.as_str()).unwrap_or("");
-        let correction_loops = event
-            .data
-            .get("correction_loops")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        boosts.push(confidence_boost(verdict, correction_loops));
-    }
-
-    if boosts.is_empty() {
-        1.0
-    } else {
-        boosts.iter().sum::<f64>() / boosts.len() as f64
     }
 }
 
@@ -874,7 +611,7 @@ mod tests {
     use tokio::sync::RwLock;
 
     fn conversation_fixture(sequence: u64) -> String {
-        let raw = format!("conv_0190f5fe-7c00-7a00-8abc-{sequence:012}");
+        let raw = format!("0190f5fe-7c00-7a00-8abc-{sequence:012}");
         nomifun_common::ConversationId::try_from(raw.as_str()).unwrap().into_string()
     }
 
@@ -933,6 +670,7 @@ mod tests {
                 append_event(
                     dir,
                     &CollectedEvent {
+                        event_id: nomifun_common::generate_id(),
                         ts: base + k,
                         source: "tool_calls".into(),
                         name: "tool.call".into(),
@@ -958,9 +696,12 @@ mod tests {
         });
         config.evolve.min_pattern_count = 3;
         config.evolve.min_distinct_sessions = 2;
-        let registry = Arc::new(CompanionRegistry::scan(dir.join("companions"), dir.join("shared")));
+        let registry = Arc::new(
+            CompanionRegistry::scan(dir.join("companions"), dir.join("shared"))
+                .unwrap(),
+        );
         let companion = registry.create("测试", "ink").await.unwrap();
-        config.default_companion_id = Some(companion.id.clone());
+        config.default_companion_id = Some(companion.companion_id.clone());
         let engine = EvolutionEngine {
             companion_dir: dir.to_path_buf(),
             config: Arc::new(RwLock::new(config)),
@@ -972,7 +713,7 @@ mod tests {
             transcript: std::sync::RwLock::new(Arc::new(NoopTranscriptSource)),
             run_lock: Arc::new(Mutex::new(())),
         };
-        (engine, companion.id)
+        (engine, companion.companion_id)
     }
 
     #[tokio::test]
@@ -1053,6 +794,7 @@ mod tests {
                 append_event(
                     dir,
                     &CollectedEvent {
+                        event_id: nomifun_common::generate_id(),
                         ts: base + k,
                         source: "tool_calls".into(),
                         name: "tool.call".into(),
@@ -1140,16 +882,17 @@ mod tests {
         engine
             .store
             .insert_skill(&CompanionSkill {
+            companion_skill_id: nomifun_common::generate_id(),
                 skill_name: "grep-read-edit".into(),
                 scope_kind: "companion".into(),
                 scope_companion_id: Some(cid.clone()),
                 status: "active".into(),
                 source: "mined".into(),
                 confidence: 0.7,
-                provenance: vec![],
+                provenance_event_ids: vec![],
                 strength: 1.0,
                 version: 1,
-                superseded_by: None,
+                skill_pattern_id: None,
                 usage_count: 0,
                 last_used_at: None,
                 created_at: now,
@@ -1222,207 +965,5 @@ mod tests {
         assert!(dp.contains("grep"), "steps still present: {dp}");
         let skills = engine.store.list_skills(&cid, false).await.unwrap();
         assert_eq!(skills.len(), 1);
-    }
-
-    /// Semantic-dedup completer: drafts a market-scan skill whose NAME is not
-    /// name-similar to any seeded skill (so the name-based safety net misses),
-    /// approves it, then the dedup judge points at the seeded `weekly-report`
-    /// skill and the merge produces the in-place upgraded body.
-    struct SemanticDupCompleter;
-    #[async_trait::async_trait]
-    impl CompanionCompleter for SemanticDupCompleter {
-        async fn complete(&self, _p: &str, _m: &str, system: &str, _u: &str, _t: u32) -> Result<String, AppError> {
-            if system == prompt::DRAFT_SYSTEM {
-                Ok(r#"{"name":"market-scan","description":"扫描今天的市场信息","when_to_use":"w","body":"b"}"#.into())
-            } else if system == prompt::CRITIC_SYSTEM {
-                Ok(r#"{"approve":true}"#.into())
-            } else if system == prompt::DEDUP_SYSTEM {
-                Ok(r#"{"duplicate_of":"weekly-report","reason":"同一类事:查市场信息"}"#.into())
-            } else {
-                // MERGE_SYSTEM
-                Ok(r#"{"name":"weekly-report","description":"merged desc","when_to_use":"w","body":"merged body"}"#.into())
-            }
-        }
-    }
-
-    /// Records every `system` prompt so tests can assert whether the dedup gate
-    /// was actually invoked. Always votes "no duplicate" so the caller creates fresh.
-    struct RecordingSystemsCompleter {
-        draft: String,
-        systems: Arc<tokio::sync::Mutex<Vec<String>>>,
-    }
-    #[async_trait::async_trait]
-    impl CompanionCompleter for RecordingSystemsCompleter {
-        async fn complete(&self, _p: &str, _m: &str, system: &str, _u: &str, _t: u32) -> Result<String, AppError> {
-            self.systems.lock().await.push(system.to_owned());
-            if system == prompt::DRAFT_SYSTEM {
-                Ok(self.draft.clone())
-            } else if system == prompt::CRITIC_SYSTEM {
-                Ok(r#"{"approve":true}"#.into())
-            } else if system == prompt::DEDUP_SYSTEM {
-                Ok(r#"{"duplicate_of":null,"reason":"不重复"}"#.into())
-            } else {
-                Ok(r#"{"name":"market-scan","description":"d","when_to_use":"w","body":"b"}"#.into())
-            }
-        }
-    }
-
-    /// Seed a pre-existing ACTIVE owner skill on disk + in the DB (name deliberately
-    /// unlike the drafted name so only the SEMANTIC gate — not the name net — can hit).
-    async fn seed_active_skill(engine: &EvolutionEngine, cid: &str, name: &str, desc: &str) {
-        let input = SkillDraftInput {
-            name: name.to_owned(),
-            description: desc.to_owned(),
-            when_to_use: None,
-            allowed_tools: None,
-            paths: None,
-            body: "old body".into(),
-        };
-        skill_service::create_skill(&engine.skill_paths, &SkillScope::Companion(cid.to_owned()), false, &input).await.unwrap();
-        let now = now_ms();
-        engine
-            .store
-            .insert_skill(&CompanionSkill {
-                skill_name: name.to_owned(),
-                scope_kind: "companion".into(),
-                scope_companion_id: Some(cid.to_owned()),
-                status: "active".into(),
-                source: "mined".into(),
-                confidence: 0.7,
-                provenance: vec![],
-                strength: 1.0,
-                version: 1,
-                superseded_by: None,
-                usage_count: 0,
-                last_used_at: None,
-                created_at: now,
-                updated_at: now,
-                signature: "seed-sig".into(),
-            })
-            .await
-            .unwrap();
-    }
-
-    /// Mining path: a semantically-duplicate draft (name unlike the existing skill,
-    /// so the name net misses) is merged into the existing skill via the LLM dedup
-    /// gate — no new skill row, existing version bumped.
-    #[tokio::test]
-    async fn semantically_duplicate_draft_merges_into_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        seed_tool_calls(dir.path());
-        let (engine, cid) = make_engine_with(dir.path(), Arc::new(SemanticDupCompleter)).await;
-        seed_active_skill(&engine, &cid, "weekly-report", "汇总当天股市与市场动态").await;
-        engine.run_once().await.unwrap();
-        let skills = engine.store.list_skills(&cid, false).await.unwrap();
-        assert_eq!(skills.len(), 1, "semantic duplicate must merge, not create a new skill");
-        assert_eq!(skills[0].skill_name, "weekly-report");
-        assert_eq!(skills[0].version, 2, "merge target version should bump");
-    }
-
-    /// No existing skills → the dedup LLM gate is never called (empty digest short-circuits);
-    /// a fresh skill is created.
-    #[tokio::test]
-    async fn no_existing_skills_skips_dedup_call() {
-        let dir = tempfile::tempdir().unwrap();
-        seed_tool_calls(dir.path());
-        let systems = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let draft = r#"{"name":"market-scan","description":"扫描市场","when_to_use":"w","body":"b"}"#;
-        let completer = Arc::new(RecordingSystemsCompleter { draft: draft.into(), systems: systems.clone() });
-        let (engine, cid) = make_engine_with(dir.path(), completer).await;
-        engine.run_once().await.unwrap();
-        let sys = systems.lock().await;
-        assert!(!sys.iter().any(|s| s == prompt::DEDUP_SYSTEM), "dedup must not fire with no existing skills");
-        let skills = engine.store.list_skills(&cid, false).await.unwrap();
-        assert_eq!(skills.len(), 1, "a fresh skill should be created");
-        assert_eq!(skills[0].skill_name, "market-scan");
-    }
-
-    /// Dedup gate returns null → not a duplicate → a fresh skill is created alongside
-    /// the existing one (the gate WAS invoked because a digest existed).
-    #[tokio::test]
-    async fn dedup_miss_creates_new_skill() {
-        let dir = tempfile::tempdir().unwrap();
-        seed_tool_calls(dir.path());
-        let systems = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let draft = r#"{"name":"market-scan","description":"扫描市场","when_to_use":"w","body":"b"}"#;
-        let completer = Arc::new(RecordingSystemsCompleter { draft: draft.into(), systems: systems.clone() });
-        let (engine, cid) = make_engine_with(dir.path(), completer).await;
-        seed_active_skill(&engine, &cid, "weekly-report", "完全不相干的事:整理周报模板").await;
-        engine.run_once().await.unwrap();
-        let sys = systems.lock().await;
-        assert!(sys.iter().any(|s| s == prompt::DEDUP_SYSTEM), "dedup should fire when a digest exists");
-        let skills = engine.store.list_skills(&cid, false).await.unwrap();
-        assert_eq!(skills.len(), 2, "a non-duplicate draft must create a new skill");
-    }
-
-    /// Demonstration path: a semantically-duplicate demonstration merges into the
-    /// existing skill (version bump) instead of creating a near-duplicate draft.
-    #[tokio::test]
-    async fn draft_from_episode_semantic_duplicate_merges() {
-        let dir = tempfile::tempdir().unwrap();
-        let (engine, cid) = make_engine_with(dir.path(), Arc::new(SemanticDupCompleter)).await;
-        seed_active_skill(&engine, &cid, "weekly-report", "汇总当天股市与市场动态").await;
-        let name = engine
-            .draft_from_episode(vec!["grep".into(), "read".into(), "edit".into()], TranscriptAnchor::default(), &cid)
-            .await
-            .unwrap();
-        assert_eq!(name.as_deref(), Some("weekly-report"), "demonstration should merge into the existing skill");
-        let skills = engine.store.list_skills(&cid, false).await.unwrap();
-        assert_eq!(skills.len(), 1, "demonstration duplicate must not create a new skill");
-        assert_eq!(skills[0].version, 2, "merge target version should bump");
-    }
-
-    /// Consolidation completer: clusters `weekly-report` under canonical `market-scan`,
-    /// and the merge folds the duplicate's body into the canonical.
-    struct ConsolidatingCompleter;
-    #[async_trait::async_trait]
-    impl CompanionCompleter for ConsolidatingCompleter {
-        async fn complete(&self, _p: &str, _m: &str, system: &str, _u: &str, _t: u32) -> Result<String, AppError> {
-            if system == prompt::CONSOLIDATE_SYSTEM {
-                Ok(r#"{"groups":[{"canonical":"market-scan","duplicates":["weekly-report"]}]}"#.into())
-            } else if system == prompt::MERGE_SYSTEM {
-                Ok(r#"{"name":"market-scan","description":"merged desc","when_to_use":"w","body":"merged body"}"#.into())
-            } else {
-                Ok("{}".into())
-            }
-        }
-    }
-
-    /// Consolidation pass: two redundant existing skills → the duplicate is folded into the
-    /// canonical (version bump) and archived with `superseded_by` set. Runs with no mined
-    /// events (the pass precedes the events gate).
-    #[tokio::test]
-    async fn consolidation_folds_redundant_skills_and_archives_duplicate() {
-        let dir = tempfile::tempdir().unwrap();
-        let (engine, cid) = make_engine_with(dir.path(), Arc::new(ConsolidatingCompleter)).await;
-        engine.config.write().await.evolve.consolidate_enabled = true;
-        seed_active_skill(&engine, &cid, "market-scan", "扫描当天市场信息").await;
-        seed_active_skill(&engine, &cid, "weekly-report", "汇总当天市场动态").await;
-        engine.run_once().await.unwrap();
-        // Canonical folded + version bumped, stays active.
-        let canonical = engine.store.get_skill(&cid, "market-scan").await.unwrap().unwrap();
-        assert_eq!(canonical.status, "active");
-        assert_eq!(canonical.version, 2, "canonical version should bump after folding");
-        // Duplicate archived with superseded_by pointing at the canonical.
-        let dup = engine.store.get_skill(&cid, "weekly-report").await.unwrap().unwrap();
-        assert_eq!(dup.status, "archived", "folded duplicate should be archived");
-        assert_eq!(dup.superseded_by.as_deref(), Some("market-scan"));
-        // A second run within the 24h cadence must NOT re-run consolidation.
-        let last = engine.store.get_state_i64("last_consolidate_ts").await.unwrap();
-        assert!(last > 0, "consolidation cadence timestamp should be stamped");
-    }
-
-    /// Consolidation disabled (default) → the pass never fires; redundant skills are left intact.
-    #[tokio::test]
-    async fn consolidation_disabled_leaves_skills_intact() {
-        let dir = tempfile::tempdir().unwrap();
-        let (engine, cid) = make_engine_with(dir.path(), Arc::new(ConsolidatingCompleter)).await;
-        // consolidate_enabled stays false (default).
-        seed_active_skill(&engine, &cid, "market-scan", "扫描当天市场信息").await;
-        seed_active_skill(&engine, &cid, "weekly-report", "汇总当天市场动态").await;
-        engine.run_once().await.unwrap();
-        let dup = engine.store.get_skill(&cid, "weekly-report").await.unwrap().unwrap();
-        assert_eq!(dup.status, "active", "disabled consolidation must not archive anything");
-        assert_eq!(engine.store.get_state_i64("last_consolidate_ts").await.unwrap(), 0);
     }
 }

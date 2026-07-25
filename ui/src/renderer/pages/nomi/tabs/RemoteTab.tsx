@@ -23,7 +23,7 @@ const RemoteTab: React.FC<Props> = ({ companion }) => {
   return (
     <div className='flex flex-col gap-10px py-8px'>
       {/* 远程连接：IM 渠道按伙伴接待（platform→companionId 反向视图）/ Remote connect: per-companion IM channel greeting */}
-      <RemoteConnectSection companionId={profile.id} companionName={profile.name} />
+      <RemoteConnectSection companionId={profile.companion_id} companionName={profile.name} />
     </div>
   );
 };

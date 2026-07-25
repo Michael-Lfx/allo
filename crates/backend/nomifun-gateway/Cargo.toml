@@ -80,3 +80,4 @@ dirs.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true
+jsonschema.workspace = true

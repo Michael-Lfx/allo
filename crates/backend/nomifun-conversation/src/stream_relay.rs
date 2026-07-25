@@ -1,19 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
+use std::time::Duration;
 
+use futures_util::FutureExt;
 use nomifun_ai_agent::{
     AgentSendError, AgentStreamEvent,
     artifact_store::ArtifactStore,
     protocol::events::{
         FinishEventData, PlanEventData, ThinkingEventData, TurnStopReason,
         tool_call::{
-            AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData, ToolCallStatus,
-            acp_content_item_dedupe_key, should_supersede_preview,
-            validate_completed_acp_artifact_contract, validate_completed_artifact_contract,
+            AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallEventData,
+            ToolCallStatus, validate_artifact_receipt_integrity,
+            validate_completed_artifact_contract,
         },
     },
 };
@@ -21,26 +22,22 @@ use nomifun_ai_agent::{
 use crate::response_middleware::{ICronService, MessageMiddleware, MiddlewareResult};
 use crate::runtime_state::{AgentTurnCancellation, ConversationRuntimeStateService};
 use nomifun_api_types::{AgentErrorCode, ConversationRuntimeSummary, WebSocketMessage};
-use nomifun_common::{CompanionId, ErrorChain, MessageId, normalize_keys_to_snake_case, now_ms};
+use nomifun_common::{
+    CompanionId, ErrorChain, MessageId, generate_id, normalize_keys_to_snake_case, now_ms,
+};
 
 use crate::service::ConversationService;
-use nomifun_db::{DbError, IConversationRepository, MessageRowUpdate, TurnArtifactMessageCommit};
+use nomifun_db::{
+    DbError, IConversationRepository, MessageRowUpdate, SortOrder, TurnArtifactMessageCommit,
+};
 use nomifun_db::models::MessageRow;
 use nomifun_realtime::UserEventSink;
 use serde_json::{Value, json};
-use tokio::sync::{broadcast, oneshot};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, oneshot};
 use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
 const FLUSH_INTERVAL: u32 = 20;
-/// Coalesce high-frequency token WS emits (aligned with LeadThinkingThrottle).
-const WS_TEXT_COALESCE_CHARS: usize = 48;
-const WS_TEXT_COALESCE_INTERVAL: Duration = Duration::from_millis(80);
-const TURN_COMPLETION_PERSIST_GRACE: Duration = Duration::from_secs(1);
-const TERMINAL_FINALIZATION_GRACE: Duration = Duration::from_secs(5);
-const ARTIFACT_COMMIT_GRACE: Duration = Duration::from_secs(5);
-const EVENT_SIDE_EFFECT_GRACE: Duration = Duration::from_secs(1);
 const MAX_TERMINAL_ACTIVE_ITEMS: usize = 256;
 const ARTIFACT_DELIVERY_COMMITTED_FIELD: &str = "artifact_delivery_committed";
 const ARTIFACT_DELIVERY_PENDING_OUTPUT: &str =
@@ -64,6 +61,73 @@ fn remember_bounded(set: &mut HashSet<String>, value: String, kind: &'static str
         warn!(kind, max = MAX_TERMINAL_ACTIVE_ITEMS, "Relay terminal deduplication limit reached");
         false
     }
+}
+
+/// Apply the normalized ToolCall artifact contract to an externally-produced
+/// ACP update. Only locally verified `Artifact` receipts count; a remote
+/// ResourceLink is a locator, not proof that a requested image/export exists.
+fn validate_completed_acp_artifact_contract(
+    data: &nomifun_ai_agent::protocol::events::tool_call::AcpToolCallEventData,
+) -> Result<(), String> {
+    if data.update.status != Some(AcpToolCallStatus::Completed) {
+        return Ok(());
+    }
+    let artifacts = data
+        .update
+        .content
+        .iter()
+        .flatten()
+        .filter_map(|item| match item {
+            nomifun_ai_agent::protocol::events::AcpToolCallContentItem::Artifact {
+                artifact,
+                ..
+            } => Some(artifact.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    validate_artifact_receipt_integrity("ACP artifact delivery", &artifacts)
+        .map_err(|error| format!("ACP {error}"))?;
+    const IDENTITY_KEYS: &[&str] = &[
+        "tool",
+        "tool_name",
+        "toolName",
+        "name",
+        "operation",
+        "operation_name",
+        "operationName",
+    ];
+    let mut identities = data.update.title.iter().map(String::as_str).collect::<Vec<_>>();
+    for value in [&data.update.raw_input, &data.update.raw_output]
+        .into_iter()
+        .filter_map(Option::as_ref)
+    {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        identities.extend(
+            IDENTITY_KEYS
+                .iter()
+                .filter_map(|key| object.get(*key).and_then(Value::as_str)),
+        );
+    }
+    identities.sort_unstable();
+    identities.dedup();
+
+    for name in identities {
+        validate_completed_artifact_contract(&ToolCallEventData {
+            call_id: data.update.tool_call_id.clone(),
+            name: name.to_owned(),
+            args: data.update.raw_input.clone().unwrap_or(Value::Null),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: None,
+            description: None,
+            artifacts: artifacts.clone(),
+            retry: None,
+        })
+        .map_err(|error| format!("ACP {error}"))?;
+    }
+    Ok(())
 }
 
 /// Materialize a provider's sparse ACP update against the latest lifecycle
@@ -121,10 +185,13 @@ fn effective_acp_tool_call_projection(
             .collect::<Vec<_>>();
         let mut seen = merged
             .iter()
-            .map(acp_content_item_dedupe_key)
+            .filter_map(|item| serde_json::to_string(item).ok())
             .collect::<HashSet<_>>();
         for item in incoming.update.content.iter().flatten() {
-            if seen.insert(acp_content_item_dedupe_key(item)) {
+            let duplicate = serde_json::to_string(item)
+                .ok()
+                .is_some_and(|encoded| !seen.insert(encoded));
+            if !duplicate {
                 merged.push(item.clone());
             }
         }
@@ -164,6 +231,7 @@ fn tool_group_artifact_contract_errors(
                 artifacts: paired_delivery
                     .map(|delivery| delivery.artifacts.clone())
                     .unwrap_or_default(),
+                retry: None,
             });
             result.err().map(|error| (index, error))
         })
@@ -182,6 +250,7 @@ fn tool_group_entry_has_artifact_contract(
         output: None,
         description: entry.description.clone(),
         artifacts: Vec::new(),
+        retry: None,
     })
     .is_err()
 }
@@ -193,44 +262,6 @@ struct TextSegmentState {
     created_at: i64,
     record_created: bool,
     flush_counter: u32,
-}
-
-/// Coalesce `message.stream` text frames before WS emit (DB flush stays on FLUSH_INTERVAL).
-#[derive(Debug, Default)]
-struct TextWsCoalesce {
-    pending: String,
-    last_flush: Option<Instant>,
-    emit_count: u64,
-    chunk_count: u64,
-}
-
-impl TextWsCoalesce {
-    fn push(&mut self, chunk: &str) -> bool {
-        if chunk.is_empty() {
-            return false;
-        }
-        self.chunk_count += 1;
-        self.pending.push_str(chunk);
-        // First visible assistant text must not wait on the coalesce timer —
-        // TTFT is user-visible. Later chunks keep merging to limit render churn.
-        if self.emit_count == 0 {
-            return true;
-        }
-        let now = Instant::now();
-        self.last_flush
-            .map(|instant| now.duration_since(instant) >= WS_TEXT_COALESCE_INTERVAL)
-            .unwrap_or(true)
-            || self.pending.chars().count() >= WS_TEXT_COALESCE_CHARS
-    }
-
-    fn take(&mut self) -> Option<String> {
-        if self.pending.is_empty() {
-            return None;
-        }
-        self.last_flush = Some(Instant::now());
-        self.emit_count += 1;
-        Some(std::mem::take(&mut self.pending))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -297,84 +328,403 @@ fn turn_writeback_phase_label(phase: nomifun_knowledge::TurnWritebackPhase) -> &
     }
 }
 
-fn turn_writeback_retryable(status: nomifun_knowledge::TurnWritebackStatus) -> bool {
-    matches!(
-        status,
-        nomifun_knowledge::TurnWritebackStatus::NoCompleter
-            | nomifun_knowledge::TurnWritebackStatus::Partial
-            | nomifun_knowledge::TurnWritebackStatus::Failed
-    )
-}
-
-fn turn_writeback_running_state(status: &str, attempt_id: &str, started_at: i64, updated_at: i64) -> Value {
+fn turn_writeback_running_state(
+    status: &str,
+    attempt_id: &str,
+    attempt_generation: u64,
+    started_at: i64,
+    updated_at: i64,
+    prior_written: &[Value],
+    prior_failures: &[Value],
+) -> Value {
     json!({
         "status": status,
         "attempt_id": attempt_id,
+        "attempt_generation": attempt_generation,
         "started_at": started_at,
         "updated_at": updated_at,
         "finished_at": Value::Null,
         "retryable": false,
         "candidates": 0,
-        "written": [],
-        "failures": [],
+        "written": prior_written,
+        "failures": prior_failures,
     })
 }
 
-/// Terminal state for a write-back that never produced its own report because
-/// it was cancelled (a new turn / teardown) or exceeded the hard bound. Without
-/// this the assistant row keeps a running `knowledge_writeback` state forever:
-/// the live UI spins with no resolution and a later re-fetch only projects it
-/// as "interrupted" once it goes stale. Emitting a terminal state here resolves
-/// the UI immediately and marks it retryable.
-fn turn_writeback_interrupted_state(attempt_id: &str, started_at: i64, finished_at: i64) -> Value {
+fn turn_writeback_interrupted_state(
+    attempt_id: &str,
+    attempt_generation: u64,
+    started_at: i64,
+    interrupted_at: i64,
+    reason: &str,
+    prior_written: &[Value],
+    prior_failures: &[Value],
+) -> Value {
+    // A global/provider failure describes one attempt, not a durable target.
+    // Keep target-specific failures across partial retries, but replace any
+    // historical global failure with this interruption so retry metadata stays
+    // bounded even when providers include unique request IDs.
+    let mut failures = prior_failures
+        .iter()
+        .filter(|failure| {
+            failure.get("kb_id").and_then(Value::as_str).is_some()
+                && failure.get("rel_path").and_then(Value::as_str).is_some()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    failures.push(json!({
+        "kb_id": Value::Null,
+        "rel_path": Value::Null,
+        "error": reason,
+    }));
     json!({
         "status": "interrupted",
         "attempt_id": attempt_id,
+        "attempt_generation": attempt_generation,
         "started_at": started_at,
-        "updated_at": finished_at,
-        "finished_at": finished_at,
-        "retryable": true,
+        "updated_at": interrupted_at,
+        "finished_at": interrupted_at,
+        "interrupted_at": interrupted_at,
+        // The process may have stopped after a direct file merge committed but
+        // before its terminal message state committed. Retrying this attempt
+        // generically could duplicate that side effect.
+        "retryable": false,
+        "commit_ambiguous": true,
         "candidates": 0,
-        "written": [],
-        "failures": [],
+        "written": prior_written,
+        "failures": failures,
+    })
+}
+
+fn turn_writeback_not_started_state(
+    attempt_id: &str,
+    attempt_generation: u64,
+    started_at: i64,
+    failed_at: i64,
+    reason: &str,
+    prior_written: &[Value],
+    prior_failures: &[Value],
+) -> Value {
+    let mut failures = prior_failures
+        .iter()
+        .filter(|failure| {
+            failure.get("kb_id").and_then(Value::as_str).is_some()
+                && failure.get("rel_path").and_then(Value::as_str).is_some()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    failures.push(json!({
+        "kb_id": Value::Null,
+        "rel_path": Value::Null,
+        "error": reason,
+    }));
+    json!({
+        "status": "failed",
+        "attempt_id": attempt_id,
+        "attempt_generation": attempt_generation,
+        "started_at": started_at,
+        "updated_at": failed_at,
+        "finished_at": failed_at,
+        "retryable": true,
+        "commit_ambiguous": false,
+        "candidates": 0,
+        "written": prior_written,
+        "failures": failures,
     })
 }
 
 fn turn_writeback_final_state(
     report: &nomifun_knowledge::TurnWritebackReport,
-    status: &str,
     attempt_id: &str,
+    attempt_generation: u64,
     started_at: i64,
     finished_at: i64,
+    prior_written: &[Value],
+    prior_failures: &[Value],
+    _scope: &str,
 ) -> Value {
+    let target_key = |kb_id: &str, rel_path: &str| {
+        let logical =
+            nomifun_knowledge::service::logical_writeback_target_from_storage_path(
+                rel_path,
+            );
+        format!(
+            "{kb_id}\0{}",
+            nomifun_knowledge::service::portable_writeback_path_identity(&logical)
+        )
+    };
+    let value_target_key = |item: &Value| {
+        Some(target_key(
+            item.get("kb_id")?.as_str()?,
+            item.get("rel_path")?.as_str()?,
+        ))
+    };
+
+    let mut written = Vec::new();
+    let mut seen_written = HashSet::new();
+    for item in prior_written {
+        let dedupe_key = value_target_key(item)
+            .or_else(|| serde_json::to_string(item).ok());
+        if dedupe_key.is_none_or(|key| seen_written.insert(key)) {
+            written.push(item.clone());
+        }
+    }
+    for outcome in &report.written {
+        let item = json!({
+            "kb_id": outcome.kb_id.clone(),
+            "rel_path": outcome.final_rel_path.clone(),
+            "staged": outcome.staged,
+        });
+        let key = target_key(
+            outcome.kb_id.as_str(),
+            &outcome.final_rel_path,
+        );
+        if seen_written.insert(key)
+        {
+            written.push(item);
+        }
+    }
+    // Preserve unresolved target failures when a retry produces no candidate
+    // (or only resolves a subset). A single failed target may legitimately be
+    // corrected to a different path, so one successful write clears that lone
+    // historical target; with several historical targets, only an exact
+    // successful target is cleared and the rest remain retryable.
+    let prior_target_failures = prior_failures
+        .iter()
+        .filter(|failure| value_target_key(failure).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let corrected_single_target = prior_target_failures
+        .first()
+        .and_then(|failure| failure.get("kb_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|prior_kb_id| {
+            prior_target_failures.len() == 1
+                && report
+                    .written
+                    .iter()
+                    .any(|outcome| outcome.kb_id.as_str() == prior_kb_id)
+        });
+    let mut failures = if corrected_single_target {
+        Vec::new()
+    } else {
+        prior_target_failures
+    };
+    for outcome in &report.written {
+        let key = target_key(
+            outcome.kb_id.as_str(),
+            &outcome.final_rel_path,
+        );
+        failures.retain(|existing| {
+            value_target_key(existing).as_deref() != Some(key.as_str())
+        });
+    }
+    for failure in &report.failures {
+        let item = json!({
+            "kb_id": failure.kb_id.clone(),
+            "rel_path": failure.rel_path.clone(),
+            "error": failure.error.clone(),
+        });
+        if let (Some(kb_id), Some(rel_path)) =
+            (failure.kb_id.as_ref(), failure.rel_path.as_deref())
+        {
+            let key = target_key(kb_id.as_str(), rel_path);
+            failures.retain(|existing| {
+                value_target_key(existing).as_deref() != Some(key.as_str())
+            });
+            failures.push(item);
+        } else if !failures.iter().any(|existing| existing == &item) {
+            failures.push(item);
+        }
+    }
+    let status = if !written.is_empty() && !failures.is_empty() {
+        "partial"
+    } else if !failures.is_empty() {
+        "failed"
+    } else {
+        turn_writeback_status_label(report.status)
+    };
+    let retryable = matches!(status, "partial" | "failed" | "no_completer");
     json!({
         "status": status,
         "attempt_id": attempt_id,
+        "attempt_generation": attempt_generation,
         "started_at": started_at,
         "updated_at": finished_at,
         "finished_at": finished_at,
-        "retryable": turn_writeback_retryable(report.status),
+        "retryable": retryable,
         "candidates": report.candidates,
-        "written": report.written.iter().map(|w| json!({
-            "kb_id": w.kb_id.clone(),
-            "rel_path": w.final_rel_path.clone(),
-            "staged": w.staged,
-        })).collect::<Vec<_>>(),
-        "failures": report.failures.iter().map(|f| json!({
-            "kb_id": f.kb_id.clone(),
-            "rel_path": f.rel_path.clone(),
-            "error": f.error.clone(),
-        })).collect::<Vec<_>>(),
+        "written": written,
+        "failures": failures,
     })
 }
 
 fn turn_writeback_event_payload(conversation_id: &str, msg_id: &str, state: &Value) -> Value {
     let mut payload = state.clone();
     if let Some(obj) = payload.as_object_mut() {
+        // These fields are persisted solely so an explicit retry can recreate
+        // the exact source turn and idempotency scope. They are not part of the
+        // realtime presentation contract.
+        obj.remove("source_message_id");
+        obj.remove("scope");
+        obj.remove("assistant_text");
         obj.insert("conversation_id".to_owned(), json!(conversation_id));
         obj.insert("msg_id".to_owned(), json!(msg_id));
     }
     payload
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnWritebackPersistOutcome {
+    Committed,
+    MessageMissing,
+    IgnoredTerminalAttempt,
+    IgnoredStaleAttempt,
+    IgnoredStaleProgress,
+    IgnoredDuplicate,
+}
+
+fn turn_writeback_status_is_running(status: &str) -> bool {
+    matches!(status, "started" | "extracting" | "writing")
+}
+
+fn turn_writeback_running_phase(status: &str) -> Option<u8> {
+    match status {
+        "started" => Some(0),
+        "extracting" => Some(1),
+        "writing" => Some(2),
+        _ => None,
+    }
+}
+
+fn turn_writeback_attempt_identity(state: &Value) -> Option<(Option<u64>, i64, &str)> {
+    Some((
+        state.get("attempt_generation").and_then(Value::as_u64),
+        state.get("started_at")?.as_i64()?,
+        state.get("attempt_id")?.as_str()?,
+    ))
+}
+
+/// Decide whether `incoming` may replace an already persisted write-back
+/// state. Unknown status labels are deliberately terminal (fail closed): a
+/// future version's durable terminal state must not be regressed to a running
+/// state by an older binary.
+fn reject_turn_writeback_transition(
+    existing: &Value,
+    incoming: &Value,
+) -> Option<TurnWritebackPersistOutcome> {
+    let Some((existing_generation, existing_started_at, existing_attempt_id)) =
+        turn_writeback_attempt_identity(existing)
+    else {
+        return None;
+    };
+    let Some((incoming_generation, incoming_started_at, incoming_attempt_id)) =
+        turn_writeback_attempt_identity(incoming)
+    else {
+        return Some(TurnWritebackPersistOutcome::IgnoredStaleProgress);
+    };
+
+    if existing_attempt_id != incoming_attempt_id {
+        // Retry generation is the durable ordering authority. Fall back to the
+        // process-monotonic timestamp only for legacy states that predate it.
+        // This prevents a late worker from an older generation winning after a
+        // wall-clock rollback or after the application restarts.
+        if let (Some(existing_generation), Some(incoming_generation)) =
+            (existing_generation, incoming_generation)
+        {
+            return (incoming_generation <= existing_generation)
+                .then_some(TurnWritebackPersistOutcome::IgnoredStaleAttempt);
+        }
+        let existing_order = (
+            existing_generation.unwrap_or_default(),
+            existing_started_at,
+            existing_attempt_id,
+        );
+        let incoming_order = (
+            incoming_generation.unwrap_or_default(),
+            incoming_started_at,
+            incoming_attempt_id,
+        );
+        return (incoming_order <= existing_order)
+            .then_some(TurnWritebackPersistOutcome::IgnoredStaleAttempt);
+    }
+
+    let existing_status = existing
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("__unknown_terminal__");
+    let incoming_status = incoming
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("__unknown_terminal__");
+
+    if !turn_writeback_status_is_running(existing_status) {
+        return Some(TurnWritebackPersistOutcome::IgnoredTerminalAttempt);
+    }
+
+    if turn_writeback_status_is_running(incoming_status) {
+        let existing_updated_at = existing
+            .get("updated_at")
+            .and_then(Value::as_i64)
+            .unwrap_or(existing_started_at);
+        let incoming_updated_at = incoming
+            .get("updated_at")
+            .and_then(Value::as_i64)
+            .unwrap_or(incoming_started_at);
+        if incoming_updated_at < existing_updated_at {
+            return Some(TurnWritebackPersistOutcome::IgnoredStaleProgress);
+        }
+
+        if let (Some(existing_phase), Some(incoming_phase)) = (
+            turn_writeback_running_phase(existing_status),
+            turn_writeback_running_phase(incoming_status),
+        ) && incoming_phase < existing_phase
+        {
+            return Some(TurnWritebackPersistOutcome::IgnoredStaleProgress);
+        }
+    }
+
+    (existing == incoming).then_some(TurnWritebackPersistOutcome::IgnoredDuplicate)
+}
+
+type TurnWritebackMessageLock = AsyncMutex<()>;
+
+fn turn_writeback_message_lock(
+    conversation_id: &str,
+    msg_id: &str,
+) -> Arc<TurnWritebackMessageLock> {
+    static LOCKS: OnceLock<StdMutex<HashMap<String, Weak<TurnWritebackMessageLock>>>> =
+        OnceLock::new();
+    let key = format!("{conversation_id}\0{msg_id}");
+    let mut locks = LOCKS
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(AsyncMutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+fn next_turn_writeback_started_at() -> i64 {
+    static LAST_STARTED_AT: AtomicI64 = AtomicI64::new(0);
+    let wall_clock = now_ms();
+    let mut observed = LAST_STARTED_AT.load(Ordering::Relaxed);
+    loop {
+        let next = wall_clock.max(observed.saturating_add(1));
+        match LAST_STARTED_AT.compare_exchange_weak(
+            observed,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return next,
+            Err(actual) => observed = actual,
+        }
+    }
 }
 
 async fn persist_turn_writeback_state(
@@ -382,22 +732,20 @@ async fn persist_turn_writeback_state(
     conversation_id: &str,
     msg_id: &str,
     state: &Value,
-) {
+) -> Result<TurnWritebackPersistOutcome, DbError> {
+    // The repository currently exposes a read/update pair rather than a JSON
+    // compare-and-swap. Serialize every write-back state mutation for a message
+    // inside this backend process so the monotonic check and update are one
+    // critical section.
+    let persistence_lock = turn_writeback_message_lock(conversation_id, msg_id);
+    let _guard = persistence_lock.lock().await;
     let row = match repo.get_message(conversation_id, msg_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             debug!(conversation_id, msg_id, "skip writeback state persist; assistant message row not found");
-            return;
+            return Ok(TurnWritebackPersistOutcome::MessageMissing);
         }
-        Err(e) => {
-            warn!(
-                conversation_id,
-                msg_id,
-                error = %ErrorChain(&e),
-                "failed to load assistant message for writeback state"
-            );
-            return;
-        }
+        Err(error) => return Err(error),
     };
 
     let mut content: Value =
@@ -406,6 +754,17 @@ async fn persist_turn_writeback_state(
         content = json!({ "content": content });
     }
     if let Some(obj) = content.as_object_mut() {
+        if let Some(existing) = obj.get("knowledge_writeback")
+            && let Some(outcome) = reject_turn_writeback_transition(existing, state)
+        {
+            debug!(
+                conversation_id,
+                msg_id,
+                ?outcome,
+                "ignored non-monotonic knowledge write-back state transition"
+            );
+            return Ok(outcome);
+        }
         obj.insert("knowledge_writeback".to_owned(), state.clone());
     }
 
@@ -414,14 +773,8 @@ async fn persist_turn_writeback_state(
         status: None,
         hidden: None,
     };
-    if let Err(e) = repo.update_message(&row.id, &update).await {
-        warn!(
-            conversation_id,
-            msg_id,
-            error = %ErrorChain(&e),
-            "failed to persist assistant message writeback state"
-        );
-    }
+    repo.update_message(&row.message_id, &update).await?;
+    Ok(TurnWritebackPersistOutcome::Committed)
 }
 
 async fn emit_turn_writeback_state(
@@ -431,128 +784,725 @@ async fn emit_turn_writeback_state(
     conversation_id: &str,
     msg_id: &str,
     state: Value,
-) {
-    persist_turn_writeback_state(repo, conversation_id, msg_id, &state).await;
-    user_events.send_to_user(
-        user_id,
-        WebSocketMessage::new(
-            "knowledge.writeback",
-            turn_writeback_event_payload(conversation_id, msg_id, &state),
-        ),
-    );
+) -> Result<TurnWritebackPersistOutcome, DbError> {
+    let outcome = persist_turn_writeback_state(repo, conversation_id, msg_id, &state).await?;
+    if outcome != TurnWritebackPersistOutcome::Committed {
+        return Ok(outcome);
+    }
+
+    // Persistence is authoritative. The event is only a projection of the
+    // committed state, and an event sink panic must not unwind into the worker's
+    // panic finalizer and attempt to replace a durable terminal state.
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        user_events.send_to_user(
+            user_id,
+            WebSocketMessage::new(
+                "knowledge.writeback",
+                turn_writeback_event_payload(conversation_id, msg_id, &state),
+            ),
+        );
+    }))
+    .is_err()
+    {
+        warn!(
+            conversation_id,
+            msg_id,
+            "knowledge write-back event sink panicked after durable persistence"
+        );
+    }
+    Ok(outcome)
 }
 
-pub(crate) async fn run_turn_writeback_report(
-    service: Arc<nomifun_knowledge::KnowledgeService>,
-    mut request: nomifun_knowledge::TurnWritebackRequest,
+#[derive(Clone)]
+pub(crate) struct TurnWritebackAttempt {
     repo: Arc<dyn IConversationRepository>,
     user_events: Arc<dyn UserEventSink>,
     user_id: String,
     conversation_id: String,
     msg_id: String,
-    final_text: String,
-    turn_token: CancellationToken,
-    hard_bound: Duration,
-) {
-    if final_text.trim().is_empty() {
-        return;
-    }
-    request.assistant_text = final_text;
-    let started_at = now_ms();
-    let attempt_id = format!("{msg_id}:{started_at}");
-    emit_turn_writeback_state(
-        &repo,
-        &user_events,
-        &user_id,
-        &conversation_id,
-        &msg_id,
-        turn_writeback_running_state("started", &attempt_id, started_at, started_at),
-    )
-    .await;
+    source_message_id: String,
+    scope: String,
+    assistant_text: String,
+    prior_written: Vec<Value>,
+    prior_failures: Vec<Value>,
+    attempt_id: String,
+    attempt_generation: u64,
+    started_at: i64,
+}
 
-    let progress_repo = Arc::clone(&repo);
-    let progress_user_events = Arc::clone(&user_events);
-    let progress_user_id = user_id.clone();
-    let progress_conversation_id = conversation_id.clone();
-    let progress_msg_id = msg_id.clone();
-    let progress_attempt_id = attempt_id.clone();
-    let finalize = service.finalize_turn_writeback_with_progress(request, move |phase| {
-        let repo = Arc::clone(&progress_repo);
-        let user_events = Arc::clone(&progress_user_events);
-        let user_id = progress_user_id.clone();
-        let conversation_id = progress_conversation_id.clone();
-        let msg_id = progress_msg_id.clone();
-        let attempt_id = progress_attempt_id.clone();
-        let status = turn_writeback_phase_label(phase);
-        async move {
-            let updated_at = now_ms();
-            emit_turn_writeback_state(
-                &repo,
-                &user_events,
-                &user_id,
-                &conversation_id,
-                &msg_id,
-                turn_writeback_running_state(status, &attempt_id, started_at, updated_at),
-            )
-            .await;
+#[derive(Debug)]
+struct TurnWritebackActivity {
+    attempt_id: String,
+    completed: AtomicBool,
+    completed_notify: Notify,
+}
+
+impl TurnWritebackActivity {
+    fn complete(&self) {
+        if !self.completed.swap(true, Ordering::AcqRel) {
+            self.completed_notify.notify_waiters();
         }
+    }
+
+    async fn wait(&self) {
+        loop {
+            let notified = self.completed_notify.notified();
+            if self.completed.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct TurnWritebackActivityCompletionGuard(Arc<TurnWritebackActivity>);
+
+impl Drop for TurnWritebackActivityCompletionGuard {
+    fn drop(&mut self) {
+        self.0.complete();
+    }
+}
+
+fn turn_writeback_activity_registry(
+) -> &'static StdMutex<HashMap<String, Vec<Weak<TurnWritebackActivity>>>> {
+    static ACTIVITIES: OnceLock<
+        StdMutex<HashMap<String, Vec<Weak<TurnWritebackActivity>>>>,
+    > = OnceLock::new();
+    ACTIVITIES.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn register_turn_writeback_activity(
+    conversation_id: &str,
+    attempt_id: &str,
+) -> Arc<TurnWritebackActivity> {
+    let activity = Arc::new(TurnWritebackActivity {
+        attempt_id: attempt_id.to_owned(),
+        completed: AtomicBool::new(false),
+        completed_notify: Notify::new(),
     });
-    // Bound the write-back and always land on a terminal state. The extraction
-    // (and optional merge) makes LLM calls that can each take tens of seconds,
-    // so a cancellation (new turn / teardown) or the hard bound must still emit
-    // a terminal "interrupted" event — otherwise the row stays "running" and
-    // the UI never resolves.
-    let report = tokio::select! {
-        biased;
-        _ = turn_token.cancelled() => {
-            let finished_at = now_ms();
-            info!(
-                conversation_id = %conversation_id,
-                msg_id = %msg_id,
-                "turn-final knowledge write-back cancelled"
-            );
-            emit_turn_writeback_state(
-                &repo,
-                &user_events,
-                &user_id,
-                &conversation_id,
-                &msg_id,
-                turn_writeback_interrupted_state(&attempt_id, started_at, finished_at),
-            )
-            .await;
+    let mut registry = turn_writeback_activity_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let activities = registry.entry(conversation_id.to_owned()).or_default();
+    activities.retain(|activity| {
+        activity
+            .upgrade()
+            .is_some_and(|activity| !activity.completed.load(Ordering::Acquire))
+    });
+    activities.push(Arc::downgrade(&activity));
+    activity
+}
+
+fn active_turn_writeback_activities(
+    conversation_id: &str,
+) -> Vec<Arc<TurnWritebackActivity>> {
+    let mut registry = turn_writeback_activity_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut active = Vec::new();
+    let remove_entry = if let Some(activities) = registry.get_mut(conversation_id) {
+        activities.retain(|activity| {
+            let Some(activity) = activity.upgrade() else {
+                return false;
+            };
+            if activity.completed.load(Ordering::Acquire) {
+                return false;
+            }
+            active.push(activity);
+            true
+        });
+        activities.is_empty()
+    } else {
+        false
+    };
+    if remove_entry {
+        registry.remove(conversation_id);
+    }
+    active
+}
+
+/// Await every process-local knowledge write-back worker for one Conversation.
+///
+/// A write-back worker is detached from the outer relay owner but remains
+/// registered here until all filesystem work and terminal message-state
+/// persistence have returned. This is intentional: aborting the outer owner
+/// must not detach write-back work from the lifecycle fence. The knowledge
+/// layer additionally keeps each final target-path syscall cancellation-
+/// indivisible, so activity completion proves that no publication can land
+/// after a replacement turn starts.
+///
+/// Stop/reset/delete callers must establish their exact Conversation tombstone,
+/// wait for the outer turn owner to quiesce, then await this fence before
+/// reconciling write-back state or committing durable Finished.  The tombstone
+/// is what excludes a new activity registration while this method rescans.
+pub(crate) async fn await_turn_writeback_quiesced(conversation_id: &str) {
+    loop {
+        let activities = active_turn_writeback_activities(conversation_id);
+        if activities.is_empty() {
             return;
         }
-        result = tokio::time::timeout(hard_bound, finalize) => {
-            match result {
-                Ok(report) => report,
-                Err(_) => {
-                    let finished_at = now_ms();
-                    warn!(
-                        conversation_id = %conversation_id,
-                        msg_id = %msg_id,
-                        "turn-final knowledge write-back exceeded the hard bound"
-                    );
-                    emit_turn_writeback_state(
-                        &repo,
-                        &user_events,
-                        &user_id,
-                        &conversation_id,
-                        &msg_id,
-                        turn_writeback_interrupted_state(&attempt_id, started_at, finished_at),
-                    )
-                    .await;
-                    return;
-                }
+        for activity in activities {
+            debug!(
+                conversation_id,
+                attempt_id = %activity.attempt_id,
+                "Waiting for exact-turn knowledge write-back activity to quiesce"
+            );
+            activity.wait().await;
+        }
+    }
+}
+
+/// Abort-safe owner for one write-back attempt.
+///
+/// Keep this guard alive for the entire asynchronous write-back operation and
+/// disarm it only after a terminal state is durably committed (or the attempt
+/// is proven stale). If the owning future is aborted or dropped while a Tokio
+/// runtime is still live, `Drop` schedules an `interrupted` terminal persist.
+pub(crate) struct TurnWritebackOwnerGuard {
+    attempt: Option<TurnWritebackAttempt>,
+    reason: &'static str,
+}
+
+impl TurnWritebackOwnerGuard {
+    pub(crate) fn disarm(&mut self) {
+        self.attempt = None;
+    }
+}
+
+impl Drop for TurnWritebackOwnerGuard {
+    fn drop(&mut self) {
+        let Some(attempt) = self.attempt.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            warn!(
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
+                "knowledge write-back owner dropped without a live Tokio runtime"
+            );
+            return;
+        };
+        let reason = self.reason;
+        let _ = runtime.spawn(async move {
+            attempt.interrupt(reason).await;
+        });
+    }
+}
+
+impl TurnWritebackAttempt {
+    pub(crate) fn new(
+        repo: Arc<dyn IConversationRepository>,
+        user_events: Arc<dyn UserEventSink>,
+        user_id: String,
+        conversation_id: String,
+        msg_id: String,
+        source_message_id: String,
+        scope: String,
+        assistant_text: String,
+        prior_written: Vec<Value>,
+        prior_failures: Vec<Value>,
+        attempt_generation: u64,
+    ) -> Self {
+        let started_at = next_turn_writeback_started_at();
+        Self {
+            repo,
+            user_events,
+            user_id,
+            conversation_id,
+            source_message_id,
+            scope,
+            assistant_text: nomifun_knowledge::turn_writeback::bounded_assistant_text(
+                &assistant_text,
+            ),
+            prior_written,
+            prior_failures,
+            attempt_id: format!(
+                "{msg_id}:{attempt_generation}:{started_at}:{}",
+                generate_id()
+            ),
+            attempt_generation,
+            msg_id,
+            started_at,
+        }
+    }
+
+    fn durable_state(&self, mut state: Value) -> Value {
+        if let Some(obj) = state.as_object_mut() {
+            obj.insert(
+                "source_message_id".to_owned(),
+                json!(self.source_message_id),
+            );
+            obj.insert("scope".to_owned(), json!(self.scope));
+            obj.insert("assistant_text".to_owned(), json!(self.assistant_text));
+        }
+        state
+    }
+
+    pub(crate) async fn persist_started_intent(&self) -> Result<(), String> {
+        let state = self.durable_state(turn_writeback_running_state(
+            "started",
+            &self.attempt_id,
+            self.attempt_generation,
+            self.started_at,
+            self.started_at,
+            &self.prior_written,
+            &self.prior_failures,
+        ));
+        persist_turn_writeback_state(
+            &self.repo,
+            &self.conversation_id,
+            &self.msg_id,
+            &state,
+        )
+        .await
+        .map_err(|error| format!("failed to persist write-back intent: {error}"))
+        .and_then(|outcome| match outcome {
+            TurnWritebackPersistOutcome::Committed
+            | TurnWritebackPersistOutcome::IgnoredDuplicate => Ok(()),
+            other => Err(format!(
+                "write-back intent was rejected by the monotonic state fence: {other:?}"
+            )),
+        })
+    }
+
+    pub(crate) fn owner_guard(&self, reason: &'static str) -> TurnWritebackOwnerGuard {
+        TurnWritebackOwnerGuard {
+            attempt: Some(self.clone()),
+            reason,
+        }
+    }
+
+    async fn emit(&self, state: Value) -> Result<TurnWritebackPersistOutcome, DbError> {
+        let state = self.durable_state(state);
+        emit_turn_writeback_state(
+            &self.repo,
+            &self.user_events,
+            &self.user_id,
+            &self.conversation_id,
+            &self.msg_id,
+            state,
+        )
+        .await
+    }
+
+    /// Publish a durable terminal state when the write-back owner panics or is
+    /// aborted. This updates only the assistant message's post-processing state;
+    /// the conversation lifecycle remains owned by `ConversationService`.
+    pub(crate) async fn interrupt(&self, reason: &'static str) {
+        let interrupted_at = now_ms();
+        persist_terminal_writeback_until_resolved(
+            self,
+            turn_writeback_interrupted_state(
+                &self.attempt_id,
+                self.attempt_generation,
+                self.started_at,
+                interrupted_at,
+                reason,
+                &self.prior_written,
+                &self.prior_failures,
+            ),
+        )
+        .await;
+    }
+}
+
+fn terminal_writeback_outcome_is_resolved(outcome: TurnWritebackPersistOutcome) -> bool {
+    matches!(
+        outcome,
+        TurnWritebackPersistOutcome::Committed
+            | TurnWritebackPersistOutcome::MessageMissing
+            | TurnWritebackPersistOutcome::IgnoredTerminalAttempt
+            | TurnWritebackPersistOutcome::IgnoredStaleAttempt
+    )
+}
+
+/// Persist a post-side-effect terminal state without a business timeout.
+///
+/// Once knowledge file effects may have happened, callers must never rerun the
+/// extractor/writer to recover a message-state failure. Retrying this one JSON
+/// transition is side-effect free and keeps the attempt owner alive until the
+/// durable state is committed, proven already terminal/stale, or the message no
+/// longer exists.
+async fn persist_terminal_writeback_until_resolved(
+    attempt: &TurnWritebackAttempt,
+    state: Value,
+) -> TurnWritebackPersistOutcome {
+    const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(25);
+    const MAX_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+    let mut retry_delay = INITIAL_RETRY_DELAY;
+    loop {
+        match attempt.emit(state.clone()).await {
+            Ok(outcome) if terminal_writeback_outcome_is_resolved(outcome) => return outcome,
+            Ok(outcome) => {
+                warn!(
+                    conversation_id = %attempt.conversation_id,
+                    msg_id = %attempt.msg_id,
+                    ?outcome,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "terminal knowledge write-back state was rejected; retrying without replaying side effects"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    conversation_id = %attempt.conversation_id,
+                    msg_id = %attempt.msg_id,
+                    error = %ErrorChain(&error),
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "terminal knowledge write-back persistence failed; retrying without replaying side effects"
+                );
             }
         }
-    };
-    let status = turn_writeback_status_label(report.status);
+        tokio::time::sleep(retry_delay).await;
+        retry_delay = retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+    }
+}
+
+async fn await_turn_writeback_report_or_interrupt<F>(
+    attempt: &TurnWritebackAttempt,
+    owner_guard: &mut TurnWritebackOwnerGuard,
+    report_future: F,
+) -> Option<nomifun_knowledge::TurnWritebackReport>
+where
+    F: Future<Output = nomifun_knowledge::TurnWritebackReport>,
+{
+    match std::panic::AssertUnwindSafe(report_future)
+        .catch_unwind()
+        .await
+    {
+        Ok(report) => Some(report),
+        Err(_) => {
+            error!(
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
+                "turn-final knowledge write-back panicked; persisting an interrupted terminal state before releasing turn ownership"
+            );
+            persist_terminal_writeback_until_resolved(
+                attempt,
+                turn_writeback_interrupted_state(
+                    &attempt.attempt_id,
+                    attempt.attempt_generation,
+                    attempt.started_at,
+                    now_ms(),
+                    "knowledge write-back panicked after side effects may have started",
+                    &attempt.prior_written,
+                    &attempt.prior_failures,
+                ),
+            )
+            .await;
+            owner_guard.disarm();
+            None
+        }
+    }
+}
+
+/// Convert write-back states left running by a dead process into durable,
+/// commit-ambiguous `interrupted` terminal states without replaying extraction
+/// or file writes.
+///
+/// The caller must first establish that this conversation has no process-local
+/// live turn/write-back owner. Calling this while an owner is active would
+/// intentionally terminate that attempt's UI state even though its side effect
+/// may still be running.
+pub(crate) async fn reconcile_orphaned_writebacks(
+    repo: Arc<dyn IConversationRepository>,
+    user_events: Option<Arc<dyn UserEventSink>>,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<usize, DbError> {
+    const PAGE_SIZE: u32 = 200;
+    const REASON: &str = "application stopped before knowledge write-back completed";
+
+    let mut page = 1;
+    let mut reconciled = 0;
+    loop {
+        let rows = repo
+            .get_messages(conversation_id, page, PAGE_SIZE, SortOrder::Asc)
+            .await?;
+        for row in rows.items {
+            let Ok(content) = serde_json::from_str::<Value>(&row.content) else {
+                continue;
+            };
+            let Some(state) = content.get("knowledge_writeback") else {
+                continue;
+            };
+            let Some(status) = state.get("status").and_then(Value::as_str) else {
+                continue;
+            };
+            if !turn_writeback_status_is_running(status) {
+                continue;
+            }
+            let Some((stored_generation, started_at, attempt_id)) =
+                turn_writeback_attempt_identity(state)
+            else {
+                continue;
+            };
+            let interrupted_at = now_ms().max(
+                state
+                    .get("updated_at")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(started_at),
+            );
+            let attempt_generation = stored_generation.unwrap_or_default();
+            let prior_written = state
+                .get("written")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let prior_failures = state
+                .get("failures")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut interrupted = turn_writeback_interrupted_state(
+                attempt_id,
+                attempt_generation,
+                started_at,
+                interrupted_at,
+                REASON,
+                &prior_written,
+                &prior_failures,
+            );
+            if let (Some(existing), Some(next)) =
+                (state.as_object(), interrupted.as_object_mut())
+            {
+                for key in ["source_message_id", "scope", "assistant_text"] {
+                    if let Some(value) = existing.get(key) {
+                        next.insert(key.to_owned(), value.clone());
+                    }
+                }
+            }
+            let outcome = if let Some(events) = user_events.as_ref() {
+                emit_turn_writeback_state(
+                    &repo,
+                    events,
+                    user_id,
+                    conversation_id,
+                    &row.message_id,
+                    interrupted,
+                )
+                .await?
+            } else {
+                persist_turn_writeback_state(
+                    &repo,
+                    conversation_id,
+                    &row.message_id,
+                    &interrupted,
+                )
+                .await?
+            };
+            if outcome == TurnWritebackPersistOutcome::Committed {
+                reconciled += 1;
+            }
+        }
+        if !rows.has_more {
+            break;
+        }
+        page += 1;
+    }
+    Ok(reconciled)
+}
+
+/// Terminalize every persisted running write-back after the process-local
+/// activity fence proves its worker is gone.
+///
+/// This retry loop intentionally has no total timeout.  It is the persistence
+/// half of [`await_turn_writeback_quiesced`]: callers must await the activity
+/// fence first, then keep their exact stop/preparation tombstones until this
+/// function returns.  Only after both barriers may Conversation Finished and
+/// an accepted receipt be committed.
+pub(crate) async fn reconcile_quiesced_writebacks_until_resolved(
+    repo: Arc<dyn IConversationRepository>,
+    user_events: Option<Arc<dyn UserEventSink>>,
+    user_id: &str,
+    conversation_id: &str,
+) -> usize {
+    const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(25);
+    const MAX_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+    let mut retry_delay = INITIAL_RETRY_DELAY;
+    loop {
+        match reconcile_orphaned_writebacks(
+            Arc::clone(&repo),
+            user_events.clone(),
+            user_id,
+            conversation_id,
+        )
+        .await
+        {
+            Ok(reconciled) => return reconciled,
+            Err(error) => {
+                warn!(
+                    conversation_id,
+                    error = %ErrorChain(&error),
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "quiesced knowledge write-back reconciliation failed; retaining exact turn ownership"
+                );
+                tokio::time::sleep(retry_delay).await;
+                retry_delay =
+                    retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+            }
+        }
+    }
+}
+
+async fn persist_panicked_writeback_until_resolved(
+    attempt: &TurnWritebackAttempt,
+    reason: &'static str,
+) {
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+    loop {
+        match std::panic::AssertUnwindSafe(attempt.interrupt(reason))
+            .catch_unwind()
+            .await
+        {
+            Ok(()) => return,
+            Err(_) => {
+                error!(
+                    conversation_id = %attempt.conversation_id,
+                    msg_id = %attempt.msg_id,
+                    "knowledge write-back panic recovery also panicked; retaining the activity fence and retrying"
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+        }
+    }
+}
+
+async fn run_registered_turn_writeback<F>(
+    attempt: TurnWritebackAttempt,
+    work: F,
+) -> Result<(), DbError>
+where
+    F: Future<Output = Result<(), DbError>> + Send + 'static,
+{
+    let activity =
+        register_turn_writeback_activity(&attempt.conversation_id, &attempt.attempt_id);
+    let completion_activity = Arc::clone(&activity);
+    let panic_attempt = attempt.clone();
+    let (result_tx, result_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let completion_guard =
+            TurnWritebackActivityCompletionGuard(completion_activity);
+        let result = match std::panic::AssertUnwindSafe(work).catch_unwind().await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                persist_panicked_writeback_until_resolved(
+                    &panic_attempt,
+                    "knowledge write-back worker returned before terminal persistence",
+                )
+                .await;
+                Err(error)
+            }
+            Err(_) => {
+                persist_panicked_writeback_until_resolved(
+                    &panic_attempt,
+                    "knowledge write-back worker panicked after side effects may have started",
+                )
+                .await;
+                Ok(())
+            }
+        };
+        // Wake stop/reset/delete before the normal owner observes completion:
+        // both paths may now proceed, but neither can pass its durable
+        // finalization fence until this activity is absent.
+        drop(completion_guard);
+        let _ = result_tx.send(result);
+    });
+
+    result_rx.await.map_err(|_| {
+        DbError::Init(
+            "knowledge write-back worker exited without reporting terminal completion"
+                .to_owned(),
+        )
+    })?
+}
+
+pub(crate) async fn run_turn_writeback_report(
+    service: Arc<nomifun_knowledge::KnowledgeService>,
+    request: nomifun_knowledge::TurnWritebackRequest,
+    final_text: String,
+    attempt: TurnWritebackAttempt,
+) -> Result<(), DbError> {
+    let worker_attempt = attempt.clone();
+    run_registered_turn_writeback(
+        attempt,
+        async move {
+            run_turn_writeback_report_inner(
+                service,
+                request,
+                final_text,
+                worker_attempt,
+            )
+            .await
+        },
+    )
+    .await
+}
+
+async fn begin_turn_writeback_attempt(
+    attempt: &TurnWritebackAttempt,
+    owner_guard: &mut TurnWritebackOwnerGuard,
+) -> bool {
+    let state = turn_writeback_running_state(
+        "started",
+        &attempt.attempt_id,
+        attempt.attempt_generation,
+        attempt.started_at,
+        attempt.started_at,
+        &attempt.prior_written,
+        &attempt.prior_failures,
+    );
+    match attempt.emit(state).await {
+        Ok(TurnWritebackPersistOutcome::Committed)
+        | Ok(TurnWritebackPersistOutcome::IgnoredDuplicate) => true,
+        Ok(outcome) => {
+            owner_guard.disarm();
+            debug!(
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
+                ?outcome,
+                "knowledge write-back start was stale, terminal, or no longer owned; skipping side effects"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
+                error = %ErrorChain(&error),
+                "knowledge write-back owner state failed; closing the attempt without running side effects"
+            );
+            persist_terminal_writeback_until_resolved(
+                attempt,
+                turn_writeback_not_started_state(
+                    &attempt.attempt_id,
+                    attempt.attempt_generation,
+                    attempt.started_at,
+                    now_ms(),
+                    "knowledge write-back did not start because its owner state could not be persisted",
+                    &attempt.prior_written,
+                    &attempt.prior_failures,
+                ),
+            )
+            .await;
+            owner_guard.disarm();
+            false
+        }
+    }
+}
+
+async fn persist_turn_writeback_report_terminal(
+    attempt: &TurnWritebackAttempt,
+    owner_guard: &mut TurnWritebackOwnerGuard,
+    report: &nomifun_knowledge::TurnWritebackReport,
+) {
     match report.status {
         nomifun_knowledge::TurnWritebackStatus::Written
         | nomifun_knowledge::TurnWritebackStatus::Partial => {
             info!(
-                conversation_id = %conversation_id,
-                msg_id = %msg_id,
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
                 candidates = report.candidates,
                 written = report.written.len(),
                 failures = report.failures.len(),
@@ -561,8 +1511,8 @@ pub(crate) async fn run_turn_writeback_report(
         }
         nomifun_knowledge::TurnWritebackStatus::Failed => {
             warn!(
-                conversation_id = %conversation_id,
-                msg_id = %msg_id,
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
                 candidates = report.candidates,
                 failures = report.failures.len(),
                 "turn-final knowledge write-back failed"
@@ -570,23 +1520,131 @@ pub(crate) async fn run_turn_writeback_report(
         }
         other => {
             debug!(
-                conversation_id = %conversation_id,
-                msg_id = %msg_id,
+                conversation_id = %attempt.conversation_id,
+                msg_id = %attempt.msg_id,
                 status = ?other,
                 "turn-final knowledge write-back skipped"
             );
         }
     }
-    let finished_at = now_ms();
-    emit_turn_writeback_state(
-        &repo,
-        &user_events,
-        &user_id,
-        &conversation_id,
-        &msg_id,
-        turn_writeback_final_state(&report, status, &attempt_id, started_at, finished_at),
+
+    persist_terminal_writeback_until_resolved(
+        attempt,
+        turn_writeback_final_state(
+            report,
+            &attempt.attempt_id,
+            attempt.attempt_generation,
+            attempt.started_at,
+            now_ms(),
+            &attempt.prior_written,
+            &attempt.prior_failures,
+            &attempt.scope,
+        ),
     )
     .await;
+    owner_guard.disarm();
+}
+
+async fn run_turn_writeback_report_inner(
+    service: Arc<nomifun_knowledge::KnowledgeService>,
+    mut request: nomifun_knowledge::TurnWritebackRequest,
+    final_text: String,
+    attempt: TurnWritebackAttempt,
+) -> Result<(), DbError> {
+    let mut owner_guard =
+        attempt.owner_guard("knowledge write-back future was aborted before terminal persistence");
+    if !begin_turn_writeback_attempt(&attempt, &mut owner_guard).await {
+        return Ok(());
+    }
+
+    request.assistant_text = final_text;
+    let started_at = attempt.started_at;
+    let attempt_id = attempt.attempt_id.clone();
+
+    let progress_attempt = attempt.clone();
+    let progress_attempt_id = attempt_id.clone();
+    let report = if request.model.is_none() {
+        Some(nomifun_knowledge::TurnWritebackReport::failed(
+            "This session has no provider-backed model for knowledge write-back; configure a knowledge model and retry",
+        ))
+    } else {
+        await_turn_writeback_report_or_interrupt(
+            &attempt,
+            &mut owner_guard,
+            service.finalize_turn_writeback_with_progress(request, move |phase| {
+                let attempt = progress_attempt.clone();
+                let attempt_id = progress_attempt_id.clone();
+                let status = turn_writeback_phase_label(phase);
+                async move {
+                    let updated_at = now_ms();
+                    match attempt
+                        .emit(turn_writeback_running_state(
+                            status,
+                            &attempt_id,
+                            attempt.attempt_generation,
+                            started_at,
+                            updated_at,
+                            &attempt.prior_written,
+                            &attempt.prior_failures,
+                        ))
+                        .await
+                    {
+                        Ok(TurnWritebackPersistOutcome::Committed)
+                        | Ok(TurnWritebackPersistOutcome::IgnoredDuplicate) => {}
+                        Ok(outcome) => {
+                            debug!(
+                                conversation_id = %attempt.conversation_id,
+                                msg_id = %attempt.msg_id,
+                                ?outcome,
+                                "ignored stale knowledge write-back progress projection"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                conversation_id = %attempt.conversation_id,
+                                msg_id = %attempt.msg_id,
+                                error = %ErrorChain(&error),
+                                "failed to persist knowledge write-back progress state"
+                            );
+                        }
+                    }
+                }
+            }),
+        )
+        .await
+    };
+    let Some(report) = report else {
+        return Ok(());
+    };
+    persist_turn_writeback_report_terminal(&attempt, &mut owner_guard, &report).await;
+    Ok(())
+}
+
+pub(crate) async fn finish_turn_writeback_failure(
+    attempt: TurnWritebackAttempt,
+    error: String,
+) -> Result<(), DbError> {
+    let worker_attempt = attempt.clone();
+    run_registered_turn_writeback(
+        attempt,
+        async move {
+            let mut owner_guard = worker_attempt.owner_guard(
+                "knowledge write-back failure finalizer was aborted before terminal persistence",
+            );
+            if !begin_turn_writeback_attempt(&worker_attempt, &mut owner_guard).await {
+                return Ok(());
+            }
+            let report = nomifun_knowledge::TurnWritebackReport::failed(error);
+            persist_turn_writeback_report_terminal(
+                &worker_attempt,
+                &mut owner_guard,
+                &report,
+            )
+            .await;
+            Ok(())
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -640,6 +1698,10 @@ pub struct StreamRelay {
     repo: Arc<dyn IConversationRepository>,
     user_events: Arc<dyn UserEventSink>,
     cron_service: Option<Arc<dyn ICronService>>,
+    /// Legacy relay-owned completion exists only for isolated unit tests.
+    /// Production completion is owned by ConversationService's durable
+    /// finalize -> exact release -> event fence.
+    #[cfg(test)]
     complete_turn: bool,
     /// Companion-companion wire markers (from `conversation.extra.companion_session` /
     /// `.companion_id`), stamped onto every `message.stream` / `turn.completed`
@@ -685,7 +1747,6 @@ pub struct StreamRelay {
     /// updates during one relay. Protocol call/session IDs are correlation keys,
     /// never database entity IDs.
     derived_message_ids: std::sync::Mutex<HashMap<String, String>>,
-    event_side_effect_circuit_open: AtomicBool,
     /// Canonical session workspace used to re-verify every local receipt at
     /// the final database commit barrier. Runtime event payloads are untrusted:
     /// a marker proves an atomic DB transition, not that bytes exist.
@@ -693,42 +1754,29 @@ pub struct StreamRelay {
 }
 
 impl StreamRelay {
-    async fn bounded_event_side_effect<T, F>(
+    /// Await one ordered stream projection to a definitive repository result.
+    ///
+    /// These mutations must never be wrapped in a local timeout or cancelled
+    /// independently of the turn owner. SQLite may already have queued a
+    /// command when its Rust future is dropped; allowing the relay to continue
+    /// could then commit a stale `work` update after terminal cleanup wrote
+    /// `finish`/`error`. Backpressure or a wedged repository therefore retains
+    /// turn ownership and withholds the terminal boundary.
+    async fn ordered_event_side_effect<T, F>(
         &self,
-        deadline: tokio::time::Instant,
         label: &'static str,
         future: F,
-    ) -> Option<T>
+    ) -> T
     where
         F: Future<Output = T>,
     {
-        if self.event_side_effect_circuit_open.load(Ordering::Acquire) {
-            return None;
-        }
-        let timed = tokio::time::timeout_at(deadline, future);
-        let result = if let Some(cancellation) = self.cancellation.as_ref() {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return None,
-                result = timed => result,
-            }
-        } else {
-            timed.await
-        };
-        match result {
-            Ok(value) => Some(value),
-            Err(_) => {
-                self.event_side_effect_circuit_open
-                    .store(true, Ordering::Release);
-                warn!(
-                    conversation_id = %self.conversation_id,
-                    msg_id = %self.msg_id,
-                    side_effect = label,
-                    "Relay event side effect exceeded its shared hard bound; continuing to consume the stream"
-                );
-                None
-            }
-        }
+        debug!(
+            conversation_id = %self.conversation_id,
+            msg_id = %self.msg_id,
+            side_effect = label,
+            "Awaiting ordered relay persistence"
+        );
+        future.await
     }
 
     pub fn new(
@@ -748,7 +1796,8 @@ impl StreamRelay {
             repo,
             user_events,
             cron_service,
-            complete_turn: true,
+            #[cfg(test)]
+            complete_turn: false,
             companion: false,
             companion_id: None,
             origin: None,
@@ -757,13 +1806,13 @@ impl StreamRelay {
             runtime_state: None,
             cancellation: None,
             derived_message_ids: std::sync::Mutex::new(HashMap::new()),
-            event_side_effect_circuit_open: AtomicBool::new(false),
             artifact_workspace: None,
         }
     }
 
-    pub fn with_turn_completion(mut self, enabled: bool) -> Self {
-        self.complete_turn = enabled;
+    #[cfg(test)]
+    fn with_test_turn_completion(mut self) -> Self {
+        self.complete_turn = true;
         self
     }
 
@@ -873,21 +1922,12 @@ impl StreamRelay {
         }
         let error_message_id = ConversationService::mint_msg_id();
         self.forward_to_websocket_with_msg_id(&error_message_id, event);
-        let persistence = tokio::time::timeout(
-            TURN_COMPLETION_PERSIST_GRACE,
-            self.persist_error_tips(&error_message_id, data),
-        );
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                warn!(conversation_id = %self.conversation_id, "Cancelled while persisting re-surfaced terminal error");
-            }
-            result = persistence => {
-                if result.is_err() {
-                    warn!(conversation_id = %self.conversation_id, "Timed out persisting re-surfaced terminal error");
-                }
-            }
-        }
+        // This projection belongs to the still-authoritative turn owner.  Do
+        // not detach or time out the insert: cancelling an in-flight database
+        // future can make its commit result ambiguous and lets a later turn
+        // race a write from this terminal generation.  A stop may still abort
+        // the whole owner after it has established its stronger tombstone.
+        self.persist_error_tips(&error_message_id, data).await;
         cancellation.mark_terminal_observed();
         true
     }
@@ -920,11 +1960,8 @@ impl StreamRelay {
         let mut full_text_buffer = String::new();
         let mut text_segments: Vec<PersistedTextSegment> = Vec::new();
         let mut active_text: Option<TextSegmentState> = None;
-        let mut text_ws_coalesce = TextWsCoalesce::default();
-        let mut ws_emit_count = 0u64;
         let mut active_thinking: Option<ThinkingSegmentState> = None;
         let mut active_tool_calls: HashMap<String, ToolCallEventData> = HashMap::new();
-        let mut pending_superseded_call_ids: HashSet<String> = HashSet::new();
         let mut completed_artifact_tool_calls: HashMap<String, ToolCallEventData> = HashMap::new();
         let mut terminal_tool_calls: HashSet<String> = HashSet::new();
         let mut failed_terminal_tool_calls: HashSet<String> = HashSet::new();
@@ -974,19 +2011,11 @@ impl StreamRelay {
                     }
                 }
                 (Some(cancellation), false) => {
-                    let Some(send_error_rx) = send_error_rx.as_mut() else {
-                        // Defensive: the pending flag says the send-error channel
-                        // exists but the receiver is gone. Degrade to the plain
-                        // receive path instead of panicking on the conversation
-                        // hot path.
-                        send_error_done = true;
-                        continue;
-                    };
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Ok(Self::cancelled_finish_event()),
                         recv = rx.recv() => recv,
-                        send_error = send_error_rx => {
+                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
                             send_error_done = true;
                             match send_error {
                                 Ok(Err(send_error)) => {
@@ -1010,17 +2039,9 @@ impl StreamRelay {
                 }
                 (None, true) => rx.recv().await,
                 (None, false) => {
-                    let Some(send_error_rx) = send_error_rx.as_mut() else {
-                        // Defensive: the pending flag says the send-error channel
-                        // exists but the receiver is gone. Degrade to the plain
-                        // receive path instead of panicking on the conversation
-                        // hot path.
-                        send_error_done = true;
-                        continue;
-                    };
                     tokio::select! {
                         recv = rx.recv() => recv,
-                        send_error = send_error_rx => {
+                        send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
                             send_error_done = true;
                             match send_error {
                                 Ok(Err(send_error)) => {
@@ -1081,19 +2102,16 @@ impl StreamRelay {
                             "StreamRelay received first agent event"
                         );
                     }
-                    // Every non-terminal event shares one persistence budget.
-                    // WebSocket forwarding happens first where applicable;
-                    // a locked/failed DB must never prevent an already-queued
-                    // Finish/Error from being consumed.
-                    let event_side_effect_deadline =
-                        tokio::time::Instant::now() + EVENT_SIDE_EFFECT_GRACE;
+                    // Repository ordering is part of the turn's durability
+                    // boundary. Never drop an issued mutation to consume a
+                    // later terminal: SQLite may commit the abandoned command
+                    // after terminal cleanup and regress a row to `work`.
 
                     match &event {
                         AgentStreamEvent::Thinking(data) => {
                             if data.status.as_deref() == Some("done") {
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "complete_thinking",
                                         self.complete_active_thinking(&mut active_thinking),
                                     )
@@ -1105,20 +2123,8 @@ impl StreamRelay {
                             // externally visible — once it streams we are no
                             // longer pre-response, so the failover seam stands down.
                             emitted_response = true;
-                            if let (Some(segment), Some(chunk)) =
-                                (active_text.as_ref(), text_ws_coalesce.take())
-                            {
-                                let coalesced = AgentStreamEvent::Text(
-                                    nomifun_ai_agent::protocol::events::TextEventData {
-                                        content: chunk,
-                                    },
-                                );
-                                self.forward_to_websocket_with_msg_id(&segment.id, &coalesced);
-                                ws_emit_count += 1;
-                            }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "close_text_before_thinking",
                                     self.close_active_text_segment(
                                         &mut active_text,
@@ -1147,8 +2153,7 @@ impl StreamRelay {
                         }
                         AgentStreamEvent::Text(data) => {
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "complete_thinking_before_text",
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
@@ -1172,32 +2177,13 @@ impl StreamRelay {
                                 record_created: false,
                                 flush_counter: 0,
                             });
+                            self.forward_to_websocket_with_msg_id(&segment.id, &event);
                             segment.buffer.push_str(&data.content);
                             full_text_buffer.push_str(&data.content);
                             segment.flush_counter += 1;
-                            if text_ws_coalesce.push(&data.content) {
-                                if let Some(chunk) = text_ws_coalesce.take() {
-                                    let coalesced = AgentStreamEvent::Text(
-                                        nomifun_ai_agent::protocol::events::TextEventData {
-                                            content: chunk,
-                                        },
-                                    );
-                                    self.forward_to_websocket_with_msg_id(&segment.id, &coalesced);
-                                    ws_emit_count += 1;
-                                }
-                            }
                             if segment.flush_counter >= FLUSH_INTERVAL {
-                                debug!(
-                                    flush_counter = segment.flush_counter,
-                                    buffer_len = segment.buffer.len(),
-                                    ws_emit_count,
-                                    ws_coalesce_chunks = text_ws_coalesce.chunk_count,
-                                    ws_coalesce_emits = text_ws_coalesce.emit_count,
-                                    "stream_text_coalesce"
-                                );
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "flush_text",
                                         self.flush_text_segment(segment),
                                     )
@@ -1261,66 +2247,34 @@ impl StreamRelay {
                             } else {
                                 "finish"
                             };
-                            if let (Some(segment), Some(chunk)) =
-                                (active_text.as_ref(), text_ws_coalesce.take())
-                            {
-                                let coalesced = AgentStreamEvent::Text(
-                                    nomifun_ai_agent::protocol::events::TextEventData {
-                                        content: chunk,
-                                    },
-                                );
-                                self.forward_to_websocket_with_msg_id(&segment.id, &coalesced);
-                                ws_emit_count += 1;
-                            }
-                            info!(
-                                ws_emit_count,
-                                ws_coalesce_chunks = text_ws_coalesce.chunk_count,
-                                ws_coalesce_emits = text_ws_coalesce.emit_count,
-                                "stream_text_turn_metrics"
-                            );
-                            let (thinking_persistence_complete, text_persistence_complete) = match tokio::time::timeout(
-                                TERMINAL_FINALIZATION_GRACE,
-                                async {
-                                    let thinking_complete = self
-                                        .complete_active_thinking(&mut active_thinking)
-                                        .await;
-                                    let thinking_complete = if thinking_complete {
-                                        true
-                                    } else {
-                                        self.retry_terminal_thinking_segment(&mut active_thinking)
-                                            .await
-                                    };
-                                    self.close_active_text_segment(
-                                        &mut active_text,
-                                        &mut text_segments,
-                                        text_status,
-                                    )
-                                    .await;
-                                    let text_complete = self.retry_terminal_text_segment(
-                                        &mut active_text,
-                                        &mut text_segments,
-                                        text_status,
-                                    )
-                                    .await;
-                                    (thinking_complete, text_complete)
-                                },
-                            )
-                            .await
-                            {
-                                Ok(complete) => complete,
-                                Err(_) => {
-                                    let thinking_complete = active_thinking.is_none();
-                                    let text_complete = active_text.is_none();
-                                    if !thinking_complete || !text_complete {
-                                        warn!(
-                                            conversation_id = %self.conversation_id,
-                                            msg_id = %self.msg_id,
-                                            "Assistant segment terminal persistence exceeded the hard bound"
-                                        );
-                                    }
-                                    (thinking_complete, text_complete)
-                                }
+                            // A terminal stream event is not execution-release
+                            // authority.  Retain this generation and await a
+                            // definitive repository result instead of dropping
+                            // a database future at an arbitrary timeout
+                            // cutpoint.  The service's durable Finished
+                            // finalizer remains the only release point.
+                            let thinking_persistence_complete = self
+                                .complete_active_thinking(&mut active_thinking)
+                                .await;
+                            let thinking_persistence_complete = if thinking_persistence_complete {
+                                true
+                            } else {
+                                self.retry_terminal_thinking_segment(&mut active_thinking)
+                                    .await
                             };
+                            self.close_active_text_segment(
+                                &mut active_text,
+                                &mut text_segments,
+                                text_status,
+                            )
+                            .await;
+                            let text_persistence_complete = self
+                                .retry_terminal_text_segment(
+                                        &mut active_text,
+                                        &mut text_segments,
+                                        text_status,
+                                    )
+                                    .await;
                             if (!thinking_persistence_complete || !text_persistence_complete)
                                 && matches!(event, AgentStreamEvent::Finish(_))
                             {
@@ -1334,17 +2288,20 @@ impl StreamRelay {
                                 && (!completed_artifact_tool_calls.is_empty()
                                     || !completed_artifact_acp_tool_calls.is_empty())
                             {
-                                let commit_result = tokio::time::timeout(
-                                    ARTIFACT_COMMIT_GRACE,
-                                    self.commit_pending_artifact_deliveries(
+                                // The transaction commit is a terminal
+                                // linearization point.  Timing out COMMIT would
+                                // make success ambiguous and could let its late
+                                // projection race the next turn, so keep the
+                                // current turn admission until it returns.
+                                let commit_result = self
+                                    .commit_pending_artifact_deliveries(
                                         &completed_artifact_tool_calls,
                                         &completed_artifact_acp_tool_calls,
-                                    ),
-                                )
-                                .await;
+                                    )
+                                    .await;
 
                                 match commit_result {
-                                    Ok(Ok(())) => {
+                                    Ok(()) => {
                                         // The transaction is now the linearization
                                         // point for artifact success. Publish every
                                         // receipt-bearing Completed frame only after
@@ -1358,7 +2315,7 @@ impl StreamRelay {
                                         completed_artifact_tool_calls.clear();
                                         completed_artifact_acp_tool_calls.clear();
                                     }
-                                    Ok(Err(commit_error)) => {
+                                    Err(commit_error) => {
                                         error!(
                                             error = %ErrorChain(&commit_error),
                                             "Atomic artifact projection failed; rejecting turn success"
@@ -1366,21 +2323,6 @@ impl StreamRelay {
                                         event = AgentStreamEvent::Error(
                                             nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
                                                 "The generated artifacts could not be committed to conversation history",
-                                                Some(AgentErrorCode::NomifunStateInconsistent),
-                                            ),
-                                        );
-                                        terminal = Self::terminal_from_event(&event);
-                                        suppress_error = false;
-                                    }
-                                    Err(_) => {
-                                        error!(
-                                            conversation_id = %self.conversation_id,
-                                            msg_id = %self.msg_id,
-                                            "Atomic artifact projection timed out; rejecting turn success"
-                                        );
-                                        event = AgentStreamEvent::Error(
-                                            nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
-                                                "Timed out while committing generated artifacts to conversation history",
                                                 Some(AgentErrorCode::NomifunStateInconsistent),
                                             ),
                                         );
@@ -1476,12 +2418,7 @@ impl StreamRelay {
                                     // unsuccessful terminal. A normal EndTurn/unspecified Finish
                                     // keeps already verified completed artifacts, while still
                                     // closing genuinely Running tools below.
-                                    self.fail_active_tool_calls(
-                                        &mut active_tool_calls,
-                                        reason,
-                                        &mut pending_superseded_call_ids,
-                                    )
-                                    .await;
+                                    self.fail_active_tool_calls(&mut active_tool_calls, reason).await;
                                     self.fail_active_acp_tool_calls(&mut active_acp_tool_calls, reason).await;
                                     self.fail_active_tool_groups(&mut active_tool_groups, reason).await;
                                 }
@@ -1517,40 +2454,7 @@ impl StreamRelay {
                             }
                             outcome
                             };
-                            let outcome = match tokio::time::timeout(
-                                TERMINAL_FINALIZATION_GRACE,
-                                terminal_cleanup,
-                            )
-                            .await
-                            {
-                                Ok(outcome) => outcome,
-                                Err(_) => {
-                                    warn!(
-                                        conversation_id = %self.conversation_id,
-                                        msg_id = %self.msg_id,
-                                        "Terminal relay finalization exceeded the hard bound"
-                                    );
-                                    if terminal_claimed {
-                                        self.forward_to_websocket_with_msg_id(&terminal_message_id, &event);
-                                    }
-                                    RelayOutcome {
-                                        system_responses: Vec::new(),
-                                        terminal: Self::terminal_from_event(&event),
-                                        stop_reason: match &event {
-                                            AgentStreamEvent::Finish(data) => data.stop_reason,
-                                            _ => None,
-                                        },
-                                        emitted_response,
-                                        suppressed_error: suppress_error.then(|| event.clone()),
-                                        final_text: (text_persistence_complete
-                                            && !full_text_buffer.trim().is_empty())
-                                            .then(|| full_text_buffer.trim().to_owned()),
-                                        final_text_msg_id: text_persistence_complete
-                                            .then(|| text_segments.last().map(|segment| segment.id.clone()))
-                                            .flatten(),
-                                    }
-                                }
-                            };
+                            let outcome = terminal_cleanup.await;
                             if terminal_claimed
                                 && let Some(cancellation) = self.cancellation.as_ref()
                             {
@@ -1560,6 +2464,7 @@ impl StreamRelay {
                                 // exact generation and publish turn.completed.
                                 cancellation.mark_terminal_observed();
                             }
+                            #[cfg(test)]
                             if self.complete_turn {
                                 Self::complete_conversation_with_context(
                                     &self.repo,
@@ -1609,26 +2514,12 @@ impl StreamRelay {
                                         );
                                         continue;
                                     }
-                                    if !self.tool_call_already_settled(&data.call_id).await {
-                                        self.supersede_orphan_preview_tool_calls(
-                                            &mut active_tool_calls,
-                                            &data,
-                                            &mut pending_superseded_call_ids,
-                                        )
-                                        .await;
-                                        tracking_overflow |= !track_bounded(
-                                            &mut active_tool_calls,
-                                            data.call_id.clone(),
-                                            data.clone(),
-                                            "tool_call",
-                                        );
-                                    } else {
-                                        debug!(
-                                            call_id = %data.call_id,
-                                            tool = %data.name,
-                                            "Ignoring stale Running tool_call event for already-settled call"
-                                        );
-                                    }
+                                    tracking_overflow |= !track_bounded(
+                                        &mut active_tool_calls,
+                                        data.call_id.clone(),
+                                        data.clone(),
+                                        "tool_call",
+                                    );
                                 }
                                 ToolCallStatus::Completed
                                 | ToolCallStatus::Error
@@ -1691,10 +2582,9 @@ impl StreamRelay {
                                 let failed_event = AgentStreamEvent::ToolCall(failed.clone());
                                 self.forward_to_websocket(&failed_event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_tool_tracking_overflow",
-                                        self.persist_tool_call(&failed, &mut pending_superseded_call_ids),
+                                        self.persist_tool_call(&failed),
                                     )
                                     .await;
                                 fatal_tracking_error = Some(
@@ -1712,10 +2602,9 @@ impl StreamRelay {
                                 let failed_event = AgentStreamEvent::ToolCall(failed.clone());
                                 self.forward_to_websocket(&failed_event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_artifact_contract_failure",
-                                        self.persist_tool_call(&failed, &mut pending_superseded_call_ids),
+                                        self.persist_tool_call(&failed),
                                     )
                                     .await;
                                 fatal_tracking_error = Some(format!(
@@ -1724,18 +2613,13 @@ impl StreamRelay {
                                 continue;
                             }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "complete_thinking_before_tool",
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
-                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
-                                ws_emit_count += 1;
-                            }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "close_text_before_tool",
                                     self.close_active_text_segment(
                                         &mut active_text,
@@ -1746,13 +2630,12 @@ impl StreamRelay {
                                 .await;
                             if has_artifact_delivery {
                                 let identity_ready = matches!(
-                                    self.bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    self.ordered_event_side_effect(
                                         "claim_artifact_tool_identity",
                                         self.try_derived_message_id("tool_call", &data.call_id),
                                     )
                                     .await,
-                                    Some(Ok(_))
+                                    Ok(_)
                                 );
                                 if !identity_ready {
                                     completed_artifact_tool_calls.remove(&data.call_id);
@@ -1779,8 +2662,7 @@ impl StreamRelay {
                                 let provisional = Self::provisional_artifact_tool_call(data);
                                 self.forward_to_websocket(&AgentStreamEvent::ToolCall(provisional));
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_provisional_artifact_tool_call",
                                         self.persist_provisional_artifact_tool_call(data),
                                     )
@@ -1788,10 +2670,9 @@ impl StreamRelay {
                             } else {
                                 self.forward_to_websocket(&event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_tool_call",
-                                        self.persist_tool_call(data, &mut pending_superseded_call_ids),
+                                        self.persist_tool_call(data),
                                     )
                                     .await;
                             }
@@ -1911,8 +2792,7 @@ impl StreamRelay {
                                 let failed_event = AgentStreamEvent::AcpToolCall(failed.clone());
                                 self.forward_to_websocket(&failed_event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_acp_tracking_overflow",
                                         self.persist_acp_tool_call(&failed),
                                     )
@@ -1942,8 +2822,7 @@ impl StreamRelay {
                                 let failed_event = AgentStreamEvent::AcpToolCall(failed.clone());
                                 self.forward_to_websocket(&failed_event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_acp_artifact_contract_failure",
                                         self.persist_acp_tool_call(&failed),
                                     )
@@ -1954,18 +2833,13 @@ impl StreamRelay {
                                 continue;
                             }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "complete_thinking_before_acp_tool",
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
-                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
-                                ws_emit_count += 1;
-                            }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "close_text_before_acp_tool",
                                     self.close_active_text_segment(
                                         &mut active_text,
@@ -1978,8 +2852,7 @@ impl StreamRelay {
                                 && has_artifact_delivery
                             {
                                 let identity_ready = matches!(
-                                    self.bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    self.ordered_event_side_effect(
                                         "claim_artifact_acp_tool_identity",
                                         self.try_derived_message_id(
                                             "acp_tool_call",
@@ -1987,7 +2860,7 @@ impl StreamRelay {
                                         ),
                                     )
                                     .await,
-                                    Some(Ok(_))
+                                    Ok(_)
                                 );
                                 if !identity_ready {
                                     completed_artifact_acp_tool_calls.remove(&tool_call_id);
@@ -2019,8 +2892,7 @@ impl StreamRelay {
                                     Self::provisional_artifact_acp_tool_call(&effective_data);
                                 self.forward_to_websocket(&AgentStreamEvent::AcpToolCall(provisional));
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_provisional_artifact_acp_tool_call",
                                         self.persist_provisional_artifact_acp_tool_call(
                                             &effective_data,
@@ -2032,8 +2904,7 @@ impl StreamRelay {
                                     effective_data.clone(),
                                 ));
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_acp_tool_call",
                                         self.persist_acp_tool_call(&effective_data),
                                     )
@@ -2064,8 +2935,7 @@ impl StreamRelay {
                                 let failed_event = AgentStreamEvent::ToolGroup(failed.clone());
                                 self.forward_to_websocket(&failed_event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_tool_group_artifact_contract_failure",
                                         self.persist_tool_group(&failed),
                                     )
@@ -2105,18 +2975,13 @@ impl StreamRelay {
                                 }
                             }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "complete_thinking_before_tool_group",
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
-                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
-                                ws_emit_count += 1;
-                            }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "close_text_before_tool_group",
                                     self.close_active_text_segment(
                                         &mut active_text,
@@ -2127,8 +2992,7 @@ impl StreamRelay {
                                 .await;
                             self.forward_to_websocket(&AgentStreamEvent::ToolGroup(entries.to_vec()));
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "persist_tool_group",
                                     self.persist_tool_group(entries),
                                 )
@@ -2139,13 +3003,12 @@ impl StreamRelay {
                             if data.backend == "nomi" && (data.status == "preparing" || data.status == "prepared") {
                                 active_agent_status = Some(data.clone());
                                 let persisted = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_agent_status",
                                         self.persist_agent_status(data),
                                     )
                                     .await;
-                                if data.status == "prepared" && persisted == Some(true) {
+                                if data.status == "prepared" && persisted {
                                     active_agent_status = None;
                                 }
                             }
@@ -2153,18 +3016,13 @@ impl StreamRelay {
                         AgentStreamEvent::Plan(data) => {
                             emitted_response = true;
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "complete_thinking_before_plan",
                                     self.complete_active_thinking(&mut active_thinking),
                                 )
                                 .await;
-                            if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
-                                ws_emit_count += 1;
-                            }
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "close_text_before_plan",
                                     self.close_active_text_segment(
                                         &mut active_text,
@@ -2184,6 +3042,7 @@ impl StreamRelay {
                                         output: None,
                                         description: None,
                                         artifacts: Vec::new(),
+                                        retry: None,
                                     }
                                 });
                                 source.status = ToolCallStatus::Completed;
@@ -2196,30 +3055,18 @@ impl StreamRelay {
                                 let source_event = AgentStreamEvent::ToolCall(source.clone());
                                 self.forward_to_websocket_hidden(&source_event);
                                 let _ = self
-                                    .bounded_event_side_effect(
-                                        event_side_effect_deadline,
+                                    .ordered_event_side_effect(
                                         "persist_plan_source_tool",
-                                        self.persist_tool_call_with_hidden(
-                                            &source,
-                                            true,
-                                            &mut pending_superseded_call_ids,
-                                        ),
+                                        self.persist_tool_call_with_hidden(&source, true),
                                     )
                                     .await;
                             }
                             let plan_id = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "resolve_plan_message_id",
                                     self.plan_message_id(data),
                                 )
-                                .await
-                                .unwrap_or_else(|| {
-                                    Self::mint_segment_msg_id(
-                                        &mut used_primary_segment_msg_id,
-                                        &self.msg_id,
-                                    )
-                                });
+                                .await;
                             if data.entries.iter().all(|entry| {
                                 entry.get("status").and_then(serde_json::Value::as_str) == Some("completed")
                             }) {
@@ -2233,8 +3080,7 @@ impl StreamRelay {
                             }
                             self.forward_to_websocket_with_msg_id(&plan_id, &event);
                             let _ = self
-                                .bounded_event_side_effect(
-                                    event_side_effect_deadline,
+                                .ordered_event_side_effect(
                                     "persist_plan",
                                     self.persist_plan(data),
                                 )
@@ -2334,21 +3180,13 @@ impl StreamRelay {
                             self.retry_terminal_thinking_segment(&mut active_thinking)
                                 .await
                         };
-                        if self.flush_text_ws_coalesce(&active_text, &mut text_ws_coalesce) {
-                            ws_emit_count += 1;
-                        }
                         self.close_active_text_segment(
                             &mut active_text,
                             &mut text_segments,
                             "error",
                         )
                         .await;
-                        self.fail_active_tool_calls(
-                            &mut active_tool_calls,
-                            incomplete_reason,
-                            &mut pending_superseded_call_ids,
-                        )
-                        .await;
+                        self.fail_active_tool_calls(&mut active_tool_calls, incomplete_reason).await;
                         self.fail_active_acp_tool_calls(&mut active_acp_tool_calls, incomplete_reason)
                             .await;
                         self.fail_active_tool_groups(&mut active_tool_groups, incomplete_reason)
@@ -2396,53 +3234,13 @@ impl StreamRelay {
                         }
                         outcome
                     };
-                    let outcome = match tokio::time::timeout(
-                        TERMINAL_FINALIZATION_GRACE,
-                        terminal_cleanup,
-                    )
-                    .await
-                    {
-                        Ok(outcome) => outcome,
-                        Err(_) => {
-                            warn!(
-                                conversation_id = %self.conversation_id,
-                                msg_id = %self.msg_id,
-                                "Channel-closed relay finalization exceeded the hard bound"
-                            );
-                            let thinking_persistence_complete = active_thinking.is_none();
-                            let text_persistence_complete = active_text.is_none();
-                            if (!thinking_persistence_complete || !text_persistence_complete)
-                                && matches!(terminal_event, AgentStreamEvent::Finish(_))
-                            {
-                                terminal_event = Self::assistant_segment_persistence_error_event();
-                                terminal_message_id = ConversationService::mint_msg_id();
-                            }
-                            if terminal_claimed {
-                                self.forward_to_websocket_with_msg_id(&terminal_message_id, &terminal_event);
-                            }
-                            RelayOutcome {
-                                system_responses: Vec::new(),
-                                terminal: Self::terminal_from_event(&terminal_event),
-                                stop_reason: match &terminal_event {
-                                    AgentStreamEvent::Finish(data) => data.stop_reason,
-                                    _ => None,
-                                },
-                                emitted_response,
-                                suppressed_error: None,
-                                final_text: (text_persistence_complete
-                                    && !full_text_buffer.trim().is_empty())
-                                    .then(|| full_text_buffer.trim().to_owned()),
-                                final_text_msg_id: text_persistence_complete
-                                    .then(|| text_segments.last().map(|segment| segment.id.clone()))
-                                    .flatten(),
-                            }
-                        }
-                    };
+                    let outcome = terminal_cleanup.await;
                     if terminal_claimed
                         && let Some(cancellation) = self.cancellation.as_ref()
                     {
                         cancellation.mark_terminal_observed();
                     }
+                    #[cfg(test)]
                     if self.complete_turn {
                         Self::complete_conversation_with_context(
                             &self.repo,
@@ -2487,7 +3285,6 @@ impl StreamRelay {
             AgentStreamEvent::AcpConfigOption(_) => "AcpConfigOption",
             AgentStreamEvent::AcpSessionInfo(_) => "AcpSessionInfo",
             AgentStreamEvent::AcpContextUsage(_) => "AcpContextUsage",
-            AgentStreamEvent::AcpPromptHookWarning(_) => "AcpPromptHookWarning",
             AgentStreamEvent::SlashCommandsUpdated(_) => "SlashCommandsUpdated",
             AgentStreamEvent::AvailableCommands(_) => "AvailableCommands",
             AgentStreamEvent::TurnCompleted(_) => "TurnCompleted",
@@ -2624,13 +3421,17 @@ impl StreamRelay {
             Err(error) => error,
         };
 
-        let existing = match self.repo.get_message(&row.conversation_id, &row.id).await {
+        let existing = match self
+            .repo
+            .get_message(&row.conversation_id, &row.message_id)
+            .await
+        {
             Ok(Some(existing)) => existing,
             Ok(None) => {
                 error!(
                     error = %ErrorChain(&insert_error),
                     operation,
-                    message_id = %row.id,
+                    message_id = %row.message_id,
                     "Failed to insert stream segment and no committed row was found to reconcile"
                 );
                 return false;
@@ -2640,7 +3441,7 @@ impl StreamRelay {
                     error = %ErrorChain(&insert_error),
                     reconcile_error = %ErrorChain(&reconcile_error),
                     operation,
-                    message_id = %row.id,
+                    message_id = %row.message_id,
                     "Failed to inspect an ambiguous stream-segment insert"
                 );
                 return false;
@@ -2657,7 +3458,7 @@ impl StreamRelay {
             error!(
                 error = %ErrorChain(&insert_error),
                 operation,
-                message_id = %row.id,
+                message_id = %row.message_id,
                 stored_type = %existing.r#type,
                 expected_type = %row.r#type,
                 stored_msg_id = ?existing.msg_id,
@@ -2672,12 +3473,12 @@ impl StreamRelay {
             status: Some(row.status.clone()),
             hidden: Some(row.hidden),
         };
-        match self.repo.update_message(&row.id, &update).await {
+        match self.repo.update_message(&row.message_id, &update).await {
             Ok(()) => {
                 warn!(
                     error = %ErrorChain(&insert_error),
                     operation,
-                    message_id = %row.id,
+                    message_id = %row.message_id,
                     "Reconciled an ambiguous stream-segment insert against its committed row"
                 );
                 true
@@ -2687,7 +3488,7 @@ impl StreamRelay {
                     error = %ErrorChain(&insert_error),
                     reconcile_error = %ErrorChain(&reconcile_error),
                     operation,
-                    message_id = %row.id,
+                    message_id = %row.message_id,
                     "Failed to reconcile an ambiguous stream-segment insert"
                 );
                 false
@@ -2719,7 +3520,8 @@ impl StreamRelay {
             }
         } else {
             let row = MessageRow {
-                id: segment.id.clone(),
+                id: 0,
+                message_id: segment.id.clone(),
                 conversation_id: self.conversation_id.clone(),
                 msg_id: Some(segment.id.clone()),
                 r#type: "text".into(),
@@ -2765,7 +3567,8 @@ impl StreamRelay {
             }
         } else {
             let row = MessageRow {
-                id: segment.id.clone(),
+                id: 0,
+                message_id: segment.id.clone(),
                 conversation_id: self.conversation_id.clone(),
                 msg_id: Some(segment.id.clone()),
                 r#type: "text".into(),
@@ -2918,7 +3721,8 @@ impl StreamRelay {
                 }
             } else if !hidden {
                 let row = MessageRow {
-                    id: self.msg_id.clone(),
+                    id: 0,
+                    message_id: self.msg_id.clone(),
                     conversation_id: self.conversation_id.clone(),
                     msg_id: Some(self.msg_id.clone()),
                     r#type: "text".into(),
@@ -2933,7 +3737,7 @@ impl StreamRelay {
                     created_at: now_ms(),
                 };
                 match self.repo.insert_message(&row).await {
-                    Ok(()) => outcome.final_text_msg_id = Some(row.id.clone()),
+                    Ok(()) => outcome.final_text_msg_id = Some(row.message_id.clone()),
                     Err(e) => {
                         outcome.final_text = None;
                         error!(error = %ErrorChain(&e), "Failed to create final fallback message");
@@ -2973,7 +3777,8 @@ impl StreamRelay {
         })
         .to_string();
         let row = MessageRow {
-            id: message_id.to_owned(),
+            id: 0,
+            message_id: message_id.to_owned(),
             conversation_id: self.conversation_id.clone(),
             msg_id: Some(message_id.to_owned()),
             r#type: "tips".into(),
@@ -3032,7 +3837,8 @@ impl StreamRelay {
         }
 
         let row = MessageRow {
-            id: id.clone(),
+            id: 0,
+            message_id: id.clone(),
             conversation_id: self.conversation_id.clone(),
             msg_id: Some(self.root_turn_id.clone()),
             r#type: "agent_status".into(),
@@ -3127,7 +3933,8 @@ impl StreamRelay {
         }
 
         let row = MessageRow {
-            id: plan_id.clone(),
+            id: 0,
+            message_id: plan_id.clone(),
             conversation_id: self.conversation_id.clone(),
             msg_id: Some(plan_id),
             r#type: "plan".into(),
@@ -3166,7 +3973,8 @@ impl StreamRelay {
         }
 
         let row = MessageRow {
-            id: segment.id.clone(),
+            id: 0,
+            message_id: segment.id.clone(),
             conversation_id: self.conversation_id.clone(),
             msg_id: Some(segment.id.clone()),
             r#type: "thinking".into(),
@@ -3207,26 +4015,6 @@ impl StreamRelay {
         } else {
             true
         }
-    }
-
-    fn flush_text_ws_coalesce(
-        &self,
-        active_text: &Option<TextSegmentState>,
-        coalesce: &mut TextWsCoalesce,
-    ) -> bool {
-        let Some(segment) = active_text.as_ref() else {
-            return false;
-        };
-        let Some(chunk) = coalesce.take() else {
-            return false;
-        };
-        self.forward_to_websocket_with_msg_id(
-            &segment.id,
-            &AgentStreamEvent::Text(nomifun_ai_agent::protocol::events::TextEventData {
-                content: chunk,
-            }),
-        );
-        true
     }
 
     #[tracing::instrument(skip_all)]
@@ -3294,13 +4082,8 @@ impl StreamRelay {
 
     /// Persist a Gemini-style tool_call event.
     #[tracing::instrument(skip_all)]
-    async fn persist_tool_call(
-        &self,
-        data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
-        pending_superseded_call_ids: &mut HashSet<String>,
-    ) {
-        self.persist_tool_call_with_hidden(data, false, pending_superseded_call_ids)
-            .await;
+    async fn persist_tool_call(&self, data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData) {
+        self.persist_tool_call_with_hidden(data, false).await;
     }
 
     async fn persist_provisional_artifact_tool_call(
@@ -3308,8 +4091,7 @@ impl StreamRelay {
         data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
     ) -> bool {
         let provisional = Self::provisional_artifact_tool_call(data);
-        let mut noop_pending = HashSet::new();
-        self.persist_tool_call_projection(&provisional, false, Some(false), &mut noop_pending)
+        self.persist_tool_call_projection(&provisional, false, Some(false))
             .await
     }
 
@@ -3325,11 +4107,8 @@ impl StreamRelay {
         &self,
         data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
         hidden: bool,
-        pending_superseded_call_ids: &mut HashSet<String>,
     ) {
-        let _ = self
-            .persist_tool_call_projection(data, hidden, None, pending_superseded_call_ids)
-            .await;
+        let _ = self.persist_tool_call_projection(data, hidden, None).await;
     }
 
     async fn persist_tool_call_projection(
@@ -3337,7 +4116,6 @@ impl StreamRelay {
         data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
         hidden: bool,
         artifact_delivery_committed: Option<bool>,
-        pending_superseded_call_ids: &mut HashSet<String>,
     ) -> bool {
         if data.call_id.trim().is_empty() {
             warn!(
@@ -3350,8 +4128,9 @@ impl StreamRelay {
 
         let status = match data.status {
             ToolCallStatus::Running => "work",
-            ToolCallStatus::Completed | ToolCallStatus::Canceled => "finish",
+            ToolCallStatus::Completed => "finish",
             ToolCallStatus::Error => "error",
+            ToolCallStatus::Canceled => "cancelled",
         };
         let message_id = self.tool_message_id(&data.call_id).await;
         let mut content_value = serde_json::to_value(data).unwrap_or_default();
@@ -3383,17 +4162,6 @@ impl StreamRelay {
                 return false;
             }
         };
-
-        if let Some(existing_row) = &existing {
-            if status == "work" && Self::tool_call_row_is_settled(existing_row) {
-                debug!(
-                    call_id = %data.call_id,
-                    tool = %data.name,
-                    "Ignoring stale Running tool_call update for already-settled call"
-                );
-                return false;
-            }
-        }
 
         if let Some(existing_row) = existing {
             let existing_artifact_committed = serde_json::from_str::<Value>(&existing_row.content)
@@ -3453,42 +4221,23 @@ impl StreamRelay {
                 );
             }
         } else {
-            let superseded = pending_superseded_call_ids.remove(&data.call_id);
-            let row_status = if superseded { "finish" } else { status };
-            // Persist the same enriched projection the update path writes — the
-            // `turn_id`, artifact-delivery marker, and normalized `artifacts` —
-            // instead of a bare re-serialization that silently drops them from a
-            // first-seen row. A superseded preview still resolves to Completed.
-            let insert_content = if superseded {
-                let mut value = content_value;
-                if let Some(object) = value.as_object_mut() {
-                    object.insert(
-                        "status".to_owned(),
-                        serde_json::to_value(ToolCallStatus::Completed)
-                            .unwrap_or_else(|_| json!("completed")),
-                    );
-                }
-                value.to_string()
-            } else {
-                content
-            };
-
             let row = MessageRow {
-                id: message_id.clone(),
+                id: 0,
+                message_id: message_id.clone(),
                 conversation_id: self.conversation_id.clone(),
                 msg_id: Some(self.root_turn_id.clone()),
                 r#type: "tool_call".into(),
-                content: insert_content,
+                content,
                 position: Some("left".into()),
-                status: Some(row_status.to_owned()),
-                hidden: hidden || superseded,
+                status: Some(status.to_owned()),
+                hidden,
                 created_at: now_ms(),
             };
             if let Err(e) = self.repo.insert_message(&row).await {
                 error!(
                     call_id = %data.call_id,
                     tool = %data.name,
-                    status = row_status,
+                    status,
                     error = %ErrorChain(&e),
                     "Failed to persist tool_call message"
                 );
@@ -3497,7 +4246,7 @@ impl StreamRelay {
                 debug!(
                     call_id = %data.call_id,
                     tool = %data.name,
-                    status = row_status,
+                    status,
                     "Persisted tool_call message"
                 );
             }
@@ -3523,104 +4272,6 @@ impl StreamRelay {
                 None => Some("finish"),
             },
             _ => None,
-        }
-    }
-
-    fn tool_call_row_is_settled(row: &MessageRow) -> bool {
-        if matches!(row.status.as_deref(), Some("finish") | Some("error")) {
-            return true;
-        }
-        serde_json::from_str::<nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData>(&row.content)
-            .ok()
-            .is_some_and(|data| {
-                matches!(
-                    data.status,
-                    ToolCallStatus::Completed | ToolCallStatus::Error | ToolCallStatus::Canceled
-                )
-            })
-    }
-
-    async fn tool_call_already_settled(&self, call_id: &str) -> bool {
-        let message_id = self.tool_message_id(call_id).await;
-        let Ok(Some(row)) = self.repo.get_message(self.conv_id(), &message_id).await else {
-            return false;
-        };
-        Self::tool_call_row_is_settled(&row)
-    }
-
-    /// Drop superseded streaming previews (text-channel tool progress, partial Browser
-    /// args) so they are not left active until the turn ends with a false `end_turn`.
-    async fn supersede_orphan_preview_tool_calls(
-        &self,
-        active_tool_calls: &mut HashMap<String, ToolCallEventData>,
-        canonical: &ToolCallEventData,
-        pending_superseded_call_ids: &mut HashSet<String>,
-    ) {
-        let superseded: Vec<String> = active_tool_calls
-            .iter()
-            .filter(|(_, preview)| should_supersede_preview(preview, canonical))
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        for call_id in superseded {
-            active_tool_calls.remove(&call_id);
-            self.hide_tool_call_message(&call_id, pending_superseded_call_ids)
-                .await;
-        }
-    }
-
-    async fn hide_tool_call_message(
-        &self,
-        call_id: &str,
-        pending_superseded_call_ids: &mut HashSet<String>,
-    ) {
-        let message_id = self.tool_message_id(call_id).await;
-        let content = self
-            .repo
-            .get_message(self.conv_id(), &message_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|row| Self::superseded_preview_content(&row.content));
-
-        let update = MessageRowUpdate {
-            content,
-            status: Some(Some("finish".to_owned())),
-            hidden: Some(true),
-        };
-        match self.repo.update_message(&message_id, &update).await {
-            Ok(()) => {
-                pending_superseded_call_ids.remove(call_id);
-                debug!(call_id, "Hidden superseded tool_call preview message");
-                self.broadcast_stream_payload(json!({
-                    "conversation_id": self.conv_id(),
-                    "msg_id": message_id,
-                    "type": "tool_call",
-                    "data": {
-                        "call_id": call_id,
-                        "status": "completed",
-                        "superseded": true,
-                    },
-                    "status": "finish",
-                    "hidden": true,
-                    "replace": true,
-                }));
-            }
-            Err(e) => {
-                if matches!(e, DbError::NotFound(_)) {
-                    pending_superseded_call_ids.insert(call_id.to_owned());
-                    debug!(
-                        call_id,
-                        "Queued superseded tool_call preview for hidden insert (row not persisted yet)"
-                    );
-                } else {
-                    debug!(
-                        call_id,
-                        error = %ErrorChain(&e),
-                        "Could not hide superseded tool_call preview"
-                    );
-                }
-            }
         }
     }
 
@@ -3757,7 +4408,7 @@ impl StreamRelay {
         let mut commits = Vec::with_capacity(generic_calls.len() + acp_calls.len());
         for data in generic_calls {
             commits.push(TurnArtifactMessageCommit {
-                id: self
+                message_id: self
                     .try_derived_message_id("tool_call", &data.call_id)
                     .await?,
                 message_type: "tool_call".to_owned(),
@@ -3766,7 +4417,7 @@ impl StreamRelay {
         }
         for data in acp_calls {
             commits.push(TurnArtifactMessageCommit {
-                id: self
+                message_id: self
                     .try_derived_message_id("acp_tool_call", &data.update.tool_call_id)
                     .await?,
                 message_type: "acp_tool_call".to_owned(),
@@ -3776,7 +4427,7 @@ impl StreamRelay {
 
         let expected_ids = commits
             .iter()
-            .map(|message| message.id.as_str())
+            .map(|message| message.message_id.as_str())
             .collect::<HashSet<_>>();
         let committed = self
             .repo
@@ -3790,7 +4441,7 @@ impl StreamRelay {
         if committed.len() != commits.len()
             || committed
                 .iter()
-                .any(|row| !expected_ids.contains(row.id.as_str()))
+                .any(|row| !expected_ids.contains(row.message_id.as_str()))
         {
             return Err(nomifun_db::DbError::Conflict(
                 "artifact commit returned an incomplete or mismatched durable batch".to_owned(),
@@ -3899,9 +4550,8 @@ impl StreamRelay {
     }
 
     async fn persist_failed_tool_calls(&self, failed: &[ToolCallEventData]) {
-        let mut noop_pending = HashSet::new();
         for data in failed {
-            self.persist_tool_call(data, &mut noop_pending).await;
+            self.persist_tool_call(data).await;
         }
     }
 
@@ -3909,34 +4559,10 @@ impl StreamRelay {
         &self,
         active_tool_calls: &mut HashMap<String, ToolCallEventData>,
         reason: &str,
-        pending_superseded_call_ids: &mut HashSet<String>,
     ) {
-        if active_tool_calls.is_empty() {
-            return;
-        }
-
-        let output = format!("The turn ended before this tool completed: {reason}");
-        let drained: Vec<(String, ToolCallEventData)> = active_tool_calls.drain().collect();
-        let mut canceled = Vec::new();
-        for (call_id, mut data) in drained {
-            if self.tool_call_already_settled(&call_id).await {
-                debug!(
-                    call_id = %call_id,
-                    tool = %data.name,
-                    "Skipping fail_active for tool call already settled"
-                );
-                continue;
-            }
-            data.status = ToolCallStatus::Canceled;
-            data.output = Some(output.clone());
-            canceled.push(data);
-        }
-
-        for data in canceled {
-            let event = AgentStreamEvent::ToolCall(data.clone());
-            self.forward_to_websocket(&event);
-            self.persist_tool_call(&data, pending_superseded_call_ids).await;
-        }
+        let failed = Self::take_failed_tool_calls(active_tool_calls, reason);
+        self.broadcast_failed_tool_calls(&failed);
+        self.persist_failed_tool_calls(&failed).await;
     }
 
     fn take_failed_acp_tool_calls(
@@ -4183,7 +4809,8 @@ impl StreamRelay {
         }
 
         let row = MessageRow {
-            id: message_id.clone(),
+            id: 0,
+            message_id: message_id.clone(),
             conversation_id: self.conversation_id.clone(),
             msg_id: Some(self.root_turn_id.clone()),
             r#type: "acp_tool_call".into(),
@@ -4202,17 +4829,6 @@ impl StreamRelay {
 
     async fn acp_tool_message_id(&self, tool_call_id: &str) -> String {
         self.derived_message_id("acp_tool_call", tool_call_id).await
-    }
-
-    /// Patch stored tool_call JSON so superseded previews show terminal status in content.
-    fn superseded_preview_content(existing_json: &str) -> String {
-        match serde_json::from_str::<ToolCallEventData>(existing_json) {
-            Ok(mut data) => {
-                data.status = ToolCallStatus::Completed;
-                serde_json::to_string(&data).unwrap_or_else(|_| existing_json.to_owned())
-            }
-            Err(_) => existing_json.to_owned(),
-        }
     }
 
     /// Merge two JSON content strings: overlays non-null fields from `new_json`
@@ -4316,7 +4932,8 @@ impl StreamRelay {
             }
         } else {
             let row = MessageRow {
-                id: group_id.clone(),
+                id: 0,
+                message_id: group_id.clone(),
                 conversation_id: self.conversation_id.clone(),
                 msg_id: Some(self.root_turn_id.clone()),
                 r#type: "tool_group".into(),
@@ -4398,21 +5015,32 @@ impl StreamRelay {
             obj.insert("origin".into(), json!(self.origin));
             obj.insert("channel_platform".into(), json!(self.channel_platform));
         }
-        static WS_STREAM_EMITS: AtomicU64 = AtomicU64::new(0);
-        let total = WS_STREAM_EMITS.fetch_add(1, Ordering::Relaxed) + 1;
-        if total % 64 == 0 {
-            debug!(total_ws_stream_emits = total, "stream_ws_emit_baseline");
-        }
         let msg = WebSocketMessage::new("message.stream", payload);
-        self.user_events.send_to_user(&self.user_id, msg);
+        // Realtime delivery is a projection, never execution authority.  A
+        // custom/embedded sink panic must not unwind the relay owner and then
+        // panic again in the service's terminal-error recovery path, which
+        // would otherwise strand the durable Conversation in Running with an
+        // accepted receipt.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.user_events.send_to_user(&self.user_id, msg);
+        }))
+        .is_err()
+        {
+            error!(
+                conversation_id = %self.conversation_id,
+                turn_id = %self.root_turn_id,
+                "User event sink panicked while projecting an agent stream event"
+            );
+        }
     }
 
     /// Emit `turn.completed` for the conversation, with the companion-companion
     /// wire markers and the turn's `origin` marker attached to the
     /// `turn.completed` payload (see [`Self::with_companion_context`] /
     /// [`Self::with_origin`]).
+    #[cfg(test)]
     #[tracing::instrument(skip_all, fields(conversation_id = %conversation_id))]
-    pub async fn complete_conversation_with_context(
+    async fn complete_conversation_with_context(
         repo: &Arc<dyn IConversationRepository>,
         user_events: &Arc<dyn UserEventSink>,
         user_id: &str,
@@ -4424,7 +5052,13 @@ impl StreamRelay {
         origin: Option<String>,
         channel_platform: Option<String>,
     ) {
-        Self::persist_conversation_finished(repo, conversation_id).await;
+        if !Self::persist_conversation_finished(repo, conversation_id).await {
+            warn!(
+                conversation_id,
+                "Suppressing turn.completed because durable Finished persistence failed"
+            );
+            return;
+        }
         Self::broadcast_turn_completed_with_context(
             user_events,
             user_id,
@@ -4438,27 +5072,25 @@ impl StreamRelay {
         );
     }
 
-    pub async fn persist_conversation_finished(
+    #[cfg(test)]
+    async fn persist_conversation_finished(
         repo: &Arc<dyn IConversationRepository>,
         conversation_id: &str,
-    ) {
+    ) -> bool {
         let update = nomifun_db::ConversationRowUpdate {
             status: Some("finished".to_owned()),
             updated_at: Some(now_ms()),
             ..Default::default()
         };
-        match tokio::time::timeout(
-            TURN_COMPLETION_PERSIST_GRACE,
-            repo.update(conversation_id, &update),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                error!(error = %ErrorChain(&e), "Failed to update conversation status");
-            }
-            Err(_) => {
-                warn!(conversation_id, "Timed out updating conversation status");
+        match repo.update(conversation_id, &update).await {
+            Ok(()) => true,
+            Err(e) => {
+                error!(
+                    conversation_id,
+                    error = %ErrorChain(&e),
+                    "Failed to persist durable Finished conversation status"
+                );
+                false
             }
         }
     }
@@ -4487,7 +5119,19 @@ impl StreamRelay {
             "channel_platform": channel_platform,
         });
         let msg = WebSocketMessage::new("turn.completed", payload);
-        user_events.send_to_user(user_id, msg);
+        // Finished and exact release are already durable before production
+        // callers reach this projection.  Keep a sink bug observational: it
+        // may lose a wake-up, but it must not unwind lifecycle cleanup.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            user_events.send_to_user(user_id, msg);
+        }))
+        .is_err()
+        {
+            error!(
+                conversation_id,
+                "User event sink panicked while projecting turn.completed"
+            );
+        }
 
         debug!(conversation_id, status = "finished", "Turn completed");
     }
@@ -4579,60 +5223,162 @@ impl ICronService for SharedCronService {
 }
 
 #[cfg(test)]
-impl StreamRelay {
-    async fn test_hide_tool_call_message(
-        &self,
-        call_id: &str,
-        pending_superseded_call_ids: &mut HashSet<String>,
-    ) {
-        self.hide_tool_call_message(call_id, pending_superseded_call_ids)
-            .await;
-    }
-
-    async fn test_persist_tool_call(
-        &self,
-        data: &ToolCallEventData,
-        pending_superseded_call_ids: &mut HashSet<String>,
-    ) {
-        self.persist_tool_call(data, pending_superseded_call_ids).await;
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use nomifun_ai_agent::protocol::events::{
         ErrorEventData, FinishEventData, PlanEventData, TextEventData, ThinkingEventData,
     };
-    use nomifun_common::{ConversationId, MessageId};
+    use nomifun_common::{ConversationId, MessageId, PersistedArtifactId};
     use nomifun_db::DbError;
-    use std::collections::HashSet;
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering},
     };
 
-    const TEST_ASSISTANT_MESSAGE_ID: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678941";
-    const TEST_TURN_A: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678942";
-    const TEST_TURN_B: &str = "msg_0190f5fe-7c00-7a00-8abc-012345678943";
-    const TEST_USER_ID: &str = "user_0190f5fe-7c00-7a00-8abc-012345678944";
+    const TEST_ASSISTANT_MESSAGE_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678941";
+    const TEST_TURN_A: &str = "0190f5fe-7c00-7a00-8abc-012345678942";
+    const TEST_TURN_B: &str = "0190f5fe-7c00-7a00-8abc-012345678943";
+    const TEST_USER_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678944";
 
     fn test_conversation_id() -> String {
         ConversationId::new().into_string()
     }
 
+    fn test_writeback_attempt(
+        repo: Arc<dyn IConversationRepository>,
+        user_events: Arc<dyn UserEventSink>,
+        user_id: String,
+        conversation_id: String,
+        msg_id: String,
+    ) -> TurnWritebackAttempt {
+        TurnWritebackAttempt::new(
+            repo,
+            user_events,
+            user_id,
+            conversation_id,
+            msg_id,
+            TEST_TURN_A.to_owned(),
+            "conversation".to_owned(),
+            "answer".to_owned(),
+            Vec::new(),
+            Vec::new(),
+            1,
+        )
+    }
+
     #[test]
-    fn text_ws_coalesce_flushes_first_visible_chunk_immediately() {
-        let mut coalesce = TextWsCoalesce::default();
-        assert!(coalesce.push("Hi"));
-        assert_eq!(coalesce.take().as_deref(), Some("Hi"));
-        assert!(!coalesce.push(" next"));
-        assert_eq!(coalesce.take().as_deref(), Some(" next"));
+    fn corrected_retry_path_clears_historical_failure_terminal_state() {
+        let kb_id = nomifun_common::KnowledgeBaseId::new();
+        let report = nomifun_knowledge::TurnWritebackReport {
+            status: nomifun_knowledge::TurnWritebackStatus::Written,
+            candidates: 1,
+            written: vec![nomifun_knowledge::WriteOutcome {
+                kb_id: kb_id.clone(),
+                final_rel_path: "Foo.md".into(),
+                op: nomifun_knowledge::WriteOp::Create,
+                staged: false,
+            }],
+            failures: Vec::new(),
+        };
+        let prior_failures = vec![json!({
+            "kb_id": kb_id,
+            "rel_path": "Foo?.md",
+            "error": "path component is not portable",
+        })];
+
+        let state = turn_writeback_final_state(
+            &report,
+            "attempt-2",
+            2,
+            1,
+            2,
+            &[],
+            &prior_failures,
+            "scope",
+        );
+
+        assert_eq!(state["status"], "written");
+        assert_eq!(state["retryable"], false);
+        assert_eq!(state["failures"], json!([]));
+        assert_eq!(state["written"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn retry_without_candidate_keeps_unresolved_target_retryable() {
+        let kb_id = nomifun_common::KnowledgeBaseId::new();
+        let report = nomifun_knowledge::TurnWritebackReport {
+            status: nomifun_knowledge::TurnWritebackStatus::NoCandidate,
+            candidates: 0,
+            written: Vec::new(),
+            failures: Vec::new(),
+        };
+        let prior_written = vec![json!({
+            "kb_id": kb_id,
+            "rel_path": "A.md",
+            "staged": false,
+        })];
+        let prior_failures = vec![json!({
+            "kb_id": kb_id,
+            "rel_path": "B.md",
+            "error": "temporary failure",
+        })];
+
+        let state = turn_writeback_final_state(
+            &report,
+            "attempt-2",
+            2,
+            1,
+            2,
+            &prior_written,
+            &prior_failures,
+            "scope",
+        );
+
+        assert_eq!(state["status"], "partial");
+        assert_eq!(state["retryable"], true);
+        assert_eq!(state["failures"], json!(prior_failures));
+    }
+
+    #[test]
+    fn retry_success_in_another_base_does_not_clear_prior_failure() {
+        let failed_kb = nomifun_common::KnowledgeBaseId::new();
+        let written_kb = nomifun_common::KnowledgeBaseId::new();
+        let report = nomifun_knowledge::TurnWritebackReport {
+            status: nomifun_knowledge::TurnWritebackStatus::Written,
+            candidates: 1,
+            written: vec![nomifun_knowledge::WriteOutcome {
+                kb_id: written_kb,
+                final_rel_path: "Unrelated.md".into(),
+                op: nomifun_knowledge::WriteOp::Create,
+                staged: false,
+            }],
+            failures: Vec::new(),
+        };
+        let prior_failures = vec![json!({
+            "kb_id": failed_kb,
+            "rel_path": "StillPending.md",
+            "error": "temporary failure",
+        })];
+
+        let state = turn_writeback_final_state(
+            &report,
+            "attempt-2",
+            2,
+            1,
+            2,
+            &[],
+            &prior_failures,
+            "scope",
+        );
+
+        assert_eq!(state["status"], "partial");
+        assert_eq!(state["retryable"], true);
+        assert_eq!(state["failures"], json!(prior_failures));
     }
 
     fn test_artifact(id: &str) -> nomifun_ai_agent::artifact_store::PersistedArtifact {
         nomifun_ai_agent::artifact_store::PersistedArtifact {
-            id: id.into(),
+            id: PersistedArtifactId::new().into_string(),
             kind: nomifun_ai_agent::artifact_store::ArtifactKind::Image,
             mime_type: "image/png".into(),
             path: format!("/workspace/{id}.png"),
@@ -4674,6 +5420,641 @@ mod tests {
     impl UserEventSink for TestUserEventBus {
         fn send_to_user(&self, _user_id: &str, event: WebSocketMessage<Value>) {
             let _ = self.sender.send(event);
+        }
+    }
+
+    struct PanicUserEventSink {
+        calls: AtomicUsize,
+    }
+
+    impl PanicUserEventSink {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl UserEventSink for PanicUserEventSink {
+        fn send_to_user(&self, _user_id: &str, _event: WebSocketMessage<Value>) {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            panic!("injected write-back event sink panic");
+        }
+    }
+
+    fn seed_writeback_message(
+        repo: &RecordingRepo,
+        conversation_id: &str,
+        message_id: &str,
+        content: Value,
+    ) {
+        repo.inserts.lock().unwrap().push(MessageRow {
+            id: 0,
+            message_id: message_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            msg_id: Some(message_id.to_owned()),
+            r#type: "text".to_owned(),
+            content: content.to_string(),
+            position: Some("left".to_owned()),
+            status: Some("finish".to_owned()),
+            hidden: false,
+            created_at: now_ms(),
+        });
+    }
+
+    #[test]
+    fn terminal_writeback_state_absorbs_late_running_and_interrupted_for_same_attempt() {
+        let terminal = json!({
+            "status": "written",
+            "attempt_id": "attempt-a",
+            "started_at": 100,
+            "updated_at": 300,
+            "finished_at": 300,
+        });
+        let late_running =
+            turn_writeback_running_state("writing", "attempt-a", 0, 100, 400, &[], &[]);
+        let late_interrupted = turn_writeback_interrupted_state(
+            "attempt-a",
+            0,
+            100,
+            400,
+            "late panic finalizer",
+            &[],
+            &[],
+        );
+
+        assert_eq!(
+            reject_turn_writeback_transition(&terminal, &late_running),
+            Some(TurnWritebackPersistOutcome::IgnoredTerminalAttempt)
+        );
+        assert_eq!(
+            reject_turn_writeback_transition(&terminal, &late_interrupted),
+            Some(TurnWritebackPersistOutcome::IgnoredTerminalAttempt)
+        );
+    }
+
+    #[test]
+    fn writeback_transition_rejects_stale_attempt_and_running_phase_regression() {
+        let existing =
+            turn_writeback_running_state("writing", "attempt-new", 0, 200, 250, &[], &[]);
+        let stale_attempt =
+            turn_writeback_running_state("started", "attempt-old", 0, 100, 300, &[], &[]);
+        let newer_attempt =
+            turn_writeback_running_state("started", "attempt-next", 1, 300, 300, &[], &[]);
+        let phase_regression =
+            turn_writeback_running_state("extracting", "attempt-new", 0, 200, 300, &[], &[]);
+
+        assert_eq!(
+            reject_turn_writeback_transition(&existing, &stale_attempt),
+            Some(TurnWritebackPersistOutcome::IgnoredStaleAttempt)
+        );
+        assert_eq!(
+            reject_turn_writeback_transition(&existing, &phase_regression),
+            Some(TurnWritebackPersistOutcome::IgnoredStaleProgress)
+        );
+        assert_eq!(
+            reject_turn_writeback_transition(&existing, &newer_attempt),
+            None
+        );
+
+        let generation_two =
+            turn_writeback_running_state("writing", "attempt-g2", 2, 200, 250, &[], &[]);
+        let late_generation_one =
+            turn_writeback_running_state("started", "attempt-g1", 1, 500, 500, &[], &[]);
+        let early_generation_three =
+            turn_writeback_running_state("started", "attempt-g3", 3, 100, 100, &[], &[]);
+        let duplicate_generation_two =
+            turn_writeback_running_state("started", "attempt-g2-duplicate", 2, 300, 300, &[], &[]);
+        assert_eq!(
+            reject_turn_writeback_transition(&generation_two, &late_generation_one),
+            Some(TurnWritebackPersistOutcome::IgnoredStaleAttempt),
+            "durable generation must beat a later wall-clock timestamp"
+        );
+        assert_eq!(
+            reject_turn_writeback_transition(&generation_two, &early_generation_three),
+            None,
+            "a newer explicit retry generation remains admissible after clock rollback"
+        );
+        assert_eq!(
+            reject_turn_writeback_transition(&generation_two, &duplicate_generation_two),
+            Some(TurnWritebackPersistOutcome::IgnoredStaleAttempt),
+            "one retry generation must have exactly one side-effect owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_writeback_persistence_does_not_broadcast_projection() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({ "content": "answer" }),
+        );
+        repo.fail_next_message_update();
+        let bus = Arc::new(TestUserEventBus::new(8));
+        let mut events = bus.subscribe();
+        let repo_dyn: Arc<dyn IConversationRepository> = repo;
+        let bus_dyn: Arc<dyn UserEventSink> = bus;
+
+        let result = emit_turn_writeback_state(
+            &repo_dyn,
+            &bus_dyn,
+            TEST_USER_ID,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            turn_writeback_running_state("started", "attempt-a", 0, 100, 100, &[], &[]),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_writeback_persistence_retries_without_rebroadcasting_failure() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({ "content": "answer" }),
+        );
+        repo.fail_next_message_update();
+        let bus = Arc::new(TestUserEventBus::new(8));
+        let mut events = bus.subscribe();
+        let attempt = test_writeback_attempt(
+            repo.clone(),
+            bus,
+            TEST_USER_ID.to_owned(),
+            conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+        );
+        let terminal = json!({
+            "status": "written",
+            "attempt_id": attempt.attempt_id.clone(),
+            "started_at": attempt.started_at,
+            "updated_at": attempt.started_at + 10,
+            "finished_at": attempt.started_at + 10,
+            "retryable": false,
+            "candidates": 1,
+            "written": [],
+            "failures": [],
+        });
+
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                persist_terminal_writeback_until_resolved(&attempt, terminal),
+            )
+            .await
+            .expect("transient terminal persistence recovered"),
+            TurnWritebackPersistOutcome::Committed
+        );
+        assert_eq!(
+            repo.message_update_attempts.load(AtomicOrdering::SeqCst),
+            2
+        );
+        assert_eq!(events.try_recv().unwrap().name, "knowledge.writeback");
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_persistence_survives_event_sink_panic_and_absorbs_interrupt() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({ "content": "answer" }),
+        );
+        let sink = Arc::new(PanicUserEventSink::new());
+        let attempt = test_writeback_attempt(
+            repo.clone(),
+            sink.clone(),
+            TEST_USER_ID.to_owned(),
+            conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+        );
+        let terminal = json!({
+            "status": "written",
+            "attempt_id": attempt.attempt_id.clone(),
+            "started_at": attempt.started_at,
+            "updated_at": attempt.started_at + 10,
+            "finished_at": attempt.started_at + 10,
+            "retryable": false,
+            "candidates": 1,
+            "written": [],
+            "failures": [],
+        });
+
+        assert_eq!(
+            attempt.emit(terminal).await.unwrap(),
+            TurnWritebackPersistOutcome::Committed
+        );
+        assert_eq!(sink.calls.load(AtomicOrdering::SeqCst), 1);
+
+        // RecordingRepo records updates but intentionally does not mutate its
+        // inserted fixture. Reflect the acknowledged write here so the next
+        // read observes the same durable state as the real repository.
+        let persisted_content = repo
+            .updates
+            .lock()
+            .unwrap()
+            .last()
+            .and_then(|(_, update)| update.content.clone())
+            .expect("terminal write-back content");
+        repo.inserts.lock().unwrap()[0].content = persisted_content;
+        let updates_before_interrupt = repo.updates.lock().unwrap().len();
+
+        attempt.interrupt("panic after terminal projection").await;
+
+        assert_eq!(
+            repo.updates.lock().unwrap().len(),
+            updates_before_interrupt,
+            "terminal persistence must absorb a late panic finalizer"
+        );
+        assert_eq!(
+            sink.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "ignored state must not be broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_sink_panic_is_projection_only_and_relay_still_returns() {
+        let repo = Arc::new(RecordingRepo::new());
+        let sink = Arc::new(PanicUserEventSink::new());
+        let (tx, _) = broadcast::channel(8);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo,
+            sink.clone(),
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+        assert_eq!(
+            sink.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "a failed realtime projection must not be retried as business execution"
+        );
+    }
+
+    #[tokio::test]
+    async fn writeback_panic_persists_interrupted_before_disarming_owner() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        let attempt = test_writeback_attempt(
+            repo.clone(),
+            Arc::new(TestUserEventBus::new(8)),
+            TEST_USER_ID.to_owned(),
+            conversation_id.clone(),
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+        );
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({
+                "content": "answer",
+                "knowledge_writeback": turn_writeback_running_state(
+                    "writing",
+                    &attempt.attempt_id,
+                    attempt.attempt_generation,
+                    attempt.started_at,
+                    attempt.started_at + 1,
+                    &attempt.prior_written,
+                    &attempt.prior_failures,
+                ),
+            }),
+        );
+        let mut owner_guard = attempt.owner_guard("guard must be disarmed by panic recovery");
+
+        let report = await_turn_writeback_report_or_interrupt(
+            &attempt,
+            &mut owner_guard,
+            async { panic!("injected knowledge write-back panic") },
+        )
+        .await;
+
+        assert!(report.is_none());
+        let update = repo
+            .updates
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("panic recovery must persist a terminal state");
+        let content: Value =
+            serde_json::from_str(update.1.content.as_deref().expect("updated content")).unwrap();
+        assert_eq!(content["knowledge_writeback"]["status"], "interrupted");
+        assert_eq!(
+            content["knowledge_writeback"]["commit_ambiguous"],
+            true
+        );
+        assert_eq!(content["knowledge_writeback"]["retryable"], false);
+
+        drop(owner_guard);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            repo.updates.lock().unwrap().len(),
+            1,
+            "disarmed Drop must not schedule a duplicate terminal finalizer"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborting_outer_owner_does_not_detach_registered_writeback_from_stop_fence() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        let attempt = test_writeback_attempt(
+            repo.clone(),
+            Arc::new(TestUserEventBus::new(8)),
+            TEST_USER_ID.to_owned(),
+            conversation_id.clone(),
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+        );
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({
+                "content": "answer",
+                "knowledge_writeback": turn_writeback_running_state(
+                    "writing",
+                    &attempt.attempt_id,
+                    attempt.attempt_generation,
+                    attempt.started_at,
+                    attempt.started_at + 1,
+                    &attempt.prior_written,
+                    &attempt.prior_failures,
+                ),
+            }),
+        );
+        let work_attempt = attempt.clone();
+        let work_gate = Arc::new(Notify::new());
+        let work_gate_for_task = Arc::clone(&work_gate);
+        let (started_tx, started_rx) = oneshot::channel();
+        let outer_owner = tokio::spawn(run_registered_turn_writeback(
+            attempt,
+            async move {
+                let _ = started_tx.send(());
+                work_gate_for_task.notified().await;
+                work_attempt
+                    .interrupt("injected tracked write-back completion")
+                    .await;
+                Ok(())
+            },
+        ));
+        started_rx.await.expect("registered worker started");
+
+        outer_owner.abort();
+        assert!(
+            outer_owner.await.expect_err("outer owner must be aborted").is_cancelled()
+        );
+
+        let conversation_for_fence = conversation_id.clone();
+        let writeback_fence = tokio::spawn(async move {
+            await_turn_writeback_quiesced(&conversation_for_fence).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !writeback_fence.is_finished(),
+            "stop fence must retain authority while the detached-but-tracked worker can still publish"
+        );
+
+        work_gate.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), writeback_fence)
+            .await
+            .expect("write-back fence completed")
+            .expect("write-back fence task");
+        let update = repo
+            .updates
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("tracked worker persisted terminal state");
+        let content: Value =
+            serde_json::from_str(update.1.content.as_deref().expect("updated content")).unwrap();
+        assert_eq!(content["knowledge_writeback"]["status"], "interrupted");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quiesced_writeback_reconciliation_has_no_busy_timeout_release() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        let attempt = test_writeback_attempt(
+            repo.clone(),
+            Arc::new(TestUserEventBus::new(8)),
+            TEST_USER_ID.to_owned(),
+            conversation_id.clone(),
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+        );
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({
+                "content": "answer",
+                "knowledge_writeback": turn_writeback_running_state(
+                    "writing",
+                    &attempt.attempt_id,
+                    attempt.attempt_generation,
+                    attempt.started_at,
+                    attempt.started_at + 1,
+                    &attempt.prior_written,
+                    &attempt.prior_failures,
+                ),
+            }),
+        );
+        repo.block_message_updates();
+        let repo_for_reconcile: Arc<dyn IConversationRepository> = repo.clone();
+        let reconciliation = tokio::spawn(async move {
+            reconcile_quiesced_writebacks_until_resolved(
+                repo_for_reconcile,
+                None,
+                TEST_USER_ID,
+                &conversation_id,
+            )
+            .await
+        });
+        for _ in 0..128 {
+            if repo.message_update_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(repo.message_update_attempts(), 1);
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !reconciliation.is_finished(),
+            "database busy time must not release a quiesced write-back fence"
+        );
+        reconciliation.abort();
+        let _ = reconciliation.await;
+    }
+
+    #[tokio::test]
+    async fn dropping_armed_writeback_owner_schedules_interrupted_persistence() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({ "content": "answer" }),
+        );
+        let attempt = test_writeback_attempt(
+            repo.clone(),
+            Arc::new(TestUserEventBus::new(8)),
+            TEST_USER_ID.to_owned(),
+            conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+        );
+        let (armed_tx, armed_rx) = oneshot::channel();
+        let owner = tokio::spawn(async move {
+            let _guard = attempt.owner_guard("injected owner abort");
+            let _ = armed_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        armed_rx.await.expect("owner armed");
+
+        owner.abort();
+        let _ = owner.await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !repo.updates.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abort finalizer persisted interrupted state");
+
+        let persisted: Value = serde_json::from_str(
+            repo.updates
+                .lock()
+                .unwrap()
+                .last()
+                .and_then(|(_, update)| update.content.as_deref())
+                .expect("interrupted content"),
+        )
+        .unwrap();
+        assert_eq!(
+            persisted["knowledge_writeback"]["status"],
+            "interrupted"
+        );
+        assert_eq!(
+            persisted["knowledge_writeback"]["failures"][0]["error"],
+            "injected owner abort"
+        );
+        assert_eq!(persisted["knowledge_writeback"]["retryable"], false);
+        assert_eq!(
+            persisted["knowledge_writeback"]["commit_ambiguous"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn orphan_reconciliation_interrupts_only_persisted_running_attempts() {
+        let conversation_id = test_conversation_id();
+        let repo = Arc::new(RecordingRepo::new());
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_ASSISTANT_MESSAGE_ID,
+            json!({
+                "content": "running",
+                "knowledge_writeback":
+                    turn_writeback_running_state(
+                        "writing",
+                        "attempt-running",
+                        0,
+                        100,
+                        200,
+                        &[],
+                        &[],
+                    ),
+            }),
+        );
+        seed_writeback_message(
+            &repo,
+            &conversation_id,
+            TEST_TURN_A,
+            json!({
+                "content": "terminal",
+                "knowledge_writeback": {
+                    "status": "written",
+                    "attempt_id": "attempt-terminal",
+                    "started_at": 100,
+                    "updated_at": 200,
+                    "finished_at": 200,
+                },
+            }),
+        );
+        let events = Arc::new(TestUserEventBus::new(8));
+        let mut receiver = events.subscribe();
+        let repo_dyn: Arc<dyn IConversationRepository> = repo.clone();
+        let events_dyn: Arc<dyn UserEventSink> = events;
+
+        assert_eq!(
+            reconcile_orphaned_writebacks(
+                repo_dyn,
+                Some(events_dyn),
+                TEST_USER_ID,
+                &conversation_id,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let updates = repo.updates.lock().unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, TEST_ASSISTANT_MESSAGE_ID);
+        let persisted: Value =
+            serde_json::from_str(updates[0].1.content.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            persisted["knowledge_writeback"]["status"],
+            "interrupted"
+        );
+        assert_eq!(persisted["knowledge_writeback"]["retryable"], false);
+        assert_eq!(
+            persisted["knowledge_writeback"]["commit_ambiguous"],
+            true
+        );
+        drop(updates);
+
+        let event = receiver.try_recv().expect("committed projection");
+        assert_eq!(event.name, "knowledge.writeback");
+        assert_eq!(event.data["status"], "interrupted");
+        assert_eq!(event.data["msg_id"], TEST_ASSISTANT_MESSAGE_ID);
+        match receiver.try_recv() {
+            Err(
+                broadcast::error::TryRecvError::Empty
+                | broadcast::error::TryRecvError::Closed,
+            ) => {}
+            other => panic!("unexpected second orphan reconciliation event: {other:?}"),
         }
     }
 
@@ -4719,7 +6100,7 @@ mod tests {
         assert_eq!(inserts.len(), 1);
         let msg = &inserts[0];
         assert_eq!(msg.conversation_id, conversation_id);
-        assert_eq!(msg.id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(msg.message_id, TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(msg.r#type, "text");
         assert_eq!(msg.status.as_deref(), Some("finish"));
 
@@ -4727,8 +6108,8 @@ mod tests {
         assert_eq!(content["content"], "Hello World");
     }
 
-    #[tokio::test]
-    async fn non_terminal_persistence_timeout_opens_a_turn_wide_circuit_breaker() {
+    #[tokio::test(start_paused = true)]
+    async fn non_terminal_persistence_has_no_local_timeout_or_circuit_breaker() {
         let relay = StreamRelay::new(
             test_conversation_id(),
             TEST_ASSISTANT_MESSAGE_ID.into(),
@@ -4737,28 +6118,34 @@ mod tests {
             Arc::new(TestUserEventBus::new(8)),
             None,
         );
-        let first = relay
-            .bounded_event_side_effect(
-                tokio::time::Instant::now() + Duration::from_millis(1),
+        let first = relay.ordered_event_side_effect(
                 "never_resolves",
                 std::future::pending::<()>(),
-            )
-            .await;
-        assert!(first.is_none());
+            );
+        tokio::pin!(first);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(60), &mut first)
+                .await
+                .is_err(),
+            "elapsed wall time must not abandon an issued repository mutation"
+        );
+        drop(first);
 
         let polls = Arc::new(AtomicUsize::new(0));
         let polls_for_future = Arc::clone(&polls);
-        let second = relay
-            .bounded_event_side_effect(
-                tokio::time::Instant::now() + Duration::from_secs(1),
+        relay
+            .ordered_event_side_effect(
                 "must_not_poll",
                 async move {
                     polls_for_future.fetch_add(1, AtomicOrdering::SeqCst);
                 },
             )
             .await;
-        assert!(second.is_none());
-        assert_eq!(polls.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(
+            polls.load(AtomicOrdering::SeqCst),
+            1,
+            "a previously stalled call must not poison later ordered persistence"
+        );
     }
 
     #[tokio::test]
@@ -5082,6 +6469,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![artifact],
+            retry: None,
         }))
         .unwrap();
         for _ in 0..FLUSH_INTERVAL {
@@ -5106,7 +6494,7 @@ mod tests {
         assert_eq!(tool_row.status.as_deref(), Some("work"));
         assert!(
             repo.take_updates().iter().all(|(id, update)| {
-                id != &tool_row.id
+                id != &tool_row.message_id
                     || update.status.as_ref().and_then(|status| status.as_deref())
                         != Some("finish")
             }),
@@ -5133,8 +6521,8 @@ mod tests {
         std::fs::remove_dir_all(workspace).expect("remove test workspace");
     }
 
-    #[tokio::test]
-    async fn timed_out_text_close_remains_available_for_terminal_retry() {
+    #[tokio::test(start_paused = true)]
+    async fn stalled_nonterminal_text_close_is_awaited_to_definitive_completion() {
         let repo = Arc::new(RecordingRepo::new());
         repo.set_block_message_inserts(true);
         let relay = StreamRelay::new(
@@ -5154,28 +6542,24 @@ mod tests {
         });
         let mut text_segments = Vec::new();
 
-        let bounded = relay
-            .bounded_event_side_effect(
-                tokio::time::Instant::now() + Duration::from_millis(10),
+        {
+            let mut ordered = Box::pin(relay.ordered_event_side_effect(
                 "close_text_before_tool",
-                relay.close_active_text_segment(&mut active_text, &mut text_segments, "finish"),
-            )
-            .await;
-
-        assert!(bounded.is_none());
-        assert!(relay.event_side_effect_circuit_open.load(Ordering::Acquire));
-        assert!(
-            active_text.is_some(),
-            "cancelling a non-terminal close must not consume the only text copy"
-        );
-        assert!(text_segments.is_empty());
-
-        // Terminal cleanup bypasses the non-terminal circuit breaker. Once the
-        // repository is responsive it must be able to write the retained text.
-        repo.set_block_message_inserts(false);
-        relay
-            .close_active_text_segment(&mut active_text, &mut text_segments, "finish")
-            .await;
+                relay.close_active_text_segment(
+                    &mut active_text,
+                    &mut text_segments,
+                    "finish",
+                ),
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), &mut ordered)
+                    .await
+                    .is_err(),
+                "the old one-second bound must not abandon the text insert"
+            );
+            repo.set_block_message_inserts(false);
+            ordered.await;
+        }
 
         assert!(active_text.is_none());
         assert_eq!(text_segments.len(), 1);
@@ -5186,8 +6570,164 @@ mod tests {
         assert_eq!(inserts[0].status.as_deref(), Some("finish"));
     }
 
-    #[tokio::test]
-    async fn timed_out_thinking_close_keeps_state_and_sends_done_once() {
+    #[tokio::test(start_paused = true)]
+    async fn stalled_nonterminal_update_withholds_terminal_and_commits_before_finish() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(128));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(128);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        let relay_task = tokio::spawn(relay.consume(rx));
+
+        for _ in 0..FLUSH_INTERVAL {
+            tx.send(AgentStreamEvent::Text(TextEventData {
+                content: "a".into(),
+            }))
+            .unwrap();
+        }
+        for _ in 0..128 {
+            if repo.message_insert_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(repo.message_insert_attempts(), 1);
+
+        repo.set_block_message_updates(true);
+        for _ in 0..FLUSH_INTERVAL {
+            tx.send(AgentStreamEvent::Text(TextEventData {
+                content: "b".into(),
+            }))
+            .unwrap();
+        }
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+        for _ in 0..128 {
+            if repo.message_update_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            repo.message_update_attempts(),
+            1,
+            "the relay must be blocked in the nonterminal `work` update"
+        );
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !relay_task.is_finished(),
+            "elapsed wall time must not abandon a queued update to consume Finish"
+        );
+        let stream_types = std::iter::from_fn(|| ws_rx.try_recv().ok())
+            .filter(|event| event.name == "message.stream")
+            .map(|event| event.data["type"].clone())
+            .collect::<Vec<_>>();
+        assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
+        assert!(!stream_types.iter().any(|kind| *kind == json!("error")));
+
+        repo.set_block_message_updates(false);
+        let outcome = tokio::time::timeout(Duration::from_secs(1), relay_task)
+            .await
+            .expect("relay completed after the ordered update was acknowledged")
+            .expect("relay task");
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let updates = repo.take_updates();
+        assert_eq!(
+            updates.len(),
+            2,
+            "one nonterminal update and one terminal update must commit"
+        );
+        assert_eq!(
+            updates[0]
+                .1
+                .status
+                .as_ref()
+                .and_then(|status| status.as_deref()),
+            Some("work")
+        );
+        assert_eq!(
+            updates[1]
+                .1
+                .status
+                .as_ref()
+                .and_then(|status| status.as_deref()),
+            Some("finish"),
+            "terminal status must be the last physical update"
+        );
+        tokio::task::yield_now().await;
+        assert!(
+            repo.take_updates().is_empty(),
+            "no abandoned nonterminal update may commit after terminal cleanup"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_terminal_assistant_insert_retains_turn_and_withholds_finish() {
+        let repo = Arc::new(RecordingRepo::new());
+        repo.set_block_message_inserts(true);
+        let bus = Arc::new(TestUserEventBus::new(16));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(16);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "durability must precede terminal publication".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let relay_task = tokio::spawn(relay.consume(rx));
+        for _ in 0..128 {
+            if repo.message_insert_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            repo.message_insert_attempts(),
+            1,
+            "the relay must be blocked at the assistant terminal insert"
+        );
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !relay_task.is_finished(),
+            "elapsed wall time must not turn an unacknowledged assistant insert into Finish"
+        );
+
+        let stream_types = std::iter::from_fn(|| ws_rx.try_recv().ok())
+            .filter(|event| event.name == "message.stream")
+            .map(|event| event.data["type"].clone())
+            .collect::<Vec<_>>();
+        assert!(stream_types.iter().any(|kind| *kind == json!("content")));
+        assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
+        assert!(!stream_types.iter().any(|kind| *kind == json!("error")));
+
+        relay_task.abort();
+        let _ = relay_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_nonterminal_thinking_close_is_awaited_and_sends_done_once() {
         let repo = Arc::new(RecordingRepo::new());
         repo.set_block_message_inserts(true);
         let bus = Arc::new(TestUserEventBus::new(16));
@@ -5207,20 +6747,21 @@ mod tests {
             completed_duration_ms: None,
         });
 
-        let bounded = relay
-            .bounded_event_side_effect(
-                tokio::time::Instant::now() + Duration::from_millis(10),
+        {
+            let mut ordered = Box::pin(relay.ordered_event_side_effect(
                 "complete_thinking_before_text",
                 relay.complete_active_thinking(&mut active_thinking),
-            )
-            .await;
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), &mut ordered)
+                    .await
+                    .is_err(),
+                "the old one-second bound must not abandon the thinking insert"
+            );
+            repo.set_block_message_inserts(false);
+            assert!(ordered.await);
+        }
 
-        assert!(bounded.is_none());
-        assert!(active_thinking.is_some());
-        assert!(repo.take_inserts().is_empty());
-
-        repo.set_block_message_inserts(false);
-        assert!(relay.complete_active_thinking(&mut active_thinking).await);
         assert!(active_thinking.is_none());
         let inserts = repo.take_inserts();
         assert_eq!(inserts.len(), 1);
@@ -5467,8 +7008,8 @@ mod tests {
 
         let inserts = repo.take_inserts();
         let plan_msg = inserts.iter().find(|m| m.r#type == "plan").expect("plan message must be persisted");
-        MessageId::parse(&plan_msg.id).expect("plan row has a canonical message ID");
-        assert_eq!(plan_msg.msg_id.as_deref(), Some(plan_msg.id.as_str()));
+        MessageId::parse(&plan_msg.message_id).expect("plan row has a canonical message ID");
+        assert_eq!(plan_msg.msg_id.as_deref(), Some(plan_msg.message_id.as_str()));
         assert_eq!(plan_msg.status.as_deref(), Some("work"));
 
         let content: serde_json::Value = serde_json::from_str(&plan_msg.content).unwrap();
@@ -5478,7 +7019,7 @@ mod tests {
         let updates = repo.take_updates();
         let (_, terminal_update) = updates
             .iter()
-            .find(|(id, _)| id == &plan_msg.id)
+            .find(|(id, _)| id == &plan_msg.message_id)
             .expect("incomplete plan must be closed with the turn");
         assert_eq!(
             terminal_update.status.as_ref().map(|status| status.as_deref()),
@@ -5513,6 +7054,7 @@ mod tests {
             output: None,
             description: None,
             artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Plan(PlanEventData {
@@ -5531,7 +7073,7 @@ mod tests {
             .into_iter()
             .find(|row| row.r#type == "tool_call")
             .expect("source tool must be persisted")
-            .id;
+            .message_id;
         MessageId::parse(&source_id).expect("tool row has a canonical message ID");
         let updates = repo.take_updates();
         let source_updates: Vec<_> = updates
@@ -5580,7 +7122,7 @@ mod tests {
             .into_iter()
             .find(|row| row.r#type == "agent_status")
             .expect("agent status must be persisted")
-            .id;
+            .message_id;
         MessageId::parse(&status_id).expect("agent status has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
@@ -5625,6 +7167,7 @@ mod tests {
             input: None,
             output: None,
             artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Text(TextEventData { content: "Beta".into() }))
@@ -5636,8 +7179,8 @@ mod tests {
         let inserts = repo.take_inserts();
         let text_msgs: Vec<_> = inserts.iter().filter(|msg| msg.r#type == "text").collect();
         assert_eq!(text_msgs.len(), 2, "text should split across tool boundaries");
-        assert_eq!(text_msgs[0].id, TEST_ASSISTANT_MESSAGE_ID);
-        assert_ne!(text_msgs[0].id, text_msgs[1].id);
+        assert_eq!(text_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_ne!(text_msgs[0].message_id, text_msgs[1].message_id);
 
         let mut text_event_msg_ids = Vec::new();
         while let Ok(evt) = ws_rx.try_recv() {
@@ -5676,7 +7219,8 @@ mod tests {
             input: None,
             output: Some("ok".into()),
             description: None,
-            artifacts: vec![],
+            artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Text(TextEventData { content: "After".into() }))
@@ -5694,7 +7238,7 @@ mod tests {
         let updates = repo.take_updates();
         assert!(
             updates.iter().all(|(id, update)| {
-                id != &text_rows[0].id
+                id != &text_rows[0].message_id
                     || update.status.as_ref().map(|status| status.as_deref()) != Some(Some("error"))
             }),
             "a later provider error must not corrupt an earlier completed text segment"
@@ -5743,8 +7287,8 @@ mod tests {
         let msg = &inserts[0];
         assert_eq!(msg.r#type, "tips");
         assert_eq!(msg.status.as_deref(), Some("error"));
-        assert_eq!(msg.msg_id.as_deref(), Some(msg.id.as_str()));
-        assert_ne!(msg.id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(msg.msg_id.as_deref(), Some(msg.message_id.as_str()));
+        assert_ne!(msg.message_id, TEST_ASSISTANT_MESSAGE_ID);
 
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
         assert_eq!(content["content"], "Something went wrong");
@@ -5754,7 +7298,7 @@ mod tests {
         let live_error = std::iter::from_fn(|| ws_rx.try_recv().ok())
             .find(|event| event.name == "message.stream" && event.data["type"] == "error")
             .expect("terminal error must be broadcast");
-        assert_eq!(live_error.data["msg_id"], msg.id);
+        assert_eq!(live_error.data["msg_id"], msg.message_id);
         assert_eq!(live_error.data["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
     }
 
@@ -5786,8 +7330,8 @@ mod tests {
         let error = inserts.iter().find(|row| row.r#type == "tips").expect("error tips row");
         assert_eq!(text.status.as_deref(), Some("error"));
         assert_eq!(error.status.as_deref(), Some("error"));
-        assert_ne!(text.id, error.id, "text and terminal error need independent identities");
-        assert_eq!(error.msg_id.as_deref(), Some(error.id.as_str()));
+        assert_ne!(text.message_id, error.message_id, "text and terminal error need independent identities");
+        assert_eq!(error.msg_id.as_deref(), Some(error.message_id.as_str()));
         let content: serde_json::Value = serde_json::from_str(&error.content).unwrap();
         assert_eq!(content["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
     }
@@ -5822,7 +7366,8 @@ mod tests {
             description: None,
             input: None,
             output: Some("ok".into()),
-            artifacts: vec![],
+            artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -5841,7 +7386,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_marks_active_tool_call_canceled_when_turn_hits_max_tokens() {
+    async fn run_marks_active_tool_call_error_when_turn_hits_max_tokens() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
         use nomifun_ai_agent::protocol::events::TurnStopReason;
 
@@ -5869,6 +7414,7 @@ mod tests {
             input: Some(json!({"file_path": "/tmp/index.html"})),
             output: None,
             artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData {
@@ -5885,16 +7431,16 @@ mod tests {
             .into_iter()
             .find(|row| row.r#type == "tool_call")
             .expect("tool call must be persisted")
-            .id;
+            .message_id;
         MessageId::parse(&tool_id).expect("tool row has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
             .find(|(id, _)| id == &tool_id)
-            .expect("active tool call should be marked canceled when the turn is truncated");
-        assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
+            .expect("active tool call should be marked failed when the turn is truncated");
+        assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("error")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
-        assert_eq!(content["status"], "canceled");
+        assert_eq!(content["status"], "error");
         assert_eq!(content["output"], "The turn ended before this tool completed: max_tokens");
     }
 
@@ -5923,7 +7469,8 @@ mod tests {
                 input: None,
                 output: Some("ok".into()),
                 description: None,
-                artifacts: vec![],
+                artifacts: Vec::new(),
+                retry: None,
             }))
             .unwrap();
             tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -5934,7 +7481,7 @@ mod tests {
         let ids: Vec<_> = inserts
             .iter()
             .filter(|row| row.r#type == "tool_call")
-            .map(|row| row.id.as_str())
+            .map(|row| row.message_id.as_str())
             .collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.iter().all(|id| MessageId::parse(*id).is_ok()));
@@ -5945,311 +7492,6 @@ mod tests {
             .map(|row| serde_json::from_str::<serde_json::Value>(&row.content).unwrap()["turn_id"].clone())
             .collect();
         assert_eq!(turns, [json!(TEST_TURN_A), json!(TEST_TURN_B)]);
-    }
-
-    #[tokio::test]
-    async fn run_marks_active_tool_call_canceled_when_turn_ends_normally() {
-        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
-        use nomifun_ai_agent::protocol::events::TurnStopReason;
-
-        let repo = Arc::new(RecordingRepo::new());
-        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
-        let (tx, _) = broadcast::channel(64);
-
-        let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
-            repo.clone(),
-            bus.clone(),
-            None,
-        );
-
-        let rx = tx.subscribe();
-
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "tc-browser".into(),
-            name: "Browser".into(),
-            args: json!({"action": "navigate", "url": "https://example.com"}),
-            status: ToolCallStatus::Running,
-            description: None,
-            input: Some(json!({"action": "navigate", "url": "https://example.com"})),
-            output: None,
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::Finish(FinishEventData {
-            session_id: None,
-            stop_reason: Some(TurnStopReason::EndTurn),
-        }))
-        .unwrap();
-
-        let outcome = relay.consume(rx).await;
-        assert_eq!(outcome.terminal, RelayTerminal::Finish);
-
-        let inserts = repo.take_inserts();
-        let browser_id = inserts
-            .iter()
-            .find(|row| row.r#type == "tool_call")
-            .map(|row| row.id.clone())
-            .expect("active Browser call should be persisted before cancellation");
-        let updates = repo.take_updates();
-        let (_, update) = updates
-            .iter()
-            .find(|(id, _)| id == &browser_id)
-            .expect("active Browser call should be marked canceled on end_turn");
-        assert_eq!(update.status.as_ref().map(|v| v.as_deref()), Some(Some("finish")));
-        let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
-        assert_eq!(content["status"], "canceled");
-        assert_eq!(content["output"], "The turn ended before this tool completed: end_turn");
-        assert_ne!(content["status"], "error", "end_turn must not paint Browser as tool failure");
-    }
-
-    #[test]
-    fn superseded_preview_content_sets_completed_status() {
-        let preview_json = serde_json::json!({
-            "call_id": "nomi-call_call_preview",
-            "name": "Browser",
-            "args": {"url": "https://example.com"},
-            "status": "running"
-        })
-        .to_string();
-
-        let patched = StreamRelay::superseded_preview_content(&preview_json);
-        let value: serde_json::Value = serde_json::from_str(&patched).unwrap();
-        assert_eq!(value["status"], "completed");
-        assert_eq!(value["call_id"], "nomi-call_call_preview");
-    }
-
-    #[tokio::test]
-    async fn persist_tool_call_inserts_hidden_when_pending_superseded() {
-        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
-
-        let repo = Arc::new(StrictRecordingRepo::new());
-        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
-        let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
-            repo.clone(),
-            bus,
-            None,
-        );
-
-        let preview = ToolCallEventData {
-            call_id: "nomi-call_call_race_preview".into(),
-            name: "Browser".into(),
-            args: json!({"url": "https://example.com"}),
-            status: ToolCallStatus::Running,
-            description: None,
-            input: None,
-            output: None,
-            artifacts: vec![],
-        };
-
-        let mut pending = HashSet::from(["nomi-call_call_race_preview".to_string()]);
-        relay
-            .test_hide_tool_call_message("nomi-call_call_race_preview", &mut pending)
-            .await;
-        assert!(pending.contains("nomi-call_call_race_preview"));
-
-        relay.test_persist_tool_call(&preview, &mut pending).await;
-        assert!(!pending.contains("nomi-call_call_race_preview"));
-
-        let inserts = repo.take_inserts();
-        assert_eq!(inserts.len(), 1);
-        assert!(inserts[0].hidden);
-        assert_eq!(inserts[0].status.as_deref(), Some("finish"));
-        let content: ToolCallEventData = serde_json::from_str(&inserts[0].content).unwrap();
-        assert_eq!(content.status, ToolCallStatus::Completed);
-    }
-
-    #[tokio::test]
-    async fn run_supersedes_preview_tool_call_when_canonical_browser_call_arrives() {
-        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
-        use nomifun_ai_agent::protocol::events::{FinishEventData, TurnStopReason};
-
-        let repo = Arc::new(RecordingRepo::new());
-        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
-        let (tx, _) = broadcast::channel(64);
-
-        let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
-            repo.clone(),
-            bus.clone(),
-            None,
-        );
-
-        let rx = tx.subscribe();
-
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "nomi-call_call_fbb31e380c974b268f4561c1".into(),
-            name: "Browser".into(),
-            args: serde_json::Value::Null,
-            status: ToolCallStatus::Running,
-            description: None,
-            input: None,
-            output: None,
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "nomi-call_019canonical".into(),
-            name: "Browser".into(),
-            args: json!({"action": "navigate", "url": "https://example.com"}),
-            status: ToolCallStatus::Running,
-            description: None,
-            input: Some(json!({"action": "navigate", "url": "https://example.com"})),
-            output: None,
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "nomi-call_019canonical".into(),
-            name: "Browser".into(),
-            args: json!({"action": "navigate", "url": "https://example.com"}),
-            status: ToolCallStatus::Completed,
-            description: None,
-            input: Some(json!({"action": "navigate", "url": "https://example.com"})),
-            output: Some("ok".into()),
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::Finish(FinishEventData {
-            session_id: None,
-            stop_reason: Some(TurnStopReason::EndTurn),
-        }))
-        .unwrap();
-
-        let outcome = relay.consume(rx).await;
-        assert_eq!(outcome.terminal, RelayTerminal::Finish);
-
-        let inserts = repo.take_inserts();
-        let preview_id = inserts
-            .iter()
-            .find(|row| {
-                row.r#type == "tool_call"
-                    && serde_json::from_str::<ToolCallEventData>(&row.content)
-                        .is_ok_and(|data| data.call_id == "nomi-call_call_fbb31e380c974b268f4561c1")
-            })
-            .map(|row| row.id.clone())
-            .expect("preview Browser call should be persisted before it is superseded");
-        let preview_id = preview_id.as_str();
-        let updates = repo.take_updates();
-        assert!(
-            updates
-                .iter()
-                .any(|(id, update)| id == preview_id && update.hidden == Some(true)),
-            "preview tool_call should be hidden when superseded"
-        );
-        assert!(
-            updates.iter().any(|(id, update)| {
-                id == preview_id
-                    && update.hidden == Some(true)
-                    && update.status.as_ref().and_then(|s| s.as_deref()) == Some("finish")
-            }),
-            "superseded preview update must set hidden=true and status=finish"
-        );
-        assert!(
-            updates.iter().any(|(id, update)| {
-                id == preview_id
-                    && update.content.as_ref().is_some_and(|c| c.contains("\"status\":\"completed\""))
-            }),
-            "superseded preview update must patch content status to completed"
-        );
-        assert!(
-            !updates.iter().any(|(id, update)| {
-                id == preview_id
-                    && update.status.as_ref().and_then(|s| s.as_deref()) == Some("error")
-            }),
-            "superseded preview must not be marked end_turn error"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_skips_fail_active_for_tool_call_already_settled_in_db() {
-        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
-
-        let repo = Arc::new(RecordingRepo::new());
-        let bus = Arc::new(nomifun_realtime::BroadcastEventBus::new(64));
-        let (tx, _) = broadcast::channel(64);
-
-        let relay = StreamRelay::new(
-            "1".into(),
-            "asst-1".into(),
-            "user-1".into(),
-            repo.clone(),
-            bus.clone(),
-            None,
-        );
-
-        let rx = tx.subscribe();
-
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "tc-computer".into(),
-            name: "Computer".into(),
-            args: json!({"action": "launch"}),
-            status: ToolCallStatus::Running,
-            description: None,
-            input: Some(json!({"action": "launch"})),
-            output: None,
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "tc-computer".into(),
-            name: "Computer".into(),
-            args: serde_json::Value::Null,
-            status: ToolCallStatus::Completed,
-            description: None,
-            input: None,
-            output: Some("Opened page".into()),
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
-            call_id: "tc-computer".into(),
-            name: "Computer".into(),
-            args: json!({"action": "launch"}),
-            status: ToolCallStatus::Running,
-            description: None,
-            input: Some(json!({"action": "launch"})),
-            output: None,
-            artifacts: vec![],
-        }))
-        .unwrap();
-        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
-            "provider fault after tool completed",
-            None,
-        )))
-        .unwrap();
-
-        relay.consume(rx).await;
-
-        let inserts = repo.take_inserts();
-        let computer_id = inserts
-            .iter()
-            .find(|row| {
-                row.r#type == "tool_call"
-                    && serde_json::from_str::<ToolCallEventData>(&row.content)
-                        .is_ok_and(|data| data.call_id == "tc-computer")
-            })
-            .map(|row| row.id.clone())
-            .expect("settled Computer call should be persisted before the terminal error");
-        let computer_id = computer_id.as_str();
-        let updates = repo.take_updates();
-        assert!(
-            !updates.iter().any(|(id, update)| {
-                id == computer_id
-                    && update
-                        .content
-                        .as_deref()
-                        .is_some_and(|content| content.contains("\"status\":\"error\""))
-            }),
-            "already-settled tool call should not be re-marked failed on terminal error"
-        );
     }
 
     #[tokio::test]
@@ -6278,6 +7520,7 @@ mod tests {
                 output,
                 description: None,
                 artifacts: Vec::new(),
+                retry: None,
             })
         };
         tx.send(event(ToolCallStatus::Completed, Some("ok".into()))).unwrap();
@@ -6325,13 +7568,14 @@ mod tests {
                 output: None,
                 description: None,
                 artifacts,
+                retry: None,
             })
         };
         tx.send(event(ToolCallStatus::Error, Vec::new())).unwrap();
         tx.send(event(
             ToolCallStatus::Completed,
             vec![PersistedArtifact {
-                id: "stale".into(),
+                id: PersistedArtifactId::new().into_string(),
                 kind: ArtifactKind::Image,
                 mime_type: "image/png".into(),
                 path: "/workspace/old.png".into(),
@@ -6397,6 +7641,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![artifact],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -6419,7 +7664,7 @@ mod tests {
             .iter()
             .rev()
             .find(|(id, update)| {
-                id == &row.id
+                id == &row.message_id
                     && update.status.as_ref().map(|s| s.as_deref()) == Some(Some("finish"))
             })
             .expect("successful enclosing turn promotes the artifact receipt");
@@ -6473,6 +7718,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![test_artifact("commit-fails")],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -6514,7 +7760,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn atomic_artifact_commit_timeout_rejects_finish_without_exposing_completed_receipt() {
+    async fn stalled_atomic_artifact_commit_retains_turn_and_exposes_no_terminal_receipt() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
 
         let repo = Arc::new(RecordingRepo::new());
@@ -6522,6 +7768,12 @@ mod tests {
         let bus = Arc::new(TestUserEventBus::new(64));
         let mut ws_rx = bus.subscribe();
         let (tx, _) = broadcast::channel(64);
+        let workspace = std::env::temp_dir().join(format!(
+            "nomifun-conversation-artifact-stall-test-{}",
+            MessageId::new().into_string()
+        ));
+        std::fs::create_dir_all(&workspace).expect("create test workspace");
+        let artifact = persisted_png_artifact(&workspace);
         let relay = StreamRelay::new(
             test_conversation_id(),
             TEST_TURN_A.into(),
@@ -6529,7 +7781,8 @@ mod tests {
             repo.clone(),
             bus,
             None,
-        );
+        )
+        .with_artifact_workspace(workspace.clone());
         let rx = tx.subscribe();
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
             call_id: "artifact-commit-times-out".into(),
@@ -6539,21 +7792,35 @@ mod tests {
             input: None,
             output: Some("generated".into()),
             description: None,
-            artifacts: vec![test_artifact("commit-timeout")],
+            artifacts: vec![artifact],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
 
-        let outcome = relay.consume(rx).await;
+        let relay_task = tokio::spawn(relay.consume(rx));
+        for _ in 0..128 {
+            if repo.artifact_commit_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         assert_eq!(
-            outcome.terminal.code(),
-            Some(AgentErrorCode::NomifunStateInconsistent)
+            repo.artifact_commit_attempts(),
+            1,
+            "the relay must be blocked at the exact artifact commit cutpoint"
+        );
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !relay_task.is_finished(),
+            "elapsed wall time must not release a turn with an ambiguous artifact COMMIT"
         );
         let row = repo
             .take_inserts()
             .into_iter()
             .find(|row| row.r#type == "tool_call")
-            .expect("timeout leaves the provisional row intact");
+            .expect("the pending commit leaves the provisional row intact");
         assert_eq!(row.status.as_deref(), Some("work"));
         let content: Value = serde_json::from_str(&row.content).unwrap();
         assert_eq!(content["artifacts"], json!([]));
@@ -6570,7 +7837,13 @@ mod tests {
         }
         assert!(!observed_completed);
         assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
-        assert_eq!(stream_types.last(), Some(&json!("error")));
+        assert!(
+            !stream_types.iter().any(|kind| *kind == json!("error")),
+            "a timeout must not manufacture a terminal error while COMMIT ownership is ambiguous"
+        );
+        relay_task.abort();
+        let _ = relay_task.await;
+        std::fs::remove_dir_all(workspace).expect("remove test workspace");
     }
 
     #[tokio::test]
@@ -6600,6 +7873,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![test_artifact("identity-failure")],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -6655,6 +7929,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![test_artifact("retracted")],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -6678,7 +7953,7 @@ mod tests {
         let correction = updates
             .iter()
             .rev()
-            .find(|(id, _)| id == &row.id)
+            .find(|(id, _)| id == &row.message_id)
             .expect("global turn error must correct the completed artifact row");
         assert_eq!(
             correction.1.status.as_ref().map(|status| status.as_deref()),
@@ -6710,7 +7985,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn terminal_timeout_still_broadcasts_artifact_retraction_before_error() {
+    async fn stalled_terminal_artifact_correction_withholds_enclosing_terminal() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
 
         let repo = Arc::new(RecordingRepo::new());
@@ -6735,6 +8010,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![test_artifact("wedged-db")],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
@@ -6743,12 +8019,28 @@ mod tests {
         )))
         .unwrap();
         // The completed row above can be inserted, but its terminal correction
-        // now wedges forever. Paused Tokio time advances directly to the relay's
-        // hard terminal timeout.
+        // now wedges forever. The exact turn owner must remain live instead of
+        // converting elapsed wall time into permission to finalize.
         repo.block_message_updates();
 
-        let outcome = relay.consume(rx).await;
-        assert!(outcome.terminal.is_error());
+        let relay_task = tokio::spawn(relay.consume(rx));
+        for _ in 0..128 {
+            if repo.message_update_attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            repo.message_update_attempts(),
+            1,
+            "the relay must be blocked at the exact terminal correction cutpoint"
+        );
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !relay_task.is_finished(),
+            "elapsed wall time must not release terminal cleanup authority"
+        );
 
         let provisional = repo
             .take_inserts()
@@ -6773,11 +8065,12 @@ mod tests {
             }
         }
         assert_eq!(final_tool_status.as_deref(), Some("error"));
-        assert_eq!(
-            stream_types.last(),
-            Some(&json!("error")),
-            "hard-timeout fallback terminal must remain after the synchronous receipt retraction"
+        assert!(
+            !stream_types.iter().any(|kind| *kind == json!("error")),
+            "the enclosing terminal must remain withheld until the durable correction returns"
         );
+        relay_task.abort();
+        let _ = relay_task.await;
     }
 
     #[tokio::test]
@@ -6848,7 +8141,7 @@ mod tests {
         let correction = updates
             .iter()
             .rev()
-            .find(|(id, _)| id == &row.id)
+            .find(|(id, _)| id == &row.message_id)
             .expect("global turn error must correct the completed ACP artifact row");
         assert_eq!(
             correction.1.status.as_ref().map(|status| status.as_deref()),
@@ -6916,6 +8209,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![test_artifact("generic-close")],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
@@ -6947,13 +8241,13 @@ mod tests {
             .iter()
             .find(|row| row.r#type == "tool_call")
             .expect("generic artifact row")
-            .id
+            .message_id
             .clone();
         let acp_id = rows
             .iter()
             .find(|row| row.r#type == "acp_tool_call")
             .expect("ACP artifact row")
-            .id
+            .message_id
             .clone();
         let updates = repo.take_updates();
         for id in [generic_id, acp_id] {
@@ -7020,6 +8314,7 @@ mod tests {
                 output: Some("generated".into()),
                 description: None,
                 artifacts: vec![test_artifact(&format!("artifact-{index}"))],
+                retry: None,
             }))
             .unwrap();
         }
@@ -7160,6 +8455,7 @@ mod tests {
                 output: (status == ToolCallStatus::Completed).then(|| "ok".into()),
                 description: None,
                 artifacts: Vec::new(),
+                retry: None,
             }))
             .unwrap();
             tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -7270,7 +8566,8 @@ mod tests {
             repo.clone(),
             bus.clone(),
             None,
-        );
+        )
+        .with_test_turn_completion();
 
         let mut ws_rx = bus.subscribe();
         let rx = tx.subscribe();
@@ -7481,6 +8778,7 @@ mod tests {
             input: None,
             output: None,
             artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
@@ -7550,8 +8848,8 @@ mod tests {
 
         assert_eq!(thinking_msgs.len(), 1);
         assert_eq!(text_msgs.len(), 1);
-        assert_eq!(thinking_msgs[0].id, TEST_ASSISTANT_MESSAGE_ID);
-        assert_ne!(thinking_msgs[0].id, text_msgs[0].id);
+        assert_eq!(thinking_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_ne!(thinking_msgs[0].message_id, text_msgs[0].message_id);
 
         let mut text_msg_ids = Vec::new();
         let mut thinking_done_ids = Vec::new();
@@ -7615,7 +8913,7 @@ mod tests {
         assert_eq!(error.status.as_deref(), Some("error"));
         let text_content: serde_json::Value = serde_json::from_str(&text.content).unwrap();
         assert_eq!(text_content["content"], "partial");
-        assert_eq!(error.msg_id.as_deref(), Some(error.id.as_str()));
+        assert_eq!(error.msg_id.as_deref(), Some(error.message_id.as_str()));
         let mut ws_events = Vec::new();
         while let Ok(event) = ws_rx.try_recv() {
             ws_events.push(event);
@@ -7624,11 +8922,11 @@ mod tests {
             .iter()
             .find(|event| event.name == "message.stream" && event.data["type"] == "error")
             .expect("unexpected channel closure must be visible as a terminal error");
-        assert_eq!(live_error.data["msg_id"], error.id);
+        assert_eq!(live_error.data["msg_id"], error.message_id);
     }
 
     #[tokio::test]
-    async fn run_broadcasts_turn_completed() {
+    async fn test_only_completion_opt_in_broadcasts_turn_completed() {
         let repo = Arc::new(RecordingRepo::new());
         let bus = Arc::new(TestUserEventBus::new(64));
         let (tx, _) = broadcast::channel(64);
@@ -7641,7 +8939,8 @@ mod tests {
             repo.clone(),
             bus.clone(),
             None,
-        );
+        )
+        .with_test_turn_completion();
 
         // Subscribe to the bus before relay runs
         let mut ws_rx = bus.subscribe();
@@ -7666,6 +8965,34 @@ mod tests {
         assert_eq!(data["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(data["status"], "finished");
         assert_eq!(data["can_send_message"], true);
+    }
+
+    #[tokio::test]
+    async fn completion_event_requires_a_durable_finished_commit() {
+        let repo = Arc::new(RecordingRepo::new());
+        repo.fail_conversation_updates();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let conversation_id = test_conversation_id();
+
+        StreamRelay::complete_conversation_with_context(
+            &(repo as Arc<dyn IConversationRepository>),
+            &(bus as Arc<dyn UserEventSink>),
+            TEST_USER_ID,
+            &conversation_id,
+            Some(TEST_ASSISTANT_MESSAGE_ID.to_owned()),
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            ws_rx.try_recv().is_err(),
+            "turn.completed must not be published when durable Finished persistence failed"
+        );
     }
 
     #[tokio::test]
@@ -7708,11 +9035,12 @@ mod tests {
             .find(|event| event.name == "message.stream" && event.data["type"] == "finish")
             .expect("cancel must surface a terminal stream event");
         assert_eq!(finish.data["data"]["stop_reason"], "cancelled");
-        let completed = ws_events
-            .iter()
-            .find(|event| event.name == "turn.completed")
-            .expect("cancelled relay must complete the turn");
-        assert_eq!(completed.data["turn_id"], TEST_ASSISTANT_MESSAGE_ID);
+        assert!(
+            ws_events
+                .iter()
+                .all(|event| event.name != "turn.completed"),
+            "default relay must leave durable completion to the service lifecycle owner"
+        );
     }
 
     #[tokio::test]
@@ -7828,10 +9156,11 @@ mod tests {
             bus.clone(),
             None,
         )
+        .with_test_turn_completion()
         .with_companion_context(
             true,
             Some(
-                CompanionId::parse("companion_0190f5fe-7c00-7a00-8abc-012345678942")
+                CompanionId::parse("0190f5fe-7c00-7a00-8abc-012345678942")
                     .unwrap(),
             ),
         );
@@ -7854,7 +9183,7 @@ mod tests {
         assert_eq!(stream_evt.data["companion"], true);
         assert_eq!(
             stream_evt.data["companion_id"],
-            "companion_0190f5fe-7c00-7a00-8abc-012345678942"
+            "0190f5fe-7c00-7a00-8abc-012345678942"
         );
         let turn_evt = ws_events
             .iter()
@@ -7863,7 +9192,7 @@ mod tests {
         assert_eq!(turn_evt.data["companion"], true);
         assert_eq!(
             turn_evt.data["companion_id"],
-            "companion_0190f5fe-7c00-7a00-8abc-012345678942"
+            "0190f5fe-7c00-7a00-8abc-012345678942"
         );
     }
 
@@ -7881,10 +9210,11 @@ mod tests {
             bus.clone(),
             None,
         )
+        .with_test_turn_completion()
         .with_companion_context(
             true,
             Some(
-                CompanionId::parse("companion_0190f5fe-7c00-7a00-8abc-012345678942")
+                CompanionId::parse("0190f5fe-7c00-7a00-8abc-012345678942")
                     .unwrap(),
             ),
         )
@@ -7957,7 +9287,8 @@ mod tests {
             repo.clone(),
             bus.clone(),
             None,
-        );
+        )
+        .with_test_turn_completion();
 
         let mut ws_rx = bus.subscribe();
         let rx = tx.subscribe();
@@ -7994,6 +9325,7 @@ mod tests {
             bus.clone(),
             None,
         )
+        .with_test_turn_completion()
         .with_origin(Some("companion".into()));
 
         let mut ws_rx = bus.subscribe();
@@ -8036,6 +9368,7 @@ mod tests {
             bus.clone(),
             None,
         )
+        .with_test_turn_completion()
         .with_origin(Some("   ".into()));
 
         let mut ws_rx = bus.subscribe();
@@ -8186,7 +9519,7 @@ mod tests {
         assert_eq!(text_rows.len(), 2);
         let updates = repo.take_updates();
         assert_eq!(updates.len(), 1, "only the acknowledged primary rewrite is recorded");
-        assert_eq!(updates[0].0, text_rows[0].id);
+        assert_eq!(updates[0].0, text_rows[0].message_id);
 
         let replacements: Vec<_> = std::iter::from_fn(|| ws_rx.try_recv().ok())
             .filter(|event| {
@@ -8196,11 +9529,11 @@ mod tests {
             })
             .collect();
         assert_eq!(replacements.len(), 1);
-        assert_eq!(replacements[0].data["msg_id"], text_rows[0].id);
+        assert_eq!(replacements[0].data["msg_id"], text_rows[0].message_id);
         assert!(
             replacements
                 .iter()
-                .all(|event| event.data["msg_id"] != text_rows[1].id),
+                .all(|event| event.data["msg_id"] != text_rows[1].message_id),
             "a failed hide must remain visible both live and after reload"
         );
     }
@@ -8236,6 +9569,7 @@ mod tests {
             output: None,
             description: Some("Read file".into()),
             artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         // Second event: Completed with output but no input
@@ -8247,7 +9581,8 @@ mod tests {
             input: None,
             output: Some("contents".into()),
             description: None,
-            artifacts: vec![],
+            artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -8258,12 +9593,12 @@ mod tests {
         let tool_msg = inserts.iter().find(|m| m.r#type == "tool_call");
         assert!(tool_msg.is_some());
         let msg = tool_msg.unwrap();
-        MessageId::parse(&msg.id).expect("tool row has a canonical message ID");
+        MessageId::parse(&msg.message_id).expect("tool row has a canonical message ID");
         assert_eq!(msg.msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_eq!(msg.status.as_deref(), Some("work"));
 
         let updates = repo.take_updates();
-        let tool_update = updates.iter().find(|(id, _)| id == &msg.id);
+        let tool_update = updates.iter().find(|(id, _)| id == &msg.message_id);
         assert!(tool_update.is_some());
         let (_, upd) = tool_update.unwrap();
         assert_eq!(upd.status, Some(Some("finish".to_owned())));
@@ -8308,6 +9643,7 @@ mod tests {
             output: None,
             description: Some("Generate image".into()),
             artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -8318,7 +9654,8 @@ mod tests {
             input: None,
             output: Some("success".into()),
             description: None,
-            artifacts: vec![],
+            artifacts: Vec::new(),
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -8334,7 +9671,7 @@ mod tests {
         let final_tool_update = updates
             .iter()
             .rev()
-            .find(|(id, _)| id == &tool_row.id)
+            .find(|(id, _)| id == &tool_row.message_id)
             .expect("tool terminal update");
         assert_eq!(final_tool_update.1.status.as_ref().and_then(|s| s.as_deref()), Some("error"));
         let content: serde_json::Value =
@@ -8412,14 +9749,14 @@ mod tests {
         let acp_msg = inserts.iter().find(|m| m.r#type == "acp_tool_call");
         assert!(acp_msg.is_some());
         let msg = acp_msg.unwrap();
-        MessageId::parse(&msg.id).expect("ACP tool row has a canonical message ID");
+        MessageId::parse(&msg.message_id).expect("ACP tool row has a canonical message ID");
         assert_eq!(msg.msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_eq!(msg.status.as_deref(), Some("work"));
 
         let updates = repo.take_updates();
         let acp_update = updates
             .iter()
-            .find(|(id, _)| id == &msg.id);
+            .find(|(id, _)| id == &msg.message_id);
         assert!(acp_update.is_some());
         let (_, upd) = acp_update.unwrap();
         assert_eq!(upd.status, Some(Some("finish".to_owned())));
@@ -8517,7 +9854,7 @@ mod tests {
         let (_, terminal) = updates
             .iter()
             .rev()
-            .find(|(id, _)| id == &row.id)
+            .find(|(id, _)| id == &row.message_id)
             .expect("external ACP terminal correction");
         assert_eq!(
             terminal.status.as_ref().and_then(|status| status.as_deref()),
@@ -8564,7 +9901,7 @@ mod tests {
 
         let first = test_artifact("external-duplicate");
         let mut duplicate = first.clone();
-        duplicate.id = "external-duplicate-alias".into();
+        duplicate.id = PersistedArtifactId::new().into_string();
         tx.send(AgentStreamEvent::AcpToolCall(AcpToolCallEventData {
             session_id: "external-session".into(),
             update: AcpToolCallUpdateData {
@@ -8707,7 +10044,7 @@ mod tests {
             .iter()
             .find(|row| row.r#type == "acp_tool_call")
             .expect("terminal ACP update must survive a missing start event");
-        MessageId::parse(&row.id).expect("ACP tool row has a canonical message ID");
+        MessageId::parse(&row.message_id).expect("ACP tool row has a canonical message ID");
         assert_eq!(row.status.as_deref(), Some("finish"));
         let content: serde_json::Value = serde_json::from_str(&row.content).unwrap();
         assert_eq!(content["turn_id"], TEST_TURN_A);
@@ -8755,17 +10092,17 @@ mod tests {
 
         relay.consume(rx).await;
 
-        let tool_id = repo
+        let tool_message_id = repo
             .take_inserts()
             .into_iter()
             .find(|row| row.r#type == "acp_tool_call")
             .expect("ACP tool must be persisted")
-            .id;
-        MessageId::parse(&tool_id).expect("ACP tool row has a canonical message ID");
+            .message_id;
+        MessageId::parse(&tool_message_id).expect("ACP tool row has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
             .iter()
-            .find(|(id, _)| id == &tool_id)
+            .find(|(message_id, _)| message_id == &tool_message_id)
             .expect("active ACP tool must be terminalized");
         assert_eq!(update.status.as_ref().map(|s| s.as_deref()), Some(Some("error")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().unwrap()).unwrap();
@@ -8818,7 +10155,7 @@ mod tests {
         let group_msg = inserts.iter().find(|m| m.r#type == "tool_group");
         assert!(group_msg.is_some());
         let msg = group_msg.unwrap();
-        MessageId::parse(&msg.id).expect("tool-group row has a canonical message ID");
+        MessageId::parse(&msg.message_id).expect("tool-group row has a canonical message ID");
         assert_eq!(msg.msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_eq!(msg.status.as_deref(), Some("finish"));
 
@@ -8899,7 +10236,7 @@ mod tests {
 
         let first = test_artifact("group-count-duplicate");
         let mut duplicate = first.clone();
-        duplicate.id = "group-count-alias".into();
+        duplicate.id = PersistedArtifactId::new().into_string();
         let paired = ToolCallEventData {
             call_id: "group-count".into(),
             name: "image_gen".into(),
@@ -8909,6 +10246,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![first, duplicate],
+            retry: None,
         };
         let completed = HashMap::from([(paired.call_id.clone(), paired)]);
         let entries = vec![ToolGroupEntry {
@@ -8960,6 +10298,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![artifact],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolGroup(vec![ToolGroupEntry {
@@ -9043,6 +10382,7 @@ mod tests {
             output: Some("generated".into()),
             description: None,
             artifacts: vec![artifact],
+            retry: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::ToolGroup(vec![ToolGroupEntry {
@@ -9124,7 +10464,7 @@ mod tests {
 
         let inserts = repo.take_inserts();
         let row = inserts.iter().find(|row| row.r#type == "tool_group").unwrap();
-        MessageId::parse(&row.id).expect("tool-group row has a canonical message ID");
+        MessageId::parse(&row.message_id).expect("tool-group row has a canonical message ID");
         assert_eq!(row.msg_id.as_deref(), Some(TEST_TURN_A));
         assert_eq!(row.status.as_deref(), Some("error"));
     }
@@ -9161,7 +10501,7 @@ mod tests {
             .into_iter()
             .find(|row| row.r#type == "tool_group")
             .expect("tool group must be persisted")
-            .id;
+            .message_id;
         MessageId::parse(&group_id).expect("tool-group row has a canonical message ID");
         let updates = repo.take_updates();
         let (_, update) = updates
@@ -9223,109 +10563,6 @@ mod tests {
         }
     }
 
-    /// Like RecordingRepo but returns NotFound on update when the row was never inserted.
-    struct StrictRecordingRepo {
-        inner: RecordingRepo,
-    }
-
-    impl StrictRecordingRepo {
-        fn new() -> Self {
-            Self {
-                inner: RecordingRepo::new(),
-            }
-        }
-
-        fn take_inserts(&self) -> Vec<MessageRow> {
-            self.inner.take_inserts()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl IConversationRepository for StrictRecordingRepo {
-        async fn get(&self, id: &str) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
-            self.inner.get(id).await
-        }
-        async fn create(&self, row: &nomifun_db::models::ConversationRow) -> Result<String, DbError> {
-            self.inner.create(row).await
-        }
-        async fn update(&self, id: &str, updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
-            self.inner.update(id, updates).await
-        }
-        async fn delete(&self, id: &str) -> Result<(), DbError> {
-            self.inner.delete(id).await
-        }
-        async fn list_paginated(
-            &self,
-            user_id: &str,
-            filters: &nomifun_db::ConversationFilters,
-        ) -> Result<nomifun_common::PaginatedResult<nomifun_db::models::ConversationRow>, DbError> {
-            self.inner.list_paginated(user_id, filters).await
-        }
-        async fn find_by_source_and_chat(
-            &self,
-            user_id: &str,
-            source: &str,
-            chat_id: &str,
-            agent_type: &str,
-        ) -> Result<Option<nomifun_db::models::ConversationRow>, DbError> {
-            self.inner
-                .find_by_source_and_chat(user_id, source, chat_id, agent_type)
-                .await
-        }
-        async fn list_by_cron_job(
-            &self,
-            user_id: &str,
-            cron_job_id: &str,
-        ) -> Result<Vec<nomifun_db::models::ConversationRow>, DbError> {
-            self.inner.list_by_cron_job(user_id, cron_job_id).await
-        }
-        async fn list_associated(
-            &self,
-            user_id: &str,
-            conversation_id: &str,
-        ) -> Result<Vec<nomifun_db::models::ConversationRow>, DbError> {
-            self.inner.list_associated(user_id, conversation_id).await
-        }
-        async fn get_messages(
-            &self,
-            conv_id: &str,
-            page: u32,
-            page_size: u32,
-            order: nomifun_db::SortOrder,
-        ) -> Result<nomifun_common::PaginatedResult<MessageRow>, DbError> {
-            self.inner.get_messages(conv_id, page, page_size, order).await
-        }
-        async fn insert_message(&self, row: &MessageRow) -> Result<(), DbError> {
-            self.inner.insert_message(row).await
-        }
-        async fn update_message(&self, id: &str, updates: &nomifun_db::MessageRowUpdate) -> Result<(), DbError> {
-            if !self.inner.has_message_id(id) {
-                return Err(DbError::NotFound(format!("Message '{id}' not found")));
-            }
-            self.inner.update_message(id, updates).await
-        }
-        async fn delete_messages_by_conversation(&self, conv_id: &str) -> Result<(), DbError> {
-            self.inner.delete_messages_by_conversation(conv_id).await
-        }
-        async fn get_message_by_msg_id(
-            &self,
-            conv_id: &str,
-            msg_id: &str,
-            msg_type: &str,
-        ) -> Result<Option<MessageRow>, DbError> {
-            self.inner.get_message_by_msg_id(conv_id, msg_id, msg_type).await
-        }
-        async fn search_messages(
-            &self,
-            user_id: &str,
-            keyword: &str,
-            page: u32,
-            page_size: u32,
-        ) -> Result<nomifun_common::PaginatedResult<nomifun_db::MessageSearchRow>, DbError> {
-            self.inner.search_messages(user_id, keyword, page, page_size).await
-        }
-    }
-
     /// Recording repo that captures insert/update calls for assertions.
     struct RecordingRepo {
         inserts: Mutex<Vec<MessageRow>>,
@@ -9336,14 +10573,19 @@ mod tests {
         fail_message_inserts: AtomicBool,
         reject_duplicate_message_inserts: AtomicBool,
         block_message_inserts: AtomicBool,
+        message_insert_notify: Notify,
+        message_insert_attempts: AtomicUsize,
         fail_next_message_update: AtomicBool,
         fail_message_updates: AtomicBool,
         message_update_attempts: AtomicUsize,
         fail_message_update_attempt: AtomicUsize,
         block_message_updates: AtomicBool,
+        message_update_notify: Notify,
+        fail_conversation_updates: AtomicBool,
         fail_message_correlations: AtomicBool,
         fail_artifact_commits: AtomicBool,
         block_artifact_commits: AtomicBool,
+        artifact_commit_attempts: AtomicUsize,
     }
 
     impl RecordingRepo {
@@ -9357,14 +10599,19 @@ mod tests {
                 fail_message_inserts: AtomicBool::new(false),
                 reject_duplicate_message_inserts: AtomicBool::new(false),
                 block_message_inserts: AtomicBool::new(false),
+                message_insert_notify: Notify::new(),
+                message_insert_attempts: AtomicUsize::new(0),
                 fail_next_message_update: AtomicBool::new(false),
                 fail_message_updates: AtomicBool::new(false),
                 message_update_attempts: AtomicUsize::new(0),
                 fail_message_update_attempt: AtomicUsize::new(0),
                 block_message_updates: AtomicBool::new(false),
+                message_update_notify: Notify::new(),
+                fail_conversation_updates: AtomicBool::new(false),
                 fail_message_correlations: AtomicBool::new(false),
                 fail_artifact_commits: AtomicBool::new(false),
                 block_artifact_commits: AtomicBool::new(false),
+                artifact_commit_attempts: AtomicUsize::new(0),
             }
         }
 
@@ -9388,6 +10635,9 @@ mod tests {
 
         fn set_block_message_inserts(&self, block: bool) {
             self.block_message_inserts.store(block, AtomicOrdering::SeqCst);
+            if !block {
+                self.message_insert_notify.notify_waiters();
+            }
         }
 
         fn fail_next_message_update(&self) {
@@ -9407,6 +10657,18 @@ mod tests {
             self.block_message_updates.store(true, AtomicOrdering::SeqCst);
         }
 
+        fn set_block_message_updates(&self, block: bool) {
+            self.block_message_updates.store(block, AtomicOrdering::SeqCst);
+            if !block {
+                self.message_update_notify.notify_waiters();
+            }
+        }
+
+        fn fail_conversation_updates(&self) {
+            self.fail_conversation_updates
+                .store(true, AtomicOrdering::SeqCst);
+        }
+
         fn fail_message_correlations(&self) {
             self.fail_message_correlations
                 .store(true, AtomicOrdering::SeqCst);
@@ -9422,12 +10684,21 @@ mod tests {
                 .store(true, AtomicOrdering::SeqCst);
         }
 
-        fn take_inserts(&self) -> Vec<MessageRow> {
-            std::mem::take(&mut self.inserts.lock().unwrap())
+        fn message_insert_attempts(&self) -> usize {
+            self.message_insert_attempts.load(AtomicOrdering::SeqCst)
         }
 
-        fn has_message_id(&self, id: &str) -> bool {
-            self.inserts.lock().unwrap().iter().any(|m| m.id == id)
+        fn message_update_attempts(&self) -> usize {
+            self.message_update_attempts.load(AtomicOrdering::SeqCst)
+        }
+
+        fn artifact_commit_attempts(&self) -> usize {
+            self.artifact_commit_attempts
+                .load(AtomicOrdering::SeqCst)
+        }
+
+        fn take_inserts(&self) -> Vec<MessageRow> {
+            std::mem::take(&mut self.inserts.lock().unwrap())
         }
 
         #[allow(dead_code)]
@@ -9442,9 +10713,14 @@ mod tests {
             Ok(None)
         }
         async fn create(&self, row: &nomifun_db::models::ConversationRow) -> Result<String, DbError> {
-            Ok(row.id.clone())
+            Ok(row.conversation_id.clone())
         }
         async fn update(&self, _id: &str, _updates: &nomifun_db::ConversationRowUpdate) -> Result<(), DbError> {
+            if self.fail_conversation_updates.load(AtomicOrdering::SeqCst) {
+                return Err(DbError::Init(
+                    "injected conversation status update failure".to_owned(),
+                ));
+            }
             Ok(())
         }
         async fn delete(&self, _id: &str) -> Result<(), DbError> {
@@ -9486,15 +10762,30 @@ mod tests {
         }
         async fn get_messages(
             &self,
-            _conv_id: &str,
-            _page: u32,
-            _page_size: u32,
+            conv_id: &str,
+            page: u32,
+            page_size: u32,
             _order: nomifun_db::SortOrder,
         ) -> Result<nomifun_common::PaginatedResult<MessageRow>, DbError> {
+            let rows = self
+                .inserts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|row| row.conversation_id == conv_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let total = rows.len() as u64;
+            let start = page.saturating_sub(1) as usize * page_size as usize;
+            let items = rows
+                .into_iter()
+                .skip(start)
+                .take(page_size as usize)
+                .collect::<Vec<_>>();
             Ok(nomifun_common::PaginatedResult {
-                items: vec![],
-                total: 0,
-                has_more: false,
+                has_more: start.saturating_add(items.len()) < total as usize,
+                items,
+                total,
             })
         }
         async fn get_message(&self, _conv_id: &str, message_id: &str) -> Result<Option<MessageRow>, DbError> {
@@ -9503,12 +10794,20 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|row| row.id == message_id)
+                .find(|row| row.message_id == message_id)
                 .cloned())
         }
         async fn insert_message(&self, row: &MessageRow) -> Result<(), DbError> {
-            if self.block_message_inserts.load(AtomicOrdering::SeqCst) {
-                std::future::pending::<()>().await;
+            self.message_insert_attempts
+                .fetch_add(1, AtomicOrdering::SeqCst);
+            while self.block_message_inserts.load(AtomicOrdering::SeqCst) {
+                let notified = self.message_insert_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if !self.block_message_inserts.load(AtomicOrdering::SeqCst) {
+                    break;
+                }
+                notified.await;
             }
             if self
                 .commit_next_message_insert_then_error
@@ -9528,7 +10827,12 @@ mod tests {
             if self
                 .reject_duplicate_message_inserts
                 .load(AtomicOrdering::SeqCst)
-                && self.inserts.lock().unwrap().iter().any(|existing| existing.id == row.id)
+                && self
+                    .inserts
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|existing| existing.message_id == row.message_id)
             {
                 return Err(DbError::Conflict("injected duplicate message insert".to_owned()));
             }
@@ -9542,6 +10846,8 @@ mod tests {
             messages: &[TurnArtifactMessageCommit],
             committed_at: i64,
         ) -> Result<Vec<MessageRow>, DbError> {
+            self.artifact_commit_attempts
+                .fetch_add(1, AtomicOrdering::SeqCst);
             if self.block_artifact_commits.load(AtomicOrdering::SeqCst) {
                 std::future::pending::<()>().await;
             }
@@ -9554,7 +10860,7 @@ mod tests {
             let mut inserts = self.inserts.lock().unwrap();
             let mut updates = self.updates.lock().unwrap();
             for message in messages {
-                if let Some(existing) = inserts.iter().find(|row| row.id == message.id)
+                if let Some(existing) = inserts.iter().find(|row| row.message_id == message.message_id)
                     && (existing.conversation_id != conversation_id
                         || existing.msg_id.as_deref() != Some(turn_message_id)
                         || existing.r#type != message.message_type
@@ -9568,9 +10874,9 @@ mod tests {
             }
             let mut committed = Vec::with_capacity(messages.len());
             for message in messages {
-                if let Some(existing) = inserts.iter().find(|row| row.id == message.id) {
+                if let Some(existing) = inserts.iter().find(|row| row.message_id == message.message_id) {
                     updates.push((
-                        message.id.clone(),
+                        message.message_id.clone(),
                         nomifun_db::MessageRowUpdate {
                             content: Some(message.content.clone()),
                             status: Some(Some("finish".to_owned())),
@@ -9583,7 +10889,8 @@ mod tests {
                     committed.push(row);
                 } else {
                     let row = MessageRow {
-                        id: message.id.clone(),
+                        id: 0,
+                        message_id: message.message_id.clone(),
                         conversation_id: conversation_id.to_owned(),
                         msg_id: Some(turn_message_id.to_owned()),
                         r#type: message.message_type.clone(),
@@ -9626,13 +10933,19 @@ mod tests {
                 .clone())
         }
         async fn update_message(&self, id: &str, updates: &nomifun_db::MessageRowUpdate) -> Result<(), DbError> {
-            if self.block_message_updates.load(AtomicOrdering::SeqCst) {
-                std::future::pending::<()>().await;
-            }
             let attempt = self
                 .message_update_attempts
                 .fetch_add(1, AtomicOrdering::SeqCst)
                 + 1;
+            while self.block_message_updates.load(AtomicOrdering::SeqCst) {
+                let notified = self.message_update_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if !self.block_message_updates.load(AtomicOrdering::SeqCst) {
+                    break;
+                }
+                notified.await;
+            }
             if self.fail_message_updates.load(AtomicOrdering::SeqCst)
                 || self.fail_next_message_update.swap(false, AtomicOrdering::SeqCst)
                 || self.fail_message_update_attempt.load(AtomicOrdering::SeqCst) == attempt
@@ -9652,25 +10965,10 @@ mod tests {
             msg_type: &str,
         ) -> Result<Option<MessageRow>, DbError> {
             let inserts = self.inserts.lock().unwrap();
-            let mut row = inserts
+            Ok(inserts
                 .iter()
                 .find(|m| m.msg_id.as_deref() == Some(msg_id) && m.r#type == msg_type)
-                .cloned();
-            drop(inserts);
-            if let Some(found) = row.as_mut() {
-                for (_, update) in self.updates.lock().unwrap().iter().filter(|(id, _)| id == msg_id) {
-                    if let Some(content) = &update.content {
-                        found.content = content.clone();
-                    }
-                    if let Some(status) = &update.status {
-                        found.status = status.clone();
-                    }
-                    if let Some(hidden) = update.hidden {
-                        found.hidden = hidden;
-                    }
-                }
-            }
-            Ok(row)
+                .cloned())
         }
         async fn search_messages(
             &self,

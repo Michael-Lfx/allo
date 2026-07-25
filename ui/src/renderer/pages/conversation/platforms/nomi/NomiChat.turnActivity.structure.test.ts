@@ -15,12 +15,22 @@ describe('NomiChat turn activity ownership', () => {
   test('shares the local stream lifecycle with the message list and send box', () => {
     expect(chatSource.includes('useNomiMessage(conversation_id')).toBe(true);
     expect(chatSource.includes('turnActivity.running')).toBe(true);
-    expect(chatSource.includes('isProcessing === true || turnActivity.running')).toBe(true);
+    expect(chatSource.includes('turnActivity.hasHydratedRunningState')).toBe(true);
+    expect(chatSource.includes('resolvedIsProcessing')).toBe(true);
     expect(chatSource.includes('!turnActivity.presentation.streamFinished')).toBe(true);
+    expect(chatSource.includes('isProcessing === true || turnActivity.running')).toBe(true);
     expect(chatSource.includes('turnActivity={turnActivity}')).toBe(true);
     expect(chatSource.includes('activeTurnId: turnActivity.activeTurnId')).toBe(true);
     expect(chatSource.includes('activeRequestMessageId: turnActivity.activeRequestMessageId')).toBe(true);
     expect(chatSource.includes('TurnStatusRail')).toBe(true);
+  });
+
+  test('uses the initial processing snapshot only until live turn state is hydrated', () => {
+    expect(
+      /const resolvedIsProcessing = turnActivity\.hasHydratedRunningState\s+\? turnActivity\.running\s+: isProcessing === true \|\| turnActivity\.running;/.test(
+        chatSource
+      )
+    ).toBe(true);
   });
 
   test('does not let the send box own the stream subscription by itself', () => {
@@ -30,7 +40,7 @@ describe('NomiChat turn activity ownership', () => {
 
   test('renders an optimistic local user bubble before HTTP accept', () => {
     expect(sendBoxSource.includes('notifyLocalSubmit')).toBe(true);
-    expect(sendBoxSource.includes('prefixedId(')).toBe(true);
+    expect(sendBoxSource.includes('uuidv7()')).toBe(true);
     expect(sendBoxSource.includes('removeMessageByMsgId(localMsgId)')).toBe(true);
   });
 

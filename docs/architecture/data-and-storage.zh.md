@@ -1,13 +1,18 @@
 # 数据与存储
 
+数据库和 ID 改动还必须遵守仓库级
+[数据与标识符规范](../contributing/data-and-identifier-standards.zh.md)。
+本文主要描述存储行为；可执行 schema 与逻辑关联 registry 仍是实现层面的
+权威来源。
+
 Flowy 把状态保存在三个地方：一个 SQLite 数据库（一切结构化数据的真理之源）、一个按安装划分的**数据目录**（数据库文件、日志、操作系统缓存的运行时），以及按会话划分的**工作目录**（agent 读写的文件）。本页解释什么内容存在哪里、怎么命名，以及如何加以保护。
 
 ## 数据目录
 
 | 宿主 | 默认路径 | 覆盖方式 |
 | --- | --- | --- |
-| 桌面（`nomifun-desktop`） | 按用户的应用数据目录：Windows 上的 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上的 `~/Library/Application Support/Flowy/Nomi`，Linux 上的 `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`）。设置了 `NOMIFUN_DATA_DIR` 时变为 `$NOMIFUN_DATA_DIR/Nomi`。位于 `<system temp>/nomifun-data/Nomi` 的旧版安装会在启动时被自动搬迁（一次性；旧目录保留作备份）。 | 环境变量 `NOMIFUN_DATA_DIR` |
-| Web（`nomifun-web`）与 `nomicore` bin | 与桌面外壳**完全相同**的按用户目录 —— `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi`（旧的相对 `./data` 默认值已删除）。设置了 `NOMIFUN_DATA_DIR` 时取**字面值**（不追加 `/Nomi`），因此 Docker `/data`、systemd `/var/lib/nomifun` 部署不受影响。 | 命令行 `--data-dir` 或环境变量 `NOMIFUN_DATA_DIR` |
+| 桌面（`nomifun-desktop`） | 按用户的应用数据目录：Windows 上的 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上的 `~/Library/Application Support/Flowy/Nomi`，Linux 上的 `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`）。设置了 `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` 时变为 `$…/Nomi`。当前目录或旧根目录中的 pre-v3 数据集会整体退役；其中的产品行不会搬入 v3。 | 环境变量 `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` |
+| Web（`nomifun-web`）与 `nomicore` bin | 与桌面外壳**完全相同**的按用户目录 —— `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi`（旧的相对 `./data` 默认值已删除）。设置了 `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` 时取**字面值**（不追加 `/Nomi`），因此 Docker `/data`、systemd `/var/lib/nomifun` 部署不受影响。 | 命令行 `--data-dir` 或环境变量 `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` |
 
 数据目录内部：
 
@@ -21,11 +26,11 @@ Flowy 把状态保存在三个地方：一个 SQLite 数据库（一切结构化
 └── companion/                 companion file domain (shared memory hub + per-companion profiles, see below)
 ```
 
-三个宿主的缺省默认值都经由同一个共享辅助函数解析：[`nomifun_app::cli::default_data_dir()`](../../crates/backend/nomifun-app/src/cli.rs) —— `dirs::data_local_dir()/Flowy/Nomi`（按用户的 application-data 位置），仅当操作系统报告不出用户目录时才极端回退到系统临时目录（`<system temp>/nomifun-data/Nomi`）。环境变量语义保持各宿主原状：桌面外壳对 `NOMIFUN_DATA_DIR` 追加 `"Nomi"`（见 [`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs)），而 `nomifun-web` 与 `nomicore` 取其字面值（clap `env` 绑定 —— 对 `nomicore` 是新增的，它以前不读这个变量）。位于 `<system temp>/nomifun-data/Nomi` 的既有旧版安装会在启动时被一次性搬迁到新位置（[`apps/desktop/src/relocate.rs`](../../apps/desktop/src/relocate.rs)）：数据被复制（可再生的缓存/日志留在原地），旧目录保留作备份，随后后端把数据库中存储的绝对路径（知识库根、会话工作区、终端 cwd）改写到新根。
+三个宿主的缺省默认值都经由同一个共享辅助函数解析：[`nomifun_app::cli::default_data_dir()`](../../crates/backend/nomifun-app/src/cli.rs) —— `dirs::data_local_dir()/Flowy/Nomi<channel-suffix>`（按用户的 application-data 位置）。stable 使用 `Nomi`，非 stable channel 使用 `Nomi-dev` 等同级目录；仅当操作系统报告不出用户目录时才极端回退到系统临时目录（`<system temp>/nomifun-data/Nomi<channel-suffix>`）。环境变量语义保持各宿主原状：桌面外壳对 `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` 追加 `"Nomi"`（见 [`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs)），而 `nomifun-web` 与 `nomicore` 取其字面值（clap `env` 绑定 —— 对 `nomicore` 是新增的，它以前不读这个变量）。v3 不会把 `<system temp>/nomifun-data/Nomi` 或其他旧根目录中的产品数据复制到 active dataset；检测到历史受管数据集时，reset 状态机会将其完整移动到 retired/quarantine 位置，然后创建全新的 v3 数据集，不改写历史数据库路径。
 
-### 一个目录，一份状态
+### 每个 channel 一个目录、一份状态
 
-所有宿主共用一个默认值是有意为之：开发循环（`bun run serve:web`、`dev:web`、`dev`）与已安装的桌面应用读写同一份状态，因此 provider 或伙伴配置一次、处处可测，排查问题也永远只有一个目录可看。确实需要隔离沙箱时，`NOMIFUN_DATA_DIR` 或 `--data-dir` 就是逃生舱。（dev 脚本不再传仓库相对的 `--data-dir`；旧的 `data/` 与 `.dev-data/` 目录不再被任何东西读取，其内容也**不会**被自动迁移 —— 还需要的话请手动拷进新根，或用 `NOMIFUN_DATA_DIR` 指回去。）
+同一 build channel 的宿主共用一个默认值是有意为之。已安装桌面应用与生产形态的 `bun run serve:web` 使用 stable 的 `Nomi`；`bun run dev`、`dev:web` 与 `build:fast` 使用 dev 的 `Nomi-dev`。这样既保留每个 channel 内的一份状态，也避免关闭鉴权或实验性的开发循环触碰已安装应用的状态。需要把 stable 快照带入开发环境时可运行 `bun run seed:dev`；需要显式选择目录时则使用 `NOMIFUN_DATA_DIR` 或 `--data-dir`。
 
 让这种共享变得安全的是**排他服务器锁**：启动时（`bootstrap::init_environment`，早于数据库打开）后端对 `{data_dir}/server.lock` 取 OS 级排他 advisory 锁（`fs2`：Unix 上 `flock`，Windows 上 `LockFileEx`）。进程退出*或崩溃*时锁由 OS 释放，因此残留的 `server.lock` 文件无害，不需要任何过期启发式。同一目录上的第二个后端会快速失败，错误信息点名持有者（pid + exe）并给出两条出路：关掉另一个实例，或让这一个指向自己的独立目录。桌面外壳现在会把后端启动失败弹成原生错误对话框并退出（以前是静默白屏）。`nomicore doctor` 与 `mcp-*` stdio 子命令不受该锁影响（`doctor` 设计上就允许与运行中的服务器并存）。
 
@@ -33,10 +38,29 @@ Flowy 把状态保存在三个地方：一个 SQLite 数据库（一切结构化
 
 [`nomifun-db`](../../crates/backend/nomifun-db/) 是数据层。来自 [`crates/backend/nomifun-db/src/lib.rs`](../../crates/backend/nomifun-db/src/lib.rs) 的要点：
 
-持久化实体身份遵循 [id-system.md](id-system.zh.md) 中的规范前缀 UUIDv7 契约；SQLite 行顺序和自增值都不是可迁移的实体身份。
+持久化身份遵循 [id-system.md](id-system.zh.md) 中的 v3 分层契约：
 
-- `Database` —— 持有 `sqlx::SqlitePool` 与迁移。通过 `nomifun-db::SqlitePool` 再导出。
-- `init_database` —— 打开文件、运行内嵌迁移。
+- 每张产品表都有 `id INTEGER PRIMARY KEY AUTOINCREMENT`；
+- 需要跨数据集的稳定实体增加具名、裸标准 UUIDv7 字段；
+- 仅内部关系、单例、缓存和事件行在当前数据集内部使用表 `id`；
+  需要产品定位的实体使用具名 UUIDv7 业务字段；
+- 关系是带索引的逻辑关联，不是物理外键。
+
+本地 `id` 是表主键，但不是可移植的业务身份，绝不以技术行主键的身份跨越 API、
+事件、受管文件或备份图。需要产品定位的实体使用具名 UUIDv7；产品 wire 契约
+不引入整数业务 ID。
+
+具体地说，Agent Execution Participant、Step、Attempt、Template Participant
+分别使用 `participant_id`、`step_id`、`attempt_id`、
+`template_participant_id`；Channel Plugin、User、Session 分别使用
+`channel_plugin_id`、`channel_user_id`、`channel_session_id`。这七类字段都是
+裸标准 UUIDv7 业务 ID，不是本地整数身份。同一规则也适用于 MCP Server、
+Webhook、Connector Credential、Creation Task、Conversation Artifact 和
+IDMM Intervention。
+
+- `Database` —— 持有 `sqlx::SqlitePool` 与 v3 baseline schema 状态。通过
+  `nomifun-db::SqlitePool` 再导出。
+- `init_database` —— 打开或初始化 v3 baseline 数据库。
 - `init_database_memory` —— 测试用的内存版本。
 
 该 crate 暴露约 20 对仓储 **trait + Sqlite 实现**。下面是非穷尽列表（完整列表见 `lib.rs` 中的 `pub use repository::{...}` 块）：
@@ -52,7 +76,7 @@ Flowy 把状态保存在三个地方：一个 SQLite 数据库（一切结构化
 | `IProviderRepository` | `SqliteProviderRepository` | LLM provider 凭证（加密） |
 | `IRemoteAgentRepository` | `SqliteRemoteAgentRepository` | 远程 agent 端点 |
 | `IAgentExecutionRepository` | `SqliteAgentExecutionRepository` | AgentExecution、不可变 Participant、按 revision 演进的 Step/Dependency、Attempt、Conversation Link 与 Event outbox；详见[统一模型](agent-execution.zh.md) |
-| `IRequirementRepository` | `SqliteRequirementRepository` | AutoWork requirements（**有意不与 conversations 建立外键** —— 即使会话被删除，循环也要存活） |
+| `IRequirementRepository` | `SqliteRequirementRepository` | AutoWork requirements；所有 owner 关联都遵循 Repository/Service 管理的逻辑关联策略 |
 | `ICronRepository` | `SqliteCronRepository` | 定时任务及其按时区归一化的表达式 |
 | `ITerminalRepository` | `SqliteTerminalRepository` | 终端会话元数据 |
 | `IPresetRepository` / `IPresetStateRepository` | `SqlitePresetRepository` / `SqlitePresetRepository` | 关系化设定与每用户选择状态 |
@@ -64,9 +88,22 @@ Flowy 把状态保存在三个地方：一个 SQLite 数据库（一切结构化
 
 伴随其行的若干参数类型包括 `UpdateAgentHandshakeParams`、`ConversationFilters`、`ConversationRowUpdate`、`MessageRowUpdate`、`MessageSearchRow`、`UpdateCronJobParams`、`UpsertOAuthTokenParams`、`CreateProviderParams`、`UpdateRemoteAgentParams`、`CreateAgentExecutionParams`、`ReconcileAgentExecutionPlanParams` 和 `SettleAgentExecutionAttemptParams` 等。Repository trait 是功能域契约；领域服务通过它们访问数据，只有范围明确的 bootstrap/schema 维护是直接使用 pool 的已记录例外。
 
-### 迁移
+### v3 baseline 与数据集 reset
 
-迁移是用 `sqlx::migrate!` 内嵌的 SQL 文件。它们在每次启动 `init_database` 时运行。Schema 只向前演进；不支持降级。
+内嵌 SQL 定义的是全新、空数据库的 v3 baseline。`init_database` 可以记录并
+校验该 baseline，但不会把 pre-v3 产品行转换为 v3 行。
+
+打开 SQLite 之前，bootstrap 会检查数据集契约和 generation。不存在数据集时
+初始化 v3；检测到历史或不兼容数据集时整体退役并创建新的空 v3 数据集。
+不提供逐表历史迁移、兼容读取、ID 规范化或降级路径。
+
+运行时 baseline 校验至少确认：
+
+- 每张产品表都有 `id INTEGER PRIMARY KEY AUTOINCREMENT`；
+- 稳定业务 ID 是裸标准 UUIDv7；
+- schema 没有物理 `FOREIGN KEY`、`REFERENCES`、trigger、数据库 cascade 或
+  `*_row_id`；
+- 每个逻辑关联都有必需索引和 registry 登记。
 
 ### 定时任务所有权
 
@@ -75,7 +112,7 @@ Conversation 临时推导的提示字段。新任务必须显式接收已认证�
 ID；可选的 Conversation 绑定必须已经属于同一个 owner。目标缺失、存在多个
 反向 owner，或正反向 owner 不一致时都会拒绝写入，不会猜测或静默修复。
 
-HTTP、Gateway、服务和 Repository 的公开读写都必须携带 `user_id`，越权访问统一表现为不存在。调度器是唯一允许按全局任务 id 读取的内部入口，但定时器会同时捕获所有者，并在执行前与持久化行重新核对，以阻断删除后同 id 重建等竞态。任务与 Conversation 的双向绑定以及任务生成的 Conversation Artifact 都由数据库触发器强制同属一个用户；Artifact 的状态更新也在 SQL 写入前按所有者过滤。任务所有者不能原地迁移，运行时不存在安装所有者兜底。定时任务只有一个执行目标——Agent，因此 ID-v2 的领域模型、API 与基线 schema 都不表达 target type，也不包含旧的 terminal 专用字段。
+HTTP、Gateway、服务和 Repository 的公开读写都必须携带 `user_id`，越权访问统一表现为不存在。调度器按裸 UUIDv7 `cron_job_id` 读取任务，并在执行前与持久化行重新核对所有者，以阻断删除后同 ID 重建等竞态。Repository 事务负责校验可选 Conversation 关联以及任务生成的 Conversation Artifact 的 owner 一致性。任务所有者不能原地迁移，运行时不存在安装所有者兜底。定时任务只有一个执行目标——Agent，因此 v3 领域模型、API 与基线 schema 不表达 target type，也不包含旧的 terminal 专用字段。
 
 ### 安装级执行权限
 
@@ -85,21 +122,29 @@ HTTP、Gateway、服务和 Repository 的公开读写都必须携带 `user_id`�
 其他已认证主体只保留普通 Nomi Conversation 和定时任务中的模型调用；用户身份、
 role 文本或开放 JSON 都不能扩大权限。
 
-Migration 041 一次性完成硬切：规范化次级用户保留的 Conversation 与定时任务模型
-选择，禁用没有可用模型的任务，墓碑化可恢复执行图，删除次级模板与终端，并安装
-所有权和 model-only trigger。因为 SQLite migration 不能删除文件，启动 reconciliation
-还会清除次级用户或孤儿定时任务的 Skill 目录。本地 loopback capability 的签名根和
-可续期 lease 只存在于进程内，绝不持久化。
+v3 baseline 直接创建上述权限模型，不保留或规范化旧 schema generation 中的历史行。
+本地 loopback capability 的签名根和可续期 lease 只存在于进程内，绝不持久化。
 
-### 按会话的外键说明
+### 逻辑关联策略
 
-`requirements`（AutoWork 队列）有意**不**为 `conversation_id` 建立外键。AutoWork 持久执行器（`nomifun-requirement`）是后端权威的，并能在会话被删除后存活 —— 外键会把它的生命周期与会话耦合在一起，破坏 boot-resume 的设计。
+任何产品表都没有物理外键。稳定父实体关联（例如
+`messages.conversation_id`、`cron_job_runs.cron_job_id`）保存父实体的裸 UUIDv7
+业务 ID。Repository 层在事务
+中校验目标，并执行登记的 `RESTRICT`、应用层 `CASCADE`、`SET_NULL` 或
+`KEEP_HISTORY` 删除策略。应用层 `CASCADE` 是 Service/Repository 行为，不是
+SQLite cascade 或 trigger。数据库和受管 side-store 都执行 orphan audit。
+
+`requirements.owner_conversation_id` 是采用 `SET_NULL` 删除策略的逻辑关联；
+删除会话时由应用事务清空绑定，因此持久化 AutoWork runner 仍可继续运行，
+不依赖数据库级 cascade。
 
 ## 静态加密 —— AES-GCM
 
 敏感字符串（provider API key、OAuth token、渠道 bot token 等）在写入前用 AES-256-GCM 加密，由 `nomifun_common::crypto::{encrypt_string, decrypt_string}` 与 `nomifun_app::load_or_create_data_encryption_key` 加载的数据加密密钥承担。
 
-主密钥是每个安装独有的 `<data_dir>/encryption_key` 文件。旧安装没有该文件时，新版本首次启动会用当前解析到的 JWT secret 派生并写入一次，以保证既有密文可读；之后修改密码或轮换 JWT 不会再改变数据密钥。丢失 `encryption_key` 会使所有加密列无法解读。
+主密钥是每个 v3 数据集独有的 `<data_dir>/encryption_key` 文件，在新数据集
+初始化时创建。密码修改或 JWT 轮换不会改变它；v3 reset 不导入历史密文或旧
+密钥。丢失 active dataset 的 `encryption_key` 会使该数据集的加密列无法解读。
 
 工作区中锁定的 `aes-gcm` crate 版本是 `0.10`。
 
@@ -108,14 +153,12 @@ Migration 041 一次性完成硬切：规范化次级用户保留的 Conversatio
 每个会话拥有一个 agent 可自由读写的目录：
 
 ```
-{work_dir}/conversations/{label}-temp-{workspace_token}/
+{work_dir}/conversations/{workspace_id}/
 ```
 
 - `work_dir` —— 运行时工作目录；未显式设置时回退至数据目录。来源依次为：`--work-dir` flag → 环境变量 `NOMIFUN_WORK_DIR` → `<data_dir>`。
-- `label` —— 由会话标题派生的短 slug。
-- `temp` —— 字面字符串；表明这些目录是用户也可以投放文件的可写暂存空间。
-- `workspace_token` —— 后端签发并存入 `extra.temp_workspace_id` 的 `ws_…`
-  token；它标识这一个托管工作区，不复用 canonical Conversation 实体 ID。
+- `workspace_id` —— 后端签发并存入 `extra.temp_workspace_id` 的裸小写 UUIDv7，
+  固定 36 字符。目录名不包含类型前缀、标题 slug 或 `temp` 标记。
 
 未选择自定义工作区时，Conversation 行创建完成后立即物化该目录。会话被删除时该目录被移除（`nomifun_common::hooks` 中的 `OnConversationDelete` 钩子）。其内的文件操作处于沙箱中并被监视：
 
@@ -131,7 +174,9 @@ Migration 041 一次性完成硬切：规范化次级用户保留的 Conversatio
 
 ## 伙伴数据（`companion/` 文件域）
 
-数字伙伴的数据刻意**不进主库迁移体系**，而是一个可整体导出/清空的文件域（详见[伙伴指南](../guides/companions.zh.md)）。多伙伴布局如下：
+数字伙伴的数据位于主产品数据库表之外，是一个可整体导出/清空的文件域
+（详见[伙伴指南](../guides/companions.zh.md)）。它作为受管数据集的一部分参与
+v3 reset/restore，不通过历史逐行迁移导入。多伙伴布局如下：
 
 ```
 <data_dir>/companion/
@@ -141,11 +186,11 @@ Migration 041 一次性完成硬切：规范化次级用户保留的 Conversatio
 │   └── memory.db                独立 SQLite（PRAGMA user_version 版本阶梯）：
 │                                共享记忆/建议/学习历史 + 每宠运行态（companion_runtime_state：XP 等）
 └── companions/
-    └── {companion_id}/                companion_{uuid_v7}，目录即真相
+    └── {companion_id}/                companion_id 为裸标准 UUIDv7，目录即真相
         └── config.json          CompanionProfileConfig：名称/形象/人格/每宠模型/桌宠开关与位置
 ```
 
-旧版单宠布局 `companion/nomi/` 在首次启动时被自动迁移为 `shared/` + 第一只伙伴 "Nomi"，原目录写入 `.migrated` 标记后保留（一个版本周期后清理）。
+历史单宠布局 `companion/nomi/` 不迁移到 v3；检测到它时随整个旧数据集退役。
 
 伙伴绑定的知识库不在 `companion/` 域内：绑定关系存主库 `knowledge_bindings('companion', companion_id)`，知识库内容在知识库自己的托管目录（URL 源知识库抓取的 markdown 快照存于其 `snapshots/` 子目录）。
 
@@ -178,10 +223,12 @@ Flowy 自带其 `bun` 运行时（1.3.13），使 MCP 服务器与工具子进�
 2. enhance_process_path             prepend cache bin dir to PATH
 3. bootstrap::init_environment      resolve work_dir / log_dir, init tracing,
                                     take the exclusive {data_dir}/server.lock
-4. bootstrap::init_data_layer       open database, run migrations
-5. AppServices::from_config         instantiate every service
-6. ensure_admin_credentials (web)   pre-seed admin if NOMIFUN_ADMIN_PASSWORD is set
-7. create_router → axum::serve      bind and start serving
+4. bootstrap::prepare_v3_dataset    check generation; hard reset/quarantine as a whole
+5. bootstrap::init_data_layer       initialize/open the v3 database baseline
+6. bootstrap::write_v3_receipt      write and finalize the dataset reset receipt
+7. AppServices::from_config         instantiate every service
+8. ensure_admin_credentials (web)   pre-seed admin if NOMIFUN_ADMIN_PASSWORD is set
+9. create_router → axum::serve      bind and start serving
 ```
 
 第 3 步就是第二个后端在已被占用的数据目录上快速失败的地方（见上文「一个目录，一份状态」）。
@@ -195,9 +242,10 @@ Flowy 自带其 `bun` 运行时（1.3.13），使 MCP 服务器与工具子进�
   `flowy-backend.db`：WAL 数据可能仍在
   `flowy-backend.db-wal` 中，裸复制可能得到不完整数据库。旧安装可能仍为
   `nomifun-backend.db`，下次启动时会自动重命名。
-- **备份清单** —— 记录 schema version、storage-generation/dataset ID、
-  创建时间以及每个文件的校验和。Restore 保留实体 ID；Merge 导入遇到同
-  ID 不同内容必须失败。
+- **备份清单** —— 记录 v3 schema、storage-generation/dataset ID、创建时间
+  以及每个文件的校验和。Restore 保留稳定业务 UUIDv7；技术 `id` 在目标
+  数据集中重新分配，关系从 registry 登记的业务键、自然键、JSON 和
+  side-store 引用重建。
 - **加密密钥** —— 离线 bundle 会在文件存在时纳入
   `<data_dir>/encryption_key`。缺少该文件时，provider API key、OAuth token、
   渠道 bot token 等加密列将无法解密。
@@ -217,8 +265,8 @@ nomicore restore --bundle <备份目录> --destination-data-dir <新数据目录
 
 `backup` 在打开 SQLite 前获取数据目录的 `server.lock`，因此不会与运行中的
 后端竞态；它使用与服务启动相同的 CLI / 持久化配置 / 环境变量规则解析
-`work_dir`。输出目录必须不存在，并且必须位于两个源根目录之外。备份以不运行
-migration、恢复或 quarantine 的方式打开现有 ID-v2 数据库；无效源会直接失败。
+`work_dir`。输出目录必须不存在，并且必须位于两个源根目录之外。备份只接受
+v3 数据集；不会迁移、恢复或 quarantine 历史数据集，历史数据源直接失败。
 完整 bundle 包含 WAL 安全的数据库快照、
 存在时的持久加密密钥、伙伴文件域和托管会话工作区。日志、`server.lock`、
 数据库 WAL/SHM sidecar、runtime/Bun 缓存、浏览器 profile、进程/会话临时
@@ -230,7 +278,9 @@ reparse point、路径穿越、特殊文件、未声明的 payload 文件/目录
 超过 8 GiB、总计超过 64 GiB、文件超过 200,000 个或目录超过 200,000 个的
 bundle；JSON 清单本身上限为 64 MiB。`restore` 在写入前验证整个 bundle，只接受不
 存在或空的目标目录，在目标旁边 staging 并验证所有文件，最后通过一次 rename
-安装完整数据目录；失败不会暴露部分目标。所有实体 ID 保持不变，但会写入新的
+安装完整数据目录；失败不会暴露部分目标。稳定业务 UUIDv7 保持不变；本地技术
+`id` 由目标数据集重新分配且不作为关系 locator，再对完整的已登记逻辑关联图
+执行 orphan audit。恢复会写入新的
 `storage-generation`，避免源数据集浏览器缓存污染恢复后的数据。来自源自定义
 work-dir 的托管工作区统一落到
 `<destination-data-dir>/conversations`；自定义外部工作区必须由其所有者另行
@@ -244,9 +294,10 @@ bundle 含数据库加密密钥和加密凭据，整个目录都必须按敏感�
 下。若要改用独立 work root，应先移动恢复出的托管目录，并在服务首次启动前
 设置常规 work-dir override；绝不能把 restore 目标指向已有外部项目。
 
-这些命令实现完整的离线 Backup/Restore。ID 契约中的逻辑 Merge/Clone 规则
-尚未接入真实 SQLite CLI 操作，文档和产品界面不得宣称 CLI 已提供 Merge 或
-Clone。
+这些命令实现 v3 离线 Backup/Restore，不提供历史数据 Merge/Migration。Clone
+保留输入中的业务 UUIDv7，不会 mint 或隐式重写；目标已有同一业务 ID 时必须
+fail-closed，不能留下部分写入。技术 `id` 在目标中重建，关系从可移植的业务
+键、自然键和外部 ID 重建；源数据集的自增 `id` 绝不是可移植身份。
 
 干净卸载因此是删除数据目录、（如果单独设置过）工作目录与 OS 缓存目录。
 

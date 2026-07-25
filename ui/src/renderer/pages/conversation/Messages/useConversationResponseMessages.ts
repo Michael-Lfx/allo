@@ -42,7 +42,7 @@ export function useConversationResponseMessages(
   useEffect(() => {
     let cancelled = false;
     void ipcBridge.conversation.get
-      .invoke({ id: conversation_id })
+      .invoke({ conversation_id })
       .then((conversation) => {
         if (cancelled || !conversation?.runtime) return;
         setIsProcessing(conversation.runtime.is_processing === true);

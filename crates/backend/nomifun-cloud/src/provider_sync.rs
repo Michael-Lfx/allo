@@ -130,7 +130,7 @@ pub async fn sync_flowy_builtin_provider(
         };
         provider_repo
             .create(CreateProviderParams {
-                id: Some(FLOWY_BUILTIN_PROVIDER_ID),
+                provider_id: Some(FLOWY_BUILTIN_PROVIDER_ID),
                 platform: "openai",
                 name: "Flowy Cloud",
                 base_url: &base_url,
@@ -138,7 +138,6 @@ pub async fn sync_flowy_builtin_provider(
                 models: &models,
                 enabled: true,
                 capabilities: FLOWY_CAPABILITIES_JSON,
-                context_limit: None,
                 model_context_limits: None,
                 model_protocols: None,
                 model_descriptions: Some(descriptions.as_str()),
@@ -265,13 +264,13 @@ async fn disable_non_flowy_providers(
 ) -> Result<(), String> {
     let rows = provider_repo.list().await.map_err(|e| e.to_string())?;
     for row in rows {
-        if row.id == FLOWY_BUILTIN_PROVIDER_ID {
+        if row.provider_id == FLOWY_BUILTIN_PROVIDER_ID {
             continue;
         }
         if row.enabled {
             provider_repo
                 .update(
-                    &row.id,
+                    &row.provider_id,
                     UpdateProviderParams {
                         enabled: Some(false),
                         ..Default::default()

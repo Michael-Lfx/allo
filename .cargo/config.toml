@@ -47,6 +47,7 @@ linker = "rust-lld.exe"
 [build]
 build-dir = "{workspace-root}/build.noindex"
 incremental = true
+rustc-wrapper = "sccache.exe"
 
 
 # Profile settings are managed in the workspace Cargo.toml to keep a single

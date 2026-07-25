@@ -22,7 +22,7 @@ describe('agentSelectionUtils preset selection helpers', () => {
   });
 
   test('findPresetById resolves alias ids in the catalog', () => {
-    const presets = [{ id: 'builtin-cowork', name: 'Cowork' }];
+    const presets = [{ preset_id: 'builtin-cowork', name: 'Cowork' }];
     expect(findPresetById(presets, 'cowork')?.name).toBe('Cowork');
   });
 });

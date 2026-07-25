@@ -121,7 +121,7 @@ impl ModelsCatalogService {
             let models: Vec<String> = serde_json::from_str(&provider.models).unwrap_or_default();
             total += self
                 .reconciler
-                .reconcile_models(&provider.id, &provider.platform, &models)
+                .reconcile_models(&provider.provider_id, &provider.platform, &models)
                 .await;
         }
         total

@@ -166,14 +166,9 @@ export function useDetachedMemoryPanel(options: {
       }),
       listenCurrentWindow<MemoryPanelActivatePayload>(MEMORY_PANEL_EVENTS.activate, (payload) => {
         if (payload.requestId !== stateRef.current.requestId) return;
-        // The panel renders the last snapshot, which can lag behind the live
-        // list (a suggestion decided elsewhere is removed from live state
-        // before the panel receives the refreshed snapshot). Fall back to the
-        // snapshot so clicking a visible item always navigates; if neither
-        // source has it, still open the default suggestions page.
         const suggestion =
-          suggestionsRef.current.find((item) => item.id === payload.suggestionId) ??
-          panelSnapshotSuggestionsRef.current.find((item) => item.id === payload.suggestionId);
+          suggestionsRef.current.find((item) => item.suggestion_id === payload.suggestionId) ??
+          panelSnapshotSuggestionsRef.current.find((item) => item.suggestion_id === payload.suggestionId);
         void (async () => {
           let ok = false;
           try {

@@ -510,7 +510,9 @@ const LearningPage: React.FC = () => {
       );
       setKnowledgeBases(bases);
       setSelectedKnowledgeBaseId((current) =>
-        current && bases.some((base) => base.id === current) ? current : bases[0]?.id
+        current && bases.some((base) => base.knowledge_base_id === current)
+          ? current
+          : bases[0]?.knowledge_base_id
       );
     } catch (actionError) {
       Message.error(actionError instanceof Error ? actionError.message : t('learning.loadBasesFailed'));
@@ -687,7 +689,7 @@ const LearningPage: React.FC = () => {
               onChange={(value: string) => setSelectedKnowledgeBaseId(value)}
             >
               {knowledgeBases.map((base) => (
-                <Select.Option key={base.id} value={base.id}>
+                <Select.Option key={base.knowledge_base_id} value={base.knowledge_base_id}>
                   {base.name} ({base.file_count} {t('learning.files')})
                 </Select.Option>
               ))}

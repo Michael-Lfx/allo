@@ -15,7 +15,7 @@ export interface ApiMessageSearchItem {
   /** Character indices (0-based) that matched the fuzzy search keyword. */
   match_indices?: number[] | null;
   conversation: {
-    id: string;
+    conversation_id: string;
     name: string;
     type: string;
     model?: { provider_id: string; model: string; use_model?: string } | null;

@@ -30,7 +30,6 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod memory_panel_window;
 mod companion_pointer;
-mod relocate;
 mod updater_install_context;
 
 /// Build the webview initialization script. Injects the loopback backend port
@@ -166,13 +165,10 @@ fn resolve_webui_spa_dir(app: &tauri::App) -> anyhow::Result<Option<PathBuf>> {
 ///
 /// 1. `FLOWY_DATA_DIR` / `NOMIFUN_DATA_DIR` env — explicit override; the shell
 ///    appends `/Nomi` (semantics unchanged since the Electron era).
-/// 2. The shared per-host default from `nomifun_app::cli::default_data_dir()`:
-///    `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application
-///    Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` on Linux,
-///    with the historic `<system temp>/nomifun-data/Nomi` as the extreme
-///    fallback (installs that used to land there are auto-relocated, see
-///    `relocate.rs`). The web host and the `nomicore` bin resolve to the SAME
-///    directory, so dev loops and the installed app share one state.
+/// 2. The shared per-channel default from `nomifun_app::cli::default_data_dir()`:
+///    `%LOCALAPPDATA%\Flowy\Nomi` (or `Nomi-dev` etc.) on Windows, with the
+///    historic `<system temp>/nomifun-data/Nomi*` as the extreme fallback.
+///    Same-channel hosts share one state; non-stable channels stay isolated.
 fn default_data_dir() -> PathBuf {
     if let Some(dir) = nomifun_common::storage_paths::resolve_data_dir_from_env() {
         return PathBuf::from(dir).join("Nomi");
@@ -575,11 +571,11 @@ fn main() -> std::process::ExitCode {
     }
 
     // Env mutation + runtime init BEFORE Tauri builds its runtime/threads,
-    // mirroring the nomicore bin's ordering. The relocation (legacy temp dir →
-    // per-user app-data, one-shot) must run first of all: everything below —
-    // runtime cache, backend cli, embedded server — keys off the data dir it
-    // returns. On relocation failure it falls back to the legacy dir.
-    let data_dir = relocate::effective_data_dir(default_data_dir());
+    // mirroring the nomicore bin's ordering. v3 is a hard dataset cut, so the
+    // desktop must never copy or reopen the historical temp-rooted dataset
+    // before the shared dataset gate runs. The backend will quarantine any
+    // incompatible dataset already present at the current data root.
+    let data_dir = default_data_dir();
     nomifun_runtime::init(&data_dir);
     // SAFETY: no worker threads exist yet (Tauri's runtime is built by .run()).
     let merged_path = unsafe { nomifun_runtime::enhance_process_path() };

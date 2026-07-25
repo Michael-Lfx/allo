@@ -20,6 +20,7 @@ semver.workspace = true
 tracing.workspace = true
 dirs.workspace = true
 ts-rs.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

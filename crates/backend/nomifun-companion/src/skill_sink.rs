@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomifun_ai_agent::{CompanionSkillSink, SkillListing};
+use nomifun_common::CompanionSkillId;
 use nomifun_extension::constants::SKILL_MANIFEST_FILE;
 use nomifun_extension::skill_service::{self, SkillDraftInput, SkillPaths, SkillScope};
 
@@ -49,8 +50,9 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
             let scope = Self::scope_of(s.scope_companion_id.as_deref());
             // when_to_use index uses the SKILL.md description (what the skill does).
             if let Ok(dir) = skill_service::skill_dir_for(&self.skill_paths, &scope, &s.skill_name, false) {
-                let desc = skill_service::read_skill_info(&dir).await.map(|(_, d)| d).unwrap_or_default();
-                out.push(SkillListing { name: s.skill_name, when_to_use: desc });
+                if let Ok((_, desc)) = skill_service::read_skill_info(&dir).await {
+                    out.push(SkillListing { name: s.skill_name, when_to_use: desc });
+                }
             }
         }
         out
@@ -65,7 +67,11 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
                 if let Ok(body) = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await {
                     let _ = self
                         .store
-                        .record_skill_usage(Some(&owner), name, nomifun_common::now_ms())
+                        .record_skill_usage_by_name(
+                            Some(&owner),
+                            name,
+                            nomifun_common::now_ms(),
+                        )
                         .await;
                     return Some(append_support_files(&dir, &body));
                 }
@@ -73,7 +79,10 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
         }
         if let Ok(dir) = skill_service::skill_dir_for(&self.skill_paths, &SkillScope::Shared, name, false) {
             if let Ok(body) = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await {
-                let _ = self.store.record_skill_usage(None, name, nomifun_common::now_ms()).await;
+                let _ = self
+                    .store
+                    .record_skill_usage_by_name(None, name, nomifun_common::now_ms())
+                    .await;
                 return Some(append_support_files(&dir, &body));
             }
         }
@@ -97,7 +106,10 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
         }
         // Dedup: if a similar active/draft skill already exists, skip creation.
         if let Ok(Some(existing)) = self.store.find_similar_skill(&owner, &name).await {
-            return Ok(format!("技能「{existing}」已存在，无需重复创建。"));
+            return Ok(format!(
+                "技能「{}」已存在，无需重复创建。",
+                existing.skill_name
+            ));
         }
         // Dedup: if a similar pending suggestion already exists, touch it instead of duplicating.
         let title = format!("我整理了一个新技能：{name}");
@@ -130,18 +142,20 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
 
         // Program writes DB row — status forced to draft, source tagged assistant.
         let now = nomifun_common::now_ms();
+        let companion_skill_id = CompanionSkillId::new().into_string();
         self.store
             .insert_skill(&CompanionSkill {
+                companion_skill_id: companion_skill_id.clone(),
                 skill_name: name.clone(),
                 scope_kind: "companion".into(),
                 scope_companion_id: Some(owner.clone()),
                 status: "draft".into(),
                 source: "assistant".into(),
                 confidence: 0.5,
-                provenance: vec![],
+                provenance_event_ids: vec![],
                 strength: 1.0,
                 version: 1,
-                superseded_by: None,
+                skill_pattern_id: None,
                 usage_count: 0,
                 last_used_at: None,
                 created_at: now,
@@ -154,18 +168,19 @@ impl CompanionSkillSink for CompanionSkillStoreSink {
         // Program creates the review suggestion card — user must accept to activate.
         let action = serde_json::json!({
             "type": "create_skill",
-            "name": name,
+            "companion_skill_id": companion_skill_id,
             "companion_id": owner,
             "signature": ""
         });
         if let Ok(created) = self
             .store
-            .insert_suggestion(Some(owner.as_str()), "create_skill", &title, &body_text, Some(&action))
+            .insert_suggestion("create_skill", &title, &body_text, Some(&action))
             .await
         {
             self.emitter.emit_suggestion_created(&owner, &created);
         }
-        self.emitter.emit_skill_drafted(&owner, &name);
+        self.emitter
+            .emit_skill_drafted(&owner, &companion_skill_id, &name);
 
         Ok(format!("技能「{name}」已创建为草案，等待主人审阅。"))
     }

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use nomifun_poi::PoiService;
 
 use crate::capability::prompt_pipeline::{PreSendHook, PromptCtx};
-use crate::manager::acp::hooks::emit_hook_warning;
 
 pub struct PoiPrefetchHook {
     poi_service: Arc<PoiService>,
@@ -32,7 +31,7 @@ impl PreSendHook for PoiPrefetchHook {
         match self.render_prefetch(&prompt) {
             Some(block) if !block.trim().is_empty() => format!("{block}\n\n{prompt}"),
             _ if self.poi_service.interest_config().enabled && self.poi_service.store().lock().is_err() => {
-                emit_hook_warning(ctx, "poi_prefetch", "interest store lock poisoned");
+                tracing::warn!(hook = "poi_prefetch", "interest store lock poisoned");
                 prompt
             }
             _ => prompt,

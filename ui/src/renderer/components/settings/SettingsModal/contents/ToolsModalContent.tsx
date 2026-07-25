@@ -1,6 +1,6 @@
 
 
-import { type IMcpServer, BUILTIN_IMAGE_GEN_ID, BUILTIN_IMAGE_GEN_NAME } from '@/common/config/storage';
+import type { IMcpServer } from '@/common/config/storage';
 import { getAgents } from '@/renderer/hooks/agent/useAgents';
 import { Message, Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
@@ -14,15 +14,13 @@ import McpServerItem from '@/renderer/pages/settings/ToolsSettings/McpServerItem
 import { useMcpServers, useMcpConnection, useMcpModal, useMcpServerCRUD, useMcpOAuth } from '@/renderer/hooks/mcp';
 import {
   extensionMcpUiKey,
+  mcpServerUiKey,
   type ExtensionMcpServerContribution,
 } from '@/renderer/hooks/mcp/extensionCatalog';
 import classNames from 'classnames';
 import { useSettingsViewMode } from '../settingsViewContext';
 
 type MessageInstance = Required<ReturnType<typeof Message.useMessage>[0]>;
-
-const isBuiltinImageGenServer = (server: IMcpServer) =>
-  server.builtin === true && (String(server.id) === BUILTIN_IMAGE_GEN_ID || server.name === BUILTIN_IMAGE_GEN_NAME);
 
 const ModalMcpManagementSection: React.FC<{
   message: MessageInstance;
@@ -34,20 +32,17 @@ const ModalMcpManagementSection: React.FC<{
 }> = ({ message, mcpServers, extensionMcpServers, setMcpServers, saveMcpServers, isPageMode }) => {
   const { t } = useTranslation();
   const { oauthStatus, loggingIn, checkOAuthStatus, markLoginRequired, clearLoginRequired, login } = useMcpOAuth();
-  const visibleMcpServers = useMemo(
-    () => mcpServers.filter((server) => !isBuiltinImageGenServer(server)),
-    [mcpServers]
-  );
+  const visibleMcpServers = useMemo(() => mcpServers, [mcpServers]);
 
   const handleAuthRequired = useCallback(
     (server: IMcpServer) => {
-      markLoginRequired(server.id);
+      markLoginRequired(server.mcp_server_id);
     },
     [markLoginRequired]
   );
   const handleAuthResolved = useCallback(
     (server: IMcpServer) => {
-      clearLoginRequired(server.id);
+      clearLoginRequired(server.mcp_server_id);
     },
     [clearLoginRequired]
   );
@@ -88,7 +83,7 @@ const ModalMcpManagementSection: React.FC<{
   );
 
   const wrappedHandleAddMcpServer = useCallback(
-    async (serverData: Omit<IMcpServer, 'id' | 'created_at' | 'updated_at'>) => {
+    async (serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
       const addedServer = await handleAddMcpServer(serverData);
       if (addedServer) {
         void handleTestMcpConnection(addedServer, { notify: false });
@@ -98,7 +93,7 @@ const ModalMcpManagementSection: React.FC<{
   );
 
   const wrappedHandleEditMcpServer = useCallback(
-    async (serverToEdit: IMcpServer | undefined, serverData: Omit<IMcpServer, 'id' | 'created_at' | 'updated_at'>) => {
+    async (serverToEdit: IMcpServer | undefined, serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
       const updatedServer = await handleEditMcpServer(serverToEdit, serverData);
       if (updatedServer) {
         void handleTestMcpConnection(updatedServer, { notify: false });
@@ -108,7 +103,7 @@ const ModalMcpManagementSection: React.FC<{
   );
 
   const wrappedHandleBatchImportMcpServers = useCallback(
-    async (serversData: Omit<IMcpServer, 'id' | 'created_at' | 'updated_at'>[]) => {
+    async (serversData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>[]) => {
       const addedServers = await handleBatchImportMcpServers(serversData);
       if (addedServers && addedServers.length > 0) {
         await handleTestMcpConnections(addedServers, { concurrency: 4, notify: false });
@@ -225,23 +220,26 @@ const ModalMcpManagementSection: React.FC<{
             disableOverflow={isPageMode}
           >
             <div className='space-y-12px'>
-              {visibleMcpServers.map((server) => (
-                <McpServerItem
-                  key={server.id}
-                  server={server}
-                  isCollapsed={mcpCollapseKey[server.id] || false}
-                  isTestingConnection={testingServers[server.id] || false}
-                  oauthStatus={oauthStatus[server.id]}
-                  isLoggingIn={loggingIn[server.id]}
-                  onToggleCollapse={() => toggleServerCollapse(server.id)}
-                  onTestConnection={handleTestMcpConnection}
-                  onEditServer={showEditMcpModal}
-                  onDeleteServer={showDeleteConfirm}
-                  onOAuthLogin={handleOAuthLogin}
-                />
-              ))}
+              {visibleMcpServers.map((server) => {
+                const uiKey = mcpServerUiKey(server.mcp_server_id);
+                return (
+                  <McpServerItem
+                    key={server.mcp_server_id}
+                    server={server}
+                    isCollapsed={mcpCollapseKey[uiKey] || false}
+                    isTestingConnection={testingServers[server.mcp_server_id] || false}
+                    oauthStatus={oauthStatus[server.mcp_server_id]}
+                    isLoggingIn={loggingIn[server.mcp_server_id]}
+                    onToggleCollapse={() => toggleServerCollapse(uiKey)}
+                    onTestConnection={handleTestMcpConnection}
+                    onEditServer={showEditMcpModal}
+                    onDeleteServer={showDeleteConfirm}
+                    onOAuthLogin={handleOAuthLogin}
+                  />
+                );
+              })}
               {extensionMcpServers.map((server) => {
-                const uiKey = extensionMcpUiKey(server.contributionKey);
+                const uiKey = extensionMcpUiKey(server.source_key);
                 return (
                   <ExtensionMcpServerItem
                     key={uiKey}

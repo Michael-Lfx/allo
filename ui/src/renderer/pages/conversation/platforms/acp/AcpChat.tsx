@@ -34,7 +34,6 @@ const AcpChat: React.FC<{
   readOnly?: boolean;
   emptySlot?: React.ReactNode;
   loadedSkills?: string[];
-  loadedMcpServers?: string[];
   loadedMcpStatuses?: IConversationMcpStatus[];
 }> = ({
   conversation_id,
@@ -48,7 +47,6 @@ const AcpChat: React.FC<{
   readOnly,
   emptySlot,
   loadedSkills,
-  loadedMcpServers,
   loadedMcpStatuses,
 }) => {
   const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
@@ -67,6 +65,7 @@ const AcpChat: React.FC<{
     enabled: !readOnly,
     setAiProcessing: messageState.setAiProcessing,
     markTurnAccepted: messageState.markTurnAccepted,
+    reconcilePublicDeliveryReplay: messageState.reconcilePublicDeliveryReplay,
     checkAndUpdateTitle,
     addOrUpdateMessage,
   });
@@ -84,7 +83,6 @@ const AcpChat: React.FC<{
         activeTurnId: messageState.activeTurnId,
         activeRequestMessageId: messageState.activeRequestMessageId,
         loadedSkills,
-        loadedMcpServers,
         loadedMcpStatuses,
       }}
     >

@@ -68,15 +68,70 @@ impl CollectConfig {
     }
 }
 
-pub(crate) fn deserialize_optional_model<'de, D>(deserializer: D) -> Result<Option<ProviderWithModel>, D::Error>
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedProviderModel {
+    #[serde(deserialize_with = "deserialize_provider_id")]
+    provider_id: String,
+    model: String,
+}
+
+fn deserialize_provider_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let model = Option::<ProviderWithModel>::deserialize(deserializer)?;
-    if let Some(model) = model.as_ref() {
-        model.validate().map_err(serde::de::Error::custom)?;
+    let raw = String::deserialize(deserializer)?;
+    nomifun_common::ProviderId::parse(raw)
+        .map(nomifun_common::ProviderId::into_string)
+        .map_err(serde::de::Error::custom)
+}
+
+/// Deserialize the only persisted Provider-reference shape accepted by the
+/// companion side store: exactly `{provider_id, model}`. `use_model` is a
+/// runtime DTO concern and is deliberately not a side-store field.
+pub(crate) fn deserialize_optional_model<'de, D>(
+    deserializer: D,
+) -> Result<Option<ProviderWithModel>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let model = Option::<PersistedProviderModel>::deserialize(deserializer)?;
+    model
+        .map(|model| {
+            let model = ProviderWithModel {
+                provider_id: model.provider_id,
+                model: model.model,
+                use_model: None,
+            };
+            model.validate().map_err(serde::de::Error::custom)?;
+            Ok(model)
+        })
+        .transpose()
+}
+
+pub(crate) fn serialize_optional_model<S>(
+    model: &Option<ProviderWithModel>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match model {
+        None => serializer.serialize_none(),
+        Some(model) => {
+            model.validate().map_err(serde::ser::Error::custom)?;
+            if model.use_model.is_some() {
+                return Err(serde::ser::Error::custom(
+                    "companion side-store model must use exactly {provider_id, model}",
+                ));
+            }
+            Some(PersistedProviderModel {
+                provider_id: model.provider_id.clone(),
+                model: model.model.clone(),
+            })
+            .serialize(serializer)
+        }
     }
-    Ok(model)
 }
 
 /// Scheduled learning settings.

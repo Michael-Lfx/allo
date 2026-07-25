@@ -20,7 +20,6 @@ type AgentPillBarProps = {
     agent_source?: AgentSource;
     backend?: string;
     id?: string;
-    custom_agent_id?: string;
   }) => string;
   onSelectAgent: (key: string) => void;
   suppressSelectionAnimation?: boolean;
@@ -76,7 +75,7 @@ const AgentPillBar: React.FC<AgentPillBarProps> = ({
                 ? resolveAgentLogo({
                     icon: agent.icon,
                     backend: agent.backend || agent.agent_type,
-                    custom_agent_id: agent.custom_agent_id,
+                    agentId: agent.id,
                     isExtension: agent.isExtension,
                   })
                 : undefined);

@@ -80,7 +80,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
       if (pairings) {
         setPendingPairings(
           pairings.filter(
-            (p) => p.platformType === 'dingtalk' && (!channelTarget?.channelId || p.channelId === channelTarget.channelId)
+            (p) => p.platformType === 'dingtalk' && (!channelTarget?.channelPluginId || p.channel_plugin_id === channelTarget.channelPluginId)
           )
         );
       }
@@ -89,7 +89,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
     } finally {
       setPairingLoading(false);
     }
-  }, [channelTarget?.channelId]);
+  }, [channelTarget?.channelPluginId]);
 
   // Load authorized users
   const loadAuthorizedUsers = useCallback(async () => {
@@ -99,7 +99,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
       if (users) {
         setAuthorizedUsers(
           users.filter(
-            (u) => u.platformType === 'dingtalk' && (!channelTarget?.channelId || u.channelId === channelTarget.channelId)
+            (u) => u.platformType === 'dingtalk' && (!channelTarget?.channelPluginId || u.channel_plugin_id === channelTarget.channelPluginId)
           )
         );
       }
@@ -108,7 +108,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
     } finally {
       setUsersLoading(false);
     }
-  }, [channelTarget?.channelId]);
+  }, [channelTarget?.channelPluginId]);
 
   // Initial load
   useEffect(() => {
@@ -120,7 +120,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
   useEffect(() => {
     const unsubscribe = channel.pairingRequested.on((request) => {
       if (request.platformType !== 'dingtalk') return;
-      if (channelTarget?.channelId && request.channelId !== channelTarget.channelId) return;
+      if (channelTarget?.channelPluginId && request.channel_plugin_id !== channelTarget.channelPluginId) return;
       setPendingPairings((prev) => {
         const exists = prev.some((p) => p.code === request.code);
         if (exists) return prev;
@@ -128,22 +128,22 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
       });
     });
     return () => unsubscribe();
-  }, [channelTarget?.channelId]);
+  }, [channelTarget?.channelPluginId]);
 
   // Listen for user authorization
   useEffect(() => {
     const unsubscribe = channel.userAuthorized.on((user) => {
       if (user.platformType !== 'dingtalk') return;
-      if (channelTarget?.channelId && user.channelId !== channelTarget.channelId) return;
+      if (channelTarget?.channelPluginId && user.channel_plugin_id !== channelTarget.channelPluginId) return;
       setAuthorizedUsers((prev) => {
-        const exists = prev.some((u) => u.id === user.id);
+        const exists = prev.some((u) => u.channel_user_id === user.channel_user_id);
         if (exists) return prev;
         return [user, ...prev];
       });
       setPendingPairings((prev) => prev.filter((p) => p.platformUserId !== user.platformUserId));
     });
     return () => unsubscribe();
-  }, [channelTarget?.channelId]);
+  }, [channelTarget?.channelPluginId]);
 
   // Test DingTalk connection
   const handleTestConnection = async () => {
@@ -193,21 +193,20 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
       };
       const result = await channel.enablePlugin.invoke(
         channelTarget
-          ? { plugin_id: channelTarget.channelId, plugin_type: 'dingtalk', ...(channelTarget.publicAgentId ? { public_agent_id: channelTarget.publicAgentId } : { companion_id: channelTarget.companionId }), config }
+          ? { plugin_id: channelTarget.channelPluginId, plugin_type: 'dingtalk', ...(channelTarget.publicAgentId ? { public_agent_id: channelTarget.publicAgentId } : { companion_id: channelTarget.companionId }), config }
           : { plugin_type: 'dingtalk', config }
       );
       if (!result.success) {
-        throw new Error(result.error || result.message || t('nomi.settings.remoteEnableFailed', { defaultValue: 'Failed to enable channel' }));
+        throw new Error(result.error || t('nomi.settings.remoteEnableFailed', { defaultValue: 'Failed to enable channel' }));
       }
 
       Message.success(t('settings.dingtalk.pluginEnabled', 'DingTalk bot enabled'));
       const plugins = await channel.getPluginStatus.invoke();
       if (plugins) {
-        // Multi-row model: resolve by row id (or this companion's freshly created
-        // row in create mode); legacy path keeps the by-type lookup.
+        // Multi-plugin model: resolve by business UUID, or by owner after create.
         const dingtalkPlugin = channelTarget
-          ? channelTarget.channelId
-            ? plugins.find((p) => p.id === channelTarget.channelId)
+          ? channelTarget.channelPluginId
+            ? plugins.find((p) => p.plugin_id === channelTarget.channelPluginId)
             : plugins.find((p) => p.type === 'dingtalk' && p.companionId === channelTarget.companionId)
           : plugins.find((p) => p.type === 'dingtalk');
         onStatusChange(dingtalkPlugin || null);
@@ -250,9 +249,9 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
   };
 
   // Revoke user
-  const handleRevokeUser = async (user_id: import('@/common/types/ids').ChannelUserId) => {
+  const handleRevokeUser = async (channel_user_id: import('@/common/types/ids').ChannelUserId) => {
     try {
-      await channel.revokeUser.invoke({ user_id });
+      await channel.revokeUser.invoke({ channel_user_id });
       Message.success(t('settings.channels.userRevoked', 'User access revoked'));
       await loadAuthorizedUsers();
     } catch (error: unknown) {
@@ -579,7 +578,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
           ) : (
             <div className='flex flex-col gap-12px'>
               {authorizedUsers.map((user) => (
-                <div key={user.id} className='flex items-center justify-between bg-fill-2 rd-8px p-12px'>
+                <div key={user.channel_user_id} className='flex items-center justify-between bg-fill-2 rd-8px p-12px'>
                   <div className='flex-1'>
                     <div className='text-14px font-500 text-t-primary'>{user.display_name || t('common.unknownUser')}</div>
                     <div className='text-12px text-t-tertiary mt-4px'>
@@ -594,7 +593,7 @@ const DingTalkConfigForm: React.FC<DingTalkConfigFormProps> = ({
                       status='danger'
                       size='small'
                       icon={<Delete size={16} />}
-                      onClick={() => handleRevokeUser(user.id)}
+                      onClick={() => handleRevokeUser(user.channel_user_id)}
                     />
                   </Tooltip>
                 </div>

@@ -10,9 +10,12 @@ import type { IProvider, ModelProfile } from '@/common/config/storage';
 import type { ProviderId } from '@/common/types/ids';
 import { getCreationModels } from './creationModels';
 
+const PROVIDER_ID = '0190f5fe-7c00-7a00-8000-000000000001' as ProviderId;
+const CATALOG_PROVIDER_ID = '0190f5fe-7c00-7a00-8000-000000000002' as ProviderId;
+
 const provider = (overrides: Partial<IProvider> = {}): IProvider =>
   ({
-    id: 'prov_1' as ProviderId,
+    id: PROVIDER_ID,
     platform: 'openai',
     name: 'OpenAI',
     base_url: 'https://api.openai.com',
@@ -23,7 +26,7 @@ const provider = (overrides: Partial<IProvider> = {}): IProvider =>
   }) as IProvider;
 
 const catalogProvider = {
-  id: 'prov_catalog' as ProviderId,
+  id: CATALOG_PROVIDER_ID,
   name: 'Catalog Provider',
   platform: 'openai',
   enabled: true,
@@ -35,7 +38,7 @@ const profile = (
   source: ModelProfile['source'],
   model: string,
   tasks: ModelProfile['tasks'],
-  providerId: ProviderId = 'prov_1' as ProviderId
+  providerId: ProviderId = PROVIDER_ID
 ): ModelProfile => ({
   provider_id: providerId,
   model,

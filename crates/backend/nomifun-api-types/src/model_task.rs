@@ -75,6 +75,7 @@ pub enum ProfileSource {
 pub struct ModelProfile {
     #[serde(deserialize_with = "crate::serde_util::deserialize_provider_id")]
     pub provider_id: String,
+    #[serde(deserialize_with = "crate::serde_util::deserialize_model_name")]
     pub model: String,
     pub tasks: Vec<ModelTask>,
     pub traits: Vec<ModelTrait>,
@@ -98,9 +99,11 @@ impl ModelProfile {
 
 /// Request body for `POST /api/model-profiles` (upsert one profile).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProfileUpsertRequest {
     #[serde(deserialize_with = "crate::serde_util::deserialize_provider_id")]
     pub provider_id: String,
+    #[serde(deserialize_with = "crate::serde_util::deserialize_model_name")]
     pub model: String,
     #[serde(default)]
     pub tasks: Vec<ModelTask>,
@@ -115,9 +118,11 @@ pub struct ModelProfileUpsertRequest {
 
 /// Body identifying a single profile (`POST /api/model-profiles/delete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProfileKeyRequest {
     #[serde(deserialize_with = "crate::serde_util::deserialize_provider_id")]
     pub provider_id: String,
+    #[serde(deserialize_with = "crate::serde_util::deserialize_model_name")]
     pub model: String,
 }
 
@@ -269,7 +274,7 @@ mod tests {
     #[test]
     fn primary_task_prefers_first() {
         let p = ModelProfile {
-            provider_id: "prov_018f1234-5678-7abc-8def-012345678990".into(),
+            provider_id: "018f1234-5678-7abc-8def-012345678990".into(),
             model: "m".into(),
             tasks: vec![ModelTask::ImageGeneration, ModelTask::ImageEdit],
             traits: vec![],

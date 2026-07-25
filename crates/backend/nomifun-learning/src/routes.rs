@@ -7,7 +7,7 @@ use nomifun_api_types::ApiResponse;
 use nomifun_auth::CurrentUser;
 use nomifun_common::{
     AppError, LearningActivityId, LearningCourseId, LearningLessonId, LearningReviewItemId,
-    PrefixedIdError,
+    UuidV7Error,
 };
 use serde::Deserialize;
 
@@ -157,7 +157,7 @@ async fn rate_review(
 
 fn parse_id<T>(value: String) -> Result<T, AppError>
 where
-    T: FromStr<Err = PrefixedIdError>,
+    T: FromStr<Err = UuidV7Error>,
 {
     value
         .parse::<T>()

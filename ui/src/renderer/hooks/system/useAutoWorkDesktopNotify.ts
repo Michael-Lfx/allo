@@ -24,7 +24,7 @@ export const useAutoWorkDesktopNotify = () => {
             : t('requirements.notify.needsReviewTitle', { defaultValue: 'Requirement needs review' });
       const body = req.title
         ? `${req.tag ? `[${req.tag}] ` : ''}${req.title}`
-        : String(req.id);
+        : String(req.requirement_id);
       void ipcBridge.notification.show.invoke({ title, body }).catch(() => {
         /* notification permission / unsupported host — ignore */
       });

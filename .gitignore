@@ -6,6 +6,9 @@
 /build.noindex/
 .cargo/config.local.toml
 /build.*.noindex/
+/.tmp-*/
+# Local VMware HGFS/ext4 bind-mount rollback directories
+/*.hgfs-before-bind-*/
 Cargo.lock.bak
 # Packaging / runtime artifacts
 /dist/
@@ -85,3 +88,8 @@ Thumbs.db
 
 # Isolated Codex development worktrees
 .worktrees/
+
+# Repository policy: GitHub Actions workflows are forbidden. Keep these
+# ignored as an additional guard against accidental `git add` operations.
+/.github/workflows/*.yml
+/.github/workflows/*.yaml

@@ -65,6 +65,9 @@ import {
 import { getProcessItemState } from './turnProcessState';
 import { isSupersededPlanToolFailure } from './planToolVisibility';
 import type { MessageId } from '@/common/types/ids';
+import { ExplicitToolRetryReceiptIndex } from './toolRetryReceiptModel';
+
+type SourceMessageId = MessageId;
 
 type IMessageVO =
   | TMessage
@@ -74,7 +77,7 @@ type IMessageVO =
       msg_id?: MessageId;
       turn_id?: MessageId;
       diffs: FileChangeInfo[];
-      sourceMessageIds: string[];
+      sourceMessageIds: SourceMessageId[];
       created_at: number;
     }
   | {
@@ -83,9 +86,10 @@ type IMessageVO =
       msg_id?: MessageId;
       turn_id?: MessageId;
       messages: Array<IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall>;
-      sourceMessageIds: string[];
+      sourceMessageIds: SourceMessageId[];
       created_at: number;
     };
+type ToolSummaryVO = Extract<IMessageVO, { type: 'tool_summary' }>;
 type IArtifactVO = { type: 'artifact'; id: string; artifact: IConversationArtifact; created_at: number };
 type IRenderableItem = IMessageVO | IArtifactVO;
 type ITurnProcessDisclosureVO = {
@@ -94,7 +98,7 @@ type ITurnProcessDisclosureVO = {
   msg_id: MessageId;
   processItems: IRenderableItem[];
   processItemStates: Record<string, TurnDisclosureProcessState>;
-  sourceMessageIds: string[];
+  sourceMessageIds: SourceMessageId[];
   created_at: number;
   startAt: number;
   endAt: number;
@@ -107,7 +111,7 @@ type IProcessReceiptVO = {
   id: string;
   msg_id?: MessageId;
   item: IRenderableItem;
-  sourceMessageIds: string[];
+  sourceMessageIds: SourceMessageId[];
   created_at: number;
   state: TurnDisclosureProcessState;
   label: string;
@@ -122,20 +126,20 @@ type ConversationLocationState = {
   fromConversationSearch?: boolean;
 };
 
-const getProcessedItemSourceMessageIds = (item: IProcessedItem): string[] => {
+const getProcessedItemSourceMessageIds = (item: IProcessedItem): SourceMessageId[] => {
   if ('type' in item && (item.type === 'turn_process_disclosure' || item.type === 'process_receipt')) {
     return item.sourceMessageIds;
   }
-  if ('type' in item && item.type === 'artifact') {
-    return [item.id];
-  }
+  if ('type' in item && item.type === 'artifact') return [];
   if ('type' in item && item.type === 'tool_summary') {
     return item.sourceMessageIds;
   }
   if ('type' in item && item.type === 'file_summary') {
     return item.sourceMessageIds;
   }
-  return 'id' in item ? [item.id] : [];
+  const message = item as TMessage;
+  const businessId = message.message_id ?? message.msg_id;
+  return businessId ? [businessId] : [];
 };
 
 const matchesTargetMessage = (item: IProcessedItem, targetMessageId?: MessageId): boolean => {
@@ -145,9 +149,11 @@ const matchesTargetMessage = (item: IProcessedItem, targetMessageId?: MessageId)
   return getProcessedItemSourceMessageIds(item).includes(targetMessageId);
 };
 
+const getMessageBusinessIdentity = (message: TMessage): SourceMessageId | undefined =>
+  message.message_id ?? message.msg_id;
+
 const getProcessedItemAnchorId = (item: IProcessedItem): string => {
-  const sourceIds = getProcessedItemSourceMessageIds(item);
-  return sourceIds[0] || ('id' in item ? item.id : uuid());
+  return 'id' in item ? item.id : uuid();
 };
 
 const getProcessedItemCreatedAt = (item: IProcessedItem): number => {
@@ -571,7 +577,7 @@ const buildProcessReceiptSummary = (
           id: `tool-summary-${item.id}`,
           msg_id: item.msg_id,
           messages: [item],
-          sourceMessageIds: [item.id],
+          sourceMessageIds: getProcessedItemSourceMessageIds(item),
           created_at: item.created_at ?? 0,
         },
         state,
@@ -694,6 +700,7 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
     return (
       <div
         id={`message-${message.id}`}
+        data-message-business-id={message.message_id ?? message.msg_id}
         data-testid={`message-${message.type}-${message.position}`}
         data-message-type={message.type}
         data-message-position={message.position}
@@ -785,14 +792,15 @@ const MessageList: React.FC<{
   const processedList = useMemo(() => {
     const result: Array<IMessageVO> = [];
     let diffsChanges: FileChangeInfo[] = [];
-    let diffsSourceMessageIds: string[] = [];
+    let diffsSourceMessageIds: SourceMessageId[] = [];
     let diffsTurnId: MessageId | undefined;
     let toolList: Array<IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall> = [];
-    let toolSourceMessageIds: string[] = [];
+    let toolSourceMessageIds: SourceMessageId[] = [];
+    const retrySummaries = new ExplicitToolRetryReceiptIndex<ToolSummaryVO>();
 
     const pushFileDffChanges = (
       changes: FileChangeInfo,
-      sourceMessageId: string,
+      sourceMessageId: SourceMessageId,
       created_at: number,
       msg_id?: MessageId,
       turn_id?: MessageId
@@ -820,6 +828,21 @@ const MessageList: React.FC<{
       toolSourceMessageIds = [];
     };
     const pushToolList = (message: IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall) => {
+      const existingRetry = message.type === 'tool_call' ? retrySummaries.takeContinuation(message) : undefined;
+      if (message.type === 'tool_call' && existingRetry) {
+        existingRetry.messages.push(message);
+        const sourceMessageId = getMessageBusinessIdentity(message);
+        if (sourceMessageId) existingRetry.sourceMessageIds.push(sourceMessageId);
+        // A retry can be separated from its first attempt by thinking/text.
+        // Keep the durable summary reference above, but do not accidentally
+        // append an unrelated following tool to that earlier receipt.
+        toolList = [];
+        toolSourceMessageIds = [];
+        diffsChanges = [];
+        diffsSourceMessageIds = [];
+        diffsTurnId = undefined;
+        return;
+      }
       const groupedTurnId = toolList.find((tool) => tool.turn_id)?.turn_id;
       if (groupedTurnId && message.turn_id && groupedTurnId !== message.turn_id) {
         // A delayed event from another explicit turn must start a new receipt;
@@ -830,7 +853,7 @@ const MessageList: React.FC<{
       }
       if (!toolList.length) {
         toolSourceMessageIds = [];
-        result.push({
+        const summary: ToolSummaryVO = {
           type: 'tool_summary',
           id: `tool-summary-${message.id}`,
           msg_id: message.msg_id,
@@ -838,10 +861,20 @@ const MessageList: React.FC<{
           messages: toolList,
           sourceMessageIds: toolSourceMessageIds,
           created_at: message.created_at ?? 0,
-        });
+        };
+        result.push(summary);
       }
       toolList.push(message);
-      toolSourceMessageIds.push(message.id);
+      const sourceMessageId = getMessageBusinessIdentity(message);
+      if (sourceMessageId) toolSourceMessageIds.push(sourceMessageId);
+      if (message.type === 'tool_call') {
+        const summary = result.findLast(
+          (item): item is ToolSummaryVO => item.type === 'tool_summary' && item.messages === toolList
+        );
+        if (summary) {
+          retrySummaries.rememberFirst(message, summary);
+        }
+      }
       diffsChanges = [];
       diffsSourceMessageIds = [];
       diffsTurnId = undefined;
@@ -887,10 +920,11 @@ const MessageList: React.FC<{
           const writeFileResults = message.content
             .filter(isSuccessfulWriteFileResult)
             .map((item) => item.result_display as WriteFileResult);
-          if (writeFileResults.length && writeFileResults[0].file_diff) {
+          const sourceMessageId = getMessageBusinessIdentity(message);
+          if (writeFileResults.length && writeFileResults[0].file_diff && sourceMessageId) {
             pushFileDffChanges(
               parseDiff(writeFileResults[0].file_diff, writeFileResults[0].file_name),
-              message.id,
+              sourceMessageId,
               message.created_at ?? 0,
               message.msg_id,
               message.turn_id
@@ -924,7 +958,7 @@ const MessageList: React.FC<{
       })
       .map<IArtifactVO>((artifact) => ({
         type: 'artifact',
-        id: `artifact_${artifact.id}`,
+        id: `conversation-artifact:${artifact.conversation_artifact_id}`,
         artifact,
         created_at: artifact.created_at,
       }));
@@ -1177,16 +1211,9 @@ const MessageList: React.FC<{
         return;
 
       const targetIndex = displayList.findIndex((item) => {
-        if (
-          (item as { type?: string }).type === 'file_summary' ||
-          (item as { type?: string }).type === 'tool_summary' ||
-          (item as { type?: string }).type === 'artifact'
-        ) {
-          return false;
-        }
-        const message = item as TMessage;
-        if (detail.messageId && message.id === detail.messageId) return true;
-        if (detail.msgId && message.msg_id === detail.msgId) return true;
+        const sourceMessageIds = getProcessedItemSourceMessageIds(item);
+        if (detail.messageId && sourceMessageIds.includes(detail.messageId)) return true;
+        if (detail.msgId && sourceMessageIds.includes(detail.msgId)) return true;
         return false;
       });
       if (targetIndex < 0) return;

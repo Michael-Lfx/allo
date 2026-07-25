@@ -53,7 +53,7 @@ impl LiveConversationTitleCompleter {
         for provider in providers.iter().filter(|p| p.enabled) {
             let models = enabled_models(&provider.models, provider.model_enabled.as_deref());
             for model in models {
-                let pair = (provider.id.clone(), model.clone());
+                let pair = (provider.provider_id.clone(), model.clone());
                 if is_reasoning_heavy_model(&model) {
                     reasoning_fallback.get_or_insert(pair);
                 } else {

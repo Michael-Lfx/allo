@@ -1,5 +1,3 @@
-
-
 /**
  * Nomi应用程序共用常量
  */
@@ -60,3 +58,6 @@ export {
 
 /** When true, hide local provider management and only expose Flowy Cloud models. */
 export const SERVER_MANAGED_MODELS = true;
+
+/** Stable bare UUIDv7 business ID of the built-in Nomi agent. */
+export const NOMI_AGENT_ID = '0190f5fe-7c00-7a00-8000-000000000114';

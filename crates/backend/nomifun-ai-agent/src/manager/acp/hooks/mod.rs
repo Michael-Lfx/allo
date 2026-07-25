@@ -1,9 +1,7 @@
 //! Built-in `PreSendHook`s for the ACP prompt pipeline.
 //!
 //! Each hook reads a one-shot flag on `AcpSession` (or a `pending_*`
-//! field), consumes it, and prepends its block to the prompt. Failures
-//! are reported via `ctx.runtime.emit(AgentStreamEvent::AcpPromptHookWarning(..))`
-//! and the prompt is returned in a gracefully-degraded form.
+//! field), consumes it, and prepends its block to the prompt.
 
 mod poi_prefetch;
 
@@ -12,8 +10,6 @@ pub use poi_prefetch::PoiPrefetchHook;
 use crate::capability::first_message_injector::{InjectionConfig, inject_first_message_prefix};
 use crate::capability::model_identity_reminder::render_model_identity_reminder;
 use crate::capability::prompt_pipeline::{PreSendHook, PromptCtx};
-use crate::protocol::events::AgentStreamEvent;
-use nomifun_api_types::AcpPromptHookWarningPayload;
 
 #[derive(Default)]
 pub struct SessionNewPreludeHook;
@@ -40,8 +36,14 @@ impl PreSendHook for SessionNewPreludeHook {
     }
 }
 
-/// Deliver the knowledge-base retrieval-protocol section on the first prompt of
-/// every session activation.
+/// Deliver the knowledge-base retrieval-protocol section
+/// (`AcpSessionParams::knowledge_context`) on the first prompt of EVERY session
+/// activation — `session/new` and every resume path. Preset rules and this
+/// knowledge section use separate one-shot flags so either block can be absent
+/// without suppressing the other. A resumed/restarted session — or one rebuilt
+/// after a `挂载知识库` binding change — still learns which bases are mounted and
+/// how to retrieve from them. Consumes the one-shot `pending_knowledge_prelude`
+/// flag set by `open_session_new` / `open_session_resume`.
 #[derive(Default)]
 pub struct KnowledgeContextHook;
 
@@ -83,35 +85,5 @@ impl PreSendHook for ModelIdentityReminderHook {
 
         let reminder = render_model_identity_reminder(&label);
         format!("{reminder}{prompt}")
-    }
-}
-
-/// Emit a non-blocking toast warning back to the UI via the stream channel.
-pub(crate) fn emit_hook_warning(ctx: &PromptCtx<'_>, hook: &'static str, message: impl Into<String>) {
-    let payload = AcpPromptHookWarningPayload {
-        hook: hook.to_owned(),
-        message: message.into(),
-    };
-    let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
-    ctx.runtime.emit(AgentStreamEvent::AcpPromptHookWarning(value));
-}
-
-#[cfg(test)]
-mod tests {
-    //! Full-path hook tests live in tests/prompt_pipeline_integration.rs
-    //! where a real AcpSession + AcpSessionParams + AgentRuntimeState triple
-    //! is already wired for assertion. This module keeps unit-level
-    //! property checks around the helpers that don't need ctx.
-    use super::*;
-
-    #[test]
-    fn emit_hook_warning_payload_shape() {
-        let payload = AcpPromptHookWarningPayload {
-            hook: "session_new_prelude".into(),
-            message: "boom".into(),
-        };
-        let v = serde_json::to_value(&payload).unwrap();
-        assert_eq!(v["hook"], "session_new_prelude");
-        assert_eq!(v["message"], "boom");
     }
 }

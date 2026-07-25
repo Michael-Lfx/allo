@@ -57,7 +57,7 @@ fn resolve_work_dir() -> String {
     if let Some(v) = env_path(&["FLOWY_WORK_DIR", "NOMIFUN_WORK_DIR"]) {
         return v;
     }
-    storage_paths::default_data_dir(&nomifun_common::channel::dir_suffix())
+    storage_paths::default_data_dir("")
         .to_string_lossy()
         .into_owned()
 }
@@ -69,7 +69,7 @@ fn resolve_log_dir() -> String {
     if let Some(v) = env_path(&["FLOWY_LOG_DIR", "NOMIFUN_LOG_DIR"]) {
         return v;
     }
-    storage_paths::default_data_dir(&nomifun_common::channel::dir_suffix())
+    storage_paths::default_data_dir("")
         .join("logs")
         .to_string_lossy()
         .into_owned()

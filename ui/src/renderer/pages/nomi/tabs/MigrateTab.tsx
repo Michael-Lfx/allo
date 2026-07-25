@@ -63,7 +63,9 @@ const MigrateTab: React.FC<Props> = ({ companions }) => {
   const [unmatchedNames, setUnmatchedNames] = useState<string[]>([]);
 
   const effectiveCompanionId =
-    selectedCompanionId && companions.some((p) => p.id === selectedCompanionId) ? selectedCompanionId : companions[0]?.id;
+    selectedCompanionId && companions.some((p) => p.companion_id === selectedCompanionId)
+      ? selectedCompanionId
+      : companions[0]?.companion_id;
 
   // ── 1. memory hub export ──
   const exportMemory = async () => {
@@ -82,7 +84,7 @@ const MigrateTab: React.FC<Props> = ({ companions }) => {
 
   // ── 2. companion bundle export ──
   const exportCompanion = async () => {
-    const companion = companions.find((p) => p.id === effectiveCompanionId);
+    const companion = companions.find((p) => p.companion_id === effectiveCompanionId);
     if (!companion) return;
     const dest = await pickSavePath(`nomifun-companion-${safeName(companion.name)}-${today()}.zip`);
     if (!dest) return;
@@ -94,10 +96,10 @@ const MigrateTab: React.FC<Props> = ({ companions }) => {
       let knowledgeNames: string[] = [];
       try {
         const [binding, bases] = await Promise.all([
-          ipcBridge.knowledge.getBinding.invoke({ kind: 'companion', target_id: companion.id }),
+          ipcBridge.knowledge.getBinding.invoke({ kind: 'companion', target_id: companion.companion_id }),
           ipcBridge.knowledge.listBases.invoke(),
         ]);
-        const nameById = new Map(bases.map((b) => [b.id, b.name]));
+        const nameById = new Map(bases.map((b) => [b.knowledge_base_id, b.name]));
         knowledgeNames = binding.kb_ids
           .map((id) => nameById.get(id))
           .filter((n): n is string => Boolean(n));
@@ -106,10 +108,14 @@ const MigrateTab: React.FC<Props> = ({ companions }) => {
       }
       // ipcBridge.companion.exportCompanion's body mapper only forwards dest_path, so the
       // frontend-collected knowledge_names go through httpRequest directly.
-      const res = await httpRequest<ICompanionExportResult>('POST', `/api/companion/export/companions/${companion.id}`, {
+      const res = await httpRequest<ICompanionExportResult>(
+        'POST',
+        `/api/companion/export/companions/${companion.companion_id}`,
+        {
         dest_path: dest,
         knowledge_names: knowledgeNames,
-      });
+        }
+      );
       Message.success(t('nomi.migrate.exportCompanionOk', { path: res.dest_path }));
     } catch (e) {
       Message.error(errText(e));
@@ -147,7 +153,7 @@ const MigrateTab: React.FC<Props> = ({ companions }) => {
     if (!outcome.knowledge_names.length) return;
     try {
       const bases = await ipcBridge.knowledge.listBases.invoke();
-      const idByName = new Map(bases.map((b) => [b.name, b.id]));
+      const idByName = new Map(bases.map((b) => [b.name, b.knowledge_base_id]));
       const matchedIds: KnowledgeBaseId[] = [];
       const missing: string[] = [];
       for (const name of outcome.knowledge_names) {
@@ -228,7 +234,7 @@ const MigrateTab: React.FC<Props> = ({ companions }) => {
             style={{ width: 220 }}
             placeholder={t('nomi.migrate.companionPlaceholder')}
             value={effectiveCompanionId}
-            options={companions.map((p) => ({ label: p.name, value: p.id }))}
+            options={companions.map((p) => ({ label: p.name, value: p.companion_id }))}
             onChange={(v: string) => setSelectedCompanionId(v)}
           />
           <Button type='primary' disabled={!effectiveCompanionId} loading={exportingCompanion} onClick={() => void exportCompanion()}>

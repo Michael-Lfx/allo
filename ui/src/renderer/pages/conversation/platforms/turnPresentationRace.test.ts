@@ -1,7 +1,7 @@
 
 
 import { describe, expect, test } from 'bun:test';
-import { prefixedId } from '@/common/utils';
+import { uuidv7 } from '@/common/utils';
 import { parseMessageId } from '@/common/types/ids';
 import {
   initialTurnPresentationState,
@@ -10,7 +10,7 @@ import {
 
 describe('turn presentation send/stop/retry races', () => {
   test('failed local submit clears active turn ids without leaving stop busy', () => {
-    const requestMessageId = parseMessageId(prefixedId('msg'));
+    const requestMessageId = parseMessageId(uuidv7());
     let state = turnPresentationReducer(initialTurnPresentationState, {
       type: 'localSubmit',
       localRequestId: 'local-1',
@@ -33,7 +33,7 @@ describe('turn presentation send/stop/retry races', () => {
     });
     state = turnPresentationReducer(state, {
       type: 'accepted',
-      requestMessageId: parseMessageId(prefixedId('msg')),
+      requestMessageId: parseMessageId(uuidv7()),
     });
     state = turnPresentationReducer(state, { type: 'streaming' });
     expect(state.showStop).toBe(true);

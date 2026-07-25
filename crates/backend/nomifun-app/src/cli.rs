@@ -9,27 +9,23 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use nomifun_common::storage_paths;
 
-/// The default data directory shared by ALL hosts (desktop shell, `nomifun-web`,
-/// the `nomicore` bin): the per-user application-data dir joined with
-/// `Flowy/Nomi` — `%LOCALAPPDATA%\Flowy\Nomi` on Windows,
-/// `~/Library/Application Support/Flowy/Nomi` on macOS,
-/// `$XDG_DATA_HOME/Flowy/Nomi` on Linux. Extreme fallback when the OS
-/// reports no user dir: `<system temp>/nomifun-data/Nomi`.
+/// The default data directory shared by all hosts built for the same channel
+/// (desktop shell, `nomifun-web`, the `nomicore` bin): the per-user
+/// application-data dir joined with `Flowy/Nomi<channel-suffix>`. Stable
+/// builds use `Nomi`; dev builds use `Nomi-dev`. Extreme fallback when the OS
+/// reports no user dir: `<system temp>/nomifun-data/Nomi<channel-suffix>`.
 ///
-/// One default for every host is deliberate: dev loops (`bun run web`,
-/// `dev:webui`, `desktop:dev`) and the installed desktop app all read and
-/// write the same state, so a feature configured once is testable everywhere
-/// and troubleshooting only ever has one directory to look at. The
+/// Sharing within a channel is deliberate, while isolating non-stable channels
+/// prevents development loops from touching installed-app state. The
 /// `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` env / `--data-dir` flag remain the
-/// escape hatch for an isolated sandbox. Concurrent use of one dir is prevented
-/// by the exclusive server lock (see `bootstrap::server_lock`).
+/// escape hatch for an explicitly selected directory. Concurrent use of one
+/// dir is prevented by the exclusive server lock (see `bootstrap::server_lock`).
 ///
 /// This is only the *unset* default — it does NOT consult env vars.
 /// Env semantics stay host-specific: the desktop shell appends `/Nomi` to the
 /// env value, web/nomicore take it literally (clap `env` binding).
 pub fn default_data_dir() -> PathBuf {
-    storage_paths::resolve_data_dir_from_env()
-        .unwrap_or_else(|| storage_paths::default_data_dir(&nomifun_common::channel::dir_suffix()))
+    storage_paths::default_data_dir(&crate::channel::dir_suffix())
 }
 
 /// The data-dir leaf for the active build channel: `Nomi` on stable, `Nomi-dev`
@@ -203,18 +199,20 @@ mod tests {
     use super::{Cli, Command};
 
     #[test]
-    fn default_data_dir_is_per_user_nomifun_nomi() {
+    fn default_data_dir_matches_active_channel() {
         // Pure shape check on the unset default — env handling belongs to clap
         // (`env = "NOMIFUN_DATA_DIR"`) and is not exercised here to keep the
         // test independent of the ambient environment.
         let dir = super::default_data_dir();
+        let leaf = super::nomi_leaf(&crate::channel::dir_suffix());
         assert!(
             dir.is_absolute(),
             "default data dir must be absolute, got {dir:?}"
         );
         assert!(
-            dir.ends_with("Flowy/Nomi") || dir.ends_with("nomifun-data/Nomi"),
-            "default data dir should end with Flowy/Nomi (or the temp fallback), got {dir:?}"
+            dir.ends_with(format!("Flowy/{leaf}"))
+                || dir.ends_with(format!("nomifun-data/{leaf}")),
+            "default data dir should end with Flowy/{leaf} (or the temp fallback), got {dir:?}"
         );
     }
 

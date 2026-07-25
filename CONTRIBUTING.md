@@ -15,21 +15,26 @@ that maintainers can review without guessing.
 
 If you only remember one page of rules, remember these:
 
-1. Keep pull requests small. One problem, one behavior change, one reviewable
+1. GitHub Actions are strictly forbidden. Do not add, restore, generate, or
+   re-enable any workflow, including disabled or manual-only workflows. Use
+   local scripts and documented manual commands instead. A pull request that
+   introduces `.github/workflows/*.yml` or `.github/workflows/*.yaml` must be
+   rejected.
+2. Keep pull requests small. One problem, one behavior change, one reviewable
    story.
-2. Ask first before large product changes, new top-level surfaces, database
+3. Ask first before large product changes, new top-level surfaces, database
    migrations, security-sensitive flows, bundled assets, vendored code, or broad
    refactors.
-3. Follow the existing ownership boundaries: renderer code through `ui/`,
+4. Follow the existing ownership boundaries: renderer code through `ui/`,
    backend feature code through `crates/backend/`, agent-engine code through
    `crates/agent/`, and backend-to-agent usage through `nomifun-ai-agent` unless
    a documented exception already exists.
-4. Run the narrowest checks that prove your change works. If you cannot run a
+5. Run the narrowest checks that prove your change works. If you cannot run a
    check, say so in the PR and explain why.
-5. Do not commit secrets, local data, build output, private workspaces,
+6. Do not commit secrets, local data, build output, private workspaces,
    proprietary assets, or third-party assets whose redistribution license is
    unclear.
-6. User-visible changes need user-facing notes: screenshots when UI changes,
+7. User-visible changes need user-facing notes: screenshots when UI changes,
    docs when workflows change, i18n updates for both supported locales, and
    changelog notes when the change affects a release user.
 
@@ -155,9 +160,22 @@ legacy redirected routes as current navigation.
   usually be feature-gated.
 - HTTP request/response DTOs belong in `nomifun-api-types` when they are part of
   the API contract.
-- Database schema changes are append-only SQL files under
-  `crates/backend/nomifun-db/migrations/`. Update models, repositories, and
-  focused migration tests together.
+- Database and identifier changes must follow the repository-wide
+  [Data and Identifier Standards](docs/contributing/data-and-identifier-standards.md).
+  Every product table uses `id INTEGER PRIMARY KEY AUTOINCREMENT`; stable
+  cross-boundary identities use named bare UUIDv7 fields; product schemas use
+  indexed logical references rather than physical foreign keys, triggers, or
+  `*_row_id` columns. Update the executable schema, logical-reference registry,
+  repositories, boundary types, and focused tests together.
+- The current v3 database is a clean baseline with an intentionally new
+  dataset lineage. Do not add historical compatibility migrations, legacy ID
+  mappers, aliases, or dual-read/dual-write behavior without an explicit
+  architecture decision. Do not assume that an append-only migration is the
+  correct answer for every schema change.
+- Technical row `id` values must stay inside repository/storage code and must
+  not enter APIs, events, managed files, backup graphs, or cross-table
+  references. Do not commit local data, `.tmp***` directories, dependency
+  trees, build output, or other intermediate products.
 - Use `AppError` for user-facing backend failures and preserve useful context in
   logs with `tracing`.
 - Avoid blocking work on async request paths unless it is already isolated or
@@ -260,7 +278,7 @@ PR.
 | Frontend feature | `bun run check`; add screenshots for visible surfaces. |
 | Rust compile path | `cargo check --workspace` or a narrower `cargo check -p <crate>`. |
 | Rust behavior | `cargo test -p <crate>` or the focused test target that covers the change. |
-| Database migration | Migration test or focused repository test plus `cargo test -p nomifun-db` when practical. |
+| Database/schema/identifier change | Follow the [Data and Identifier Standards](docs/contributing/data-and-identifier-standards.md); run the affected schema-contract, repository, reset, or restore tests plus `cargo test -p nomifun-db` when practical. |
 | Packaging/release | The relevant build script plus the release docs you changed. |
 | Security-sensitive path | Focused tests, threat-model notes in the PR, and no public vulnerability details if disclosure is private. |
 

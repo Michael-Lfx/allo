@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use nomifun_common::{
     AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
     LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
-    LearningReviewItemId, PrefixedIdError, UserId, now_ms,
+    LearningReviewItemId, UserId, UuidV7Error, now_ms,
 };
 use nomifun_db::SqlitePool;
 use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
@@ -83,11 +83,12 @@ impl LearningService {
     pub async fn import_course(&self, pack: CoursePack) -> Result<CourseDetail, AppError> {
         validate_pack(&pack)?;
         if let Some(kb_id) = &pack.source_kb_id {
-            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM knowledge_bases WHERE id = ?")
-                .bind(kb_id.as_str())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(internal)?;
+            let exists: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM knowledge_bases WHERE knowledge_base_id = ?")
+                    .bind(kb_id.as_str())
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(internal)?;
             if exists == 0 {
                 return Err(AppError::BadRequest(format!(
                     "knowledge base {kb_id} does not exist"
@@ -100,7 +101,7 @@ impl LearningService {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
-             (id, title, description, domain, source_kb_id, version, created_at, updated_at) \
+             (course_id, title, description, domain, source_kb_id, version, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
@@ -120,7 +121,7 @@ impl LearningService {
             let concept_id = LearningConceptId::new();
             sqlx::query(
                 "INSERT INTO learning_concepts \
-                 (id, course_id, concept_key, title, description) VALUES (?, ?, ?, ?, ?)",
+                 (concept_id, course_id, concept_key, title, description) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(concept_id.as_str())
             .bind(course_id.as_str())
@@ -152,7 +153,7 @@ impl LearningService {
             let module_id = LearningModuleId::new();
             sqlx::query(
                 "INSERT INTO learning_modules \
-                 (id, course_id, title, description, position) VALUES (?, ?, ?, ?, ?)",
+                 (module_id, course_id, title, description, position) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(module_id.as_str())
             .bind(course_id.as_str())
@@ -178,7 +179,7 @@ impl LearningService {
                     .unwrap_or((None, None, None));
                 sqlx::query(
                     "INSERT INTO learning_lessons \
-                     (id, module_id, title, summary, position, estimated_minutes, \
+                     (lesson_id, module_id, title, summary, position, estimated_minutes, \
                       source_path, source_start, source_end) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
@@ -215,7 +216,7 @@ impl LearningService {
                     };
                     sqlx::query(
                         "INSERT INTO learning_activities \
-                         (id, lesson_id, kind, prompt, config_json, position) \
+                         (activity_id, lesson_id, kind, prompt, config_json, position) \
                          VALUES (?, ?, ?, ?, ?, ?)",
                     )
                     .bind(activity_id.as_str())
@@ -254,17 +255,18 @@ impl LearningService {
 
     pub async fn list_courses(&self, user_id: &UserId) -> Result<Vec<CourseSummary>, AppError> {
         let rows = sqlx::query(
-            "SELECT c.id, c.title, c.description, c.domain, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.source_kb_id, c.version, c.updated_at, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
-                           WHERE e.course_id = c.id AND e.user_id = ?) AS enrolled, \
+                           WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
-                     JOIN learning_modules m ON m.id = l.module_id WHERE m.course_id = c.id) AS total_lessons, \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE m.course_id = c.course_id) AS total_lessons, \
                     (SELECT COUNT(*) FROM learning_lesson_progress p \
-                     JOIN learning_enrollments e ON e.id = p.enrollment_id \
-                     JOIN learning_lessons l ON l.id = p.lesson_id \
-                     JOIN learning_modules m ON m.id = l.module_id \
-                     WHERE e.user_id = ? AND m.course_id = c.id AND p.status = 'completed') AS completed_lessons \
-             FROM learning_courses c ORDER BY c.updated_at DESC, c.id",
+                     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+                     JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons \
+             FROM learning_courses c ORDER BY c.updated_at DESC, c.course_id",
         )
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -281,17 +283,18 @@ impl LearningService {
     ) -> Result<CourseDetail, AppError> {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
-            "SELECT c.id, c.title, c.description, c.domain, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.source_kb_id, c.version, c.updated_at, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
-                           WHERE e.course_id = c.id AND e.user_id = ?) AS enrolled, \
+                           WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
-                     JOIN learning_modules m ON m.id = l.module_id WHERE m.course_id = c.id) AS total_lessons, \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE m.course_id = c.course_id) AS total_lessons, \
                     (SELECT COUNT(*) FROM learning_lesson_progress p \
-                     JOIN learning_enrollments e ON e.id = p.enrollment_id \
-                     JOIN learning_lessons l ON l.id = p.lesson_id \
-                     JOIN learning_modules m ON m.id = l.module_id \
-                     WHERE e.user_id = ? AND m.course_id = c.id AND p.status = 'completed') AS completed_lessons \
-             FROM learning_courses c WHERE c.id = ?",
+                     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+                     JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons \
+             FROM learning_courses c WHERE c.course_id = ?",
         )
         .bind(user_value)
         .bind(user_value)
@@ -304,7 +307,8 @@ impl LearningService {
 
         let enrollment_id = if let Some(user_id) = user_id {
             sqlx::query_scalar::<_, String>(
-                "SELECT id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
+                "SELECT enrollment_id FROM learning_enrollments \
+                 WHERE user_id = ? AND course_id = ?",
             )
             .bind(user_id.as_str())
             .bind(course_id.as_str())
@@ -321,8 +325,8 @@ impl LearningService {
             .map(LearningEnrollmentId::as_str);
 
         let module_rows = sqlx::query(
-            "SELECT id, title, description, position FROM learning_modules \
-             WHERE course_id = ? ORDER BY position, id",
+            "SELECT module_id, title, description, position FROM learning_modules \
+             WHERE course_id = ? ORDER BY position, module_id",
         )
         .bind(course_id.as_str())
         .fetch_all(&self.pool)
@@ -331,15 +335,16 @@ impl LearningService {
         let mut modules = Vec::with_capacity(module_rows.len());
         let mut next_lesson_id = None;
         for module_row in module_rows {
-            let module_id: LearningModuleId = parse_id(module_row.try_get("id").map_err(internal)?)?;
+            let module_id: LearningModuleId =
+                parse_id(module_row.try_get("module_id").map_err(internal)?)?;
             let lesson_rows = sqlx::query(
-                "SELECT l.id, l.title, l.summary, l.position, l.estimated_minutes, \
+                "SELECT l.lesson_id, l.title, l.summary, l.position, l.estimated_minutes, \
                         l.source_path, l.source_start, l.source_end, \
                         COALESCE(p.status, 'not_started') AS status \
                  FROM learning_lessons l \
                  LEFT JOIN learning_lesson_progress p \
-                   ON p.lesson_id = l.id AND p.enrollment_id = ? \
-                 WHERE l.module_id = ? ORDER BY l.position, l.id",
+                   ON p.lesson_id = l.lesson_id AND p.enrollment_id = ? \
+                 WHERE l.module_id = ? ORDER BY l.position, l.lesson_id",
             )
             .bind(enrollment_value)
             .bind(module_id.as_str())
@@ -349,7 +354,7 @@ impl LearningService {
             let mut lessons = Vec::with_capacity(lesson_rows.len());
             for lesson_row in lesson_rows {
                 let lesson_id: LearningLessonId =
-                    parse_id(lesson_row.try_get("id").map_err(internal)?)?;
+                    parse_id(lesson_row.try_get("lesson_id").map_err(internal)?)?;
                 let status_text: String = lesson_row.try_get("status").map_err(internal)?;
                 let status = LessonStatus::try_from(status_text.as_str())
                     .map_err(AppError::Internal)?;
@@ -419,7 +424,7 @@ impl LearningService {
         user_id: &UserId,
     ) -> Result<LearningEnrollmentId, AppError> {
         let course_exists: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
                 .bind(course_id.as_str())
                 .fetch_one(&self.pool)
                 .await
@@ -431,7 +436,7 @@ impl LearningService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO learning_enrollments \
-             (id, user_id, course_id, enrolled_at, updated_at) VALUES (?, ?, ?, ?, ?) \
+             (enrollment_id, user_id, course_id, enrolled_at, updated_at) VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(user_id, course_id) DO UPDATE SET updated_at = excluded.updated_at",
         )
         .bind(enrollment_id.as_str())
@@ -443,7 +448,7 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let stored: String = sqlx::query_scalar(
-            "SELECT id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
+            "SELECT enrollment_id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
         )
         .bind(user_id.as_str())
         .bind(course_id.as_str())
@@ -460,10 +465,10 @@ impl LearningService {
         status: LessonStatus,
     ) -> Result<(), AppError> {
         let enrollment_id: Option<String> = sqlx::query_scalar(
-            "SELECT e.id FROM learning_enrollments e \
+            "SELECT e.enrollment_id FROM learning_enrollments e \
              JOIN learning_modules m ON m.course_id = e.course_id \
-             JOIN learning_lessons l ON l.module_id = m.id \
-             WHERE e.user_id = ? AND l.id = ?",
+             JOIN learning_lessons l ON l.module_id = m.module_id \
+             WHERE e.user_id = ? AND l.lesson_id = ?",
         )
         .bind(user_id.as_str())
         .bind(lesson_id.as_str())
@@ -516,12 +521,12 @@ impl LearningService {
         response: Value,
     ) -> Result<AttemptResult, AppError> {
         let row = sqlx::query(
-            "SELECT a.kind, a.config_json, e.id AS enrollment_id \
+            "SELECT a.kind, a.config_json, e.enrollment_id \
              FROM learning_activities a \
-             JOIN learning_lessons l ON l.id = a.lesson_id \
-             JOIN learning_modules m ON m.id = l.module_id \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
              JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
-             WHERE a.id = ?",
+             WHERE a.activity_id = ?",
         )
         .bind(user_id.as_str())
         .bind(activity_id.as_str())
@@ -548,7 +553,7 @@ impl LearningService {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_attempts \
-             (id, enrollment_id, activity_id, response_json, score, passed, feedback, created_at) \
+             (attempt_id, enrollment_id, activity_id, response_json, score, passed, feedback, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(attempt_id.as_str())
@@ -601,15 +606,15 @@ impl LearningService {
         limit: i64,
     ) -> Result<Vec<DueReview>, AppError> {
         let rows = sqlx::query(
-            "SELECT r.id, r.enrollment_id, e.course_id, c.title AS course_title, \
+            "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.concept_id, lc.title AS concept_title, r.due_at, \
                     r.stability_days, r.difficulty, r.review_count, r.lapse_count \
              FROM learning_review_items r \
-             JOIN learning_enrollments e ON e.id = r.enrollment_id \
-             JOIN learning_courses c ON c.id = e.course_id \
-             JOIN learning_concepts lc ON lc.id = r.concept_id \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             JOIN learning_courses c ON c.course_id = e.course_id \
+             JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
              WHERE e.user_id = ? AND r.due_at <= ? \
-             ORDER BY r.due_at, r.id LIMIT ?",
+             ORDER BY r.due_at, r.review_item_id LIMIT ?",
         )
         .bind(user_id.as_str())
         .bind(now_ms())
@@ -620,7 +625,7 @@ impl LearningService {
         rows.into_iter()
             .map(|row| {
                 Ok(DueReview {
-                    id: parse_id(row.try_get("id").map_err(internal)?)?,
+                    id: parse_id(row.try_get("review_item_id").map_err(internal)?)?,
                     enrollment_id: parse_id(
                         row.try_get("enrollment_id").map_err(internal)?,
                     )?,
@@ -648,8 +653,8 @@ impl LearningService {
             "SELECT r.enrollment_id, r.concept_id, r.stability_days, r.difficulty, \
                     r.review_count, r.lapse_count \
              FROM learning_review_items r \
-             JOIN learning_enrollments e ON e.id = r.enrollment_id \
-             WHERE r.id = ? AND e.user_id = ?",
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE r.review_item_id = ? AND e.user_id = ?",
         )
         .bind(review_id.as_str())
         .bind(user_id.as_str())
@@ -679,7 +684,7 @@ impl LearningService {
         sqlx::query(
             "UPDATE learning_review_items SET due_at = ?, stability_days = ?, difficulty = ?, \
              review_count = ?, lapse_count = ?, last_reviewed_at = ?, updated_at = ? \
-             WHERE id = ?",
+             WHERE review_item_id = ?",
         )
         .bind(next.due_at)
         .bind(next.stability_days)
@@ -723,8 +728,8 @@ impl LearningService {
         lesson_id: &LearningLessonId,
     ) -> Result<Vec<ActivityView>, AppError> {
         let rows = sqlx::query(
-            "SELECT id, kind, prompt, config_json, position FROM learning_activities \
-             WHERE lesson_id = ? ORDER BY position, id",
+            "SELECT activity_id, kind, prompt, config_json, position FROM learning_activities \
+             WHERE lesson_id = ? ORDER BY position, activity_id",
         )
         .bind(lesson_id.as_str())
         .fetch_all(&self.pool)
@@ -732,7 +737,8 @@ impl LearningService {
         .map_err(internal)?;
         let mut activities = Vec::with_capacity(rows.len());
         for row in rows {
-            let id: LearningActivityId = parse_id(row.try_get("id").map_err(internal)?)?;
+            let id: LearningActivityId =
+                parse_id(row.try_get("activity_id").map_err(internal)?)?;
             let kind_text: String = row.try_get("kind").map_err(internal)?;
             let config: StoredActivityConfig = serde_json::from_str(
                 &row.try_get::<String, _>("config_json").map_err(internal)?,
@@ -768,11 +774,11 @@ impl LearningService {
         enrollment_id: Option<&LearningEnrollmentId>,
     ) -> Result<Vec<ConceptView>, AppError> {
         let rows = sqlx::query(
-            "SELECT c.id, c.concept_key, c.title, c.description, m.mastery \
+            "SELECT c.concept_id, c.concept_key, c.title, c.description, m.mastery \
              FROM learning_concepts c \
              LEFT JOIN learning_mastery_states m \
-               ON m.concept_id = c.id AND m.enrollment_id = ? \
-             WHERE c.course_id = ? ORDER BY c.concept_key, c.id",
+               ON m.concept_id = c.concept_id AND m.enrollment_id = ? \
+             WHERE c.course_id = ? ORDER BY c.concept_key, c.concept_id",
         )
         .bind(enrollment_id.map(LearningEnrollmentId::as_str))
         .bind(course_id.as_str())
@@ -781,7 +787,8 @@ impl LearningService {
         .map_err(internal)?;
         let mut concepts = Vec::with_capacity(rows.len());
         for row in rows {
-            let id: LearningConceptId = parse_id(row.try_get("id").map_err(internal)?)?;
+            let id: LearningConceptId =
+                parse_id(row.try_get("concept_id").map_err(internal)?)?;
             let prerequisites: Vec<String> = sqlx::query_scalar(
                 "SELECT prerequisite_concept_id FROM learning_concept_prerequisites \
                  WHERE concept_id = ? ORDER BY prerequisite_concept_id",
@@ -1038,7 +1045,7 @@ async fn update_mastery_and_review(
 ) -> Result<(), AppError> {
     update_mastery(transaction, enrollment_id, concept_id, score, now).await?;
     let current = sqlx::query(
-        "SELECT id, stability_days, difficulty, review_count, lapse_count \
+        "SELECT review_item_id, stability_days, difficulty, review_count, lapse_count \
          FROM learning_review_items WHERE enrollment_id = ? AND concept_id = ?",
     )
     .bind(enrollment_id.as_str())
@@ -1048,7 +1055,8 @@ async fn update_mastery_and_review(
     .map_err(internal)?;
     let (review_id, stability, difficulty, count, lapses) = if let Some(row) = current {
         (
-            row.try_get::<String, _>("id").map_err(internal)?,
+            row.try_get::<String, _>("review_item_id")
+                .map_err(internal)?,
             row.try_get("stability_days").map_err(internal)?,
             row.try_get("difficulty").map_err(internal)?,
             row.try_get("review_count").map_err(internal)?,
@@ -1066,7 +1074,7 @@ async fn update_mastery_and_review(
     let next = schedule_review(now, stability, difficulty, count, lapses, rating);
     sqlx::query(
         "INSERT INTO learning_review_items \
-         (id, enrollment_id, concept_id, due_at, stability_days, difficulty, review_count, \
+         (review_item_id, enrollment_id, concept_id, due_at, stability_days, difficulty, review_count, \
           lapse_count, last_reviewed_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(enrollment_id, concept_id) DO UPDATE SET \
@@ -1140,7 +1148,7 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         .map(parse_id)
         .transpose()?;
     Ok(CourseSummary {
-        id: parse_id(row.try_get("id").map_err(internal)?)?,
+        id: parse_id(row.try_get("course_id").map_err(internal)?)?,
         title: row.try_get("title").map_err(internal)?,
         description: row.try_get("description").map_err(internal)?,
         domain: row.try_get("domain").map_err(internal)?,
@@ -1155,7 +1163,7 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
 
 fn parse_id<T>(value: String) -> Result<T, AppError>
 where
-    T: FromStr<Err = PrefixedIdError>,
+    T: FromStr<Err = UuidV7Error>,
 {
     value
         .parse()

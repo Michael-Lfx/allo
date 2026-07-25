@@ -63,7 +63,7 @@ pub async fn reconcile_running_conversations_on_boot(
 
     let mut reconciled = 0usize;
     for conv in running {
-        let conv_id = conv.id.as_str();
+        let conv_id = conv.conversation_id.as_str();
 
         // Detect + close the actual crash artifacts. `had_dangling` is our
         // proof that a turn was interrupted mid-flight rather than the status
@@ -138,8 +138,8 @@ async fn settle_dangling_turn_messages(
         if msg.r#type == "thinking" {
             if let Some(update) = finalize_thinking_content(&msg) {
                 had_dangling = true;
-                if let Err(e) = conversation_repo.update_message(&msg.id, &update).await {
-                    warn!(conversation_id = conv_id, message_id = %msg.id, error = %e, "conversation boot reconciliation: failed to finalize thinking message");
+                if let Err(e) = conversation_repo.update_message(&msg.message_id, &update).await {
+                    warn!(conversation_id = conv_id, message_id = %msg.message_id, error = %e, "conversation boot reconciliation: failed to finalize thinking message");
                 }
             }
             continue;
@@ -154,8 +154,8 @@ async fn settle_dangling_turn_messages(
                 status: Some(Some("finish".to_owned())),
                 ..Default::default()
             };
-            if let Err(e) = conversation_repo.update_message(&msg.id, &update).await {
-                warn!(conversation_id = conv_id, message_id = %msg.id, error = %e, "conversation boot reconciliation: failed to terminalize work message");
+            if let Err(e) = conversation_repo.update_message(&msg.message_id, &update).await {
+                warn!(conversation_id = conv_id, message_id = %msg.message_id, error = %e, "conversation boot reconciliation: failed to terminalize work message");
             }
         }
     }

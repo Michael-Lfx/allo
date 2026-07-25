@@ -63,9 +63,9 @@ export function useKnowledgeBase(id: KnowledgeBaseId | undefined) {
     setLoading(true);
     try {
       const [info, list, treeRoot] = await Promise.all([
-        ipcBridge.knowledge.getBase.invoke({ id }),
-        ipcBridge.knowledge.listFiles.invoke({ id }),
-        ipcBridge.knowledge.listTree.invoke({ id }),
+        ipcBridge.knowledge.getBase.invoke({ knowledge_base_id: id }),
+        ipcBridge.knowledge.listFiles.invoke({ knowledge_base_id: id }),
+        ipcBridge.knowledge.listTree.invoke({ knowledge_base_id: id }),
       ]);
       setBase(info);
       setFiles(list);
@@ -88,7 +88,7 @@ export function useKnowledgeBase(id: KnowledgeBaseId | undefined) {
   useEffect(() => {
     if (!id) return;
     const unsub = ipcBridge.knowledge.onBaseUpdated.on((b) => {
-      if (b.id === id) void refresh();
+      if (b.knowledge_base_id === id) void refresh();
     });
     return () => unsub();
   }, [id, refresh]);
@@ -110,7 +110,7 @@ export function useKnowledgeInbox(id: KnowledgeBaseId | undefined) {
     if (!id) return;
     setLoading(true);
     try {
-      const res = await ipcBridge.knowledge.listInbox.invoke({ id });
+      const res = await ipcBridge.knowledge.listInbox.invoke({ knowledge_base_id: id });
       setItems(res);
       setError(null);
     } catch (e) {
@@ -128,7 +128,7 @@ export function useKnowledgeInbox(id: KnowledgeBaseId | undefined) {
   useEffect(() => {
     if (!id) return;
     const unsub = ipcBridge.knowledge.onBaseUpdated.on((b) => {
-      if (b.id === id) void refresh();
+      if (b.knowledge_base_id === id) void refresh();
     });
     return () => unsub();
   }, [id, refresh]);
@@ -146,7 +146,7 @@ export function useKnowledgeConsumers(id: KnowledgeBaseId | undefined) {
     if (!id) return;
     setLoading(true);
     try {
-      const res = await ipcBridge.knowledge.listConsumers.invoke({ id });
+      const res = await ipcBridge.knowledge.listConsumers.invoke({ knowledge_base_id: id });
       setConsumers(res);
       setError(null);
     } catch (e) {

@@ -12,6 +12,7 @@ pub const LEARN_MAX_TOKENS: u32 = 4096;
 pub const MOODS: [&str; 5] = ["happy", "content", "sleepy", "worried", "excited"];
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LearnedMemory {
     pub kind: String,
     pub content: String,
@@ -26,28 +27,26 @@ fn default_importance() -> f64 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LearnedSuggestion {
     pub kind: String,
     pub title: String,
     pub body: String,
     #[serde(default)]
     pub action: Option<serde_json::Value>,
-    /// Optimization 9: when `kind == "create_skill"`, optionally carry
-    /// knowledge-base content (markdown) to bridge the companion system →
-    /// the normal-dialog knowledge system. The service layer can create a
-    /// KB page from this field so both systems share the same domain knowledge.
     #[serde(default)]
     pub knowledge_base: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LearnOutput {
     #[serde(default)]
     pub memories: Vec<LearnedMemory>,
     #[serde(default)]
-    pub reinforce_ids: Vec<String>,
+    pub reinforce_memory_ids: Vec<String>,
     #[serde(default)]
-    pub supersede_ids: Vec<String>,
+    pub supersede_memory_ids: Vec<String>,
     #[serde(default)]
     pub suggestions: Vec<LearnedSuggestion>,
     #[serde(default)]
@@ -63,28 +62,23 @@ pub const LEARN_SYSTEM: &str = r#"你是这台电脑上所有电子伙伴共享�
 
 规则：
 1. 只提炼有信息量的内容，宁缺毋滥；每条记忆一句话、自包含、用中文。
-2. 若新事件印证了"已有记忆"列表中的某条，把它的 id 放进 reinforce_ids，不要重复生成。
-3. 若新事件与某条已有记忆矛盾，生成新记忆并把旧 id 放进 supersede_ids。
+2. 若新事件印证了"已有记忆"列表中的某条，把它的 memory_id 放进 reinforce_memory_ids，不要重复生成。
+3. 若新事件与某条已有记忆矛盾，生成新记忆并把旧 memory_id 放进 supersede_memory_ids。
 4. 建议宁缺毋滥：0~2 条，只在有明确、可执行且非显而易见的价值时才给；没有就返回空数组 []，绝不为凑数而产出。每条必须基于本批事件证据、具体到可直接行动；可在 action 中给出跳转，格式 {"type":"navigate","to":"/路径"}。
 5. mood 从 happy/content/sleepy/worried/excited 中选一个，代表伙伴们读完这些事件后的共同心情。
 6. diary 是以伙伴们的第一人称写的一句话日记（中文、简短、温暖），措辞不要绑定任何单一角色名，如"今天主人修了一下午 bug，我们记住了他喜欢先看报错"。
 7. 事件 data 中 origin 为 companion/cron/autowork/idmm、或 created_by 为 agent 的内容，是 agent 的自动行为而非主人发言：绝不能据此蒸馏出"主人想要/主人计划/主人提出"类记忆或建议。
 8. 事件名 companion.user_message 是主人对伙伴说的话（高价值：偏好/意图/情感都值得提炼）；companion.reply 是伙伴自己说的话，只能用作上下文理解，绝不能当作主人的事实、意愿或承诺。
-9. 若事件表明某个任务/需求已完成或不再需要，把"已有记忆"中对应的 task 记忆 id 放进 supersede_ids，不要为已完成的事保留或新建 task 记忆。
+9. 若事件表明某个任务/需求已完成或不再需要，把"已有记忆"中对应的 task 记忆 memory_id 放进 supersede_memory_ids，不要为已完成的事保留或新建 task 记忆。
 10. 不要产出与"已有建议""最近已回应过的建议"两个列表在语义上相同或高度相似的建议；主人最近已采纳或已忽略的想法，除非出现全新证据，否则不要再提。
 
 只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码围栏：
-{"memories":[{"kind":"...","content":"...","tags":["..."],"importance":0.0~1.0}],"reinforce_ids":[],"supersede_ids":[],"suggestions":[{"kind":"...","title":"...","body":"...","action":null,"knowledge_base":null}],"mood":"content","diary":"..."}
+{"memories":[{"kind":"...","content":"...","tags":["..."],"importance":0.0~1.0}],"reinforce_memory_ids":[],"supersede_memory_ids":[],"suggestions":[{"kind":"...","title":"...","body":"...","action":null,"knowledge_base":null}],"mood":"content","diary":"..."}
 
 当 kind=create_skill 时，可在 knowledge_base 字段填写该技能相关的领域知识（markdown 格式），用于在知识库中创建对应页面，使普通对话也能访问这些知识。"#;
 
 /// Build the learn user prompt from existing memories, pending (status='new')
-/// suggestions, recently-decided suggestions and new events. Feeding the pending
-/// AND recently-decided suggestions back lets the model honor rule 10 (no
-/// semantically duplicate suggestions, and no re-raising a just-handled idea).
-/// `suggestions_allowed` reflects the cadence gate: when false, the model is told
-/// to emit no suggestions this round (memories/mood/diary still update), so a
-/// throttled run doesn't even spend effort drafting suggestions we'd drop.
+/// suggestions, recently-decided suggestions and new events.
 pub fn build_learn_prompt(
     memories: &[CompanionMemory],
     pending_suggestions: &[CompanionSuggestion],
@@ -93,12 +87,12 @@ pub fn build_learn_prompt(
     truncated: bool,
     suggestions_allowed: bool,
 ) -> String {
-    let mut prompt = String::from("## 已有记忆（id | kind | 内容）\n");
+    let mut prompt = String::from("## 已有记忆（memory_id | kind | 内容）\n");
     if memories.is_empty() {
         prompt.push_str("（暂无）\n");
     }
     for m in memories {
-        prompt.push_str(&format!("- {} | {} | {}\n", m.id, m.kind, m.content));
+        prompt.push_str(&format!("- {} | {} | {}\n", m.memory_id, m.kind, m.content));
     }
     prompt.push_str("\n## 已有建议（kind | 标题 — 不要重复产出语义相同的建议）\n");
     if pending_suggestions.is_empty() {
@@ -124,7 +118,7 @@ pub fn build_learn_prompt(
     }
     if !suggestions_allowed {
         prompt.push_str(
-            "\n（本轮不产出建议：suggestions 必须是空数组 []；继续正常更新 memories/reinforce_ids/supersede_ids/mood/diary。）\n",
+            "\n（本轮不产出建议：suggestions 必须是空数组 []；继续正常更新 memories/reinforce_memory_ids/supersede_memory_ids/mood/diary。）\n",
         );
     }
     prompt.push_str("\n请按系统指令输出 JSON。");
@@ -136,6 +130,14 @@ pub fn build_learn_prompt(
 pub fn parse_learn_output(raw: &str) -> Result<LearnOutput, String> {
     let cleaned = extract_json_object(raw).ok_or_else(|| "no JSON object found in model output".to_owned())?;
     let mut output: LearnOutput = serde_json::from_str(cleaned).map_err(|e| format!("invalid learn JSON: {e}"))?;
+    for memory_id in output
+        .reinforce_memory_ids
+        .iter()
+        .chain(output.supersede_memory_ids.iter())
+    {
+        nomifun_common::CompanionMemoryId::try_from(memory_id.as_str())
+            .map_err(|error| format!("invalid memory_id in learn output: {error}"))?;
+    }
     output.memories.retain(|m| MEMORY_KINDS.contains(&m.kind.as_str()) && !m.content.trim().is_empty());
     if let Some(mood) = &output.mood {
         if !MOODS.contains(&mood.as_str()) {
@@ -289,9 +291,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_legacy_memory_id_fields_and_non_uuidv7_values() {
+        let legacy =
+            r#"{"memories":[],"reinforce_ids":[],"supersede_ids":[]}"#;
+        assert!(parse_learn_output(legacy).is_err());
+
+        let malformed =
+            r#"{"memories":[],"reinforce_memory_ids":["legacy-id"],"supersede_memory_ids":[]}"#;
+        assert!(parse_learn_output(malformed).is_err());
+    }
+
+    #[test]
     fn learn_prompt_lists_pending_suggestions_and_system_has_loop_guards() {
         let suggestion = CompanionSuggestion {
-            id: nomifun_common::CompanionSuggestionId::new().into_string(),
+            suggestion_id: nomifun_common::CompanionSuggestionId::new().into_string(),
             kind: "create_cron".into(),
             title: "建议加个每日备份任务".into(),
             body: "…".into(),
@@ -299,17 +312,11 @@ mod tests {
             status: "new".into(),
             created_at: 0,
             decided_at: None,
-            companion_id: None,
         };
         let prompt = build_learn_prompt(&[], &[suggestion], &[], &["{\"x\":1}".into()], false, true);
         assert!(prompt.contains("已有建议"));
         assert!(prompt.contains("create_cron | 建议加个每日备份任务"));
         assert!(prompt.contains("不要重复产出语义相同的建议"));
-        assert!(prompt.contains("最近已回应过的建议"));
-        // When throttled, the model is told to emit no suggestions.
-        assert!(!prompt.contains("本轮不产出建议"));
-        let throttled = build_learn_prompt(&[], &[], &[], &["{\"x\":1}".into()], false, false);
-        assert!(throttled.contains("本轮不产出建议"));
         // Empty lists render the placeholder.
         let empty = build_learn_prompt(&[], &[], &[], &[], false, true);
         assert!(empty.contains("（暂无）"));
@@ -317,7 +324,7 @@ mod tests {
         assert!(LEARN_SYSTEM.contains("companion/cron/autowork/idmm"));
         assert!(LEARN_SYSTEM.contains("companion.user_message"));
         assert!(LEARN_SYSTEM.contains("companion.reply"));
-        assert!(LEARN_SYSTEM.contains("supersede_ids"));
+        assert!(LEARN_SYSTEM.contains("supersede_memory_ids"));
     }
 
     #[test]

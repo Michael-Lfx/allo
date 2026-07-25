@@ -1,5 +1,4 @@
 //! Shared primitives: error types, enums, ID generation, crypto, timestamps, and pagination.
-pub mod channel;
 pub mod constants;
 pub mod storage_paths;
 pub mod agent_execution;
@@ -7,6 +6,7 @@ pub mod agent_execution;
 mod case_convert;
 mod crypto;
 pub mod dir_config;
+pub mod dataset_roots;
 mod enums;
 mod error;
 mod execution_authority;
@@ -16,12 +16,14 @@ mod hooks;
 mod id;
 mod scoped_auth;
 mod pagination;
+pub mod provider_lifecycle;
 pub mod provider_usage;
 mod timestamp;
 mod types;
 pub mod vision_registry;
 
 pub use case_convert::{camel_to_snake, normalize_keys_to_snake_case};
+pub use constants::NOMI_AGENT_ID;
 pub use agent_execution::{
     AdaptationPolicy, AgentExecutionActor, AgentExecutionActorType, AgentExecutionEventKind,
     AgentExecutionReceipt, AgentExecutionStatus, AgentStepMode, AgentToolPolicy, ConversationExecutionRelation, DecisionPolicy,
@@ -46,21 +48,23 @@ pub use execution_authority::ExecutionAuthority;
 pub use fsname::sanitize_dir_segment;
 pub use hooks::{OnConversationDelete, OnTerminalDelete, RequirementCreator};
 pub use id::{
-    AgentExecutionAttemptId, AgentExecutionEventId, AgentExecutionId,
-    AgentExecutionParticipantId, AgentExecutionStepId, AgentExecutionTemplateId,
-    AgentExecutionTemplateParticipantId, AgentId, AttachmentId, ChannelId, ChannelSessionId,
-    ChannelUserId, CompanionId, CompanionLearnRunId, CompanionMemoryId, CompanionSessionWindowId,
-    CompanionSuggestionId, CompanionEvolutionFeedbackId, ConnectorCredentialId, ConversationArtifactId,
-    ConversationExecutionLinkId, ConversationId, CreationTaskId, CronJobId, CronJobRunId,
-    EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID, IdPrefixError,
-    IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId, MAX_ID_PREFIX_LEN, McpServerId,
+    AgentExecutionAttemptId, AgentExecutionId, AgentExecutionParticipantId,
+    AgentExecutionStepId, AgentExecutionTemplateId, AgentExecutionTemplateParticipantId,
+    AgentId, AttachmentId, ChannelPluginId, ChannelSessionId, ChannelUserId,
+    CompanionEventId, CompanionEvolutionFeedbackId, CompanionId, CompanionLearnRunId,
+    CompanionMemoryId, CompanionSessionWindowId, CompanionSkillId, CompanionSkillPatternId,
+    CompanionSuggestionId, ConnectorCredentialId,
+    ConversationArtifactId, ConversationId, CreationTaskId, CronJobId, CronJobRunId,
+    EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID,
+    IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
     LearningActivityId, LearningAttemptId, LearningConceptId, LearningCourseId,
     LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId,
-    MessageId, PrefixedIdError, PresetId, PresetTagId, ProviderId, PublicAgentAuditEntryId,
-    PublicAgentId, RemoteAgentId, RequirementId, TerminalId, UUID_STRING_LEN, UuidV7Error, UserId,
-    WebhookId, WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,
-    generate_prefixed_id, is_reserved_provider_id, validate_id_prefix, validate_uuidv7,
-    validate_prefixed_id,
+    McpServerId, MessageId,
+    PersistedArtifactId, PresetId, PresetTagId, PreviewSnapshotId, ProviderId,
+    PublicAgentAuditEntryId, PublicAgentId, RemoteAgentId, TerminalId, UUID_STRING_LEN,
+    RequirementId, UserId, UuidV7Error, WebhookId,
+    WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,
+    is_reserved_provider_id, validate_uuidv7,
 };
 pub use scoped_auth::{
     LOOPBACK_CAPABILITY_RENEW_PATH, LOOPBACK_CAPABILITY_RENEWAL_MARGIN_SECS,
@@ -72,6 +76,7 @@ pub use scoped_auth::{
     LoopbackSessionBinding, LoopbackSessionKind, unix_time_secs,
 };
 pub use pagination::PaginatedResult;
+pub use provider_lifecycle::{ProviderLifecycleBarrier, SharedProviderLifecycleBarrier};
 pub use provider_usage::{ProviderInUseDetails, ProviderUsage, ProviderUsageFeature};
 pub use timestamp::{TimestampMs, now_ms};
 pub use types::{CommandSpec, Confirmation, ConfirmationOption, EnvVar, ProviderWithModel};

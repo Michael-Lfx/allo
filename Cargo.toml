@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "apps/web", "apps/desktop"]
 
 [workspace.package]
-version = "0.2.30"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "local/nomifun-tauri"
@@ -212,6 +212,8 @@ libc = "0.2"
 lru = "0.18"
 url = "2"
 unicode-width = "0.2.2"
+unicode-normalization = "0.1"
+unicase = "2.9"
 crossterm = "0.29"
 is-terminal = "0.4"
 
@@ -263,7 +265,11 @@ debug = "line-tables-only"
 debug = false
 
 [profile.test]
-debug = "line-tables-only"
+# Test binaries in this workspace are unusually large on Windows. Even minimal
+# line tables produced hundreds of MiB of PDB data per integration target, so
+# keep the normal dev profile debuggable and make the high-volume test profile
+# artifact-light.
+debug = false
 
 [profile.test.package."*"]
 debug = false

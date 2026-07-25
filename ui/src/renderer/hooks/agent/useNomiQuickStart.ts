@@ -10,6 +10,7 @@ import { seedConversationCache } from '@/renderer/pages/conversation/utils/conve
 import { useGuidModelSelection } from '@/renderer/pages/guid/hooks/useGuidModelSelection';
 import { conversationTarget } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
+import { uuidv7 } from '@/common/utils/uuidv7';
 
 export interface NomiQuickStartOptions {
   /** Conversation title. */
@@ -55,7 +56,16 @@ export const useNomiQuickStart = () => {
           send
             ? sessionStorageKey('initial-message-nomi', target)
             : sessionStorageKey('draft', target),
-          JSON.stringify({ input: prompt })
+          JSON.stringify(
+            send
+              ? {
+                  conversation_id: conversation.id,
+                  initial_admission_epoch: 0,
+                  input: prompt,
+                  idempotency_key: uuidv7(),
+                }
+              : { input: prompt }
+          )
         );
         seedConversationCache(conversation);
         await navigate(`/conversation/${conversation.id}`);

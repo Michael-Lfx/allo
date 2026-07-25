@@ -109,9 +109,9 @@ const RequirementListView: React.FC<RequirementListViewProps> = ({
       >
         {items.map((item) => (
           <RequirementListRow
-            key={item.id}
+            key={item.requirement_id}
             item={item}
-            selected={selectedIds.has(item.id)}
+            selected={selectedIds.has(item.requirement_id)}
             onToggleSelect={onToggleSelect}
             onOpenDetail={onOpenDetail}
             onStatusChange={onStatusChange}

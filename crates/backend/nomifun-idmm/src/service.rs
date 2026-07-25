@@ -49,10 +49,9 @@ fn validate_target_id(kind: IdmmTargetKind, target_id: &str) -> Result<&str, App
 
 /// Map a persisted row to the API/WS `InterventionRecord` DTO.
 fn row_to_record(row: IdmmInterventionRow) -> Result<InterventionRecord, AppError> {
-    let id = IdmmInterventionId::parse(row.id)
-        .map_err(|error| AppError::Internal(format!("stored IDMM intervention id is invalid: {error}")))?;
     Ok(InterventionRecord {
-        id,
+        intervention_id: nomifun_common::IdmmInterventionId::parse(row.intervention_id)
+            .map_err(|error| AppError::Internal(format!("invalid stored intervention_id: {error}")))?,
         target_kind: row.target_kind,
         target_id: row.target_id,
         watch: row.watch,
@@ -259,10 +258,11 @@ impl IdmmService {
 
         match kind {
             IdmmTargetKind::Conversation => {
-                let blob = serde_json::to_value(cfg).map_err(|e| AppError::Internal(e.to_string()))?;
+                let blob =
+                    serde_json::to_string(cfg).map_err(|e| AppError::Internal(e.to_string()))?;
                 self.probe_deps
-                    .conversation_service
-                    .update_extra(target_id, serde_json::json!({ "idmm": blob }))
+                    .conversation_repo
+                    .update_idmm(validate_target_id(kind, target_id)?, Some(&blob))
                     .await?;
             }
             IdmmTargetKind::Terminal => {
@@ -463,11 +463,13 @@ impl IdmmService {
                 if !cfg.any_enabled() {
                     continue;
                 }
-                let shared = self.manager.shared_for(IdmmTargetKind::Conversation, &row.id);
+                let shared = self
+                    .manager
+                    .shared_for(IdmmTargetKind::Conversation, &row.conversation_id);
                 let intervening = shared.intervening.load(std::sync::atomic::Ordering::Relaxed);
                 out.push(IdmmBinding {
                     kind: IdmmTargetKind::Conversation,
-                    target_id: row.id.clone(),
+                    target_id: row.conversation_id.clone(),
                     enabled: true,
                     run_state: IdmmState::run_state(true, intervening),
                 });
@@ -475,7 +477,7 @@ impl IdmmService {
             if !page.has_more {
                 break;
             }
-            cursor = page.items.last().map(|r| r.id.clone());
+            cursor = page.items.last().map(|r| r.conversation_id.clone());
         }
 
         if let Some(term_repo) = &self.probe_deps.terminal_repo {

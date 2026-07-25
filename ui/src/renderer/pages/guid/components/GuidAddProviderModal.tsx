@@ -31,7 +31,7 @@ const GuidAddProviderModal = React.forwardRef<GuidAddProviderHandle, GuidAddProv
         const existing = (providers || []).some((item) => item.id === platform.id);
         if (existing) {
           const { id, ...body } = platform;
-          await ipcBridge.mode.updateProvider.invoke({ id, ...body });
+          await ipcBridge.mode.updateProvider.invoke({ provider_id: id, ...body });
         } else {
           await ipcBridge.mode.createProvider.invoke(platform);
         }

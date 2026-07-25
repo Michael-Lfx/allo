@@ -9,7 +9,7 @@ export type TurnPreviewItem = {
   answer: string;
   questionRaw: string;
   answerRaw: string;
-  messageId?: string;
+  messageId?: MessageId;
   msgId?: MessageId;
 };
 
