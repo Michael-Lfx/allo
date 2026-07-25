@@ -85,6 +85,7 @@ jobs:
           src/renderer/pages/conversation/Messages/errorIsolation.redteam.test.ts
           src/renderer/pages/conversation/platforms/acp/acpSendFailurePresentation.test.ts
           src/renderer/pages/conversation/platforms/localImageWorkspace.structure.test.ts
+          src/renderer/hooks/context/AuthContext.contract.test.ts
 
       - name: Type-check artifact event and renderer contracts
         working-directory: ui
@@ -199,11 +200,9 @@ jobs:
           cargo test -p nomifun-desktop webui --locked
 
       - name: Test embedded WebUI HTTP behavior without a sidecar
-        run: >-
-          cargo test -p nomifun-app
-          --test webui_lan_smoke
-          webui_lan_embedded_asset_source_needs_no_filesystem_shell
-          --locked
+        run: |
+          cargo test -p nomifun-app --test webui_lan_smoke webui_lan_embedded_asset_source_needs_no_filesystem_shell --locked
+          cargo test -p nomifun-app --test webui_lan_smoke webui_browser_login_contract_accepts_generated_credentials --locked
 
       - name: Install Bun for production asset verification
         uses: oven-sh/setup-bun@v2
