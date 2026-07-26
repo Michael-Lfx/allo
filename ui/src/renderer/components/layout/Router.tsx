@@ -1,21 +1,19 @@
 import React, { Suspense, useEffect } from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
-import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
-import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
-import { requiresCloudAuthGate, resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
-import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetSettings'));
 const SkillsSettingsPage = React.lazy(() => import('@renderer/pages/settings/SkillsSettingsPage'));
 const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
+const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
+const BrowserPage = React.lazy(() => import('@renderer/pages/browser'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
 const ExecutionEngineSettings = React.lazy(() => import('@renderer/pages/settings/AgentSettings'));
 const ExtensionSettingsPage = React.lazy(() => import('@renderer/pages/settings/ExtensionSettingsPage'));
@@ -34,56 +32,39 @@ const PublicCompanionRosterPage = React.lazy(() => import('@renderer/pages/publi
 const PublicAgentDetailPage = React.lazy(() => import('@renderer/pages/publicCompanion/PublicAgentDetailPage'));
 const KnowledgeListPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeListPage'));
 const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeDetailPage'));
-const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
-const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
-const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
-// TODO: workshop/assets stay deferred (no routes until explicitly published)
-// const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
-// const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
-// const AssetLibraryPage = React.lazy(() => import('@renderer/pages/assets'));
+const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
+const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
+const AssetLibraryPage = React.lazy(() => import('@renderer/pages/assets'));
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
-const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
-const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
-const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
-const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
-const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
-const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
-const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
-const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
+const ConversationShell = React.lazy(() => import('@renderer/pages/conversation/components/ConversationShell'));
 
-type RouteFallbackProps = {
-  Component: React.LazyExoticComponent<React.ComponentType>;
-  /** Full-viewport spinner for routes outside the app shell (login / companion). */
-  fullscreen?: boolean;
-};
-
-const RouteFallback: React.FC<RouteFallbackProps> = ({ Component, fullscreen = false }) => {
+const RouteFallback: React.FC<{ Component: React.LazyExoticComponent<React.ComponentType> }> = ({ Component }) => {
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={fullscreen ? <AppLoader /> : <RouteContentFallback />}>
+      <Suspense fallback={<AppLoader />}>
         <Component />
       </Suspense>
     </RouteErrorBoundary>
   );
 };
 
-const withRouteFallback = (
-  Component: React.LazyExoticComponent<React.ComponentType>,
-  options?: { fullscreen?: boolean }
-) => <RouteFallback Component={Component} fullscreen={options?.fullscreen} />;
+const withRouteFallback = (Component: React.LazyExoticComponent<React.ComponentType>) => (
+  <RouteFallback Component={Component} />
+);
 
 const SessionShellRoute: React.FC = () => {
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
-  // Eager shell keeps sider mounted across /guid ↔ conversation; only page chunks suspend.
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <ConversationShell />
+      <Suspense fallback={<AppLoader />}>
+        <ConversationShell />
+      </Suspense>
     </RouteErrorBoundary>
   );
 };
@@ -132,30 +113,14 @@ const getHashRouteRedirectUrl = () => {
 };
 
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
-  const { status: localStatus } = useAuth();
-  const { status: cloudStatus, ready: cloudReady } = useCloudAuth();
-  const cloudGate = requiresCloudAuthGate();
-  const authChecking =
-    localStatus === 'checking' || (cloudGate && (!cloudReady || cloudStatus === 'checking'));
+  const { status } = useAuth();
 
-  if (!authChecking && localStatus !== 'authenticated') {
+  if (status === 'checking') {
+    return <AppLoader />;
+  }
+
+  if (status !== 'authenticated') {
     return <Navigate to='/login' replace />;
-  }
-
-  // Desktop: Flowy account is the product key. WebUI: local instance admin is enough.
-  if (cloudGate && !authChecking && cloudStatus !== 'authenticated') {
-    return <Navigate to='/cloud-login' replace />;
-  }
-
-  // Keep chrome mounted while auth resolves; only the outlet region shows a shell-safe loader.
-  if (authChecking) {
-    return (
-      <>
-        {React.cloneElement(layout as React.ReactElement<{ children?: React.ReactNode }>, {
-          children: <AppLoader fill />,
-        })}
-      </>
-    );
   }
 
   return (
@@ -211,8 +176,7 @@ const CompanionNavigateListener: React.FC = () => {
 };
 
 const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
-  const { status: localStatus } = useAuth();
-  const { status: cloudStatus } = useCloudAuth();
+  const { status } = useAuth();
   const hashRouteRedirectUrl = getHashRouteRedirectUrl();
 
   if (hashRouteRedirectUrl) {
@@ -225,32 +189,11 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
       <Routes>
         <Route
           path='/login'
-          element={
-            localStatus === 'authenticated' ? (
-              <Navigate
-                to={resolvePostLocalAuthPath(cloudStatus === 'authenticated')}
-                replace
-              />
-            ) : (
-              withRouteFallback(LoginPage, { fullscreen: true })
-            )
-          }
-        />
-        <Route
-          path='/cloud-login'
-          element={
-            localStatus !== 'authenticated' ? (
-              <Navigate to='/login' replace />
-            ) : !requiresCloudAuthGate() ? (
-              <Navigate to='/guid' replace />
-            ) : (
-              withRouteFallback(CloudLoginPage, { fullscreen: true })
-            )
-          }
+          element={status === 'authenticated' ? <Navigate to='/guid' replace /> : withRouteFallback(LoginPage)}
         />
         {/* The desktop-companion window route: fullscreen transparent, no app layout/sidebar. */}
-        <Route path='/companion' element={withRouteFallback(CompanionPage, { fullscreen: true })} />
-        <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
+        <Route path='/companion' element={withRouteFallback(CompanionPage)} />
+        <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage)} />
         <Route element={<ProtectedLayout layout={layout} />}>
           <Route index element={<Navigate to='/guid' replace />} />
           {/* Models, presets, skills, and MCP are independent top-level capabilities. */}
@@ -258,10 +201,9 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
+          <Route path='/browser' element={withRouteFallback(BrowserPage)} />
           <Route path='/presets' element={withRouteFallback(PresetSettings)} />
           <Route path='/skills' element={withRouteFallback(SkillsSettingsPage)} />
-          {/* Legacy assistant route → presets */}
-          <Route path='/assistants' element={<Navigate to='/presets' replace />} />
           {/* Session section — the secondary sidebar (ContentSider) persists across these routes */}
           <Route element={<SessionShellRoute />}>
             <Route path='/guid' element={withRouteFallback(Guid)} />
@@ -277,34 +219,16 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/tools' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
           <Route path='/settings/webui' element={<Navigate to='/open-capabilities' replace />} />
-          <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
-          <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
-          <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />
           <Route path='/settings/agent-runtime' element={<Navigate to='/settings/execution-engines?tab=runtime' replace />} />
           <Route path='/settings/browser-use' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/computer-use' element={withRouteFallback(SystemSettings)} />
-          <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />
-          <Route path='/settings/insights' element={withRouteFallback(InsightsSettings)} />
-          <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
-          <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
-          <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
-          {/* Feature pages embedded inside Settings */}
-          <Route path='/settings/nomi' element={withRouteFallback(NomiConfigPage)} />
-          <Route path='/settings/public-companions' element={withRouteFallback(PublicCompanionRosterPage)} />
-          <Route path='/settings/learn' element={withRouteFallback(LearningPage)} />
-          <Route path='/settings/requirements' element={withRouteFallback(RequirementsLayout)}>
-            <Route index element={withRouteFallback(WorkspacePage)} />
-            <Route path='extensions' element={withRouteFallback(ExtensionsPage)} />
-            <Route path='sources' element={withRouteFallback(SourcesPage)} />
-          </Route>
           <Route path='/settings/ext/:tabId' element={withRouteFallback(ExtensionSettingsPage)} />
           <Route path='/settings/webhook' element={<Navigate to='/requirements/extensions?tab=notify' replace />} />
           <Route path='/settings' element={<Navigate to='/settings/system' replace />} />
           <Route path='/test/components' element={withRouteFallback(ComponentsShowcase)} />
-          <Route path='/test/commercial-slice' element={withRouteFallback(CommercialSlicePage)} />
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
@@ -327,30 +251,13 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/public-companions/:public_agent_id' element={withRouteFallback(PublicAgentDetailPage)} />
           <Route path='/knowledge' element={withRouteFallback(KnowledgeListPage)} />
           <Route path='/knowledge/:id' element={withRouteFallback(KnowledgeDetailPage)} />
-          <Route path='/learn' element={withRouteFallback(LearningPage)} />
-          <Route path='/learn/:id' element={withRouteFallback(LearningPage)} />
-          <Route path='/video-generation' element={withRouteFallback(VideoGenerationListPage)} />
-          <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
-          {/* workshop/assets deferred — keep pages in tree but unrouted */}
-          {/*
+          {/* 资产库 (Asset Library) — platform-level management of workshop assets. */}
           <Route path='/assets' element={withRouteFallback(AssetLibraryPage)} />
+          {/* 创意工坊 (Creative Workshop) — infinite-canvas AI visual creation. */}
           <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />
           <Route path='/workshop/:id' element={withRouteFallback(WorkshopCanvasPage)} />
-          */}
         </Route>
-        <Route
-          path='*'
-          element={
-            <Navigate
-              to={
-                localStatus !== 'authenticated'
-                  ? '/login'
-                  : resolvePostLocalAuthPath(cloudStatus === 'authenticated')
-              }
-              replace
-            />
-          }
-        />
+        <Route path='*' element={<Navigate to={status === 'authenticated' ? '/guid' : '/login'} replace />} />
       </Routes>
     </HashRouter>
   );

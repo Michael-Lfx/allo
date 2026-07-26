@@ -140,7 +140,7 @@ pub async fn open_database_for_backup(path: &Path) -> Result<Database, DbError> 
 }
 
 async fn validate_restorable_database_contract(pool: &SqlitePool) -> Result<(), DbError> {
-    validate_exact_v3_migration_lineage(pool).await?;
+    validate_current_migration_lineage(pool).await?;
     crate::id_schema_contract::validate_id_schema_contract(pool).await?;
     crate::id_schema_contract::validate_id_data_contract(pool).await?;
 
@@ -184,7 +184,11 @@ async fn validate_restorable_database_contract(pool: &SqlitePool) -> Result<(), 
     Ok(())
 }
 
-async fn validate_exact_v3_migration_lineage(pool: &SqlitePool) -> Result<(), DbError> {
+/// Require the complete migration lineage shipped with this build.
+///
+/// Backup and restore artifacts must already be Current; they are preservation
+/// boundaries and must not be mutated as part of validation.
+pub async fn validate_current_migration_lineage(pool: &SqlitePool) -> Result<(), DbError> {
     match inspect_supported_migration_lineage(pool).await? {
         MigrationLineageStatus::Current => Ok(()),
         MigrationLineageStatus::UpgradeRequired => Err(DbError::Init(
@@ -196,10 +200,9 @@ async fn validate_exact_v3_migration_lineage(pool: &SqlitePool) -> Result<(), Db
 /// Validate that the applied migration rows are an exact, non-empty prefix of
 /// the migrations embedded in this binary.
 ///
-/// This is intentionally less strict than the backup/restore contract:
-/// startup must admit an older supported prefix so [`init_database`] can apply
-/// the missing suffix. It still rejects every lineage that the migrator cannot
-/// authenticate, including unknown future versions and edited checksums.
+/// Startup may admit an older supported prefix so [`init_database`] can apply
+/// the missing suffix. This still rejects unknown versions, gaps, failed rows,
+/// and checksum mismatches before the database is opened for migration.
 pub async fn inspect_supported_migration_lineage(
     pool: &SqlitePool,
 ) -> Result<MigrationLineageStatus, DbError> {

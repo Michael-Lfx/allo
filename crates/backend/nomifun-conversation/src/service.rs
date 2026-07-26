@@ -5,10 +5,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use dashmap::DashMap;
 use nomifun_ai_agent::artifact_store::ArtifactStore;
-use nomifun_ai_agent::capability::{SessionEndContext, SessionEndReason, SessionLifecycleCoordinator};
-use nomifun_ai_agent::conversation_title_completer::ConversationTitleCompleter;
 use nomifun_ai_agent::protocol::events::AgentStreamEvent;
 use nomifun_ai_agent::types::{AgentRuntimeBuildOptions, SendMessageData};
 use nomifun_ai_agent::{AgentRuntimeHandle, AgentRuntimeRegistry, TurnStopReason};
@@ -718,27 +715,6 @@ pub(crate) fn parse_conv_id(id: &str) -> Result<&str, nomifun_common::AppError> 
         .map_err(|_| nomifun_common::AppError::NotFound(format!("conversation {id}")))
 }
 
-fn rows_to_session_end_messages(rows: &[MessageRow]) -> Vec<serde_json::Value> {
-    rows.iter()
-        .filter(|row| !row.hidden)
-        .map(|row| {
-            let role = match row.position.as_deref() {
-                Some("left") => "assistant",
-                _ => "user",
-            };
-            let content = serde_json::from_str::<serde_json::Value>(&row.content)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("content")
-                        .and_then(|c| c.as_str().map(str::to_owned))
-                })
-                .unwrap_or_else(|| row.content.clone());
-            serde_json::json!({ "role": role, "content": content })
-        })
-        .collect()
-}
-
 fn parse_message_id(id: &str) -> Result<&str, AppError> {
     MessageId::try_from(id)
         .map(|_| id)
@@ -1057,11 +1033,6 @@ pub struct ConversationService {
     /// —— fail-safe,所以不跑故障转移的上下文(测试、纯 webui)无需任何改动。
     failover_provider_repo: Arc<RwLock<Option<Arc<dyn nomifun_db::IProviderRepository>>>>,
     failover_client_prefs: Arc<RwLock<Option<Arc<dyn nomifun_db::IClientPreferenceRepository>>>>,
-    /// LLM completer for conversation auto-titling (wired post-construction).
-    title_completer: Arc<RwLock<Option<Arc<dyn ConversationTitleCompleter>>>>,
-    llm_title_fired: Arc<DashMap<String, ()>>,
-    /// POI/insights session lifecycle coordinator (wired post-construction).
-    session_lifecycle: Arc<RwLock<Option<Arc<SessionLifecycleCoordinator>>>>,
     /// Mandatory read-side for the explicit Conversation↔Execution relation.
     /// Production assembly shares one repository-backed instance across every
     /// ConversationService; isolated tests must opt into the explicit no-op
@@ -2153,9 +2124,6 @@ impl ConversationService {
             supervision_hook: Arc::new(RwLock::new(None)),
             failover_provider_repo: Arc::new(RwLock::new(None)),
             failover_client_prefs: Arc::new(RwLock::new(None)),
-            title_completer: Arc::new(RwLock::new(None)),
-            llm_title_fired: Arc::new(DashMap::new()),
-            session_lifecycle: Arc::new(RwLock::new(None)),
             execution_conversation_boundary,
         }
     }
@@ -2231,110 +2199,6 @@ impl ConversationService {
         if let Ok(mut guard) = self.delete_hooks.write() {
             guard.push(hook);
         }
-    }
-
-    /// Wire the LLM completer for conversation auto-titling. Same slot pattern
-    /// as `with_supervision_hook` — called by `nomifun-app` after construction.
-    pub fn with_title_completer(&self, completer: Arc<dyn ConversationTitleCompleter>) {
-        if let Ok(mut g) = self.title_completer.write() {
-            *g = Some(completer);
-        }
-    }
-
-    /// Wire POI/insights session lifecycle (prefetch touch + session-end pipeline).
-    pub fn with_session_lifecycle(&self, coordinator: Arc<SessionLifecycleCoordinator>) {
-        if let Ok(mut guard) = self.session_lifecycle.write() {
-            *guard = Some(coordinator);
-        }
-    }
-
-    fn session_lifecycle_coordinator(&self) -> Option<Arc<SessionLifecycleCoordinator>> {
-        self.session_lifecycle.read().ok().and_then(|g| g.clone())
-    }
-
-    async fn on_user_message_lifecycle(
-        &self,
-        conversation_id: &str,
-        user_text: &str,
-        conversation_row: &ConversationRow,
-    ) {
-        let Some(coordinator) = self.session_lifecycle_coordinator() else {
-            return;
-        };
-        let message_count = match self
-            .conversation_repo
-            .get_messages(conversation_id, 1, 5000, SortOrder::Asc)
-            .await
-        {
-            Ok(page) => page.items.len(),
-            Err(err) => {
-                warn!(
-                    conversation_id,
-                    error = %ErrorChain(&err),
-                    "session_lifecycle: failed to count messages for proactive extraction"
-                );
-                return;
-            }
-        };
-        let session_llm_model =
-            crate::runtime_options::flowy_cloud_model_from_conversation_row(conversation_row);
-        coordinator
-            .on_user_message(
-                conversation_id,
-                user_text,
-                message_count,
-                session_llm_model.as_deref(),
-            )
-            .await;
-    }
-
-    /// Load conversation messages for proactive POI / insights extraction.
-    pub async fn load_extraction_messages(
-        &self,
-        conversation_id: &str,
-    ) -> Option<Vec<serde_json::Value>> {
-        let conv_id = parse_conv_id(conversation_id).ok()?;
-        let page = self
-            .conversation_repo
-            .get_messages(conv_id, 1, 5000, SortOrder::Asc)
-            .await
-            .ok()?;
-        Some(rows_to_session_end_messages(&page.items))
-    }
-
-    /// Non-hidden message count for threshold checks (background idle scanner).
-    pub async fn extraction_message_count(&self, conversation_id: &str) -> Option<usize> {
-        self.load_extraction_messages(conversation_id)
-            .await
-            .map(|msgs| msgs.len())
-    }
-
-    async fn end_session_lifecycle(&self, conversation_id: &str, reason: SessionEndReason) {
-        let Some(coordinator) = self.session_lifecycle_coordinator() else {
-            return;
-        };
-        let messages = match self
-            .conversation_repo
-            .get_messages(conversation_id, 1, 5000, SortOrder::Asc)
-            .await
-        {
-            Ok(page) => rows_to_session_end_messages(&page.items),
-            Err(err) => {
-                warn!(
-                    conversation_id,
-                    error = %ErrorChain(&err),
-                    "session_lifecycle: failed to load messages for session end"
-                );
-                return;
-            }
-        };
-        let ctx = SessionEndContext {
-            conversation_id: conversation_id.to_owned(),
-            session_id: conversation_id.to_owned(),
-            messages,
-            reason,
-        };
-        coordinator.run_session_end(&ctx).await;
     }
 
     /// The single source of truth for `msg_id` values across the backend.
@@ -3041,18 +2905,9 @@ impl ConversationService {
     }
 
     pub(crate) fn runtime_handle(&self, conversation_id: &str) -> Result<AgentRuntimeHandle, AppError> {
-        self.optional_runtime_handle(conversation_id).ok_or_else(|| {
-            AppError::NotFound(format!("No active agent for conversation '{conversation_id}'"))
-        })
-    }
-
-    /// Soft reads (mode / model / slash-commands / usage) use this so a
-    /// missing runtime returns empty defaults instead of NotFound.
-    pub(crate) fn optional_runtime_handle(
-        &self,
-        conversation_id: &str,
-    ) -> Option<AgentRuntimeHandle> {
-        self.runtime_registry.get_runtime(conversation_id)
+        self.runtime_registry
+            .get_runtime(conversation_id)
+            .ok_or_else(|| AppError::NotFound(format!("No active agent for conversation '{conversation_id}'")))
     }
 
     pub async fn runtime_summary_for(&self, conversation_id: &str) -> ConversationRuntimeSummary {
@@ -5172,9 +5027,6 @@ impl ConversationService {
         let managed_temp_workspace =
             managed_temp_workspace_path_from_row(&self.workspace_root, &existing)?;
 
-        self.end_session_lifecycle(id, SessionEndReason::Deleted)
-            .await;
-
         let delete_rx = self.spawn_conversation_delete_owner(
             deletion_guard,
             user_id.to_owned(),
@@ -5298,9 +5150,6 @@ impl ConversationService {
         }
         self.runtime_state.clear_knowledge_signature(id);
         self.runtime_state.clear_turn_tokens(id);
-
-        self.end_session_lifecycle(id, SessionEndReason::Reset)
-            .await;
 
         // The repository transaction also clears ACP resume identity/context
         // usage and absorbs accepted turn receipts. Keeping those mutations in
@@ -8137,9 +7986,6 @@ impl ConversationService {
             info!(msg_id = %user_msg_id, "User message persisted");
         }
 
-        self.on_user_message_lifecycle(conversation_id, &req.content, &row)
-            .await;
-
         if existing_user_message.is_none() {
             self.user_events.send_to_user(
                 user_id,
@@ -8204,8 +8050,6 @@ impl ConversationService {
         let runtime_registry = Arc::clone(runtime_registry);
         let durable_operation_id = durable_operation_id.map(str::to_owned);
         let durable_kind = durable_kind.map(str::to_owned);
-        let autotitle_user_content = req.content.clone();
-        let autotitle_conversation_id = user_msg.conversation_id.clone();
         // Only an active attempt relation needs per-turn token accounting. The
         // relation repository is authoritative; Conversation extra carries no
         // execution identity. Ordinary chat/companion turns therefore create no
@@ -8458,7 +8302,6 @@ impl ConversationService {
                 SendMessageData {
                     content: req.content,
                     msg_id: first_turn_msg_id.clone(),
-                    source_message_id: Some(source_user_message_id.clone()),
                     files: req.files,
                     inject_skills: req.inject_skills,
                     origin: origin.clone(),
@@ -8880,7 +8723,6 @@ impl ConversationService {
                     SendMessageData {
                         content: outcome.system_responses.join("\n"),
                         msg_id: next_turn_msg_id.clone(),
-                        source_message_id: Some(source_user_message_id.clone()),
                         files: vec![],
                         inject_skills: vec![],
                         // A system-driven continuation is not the human owner
@@ -8890,18 +8732,6 @@ impl ConversationService {
                     },
                     next_turn_msg_id,
                 ));
-            }
-
-            {
-                let title_service = service.clone();
-                tokio::spawn(async move {
-                    title_service
-                        .maybe_autotitle(
-                            &autotitle_conversation_id,
-                            autotitle_user_content,
-                        )
-                        .await;
-                });
             }
 
             let (ok, text, error) = durable_completion.unwrap_or_else(|| {
@@ -10276,59 +10106,6 @@ impl ConversationService {
         let (from_created_at, from_id) =
             (target.created_at, target.message_id.clone());
 
-        // An editable terminal conversation is not required to keep a
-        // process-local runtime alive. App restart, Stop, idle eviction, and
-        // runtime recovery all legitimately leave this registry cold. Restore
-        // through the same execution preparation path as a normal send, while
-        // still outside the durable destructive receipt/fence.
-        let agent = if let Some(agent) = runtime_registry.get_runtime(conv_id) {
-            agent
-        } else {
-            let (runtime_options, knowledge_signature) = self
-                .prepare_runtime_options_for_execution(
-                    &row,
-                    runtime_registry,
-                    Some(&preparation_token),
-                )
-                .await?;
-            runtime_build_lease.ensure_active()?;
-            let stored_workspace = runtime_options.workspace.clone();
-            let agent = runtime_registry
-                .get_or_create_runtime_for_preparation(
-                    conv_id,
-                    preparation_token.clone(),
-                    runtime_options,
-                )
-                .await?;
-            if runtime_build_lease.is_cancelled() {
-                Self::terminate_runtime_until_confirmed(
-                    runtime_registry,
-                    conv_id,
-                    AgentKillReason::UserCancelled,
-                    "cancelled edit/resubmit runtime preparation",
-                )
-                .await;
-                return Err(AppError::Conflict(format!(
-                    "conversation {conversation_id} runtime preparation was cancelled"
-                )));
-            }
-            self.maybe_persist_workspace(
-                conv_id,
-                &stored_workspace,
-                agent.workspace(),
-            )
-            .await?;
-            self.commit_runtime_knowledge_signature(conv_id, knowledge_signature);
-            agent
-        };
-        runtime_build_lease.ensure_active()?;
-
-        // Legacy/compacted sessions do not contain enough information to infer
-        // a safe transcript boundary. Fail before claiming the durable edit
-        // receipt, preserving both the database transcript and retry freedom.
-        agent.ensure_can_rewind_last_turn(message_id).await?;
-        runtime_build_lease.ensure_active()?;
-
         // Snapshot the exact terminal generation immediately before claiming
         // the destructive workflow. The repository consumes this epoch while
         // inserting the receipt and fence in one SQLite writer transaction, so
@@ -10493,22 +10270,12 @@ impl ConversationService {
         let preparation_result: Result<(), AppError> = async {
             runtime_build_lease.ensure_active()?;
             runtime_build_lease.promote_to_turn_execution()?;
+            let agent = self.runtime_handle(conversation_id)?;
             edit_admission_custodian.mark_destructive_runtime_mutation()?;
-            agent.rewind_last_turn(message_id).await?;
-            runtime_build_lease.ensure_active()?;
-            self.cancel_and_wait_for_turn_writebacks(conv_id).await?;
+            agent.rewind_last_turn().await?;
             runtime_build_lease.ensure_active()?;
             self.conversation_repo
-                .truncate_messages_for_admitted_edit(
-                    user_id,
-                    conv_id,
-                    &operation_id,
-                    &request_payload,
-                    admitted_admission_epoch,
-                    from_created_at,
-                    &from_id,
-                    now_ms(),
-                )
+                .delete_messages_from(conv_id, from_created_at, &from_id)
                 .await?;
             runtime_build_lease.ensure_active()?;
             Ok(())
@@ -10665,7 +10432,7 @@ impl ConversationService {
 
         // 4. 取在飞 agent 并回退最后一个 turn（内部会先停掉在飞 turn）。
         let agent = self.runtime_handle(conversation_id)?;
-        agent.rewind_last_turn(message_id).await?;
+        agent.rewind_last_turn().await?;
         runtime_build_lease.ensure_active()?;
 
         // The completed old turn may already own a detached knowledge
@@ -11340,9 +11107,6 @@ impl ConversationService {
         self.runtime_state
             .forget_cancelled_runtime_builds(conversation_id, &cancelled_build_ids);
 
-        self.end_session_lifecycle(conversation_id, SessionEndReason::NewSession)
-            .await;
-
         // Reset an existing idle runtime in place. A cold Nomi conversation
         // instead uses the registry's factory-admission barrier and exact
         // created_at owner token; manufacturing a runtime just to erase the
@@ -11450,9 +11214,6 @@ impl ConversationService {
         }
         self.runtime_state.clear_knowledge_signature(conversation_id);
         self.runtime_state.clear_turn_tokens(conversation_id);
-
-        self.end_session_lifecycle(conversation_id, SessionEndReason::ClearMessages)
-            .await;
 
         match self
             .conversation_repo
@@ -12395,114 +12156,6 @@ impl ConversationService {
         Ok(())
     }
 
-    async fn maybe_autotitle(&self, conversation_id: &str, first_user_content: String) {
-        if self
-            .llm_title_fired
-            .insert(conversation_id.to_owned(), ())
-            .is_some()
-        {
-            return;
-        }
-        let release_once_guard = || {
-            self.llm_title_fired.remove(conversation_id);
-        };
-
-        let completer = match self.title_completer.read().ok().and_then(|guard| guard.clone()) {
-            Some(completer) => completer,
-            None => {
-                release_once_guard();
-                return;
-            }
-        };
-
-        let Ok(Some(row)) = self.conversation_repo.get(conversation_id).await else {
-            release_once_guard();
-            return;
-        };
-        if serde_json::from_str::<serde_json::Value>(&row.extra)
-            .ok()
-            .and_then(|extra| {
-                extra
-                    .get("autoTitleState")
-                    .and_then(|state| state.as_str())
-                    .map(str::to_owned)
-            })
-            .as_deref()
-            == Some("done")
-        {
-            return;
-        }
-
-        let user_snippet = first_user_content.chars().take(500).collect::<String>();
-        let assistant_snippet = self
-            .conversation_repo
-            .get_messages(conversation_id, 1, 100, SortOrder::Asc)
-            .await
-            .map(|result| {
-                result
-                    .items
-                    .into_iter()
-                    .find(|message| {
-                        message.position.as_deref() == Some("left")
-                            && message.r#type == "text"
-                            && !message.hidden
-                    })
-                    .and_then(|message| {
-                        serde_json::from_str::<serde_json::Value>(&message.content)
-                            .ok()
-                            .and_then(|value| {
-                                value
-                                    .get("content")
-                                    .and_then(|content| content.as_str())
-                                    .map(str::to_owned)
-                            })
-                    })
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        let assistant_snippet = assistant_snippet.chars().take(500).collect::<String>();
-        let content = if assistant_snippet.is_empty() {
-            user_snippet.clone()
-        } else {
-            format!("User: {user_snippet}\n\nAssistant: {assistant_snippet}")
-        };
-        let title = match completer.summarize(&content).await {
-            Ok(title) if !title.is_empty() => title,
-            Ok(_) | Err(_) => crate::title::fallback_title_from_first_message(
-                &user_snippet,
-                crate::title::TITLE_MAX_CHARS,
-            ),
-        };
-        if title.is_empty() {
-            release_once_guard();
-            return;
-        }
-
-        let new_extra = match serde_json::from_str::<serde_json::Value>(&row.extra) {
-            Ok(mut extra) => {
-                extra["autoTitleState"] = serde_json::json!("done");
-                serde_json::to_string(&extra).unwrap_or_else(|_| row.extra.clone())
-            }
-            Err(_) => row.extra.clone(),
-        };
-        let update = ConversationRowUpdate {
-            name: Some(title),
-            extra: Some(new_extra),
-            updated_at: Some(now_ms()),
-            ..Default::default()
-        };
-        if let Err(error) = self.conversation_repo.update(conversation_id, &update).await {
-            warn!(
-                conversation_id,
-                error = %ErrorChain(&error),
-                "conversation auto-title update failed"
-            );
-            release_once_guard();
-            return;
-        }
-        self.broadcast_list_changed(&row.user_id, conversation_id, "updated", None);
-    }
-
     /// Broadcast a `conversation.listChanged` WebSocket event.
     pub(crate) fn broadcast_list_changed(
         &self,
@@ -13346,7 +12999,6 @@ mod tests {
             excluded_auto_skills: Vec::new(),
             knowledge_policy: Default::default(),
             knowledge_base_ids: Vec::new(),
-            mcp_server_ids: Vec::new(),
             warnings: Vec::new(),
         }
     }

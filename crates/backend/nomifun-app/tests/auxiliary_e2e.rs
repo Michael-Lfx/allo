@@ -16,43 +16,29 @@ const MISSING_CONVERSATION_ID: &str = "0190f5fe-7c00-7a00-8abc-012345679998";
 // ── Helpers ─────────────────────────────────────────────────────
 
 fn create_conv_body(name: &str, agent_type: &str) -> serde_json::Value {
-    if agent_type == "acp" {
-        json!({
-            "type": agent_type,
-            "name": name,
-            "extra": {
-                "agent_id": "0190f5fe-7c00-7a00-8000-000000000103",
-                "workspace": "/project",
-                "backend": "gemini"
-            }
-        })
+    let extra = if agent_type == "acp" {
+        common::acp_extra_with_workspace("/project")
     } else {
-        json!({
-            "type": agent_type,
-            "name": name,
-            "extra": { "workspace": "/project" }
-        })
-    }
+        json!({ "workspace": "/project" })
+    };
+    json!({
+        "type": agent_type,
+        "name": name,
+        "extra": extra
+    })
 }
 
 fn create_conv_body_with_workspace(name: &str, agent_type: &str, workspace: &str) -> serde_json::Value {
-    if agent_type == "acp" {
-        json!({
-            "type": agent_type,
-            "name": name,
-            "extra": {
-                "agent_id": "0190f5fe-7c00-7a00-8000-000000000103",
-                "workspace": workspace,
-                "backend": "gemini"
-            }
-        })
+    let extra = if agent_type == "acp" {
+        common::acp_extra_with_workspace(workspace)
     } else {
-        json!({
-            "type": agent_type,
-            "name": name,
-            "extra": { "workspace": workspace }
-        })
-    }
+        json!({ "workspace": workspace })
+    };
+    json!({
+        "type": agent_type,
+        "name": name,
+        "extra": extra
+    })
 }
 
 async fn create_conversation_with_workspace(
@@ -71,15 +57,10 @@ async fn create_conversation_with_workspace(
         csrf,
     );
     let resp = app.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
     let json = common::body_json(resp).await;
-    assert!(
-        status.is_success(),
-        "create conversation failed ({status}): {json}"
-    );
     json["data"]["conversation_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("missing conversation_id in {json}"))
+        .unwrap_or_else(|| panic!("conversation creation failed: {json}"))
         .to_owned()
 }
 
@@ -92,15 +73,10 @@ async fn create_conversation(app: &mut axum::Router, token: &str, csrf: &str, na
         csrf,
     );
     let resp = app.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
     let json = common::body_json(resp).await;
-    assert!(
-        status.is_success(),
-        "create conversation failed ({status}): {json}"
-    );
     json["data"]["conversation_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("missing conversation_id in {json}"))
+        .unwrap_or_else(|| panic!("conversation creation failed: {json}"))
         .to_owned()
 }
 
@@ -387,68 +363,6 @@ async fn slash_commands_no_active_task() {
 
     let req = get_with_token(&format!("/api/conversations/{conv_id}/slash-commands"), &token);
     let resp = app.oneshot(req).await.unwrap();
-    // No active agent → empty list (soft read)
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert!(json["data"].as_array().unwrap().is_empty());
-}
-
-// ── Soft reads: mode / model / usage (no runtime → empty defaults) ─
-
-#[tokio::test]
-async fn get_mode_no_active_runtime_returns_default() {
-    let (mut app, services) = build_app().await;
-    let (token, csrf) = setup_owner(&mut app, &services).await;
-    let conv_id = create_conversation(&mut app, &token, &csrf, "Mode Soft", "acp").await;
-
-    let req = get_with_token(&format!("/api/conversations/{conv_id}/mode"), &token);
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["data"]["mode"], "default");
-    assert_eq!(json["data"]["initialized"], false);
-}
-
-#[tokio::test]
-async fn get_model_no_active_runtime_returns_null() {
-    let (mut app, services) = build_app().await;
-    let (token, csrf) = setup_owner(&mut app, &services).await;
-    let conv_id = create_conversation(&mut app, &token, &csrf, "Model Soft", "acp").await;
-
-    let req = get_with_token(&format!("/api/conversations/{conv_id}/model"), &token);
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert!(json["data"]["model_info"].is_null());
-}
-
-#[tokio::test]
-async fn get_usage_no_active_runtime_returns_null() {
-    let (mut app, services) = build_app().await;
-    let (token, csrf) = setup_owner(&mut app, &services).await;
-    let conv_id = create_conversation(&mut app, &token, &csrf, "Usage Soft", "acp").await;
-
-    let req = get_with_token(&format!("/api/conversations/{conv_id}/usage"), &token);
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert!(json["data"].is_null());
-}
-
-#[tokio::test]
-async fn set_mode_no_active_runtime_still_404() {
-    let (mut app, services) = build_app().await;
-    let (token, csrf) = setup_owner(&mut app, &services).await;
-    let conv_id = create_conversation(&mut app, &token, &csrf, "Mode Write", "acp").await;
-
-    let req = json_with_token(
-        "PUT",
-        &format!("/api/conversations/{conv_id}/mode"),
-        json!({ "mode": "code" }),
-        &token,
-        &csrf,
-    );
-    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
@@ -502,7 +416,11 @@ async fn confirm_call_no_task() {
     let req = json_with_token(
         "POST",
         &format!("/api/conversations/{conv_id}/confirmations/call-1/confirm"),
-        json!({ "msg_id": "msg-1", "data": { "value": "allow" }, "always_allow": false }),
+        json!({
+            "msg_id": "0190f5fe-7c00-7a00-8abc-012345678901",
+            "data": { "value": "allow" },
+            "always_allow": false
+        }),
         &token,
         &csrf,
     );

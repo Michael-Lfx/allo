@@ -246,8 +246,10 @@ export const useGuidAgentSelection = ({
   const selectedAgentInfo = useMemo(() => {
     return findAgentByKey(selectedAgentKey);
   }, [selectedAgentKey, availableAgents, presets]);
-  const is_presetAgent = Boolean(selectedAgentInfo?.is_preset);
-  const is_presetAgentPending = selectedAgentKey.startsWith('preset:') && !is_presetAgent;
+  // The key is the durable user intent. Catalog metadata may revalidate, but
+  // that must never silently downgrade a selected preset to a bare Agent.
+  const is_presetAgent = selectedAgentKey.startsWith('preset:');
+  const is_presetAgentPending = selectedAgentKey.startsWith('preset:') && !Boolean(selectedAgentInfo?.is_preset);
 
   // --- SWR: Fetch detected execution engines (shared cache) ---
   const { data: availableAgentsData } = useSWR<AvailableAgent[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);

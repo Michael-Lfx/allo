@@ -7,8 +7,8 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use common::{
-    body_json, build_app, build_isolated_app_with_mock_agents, delete_with_token, get_request,
-    get_with_token, json_with_token, setup_and_login,
+    acp_extra, acp_extra_with_workspace, body_json, build_app, delete_with_token,
+    get_request, get_with_token, json_with_token, setup_and_login,
 };
 
 const MISSING_CONVERSATION_ID: &str = "0190f5fe-7c00-7a00-8abc-012345679999";
@@ -19,15 +19,25 @@ fn create_body(name: &str) -> serde_json::Value {
     json!({
         "type": "acp",
         "name": name,
-        "extra": { "workspace": "/project" }
+        "extra": acp_extra_with_workspace("/project")
     })
 }
 
 fn create_body_with_extra(name: &str, extra: serde_json::Value) -> serde_json::Value {
+    let mut canonical_extra = acp_extra();
+    canonical_extra
+        .as_object_mut()
+        .expect("ACP fixture extra must be an object")
+        .extend(
+            extra
+                .as_object()
+                .expect("ACP fixture override must be an object")
+                .clone(),
+        );
     json!({
         "type": "acp",
         "name": name,
-        "extra": extra
+        "extra": canonical_extra
     })
 }
 
@@ -86,7 +96,7 @@ async fn t1_2_create_various_agent_types() {
     for agent_type in types {
         let body = json!({
             "type": agent_type,
-            "extra": {}
+            "extra": if agent_type == "acp" { acp_extra() } else { json!({}) }
         });
         let req = json_with_token("POST", "/api/conversations", body, &token, &csrf);
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -106,7 +116,7 @@ async fn t1_3_create_with_optional_fields() {
         "name": "Telegram Bot",
         "source": "telegram",
         "channel_chat_id": "user:123",
-        "extra": {}
+        "extra": acp_extra()
     });
     let req = json_with_token("POST", "/api/conversations", body, &token, &csrf);
     let resp = app.oneshot(req).await.unwrap();
@@ -132,7 +142,7 @@ async fn t1_4_create_missing_required_field() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // model is optional — omitting it should succeed
-    let body = json!({ "type": "acp", "extra": {} });
+    let body = json!({ "type": "acp", "extra": acp_extra() });
     let req = json_with_token("POST", "/api/conversations", body, &token, &csrf);
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -175,9 +185,7 @@ async fn t1_5b_create_accepts_interior_whitespace_and_rejects_edge_whitespace() 
 
     let body = json!({
         "type": "acp",
-        "extra": {
-            "workspace": workspace.to_string_lossy()
-        }
+        "extra": acp_extra_with_workspace(workspace.to_string_lossy().into_owned())
     });
     let req = json_with_token("POST", "/api/conversations", body, &token, &csrf);
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -191,9 +199,7 @@ async fn t1_5b_create_accepts_interior_whitespace_and_rejects_edge_whitespace() 
     let edge_workspace = format!("{} ", temp.path().join("repo").to_string_lossy());
     let body = json!({
         "type": "acp",
-        "extra": {
-            "workspace": edge_workspace
-        }
+        "extra": acp_extra_with_workspace(edge_workspace)
     });
     let req = json_with_token("POST", "/api/conversations", body, &token, &csrf);
     let resp = app.oneshot(req).await.unwrap();
@@ -341,7 +347,7 @@ async fn t2_4_list_source_filter() {
         "type": "acp",
         "name": "TG Conv",
         "source": "telegram",
-        "extra": {}
+        "extra": acp_extra()
     });
     let req = json_with_token("POST", "/api/conversations", tg_body, &token, &csrf);
     app.clone().oneshot(req).await.unwrap();
@@ -594,21 +600,13 @@ async fn t4_6_update_requires_auth() {
 
 #[tokio::test]
 async fn t5_1_delete_conversation() {
-    let app_root = tempfile::tempdir().unwrap();
-    let (mut app, services) = build_isolated_app_with_mock_agents(app_root.path()).await;
+    let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    let id = nomifun_common::ConversationId::new().into_string();
-    nomifun_db::sqlx::query(
-        "INSERT INTO conversations \
-         (conversation_id, user_id, name, type, extra, status, created_at, updated_at) \
-         VALUES (?, ?, 'To Delete', 'nomi', '{}', 'finished', 1, 1)",
-    )
-    .bind(&id)
-    .bind(services.authoritative_user_id.as_ref())
-    .execute(services.database.pool())
-    .await
-    .unwrap();
+    let req = json_with_token("POST", "/api/conversations", create_body("To Delete"), &token, &csrf);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let json = body_json(resp).await;
+    let id = json["data"]["conversation_id"].as_str().unwrap().to_owned();
 
     let message_id = nomifun_common::MessageId::new().into_string();
     nomifun_db::sqlx::query(
@@ -622,27 +620,11 @@ async fn t5_1_delete_conversation() {
     .await
     .unwrap();
     nomifun_db::sqlx::query(
-        "INSERT INTO conversation_delivery_receipts \
-         (operation_id, message_id, conversation_id, user_id, kind, request_payload, \
-          status, result_ok, created_at, updated_at, completed_at, \
-          projected_conversation_id, projected_message_id) \
-         VALUES ('delete-finished-conversation', ?, ?, ?, 'turn', '{}', \
-                 'completed', 1, 1, 1, 1, ?, ?)",
-    )
-    .bind(&message_id)
-    .bind(&id)
-    .bind(services.authoritative_user_id.as_ref())
-    .bind(&id)
-    .bind(&message_id)
-    .execute(services.database.pool())
-    .await
-    .unwrap();
-    nomifun_db::sqlx::query(
         "INSERT INTO conversation_artifacts \
          (conversation_artifact_id, conversation_id, kind, status, payload, created_at, updated_at) \
          VALUES (?, ?, 'skill_suggest', 'active', '{}', 1, 1)",
     )
-    .bind(nomifun_common::ConversationArtifactId::new().as_str())
+    .bind(nomifun_common::ConversationArtifactId::new().into_string())
     .bind(&id)
     .execute(services.database.pool())
     .await
@@ -658,21 +640,22 @@ async fn t5_1_delete_conversation() {
     .execute(services.database.pool())
     .await
     .unwrap();
-    nomifun_db::sqlx::query(
-        "INSERT INTO acp_session \
-         (conversation_id, agent_backend, agent_source) \
-         VALUES (?, 'acp', 'builtin')",
-    )
-    .bind(&id)
-    .execute(services.database.pool())
-    .await
-    .unwrap();
+    let acp_session_count: i64 =
+        nomifun_db::sqlx::query_scalar("SELECT COUNT(*) FROM acp_session WHERE conversation_id = ?")
+            .bind(&id)
+            .fetch_one(services.database.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        acp_session_count, 1,
+        "canonical ACP creation must materialize its 1:1 acp_session child"
+    );
     nomifun_db::sqlx::query(
         "INSERT INTO idmm_interventions \
          (intervention_id, user_id, target_kind, target_id, watch, at, signal, tier_used, action, outcome) \
          VALUES (?, ?, 'conversation', ?, 'fault', 1, 'test', 'rule_only', 'none', 'recorded')",
     )
-    .bind(nomifun_common::IdmmInterventionId::new().as_str())
+    .bind(nomifun_common::IdmmInterventionId::new().into_string())
     .bind(services.authoritative_user_id.as_ref())
     .bind(&id)
     .execute(services.database.pool())
@@ -703,20 +686,6 @@ async fn t5_1_delete_conversation() {
         orphan_counts,
         (0, 0, 0, 0, 0),
         "conversation deletion must directly remove database-owned orphan rows"
-    );
-    let retained_receipt_projection: (Option<String>, Option<String>) =
-        nomifun_db::sqlx::query_as(
-            "SELECT projected_conversation_id, projected_message_id \
-             FROM conversation_delivery_receipts \
-             WHERE operation_id = 'delete-finished-conversation'",
-        )
-        .fetch_one(services.database.pool())
-        .await
-        .unwrap();
-    assert_eq!(
-        retained_receipt_projection,
-        (None, None),
-        "completed replay evidence survives deletion without retaining transcript projections"
     );
 
     // Verify it's gone
@@ -766,7 +735,7 @@ async fn t6_2_clone_without_source() {
         "conversation": {
             "type": "acp",
             "name": "Fresh Clone",
-            "extra": {}
+            "extra": acp_extra()
         }
     });
     let req = json_with_token("POST", "/api/conversations/clone", clone_body, &token, &csrf);

@@ -128,43 +128,6 @@ fn builtin_skill_display_metadata_matches_the_packaged_corpus() {
     );
 }
 
-#[test]
-fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
-    let skill = read_to_string(
-        builtin_skills_root()
-            .join("auto-inject")
-            .join("nomifun-skills")
-            .join("SKILL.md"),
-    );
-    assert!(skill.starts_with("---\n"), "must start with YAML frontmatter");
-    assert!(skill.contains("name: nomifun-skills"));
-    assert!(
-        skill.contains("version:"),
-        "bundled guide must declare a version for optional refresh"
-    );
-    assert!(
-        skill.contains("Do **not** treat fetching a remote")
-            || skill.to_lowercase().contains("do not treat fetching a remote"),
-        "must tell agents not to treat remote curl as a prerequisite"
-    );
-    assert!(
-        skill.to_lowercase().contains("prerequisite"),
-        "must state that remote fetch is not a prerequisite"
-    );
-    assert!(
-        !skill.contains("### Step 1 — Fetch the skill guide"),
-        "must not require fetching a remote SKILL.md before use"
-    );
-    assert!(
-        skill.contains("ClawHub") && skill.contains("SkillHub"),
-        "must document the in-app Skill Market sources"
-    );
-    assert!(
-        skill.contains("no") && skill.contains("subcommand"),
-        "must document that Skill args are not market subcommands"
-    );
-}
-
 #[tokio::test]
 async fn ui_ux_pro_max_skill_materializes_from_embedded_builtin_corpus() {
     let tmp = TempDir::new().unwrap();
