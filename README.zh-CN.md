@@ -463,7 +463,7 @@ Flowy 正按商业产品标准打磨：好看、流畅，并尽量在登录后 9
 <div align="center">
 <table>
   <tr>
-    <td align="center"><img src="docs/images/contact/wechat-group-qr.png" alt="微信群二维码" width="220"><br/><sub><b>微信群</b></sub></td>
+    <td align="center"><img src="docs/images/contact/wechat-group-qr.jpg" alt="微信群二维码" width="220"><br/><sub><b>微信群</b></sub></td>
     <td align="center"><img src="docs/images/contact/qq-group-qr.png" alt="QQ 群二维码" width="220"><br/><sub><b>QQ 群</b></sub></td>
   </tr>
 </table>
