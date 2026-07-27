@@ -26,6 +26,7 @@ describe('useNomiMessage terminal lifecycle fence', () => {
     expect(pendingFenceIndex).toBeGreaterThan(resetIndex);
     expect(hydrateRequestIndex).toBeGreaterThan(pendingFenceIndex);
     expect(source.includes('shouldApplyNomiStreamEventToTurn({')).toBe(true);
+    expect(source.includes("message.type !== 'turn_completed'")).toBe(true);
     expect(source.includes("dispatchTurn({ type: 'hydrate', isRunning, settleIdle: true });")).toBe(
       true
     );

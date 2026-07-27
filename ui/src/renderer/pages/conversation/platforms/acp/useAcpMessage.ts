@@ -924,7 +924,7 @@ export const useAcpMessage = (conversation_id: ConversationId, options?: { skipW
         // Restore persisted context usage data
         if (res.type === 'acp' && res.extra?.last_token_usage) {
           const { last_token_usage, last_context_limit } = res.extra;
-          if (last_token_usage.total_tokens > 0) {
+          if (last_token_usage && typeof last_token_usage.total_tokens === 'number') {
             setTokenUsage(last_token_usage);
           }
           if (last_context_limit && last_context_limit > 0) {

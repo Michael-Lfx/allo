@@ -958,7 +958,7 @@ const NomiSendBox: React.FC<{
           />
         }
         rightTools={
-          hideModeSelector ? undefined : (
+          hasContextUsage || !hideModeSelector ? (
             <div className='flex items-center gap-2 min-w-0' data-testid='nomi-sendbox-config-group'>
               {hasContextUsage && (
                 <ContextUsageRing
@@ -968,24 +968,28 @@ const NomiSendBox: React.FC<{
                   breakdown={tokenUsage?.context_breakdown}
                 />
               )}
-              <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
-              {collaboratorSelectorNode}
-              {extraRightTools}
-              <AgentModeSelector
-                backend='nomi'
-                conversation_id={conversation_id}
-                compact
-                initialMode={session_mode}
-                dynamicModes={dynamicModes}
-                compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
-                modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
-                compactLabelPrefix={t('agentMode.permission')}
-                hideCompactLabelPrefixOnMobile
-                beforeRuntimeSync={prepareRuntimeForRead}
-                beforeRuntimeMutation={prepareRuntimeSync}
-              />
+              {!hideModeSelector && (
+                <>
+                  <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
+                  {collaboratorSelectorNode}
+                  {extraRightTools}
+                  <AgentModeSelector
+                    backend='nomi'
+                    conversation_id={conversation_id}
+                    compact
+                    initialMode={session_mode}
+                    dynamicModes={dynamicModes}
+                    compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
+                    modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
+                    compactLabelPrefix={t('agentMode.permission')}
+                    hideCompactLabelPrefixOnMobile
+                    beforeRuntimeSync={prepareRuntimeForRead}
+                    beforeRuntimeMutation={prepareRuntimeSync}
+                  />
+                </>
+              )}
             </div>
-          )
+          ) : undefined
         }
         prefix={
           <>

@@ -488,10 +488,13 @@ export const useNomiMessage = (
       // A fresh idle hydration and an exact active turn_id form the authority
       // boundary for lifecycle state. Late output is still renderable history,
       // but it cannot reopen a completed turn or mutate a newer accepted turn.
-      // Config changes are session-scoped rather than turn-scoped and therefore
-      // remain applicable while the conversation is idle.
+      // Config changes are session-scoped rather than turn-scoped.
+      // `turn_completed` is metrics-only (context usage / token gauge) and must
+      // still apply after the turn fence closes — otherwise the context ring
+      // never appears after durable-lifecycle settlement.
       if (
         message.type !== 'config_changed' &&
+        message.type !== 'turn_completed' &&
         !shouldApplyNomiStreamEventToTurn({
           eventTurnId: message.turn_id,
           activeTurnId: rootTurnIdRef.current,
@@ -904,10 +907,16 @@ export const useNomiMessage = (
       // settle activity from a late prior-turn stream. A local submit advances
       // the generation and never reaches this branch.
       dispatchTurn({ type: 'hydrate', isRunning, settleIdle: true });
-      // Load persisted token usage stats
+      // Load persisted token usage / context gauge. Prefer any payload that
+      // carries a usable context window so the context ring can rehydrate even
+      // when total_tokens was never recorded (or was zero).
       if (res.type === 'nomi' && res.extra?.last_token_usage) {
         const { last_token_usage } = res.extra;
-        if (last_token_usage.total_tokens > 0) {
+        const hasContextGauge =
+          typeof last_token_usage.context_window === 'number' &&
+          last_token_usage.context_window > 0 &&
+          typeof last_token_usage.context_tokens === 'number';
+        if (hasContextGauge || last_token_usage.total_tokens > 0) {
           setTokenUsage(last_token_usage);
         }
       }

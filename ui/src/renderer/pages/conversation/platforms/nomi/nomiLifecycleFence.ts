@@ -32,6 +32,10 @@ export const getNomiHydrationLifecycleFence = (
  * Rejected events may still be projected into the transcript; they simply
  * cannot revive activity, reconcile completion, change thought/tool state, or
  * overwrite metrics for another turn.
+ *
+ * Exception: callers may still apply `turn_completed` metrics after the fence
+ * closes — that event is additive gauge data for the context usage ring and
+ * does not mutate turn lifecycle state.
  */
 export const shouldApplyNomiStreamEventToTurn = ({
   eventTurnId,
