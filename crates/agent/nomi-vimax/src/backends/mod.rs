@@ -214,6 +214,16 @@ pub(crate) fn map_model_err(
         || lower.contains("敏感内容")
     {
         "Upstream content safety rejected the prompt/result. The client auto-retries with safer prompts; if it still fails, soften violent/sensitive shot wording and resume."
+    } else if lower.contains("cannot be mixed")
+        || lower.contains("last frame image content cannot be mixed")
+        || (lower.contains("reference_image") && lower.contains("first_frame"))
+        || (lower.contains("last_frame") && lower.contains("reference"))
+    {
+        "Seedance rejects mixing first/last_frame with reference_image. Use frame I2V only (client now omits refs when frames are present)."
+    } else if lower.contains("captions are not enough")
+        || (lower.contains("caption") && lower.contains("empty"))
+    {
+        "Seedance 2.0 rejected empty/weak audio captions. The client retries without audio; if it still fails, ensure shot audio_desc has dialogue or SFX."
     } else if lower.contains("publicurl")
         || lower.contains("presign_not_configured")
         || lower.contains("oss put failed")

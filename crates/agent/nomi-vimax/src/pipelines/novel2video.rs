@@ -214,6 +214,8 @@ impl Novel2VideoPipeline {
             .await?;
 
             // Plan script2video text for each scene.
+            // Split the film budget across events first, then across scenes inside
+            // this event — avoid re-allocating the full film_total per event.
             let film_total = {
                 let p = self.working_dir.join("target_duration_secs.txt");
                 tokio::fs::read_to_string(&p)
@@ -224,8 +226,14 @@ impl Novel2VideoPipeline {
                     .map(|n| crate::planning::normalize_target_duration_secs(Some(n)))
                     .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS)
             };
+            let event_budgets =
+                crate::planning::allocate_scene_budgets(film_total, event_count);
+            let event_budget = event_budgets
+                .get(event_i)
+                .copied()
+                .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS);
             let scene_n = scenes.len().max(1);
-            let budgets = crate::planning::allocate_scene_budgets(film_total, scene_n);
+            let budgets = crate::planning::allocate_scene_budgets(event_budget, scene_n);
             for (si, scene) in scenes.iter().enumerate() {
                 emit_pct(
                     &progress,

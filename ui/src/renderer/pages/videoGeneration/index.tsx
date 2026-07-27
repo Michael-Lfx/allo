@@ -9,11 +9,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
-import { Search, VideoOne } from '@icon-park/react';
+import { Search, Upload, VideoOne } from '@icon-park/react';
+import { ipcBridge } from '@/common';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
+import { isDesktopShell } from '@renderer/utils/platform';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
-import { createSession, deleteSession, listSessions, planSession } from './api';
+import { createSession, deleteSession, importSession, listSessions, planSession } from './api';
 import type { PlanBody, SessionSummary } from './types';
 import SessionCard from './components/SessionCard';
 import VideoCreateComposer, {
@@ -61,6 +63,7 @@ const VideoGenerationListPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -164,11 +167,54 @@ const VideoGenerationListPage: React.FC = () => {
     [deletingId, message, t]
   );
 
+  const handleImportProject = useCallback(async () => {
+    if (importing || creating) return;
+    if (!isDesktopShell()) {
+      message.info(
+        t('videoGeneration.list.importDesktopOnly', {
+          defaultValue: '导入工程仅桌面端可用。',
+        })
+      );
+      return;
+    }
+    const paths = await ipcBridge.dialog.showOpen.invoke({
+      properties: ['openFile'],
+      filters: [
+        {
+          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Nomi 视频工程' }),
+          extensions: ['nomivimax'],
+        },
+      ],
+    });
+    const source = paths?.[0];
+    if (!source) return;
+    setImporting(true);
+    try {
+      const imported = await importSession(source);
+      trackFunnelEvent('task_accepted', {
+        feature: 'video_generation',
+        workflow: imported.workflow,
+        session_id: imported.id,
+        source: 'project_import',
+      });
+      message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
+      navigate(`/video-generation/${imported.id}`);
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    } finally {
+      setImporting(false);
+    }
+  }, [creating, importing, message, navigate, t]);
+
   return (
     <div
       className={[
         styles.page,
-        'size-full box-border overflow-y-auto',
+        'flex-1 min-h-0 size-full box-border overflow-y-auto',
         isMobile ? 'px-12px py-12px' : 'px-16px py-24px md:px-36px md:py-32px',
       ].join(' ')}
     >
@@ -188,23 +234,37 @@ const VideoGenerationListPage: React.FC = () => {
                 })}
               </p>
             </div>
-            {!error && sessions.length > 0 ? (
-              <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
-                <Search
-                  theme='outline'
-                  size={14}
-                  className='flex-none text-[var(--color-text-3)]'
-                />
-                <input
-                  className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
-                  placeholder={t('videoGeneration.list.searchPlaceholder', {
-                    defaultValue: '搜索项目...',
-                  })}
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                />
-              </div>
-            ) : null}
+            <div className='flex flex-wrap items-center gap-10px'>
+              <Button
+                type='outline'
+                size='small'
+                loading={importing}
+                disabled={creating || importing}
+                onClick={() => void handleImportProject()}
+              >
+                <span className='inline-flex items-center gap-4px'>
+                  <Upload theme='outline' size={14} fill='currentColor' />
+                  {t('videoGeneration.list.importProject', { defaultValue: '导入工程' })}
+                </span>
+              </Button>
+              {!error && sessions.length > 0 ? (
+                <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
+                  <Search
+                    theme='outline'
+                    size={14}
+                    className='flex-none text-[var(--color-text-3)]'
+                  />
+                  <input
+                    className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
+                    placeholder={t('videoGeneration.list.searchPlaceholder', {
+                      defaultValue: '搜索项目...',
+                    })}
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                  />
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {error ? (

@@ -34,9 +34,9 @@ Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appe
 
     pub const STORYBOARD: &str = r#"Return a JSON object:
 {"storyboard":[{"idx":0,"is_last":false,"cam_idx":0,"visual_desc":"string","audio_desc":"string|null"}]}
-idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc optional dialogue/SFX."#;
+idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc is dialogue/SFX that MUST finish inside the same shot's 5–15s Seedance clip (keep spoken lines short enough; leave ~2s after the last word)."#;
 
-    pub const VIS_DECOMPOSE: &str = r#"Return a JSON object:
+    pub const VIS_DECOMPOSE: &str = r#"Return a single JSON object. Each key MUST appear exactly once (never repeat ff_vis_char_idxs / lf_vis_char_idxs / any other field).
 {"ff_desc":"string","ff_vis_char_idxs":[0],"lf_desc":"string","lf_vis_char_idxs":[0],"motion_desc":"string","variation_type":"large|medium|small","variation_reason":"string"}
 ff_*/lf_* are static first/last frame snapshots; motion_desc covers camera + element motion; variation_type is large|medium|small."#;
 

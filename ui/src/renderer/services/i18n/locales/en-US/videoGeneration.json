@@ -14,6 +14,10 @@
     "retry": "Retry",
     "filterEmpty": "No matching sessions",
     "untitled": "Untitled session",
+    "importProject": "Import project",
+    "importDesktopOnly": "Importing a project is only available in the desktop app.",
+    "importOk": "Project imported",
+    "importFailed": "Import failed",
     "empty": {
       "title": "Your first film starts above",
       "desc": "Describe a scene or story and Flowy will create an editable storyboard first."
@@ -136,7 +140,13 @@
     "delete": "Delete",
     "deleteConfirm": "Delete this session? All artifacts will be removed.",
     "deleteOk": "Session deleted",
-    "deleteFailed": "Failed to delete"
+    "deleteFailed": "Failed to delete",
+    "exportProject": "Export project",
+    "exportDesktopOnly": "Exporting a project is only available in the desktop app.",
+    "exportBusy": "Finish planning or rendering before exporting.",
+    "exportOk": "Project exported",
+    "exportFailed": "Export failed",
+    "exportFilter": "Nomi video project"
   },
   "workspace": {
     "back": "Back to list",
@@ -266,8 +276,12 @@
     "briefAndModels": "Creative brief & model settings",
     "modelSettings": "Model settings",
     "filmReady": "Your film is ready",
-    "filmReadyHint": "Review playback or download it for publishing.",
+    "filmReadyHint": "Review playback or open the folder containing the film.",
     "download": "Download film",
+    "reveal": "Show in folder",
+    "revealMissing": "Local film path is unavailable. Refresh and try again.",
+    "revealDesktopOnly": "Show in folder is only available in the desktop app.",
+    "revealFailed": "Could not open the film location",
     "reviseTitle": "How should this shot change?",
     "reviseHint": "Describe the outcome directly. No technical file paths needed.",
     "revisePlaceholder": "For example: make it more tense with a fast push-in and heavier rain",

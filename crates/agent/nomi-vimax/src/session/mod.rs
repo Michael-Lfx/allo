@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,6 +11,9 @@ use uuid::Uuid;
 use crate::domain::WorkflowKind;
 use crate::error::{VimaxError, VimaxResult};
 use crate::progress::{RenderStatus, RunStatus};
+
+pub mod archive;
+pub use archive::{ARCHIVE_EXTENSION, ArchiveManifest};
 
 const STALE_KEYS: &[&str] = &[
     "story",
@@ -83,9 +86,10 @@ struct SessionsFile {
 }
 
 /// On-disk session registry under `{data_dir}/vimax/`.
+#[derive(Clone)]
 pub struct SessionIndex {
     workspace_root: PathBuf,
-    lock: Mutex<()>,
+    lock: Arc<Mutex<()>>,
 }
 
 impl SessionIndex {
@@ -106,7 +110,7 @@ impl SessionIndex {
         }
         Ok(Self {
             workspace_root,
-            lock: Mutex::new(()),
+            lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -375,6 +379,94 @@ impl SessionIndex {
         }
         Ok(path)
     }
+
+    /// Export a session (metadata + full working tree) to a `.nomivimax` archive.
+    pub fn export_to_path(&self, session_id: &str, dest_path: &Path) -> VimaxResult<PathBuf> {
+        let record = self.get(session_id)?;
+        let working = self.working_dir(session_id)?;
+        archive::export_session_to_path(&record, &working, dest_path)
+    }
+
+    /// Import a `.nomivimax` archive as a **new** session (new UUID, new working_dir).
+    ///
+    /// Extracts into a temporary directory under `.working_dir`, validates, then
+    /// atomically renames into place and inserts the index entry. Failures clean
+    /// up staging / half-imported dirs and never touch existing sessions.
+    pub fn import_from_path(&self, archive_path: &Path) -> VimaxResult<SessionRecord> {
+        let working_root = self.workspace_root.join(".working_dir");
+        std::fs::create_dir_all(&working_root)?;
+
+        let staging_name = format!(".import_tmp_{}", Uuid::new_v4());
+        let staging = working_root.join(&staging_name);
+        // Ensure staging stays inside working_root.
+        if !staging.starts_with(&working_root) || staging == working_root {
+            return Err(VimaxError::msg("invalid import staging path"));
+        }
+
+        let cleanup_staging = |path: &Path| {
+            if path.exists() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        };
+
+        let imported = match archive::import_session_from_path(archive_path, &staging) {
+            Ok(s) => s,
+            Err(e) => {
+                cleanup_staging(&staging);
+                return Err(e);
+            }
+        };
+
+        let new_id = Uuid::new_v4().to_string();
+        let final_rel = format!(".working_dir/{new_id}");
+        let final_abs = self.workspace_root.join(&final_rel);
+        if final_abs.exists() {
+            cleanup_staging(&staging);
+            return Err(VimaxError::msg(format!(
+                "import target already exists: {new_id}"
+            )));
+        }
+
+        if let Err(e) = std::fs::rename(&staging, &final_abs) {
+            cleanup_staging(&staging);
+            return Err(VimaxError::Io(e));
+        }
+
+        let now = chrono::Local::now().to_rfc3339();
+        let mut record = imported;
+        record.session_id = new_id.clone();
+        record.working_dir = final_rel;
+        record.status = RunStatus::Idle;
+        // Keep stage / final_video so UI can resume without regenerating.
+        if record.stage.is_empty() {
+            record.stage = if record.final_video.is_some() {
+                "succeeded".into()
+            } else {
+                "imported".into()
+            };
+        }
+        record.created_at = now.clone();
+        record.updated_at = now;
+        if record.summary.is_empty() {
+            record.summary = "imported project".into();
+        }
+
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = match self.load() {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&final_abs);
+                return Err(e);
+            }
+        };
+        data.sessions.insert(new_id.clone(), record.clone());
+        data.active_session_id = new_id;
+        if let Err(e) = self.save(&data) {
+            let _ = std::fs::remove_dir_all(&final_abs);
+            return Err(e);
+        }
+        Ok(record)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,4 +594,79 @@ pub fn meta_json(map: impl IntoIterator<Item = (&'static str, Value)>) -> Option
         obj.insert(k.into(), v);
     }
     Some(Value::Object(obj))
+}
+
+#[cfg(test)]
+mod import_export_tests {
+    use super::*;
+    use crate::domain::WorkflowKind;
+    use crate::progress::RunStatus;
+    use tempfile::tempdir;
+
+    #[test]
+    fn index_export_import_creates_new_id_and_keeps_assets() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let created = index
+            .create(WorkflowKind::Script2Video, Some("Share Me".into()))
+            .unwrap();
+        let working = index.working_dir(&created.session_id).unwrap();
+        let video_rel = "script2video/final_video.mp4";
+        std::fs::create_dir_all(working.join("script2video/shots/0")).unwrap();
+        std::fs::write(working.join("script2video/script.txt"), b"scene").unwrap();
+        std::fs::write(working.join(video_rel), b"VIDEOBYTES").unwrap();
+        std::fs::write(
+            working.join("script2video/shots/0/first_frame.png"),
+            b"PNG",
+        )
+        .unwrap();
+        index
+            .update_fields(&created.session_id, |r| {
+                r.status = RunStatus::Succeeded;
+                r.stage = "succeeded".into();
+                r.final_video = Some(video_rel.into());
+            })
+            .unwrap();
+
+        let archive = dir.path().join("out.nomivimax");
+        index
+            .export_to_path(&created.session_id, &archive)
+            .unwrap();
+
+        let imported = index.import_from_path(&archive).unwrap();
+        assert_ne!(imported.session_id, created.session_id);
+        assert_eq!(imported.title, "Share Me");
+        assert_eq!(imported.status, RunStatus::Idle);
+        assert_eq!(imported.final_video.as_deref(), Some(video_rel));
+        assert_eq!(
+            std::fs::read(index.working_dir(&imported.session_id).unwrap().join(video_rel))
+                .unwrap(),
+            b"VIDEOBYTES"
+        );
+        // Original still listed.
+        let list = index.list().unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn import_failure_does_not_pollute_index() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let before = index.list().unwrap().len();
+        let bad = dir.path().join("not-an-archive.nomivimax");
+        std::fs::write(&bad, b"garbage").unwrap();
+        assert!(index.import_from_path(&bad).is_err());
+        assert_eq!(index.list().unwrap().len(), before);
+        // No leftover import_tmp dirs.
+        let working_root = dir.path().join("vimax/.working_dir");
+        if working_root.exists() {
+            for entry in std::fs::read_dir(&working_root).unwrap() {
+                let name = entry.unwrap().file_name().to_string_lossy().to_string();
+                assert!(
+                    !name.starts_with(".import_tmp_"),
+                    "leftover staging dir: {name}"
+                );
+            }
+        }
+    }
 }

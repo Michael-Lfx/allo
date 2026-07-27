@@ -153,6 +153,51 @@ impl VimaxService {
         self.index.artifact_abs_path(id, rel)
     }
 
+    /// Export a finished (non-running) session to a `.nomivimax` archive on disk.
+    pub async fn export_session(
+        self: &Arc<Self>,
+        id: &str,
+        dest_path: impl AsRef<Path>,
+    ) -> VimaxResult<PathBuf> {
+        self.ensure_not_busy(id).await?;
+        let dest = dest_path.as_ref().to_path_buf();
+        let index = self.index.clone();
+        let session_id = id.to_string();
+        tokio::task::spawn_blocking(move || index.export_to_path(&session_id, &dest))
+            .await
+            .map_err(|e| VimaxError::msg(format!("export join error: {e}")))?
+    }
+
+    /// Import a `.nomivimax` archive as a new session (new id; all assets preserved).
+    pub async fn import_session(
+        self: &Arc<Self>,
+        archive_path: impl AsRef<Path>,
+    ) -> VimaxResult<SessionRecord> {
+        let path = archive_path.as_ref().to_path_buf();
+        let index = self.index.clone();
+        tokio::task::spawn_blocking(move || index.import_from_path(&path))
+            .await
+            .map_err(|e| VimaxError::msg(format!("import join error: {e}")))?
+    }
+
+    async fn ensure_not_busy(&self, id: &str) -> VimaxResult<()> {
+        let record = self.index.get(id)?;
+        if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
+            return Err(VimaxError::InvalidParams(
+                "cannot export while the project is still planning or rendering".into(),
+            ));
+        }
+        let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = map.get(id) {
+            if matches!(s.status, RunStatus::Planning | RunStatus::Rendering) {
+                return Err(VimaxError::InvalidParams(
+                    "cannot export while the project is still planning or rendering".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn plan(
         self: &Arc<Self>,
         id: &str,

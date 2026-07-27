@@ -20,4 +20,4 @@ pub use domain::WorkflowKind;
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{ProgressCallback, ProgressEvent, RenderStatus, RunStatus};
 pub use service::VimaxService;
-pub use session::{ArtifactNode, SessionIndex, SessionRecord};
+pub use session::{ARCHIVE_EXTENSION, ArtifactNode, SessionIndex, SessionRecord};

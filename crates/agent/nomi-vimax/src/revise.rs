@@ -176,7 +176,7 @@ async fn invalidate_stale(
                 remove_if_exists(&scope.join("storyboard.json"), &mut removed).await?;
             }
             "frames" => {
-                clear_shot_globs(&scope, &["first_frame.png", "last_frame.png", "new_camera_*.png", "*_selector_output.json", "transition_video_*.mp4"], &mut removed).await?;
+                clear_shot_globs(&scope, &["first_frame.png", "last_frame.png", "video_last_frame.png", "new_camera_*.png", "*_selector_output.json", "transition_video_*.mp4"], &mut removed).await?;
             }
             "clips" => {
                 clear_shot_globs(&scope, &["video.mp4"], &mut removed).await?;

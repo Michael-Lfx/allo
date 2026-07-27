@@ -23,9 +23,11 @@ import {
   Spin,
   Tag,
 } from '@arco-design/web-react';
-import { ArrowLeft, Delete, Download, Play, Refresh, VideoOne } from '@icon-park/react';
+import { ArrowLeft, Delete, Export, FolderOpen, Play, Refresh, VideoOne } from '@icon-park/react';
+import { ipcBridge } from '@/common';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
+import { isDesktopShell } from '@renderer/utils/platform';
 import {
   confirmFirstValue,
   trackFunnelEvent,
@@ -33,6 +35,7 @@ import {
 import {
   cancelSession,
   deleteSession,
+  exportSession,
   getArtifact,
   getSession,
   getSessionStatus,
@@ -103,6 +106,7 @@ const WorkspacePage: React.FC = () => {
   const [revising, setRevising] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const [runStatus, setRunStatus] = useState<SessionStatus | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactNode[]>([]);
@@ -530,18 +534,104 @@ const WorkspacePage: React.FC = () => {
     setRevisionOpen(true);
   }, []);
 
-  const handleDownload = useCallback(() => {
-    if (!finalBlobUrl) return;
+  const handleExportProject = useCallback(async () => {
+    if (exporting || !sessionId) return;
+    if (!isDesktopShell()) {
+      message.info(
+        t('videoGeneration.actions.exportDesktopOnly', {
+          defaultValue: '导出工程仅桌面端可用。',
+        })
+      );
+      return;
+    }
+    if (isActiveStatus(runStatus?.status) || planning || rendering) {
+      message.warning(
+        t('videoGeneration.actions.exportBusy', {
+          defaultValue: '规划或渲染进行中，请完成后再导出。',
+        })
+      );
+      return;
+    }
+    const safeTitle = (session?.title || 'nomi-video')
+      .replace(/[\\/:*?"<>|\s]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'nomi-video';
+    const dest = await ipcBridge.dialog.showSave.invoke({
+      defaultPath: `${safeTitle}.nomivimax`,
+      filters: [
+        {
+          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Nomi 视频工程' }),
+          extensions: ['nomivimax'],
+        },
+      ],
+    });
+    if (!dest) return;
+    setExporting(true);
+    try {
+      const result = await exportSession(sessionId, dest);
+      message.success(
+        `${t('videoGeneration.actions.exportOk', { defaultValue: '工程已导出' })}: ${result.dest_path}`
+      );
+      try {
+        await ipcBridge.shell.showItemInFolder.invoke(result.dest_path);
+      } catch {
+        // Non-fatal: export already succeeded.
+      }
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.actions.exportFailed', { defaultValue: '导出失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    exporting,
+    message,
+    planning,
+    rendering,
+    runStatus?.status,
+    session?.title,
+    sessionId,
+    t,
+  ]);
+
+  const handleRevealFilm = useCallback(async () => {
+    const rel = (runStatus?.final_video || session?.final_video || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const root = (runStatus?.working_dir_abs || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!rel || !root) {
+      message.warning(
+        t('videoGeneration.studio.revealMissing', {
+          defaultValue: '找不到成片本地路径，请刷新后重试。',
+        })
+      );
+      return;
+    }
+    if (!isDesktopShell()) {
+      message.info(
+        t('videoGeneration.studio.revealDesktopOnly', {
+          defaultValue: '打开视频所在位置仅桌面端可用。',
+        })
+      );
+      return;
+    }
+    const abs = `${root}/${rel}`;
     confirmFirstValue({
       feature: 'video_generation',
-      source: 'film_download',
+      source: 'film_reveal',
       session_id: sessionId,
     });
-    const anchor = document.createElement('a');
-    anchor.href = finalBlobUrl;
-    anchor.download = `${session?.title || 'nomi-video'}.mp4`;
-    anchor.click();
-  }, [finalBlobUrl, session?.title, sessionId]);
+    try {
+      await ipcBridge.shell.showItemInFolder.invoke(abs);
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.studio.revealFailed', { defaultValue: '无法打开视频所在位置' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    }
+  }, [message, runStatus?.final_video, runStatus?.working_dir_abs, session?.final_video, sessionId, t]);
 
   const busy = isActiveStatus(runStatus?.status) || planning || rendering;
   const hasStoryboard =
@@ -599,7 +689,7 @@ const WorkspacePage: React.FC = () => {
     <div
       className={[
         styles.studioPage,
-        'size-full box-border overflow-y-auto',
+        'flex-1 min-h-0 size-full box-border overflow-y-auto',
         isMobile ? 'px-12px py-12px' : 'px-16px py-20px md:px-32px md:py-24px',
       ].join(' ')}
     >
@@ -650,6 +740,18 @@ const WorkspacePage: React.FC = () => {
                 {t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
               </span>
             </Button>
+            <Button
+              type='outline'
+              size='small'
+              loading={exporting}
+              disabled={busy || exporting}
+              onClick={() => void handleExportProject()}
+            >
+              <span className='inline-flex items-center gap-4px'>
+                <Export theme='outline' size={14} fill='currentColor' />
+                {t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
+              </span>
+            </Button>
             <Popconfirm
               title={t('videoGeneration.actions.deleteConfirm', {
                 defaultValue: '确定删除该任务？产物将一并清除。',
@@ -688,14 +790,14 @@ const WorkspacePage: React.FC = () => {
                 </div>
                 <div className='mt-2px text-11px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.filmReadyHint', {
-                    defaultValue: '播放检查，或下载到本地继续发布。',
+                    defaultValue: '播放检查，或打开视频所在文件夹。',
                   })}
                 </div>
               </div>
-              <Button type='primary' onClick={handleDownload}>
+              <Button type='primary' onClick={() => void handleRevealFilm()}>
                 <span className='inline-flex items-center gap-6px'>
-                  <Download theme='outline' size={14} />
-                  {t('videoGeneration.studio.download', { defaultValue: '下载成片' })}
+                  <FolderOpen theme='outline' size={14} />
+                  {t('videoGeneration.studio.reveal', { defaultValue: '打开视频所在位置' })}
                 </span>
               </Button>
             </div>

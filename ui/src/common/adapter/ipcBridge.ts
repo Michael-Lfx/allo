@@ -23,6 +23,7 @@ import {
   tauriGetZoom,
   tauriIsAutostartEnabled,
   tauriOpenDialog,
+  tauriSaveDialog,
   tauriRelaunch,
   tauriSendNotification,
   tauriSetAutostart,
@@ -39,6 +40,7 @@ import {
   tauriWindowToggleMaximize,
   tauriWindowUnmaximize,
   type ShellOpenDialogOptions,
+  type ShellSaveDialogOptions,
 } from './tauriShell';
 import {
   autoUpdateStatusEmitter,
@@ -1088,6 +1090,11 @@ export const dialog = {
   showOpen: shellProvider<string[] | undefined, ShellOpenDialogOptions | void>(
     (opts) => tauriOpenDialog(opts || undefined),
     (opts) => bridge.invoke<string[] | undefined>('show-open', opts || undefined)
+  ),
+  /** Native save dialog (desktop only; web returns null). */
+  showSave: shellProvider<string | null, ShellSaveDialogOptions | void>(
+    (opts) => tauriSaveDialog(opts || undefined),
+    async () => null
   ),
 };
 

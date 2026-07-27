@@ -84,6 +84,25 @@ export async function deleteSession(id: string): Promise<void> {
   await httpRequest<unknown>('DELETE', `${BASE}/sessions/${encodeURIComponent(id)}`);
 }
 
+/** Export a session project archive to a local `.nomivimax` path. */
+export async function exportSession(
+  id: string,
+  destPath: string
+): Promise<{ dest_path: string }> {
+  return httpRequest<{ dest_path: string }>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(id)}/export`,
+    { dest_path: destPath }
+  );
+}
+
+/** Import a local `.nomivimax` archive as a new session (new id). */
+export async function importSession(sourcePath: string): Promise<SessionSummary> {
+  return httpRequest<SessionSummary>('POST', `${BASE}/sessions/import`, {
+    source_path: sourcePath,
+  });
+}
+
 export async function listArtifacts(id: string): Promise<ArtifactNode[]> {
   const data = await httpRequest<ArtifactNode[] | { tree: ArtifactNode[]; artifacts?: ArtifactNode[] }>(
     'GET',

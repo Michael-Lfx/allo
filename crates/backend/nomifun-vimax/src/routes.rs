@@ -21,6 +21,7 @@ use crate::state::VimaxRouterState;
 pub fn vimax_routes(state: VimaxRouterState) -> Router {
     Router::new()
         .route("/api/vimax/sessions", get(list_sessions).post(create_session))
+        .route("/api/vimax/sessions/import", post(import_session))
         .route(
             "/api/vimax/sessions/{id}",
             get(get_session).delete(delete_session),
@@ -30,6 +31,7 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/sessions/{id}/render", post(render_session))
         .route("/api/vimax/sessions/{id}/status", get(session_status))
         .route("/api/vimax/sessions/{id}/cancel", post(cancel_session))
+        .route("/api/vimax/sessions/{id}/export", post(export_session))
         .route("/api/vimax/sessions/{id}/artifacts", get(list_artifacts))
         .route(
             "/api/vimax/sessions/{id}/artifacts/{*path}",
@@ -219,4 +221,48 @@ async fn get_artifact(
         .header(header::CACHE_CONTROL, "private, max-age=60")
         .body(Body::from(bytes))
         .map_err(|e| AppError::Internal(e.to_string()))?)
+}
+
+#[derive(Deserialize)]
+struct ExportBody {
+    dest_path: String,
+}
+
+async fn export_session(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<ExportBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let dest = body.dest_path.trim();
+    if dest.is_empty() {
+        return Err(AppError::BadRequest("dest_path is required".into()));
+    }
+    let path = state.service.export_session(&id, PathBuf::from(dest)).await?;
+    Ok(Json(ApiResponse::ok(json!({
+        "dest_path": path.to_string_lossy(),
+    }))))
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    source_path: String,
+}
+
+async fn import_session(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ImportBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomi_vimax::SessionRecord>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let source = body.source_path.trim();
+    if source.is_empty() {
+        return Err(AppError::BadRequest("source_path is required".into()));
+    }
+    let session = state
+        .service
+        .import_session(PathBuf::from(source))
+        .await?;
+    Ok(Json(ApiResponse::ok(session)))
 }

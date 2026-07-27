@@ -208,13 +208,25 @@ impl Idea2VideoPipeline {
         }
 
         emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
-        let scenes: Vec<String> =
+        let mut scenes: Vec<String> =
             load_or_write_json(&self.working_dir.join("script.json"), || async {
                 self.screenwriter
                     .write_script_based_on_story(&story, user_requirement)
                     .await
             })
             .await?;
+
+        let max_scenes = crate::planning::max_scenes_for_budget(film_total);
+        if scenes.len() > max_scenes {
+            tracing::warn!(
+                kept = max_scenes,
+                dropped = scenes.len() - max_scenes,
+                film_total,
+                "truncated idea script scenes to respect film duration budget"
+            );
+            scenes.truncate(max_scenes);
+            write_json_artifact(&self.working_dir.join("script.json"), &scenes).await?;
+        }
 
         let scene_count = scenes.len().max(1);
         let budgets = allocate_scene_budgets(film_total, scene_count);
