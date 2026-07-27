@@ -3848,6 +3848,14 @@ impl StreamRelay {
             hidden: false,
             created_at: now_ms(),
         };
+        if !self.ensure_turn_root_message().await {
+            error!(
+                status = %data.status,
+                turn_id = %self.root_turn_id,
+                "Skipping agent_status persistence because the turn root message is unavailable"
+            );
+            return false;
+        }
         self.insert_stream_message_with_reconciliation(&row, "persist_agent_status")
             .await
     }
@@ -4086,6 +4094,48 @@ impl StreamRelay {
         self.persist_tool_call_with_hidden(data, false).await;
     }
 
+    /// Ensure the durable turn root row exists before inserting children that
+    /// parent to `root_turn_id`. Tool/status events can arrive before any text
+    /// segment, and `insert_message` now requires the parent message to exist.
+    async fn ensure_turn_root_message(&self) -> bool {
+        if self.root_turn_id.is_empty() {
+            return false;
+        }
+        match self.repo.get_message(self.conv_id(), &self.root_turn_id).await {
+            Ok(Some(_)) => true,
+            Ok(None) => {
+                let row = MessageRow {
+                    id: 0,
+                    message_id: self.root_turn_id.clone(),
+                    conversation_id: self.conversation_id.clone(),
+                    msg_id: Some(self.root_turn_id.clone()),
+                    r#type: "text".into(),
+                    content: json!({
+                        "content": "",
+                        "turn_id": &self.root_turn_id,
+                    })
+                    .to_string(),
+                    position: Some("left".into()),
+                    status: Some("work".into()),
+                    // Hidden until real assistant text arrives and reconciles
+                    // this same primary message id.
+                    hidden: true,
+                    created_at: now_ms(),
+                };
+                self.insert_stream_message_with_reconciliation(&row, "ensure_turn_root")
+                    .await
+            }
+            Err(error) => {
+                error!(
+                    turn_id = %self.root_turn_id,
+                    error = %ErrorChain(&error),
+                    "Failed to load turn root message before child persistence"
+                );
+                false
+            }
+        }
+    }
+
     async fn persist_provisional_artifact_tool_call(
         &self,
         data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
@@ -4221,6 +4271,16 @@ impl StreamRelay {
                 );
             }
         } else {
+            if !self.ensure_turn_root_message().await {
+                error!(
+                    call_id = %data.call_id,
+                    tool = %data.name,
+                    status,
+                    turn_id = %self.root_turn_id,
+                    "Skipping tool_call persistence because the turn root message is unavailable"
+                );
+                return false;
+            }
             let row = MessageRow {
                 id: 0,
                 message_id: message_id.clone(),
@@ -4820,6 +4880,14 @@ impl StreamRelay {
             hidden: false,
             created_at: now_ms(),
         };
+        if !self.ensure_turn_root_message().await {
+            error!(
+                tool_call_id,
+                turn_id = %self.root_turn_id,
+                "Skipping acp_tool_call persistence because the turn root message is unavailable"
+            );
+            return false;
+        }
         if let Err(e) = self.repo.insert_message(&row).await {
             error!(error = %ErrorChain(&e), "Failed to persist acp_tool_call message");
             return false;
@@ -4931,6 +4999,14 @@ impl StreamRelay {
                 error!(error = %ErrorChain(&e), "Failed to update tool_group message");
             }
         } else {
+            if !self.ensure_turn_root_message().await {
+                error!(
+                    group_id,
+                    turn_id = %self.root_turn_id,
+                    "Skipping tool_group persistence because the turn root message is unavailable"
+                );
+                return;
+            }
             let row = MessageRow {
                 id: 0,
                 message_id: group_id.clone(),
@@ -6519,6 +6595,73 @@ mod tests {
         assert!(!stream_types.iter().any(|kind| *kind == json!("finish")));
         assert_eq!(stream_types.last(), Some(&json!("error")));
         std::fs::remove_dir_all(workspace).expect("remove test workspace");
+    }
+
+    #[tokio::test]
+    async fn tool_call_before_text_creates_turn_root_parent() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            Arc::new(TestUserEventBus::new(32)),
+            None,
+        );
+        let (tx, _) = broadcast::channel(16);
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "browser-before-text".into(),
+            name: "Browser".into(),
+            args: json!({"action": "open"}),
+            status: ToolCallStatus::Running,
+            input: None,
+            output: None,
+            description: None,
+            artifacts: vec![],
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "browser-before-text".into(),
+            name: "Browser".into(),
+            args: json!({"action": "open"}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("ok".into()),
+            description: None,
+            artifacts: vec![],
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let inserts = repo.take_inserts();
+        assert!(
+            inserts.iter().any(|row| {
+                row.message_id == TEST_TURN_A
+                    && row.r#type == "text"
+                    && row.msg_id.as_deref() == Some(TEST_TURN_A)
+                    && row.hidden
+            }),
+            "tool-before-text must materialize a hidden turn root: {inserts:?}"
+        );
+        let tool_row = inserts
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("tool_call must persist");
+        assert_eq!(tool_row.msg_id.as_deref(), Some(TEST_TURN_A));
+        assert!(
+            inserts.iter().any(|row| row.message_id == TEST_TURN_A),
+            "tool_call parent must exist before the child insert"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -10823,6 +10966,23 @@ mod tests {
             }
             if self.fail_next_message_insert.swap(false, AtomicOrdering::SeqCst) {
                 return Err(DbError::Conflict("injected message insert failure".to_owned()));
+            }
+            if let Some(parent_id) = row.msg_id.as_deref()
+                && parent_id != row.message_id
+                && !self
+                    .inserts
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|existing| {
+                        existing.conversation_id == row.conversation_id
+                            && existing.message_id == parent_id
+                    })
+            {
+                return Err(DbError::Conflict(format!(
+                    "Message parent '{parent_id}' does not exist in Conversation '{}'",
+                    row.conversation_id
+                )));
             }
             if self
                 .reject_duplicate_message_inserts

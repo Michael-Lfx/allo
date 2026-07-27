@@ -125,10 +125,10 @@ async fn health_check_unknown_backend_reports_unavailable() {
     assert_eq!(body["data"]["available"], false);
 }
 
-// ── Session-bound ACP routes (no active runtime → 404) ──────────────
+// ── Session-bound ACP routes (missing conversation → 404) ───────────
 
 #[tokio::test]
-async fn get_mode_no_active_task() {
+async fn get_mode_missing_conversation() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "user1", "pass123").await;
 
@@ -157,7 +157,7 @@ async fn set_mode_no_active_task() {
 }
 
 #[tokio::test]
-async fn get_model_no_active_task() {
+async fn get_model_missing_conversation() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "user1", "pass123").await;
 

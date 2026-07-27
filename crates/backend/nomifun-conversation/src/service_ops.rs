@@ -42,7 +42,13 @@ impl ConversationService {
     ) -> Result<AgentModeResponse, AppError> {
         self.require_owned_conversation(user_id, conversation_id)
             .await?;
-        self.runtime_handle(conversation_id)?.get_mode().await
+        match self.optional_runtime_handle(conversation_id) {
+            Some(runtime) => runtime.get_mode().await,
+            None => Ok(AgentModeResponse {
+                mode: "default".into(),
+                initialized: false,
+            }),
+        }
     }
 
     pub async fn set_mode(
@@ -68,7 +74,10 @@ impl ConversationService {
     ) -> Result<GetModelInfoResponse, AppError> {
         self.require_owned_conversation(user_id, conversation_id)
             .await?;
-        self.runtime_handle(conversation_id)?.get_model().await
+        match self.optional_runtime_handle(conversation_id) {
+            Some(runtime) => runtime.get_model().await,
+            None => Ok(GetModelInfoResponse { model_info: None }),
+        }
     }
 
     pub async fn set_model(
@@ -106,7 +115,10 @@ impl ConversationService {
     ) -> Result<Option<serde_json::Value>, AppError> {
         self.require_owned_conversation(user_id, conversation_id)
             .await?;
-        self.runtime_handle(conversation_id)?.get_usage().await
+        match self.optional_runtime_handle(conversation_id) {
+            Some(runtime) => runtime.get_usage().await,
+            None => Ok(None),
+        }
     }
 
     pub async fn get_slash_commands(
@@ -116,7 +128,10 @@ impl ConversationService {
     ) -> Result<Vec<SlashCommandItem>, AppError> {
         self.require_owned_conversation(user_id, conversation_id)
             .await?;
-        self.runtime_handle(conversation_id)?.get_slash_commands().await
+        match self.optional_runtime_handle(conversation_id) {
+            Some(runtime) => runtime.get_slash_commands().await,
+            None => Ok(Vec::new()),
+        }
     }
 
     // ── Side question ───────────────────────────────────────────────

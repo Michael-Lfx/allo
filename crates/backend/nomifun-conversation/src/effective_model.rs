@@ -69,7 +69,8 @@ mod tests {
 
     fn row(model: Option<&str>) -> ConversationRow {
         ConversationRow {
-            id: ConversationId::new().into_string(),
+            id: 0,
+            conversation_id: ConversationId::new().into_string(),
             user_id: "user-1".into(),
             name: "test".into(),
             r#type: "nomi".into(),

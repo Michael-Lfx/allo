@@ -1554,22 +1554,14 @@ export const acpConversation = {
     (p) => `/api/conversations/${p.conversation_id}/mode`,
     (p) => ({ mode: p.mode })
   ),
-  // 404 is the expected pre-warmup response from `/api/conversations/:id/mode`
-  // and `/api/conversations/:id/model` — the agent has not attached yet, so
-  // we have nothing to read. AcpModeSelector / AcpModelSelector both fall back
-  // to handshake metadata in that case. Silence the bridge log so this
-  // ordinary state doesn't pollute Sentry breadcrumbs (ELECTRON-1BT).
+  // Soft reads: no active runtime returns 200 with
+  // `{ mode: 'default', initialized: false }` / `{ model_info: null }`.
+  // Missing conversation still 404s (real not-found).
   getMode: httpGet<{ mode: string; initialized: boolean }, { conversation_id: ConversationId }>(
-    (p) => `/api/conversations/${p.conversation_id}/mode`,
-    {
-      silentStatuses: [404],
-    }
+    (p) => `/api/conversations/${p.conversation_id}/mode`
   ),
   getModel: httpGet<{ model_info: AcpModelInfo | null }, { conversation_id: ConversationId }>(
-    (p) => `/api/conversations/${p.conversation_id}/model`,
-    {
-      silentStatuses: [404],
-    }
+    (p) => `/api/conversations/${p.conversation_id}/model`
   ),
   setModel: httpPut<void, { conversation_id: ConversationId; model: string }>(
     (p) => `/api/conversations/${p.conversation_id}/model`,

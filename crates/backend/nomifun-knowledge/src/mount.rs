@@ -1,5 +1,5 @@
 //! Platform-aware mount engine: materializes knowledge bases inside a
-//! workspace at `.nomi/knowledge/{link_name}` using NTFS junctions on
+//! workspace at `.flowy/knowledge/{link_name}` using NTFS junctions on
 //! Windows (no privilege required), symlinks on Unix, and a recursive copy
 //! is intentionally not used as a fallback: a detached copy would look
 //! writable to the agent while silently diverging from the real knowledge
@@ -8,7 +8,7 @@
 //! The mount directory is wholly owned by this module: anything inside it
 //! that is not in the desired set (or in [`MANAGED_KEEP`]) gets removed on
 //! the next sync. Targets are never touched — removal only deletes the link.
-//! Sibling `.nomi/` trees (`.nomi/skills`, …) are
+//! Sibling `.flowy/` trees (`.flowy/skills`, …) are
 //! never touched either.
 
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use crate::workspace_binding::WorkspaceBindingLease;
 use nomifun_common::AppError;
 use tokio::sync::Mutex as AsyncMutex;
 
-/// One desired mount: `{workspace}/.nomi/knowledge/{link_name}` → `target`.
+/// One desired mount: `{workspace}/.flowy/knowledge/{link_name}` → `target`.
 #[derive(Debug, Clone)]
 pub struct MountSpec {
     pub link_name: String,
@@ -367,8 +367,8 @@ fn sync_mounts_inner(workspace: &Path, specs: &[MountSpec]) -> Vec<String> {
     // Self-ignore the mount directory: when the workspace is a user git
     // repo, junctions would otherwise expose the knowledge base content as
     // committable project files. The ignore file lives INSIDE
-    // `.nomi/knowledge/` — never at the `.nomi/` root — so committable
-    // siblings like `.nomi/skills` stay visible to git.
+    // `.flowy/knowledge/` — never at the `.flowy/` root — so committable
+    // siblings like `.flowy/skills` stay visible to git.
     let gitignore = mount_root.join(".gitignore");
     if let Err(e) = ensure_managed_gitignore(&mount_root, &gitignore) {
         tracing::warn!(
@@ -609,7 +609,7 @@ fn clear_mount_root(workspace: &Path) {
         return;
     }
 
-    // Remove `.nomi/` only when it is still a plain directory and empty.
+    // Remove `.flowy/` only when it is still a plain directory and empty.
     if let Some(parent) = mount_root.parent()
         && ensure_plain_directory(parent, false).unwrap_or(false)
     {
@@ -617,9 +617,16 @@ fn clear_mount_root(workspace: &Path) {
     }
 }
 
+/// Hidden workspace folder that owns [`KB_MOUNT_REL_DIR`].
+fn kb_mount_hidden_root_rel() -> &'static Path {
+    Path::new(KB_MOUNT_REL_DIR)
+        .parent()
+        .unwrap_or_else(|| Path::new(".flowy"))
+}
+
 /// Build the managed path one component at a time. `create_dir_all` and
-/// `Path::exists` follow aliases, which would let a pre-existing `.nomi` or
-/// `.nomi/knowledge` symlink/junction redirect the stale sweep outside the
+/// `Path::exists` follow aliases, which would let a pre-existing `.flowy` or
+/// `.flowy/knowledge` symlink/junction redirect the stale sweep outside the
 /// workspace.
 fn prepare_mount_root(workspace: &Path, create: bool) -> io::Result<Option<PathBuf>> {
     match std::fs::metadata(workspace) {
@@ -634,16 +641,16 @@ fn prepare_mount_root(workspace: &Path, create: bool) -> io::Result<Option<PathB
         Err(e) => return Err(e),
     }
 
-    let nomi_root = workspace.join(".nomi");
+    let hidden_root = workspace.join(kb_mount_hidden_root_rel());
     let mount_root = workspace.join(KB_MOUNT_REL_DIR);
-    if mount_root.parent() != Some(nomi_root.as_path()) {
+    if mount_root.parent() != Some(hidden_root.as_path()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "knowledge mount constant escapes .nomi",
+            "knowledge mount constant escapes .flowy",
         ));
     }
 
-    if !ensure_plain_directory(&nomi_root, create)? {
+    if !ensure_plain_directory(&hidden_root, create)? {
         return Ok(None);
     }
     if !ensure_plain_directory(&mount_root, create)? {
@@ -651,7 +658,7 @@ fn prepare_mount_root(workspace: &Path, create: bool) -> io::Result<Option<PathB
     }
     // Recheck the ancestor after creating/inspecting the child. This rejects
     // deterministic alias replacement and narrows the external-race window.
-    ensure_plain_directory(&nomi_root, false)?;
+    ensure_plain_directory(&hidden_root, false)?;
     ensure_plain_directory(&mount_root, false)?;
     Ok(Some(mount_root))
 }
@@ -1118,13 +1125,13 @@ mod tests {
         )
         .await;
 
-        // The self-ignore lives INSIDE `.nomi/knowledge/` — pinned to the
+        // The self-ignore lives INSIDE `.flowy/knowledge/` — pinned to the
         // literal path so a constant regression cannot slip through.
-        let inside = ws.path().join(".nomi").join("knowledge").join(".gitignore");
+        let inside = ws.path().join(".flowy").join("knowledge").join(".gitignore");
         assert_eq!(std::fs::read_to_string(&inside).unwrap().trim(), "*");
-        // Never at the `.nomi/` root: that would shadow committable sibling
-        // trees like `.nomi/skills` out of the user's git repository.
-        assert!(!ws.path().join(".nomi").join(".gitignore").exists());
+        // Never at the `.flowy/` root: that would shadow committable sibling
+        // trees like `.flowy/skills` out of the user's git repository.
+        assert!(!ws.path().join(".flowy").join(".gitignore").exists());
     }
 
     #[tokio::test]
@@ -1174,9 +1181,9 @@ mod tests {
     async fn portable_writeback_mount_root_link_never_sweeps_external_files() {
         let ws = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
-        let nomi = ws.path().join(".nomi");
-        std::fs::create_dir(&nomi).unwrap();
-        let mount_root = nomi.join("knowledge");
+        let hidden = ws.path().join(".flowy");
+        std::fs::create_dir(&hidden).unwrap();
+        let mount_root = hidden.join("knowledge");
         let sentinel = outside.path().join("sentinel.md");
         std::fs::write(&sentinel, "keep").unwrap();
         #[cfg(unix)]
@@ -1238,18 +1245,18 @@ mod tests {
         let bases = TempDir::new().unwrap();
         let kb = make_base(&bases, "kb_hostile");
 
-        // Case 1: `.nomi` itself redirects outside the workspace.
-        let ws_nomi = TempDir::new().unwrap();
-        let outside_nomi = TempDir::new().unwrap();
-        std::fs::create_dir_all(outside_nomi.path().join("knowledge")).unwrap();
-        let victim_nomi = outside_nomi.path().join("knowledge").join("victim.md");
-        std::fs::write(&victim_nomi, "outside").unwrap();
-        let nomi_alias = ws_nomi.path().join(".nomi");
-        create_directory_alias(outside_nomi.path(), &nomi_alias);
+        // Case 1: `.flowy` itself redirects outside the workspace.
+        let ws_hidden = TempDir::new().unwrap();
+        let outside_hidden = TempDir::new().unwrap();
+        std::fs::create_dir_all(outside_hidden.path().join("knowledge")).unwrap();
+        let victim_hidden = outside_hidden.path().join("knowledge").join("victim.md");
+        std::fs::write(&victim_hidden, "outside").unwrap();
+        let hidden_alias = ws_hidden.path().join(".flowy");
+        create_directory_alias(outside_hidden.path(), &hidden_alias);
 
         assert!(
             sync_mounts(
-                ws_nomi.path(),
+                ws_hidden.path(),
                 vec![MountSpec {
                     link_name: "safe".into(),
                     target: kb.clone(),
@@ -1258,15 +1265,15 @@ mod tests {
             .await
             .is_empty()
         );
-        assert!(sync_mounts(ws_nomi.path(), vec![]).await.is_empty());
-        assert_eq!(std::fs::read_to_string(&victim_nomi).unwrap(), "outside");
-        assert!(!outside_nomi.path().join("knowledge").join("safe").exists());
-        remove_directory_alias(&nomi_alias);
+        assert!(sync_mounts(ws_hidden.path(), vec![]).await.is_empty());
+        assert_eq!(std::fs::read_to_string(&victim_hidden).unwrap(), "outside");
+        assert!(!outside_hidden.path().join("knowledge").join("safe").exists());
+        remove_directory_alias(&hidden_alias);
 
-        // Case 2: `.nomi` is real but `.nomi/knowledge` redirects outside.
+        // Case 2: `.flowy` is real but `.flowy/knowledge` redirects outside.
         let ws_knowledge = TempDir::new().unwrap();
         let outside_knowledge = TempDir::new().unwrap();
-        std::fs::create_dir(ws_knowledge.path().join(".nomi")).unwrap();
+        std::fs::create_dir(ws_knowledge.path().join(".flowy")).unwrap();
         let victim_knowledge = outside_knowledge.path().join("victim.md");
         std::fs::write(&victim_knowledge, "outside").unwrap();
         let knowledge_alias = ws_knowledge.path().join(KB_MOUNT_REL_DIR);
@@ -1351,7 +1358,7 @@ mod tests {
         let bases = TempDir::new().unwrap();
         let ws = TempDir::new().unwrap();
         let kb = make_base(&bases, "kb_escape");
-        let escaped = ws.path().join(".nomi").join("escaped");
+        let escaped = ws.path().join(".flowy").join("escaped");
 
         for unsafe_name in ["../escaped", "CON", "nul.txt", ".NOMI-COPY-hostile"] {
             assert!(
@@ -1663,7 +1670,7 @@ mod tests {
         let outside = TempDir::new().unwrap();
         let victim = outside.path().join("victim.md");
         std::fs::write(&victim, "outside").unwrap();
-        std::fs::create_dir(ws.path().join(".nomi")).unwrap();
+        std::fs::create_dir(ws.path().join(".flowy")).unwrap();
         let mount_alias = ws.path().join(KB_MOUNT_REL_DIR);
         create_directory_alias(outside.path(), &mount_alias);
 

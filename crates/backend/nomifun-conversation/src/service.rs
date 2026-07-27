@@ -3041,9 +3041,18 @@ impl ConversationService {
     }
 
     pub(crate) fn runtime_handle(&self, conversation_id: &str) -> Result<AgentRuntimeHandle, AppError> {
-        self.runtime_registry
-            .get_runtime(conversation_id)
-            .ok_or_else(|| AppError::NotFound(format!("No active agent for conversation '{conversation_id}'")))
+        self.optional_runtime_handle(conversation_id).ok_or_else(|| {
+            AppError::NotFound(format!("No active agent for conversation '{conversation_id}'"))
+        })
+    }
+
+    /// Soft reads (mode / model / slash-commands / usage) use this so a
+    /// missing runtime returns empty defaults instead of NotFound.
+    pub(crate) fn optional_runtime_handle(
+        &self,
+        conversation_id: &str,
+    ) -> Option<AgentRuntimeHandle> {
+        self.runtime_registry.get_runtime(conversation_id)
     }
 
     pub async fn runtime_summary_for(&self, conversation_id: &str) -> ConversationRuntimeSummary {

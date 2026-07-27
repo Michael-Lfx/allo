@@ -44,19 +44,20 @@ const logAcpModelInfo = (event: string, data: Record<string, unknown>) => {
 const fetchAcpModelInfoResult = async ([, conversation_id]: AcpModelInfoKey): Promise<AcpModelInfoFetchResult> => {
   try {
     const result = await ipcBridge.acpConversation.getModel.invoke({ conversation_id });
-    return { model_info: result?.model_info ?? null, missing_active_session: false };
+    const model_info = result?.model_info ?? null;
+    // Soft 200 with null means no active runtime (or no model payload yet).
+    // reloadModelInfo must not fall back directly; the handshake fallback
+    // effect handles genuine first-load without overwriting an established cache.
+    return { model_info, missing_active_session: model_info == null };
   } catch (error) {
-    const missingActiveSession = isBackendHttpError(error) && error.status === 404;
-    if (!missingActiveSession) {
+    const missingConversation = isBackendHttpError(error) && error.status === 404;
+    if (!missingConversation) {
       logAcpModelInfo('fetch_failed', {
         conversation_id,
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    // 404 before warmup or between ACP evict/rebuild. reloadModelInfo must
-    // not fall back directly; the no-cache fallback effect handles genuine
-    // first-load cases without overwriting an established model cache.
-    return { model_info: null, missing_active_session: missingActiveSession };
+    return { model_info: null, missing_active_session: true };
   }
 };
 
