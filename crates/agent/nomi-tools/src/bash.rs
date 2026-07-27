@@ -1041,24 +1041,30 @@ mod tests {
         }
 
         fn is_gone(&self) -> bool {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             let command = format!(
                 "if (Get-Process -Id {} -ErrorAction SilentlyContinue) {{ exit 1 }} else {{ exit 0 }}",
                 self.pid
             );
             std::process::Command::new("powershell.exe")
                 .args(["-NoLogo", "-NoProfile", "-Command", &command])
+                .creation_flags(CREATE_NO_WINDOW)
                 .status()
                 .is_ok_and(|status| status.success())
         }
 
         fn force_kill(&self) {
             if !self.is_gone() {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                 let command = format!(
                     "Stop-Process -Id {} -Force -ErrorAction SilentlyContinue",
                     self.pid
                 );
                 let _ = std::process::Command::new("powershell.exe")
                     .args(["-NoLogo", "-NoProfile", "-Command", &command])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .status();
             }
         }

@@ -30,7 +30,7 @@ function pidsOnPort(port) {
     if (isWin) {
       // Lines look like: "  TCP    127.0.0.1:5173   0.0.0.0:0   LISTENING   13880"
       // (UDP rows have no LISTENING state, so the filter naturally excludes them.)
-      const out = execSync('netstat -ano', { encoding: 'utf8' });
+      const out = execSync('netstat -ano', { encoding: 'utf8', windowsHide: true });
       const pids = new Set();
       for (const line of out.split(/\r?\n/)) {
         if (!line.includes('LISTENING')) continue;
@@ -56,7 +56,7 @@ function pidsOnPort(port) {
 function kill(pid) {
   try {
     // /T also takes the process tree, matching the orphaned-child case.
-    if (isWin) execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+    if (isWin) execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', windowsHide: true });
     else execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
     return true;
   } catch {
@@ -79,4 +79,4 @@ for (const port of ports) {
 }
 
 // Give the OS a beat to release the socket before the dev server tries to bind.
-if (killedAny && isWin) execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 400"', { stdio: 'ignore' });
+if (killedAny && isWin) execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 400"', { stdio: 'ignore', windowsHide: true });
