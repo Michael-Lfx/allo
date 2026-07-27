@@ -758,3 +758,70 @@ body[arco-theme='dark'] .arco-message-error {
   color: var(--color-text-1) !important;
   background-color: var(--color-fill-1) !important;
 }
+
+@keyframes knowledge-mount-pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(var(--primary-6), 0.35);
+  }
+  55% {
+    transform: scale(1.06);
+    box-shadow: 0 0 0 8px rgba(var(--primary-6), 0);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(var(--primary-6), 0);
+  }
+}
+
+@keyframes knowledge-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes knowledge-hit-pop {
+  0% {
+    transform: scale(0.86);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes knowledge-grow-flash {
+  0% {
+    background-color: rgba(var(--primary-6), 0.22);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.knowledge-mount-pulse {
+  animation: knowledge-mount-pulse 0.45s ease-out;
+}
+
+.knowledge-mount-pulse-icon {
+  animation: knowledge-mount-pulse 0.45s ease-out;
+}
+
+.knowledge-live-pulse {
+  animation: knowledge-live-pulse 1.6s ease-in-out infinite;
+}
+
+.knowledge-search-hit-pop {
+  animation: knowledge-hit-pop 0.28s ease-out;
+}
+
+.knowledge-tree-node-grow {
+  animation: knowledge-grow-flash 1.4s ease-out;
+}

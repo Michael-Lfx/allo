@@ -279,6 +279,19 @@ export const KnowledgeCard: React.FC<KnowledgeCardProps> = ({
           {t('knowledge.card.pending', { count: base.pending_inbox, defaultValue: '{{count}} 待审' })}
         </span>
       )}
+      {base.pending_inbox === 0 && base.file_count > 0 && (
+        <span
+          className={[
+            'knowledge-card-ready absolute top-14px right-14px inline-flex items-center gap-5px',
+            'rounded-full px-9px py-3px',
+            'text-11px font-600',
+            'bg-[rgba(var(--success-6),0.12)] text-[rgb(var(--success-5))] border border-solid border-[rgba(var(--success-6),0.35)]',
+          ].join(' ')}
+        >
+          <i className='knowledge-live-pulse w-6px h-6px rounded-full bg-[rgb(var(--success-6))]' />
+          {t('knowledge.card.ready', { defaultValue: '可检索' })}
+        </span>
+      )}
 
       {/* Header: icon + name + badges */}
       <div className='flex items-center gap-12px'>

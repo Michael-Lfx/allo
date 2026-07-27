@@ -37,6 +37,7 @@ import KnowledgeCard from '../KnowledgeCard';
 import KnowledgeTagFilterBar, { type KnowledgeKind, type KnowledgeSort } from '../KnowledgeTagFilterBar';
 import KnowledgeTagManagementModal from '../KnowledgeTagManagementModal';
 import CreateStudio from '../CreateStudio';
+import QuickCapture, { type QuickCaptureSeed } from '../QuickCapture';
 
 // ─── Filter pure function ────────────────────────────────────────────────────
 
@@ -145,12 +146,24 @@ const KnowledgeListPage: React.FC = () => {
     [bases, kindFilter, tagFilter, searchQuery, sort]
   );
 
-  // ─── CreateStudio state ─────────────────────────────────────────────────────
+  // ─── QuickCapture + advanced CreateStudio ─────────────────────────────────
 
+  const [quickVisible, setQuickVisible] = useState(false);
+  const [quickSeed, setQuickSeed] = useState<QuickCaptureSeed>('sample');
   const [studioVisible, setStudioVisible] = useState(false);
   const [studioInitialKind, setStudioInitialKind] = useState<KnowledgeKind | undefined>(undefined);
 
+  const openQuick = (initialKind?: KnowledgeKindShortcut) => {
+    const seed: QuickCaptureSeed =
+      initialKind === 'local' || initialKind === 'web' || initialKind === 'blank' || initialKind === 'sample'
+        ? initialKind
+        : 'sample';
+    setQuickSeed(seed);
+    setQuickVisible(true);
+  };
+
   const openStudio = (initialKind?: KnowledgeKindShortcut) => {
+    setQuickVisible(false);
     setStudioInitialKind(initialKind as KnowledgeKind | undefined);
     setStudioVisible(true);
   };
@@ -158,7 +171,6 @@ const KnowledgeListPage: React.FC = () => {
   const handleStudioCreated = (base: unknown) => {
     setStudioVisible(false);
     void refresh();
-    // Navigate to the new base detail
     if (base && typeof base === 'object' && 'knowledge_base_id' in base) {
       navigate(`/knowledge/${(base as IKnowledgeBase).knowledge_base_id}`);
     }
@@ -287,7 +299,9 @@ const KnowledgeListPage: React.FC = () => {
               {t('knowledge.title', { defaultValue: '知识库' })}
             </h1>
             <Typography.Paragraph className='!m-0 !mt-6px text-[var(--color-text-3)] text-13px max-w-560px'>
-              {t('knowledge.subtitle', { defaultValue: '集中管理你的专属领域知识。任意会话、终端、数字伙伴都能挂载它作为模型的扩展知识来源。' })}
+              {t('knowledge.subtitle', {
+                defaultValue: '把资料变成 Agent 可见的工作记忆。挂载到会话后，下一句对话就能有据可查。',
+              })}
             </Typography.Paragraph>
           </div>
           <div className='flex items-center gap-10px'>
@@ -305,11 +319,11 @@ const KnowledgeListPage: React.FC = () => {
             <div
               role='button'
               tabIndex={0}
-              onClick={() => openStudio()}
+              onClick={() => openQuick()}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  openStudio();
+                  openQuick();
                 }
               }}
               className={[
@@ -338,7 +352,11 @@ const KnowledgeListPage: React.FC = () => {
             extra={<Button onClick={() => void refresh()}>{t('knowledge.retry', { defaultValue: '重试' })}</Button>}
           />
         ) : bases.length === 0 && !loading ? (
-          <KnowledgeEmptyState onCreate={openStudio} onImport={() => void handleImport()} />
+          <KnowledgeEmptyState
+            onCreate={openQuick}
+            onImport={() => void handleImport()}
+            onAdvanced={() => openStudio()}
+          />
         ) : (
           <>
             {/* Two-dimension filter bar */}
@@ -372,11 +390,11 @@ const KnowledgeListPage: React.FC = () => {
               <div
                 role='button'
                 tabIndex={0}
-                onClick={() => openStudio()}
+                onClick={() => openQuick()}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    openStudio();
+                    openQuick();
                   }
                 }}
                 className={[
@@ -405,7 +423,13 @@ const KnowledgeListPage: React.FC = () => {
         )}
       </div>
 
-      {/* ─── CreateStudio (replaces old create Modal) ────────────────────────── */}
+      {/* ─── QuickCapture (primary) + CreateStudio (advanced) ─────────────── */}
+      <QuickCapture
+        visible={quickVisible}
+        initialSeed={quickSeed}
+        onClose={() => setQuickVisible(false)}
+        onAdvanced={() => openStudio()}
+      />
       <CreateStudio
         visible={studioVisible}
         initialKind={studioInitialKind}

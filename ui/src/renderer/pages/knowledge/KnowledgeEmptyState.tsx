@@ -1,222 +1,182 @@
 
-
-import React from 'react';
+import React, { useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { BookOne, FolderOpen, Plus, Upload, Earth, LarkOne } from '@icon-park/react';
-import { FEISHU_KNOWLEDGE_CREATION_ENABLED } from './CreateStudio/sourceTypes';
+import { Message, Spin } from '@arco-design/web-react';
+import { BookOne, Earth, FolderOpen, Plus, Upload } from '@icon-park/react';
+import { ipcBridge } from '@/common';
+import { isDesktopShell } from '@renderer/utils/platform';
+import { knowledgeErrorText } from './useKnowledge';
+import { bindingForNewBase, stashKnowledgeActivation } from './knowledgeActivation';
 
-export type KnowledgeKindShortcut = 'blank' | 'local' | 'web' | 'feishu';
+export type KnowledgeKindShortcut = 'blank' | 'local' | 'web' | 'feishu' | 'sample';
 
 interface KnowledgeEmptyStateProps {
   onCreate: (initialKind?: KnowledgeKindShortcut) => void;
   onImport?: () => void;
+  onAdvanced?: () => void;
 }
 
-/**
- * First-run empty state for the knowledge list: prominent three-step onboarding
- * (create -> fill -> mount), type shortcut tiles, and import CTA.
- *
- * Redesigned to be visually prominent as a full-page landing. All colors use
- * theme variables (no hard-coded semantic colors).
- */
-const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onImport }) => {
+const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onImport, onAdvanced }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
 
-  // ─── Three-step lifecycle ───────────────────────────────────────────────────
+  const activate = useCallback(
+    async (seed: 'sample' | 'blank' | 'local' | 'web', opts?: { root_path?: string; url?: string }) => {
+      setBusy(true);
+      try {
+        const outcome = await ipcBridge.knowledge.quickCreate.invoke({
+          seed,
+          root_path: opts?.root_path,
+          url: opts?.url,
+        });
+        stashKnowledgeActivation({
+          knowledge_base_id: outcome.base.knowledge_base_id,
+          suggest_prompt: outcome.suggest_prompt,
+          binding: bindingForNewBase(outcome.base.knowledge_base_id),
+        });
+        Message.success(t('knowledge.quick.createOk', { defaultValue: '知识库已就绪，去对话里试试' }));
+        navigate('/guid');
+      } catch (e) {
+        Message.error(knowledgeErrorText(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [navigate, t]
+  );
 
-  const steps: { num: number; icon: React.ReactNode; title: string; desc: string }[] = [
+  const pickLocal = useCallback(async () => {
+    if (!isDesktopShell()) {
+      onCreate('local');
+      return;
+    }
+    try {
+      const paths = await ipcBridge.dialog.showOpen.invoke({ properties: ['openDirectory'] });
+      const path = paths?.[0];
+      if (!path) return;
+      await activate('local', { root_path: path });
+    } catch (e) {
+      Message.error(String(e));
+    }
+  }, [activate, onCreate]);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDropActive(false);
+      // Browser DnD of folders is limited; guide user to local picker.
+      void pickLocal();
+    },
+    [pickLocal]
+  );
+
+  const tiles = [
     {
-      num: 1,
-      icon: <Plus theme='outline' size='18' fill='currentColor' className='block' />,
-      title: t('knowledge.onboarding.step1Title', { defaultValue: '创建' }),
-      desc: t('knowledge.onboarding.step1Desc', { defaultValue: '从空白、本地文件夹或一组 URL 创建知识库。' }),
+      key: 'sample' as const,
+      label: t('knowledge.quick.sampleTitle', { defaultValue: '用示例库试试' }),
+      icon: <BookOne theme='outline' size='20' />,
+      onClick: () => void activate('sample'),
     },
     {
-      num: 2,
-      icon: <BookOne theme='outline' size='18' fill='currentColor' className='block' />,
-      title: t('knowledge.onboarding.step2Title', { defaultValue: '填充' }),
-      desc: t('knowledge.onboarding.step2Desc', { defaultValue: '放入 .md 文档——也可以让 AI 自动生成梗概和 README。' }),
-    },
-    {
-      num: 3,
-      icon: <FolderOpen theme='outline' size='18' fill='currentColor' className='block' />,
-      title: t('knowledge.onboarding.step3Title', { defaultValue: '挂载' }),
-      desc: t('knowledge.onboarding.step3Desc', { defaultValue: '挂载到会话，模型会在 .flowy/knowledge/ 下随时查阅。' }),
-    },
-  ];
-
-  // ─── Type shortcut tiles ────────────────────────────────────────────────────
-
-  const kinds: {
-    key: KnowledgeKindShortcut;
-    label: string;
-    icon: React.ReactNode;
-    disabled?: boolean;
-    badge?: string;
-  }[] = [
-    {
-      key: 'blank',
-      label: t('knowledge.empty.kindBlank', { defaultValue: '空白知识库' }),
-      icon: <Plus theme='outline' size='20' />,
-    },
-    {
-      key: 'local',
+      key: 'local' as const,
       label: t('knowledge.empty.kindLocal', { defaultValue: '本地目录' }),
       icon: <FolderOpen theme='outline' size='20' />,
+      onClick: () => void pickLocal(),
     },
     {
-      key: 'web',
+      key: 'web' as const,
       label: t('knowledge.empty.kindWeb', { defaultValue: '从网页抓取' }),
       icon: <Earth theme='outline' size='20' />,
+      onClick: () => onCreate('web'),
     },
     {
-      key: 'feishu',
-      label: t('knowledge.empty.kindFeishu', { defaultValue: '飞书文档' }),
-      icon: <LarkOne theme='outline' size='20' />,
-      disabled: !FEISHU_KNOWLEDGE_CREATION_ENABLED,
-      badge: !FEISHU_KNOWLEDGE_CREATION_ENABLED
-        ? t('knowledge.studio.temporarilyDisabled', { defaultValue: '暂不可用' })
-        : undefined,
+      key: 'blank' as const,
+      label: t('knowledge.empty.kindBlank', { defaultValue: '空白知识库' }),
+      icon: <Plus theme='outline' size='20' />,
+      onClick: () => void activate('blank'),
     },
   ];
 
   return (
-    <div className='flex w-full flex-col items-center gap-32px px-16px py-56px'>
-      {/* Hero icon + headline */}
-      <div className='flex flex-col items-center gap-12px text-center'>
-        <div className='flex size-72px items-center justify-center rounded-full bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)]'>
-          <BookOne theme='outline' size='36' fill='currentColor' />
-        </div>
+    <div className='flex w-full flex-col items-center gap-28px px-16px py-48px'>
+      <div className='flex flex-col items-center gap-10px text-center'>
         <h2 className='m-0 text-22px font-bold text-[var(--color-text-1)]'>
-          {t('knowledge.onboarding.title', { defaultValue: '开始管理你的专属知识' })}
+          {t('knowledge.onboarding.title', { defaultValue: '把资料丢进去，下一句就有据可查' })}
         </h2>
-        <p className='m-0 max-w-480px text-14px leading-relaxed text-[var(--color-text-3)]'>
+        <p className='m-0 max-w-520px text-14px leading-relaxed text-[var(--color-text-3)]'>
           {t('knowledge.onboarding.subtitle', {
-            defaultValue: '知识库是一个 Markdown 文档目录，可以挂载进任意会话，作为模型的扩展知识来源。',
+            defaultValue: '知识库是 Agent 可见的工作记忆。先塞资料，再问一句，马上看到命中。',
           })}
         </p>
       </div>
 
-      {/* Three-step onboarding cards */}
-      <div className='flex w-full max-w-780px flex-col gap-14px sm:flex-row'>
-        {steps.map((s) => (
-          <div
-            key={s.num}
-            className='flex flex-1 flex-col rounded-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-20px'
-          >
-            <div className='grid grid-cols-[28px_minmax(0,1fr)] gap-x-10px gap-y-8px'>
-              <span className='col-start-1 row-start-1 flex size-28px shrink-0 items-center justify-center self-center rounded-8px bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)] text-12px font-bold leading-none'>
-                {s.num}
-              </span>
-              <div className='col-start-2 row-start-1 flex min-h-28px min-w-0 items-center gap-10px'>
-                <span className='flex size-20px shrink-0 items-center justify-center text-[rgb(var(--primary-6))] leading-none [&_svg]:block'>
-                  {s.icon}
-                </span>
-                <span className='min-w-0 text-14px font-semibold leading-5 text-[var(--color-text-1)]'>
-                  {s.title}
-                </span>
-              </div>
-              <span className='col-start-2 row-start-2 text-13px leading-[1.7] text-[var(--color-text-3)]'>
-                {s.desc}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Type shortcut tiles */}
-      <div className='flex w-full max-w-780px flex-col gap-10px'>
-        <span className='text-12px font-semibold text-[var(--color-text-3)]'>
-          {t('knowledge.empty.quickStart', { defaultValue: '快速开始' })}
-        </span>
-        <div className='grid grid-cols-2 gap-10px sm:grid-cols-4'>
-          {kinds.map((k) => (
-            <div
-              key={k.key}
-              role='button'
-              tabIndex={k.disabled ? -1 : 0}
-              aria-disabled={k.disabled || undefined}
-              onClick={() => {
-                if (!k.disabled) onCreate(k.key);
-              }}
-              onKeyDown={(e) => {
-                if (!k.disabled && (e.key === 'Enter' || e.key === ' ')) {
-                  e.preventDefault();
-                  onCreate(k.key);
-                }
-              }}
-              className={[
-                'flex flex-col items-center justify-center gap-8px select-none',
-                'rounded-12px border border-dashed border-[var(--color-border-2)] bg-transparent',
-                'py-20px px-12px',
-                'text-[var(--color-text-2)]',
-                k.disabled
-                  ? 'cursor-not-allowed opacity-50'
-                  : 'cursor-pointer hover:border-[var(--color-primary-light-3)] hover:text-[rgb(var(--primary-6))] hover:bg-[var(--color-primary-light-1)]',
-                'transition-all duration-150',
-              ].join(' ')}
-            >
-              {k.icon}
-              <span className='text-12px font-medium'>{k.label}</span>
-              {k.badge && (
-                <span className='rounded-5px bg-[var(--color-fill-3)] px-6px py-1px text-10px text-[var(--color-text-3)]'>
-                  {k.badge}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Primary CTA + Import secondary CTA */}
-      <div className='flex items-center gap-14px'>
+      <Spin loading={busy} className='w-full max-w-720px'>
         <div
-          role='button'
-          tabIndex={0}
-          onClick={() => onCreate()}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onCreate();
-            }
+          className={`knowledge-drop-zone flex w-full flex-col items-center gap-14px rounded-18px border border-dashed px-24px py-36px transition-colors ${
+            dropActive
+              ? 'border-[rgba(var(--primary-6),0.55)] bg-[rgba(var(--primary-6),0.08)]'
+              : 'border-[var(--color-border-3)] bg-[var(--color-fill-1)]'
+          }`}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            setDropActive(true);
           }}
-          className={[
-            'inline-flex items-center gap-7px cursor-pointer select-none',
-            'rounded-full px-22px py-10px text-14px font-700',
-            'border border-solid border-transparent',
-            'bg-[rgba(var(--primary-6),0.12)] text-[var(--color-text-1)]',
-            'shadow-[0_6px_18px_rgba(var(--primary-6),0.14)]',
-            'hover:bg-[rgba(var(--primary-6),0.18)]',
-            'focus-visible:border-[rgb(var(--primary-6))] focus-visible:outline-none',
-            'transition-all duration-150',
-          ].join(' ')}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDropActive(true);
+          }}
+          onDragLeave={() => setDropActive(false)}
+          onDrop={onDrop}
         >
-          <Plus theme='outline' size='15' className='text-[rgb(var(--primary-6))]' />
-          {t('knowledge.newBase', { defaultValue: '新建知识库' })}
-        </div>
-        {onImport && (
-          <div
-            role='button'
-            tabIndex={0}
-            onClick={onImport}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onImport();
-              }
-            }}
-            className={[
-              'inline-flex items-center gap-7px cursor-pointer select-none',
-              'rounded-full px-22px py-10px text-14px font-medium',
-              'border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] text-[var(--color-text-2)]',
-              'hover:border-[var(--color-primary-light-3)] hover:text-[rgb(var(--primary-6))] hover:bg-[var(--color-primary-light-1)]',
-              'transition-all duration-150',
-            ].join(' ')}
-          >
-            <Upload theme='outline' size='15' />
-            {t('knowledge.onboarding.import', { defaultValue: '导入' })}
+          <div className='flex size-56px items-center justify-center rounded-full bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)]'>
+            <Upload theme='outline' size='26' fill='currentColor' />
           </div>
-        )}
+          <div className='text-15px font-600 text-[var(--color-text-1)]'>
+            {t('knowledge.onboarding.dropTitle', { defaultValue: '拖入文件夹，或选一种方式开始' })}
+          </div>
+          <div className='text-13px text-[var(--color-text-3)]'>
+            {t('knowledge.onboarding.dropHint', {
+              defaultValue: '试问还没资料可答——先放入 Markdown，再去对话验证。',
+            })}
+          </div>
+
+          <div className='mt-8px grid w-full grid-cols-2 gap-10px sm:grid-cols-4'>
+            {tiles.map((tile) => (
+              <button
+                key={tile.key}
+                type='button'
+                className='knowledge-empty-kind-tile flex flex-col items-center gap-8px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-10px py-14px cursor-pointer transition-colors hover:border-[rgba(var(--primary-6),0.36)] hover:bg-[rgba(var(--primary-6),0.05)]'
+                onClick={tile.onClick}
+                disabled={busy}
+              >
+                <span className='text-[rgb(var(--primary-6))]'>{tile.icon}</span>
+                <span className='text-12px font-500 text-[var(--color-text-1)] text-center'>{tile.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </Spin>
+
+      <div className='flex flex-wrap items-center justify-center gap-12px'>
+        <button
+          type='button'
+          className='border-none bg-transparent p-0 text-13px text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)]'
+          onClick={() => onAdvanced?.() ?? onCreate()}
+        >
+          {t('knowledge.quick.moreSources', { defaultValue: '更多来源（飞书 / 导入 zip）›' })}
+        </button>
+        {onImport ? (
+          <button
+            type='button'
+            className='border-none bg-transparent p-0 text-13px text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)]'
+            onClick={onImport}
+          >
+            {t('knowledge.onboarding.import', { defaultValue: '导入' })}
+          </button>
+        ) : null}
       </div>
     </div>
   );

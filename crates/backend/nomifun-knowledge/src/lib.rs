@@ -26,6 +26,7 @@ pub mod feishu_md;
 pub mod mcp_server;
 mod broker;
 pub mod mount;
+pub mod quick;
 pub mod routes;
 pub mod service;
 pub mod source_url;

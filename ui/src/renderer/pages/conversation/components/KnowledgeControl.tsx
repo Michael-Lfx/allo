@@ -211,6 +211,8 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
   const [persistedBinding, setPersistedBinding] = useState<IKnowledgeBinding>(defaultKnowledgeBinding);
   const binding = draft ? draft.value : persistedBinding;
   const [searchQuery, setSearchQuery] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [mountPulse, setMountPulse] = useState(false);
   const isDraftMode = !!draft;
 
   const reloadBinding = useCallback(async () => {
@@ -311,7 +313,15 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
     try {
       await ipcBridge.knowledge.setBinding.invoke({ kind, target_id: id, ...next });
       if (next.enabled !== binding.enabled) {
-        Message.success(next.enabled ? t('knowledge.control.enabledOk') : t('knowledge.control.disabledOk'));
+        Message.success(
+          next.enabled
+            ? t('knowledge.control.enabledOk', { defaultValue: '知识已接入这场对话。' })
+            : t('knowledge.control.disabledOk')
+        );
+        if (next.enabled) {
+          setMountPulse(true);
+          window.setTimeout(() => setMountPulse(false), 480);
+        }
       }
     } catch (e) {
       Message.error(String(e));
@@ -568,7 +578,7 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
               </div>
             </div>
 
-            {/* Writeback section */}
+            {/* Writeback section — advanced options collapsed by default */}
             <div className={sectionClass}>
               <div className='flex items-center justify-between gap-10px'>
                 <span className='min-w-0 flex flex-col gap-2px'>
@@ -588,44 +598,54 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
               </div>
 
               {binding.writeback && (
-                <div className='flex flex-col gap-9px'>
-                  {/* Mode */}
-                  <div className={fieldStackClass}>
-                    <span className={fieldLabelClass}>
-                      {t('knowledge.control.writebackMode', { defaultValue: '回血模式' })}
-                    </span>
-                    {renderSegment(
-                      binding.writeback_mode,
-                      [
-                        { value: 'staged', label: t('knowledge.control.modeStaged', { defaultValue: '暂存回血' }) },
-                        { value: 'direct', label: t('knowledge.control.modeDirect', { defaultValue: '直接回血' }) },
-                      ],
-                      (v) => handleWritebackMode(v as KnowledgeWritebackMode)
-                    )}
-                    <span className='text-[var(--color-text-2)] text-11px leading-15px'>{writebackModeHint}</span>
-                  </div>
-
-                  {/* Eagerness */}
-                  <div className={fieldStackClass}>
-                    <span className={fieldLabelClass}>
-                      {t('knowledge.control.writebackEagerness', { defaultValue: '回写意识' })}
-                    </span>
-                    {renderSegment(
-                      binding.writeback_eagerness,
-                      [
-                        {
-                          value: 'conservative',
-                          label: t('knowledge.control.eagernessConservative', { defaultValue: '保守型' }),
-                        },
-                        {
-                          value: 'aggressive',
-                          label: t('knowledge.control.eagernessAggressive', { defaultValue: '激进型' }),
-                        },
-                      ],
-                      (v) => handleWritebackEagerness(v as KnowledgeWritebackEagerness)
-                    )}
-                    <span className='text-[var(--color-text-2)] text-11px leading-15px'>{writebackEagernessHint}</span>
-                  </div>
+                <div className='flex flex-col gap-8px'>
+                  <button
+                    type='button'
+                    className='knowledge-control-advanced-toggle self-start border-none bg-transparent p-0 text-11px font-600 text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)]'
+                    onClick={() => setAdvancedOpen((v) => !v)}
+                  >
+                    {advancedOpen
+                      ? t('knowledge.control.hideAdvanced', { defaultValue: '收起高级选项' })
+                      : t('knowledge.control.showAdvanced', { defaultValue: '高级选项 ›' })}
+                  </button>
+                  {advancedOpen ? (
+                    <div className='flex flex-col gap-9px'>
+                      <div className={fieldStackClass}>
+                        <span className={fieldLabelClass}>
+                          {t('knowledge.control.writebackMode', { defaultValue: '回血模式' })}
+                        </span>
+                        {renderSegment(
+                          binding.writeback_mode,
+                          [
+                            { value: 'staged', label: t('knowledge.control.modeStaged', { defaultValue: '暂存回血' }) },
+                            { value: 'direct', label: t('knowledge.control.modeDirect', { defaultValue: '直接回血' }) },
+                          ],
+                          (v) => handleWritebackMode(v as KnowledgeWritebackMode)
+                        )}
+                        <span className='text-[var(--color-text-2)] text-11px leading-15px'>{writebackModeHint}</span>
+                      </div>
+                      <div className={fieldStackClass}>
+                        <span className={fieldLabelClass}>
+                          {t('knowledge.control.writebackEagerness', { defaultValue: '回写意识' })}
+                        </span>
+                        {renderSegment(
+                          binding.writeback_eagerness,
+                          [
+                            {
+                              value: 'conservative',
+                              label: t('knowledge.control.eagernessConservative', { defaultValue: '保守型' }),
+                            },
+                            {
+                              value: 'aggressive',
+                              label: t('knowledge.control.eagernessAggressive', { defaultValue: '激进型' }),
+                            },
+                          ],
+                          (v) => handleWritebackEagerness(v as KnowledgeWritebackEagerness)
+                        )}
+                        <span className='text-[var(--color-text-2)] text-11px leading-15px'>{writebackEagernessHint}</span>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -646,13 +666,17 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
       shape='round'
       type='secondary'
       disabled={!!disabledReason}
-      className={capabilityHeaderButtonClass(binding.enabled, 'shrink-0')}
+      className={`${capabilityHeaderButtonClass(binding.enabled, 'shrink-0')}${mountPulse ? ' knowledge-mount-pulse' : ''}`}
       style={capabilityHeaderButtonStyle(dotColor)}
     >
       <span className='inline-flex items-center gap-6px leading-none'>
-        {/* Icon tinted by enabled-state (primary when mounted, gray off) — the
-            status used to live on a separate dot beside a primary-blue button. */}
-        <BookOne theme='outline' size='14' fill={dotColor} className='block' style={{ lineHeight: 0 }} />
+        <BookOne
+          theme='outline'
+          size='14'
+          fill={dotColor}
+          className={`block${mountPulse ? ' knowledge-mount-pulse-icon' : ''}`}
+          style={{ lineHeight: 0 }}
+        />
         <span className='text-12px'>{t('knowledge.control.label')}</span>
       </span>
     </Button>

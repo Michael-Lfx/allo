@@ -21,6 +21,7 @@ import {
   Badge,
   Button,
   Checkbox,
+  Drawer,
   Dropdown,
   Empty,
   Input,
@@ -29,7 +30,6 @@ import {
   Modal,
   Result,
   Spin,
-  Tabs,
   Tag,
   Tree,
 } from '@arco-design/web-react';
@@ -64,6 +64,7 @@ import {
   knowledgeErrorText,
   notifySourceFetchResult,
   useKnowledgeBase,
+  useKnowledgeConsumers,
   useKnowledgeInbox,
 } from '../useKnowledge';
 import { useKnowledgeTags } from '../useKnowledgeTags';
@@ -71,6 +72,7 @@ import KnowledgeModelSelector, { useKnowledgeAutogenModel } from '../KnowledgeMo
 import InboxReviewPanel from '../InboxReviewPanel';
 import KnowledgeConnectorDrawer from '../KnowledgeConnectorDrawer';
 import KnowledgeConsumersSection from '../KnowledgeConsumersSection';
+import KnowledgeSearchPanel from '../KnowledgeSearchPanel';
 import TagPicker from '../CreateStudio/TagPicker';
 import { FEISHU_KNOWLEDGE_CREATION_ENABLED } from '../CreateStudio/sourceTypes';
 import {
@@ -83,10 +85,22 @@ import {
   replaceKnowledgePathPrefix,
 } from './treeModel';
 
-// ─── Tab keys (maps to ?tab= query values) ─────────────────────────────────────
+// ─── Secondary panels via query (?activity=1 / ?settings=1); legacy ?tab= kept ─
 
-type TabKey = 'docs' | 'inbox' | 'use' | 'set';
-const ALL_TABS: TabKey[] = ['docs', 'inbox', 'use', 'set'];
+type DetailPanel = 'none' | 'activity' | 'settings';
+
+function panelFromSearchParams(searchParams: URLSearchParams): DetailPanel {
+  if (searchParams.get('settings') === '1' || searchParams.get('tab') === 'set') return 'settings';
+  if (
+    searchParams.get('activity') === '1' ||
+    searchParams.get('activity') === 'inbox' ||
+    searchParams.get('tab') === 'inbox' ||
+    searchParams.get('tab') === 'use'
+  ) {
+    return 'activity';
+  }
+  return 'none';
+}
 
 // ─── Kind config (mirrors KnowledgeCard — intentionally duplicated to avoid
 //     circular deps; will be extracted to shared module in future cleanup) ────────
@@ -494,24 +508,38 @@ const KnowledgeDetailPage: React.FC = () => {
   // ─── Data hooks ─────────────────────────────────────────────────────────────
   const { base, files, tree, loading, error, refresh } = useKnowledgeBase(id);
   const { items: inboxItems, loading: inboxLoading, refresh: refreshInbox } = useKnowledgeInbox(id);
+  const { consumers } = useKnowledgeConsumers(id);
   const { choice: modelChoice, setChoice: setModelChoice } = useKnowledgeAutogenModel();
   const { tags: allTags, createTag } = useKnowledgeTags();
 
-  // ─── Tab routing via ?tab= ──────────────────────────────────────────────────
-  const rawTabParam = searchParams.get('tab');
-  const activeTab: TabKey = rawTabParam && ALL_TABS.includes(rawTabParam as TabKey) ? (rawTabParam as TabKey) : 'docs';
+  // ─── Secondary panels via query ─────────────────────────────────────────────
+  const activePanel = panelFromSearchParams(searchParams);
 
-  const setTab = useCallback(
-    (key: string) => {
+  const setPanel = useCallback(
+    (panel: DetailPanel) => {
       setSearchParams(
         (prev) => {
-          prev.set('tab', key);
+          prev.delete('tab');
+          prev.delete('activity');
+          prev.delete('settings');
+          if (panel === 'activity') prev.set('activity', '1');
+          if (panel === 'settings') prev.set('settings', '1');
           return prev;
         },
         { replace: true }
       );
     },
     [setSearchParams]
+  );
+
+  // Legacy helpers used by older call sites in this file
+  const setTab = useCallback(
+    (key: string) => {
+      if (key === 'set') setPanel('settings');
+      else if (key === 'inbox' || key === 'use') setPanel('activity');
+      else setPanel('none');
+    },
+    [setPanel]
   );
 
   // ─── Tag resolution ─────────────────────────────────────────────────────────
@@ -548,6 +576,10 @@ const KnowledgeDetailPage: React.FC = () => {
     setConnectorVisible(true);
   }, []);
   const [fileSearch, setFileSearch] = useState('');
+  const [searchPanelVisible, setSearchPanelVisible] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [highlightPath, setHighlightPath] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
   const isTreeSearch = fileSearch.trim().length > 0;
 
   const source = getBaseSource(base);
@@ -561,8 +593,16 @@ const KnowledgeDetailPage: React.FC = () => {
     void refreshInbox();
   };
 
-  // Auto-select first file
+  // Auto-select first file / honor ?highlight=
   useEffect(() => {
+    const highlight = searchParams.get('highlight');
+    if (highlight && files.some((f) => f.rel_path === highlight)) {
+      setSelectedPath(highlight);
+      setSelectedTreeKey(highlight);
+      setHighlightPath(highlight);
+      window.setTimeout(() => setHighlightPath(null), 1600);
+      return;
+    }
     if (!selectedPath && files.length > 0) {
       setSelectedPath(files[0].rel_path);
       setSelectedTreeKey(files[0].rel_path);
@@ -572,7 +612,7 @@ const KnowledgeDetailPage: React.FC = () => {
       setSelectedPath(nextPath);
       setSelectedTreeKey(nextPath);
     }
-  }, [files, selectedPath]);
+  }, [files, selectedPath, searchParams]);
 
   // Reset per-base view state when switching knowledge bases — the route param
   // changes but React reuses this component instance, so the previous base's
@@ -676,6 +716,74 @@ const KnowledgeDetailPage: React.FC = () => {
     setRenameName(item.name);
     setRenameVisible(true);
   };
+
+  const uploadMarkdownFiles = useCallback(
+    async (absolutePaths: string[]) => {
+      if (!id || absolutePaths.length === 0) return;
+      const folder = selectedFolderPath || parentDirOfKnowledgePath(selectedPath) || '';
+      setUploading(true);
+      let written = 0;
+      let lastPath: string | null = null;
+      try {
+        for (const abs of absolutePaths) {
+          const rawName = abs.split(/[/\\]/).pop()?.trim() || 'untitled.md';
+          const name = rawName.toLowerCase().endsWith('.md') ? rawName : `${rawName}.md`;
+          const content = await ipcBridge.fs.readFile.invoke({ path: abs });
+          if (content == null) continue;
+          const rel = folder ? `${folder}/${name}` : name;
+          await ipcBridge.knowledge.writeFile.invoke({
+            knowledge_base_id: id,
+            path: rel,
+            content: String(content),
+          });
+          written += 1;
+          lastPath = rel;
+        }
+        if (written === 0) {
+          Message.warning(t('knowledge.detail.docs.uploadEmpty', { defaultValue: '没有可上传的 Markdown 文件' }));
+          return;
+        }
+        setFileSearch('');
+        await refresh();
+        await reloadTreePath(folder);
+        if (lastPath) {
+          setSelectedPath(lastPath);
+          setSelectedTreeKey(lastPath);
+          setHighlightPath(lastPath);
+          window.setTimeout(() => setHighlightPath(null), 1600);
+        }
+        Message.success(
+          t('knowledge.detail.docs.uploadOk', { defaultValue: '已上传 {{n}} 个文件', n: written })
+        );
+      } catch (e) {
+        Message.error(String(e));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [id, refresh, reloadTreePath, selectedFolderPath, selectedPath, t]
+  );
+
+  const handleUpload = useCallback(async () => {
+    try {
+      const paths = await ipcBridge.dialog.showOpen.invoke({
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      });
+      if (!paths?.length) return;
+      await uploadMarkdownFiles(paths);
+    } catch (e) {
+      Message.error(String(e));
+    }
+  }, [uploadMarkdownFiles]);
+
+  const handleSelectSearchHit = useCallback((relPath: string) => {
+    setSelectedPath(relPath);
+    setSelectedTreeKey(relPath);
+    setSelectedFolderPath(parentDirOfKnowledgePath(relPath));
+    setHighlightPath(relPath);
+    window.setTimeout(() => setHighlightPath(null), 1600);
+  }, []);
 
   const handleCreateFile = async () => {
     if (!id) return;
@@ -1003,22 +1111,35 @@ const KnowledgeDetailPage: React.FC = () => {
             <Button
               shape='round'
               icon={<Search theme='outline' size='14' />}
-              onClick={() => Message.info(t('knowledge.detail.searchPlaceholder', { defaultValue: '检索功能开发中' }))}
+              onClick={() => setSearchPanelVisible(true)}
             >
               {t('knowledge.detail.search', { defaultValue: '检索' })}
             </Button>
+            <Badge count={pendingCount} dot={pendingCount > 0} offset={[-4, 4]}>
+              <Button shape='round' onClick={() => setPanel('activity')}>
+                {t('knowledge.detail.activity', { defaultValue: '动态' })}
+              </Button>
+            </Badge>
             <Button
               type='primary'
               shape='round'
               icon={<LinkOne theme='outline' size='14' />}
-              onClick={() => setTab('use')}
+              onClick={() => {
+                setPanel('activity');
+                navigate('/guid');
+              }}
             >
-              {t('knowledge.detail.mountToSession', { defaultValue: '挂载到会话' })}
+              {t('knowledge.detail.tryInChat', { defaultValue: '去对话试用' })}
             </Button>
+            <Button
+              shape='round'
+              icon={<SettingTwo theme='outline' size='14' />}
+              onClick={() => setPanel('settings')}
+            />
             <Dropdown
               droplist={
                 <Menu>
-                  <Menu.Item key='export' onClick={() => setTab('set')}>
+                  <Menu.Item key='export' onClick={() => setPanel('settings')}>
                     {t('knowledge.detail.export', { defaultValue: '导出' })}
                   </Menu.Item>
                   <Menu.Item key='openFolder' onClick={() => void handleOpenFolder()}>
@@ -1037,7 +1158,7 @@ const KnowledgeDetailPage: React.FC = () => {
                       {t('knowledge.detail.connector', { defaultValue: '连接器' })}
                     </span>
                   </Menu.Item>
-                  <Menu.Item key='delete' className='!text-[rgb(var(--danger-6))]' onClick={() => setTab('set')}>
+                  <Menu.Item key='delete' className='!text-[rgb(var(--danger-6))]' onClick={() => setPanel('settings')}>
                     {t('knowledge.detail.delete', { defaultValue: '删除知识库' })}
                   </Menu.Item>
                 </Menu>
@@ -1051,10 +1172,29 @@ const KnowledgeDetailPage: React.FC = () => {
 
         {/* ─── Meta info row ─────────────────────────────────────────────────── */}
         {base && (
-          <div className='flex flex-wrap gap-14px text-12px text-[var(--color-text-3)]'>
+          <div className='flex flex-wrap gap-14px text-12px text-[var(--color-text-3)] items-center'>
+            <span className='knowledge-live-dot inline-flex items-center gap-6px'>
+              <i
+                className={`w-6px h-6px rounded-full ${
+                  consumers.some((c) => c.enabled)
+                    ? 'bg-[rgb(var(--success-6))] shadow-[0_0_8px_rgb(var(--success-6))] animate-pulse'
+                    : 'bg-[var(--color-fill-3)]'
+                }`}
+              />
+              {consumers.some((c) => c.enabled)
+                ? t('knowledge.card.liveMounted', {
+                    defaultValue: 'Live · {{n}} 处挂载',
+                    n: consumers.filter((c) => c.enabled).length,
+                  })
+                : t('knowledge.card.notMounted', { defaultValue: '尚未挂载' })}
+            </span>
             <span>{t('knowledge.detail.fileCount', { defaultValue: '{{n}} 篇文档', n: base.file_count })}</span>
             <span>{formatSize(base.total_size)}</span>
-            {/* mount count placeholder — D3 consumers section will provide real data */}
+            {pendingCount > 0 ? (
+              <span className='text-[rgb(var(--warning-5))]'>
+                {t('knowledge.card.pending', { count: pendingCount, defaultValue: '{{count}} 待审' })}
+              </span>
+            ) : null}
             <span>{t('knowledge.detail.rootPath', { defaultValue: '{{path}}', path: base.root_path })}</span>
             {relativeTime && (
               <span>{t('knowledge.detail.updatedAt', { defaultValue: '更新于 {{time}}', time: relativeTime })}</span>
@@ -1062,18 +1202,16 @@ const KnowledgeDetailPage: React.FC = () => {
           </div>
         )}
 
-        {/* ─── Tabs ──────────────────────────────────────────────────────────── */}
-        <Tabs className='knowledge-detail-tabs' activeTab={activeTab} onChange={(k) => setTab(k)} type='line'>
-          {/* Tab: Documents */}
-          <Tabs.TabPane key='docs' title={t('knowledge.detail.tabDocs', { defaultValue: '文档' })}>
-            {/* ── Document tree + viewer (D2 redesign) ── */}
-            <div
-              className={classNames(
-                'flex w-full gap-18px pt-16px',
-                isMobile ? 'flex-col' : 'flex-row',
-                'min-h-440px'
-              )}
-            >
+        {/* ─── Document canvas (primary) ─────────────────────────────────────── */}
+        <div className='knowledge-detail-tabs knowledge-detail-canvas pt-4px'>
+          {/* ── Document tree + viewer (D2 redesign) ── */}
+          <div
+            className={classNames(
+              'flex w-full gap-18px pt-16px',
+              isMobile ? 'flex-col' : 'flex-row',
+              'min-h-440px'
+            )}
+          >
               {/* ─── Left: File tree panel ─── */}
               <div
                 className={classNames(
@@ -1103,8 +1241,9 @@ const KnowledgeDetailPage: React.FC = () => {
                   </button>
                   <button
                     type='button'
-                    className='knowledge-doc-action inline-flex min-w-0 appearance-none items-center justify-center gap-4px rounded-8px border-none bg-transparent px-6px py-7px font-[inherit] text-11px font-500 text-[var(--color-text-2)] cursor-pointer transition-colors hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)] focus-visible:text-[var(--color-text-1)]'
-                    onClick={() => Message.info(t('knowledge.detail.docs.uploadTodo', { defaultValue: '上传功能开发中' }))}
+                    className='knowledge-doc-action inline-flex min-w-0 appearance-none items-center justify-center gap-4px rounded-8px border-none bg-transparent px-6px py-7px font-[inherit] text-11px font-500 text-[var(--color-text-2)] cursor-pointer transition-colors hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)] focus-visible:text-[var(--color-text-1)] disabled:opacity-50 disabled:cursor-not-allowed'
+                    onClick={() => void handleUpload()}
+                    disabled={uploading}
                     title={t('knowledge.detail.docs.upload', { defaultValue: '上传' })}
                   >
                     <Upload theme='outline' size='12' className='shrink-0' />
@@ -1174,7 +1313,12 @@ const KnowledgeDetailPage: React.FC = () => {
                         renderTitle={(node) => {
                           const item = node.dataRef as IKnowledgeTreeEntry;
                           return (
-                            <div className='knowledge-tree-node-row group flex w-full min-w-0 items-center gap-6px pr-1px'>
+                            <div
+                              className={classNames(
+                                'knowledge-tree-node-row group flex w-full min-w-0 items-center gap-6px pr-1px rounded-6px',
+                                highlightPath === item.rel_path && 'knowledge-tree-node-grow'
+                              )}
+                            >
                               <span className='knowledge-tree-node-main flex min-w-0 flex-1 items-center gap-5px'>
                                 {item.is_dir ? (
                                   <FolderOpen theme='outline' size='13' className='shrink-0 text-[var(--color-text-3)]' />
@@ -1245,8 +1389,34 @@ const KnowledgeDetailPage: React.FC = () => {
               {/* ─── Right: Viewer / editor panel ─── */}
               <div className='box-border min-w-0 flex-1 flex flex-col rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] overflow-hidden'>
                 {selectedPath == null ? (
-                  <div className='flex-1 grid place-items-center'>
-                    <Empty description={t('knowledge.selectFile')} />
+                  <div
+                    className={`knowledge-canvas-drop flex-1 grid place-items-center px-24px transition-colors ${
+                      dropActive ? 'bg-[rgba(var(--primary-6),0.06)]' : ''
+                    }`}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      setDropActive(true);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDropActive(true);
+                    }}
+                    onDragLeave={() => setDropActive(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDropActive(false);
+                      void handleUpload();
+                    }}
+                  >
+                    <Empty
+                      description={
+                        files.length === 0
+                          ? t('knowledge.detail.docs.emptyDrop', {
+                              defaultValue: '试问还没资料可答 — 拖入或上传 Markdown，记忆就会生长',
+                            })
+                          : t('knowledge.selectFile')
+                      }
+                    />
                   </div>
                 ) : (
                   <>
@@ -1343,176 +1513,88 @@ const KnowledgeDetailPage: React.FC = () => {
                 </Button>
               )}
             </div>
-          </Tabs.TabPane>
-
-          {/* Tab: Inbox / Pending Review */}
-          <Tabs.TabPane
-            key='inbox'
-            title={
-              <span className='flex items-center gap-6px'>
-                {t('knowledge.detail.tabInbox', { defaultValue: '待审' })}
-                {pendingCount > 0 && <Badge count={pendingCount} />}
-              </span>
-            }
-          >
-            <div className='pt-16px'>
-              {base && (inboxLoading || inboxItems.length > 0) ? (
-                <InboxReviewPanel baseId={base.knowledge_base_id} items={inboxItems} loading={inboxLoading} onChanged={handleInboxChanged} />
-              ) : (
-                <Empty description={t('knowledge.detail.inboxEmpty', { defaultValue: '暂无待审内容' })} />
-              )}
-            </div>
-          </Tabs.TabPane>
-
-          {/* Tab: Mount & Usage */}
-          <Tabs.TabPane key='use' title={t('knowledge.detail.tabUse', { defaultValue: '挂载与使用' })}>
-            <div className='flex flex-col gap-16px pt-16px'>
-              {/* ── Three-step tutorial hero cards ── */}
-              <div className={classNames('grid gap-12px', isMobile ? 'grid-cols-1' : 'grid-cols-3')}>
-                {/* Step 1 */}
-                <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-                  <div className='w-26px h-26px rd-8px grid place-items-center mb-10px text-13px font-700 bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-5))] border border-solid border-[rgba(var(--primary-6),0.4)]'>
-                    1
-                  </div>
-                  <b className='block text-13px text-[var(--color-text-1)] mb-5px'>
-                    {t('knowledge.detail.use.step1Title', { defaultValue: '挂载到一个会话' })}
-                  </b>
-                  <p className='m-0 text-12px leading-relaxed text-[var(--color-text-3)]'>
-                    {t('knowledge.detail.use.step1Desc', {
-                      defaultValue: '把知识库挂到会话 / 终端 / 数字伙伴上，它就成为该处模型的扩展知识。一个库可被多处复用。',
-                    })}
-                  </p>
-                </div>
-                {/* Step 2 */}
-                <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-                  <div className='w-26px h-26px rd-8px grid place-items-center mb-10px text-13px font-700 bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-5))] border border-solid border-[rgba(var(--primary-6),0.4)]'>
-                    2
-                  </div>
-                  <b className='block text-13px text-[var(--color-text-1)] mb-5px'>
-                    {t('knowledge.detail.use.step2Title', { defaultValue: '模型自动检索' })}
-                  </b>
-                  <p className='m-0 text-12px leading-relaxed text-[var(--color-text-3)]'>
-                    {t('knowledge.detail.use.step2Desc', {
-                      defaultValue: '模型会在 .flowy/knowledge/ 下按需检索，命中的内容用于回答——原文不塞进上下文，省 token。',
-                    })}
-                  </p>
-                </div>
-                {/* Step 3 */}
-                <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-                  <div className='w-26px h-26px rd-8px grid place-items-center mb-10px text-13px font-700 bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-5))] border border-solid border-[rgba(var(--primary-6),0.4)]'>
-                    3
-                  </div>
-                  <b className='block text-13px text-[var(--color-text-1)] mb-5px'>
-                    {t('knowledge.detail.use.step3Title', { defaultValue: '（可选）回血沉淀' })}
-                  </b>
-                  <p className='m-0 text-12px leading-relaxed text-[var(--color-text-3)]'>
-                    {t('knowledge.detail.use.step3Desc', {
-                      defaultValue: '开启回血后，会话里新学到的知识可暂存到「待审」由你确认，知识库越用越厚。',
-                    })}
-                  </p>
-                </div>
-              </div>
-
-              {/* ── Consumers section: who is mounting this base ── */}
-              <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-                <div className='knowledge-mount-heading mb-12px flex flex-wrap items-start gap-x-10px gap-y-4px'>
-                  <span className='shrink-0 text-13px font-700 leading-20px text-[var(--color-text-1)]'>
-                    {t('knowledge.detail.use.mountedTitle', { defaultValue: '已挂载' })}
-                  </span>
-                  <div className='knowledge-mount-hint flex min-w-0 flex-1 items-start gap-6px pt-1px'>
-                    <LinkOne theme='outline' size='13' className='text-[var(--color-text-4)] shrink-0 mt-2px' />
-                    <span className='min-w-0 text-12px text-[var(--color-text-3)] leading-relaxed'>
-                      {t('knowledge.detail.use.mountHint', {
-                        defaultValue: '挂载操作在会话侧的「挂载知识库」控件中进行——打开任意会话 / 终端 / 数字伙伴，点击知识库按钮即可将本库挂载上去。',
-                      })}
-                    </span>
-                  </div>
-                </div>
-                {base ? <KnowledgeConsumersSection baseId={base.knowledge_base_id} /> : null}
-              </div>
-
-              {/* ── Writeback explanation (honest: per-binding, no fake global toggle) ── */}
-              <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-                <div className='text-13px font-700 text-[var(--color-text-1)] mb-10px'>
-                  {t('knowledge.detail.use.writebackTitle', { defaultValue: '回血（让会话把新知识写回本库）' })}
-                </div>
-                <div className='text-12px text-[var(--color-text-2)] leading-relaxed space-y-6px'>
-                  <p className='m-0'>
-                    {t('knowledge.detail.use.writebackDesc', {
-                      defaultValue: '回血模式在每个会话的「挂载知识库」控件里按工作区设置——不是全局统一开关。每个挂载可独立选择：',
-                    })}
-                  </p>
-                  <ul className='m-0 pl-18px text-[var(--color-text-3)]'>
-                    <li>
-                      <span className='text-[var(--color-text-2)] font-500'>
-                        {t('knowledge.detail.use.writebackOff', { defaultValue: '关闭' })}
-                      </span>
-                      {' — '}
-                      {t('knowledge.detail.use.writebackOffDesc', { defaultValue: '纯只读，不回写' })}
-                    </li>
-                    <li>
-                      <span className='text-[var(--color-text-2)] font-500'>
-                        {t('knowledge.detail.use.writebackStaged', { defaultValue: '暂存审阅' })}
-                      </span>
-                      {' — '}
-                      {t('knowledge.detail.use.writebackStagedDesc', { defaultValue: '新知识先进「待审」，你确认后才并入（推荐）' })}
-                    </li>
-                    <li>
-                      <span className='text-[var(--color-text-2)] font-500'>
-                        {t('knowledge.detail.use.writebackDirect', { defaultValue: '直接写入' })}
-                      </span>
-                      {' — '}
-                      {t('knowledge.detail.use.writebackDirectDesc', { defaultValue: '模型直接改库，适合个人/数字伙伴' })}
-                    </li>
-                  </ul>
-                </div>
-              </div>
-
-              {/* ── Terminal CLI registration entry ── */}
-              <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
-                <div className='text-13px font-700 text-[var(--color-text-1)] mb-8px'>
-                  {t('knowledge.detail.use.cliTitle', { defaultValue: '终端 CLI 接入' })}
-                </div>
-                <p className='m-0 text-12px text-[var(--color-text-3)] leading-relaxed mb-12px'>
-                  {t('knowledge.detail.use.cliDesc', {
-                    defaultValue: '给 claude / codex / gemini 一键注入只读的 knowledge_search 工具，让命令行里的 Agent 也能查这个库。请在终端页面使用「接入知识库」按钮完成注册。',
-                  })}
-                </p>
-                <Button
-                  size='small'
-                  icon={<LinkCloud theme='outline' size='14' />}
-                  onClick={() => navigate('/terminal')}
-                >
-                  {t('knowledge.detail.use.goTerminal', { defaultValue: '前往终端注册' })}
-                </Button>
-              </div>
-            </div>
-          </Tabs.TabPane>
-
-          {/* Tab: Settings (D5) */}
-          <Tabs.TabPane
-            key='set'
-            title={
-              <span className='flex items-center gap-6px'>
-                <SettingTwo theme='outline' size='13' />
-                {t('knowledge.detail.tabSettings', { defaultValue: '设置' })}
-              </span>
-            }
-          >
-            <div className='pt-16px'>
-              {base && (
-                <SettingsTab
-                  base={base}
-                  allTags={allTags}
-                  createTag={createTag}
-                  onRefresh={refresh}
-                  onConnectorOpen={handleConnectorOpen}
-                />
-              )}
-            </div>
-          </Tabs.TabPane>
-        </Tabs>
+        </div>
       </div>
+
+      {/* ─── Activity drawer (inbox + mount usage) ──────────────────────────── */}
+      <Drawer
+        width={isMobile ? '100%' : 480}
+        title={t('knowledge.detail.activityTitle', { defaultValue: '动态与挂载' })}
+        visible={activePanel === 'activity'}
+        onCancel={() => setPanel('none')}
+        footer={null}
+        unmountOnExit
+      >
+        <div className='flex flex-col gap-18px'>
+          <div>
+            <div className='mb-10px text-13px font-700 text-[var(--color-text-1)]'>
+              {t('knowledge.detail.tabInbox', { defaultValue: '待审' })}
+              {pendingCount > 0 ? <Badge className='ml-8px' count={pendingCount} /> : null}
+            </div>
+            {base && (inboxLoading || inboxItems.length > 0) ? (
+              <InboxReviewPanel
+                baseId={base.knowledge_base_id}
+                items={inboxItems}
+                loading={inboxLoading}
+                onChanged={handleInboxChanged}
+              />
+            ) : (
+              <Empty description={t('knowledge.detail.inboxEmpty', { defaultValue: '暂无待审内容' })} />
+            )}
+          </div>
+          <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
+            <div className='knowledge-mount-heading mb-12px flex flex-wrap items-start gap-x-10px gap-y-4px'>
+              <span className='shrink-0 text-13px font-700 leading-20px text-[var(--color-text-1)]'>
+                {t('knowledge.detail.use.mountedTitle', { defaultValue: '已挂载' })}
+              </span>
+              <div className='knowledge-mount-hint flex min-w-0 flex-1 items-start gap-6px pt-1px'>
+                <LinkOne theme='outline' size='13' className='text-[var(--color-text-4)] shrink-0 mt-2px' />
+                <span className='min-w-0 text-12px text-[var(--color-text-3)] leading-relaxed'>
+                  {t('knowledge.detail.use.mountHint', {
+                    defaultValue:
+                      '挂载操作在会话侧的「挂载知识库」控件中进行——打开任意会话 / 终端 / 数字伙伴，点击知识库按钮即可将本库挂载上去。',
+                  })}
+                </span>
+              </div>
+            </div>
+            {base ? <KnowledgeConsumersSection baseId={base.knowledge_base_id} /> : null}
+          </div>
+          <div className='box-border rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] p-16px'>
+            <div className='text-13px font-700 text-[var(--color-text-1)] mb-8px'>
+              {t('knowledge.detail.use.cliTitle', { defaultValue: '终端 CLI 接入' })}
+            </div>
+            <p className='m-0 text-12px text-[var(--color-text-3)] leading-relaxed mb-12px'>
+              {t('knowledge.detail.use.cliDesc', {
+                defaultValue:
+                  '给 claude / codex / gemini 一键注入只读的 knowledge_search 工具，让命令行里的 Agent 也能查这个库。请在终端页面使用「接入知识库」按钮完成注册。',
+              })}
+            </p>
+            <Button size='small' icon={<LinkCloud theme='outline' size='14' />} onClick={() => navigate('/terminal')}>
+              {t('knowledge.detail.use.goTerminal', { defaultValue: '前往终端注册' })}
+            </Button>
+          </div>
+        </div>
+      </Drawer>
+
+      {/* ─── Settings drawer ───────────────────────────────────────────────── */}
+      <Drawer
+        width={isMobile ? '100%' : 520}
+        title={t('knowledge.detail.tabSettings', { defaultValue: '设置' })}
+        visible={activePanel === 'settings'}
+        onCancel={() => setPanel('none')}
+        footer={null}
+        unmountOnExit
+      >
+        {base ? (
+          <SettingsTab
+            base={base}
+            allTags={allTags}
+            createTag={createTag}
+            onRefresh={refresh}
+            onConnectorOpen={handleConnectorOpen}
+          />
+        ) : null}
+      </Drawer>
 
       {/* ─── Connector drawer (preserved) ──────────────────────────────────── */}
       {base ? (
@@ -1573,6 +1655,15 @@ const KnowledgeDetailPage: React.FC = () => {
           onPressEnter={() => void handleRenameTreeEntry()}
         />
       </Modal>
+
+      {id ? (
+        <KnowledgeSearchPanel
+          visible={searchPanelVisible}
+          knowledgeBaseId={id}
+          onClose={() => setSearchPanelVisible(false)}
+          onSelectHit={handleSelectSearchHit}
+        />
+      ) : null}
     </div>
   );
 };

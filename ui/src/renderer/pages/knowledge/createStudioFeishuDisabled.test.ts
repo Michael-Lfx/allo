@@ -43,12 +43,15 @@ describe('CreateStudio Feishu creation gate', () => {
     expect(canSubmitStudioSourceConfig('feishu', {})).toEqual({ ok: true });
   });
 
-  test('wires visible Feishu shortcuts to the creation flag', () => {
+  test('wires visible Feishu shortcuts to the creation flag in CreateStudio', () => {
     expect(typeRailSource.includes('FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
     expect(typeRailSource.includes('disabled: !FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
+  });
 
-    expect(emptyStateSource.includes('FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
-    expect(emptyStateSource.includes('disabled: !FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(true);
-    expect(emptyStateSource.includes('if (!k.disabled) onCreate(k.key);')).toBe(true);
+  test('empty state demotes Feishu/import to advanced QuickCapture path', () => {
+    expect(emptyStateSource.includes('knowledge-drop-zone')).toBe(true);
+    expect(emptyStateSource.includes('onAdvanced')).toBe(true);
+    expect(emptyStateSource.includes('quickCreate')).toBe(true);
+    expect(emptyStateSource.includes('FEISHU_KNOWLEDGE_CREATION_ENABLED')).toBe(false);
   });
 });

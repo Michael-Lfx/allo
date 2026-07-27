@@ -1,3 +1,4 @@
+
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
@@ -62,7 +63,17 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes("onConnectorOpen={() => setConnectorVisible(true)}")).toBe(false);
   });
 
-  test('uses theme-aware contrast for detail badges, active tabs, and settings fields', () => {
+  test('uses canvas + activity/settings drawers instead of four primary tabs', () => {
+    expect(detailSource.includes('knowledge-detail-canvas')).toBe(true);
+    expect(detailSource.includes("setPanel('activity')")).toBe(true);
+    expect(detailSource.includes("setPanel('settings')")).toBe(true);
+    expect(detailSource.includes('KnowledgeSearchPanel')).toBe(true);
+    expect(detailSource.includes('handleUpload')).toBe(true);
+    expect(detailSource.includes('uploadTodo')).toBe(false);
+    expect(detailSource.includes('检索功能开发中')).toBe(false);
+  });
+
+  test('uses theme-aware contrast for detail badges and settings fields', () => {
     expect(detailSource.includes('knowledge-detail-soft-active')).toBe(true);
     expect(detailSource.includes('knowledge-detail-kind-badge')).toBe(true);
     expect(detailSource.includes('knowledge-detail-user-tag')).toBe(true);

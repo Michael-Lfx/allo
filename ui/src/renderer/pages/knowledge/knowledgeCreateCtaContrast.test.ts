@@ -1,3 +1,4 @@
+
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
@@ -25,24 +26,18 @@ describe('Knowledge create CTA contrast', () => {
     expect(classBlock.includes('text-[var(--color-text-1)]')).toBe(true);
   });
 
-  test('empty state primary create button uses theme text instead of fixed white text', () => {
-    const classBlock = classBlockBefore(emptyStateSource, "t('knowledge.newBase'");
-
-    expect(classBlock.includes('text-white')).toBe(false);
-    expect(classBlock.includes('text-[var(--color-text-1)]')).toBe(true);
+  test('empty state uses drop-zone activation instead of a white primary CTA', () => {
+    expect(emptyStateSource.includes('knowledge-drop-zone')).toBe(true);
+    expect(emptyStateSource.includes('text-white')).toBe(false);
+    expect(emptyStateSource.includes('quickCreate')).toBe(true);
   });
 
-  test('create buttons show no default border and use theme border only when focused', () => {
-    const classBlocks = [
-      classBlockBefore(listPageSource, "t('knowledge.newBase'"),
-      classBlockBefore(emptyStateSource, "t('knowledge.newBase'"),
-    ];
+  test('list create button shows no default border and uses theme border only when focused', () => {
+    const classBlock = classBlockBefore(listPageSource, "t('knowledge.newBase'");
 
-    for (const classBlock of classBlocks) {
-      expect(classBlock.includes('border-[rgba(var(--primary-6),0.45)]')).toBe(false);
-      expect(classBlock.includes('border-transparent')).toBe(true);
-      expect(classBlock.includes('focus-visible:border-[rgb(var(--primary-6))]')).toBe(true);
-      expect(classBlock.includes('focus-visible:outline-none')).toBe(true);
-    }
+    expect(classBlock.includes('border-[rgba(var(--primary-6),0.45)]')).toBe(false);
+    expect(classBlock.includes('border-transparent')).toBe(true);
+    expect(classBlock.includes('focus-visible:border-[rgb(var(--primary-6))]')).toBe(true);
+    expect(classBlock.includes('focus-visible:outline-none')).toBe(true);
   });
 });

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connector::ConnectorIdentity;
 use crate::export::{self, ExportSummary, ImportSummary};
+use crate::quick::{QuickCreateOutcome, SuggestPromptOutcome};
 use crate::service::{
     AutogenOutcome, ConsumerInfo, InboxDiff, InboxEntry, InboxMergeResult, KbFileContent, KbFileEntry,
     KbTreeEntry, KnowledgeBaseInfo, KnowledgeBinding, KnowledgeSearchHit, RefreshSourceSummary,
@@ -21,6 +22,7 @@ use crate::state::KnowledgeRouterState;
 pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
     Router::new()
         .route("/api/knowledge/bases", get(list_bases).post(create_base))
+        .route("/api/knowledge/bases/quick", post(quick_create_base))
         .route("/api/knowledge/bases/import", post(import_base))
         .route(
             "/api/knowledge/bases/{knowledge_base_id}",
@@ -33,6 +35,14 @@ pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
         .route(
             "/api/knowledge/bases/{knowledge_base_id}/autogen",
             post(autogen_base),
+        )
+        .route(
+            "/api/knowledge/bases/{knowledge_base_id}/upload",
+            post(upload_files),
+        )
+        .route(
+            "/api/knowledge/bases/{knowledge_base_id}/suggest-prompt",
+            post(suggest_prompt),
         )
         .route("/api/knowledge/description/generate", post(generate_description))
         .route("/api/knowledge/description/polish", post(polish_description))
@@ -197,6 +207,96 @@ async fn create_base(
         });
     }
     Ok(Json(ApiResponse::ok(info)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickCreateRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    /// `sample` | `blank` | `local` | `web`
+    seed: String,
+    #[serde(default)]
+    root_path: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    bind_kind: Option<String>,
+    #[serde(default)]
+    bind_target_id: Option<String>,
+}
+
+async fn quick_create_base(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<QuickCreateRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<QuickCreateOutcome>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let outcome = state
+        .service
+        .quick_create_base(
+            req.name.as_deref(),
+            req.description.as_deref(),
+            &req.seed,
+            req.root_path.as_deref(),
+            req.url.as_deref(),
+            req.bind_kind.as_deref(),
+            req.bind_target_id.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(outcome)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadFileItem {
+    path: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadFilesRequest {
+    files: Vec<UploadFileItem>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadFilesResponse {
+    written: usize,
+}
+
+async fn upload_files(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(knowledge_base_id): Path<KnowledgeBaseId>,
+    body: Result<Json<UploadFilesRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<UploadFilesResponse>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let files: Vec<(String, String)> = req
+        .files
+        .into_iter()
+        .map(|f| (f.path, f.content))
+        .collect();
+    let written = state
+        .service
+        .upload_files_batch(knowledge_base_id.as_str(), &files)
+        .await?;
+    Ok(Json(ApiResponse::ok(UploadFilesResponse { written })))
+}
+
+async fn suggest_prompt(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(knowledge_base_id): Path<KnowledgeBaseId>,
+) -> Result<Json<ApiResponse<SuggestPromptOutcome>>, AppError> {
+    let prompt = state
+        .service
+        .suggest_prompt_for_base(knowledge_base_id.as_str())
+        .await?;
+    Ok(Json(ApiResponse::ok(SuggestPromptOutcome { prompt })))
 }
 
 async fn get_base(

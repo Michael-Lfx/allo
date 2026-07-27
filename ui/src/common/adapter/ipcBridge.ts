@@ -5333,6 +5333,12 @@ export interface IKnowledgeSearchHit {
   score: number;
 }
 
+export interface IKnowledgeQuickCreateOutcome {
+  base: IKnowledgeBase;
+  suggest_prompt: string;
+  binding?: IKnowledgeBinding | null;
+}
+
 export interface IKnowledgeFileEntry {
   rel_path: string;
   size: number;
@@ -5716,6 +5722,31 @@ export const knowledge = {
       tags?: string[];
     }
   >('/api/knowledge/bases'), fromApiKnowledgeBase),
+  /** One-shot activation create (sample/blank/local/web) with optional binding. */
+  quickCreate: withResponseMap(httpPost<
+    IKnowledgeQuickCreateOutcome,
+    {
+      seed: 'sample' | 'blank' | 'local' | 'web';
+      name?: string;
+      description?: string;
+      root_path?: string;
+      url?: string;
+      bind_kind?: KnowledgeBindingKind;
+      bind_target_id?: string;
+    }
+  >('/api/knowledge/bases/quick', (p) => ({
+    seed: p.seed,
+    name: p.name,
+    description: p.description,
+    rootPath: p.root_path,
+    url: p.url,
+    bindKind: p.bind_kind,
+    bindTargetId: p.bind_target_id,
+  })), (outcome) => ({
+    ...outcome,
+    base: fromApiKnowledgeBase(outcome.base),
+    binding: outcome.binding ? fromApiKnowledgeBinding(outcome.binding) : outcome.binding,
+  })),
   getBase: withResponseMap(httpGet<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}`, { timeoutMs: KB_READ_TIMEOUT_MS }), fromApiKnowledgeBase),
   updateBase: withResponseMap(httpPut<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId; name?: string; description?: string; tags?: string[] }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}`,
@@ -5779,6 +5810,13 @@ export const knowledge = {
   writeFile: httpPut<void, { knowledge_base_id: KnowledgeBaseId; path: string; content: string }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file`,
     (p) => ({ path: p.path, content: p.content })
+  ),
+  uploadFiles: httpPost<{ written: number }, { knowledge_base_id: KnowledgeBaseId; files: Array<{ path: string; content: string }> }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/upload`,
+    (p) => ({ files: p.files })
+  ),
+  suggestPrompt: httpPost<{ prompt: string }, { knowledge_base_id: KnowledgeBaseId }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/suggest-prompt`
   ),
   deleteFile: httpDelete<void, { knowledge_base_id: KnowledgeBaseId; path: string }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file?path=${encodeURIComponent(p.path)}`

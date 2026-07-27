@@ -39,6 +39,7 @@ import type { LocalizableSkill } from '@/renderer/pages/settings/skill/skillDisp
 import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
+import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
 import { isAutoWorkEntry } from './hooks/autoWorkEntry';
@@ -253,6 +254,14 @@ const GuidPage: React.FC = () => {
   // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
   // collected up front and applied right after the conversation is created.
   const advancedConfig = useGuidAdvancedConfig();
+
+  // Knowledge activation hand-off from QuickCapture / empty-state sample seed.
+  useEffect(() => {
+    const activation = consumeKnowledgeActivation();
+    if (!activation) return;
+    advancedConfig.setKnowledge(activation.binding);
+    guidInput.setInput(activation.suggest_prompt);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one-shot on mount
 
   const mention = useGuidMention({
     availableAgents: agentSelection.availableAgents,
