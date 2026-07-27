@@ -20,10 +20,13 @@ pub use boot_log::{BootNoteLevel, record_boot_note};
 pub use environment::{
     ServerEnvironment, finalize_data_layer, init_data_layer, init_environment,
 };
+pub(crate) use environment::{
+    acquire_distinct_work_root_lock, acquire_work_root_lock,
+};
 pub use server_lock::{BootServerLockAuthority, SERVER_LOCK_FILE, ServerLock};
 pub use webui_dist::{
     UI_BUILD_MANIFEST_FILE, UI_BUILD_MANIFEST_SCHEMA, UiBuildManifest, ui_api_contract_version,
-    validate_webui_dist,
+    validate_webui_dist, validate_webui_manifest_bytes,
 };
 pub(crate) use work_dir::resolve_work_dir;
 
