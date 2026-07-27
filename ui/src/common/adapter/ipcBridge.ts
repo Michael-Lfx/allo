@@ -9,10 +9,10 @@
  *
  * This file replaces the original IPC bridge calls with HTTP REST and WebSocket
  * calls routed to nomicore. Electron-native operations (window controls,
- * native dialogs, auto-update, devtools, zoom, CDP, deep links) remain as IPC.
+ * native dialogs, auto-update, devtools, zoom, deep links) remain as IPC.
  */
 
-import type { IConfirmation } from '@/common/chat/chatLib';
+import type { ConfirmationCorrelationId, IConfirmation } from '@/common/chat/chatLib';
 import { bridge } from '@/platform';
 import type { McpConnectionTestRequest } from './mcpRequest';
 import {
@@ -61,29 +61,40 @@ import type {
   TProviderWithModel,
 } from '../config/storage';
 import type {
-  Assistant,
-  AssistantTag,
-  CreateAssistantRequest,
-  CreateAssistantTagRequest,
-  ImportAssistantsRequest,
-  ImportAssistantsResult,
-  SetAssistantStateRequest,
-  UpdateAssistantRequest,
-  UpdateAssistantTagRequest,
-} from '../types/agent/assistantTypes';
-import type { PreviewHistoryTarget, PreviewSnapshotInfo } from '../types/office/preview';
+  CreatePresetRequest,
+  CreatePresetTagRequest,
+  ImportPresetsRequest,
+  ImportPresetsResult,
+  Preset,
+  PresetReference,
+  PresetTag,
+  ResolvePresetRequest,
+  ResolvedPresetSnapshot,
+  SetPresetStateRequest,
+  UpdatePresetRequest,
+  UpdatePresetTagRequest,
+} from '../types/agent/presetTypes';
+import {
+  parsePresetReference,
+  parsePresetTagKey,
+} from '../types/agent/presetTypes';
+import type { PreviewHistoryTarget, PreviewSnapshotInfo, PreviewUrlResponse } from '../types/office/preview';
+import { parsePresetTagId, parsePreviewSnapshotId } from '../types/ids';
 import type { AcpModelInfo } from '../types/platform/acpTypes';
-import type {
-  CreateProviderRequest,
-  FetchModelsAnonymousRequest,
-  FetchModelsResponse,
-  ModelProfileKeyRequest,
-  ModelProfileUpsertRequest,
-  ProviderHealthCheckRequest,
-  ProviderHealthCheckResponse,
-  ResolveModelsRequest,
-  ResolveModelsResponse,
-  UpdateProviderRequest,
+import {
+  fromProviderResponse,
+  toCreateProviderRequest,
+  type CreateProviderInput,
+  type FetchModelsAnonymousRequest,
+  type FetchModelsResponse,
+  type ModelProfileKeyRequest,
+  type ModelProfileUpsertRequest,
+  type ProviderResponse,
+  type ProviderHealthCheckRequest,
+  type ProviderHealthCheckResponse,
+  type ResolveModelsRequest,
+  type ResolveModelsResponse,
+  type UpdateProviderRequest,
 } from '../types/provider/providerApi';
 import type {
   CheckManagedModelHealthRequest,
@@ -96,25 +107,43 @@ import type {
 } from '../types/provider/managedModelService';
 import type { SpeechToTextRequest, SpeechToTextResult } from '../types/provider/speech';
 import type {
-  TAdjustRunRequest,
-  TCreateAdhocRun,
-  TReassign,
-  TModelRange,
-  TReplanRequest,
-  TRun,
-  TRunDetail,
-  TSteer,
-  TTaskConfigUpdate,
-  TTaskSpecUpdate,
-} from '../types/orchestrator/orchestratorTypes';
+  TAdoptExecutionStepOutput,
+  TAdjustAgentExecution,
+  TAddExecutionSteps,
+  TAgentExecution,
+  TAgentExecutionDetail,
+  TAgentExecutionEvent,
+  TAgentExecutionEventsQuery,
+  TAnswerExecutionDecision,
+  TConfigureExecutionStep,
+  TCreateAgentExecution,
+  TDecisionPolicy,
+  TDelegationPolicy,
+  TExecutionModelPool,
+  TExecutionAttempt,
+  TExecutionParticipant,
+  TExecutionStep,
+  TExecutionStepDependency,
+  TReassignExecutionStep,
+  TRenameAgentExecution,
+  TReplanAgentExecution,
+  TRetryExecutionStep,
+  TSteerExecutionStep,
+  TUpdateExecutionStep,
+  TVersionedAgentExecutionCommand,
+} from '../types/agentExecution/agentExecutionTypes';
 import type {
-  TOrchRunCompletedEvent,
-  TOrchRunLeadThinkingEvent,
-  TOrchRunPlanUpdatedEvent,
-  TOrchRunStatusEvent,
-  TOrchTaskAssignedEvent,
-  TOrchTaskStatusEvent,
-} from '../types/orchestrator/orchestratorEvents';
+  TAgentExecutionChangedEvent,
+  TAgentExecutionLeadThinkingEvent,
+} from '../types/agentExecution/agentExecutionEvents';
+import type {
+  TAgentExecutionTemplate,
+  TAgentExecutionTemplateDetail,
+  TAgentExecutionTemplateParticipant,
+  TCreateAgentExecutionTemplate,
+  TCreateExecutionFromTemplate,
+  TUpdateAgentExecutionTemplate,
+} from '../types/agentExecution/agentExecutionTemplateTypes';
 import type {
   AutoUpdateStatus,
   UpdateCheckRequest,
@@ -125,7 +154,81 @@ import type {
   UpdateReleaseInfo,
 } from '../update/updateTypes';
 import type { ProtocolDetectionRequest, ProtocolDetectionResponse } from '../utils/protocolDetector';
-import { fromApiConversation, fromApiPaginatedConversations, toApiModelOptional } from './apiModelMapper';
+import {
+  fromApiConversation,
+  fromApiPaginatedConversations,
+  fromApiResolvedPresetSnapshot,
+  toApiModelOptional,
+} from './apiModelMapper';
+import {
+  parseAgentId,
+  parseAttachmentId,
+  parseChannelPluginId,
+  parseChannelSessionId,
+  parseChannelUserId,
+  parseCompanionEventId,
+  parseCompanionId,
+  parseCompanionLearnRunId,
+  parseCompanionMemoryId,
+  parseCompanionSessionWindowId,
+  parseCompanionSkillId,
+  parseCompanionSuggestionId,
+  parseConnectorCredentialId,
+  parseConversationId,
+  parseCronJobId,
+  parseCronJobRunId,
+  parseExecutionAttemptId,
+  parseExecutionId,
+  parseExecutionParticipantId,
+  parseExecutionStepId,
+  parseExecutionTemplateId,
+  parseExecutionTemplateParticipantId,
+  parseFigureId,
+  parseIdmmInterventionId,
+  parseKnowledgeBaseId,
+  parseMessageId,
+  parseMcpServerId,
+  parseOptionalEntityId,
+  parseProviderId,
+  parsePublicAgentId,
+  parsePublicAgentAuditEntryId,
+  parseRequirementId,
+  parseRemoteAgentId,
+  parseSkillPatternId,
+  parseTerminalId,
+  parseUserId,
+  parseWebhookId,
+  type AttachmentId,
+  type ChannelPluginId,
+  type ConversationId,
+  type CronJobId,
+  type CronJobRunId,
+  type CompanionEventId,
+  type CompanionId,
+  type CompanionLearnRunId,
+  type CompanionMemoryId,
+  type CompanionSessionWindowId,
+  type CompanionSkillId,
+  type CompanionSuggestionId,
+  type ConnectorCredentialId,
+  type FigureId,
+  type IdmmInterventionId,
+  type ExecutionAttemptId,
+  type ExecutionId,
+  type ExecutionStepId,
+  type ExecutionTemplateId,
+  type McpServerId,
+  type MessageId,
+  type ProviderId,
+  type PublicAgentAuditEntryId,
+  type PublicAgentId,
+  type KnowledgeBaseId,
+  type RequirementId,
+  type RemoteAgentId,
+  type SkillPatternId,
+  type TerminalId,
+  type WebhookId,
+} from '../types/ids';
 import {
   httpDelete,
   httpGet,
@@ -138,8 +241,32 @@ import {
   wsEmitter,
   wsMappedEmitter,
 } from './httpBridge';
+
+export { browserSession } from '@/common/browser/browserSession';
+export type {
+  BrowserCloseResult,
+  BrowserIdentityMode,
+  BrowserLaneLifecycleState,
+  BrowserResourcePressureState,
+  IBrowserCapacityOverview,
+  IBrowserInventoryChangedEvent,
+  IBrowserLane,
+  IBrowserLaneIdentity,
+  IBrowserLaneOwner,
+  IBrowserLaneQueue,
+  IBrowserOverview,
+  IBrowserTab,
+} from '@/common/browser/browserTypes';
+import {
+  parseConversationArtifactId,
+  type ConversationArtifactId,
+} from '../types/conversationArtifact';
 import { fromApiSearchResult, type ApiMessageSearchItem } from './searchMapper';
 import { fromBackendCompareResult, type RawCompareResult } from './fileSnapshotMapper';
+import {
+  fromApiStoredMessage,
+  type StoredMessageResponse,
+} from './storedMessageMapper';
 import {
   absoluteToRelativePath,
   fromBackendWorkspaceFlatFiles,
@@ -152,9 +279,13 @@ import {
 // ---------------------------------------------------------------------------
 
 export const shell = {
-  openFile: httpPost<void, string>('/api/shell/open-file', (file_path) => ({ file_path })),
+  openFile: httpPost<void, string>('/api/shell/open-file', (file_path) => ({
+    file_path,
+  })),
   showItemInFolder: httpPost<void, string>('/api/shell/show-item-in-folder', (file_path) => ({ file_path })),
-  openExternal: httpPost<void, string>('/api/shell/open-external', (url) => ({ url })),
+  openExternal: httpPost<void, string>('/api/shell/open-external', (url) => ({
+    url,
+  })),
   checkToolInstalled: httpPost<boolean, { tool: string }>('/api/shell/check-tool-installed'),
   openFolderWith: httpPost<void, { folder_path: string; tool: 'vscode' | 'terminal' | 'explorer' }>(
     '/api/shell/open-folder-with'
@@ -162,72 +293,283 @@ export const shell = {
 };
 
 // ---------------------------------------------------------------------------
-// Assistants — routed to /api/assistants/*
+// Presets — reusable launch configuration catalog
 // ---------------------------------------------------------------------------
 
-export const assistants = {
-  list: httpGet<Assistant[], void>('/api/assistants'),
-  create: httpPost<Assistant, CreateAssistantRequest>('/api/assistants'),
-  update: httpPut<Assistant, UpdateAssistantRequest>((p) => `/api/assistants/${p.id}`),
-  delete: httpDelete<void, { id: string }>((p) => `/api/assistants/${p.id}`),
-  setState: httpPatch<Assistant, SetAssistantStateRequest>(
-    (p) => `/api/assistants/${p.id}/state`,
+const fromApiPreset = (preset: Preset): Preset => {
+  if (Object.prototype.hasOwnProperty.call(preset, 'id')) {
+    throw new TypeError('Preset response legacy field "id" is not accepted; use "preset_id"');
+  }
+  return {
+    ...preset,
+    preset_id: parsePresetReference(preset.preset_id, preset.source),
+    model_preferences: preset.model_preferences.map((model) => ({
+      ...model,
+      ...(model.provider_id == null ? {} : { provider_id: parseProviderId(model.provider_id) }),
+    })),
+    knowledge_bases: preset.knowledge_bases.map((binding) => ({
+      ...binding,
+      knowledge_base_id: parseKnowledgeBaseId(binding.knowledge_base_id),
+    })),
+    audience_tag_ids: preset.audience_tag_ids.map(parsePresetTagId),
+    scenario_tag_ids: preset.scenario_tag_ids.map(parsePresetTagId),
+  };
+};
+
+const fromApiPresetTag = (tag: PresetTag): PresetTag => ({
+  ...tag,
+  preset_tag_id: parsePresetTagId(tag.preset_tag_id),
+  key: parsePresetTagKey(tag.key),
+});
+
+export const presets = {
+  list: withResponseMap(httpGet<Preset[], void>('/api/presets'), (items) => items.map(fromApiPreset)),
+  get: withResponseMap(
+    httpGet<Preset, { preset_id: Preset['preset_id'] }>(
+      (p) => `/api/presets/${encodeURIComponent(p.preset_id)}`
+    ),
+    fromApiPreset
+  ),
+  create: withResponseMap(httpPost<Preset, CreatePresetRequest>('/api/presets'), fromApiPreset),
+  update: withResponseMap(httpPut<Preset, { preset_id: Preset['preset_id'] } & UpdatePresetRequest>(
+    (p) => `/api/presets/${encodeURIComponent(p.preset_id)}`,
     (p) => {
-      const { id: _id, ...body } = p;
+      const { preset_id: _presetId, ...body } = p;
       return body;
     }
+  ), fromApiPreset),
+  delete: httpDelete<void, { preset_id: Preset['preset_id'] }>(
+    (p) => `/api/presets/${encodeURIComponent(p.preset_id)}`
   ),
-  import: httpPost<ImportAssistantsResult, ImportAssistantsRequest>('/api/assistants/import'),
+  setState: withResponseMap(httpPatch<Preset, SetPresetStateRequest>(
+    (p) => `/api/presets/${encodeURIComponent(p.preset_id)}/state`,
+    (p) => {
+      const { preset_id: _presetId, ...body } = p;
+      return body;
+    }
+  ), fromApiPreset),
+  resolve: withResponseMap(httpPost<ResolvedPresetSnapshot, ResolvePresetRequest>(
+    (p) => `/api/presets/${encodeURIComponent(p.preset_id)}/resolve`,
+    (p) => {
+      const { preset_id: _presetId, ...body } = p;
+      return body;
+    }
+  ), fromApiResolvedPresetSnapshot),
+  import: httpPost<ImportPresetsResult, ImportPresetsRequest>('/api/presets/import'),
 };
 
 // ---------------------------------------------------------------------------
-// Assistant Tags — routed to /api/assistant-tags/*
+// Preset Tags
 // ---------------------------------------------------------------------------
 
-export const assistantTags = {
-  list: httpGet<AssistantTag[], void>('/api/assistant-tags'),
-  create: httpPost<AssistantTag, CreateAssistantTagRequest>('/api/assistant-tags'),
-  update: httpPut<AssistantTag, UpdateAssistantTagRequest>(
-    (p) => `/api/assistant-tags/${p.key}`,
+export const presetTags = {
+  list: withResponseMap(httpGet<PresetTag[], void>('/api/preset-tags'), (items) => items.map(fromApiPresetTag)),
+  create: withResponseMap(httpPost<PresetTag, CreatePresetTagRequest>('/api/preset-tags'), fromApiPresetTag),
+  update: withResponseMap(httpPut<PresetTag, UpdatePresetTagRequest>(
+    (p) => `/api/preset-tags/${encodeURIComponent(p.preset_tag_id)}`,
     (p) => {
-      const { key: _key, ...body } = p;
+      const { preset_tag_id: _presetTagId, ...body } = p;
       return body;
     }
+  ), fromApiPresetTag),
+  delete: httpDelete<void, { preset_tag_id: PresetTag['preset_tag_id'] }>(
+    (p) => `/api/preset-tags/${encodeURIComponent(p.preset_tag_id)}`
   ),
-  delete: httpDelete<void, { key: string }>((p) => `/api/assistant-tags/${p.key}`),
 };
 
 // ---------------------------------------------------------------------------
 // Conversation — REST + WS
 // ---------------------------------------------------------------------------
 
+const fromApiSendMessageResult = (result: ISendMessageResult): ISendMessageResult => ({
+  ...result,
+  msg_id: parseMessageId(result.msg_id),
+  // Current servers always send an explicit boolean. A legacy/malformed
+  // response without replay authority must fail closed as an accepted replay:
+  // authoritative GET reconciliation may reopen a running turn, but the client
+  // may not manufacture a fresh one.
+  replayed: result.replayed !== false,
+  completed: result.completed === true,
+  result_ok: result.result_ok ?? null,
+  result_text: result.result_text ?? null,
+  result_error: result.result_error ?? null,
+});
+
+const requireConversationIdempotencyKey = (value: unknown): string => {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('conversation mutation requires a stable idempotency key');
+  }
+  return value;
+};
+
+type ConversationArtifactResponseFor<T extends IConversationArtifact> = T extends IConversationArtifact
+  ? Omit<T, 'conversation_artifact_id'> & {
+      conversation_artifact_id: unknown;
+      artifact_id?: never;
+      id?: never;
+    }
+  : never;
+
+type ConversationArtifactResponse = ConversationArtifactResponseFor<IConversationArtifact>;
+
+const fromApiConversationArtifact = (
+  artifact: ConversationArtifactResponse
+): IConversationArtifact => {
+  if (
+    Object.prototype.hasOwnProperty.call(artifact, 'id') ||
+    Object.prototype.hasOwnProperty.call(artifact, 'artifact_id')
+  ) {
+    throw new TypeError(
+      'conversation artifact wire payload must use conversation_artifact_id, not id or artifact_id'
+    );
+  }
+  const common = {
+    ...artifact,
+    conversation_artifact_id: parseConversationArtifactId(artifact.conversation_artifact_id),
+    conversation_id: parseConversationId(artifact.conversation_id),
+    cron_job_id: artifact.cron_job_id == null ? undefined : parseCronJobId(artifact.cron_job_id),
+  };
+  if (artifact.kind === 'cron_trigger') {
+    return {
+      ...common,
+      kind: artifact.kind,
+      payload: {
+        ...artifact.payload,
+        cron_job_id: parseCronJobId(artifact.payload.cron_job_id),
+      },
+    };
+  }
+  return {
+    ...common,
+    kind: artifact.kind,
+    payload: {
+      ...artifact.payload,
+      cron_job_id: parseCronJobId(artifact.payload.cron_job_id),
+    },
+  };
+};
+
+const fromApiResponseMessage = (message: IResponseMessage): IResponseMessage => ({
+  ...message,
+  msg_id: parseMessageId(message.msg_id),
+  turn_id: message.turn_id == null ? undefined : parseMessageId(message.turn_id),
+  conversation_id: parseConversationId(message.conversation_id),
+  companion_id:
+    message.companion_id == null ? message.companion_id : parseCompanionId(message.companion_id),
+});
+
+const fromApiKnowledgeWritebackEvent = (
+  event: IKnowledgeWritebackEvent
+): IKnowledgeWritebackEvent => ({
+  ...event,
+  conversation_id: parseConversationId(event.conversation_id),
+  msg_id: parseMessageId(event.msg_id),
+  written: event.written?.map((item) => ({
+    ...item,
+    kb_id: item.kb_id == null ? item.kb_id : parseKnowledgeBaseId(item.kb_id),
+  })),
+  failures: event.failures?.map((item) => ({
+    ...item,
+    kb_id: item.kb_id == null ? item.kb_id : parseKnowledgeBaseId(item.kb_id),
+  })),
+});
+
+const fromApiUserMessageCreatedEvent = (
+  event: IUserMessageCreatedEvent
+): IUserMessageCreatedEvent => ({
+  ...event,
+  conversation_id: parseConversationId(event.conversation_id),
+  msg_id: parseMessageId(event.msg_id),
+  companion_id:
+    event.companion_id == null ? event.companion_id : parseCompanionId(event.companion_id),
+});
+
+export const fromApiTurnCompletedEvent = (raw: unknown): IConversationTurnCompletedEvent => {
+  const r = raw as Record<string, unknown>;
+  const rawLast = r.last_message as Record<string, unknown> | undefined;
+  if (rawLast && Object.prototype.hasOwnProperty.call(rawLast, 'id')) {
+    throw new TypeError('turn.completed last_message legacy field "id" is not accepted; use "message_id"');
+  }
+  const last_message: IConversationTurnCompletedEvent['last_message'] = rawLast
+    ? {
+        message_id: rawLast.message_id == null ? undefined : parseMessageId(rawLast.message_id),
+        type: rawLast.type as string | undefined,
+        content: rawLast.content ?? null,
+        status: rawLast.status as string | null | undefined,
+        created_at: (rawLast.created_at ?? Date.now()) as number,
+      }
+    : {
+        content: null,
+        created_at: Date.now(),
+      };
+  const rawRuntime = (r.runtime ?? {}) as Record<string, unknown>;
+  const runtime: IConversationTurnCompletedEvent['runtime'] = {
+    state: (rawRuntime.state ?? 'idle') as IConversationTurnCompletedEvent['runtime']['state'],
+    can_send_message: (rawRuntime.can_send_message ?? true) as boolean,
+    has_runtime: (rawRuntime.has_runtime ?? false) as boolean,
+    runtime_status: rawRuntime.runtime_status as IConversationTurnCompletedEvent['runtime']['runtime_status'],
+    // Missing terminal runtime authority must never be interpreted as an
+    // already-released turn. Lifecycle consumers fail closed on `true`.
+    is_processing:
+      typeof rawRuntime.is_processing === 'boolean' ? rawRuntime.is_processing : true,
+    pending_confirmations: (rawRuntime.pending_confirmations ?? 0) as number,
+    ...(rawRuntime.active_turn_id == null
+      ? {}
+      : { active_turn_id: parseMessageId(rawRuntime.active_turn_id) }),
+  };
+  const rawModel = (r.model ?? {}) as Record<string, unknown>;
+  const model: IConversationTurnCompletedEvent['model'] = {
+    platform: (rawModel.platform ?? '') as string,
+    name: (rawModel.name ?? '') as string,
+    use_model: (rawModel.use_model ?? '') as string,
+  };
+  return {
+    conversation_id: parseConversationId(r.conversation_id),
+    turn_id: r.turn_id == null ? undefined : parseMessageId(r.turn_id),
+    status: (r.status ?? 'finished') as IConversationTurnCompletedEvent['status'],
+    state: (r.state ??
+      (r.status === 'finished' ? 'ai_waiting_input' : 'unknown')) as IConversationTurnCompletedEvent['state'],
+    detail: (r.detail ?? '') as string,
+    can_send_message: (r.can_send_message ?? r.status === 'finished') as boolean,
+    runtime,
+    workspace: (r.workspace ?? '') as string,
+    model,
+    last_message,
+  };
+};
+
 export const conversation = {
   create: withResponseMap(
-    httpPost<TChatConversation, ICreateConversationParams>('/api/conversations', (p) => {
+    httpPost<unknown, ICreateConversationParams>('/api/conversations', (p) => {
       // Top-level `model` is nomi-only on the backend (spec 2026-05-12).
       // Other agent types carry model info via `extra`.
       const isNomi = p.type === 'nomi';
-      // Conversations are minted by the backend (INTEGER AUTOINCREMENT,
-      // numeric-id spec §5) — never send a client-supplied id.
+      // Conversations are minted by the backend; never send a client-supplied
+      // entity ID.
       const body: Record<string, unknown> = {
         type: p.type,
         name: p.name,
+        preset_id: p.preset_id,
+        preset_overrides: p.preset_overrides,
         extra: p.extra,
       };
       if (isNomi) {
         const model = toApiModelOptional(p.model);
         if (model) body.model = model;
+        if (p.delegation_policy) body.delegation_policy = p.delegation_policy;
+        if (p.execution_model_pool) body.execution_model_pool = p.execution_model_pool;
+        if (p.decision_policy) body.decision_policy = p.decision_policy;
+        if (p.execution_template_id) body.execution_template_id = p.execution_template_id;
       }
       return body;
     }),
     fromApiConversation
   ),
   createWithConversation: withResponseMap(
-    httpPost<TChatConversation, { conversation: TChatConversation }>('/api/conversations/clone', (p) => {
+    httpPost<unknown, { conversation: TChatConversation }>('/api/conversations/clone', (p) => {
       const isNomi = p.conversation.type === 'nomi';
-      // Drop `id` here too: conversations use backend-minted INTEGER ids
-      // (numeric-id spec §5), so the clone endpoint assigns a fresh one — the
-      // source id must never leak into the new row.
+      // Drop `id` here too: the clone endpoint assigns a fresh entity ID; the
+      // source ID must never leak into the new row.
       const { model: _rawModel, id: _sourceId, ...rest } = p.conversation as TChatConversation & {
         model?: TProviderWithModel;
       };
@@ -243,24 +585,29 @@ export const conversation = {
     fromApiConversation
   ),
   get: withResponseMap(
-    httpGet<TChatConversation, { id: number }>((p) => `/api/conversations/${p.id}`, { silentStatuses: [404] }),
+    httpGet<unknown, { conversation_id: ConversationId }>(
+      (p) => `/api/conversations/${p.conversation_id}`,
+      { silentStatuses: [404] }
+    ),
     fromApiConversation
   ),
   getAssociateConversation: withResponseMap(
-    httpGet<TChatConversation[], { conversation_id: number }>(
+    httpGet<unknown[], { conversation_id: ConversationId }>(
       (p) => `/api/conversations/${p.conversation_id}/associated`
     ),
     (list) => list.map(fromApiConversation)
   ),
   listByCronJob: withResponseMap(
-    httpGet<TChatConversation[], { cron_job_id: string }>((p) => `/api/cron/jobs/${p.cron_job_id}/conversations`),
+    httpGet<unknown[], { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}/conversations`),
     (list) => list.map(fromApiConversation)
   ),
-  remove: httpDelete<boolean, { id: number }>((p) => `/api/conversations/${p.id}`),
+  remove: httpDelete<boolean, { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}`
+  ),
   // updates 额外允许顶层 `pinned`：对应 conversations 表真列（UpdateConversationRequest.pinned，
   // 服务端置位时自动维护 pinned_at）；body 构造的 `...rest` 原样透传该字段。
-  update: httpPatch<boolean, { id: number; updates: Partial<TChatConversation> & { pinned?: boolean }; merge_extra?: boolean }>(
-    (p) => `/api/conversations/${p.id}`,
+  update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean }; merge_extra?: boolean }>(
+    (p) => `/api/conversations/${p.conversation_id}`,
     (p) => {
       const updates = p.updates as Record<string, unknown>;
       const { model: rawModel, ...rest } = updates;
@@ -272,44 +619,86 @@ export const conversation = {
       };
     }
   ),
-  reset: httpPost<void, IResetConversationParams>((p) => `/api/conversations/${p.id}/reset`),
-  warmup: httpPost<void, { conversation_id: number }>((p) => `/api/conversations/${p.conversation_id}/warmup`),
-  stop: httpPost<void, { conversation_id: number }>((p) => `/api/conversations/${p.conversation_id}/cancel`),
-  clearContext: httpPost<void, { conversation_id: number }>(
+  reset: httpPost<void, IResetConversationParams>((p) => `/api/conversations/${p.conversation_id}/reset`),
+  warmup: httpPost<void, { conversation_id: ConversationId }>((p) => `/api/conversations/${p.conversation_id}/warmup`),
+  stop: httpPost<void, { conversation_id: ConversationId }>((p) => `/api/conversations/${p.conversation_id}/cancel`),
+  clearContext: httpPost<void, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/clear-context`
   ),
   /** 清空一条会话的全部消息（保留会话行，不触碰 companion_memories 记忆库）。
    *  伙伴专属会话「清空上下文」按钮调用。 */
-  clearMessages: httpPost<boolean, { id: number }>((p) => `/api/conversations/${p.id}/clear-messages`),
+  clearMessages: httpPost<boolean, { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/clear-messages`
+  ),
+  retryKnowledgeWriteback: httpPost<
+    void,
+    { conversation_id: ConversationId; message_id: MessageId; attempt_id: string }
+  >(
+    (p) =>
+      `/api/conversations/${p.conversation_id}/messages/${p.message_id}/knowledge-writeback/retry`,
+    (p) => ({ attempt_id: p.attempt_id })
+  ),
   activeCount: httpGet<{ count: number }>('/api/conversations/active-count'),
-  sendMessage: httpPost<ISendMessageResult, ISendMessageParams>(
-    (p) => `/api/conversations/${p.conversation_id}/messages`,
-    (p) => ({
-      content: p.input,
-      files: p.files,
-      loading_id: p.loading_id,
-      inject_skills: p.inject_skills,
-    })
-  ),
-  steer: httpPost<ISendMessageResult, ISendMessageParams>(
-    (p) => `/api/conversations/${p.conversation_id}/steer`,
-    (p) => ({
-      content: p.input,
-      files: p.files,
-      inject_skills: p.inject_skills,
-    })
-  ),
-  editResubmit: httpPost<ISendMessageResult, { conversation_id: number; msg_id: string; input: string; files?: string[] }>(
-    (p) => `/api/conversations/${p.conversation_id}/messages/${p.msg_id}/edit-resubmit`,
-    (p) => ({
-      content: p.input,
-      files: p.files,
-    })
-  ),
-  getSlashCommands: httpGet<Array<{ command: string; description: string }>, { conversation_id: number }>(
+  sendMessage: {
+    provider: () => {},
+    invoke: async (p: ISendMessageParams): Promise<ISendMessageResult> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const result = await httpRequest<ISendMessageResult>(
+        'POST',
+        `/api/conversations/${p.conversation_id}/messages`,
+        {
+          content: p.input,
+          files: p.files,
+          inject_skills: p.inject_skills,
+        },
+        { idempotencyKey, initialOnly: p.initial_only === true }
+      );
+      return fromApiSendMessageResult(result);
+    },
+  },
+  steer: {
+    provider: () => {},
+    invoke: async (p: ISendMessageParams): Promise<ISendMessageResult> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const result = await httpRequest<ISendMessageResult>(
+        'POST',
+        `/api/conversations/${p.conversation_id}/steer`,
+        {
+        content: p.input,
+        files: p.files,
+        inject_skills: p.inject_skills,
+        },
+        { idempotencyKey }
+      );
+      return fromApiSendMessageResult(result);
+    },
+  },
+  editResubmit: {
+    provider: () => {},
+    invoke: async (p: {
+      conversation_id: ConversationId;
+      msg_id: MessageId;
+      input: string;
+      files?: string[];
+      idempotency_key: string;
+    }): Promise<ISendMessageResult> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const result = await httpRequest<ISendMessageResult>(
+        'POST',
+        `/api/conversations/${p.conversation_id}/messages/${p.msg_id}/edit-resubmit`,
+        {
+        content: p.input,
+        files: p.files,
+        },
+        { idempotencyKey }
+      );
+      return fromApiSendMessageResult(result);
+    },
+  },
+  getSlashCommands: httpGet<Array<{ command: string; description: string }>, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/slash-commands`
   ),
-  askSideQuestion: httpPost<ConversationSideQuestionResult, { conversation_id: number; question: string }>(
+  askSideQuestion: httpPost<ConversationSideQuestionResult, { conversation_id: ConversationId; question: string }>(
     (p) => `/api/conversations/${p.conversation_id}/side-question`,
     (p) => ({ question: p.question })
   ),
@@ -317,26 +706,49 @@ export const conversation = {
     (p) => `/api/conversations/${p.conversation_id}/confirmations/${encodeURIComponent(p.call_id)}/confirm`,
     (p) => ({ msg_id: p.msg_id, data: p.confirm_key })
   ),
-  listArtifacts: httpGet<IConversationArtifact[], { conversation_id: number }>(
-    (p) => `/api/conversations/${p.conversation_id}/artifacts`
+  listArtifacts: withResponseMap(
+    httpGet<ConversationArtifactResponse[], { conversation_id: ConversationId }>(
+      (p) => `/api/conversations/${p.conversation_id}/artifacts`
+    ),
+    (artifacts) => artifacts.map(fromApiConversationArtifact)
   ),
-  updateArtifact: httpPatch<
-    IConversationArtifact,
-    { conversation_id: number; artifact_id: number; status: IConversationArtifactStatus }
-  >(
-    (p) => `/api/conversations/${p.conversation_id}/artifacts/${p.artifact_id}`,
-    (p) => ({ status: p.status })
+  updateArtifact: withResponseMap(
+    httpPatch<
+      ConversationArtifactResponse,
+      {
+        conversation_id: ConversationId;
+        conversation_artifact_id: ConversationArtifactId;
+        status: IConversationArtifactStatus;
+      }
+    >(
+      (p) =>
+        `/api/conversations/${p.conversation_id}/artifacts/${p.conversation_artifact_id}`,
+      (p) => ({ status: p.status })
+    ),
+    fromApiConversationArtifact
   ),
-  responseStream: wsEmitter<IResponseMessage>('message.stream'),
+  responseStream: wsMappedEmitter<IResponseMessage>('message.stream', (raw) =>
+    fromApiResponseMessage(raw as IResponseMessage)
+  ),
   /** A user message was persisted (incl. IM channel inbound — see
    *  IUserMessageCreatedEvent). */
-  userCreated: wsEmitter<IUserMessageCreatedEvent>('message.userCreated'),
-  artifactStream: wsEmitter<IConversationArtifact>('conversation.artifact'),
-  knowledgeWriteback: wsEmitter<IKnowledgeWritebackEvent>('knowledge.writeback'),
-  turnStarted: wsMappedEmitter<IConversationTurnStartedEvent>('turn.started', (raw) => {
+  userCreated: wsMappedEmitter<IUserMessageCreatedEvent>('message.userCreated', (raw) =>
+    fromApiUserMessageCreatedEvent(raw as IUserMessageCreatedEvent)
+  ),
+  artifactStream: wsMappedEmitter<IConversationArtifact, ConversationArtifactResponse>(
+    'conversation.artifact',
+    fromApiConversationArtifact
+  ),
+  knowledgeWriteback: wsMappedEmitter<IKnowledgeWritebackEvent>('knowledge.writeback', (raw) =>
+    fromApiKnowledgeWritebackEvent(raw as IKnowledgeWritebackEvent)
+  ),
+  /** The server does not replay WebSocket frames. Consumers with durable
+   * projections must reload them after a successful reconnect. */
+  reconnected: wsEmitter<undefined>('ws.reconnected'),
+  turnStarted: wsMappedEmitter<IConversationTurnStartedEvent, unknown>('turn.started', (raw) => {
     const r = raw as Record<string, unknown>;
     const rawRuntime = (r.runtime ?? {}) as Record<string, unknown>;
-    const rawProcessingStartedAt = rawRuntime.processing_started_at ?? rawRuntime.processingStartedAt;
+    const rawProcessingStartedAt = rawRuntime.processing_started_at;
     const processing_started_at =
       typeof rawProcessingStartedAt === 'number'
         ? rawProcessingStartedAt
@@ -344,136 +756,81 @@ export const conversation = {
           ? Number(rawProcessingStartedAt)
           : undefined;
     return {
-      session_id: Number(r.session_id ?? r.sessionId ?? r.conversation_id ?? 0),
-      conversation_id: Number(r.conversation_id ?? r.session_id ?? r.sessionId ?? 0),
-      turn_id: (r.turn_id ?? r.turnId) as string | undefined,
+      conversation_id: parseConversationId(r.conversation_id),
+      turn_id: parseMessageId(r.turn_id),
       status: (r.status ?? 'running') as IConversationTurnStartedEvent['status'],
       phase: (r.phase ?? 'starting') as IConversationTurnStartedEvent['phase'],
       state: (r.state ?? 'initializing') as IConversationTurnStartedEvent['state'],
       detail: (r.detail ?? '') as string,
-      can_send_message: (r.can_send_message ?? r.canSendMessage ?? false) as boolean,
+      can_send_message: (r.can_send_message ?? false) as boolean,
       runtime: {
         state: (rawRuntime.state ?? 'starting') as IConversationTurnStartedEvent['runtime']['state'],
-        can_send_message: (rawRuntime.can_send_message ?? rawRuntime.canSendMessage ?? false) as boolean,
-        has_task: (rawRuntime.has_task ?? rawRuntime.hasTask ?? true) as boolean,
-        task_status: (rawRuntime.task_status ??
-          rawRuntime.taskStatus) as IConversationTurnStartedEvent['runtime']['task_status'],
-        is_processing: (rawRuntime.is_processing ?? rawRuntime.isProcessing ?? true) as boolean,
-        pending_confirmations: (rawRuntime.pending_confirmations ?? rawRuntime.pendingConfirmations ?? 0) as number,
+        can_send_message: (rawRuntime.can_send_message ?? false) as boolean,
+        has_runtime: (rawRuntime.has_runtime ?? true) as boolean,
+        runtime_status: rawRuntime.runtime_status as IConversationTurnStartedEvent['runtime']['runtime_status'],
+        is_processing: (rawRuntime.is_processing ?? true) as boolean,
+        pending_confirmations: (rawRuntime.pending_confirmations ?? 0) as number,
+        ...(rawRuntime.active_turn_id == null
+          ? {}
+          : { active_turn_id: parseMessageId(rawRuntime.active_turn_id) }),
         ...(Number.isFinite(processing_started_at) ? { processing_started_at } : {}),
       },
       companion: r.companion as boolean | undefined,
-      companion_id: (r.companion_id ?? r.companionId) as string | null | undefined,
+      companion_id: r.companion_id == null ? null : parseCompanionId(r.companion_id),
       origin: (r.origin ?? null) as string | null | undefined,
-      channel_platform: (r.channel_platform ?? r.channelPlatform) as string | null | undefined,
+      channel_platform: r.channel_platform as string | null | undefined,
     };
   }),
-  turnCompleted: wsMappedEmitter<IConversationTurnCompletedEvent>('turn.completed', (raw) => {
-    const r = raw as Record<string, unknown>;
-    const rawLast = (r.last_message ?? r.lastMessage) as Record<string, unknown> | undefined;
-    const last_message: IConversationTurnCompletedEvent['last_message'] = rawLast
-      ? {
-          id: rawLast.id as string | undefined,
-          type: rawLast.type as string | undefined,
-          content: rawLast.content ?? null,
-          status: rawLast.status as string | null | undefined,
-          created_at: (rawLast.created_at ?? rawLast.createdAt ?? Date.now()) as number,
-        }
-      : {
-          content: null,
-          created_at: Date.now(),
-        };
-    const rawRuntime = (r.runtime ?? {}) as Record<string, unknown>;
-    const runtime: IConversationTurnCompletedEvent['runtime'] = {
-      state: (rawRuntime.state ?? 'idle') as IConversationTurnCompletedEvent['runtime']['state'],
-      can_send_message: (rawRuntime.can_send_message ?? rawRuntime.canSendMessage ?? true) as boolean,
-      has_task: (rawRuntime.has_task ?? rawRuntime.hasTask ?? false) as boolean,
-      task_status: (rawRuntime.task_status ??
-        rawRuntime.taskStatus) as IConversationTurnCompletedEvent['runtime']['task_status'],
-      is_processing: (rawRuntime.is_processing ?? rawRuntime.isProcessing ?? false) as boolean,
-      pending_confirmations: (rawRuntime.pending_confirmations ?? rawRuntime.pendingConfirmations ?? 0) as number,
-    };
-    const rawModel = (r.model ?? {}) as Record<string, unknown>;
-    const model: IConversationTurnCompletedEvent['model'] = {
-      platform: (rawModel.platform ?? '') as string,
-      name: (rawModel.name ?? '') as string,
-      use_model: (rawModel.use_model ?? rawModel.useModel ?? '') as string,
-    };
-    return {
-      session_id: Number(r.session_id ?? r.sessionId ?? r.conversation_id ?? 0),
-      status: (r.status ?? 'finished') as IConversationTurnCompletedEvent['status'],
-      state: (r.state ??
-        (r.status === 'finished' ? 'ai_waiting_input' : 'unknown')) as IConversationTurnCompletedEvent['state'],
-      detail: (r.detail ?? '') as string,
-      can_send_message: (r.can_send_message ?? r.canSendMessage ?? r.status === 'finished') as boolean,
-      runtime,
-      workspace: (r.workspace ?? '') as string,
-      model,
-      last_message,
-    };
-  }),
+  turnCompleted: wsMappedEmitter<IConversationTurnCompletedEvent, unknown>('turn.completed', fromApiTurnCompletedEvent),
   listChanged: wsEmitter<IConversationListChangedEvent>('conversation.listChanged'),
   // Uses httpRequest directly (instead of httpGet + withResponseMap) because the
   // response mapper needs `workspace` from params to build fullPath/relativePath,
   // and withResponseMap's map function does not receive the original params.
   getWorkspace: {
     provider: () => {},
-    invoke: (async (p: { conversation_id: number; workspace: string; path: string; search?: string }) => {
+    invoke: (async (p: { conversation_id: ConversationId; workspace: string; path: string; search?: string }) => {
       const rel = absoluteToRelativePath(p.path, p.workspace);
       const url = `/api/conversations/${p.conversation_id}/workspace?path=${encodeURIComponent(rel)}${p.search ? `&search=${encodeURIComponent(p.search)}` : ''}`;
       const raw = await httpRequest<Array<{ name: string; type: string }>>('GET', url);
       return fromBackendWorkspaceList(raw, p.workspace, rel);
-    }) as (p: { conversation_id: number; workspace: string; path: string; search?: string }) => Promise<IDirOrFile[]>,
+    }) as (p: { conversation_id: ConversationId; workspace: string; path: string; search?: string }) => Promise<IDirOrFile[]>,
   },
   responseSearchWorkSpace: stubProvider<void, { file: number; dir: number; match?: IDirOrFile }>(
     'responseSearchWorkSpace',
     undefined as unknown as void
   ),
   confirmation: {
-    add: wsEmitter<IConfirmation<unknown> & { conversation_id: number }>('confirmation.add'),
-    update: wsEmitter<IConfirmation<unknown> & { conversation_id: number }>('confirmation.update'),
+    add: wsEmitter<IConfirmation<unknown> & { conversation_id: ConversationId }>('confirmation.add'),
+    update: wsEmitter<IConfirmation<unknown> & { conversation_id: ConversationId }>('confirmation.update'),
     confirm: httpPost<
       void,
-      { conversation_id: number; msg_id: string; data: unknown; call_id: string; always_allow?: boolean }
+      {
+        conversation_id: ConversationId;
+        msg_id: MessageId | ConfirmationCorrelationId;
+        data: unknown;
+        call_id: string;
+        always_allow?: boolean;
+      }
     >(
       (p) => `/api/conversations/${p.conversation_id}/confirmations/${encodeURIComponent(p.call_id)}/confirm`,
-      (p) => ({ msg_id: p.msg_id, data: p.data, always_allow: p.always_allow ?? false })
+      (p) => ({
+        msg_id: p.msg_id,
+        data: p.data,
+        always_allow: p.always_allow ?? false,
+      })
     ),
-    list: httpGet<IConfirmation<unknown>[], { conversation_id: number }>(
+    list: httpGet<IConfirmation<unknown>[], { conversation_id: ConversationId }>(
       (p) => `/api/conversations/${p.conversation_id}/confirmations`
     ),
-    remove: wsEmitter<{ conversation_id: number; id: string }>('confirmation.remove'),
+    remove: wsEmitter<{ conversation_id: ConversationId; id: string }>('confirmation.remove'),
   },
   approval: {
-    check: httpGet<{ approved: boolean }, { conversation_id: number; action: string; command_type?: string }>(
+    check: httpGet<{ approved: boolean }, { conversation_id: ConversationId; action: string; command_type?: string }>(
       (p) =>
         `/api/conversations/${p.conversation_id}/approvals/check?action=${encodeURIComponent(p.action)}${p.command_type ? `&command_type=${encodeURIComponent(p.command_type)}` : ''}`
     ),
   },
 };
-
-// ---------------------------------------------------------------------------
-// CDP status / config types (used by application, stays IPC)
-// ---------------------------------------------------------------------------
-
-export interface ICdpStatus {
-  enabled: boolean;
-  port: number | null;
-  startupEnabled: boolean;
-  instances: Array<{
-    pid: number;
-    port: number;
-    cwd: string;
-    startTime: number;
-  }>;
-  configEnabled: boolean;
-  isDevMode: boolean;
-}
-
-export interface ICdpConfig {
-  enabled?: boolean;
-  port?: number;
-}
 
 export interface IStartOnBootStatus {
   supported: boolean;
@@ -515,15 +872,23 @@ export const application = {
   factoryReset: httpPost<void, void>('/api/system/factory-reset'),
   // DEGRADE_STUB: Tauri v2 has no public JS API to toggle the webview devtools.
   openDevTools: stubShellProvider<boolean, void>(false),
-  isDevToolsOpened: stubShellProvider<boolean, void>(false),
   systemInfo: withResponseMap(
-    httpGet<{ cache_dir: string; work_dir: string; log_dir: string; platform: string; arch: string }, void>(
-      '/api/system/info'
-    ),
+    httpGet<
+      {
+        cache_dir: string;
+        work_dir: string;
+        log_dir: string;
+        storage_generation: string;
+        platform: string;
+        arch: string;
+      },
+      void
+    >('/api/system/info'),
     (raw) => ({
       cacheDir: raw.cache_dir,
       workDir: raw.work_dir,
       logDir: raw.log_dir,
+      storageGeneration: raw.storage_generation,
       platform: raw.platform,
       arch: raw.arch,
     })
@@ -547,15 +912,6 @@ export const application = {
     ({ show, quit }) => tauriSetTrayLabels(show, quit),
     undefined
   ),
-  // DEGRADE_STUB: Tauri (WebView2/WKWebView) exposes no Chrome DevTools Protocol surface.
-  getCdpStatus: stubShellProvider<IBridgeResponse<ICdpStatus>, void>({
-    success: true,
-    data: { enabled: false, port: null, startupEnabled: false, instances: [], configEnabled: false, isDevMode: false },
-  }),
-  updateCdpConfig: stubShellProvider<IBridgeResponse<ICdpConfig>, Partial<ICdpConfig>>({
-    success: false,
-    msg: 'CDP not supported in the Tauri shell',
-  }),
   getStartOnBootStatus: shellProvider<IBridgeResponse<IStartOnBootStatus>, void>(
     async () => ({
       success: true,
@@ -566,23 +922,45 @@ export const application = {
   setStartOnBoot: shellProvider<IBridgeResponse<IStartOnBootStatus>, { enabled: boolean }>(
     async ({ enabled }) => {
       await tauriSetAutostart(enabled);
-      return { success: true, data: { supported: true, enabled, isPackaged: true, platform: navigator.platform } };
+      return {
+        success: true,
+        data: {
+          supported: true,
+          enabled,
+          isPackaged: true,
+          platform: navigator.platform,
+        },
+      };
     },
     { success: false }
   ),
   // DEGRADE_STUB: no GPU-process recovery hooks in Tauri's webview.
   getGpuStatus: stubShellProvider<IBridgeResponse<IGpuStatus>, void>({
     success: true,
-    data: { userOverride: null, autoDisabled: false, crashCount: 0, lastCrashAt: null },
+    data: {
+      userOverride: null,
+      autoDisabled: false,
+      crashCount: 0,
+      lastCrashAt: null,
+    },
   }),
   setGpuOverride: stubShellProvider<IBridgeResponse<IGpuStatus>, { override: IGpuOverride | null }>({
     success: true,
-    data: { userOverride: null, autoDisabled: false, crashCount: 0, lastCrashAt: null },
+    data: {
+      userOverride: null,
+      autoDisabled: false,
+      crashCount: 0,
+      lastCrashAt: null,
+    },
   }),
   // DEGRADE_STUB: renderer-log piping to the shell; the in-process backend owns log files.
   writeRendererLog: stubShellProvider<void, IRendererLogEntry>(undefined),
-  logStream: noopEmitter<{ level: 'log' | 'warn' | 'error'; tag: string; message: string; data?: unknown }>(),
-  devToolsStateChanged: noopEmitter<{ isOpen: boolean }>(),
+  logStream: noopEmitter<{
+    level: 'log' | 'warn' | 'error';
+    tag: string;
+    message: string;
+    data?: unknown;
+  }>(),
 };
 
 // ---------------------------------------------------------------------------
@@ -635,7 +1013,13 @@ export const update = {
 
 export const autoUpdate = {
   check: shellProvider<
-    IBridgeResponse<{ updateInfo?: { version: string; releaseDate?: string; releaseNotes?: string } }>,
+    IBridgeResponse<{
+      updateInfo?: {
+        version: string;
+        releaseDate?: string;
+        releaseNotes?: string;
+      };
+    }>,
     { includePrerelease?: boolean }
   >(async () => {
     // `force` so each modal open / retry performs a fresh check; update.check
@@ -680,6 +1064,28 @@ export const dialog = {
 // File System — routed to /api/fs/* and /api/skills/*
 // ---------------------------------------------------------------------------
 
+export type SkillMarketSource = 'clawhub' | 'skillhub';
+
+export interface ISkillMarketItem {
+  id: string;
+  source: SkillMarketSource;
+  rank: number;
+  name: string;
+  description: string;
+  url: string;
+  install_command: string;
+  tags?: string[];
+  audience_tags?: string[];
+  scenario_tags?: string[];
+  stats?: string;
+}
+
+export interface ISkillMarketSyncResponse {
+  fetched_at: number;
+  items: ISkillMarketItem[];
+  errors?: string[];
+}
+
 export const fs = {
   getFilesByDir: httpPost<Array<IDirOrFile>, { dir: string; root: string }>('/api/fs/dir'),
   listWorkspaceFiles: withResponseMap(
@@ -707,27 +1113,16 @@ export const fs = {
   cancelZip: httpPost<boolean, { request_id: string }>('/api/fs/zip/cancel'),
   getFileMetadata: httpPost<IFileMetadata, { path: string; workspace?: string }>('/api/fs/metadata'),
   copyFilesToWorkspace: httpPost<
-    { copied_files: string[]; failed_files?: Array<{ path: string; error: string }> },
+    {
+      copied_files: string[];
+      failed_files?: Array<{ path: string; error: string }>;
+    },
     { file_paths: string[]; workspace: string; source_root?: string }
   >('/api/fs/copy'),
   removeEntry: httpPost<void, { path: string }>('/api/fs/remove'),
   renameEntry: httpPost<{ new_path: string }, { path: string; new_name: string }>('/api/fs/rename'),
   readBuiltinRule: httpPost<string, { file_name: string }>('/api/skills/builtin-rule'),
   readBuiltinSkill: httpPost<string, { file_name: string }>('/api/skills/builtin-skill'),
-  readAssistantRule: httpPost<string, { assistant_id: string; locale?: string }>('/api/skills/assistant-rule/read'),
-  writeAssistantRule: httpPost<boolean, { assistant_id: string; content: string; locale?: string }>(
-    '/api/skills/assistant-rule/write'
-  ),
-  deleteAssistantRule: httpDelete<boolean, { assistant_id: string }>(
-    (p) => `/api/skills/assistant-rule/${p.assistant_id}`
-  ),
-  readAssistantSkill: httpPost<string, { assistant_id: string; locale?: string }>('/api/skills/assistant-skill/read'),
-  writeAssistantSkill: httpPost<boolean, { assistant_id: string; content: string; locale?: string }>(
-    '/api/skills/assistant-skill/write'
-  ),
-  deleteAssistantSkill: httpDelete<boolean, { assistant_id: string }>(
-    (p) => `/api/skills/assistant-skill/${p.assistant_id}`
-  ),
   listAvailableSkills: httpGet<
     Array<{
       name: string;
@@ -749,7 +1144,7 @@ export const fs = {
   >('/api/skills/builtin-auto'),
   materializeSkillsForAgent: httpPost<
     { skills: Array<{ name: string; source_path: string }> },
-    { conversation_id: number; skills: string[] }
+    { conversation_id: ConversationId; skills: string[] }
   >('/api/skills/materialize-for-agent'),
   readSkillInfo: httpPost<{ name: string; description: string }, { skill_path: string }>('/api/skills/info'),
   importSkill: httpPost<{ skill_name: string }, { skill_path: string }>('/api/skills/import'),
@@ -772,7 +1167,7 @@ export const fs = {
   ),
   deleteSkill: httpDelete<void, { skill_name: string }>((p) => `/api/skills/${encodeURIComponent(p.skill_name)}`),
   // Assign tags to a skill (PUT /api/skills/{name}/tags). Tag keys reference the
-  // shared assistant tag vocabulary; the backend stores them in a sidecar table.
+  // shared preset tag vocabulary; the backend stores them in a sidecar table.
   setSkillTags: httpPut<void, { skill_name: string; audience_tags: string[]; scenario_tags: string[] }>(
     (p) => `/api/skills/${encodeURIComponent(p.skill_name)}/tags`,
     (p) => ({ audience_tags: p.audience_tags, scenario_tags: p.scenario_tags })
@@ -785,6 +1180,9 @@ export const fs = {
   ),
   enableSkillsMarket: httpPost<void, void>('/api/skills/market/enable'),
   disableSkillsMarket: httpPost<void, void>('/api/skills/market/disable'),
+  syncSkillMarketRankings: httpPost<ISkillMarketSyncResponse, { sources?: SkillMarketSource[] }>(
+    '/api/skills/market/rankings/sync'
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -878,7 +1276,12 @@ export const googleAuth = {
 
 export const google = {
   subscriptionStatus: httpGet<
-    { isSubscriber: boolean; tier?: string; lastChecked: number; message?: string },
+    {
+      isSubscriber: boolean;
+      tier?: string;
+      lastChecked: number;
+      message?: string;
+    },
     { proxy?: string }
   >('/api/google/subscription-status'),
 };
@@ -906,19 +1309,38 @@ export const bedrock = {
 // Mode (Provider management) — routed to /api/providers/*
 // ---------------------------------------------------------------------------
 
+const normalizeModelProfile = (profile: ModelProfile): ModelProfile => ({
+  ...profile,
+  provider_id: parseProviderId(profile.provider_id),
+});
+
+const normalizeManagedModelStatus = (
+  status: ManagedModelServiceStatus
+): ManagedModelServiceStatus => ({
+  ...status,
+  providerId: status.providerId == null ? null : parseProviderId(status.providerId),
+});
+
 export const mode = {
-  listProviders: httpGet<IProvider[], void>('/api/providers'),
-  createProvider: httpPost<IProvider, CreateProviderRequest>('/api/providers'),
-  updateProvider: httpPut<IProvider, { id: string } & UpdateProviderRequest>(
-    (p) => `/api/providers/${p.id}`,
+  listProviders: withResponseMap(httpGet<ProviderResponse[], void>('/api/providers'), (providers) =>
+    providers.map(fromProviderResponse)
+  ),
+  createProvider: withResponseMap(
+    httpPost<ProviderResponse, CreateProviderInput>('/api/providers', toCreateProviderRequest),
+    fromProviderResponse
+  ),
+  updateProvider: withResponseMap(httpPut<ProviderResponse, { provider_id: ProviderId } & UpdateProviderRequest>(
+    (p) => `/api/providers/${p.provider_id}`,
     (p) => {
-      const { id: _id, ...body } = p;
+      const { provider_id: _provider_id, ...body } = p;
       return body;
     }
+  ), fromProviderResponse),
+  deleteProvider: httpDelete<void, { provider_id: ProviderId }>(
+    (p) => `/api/providers/${p.provider_id}`
   ),
-  deleteProvider: httpDelete<void, { id: string }>((p) => `/api/providers/${p.id}`),
-  fetchProviderModels: httpPost<FetchModelsResponse, { id: string; try_fix?: boolean }>(
-    (p) => `/api/providers/${p.id}/models`,
+  fetchProviderModels: httpPost<FetchModelsResponse, { provider_id: ProviderId; try_fix?: boolean }>(
+    (p) => `/api/providers/${p.provider_id}/models`,
     (p) => ({ try_fix: p.try_fix })
   ),
   /**
@@ -932,30 +1354,39 @@ export const mode = {
 };
 
 // ---------------------------------------------------------------------------
-// NomiFun-managed model services — stable provider layer for free/local models
+// NomiFun-managed free-model service
 // ---------------------------------------------------------------------------
 
 export const managedModelService = {
   free: {
-    status: httpGet<ManagedModelServiceStatus, void>('/api/model-services/free/status'),
-    models: httpGet<ManagedModel[], void>('/api/model-services/free/models'),
-    refresh: httpPost<ManagedModelServiceStatus, void>('/api/model-services/free/refresh'),
-    setEnabled: httpPost<ManagedModelServiceStatus, SetManagedModelServiceEnabledRequest>(
-      '/api/model-services/free/activate'
+    status: withResponseMap(
+      httpGet<ManagedModelServiceStatus, void>('/api/model-services/free/status'),
+      normalizeManagedModelStatus
     ),
-    setModelEnabled: httpPatch<ManagedModelServiceStatus, SetManagedModelEnabledRequest>(
-      (p) => `/api/model-services/free/models/${encodeURIComponent(p.id)}`,
-      (p) => ({ enabled: p.enabled })
+    models: httpGet<ManagedModel[], void>('/api/model-services/free/models'),
+    refresh: withResponseMap(
+      httpPost<ManagedModelServiceStatus, void>('/api/model-services/free/refresh'),
+      normalizeManagedModelStatus
+    ),
+    setEnabled: withResponseMap(
+      httpPost<ManagedModelServiceStatus, SetManagedModelServiceEnabledRequest>(
+        '/api/model-services/free/activate'
+      ),
+      normalizeManagedModelStatus
+    ),
+    setModelEnabled: withResponseMap(
+      httpPatch<ManagedModelServiceStatus, SetManagedModelEnabledRequest>(
+        (p) => `/api/model-services/free/models/${encodeURIComponent(p.model_id)}`,
+        (p) => ({ enabled: p.enabled })
+      ),
+      normalizeManagedModelStatus
     ),
     healthSnapshot: httpGet<ManagedModelHealthResult[], void>('/api/model-services/free/health'),
     checkHealth: httpPost<ManagedModelHealthBatchResult, void>('/api/model-services/free/health'),
     checkModelHealth: httpPost<ManagedModelHealthResult, CheckManagedModelHealthRequest>(
-      (p) => `/api/model-services/free/models/${encodeURIComponent(p.id)}/health`,
+      (p) => `/api/model-services/free/models/${encodeURIComponent(p.model_id)}/health`,
       () => undefined
     ),
-  },
-  local: {
-    status: httpGet<ManagedModelServiceStatus, void>('/api/model-services/local/status'),
   },
 };
 
@@ -964,10 +1395,24 @@ export const managedModelService = {
 // ---------------------------------------------------------------------------
 
 export const modelProfile = {
-  list: httpGet<ModelProfile[], void>('/api/model-profiles'),
-  upsert: httpPost<ModelProfile, ModelProfileUpsertRequest>('/api/model-profiles'),
+  list: withResponseMap(httpGet<ModelProfile[], void>('/api/model-profiles'), (profiles) =>
+    profiles.map(normalizeModelProfile)
+  ),
+  upsert: withResponseMap(
+    httpPost<ModelProfile, ModelProfileUpsertRequest>('/api/model-profiles'),
+    normalizeModelProfile
+  ),
   remove: httpPost<void, ModelProfileKeyRequest>('/api/model-profiles/delete'),
-  resolve: httpPost<ResolveModelsResponse, ResolveModelsRequest>('/api/model-profiles/resolve'),
+  resolve: withResponseMap(
+    httpPost<ResolveModelsResponse, ResolveModelsRequest>('/api/model-profiles/resolve'),
+    (response) => ({
+      ...response,
+      models: response.models.map((model) => ({
+        ...model,
+        provider_id: parseProviderId(model.provider_id),
+      })),
+    })
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -977,63 +1422,80 @@ export const modelProfile = {
 export const acpConversation = {
   sendMessage: conversation.sendMessage,
   responseStream: conversation.responseStream,
-  getAvailableAgents: httpGet<AgentMetadata[], void>('/api/agents'),
+  getAvailableAgents: withResponseMap(
+    httpGet<AgentMetadata[], void>('/api/agents'),
+    (agents) => agents.map(fromApiAgentMetadata)
+  ),
   refreshCustomAgents: httpPost<void, void>('/api/agents/refresh'),
   testCustomAgent: httpPost<
     { step: 'success' } | { step: 'fail_cli'; error: string } | { step: 'fail_acp'; error: string },
     { command: string; acp_args?: string[]; env?: Record<string, string> }
   >('/api/agents/custom/try-connect'),
-  createCustomAgent: httpPost<
-    AgentMetadata,
-    {
-      name: string;
-      command: string;
-      icon?: string;
-      args?: string[];
-      env?: Array<{ name: string; value: string; description?: string }>;
-      advanced?: {
-        yolo_id?: string;
-        native_skills_dirs?: string[];
-        behavior_policy?: { supports_side_question?: boolean };
-        description?: string;
-      };
-    }
-  >('/api/agents/custom'),
-  updateCustomAgent: httpPut<
-    AgentMetadata,
-    {
-      id: string;
-      name: string;
-      command: string;
-      icon?: string;
-      args?: string[];
-      env?: Array<{ name: string; value: string; description?: string }>;
-      advanced?: {
-        yolo_id?: string;
-        native_skills_dirs?: string[];
-        behavior_policy?: { supports_side_question?: boolean };
-        description?: string;
-      };
-    }
-  >(
-    (p) => `/api/agents/custom/${p.id}`,
-    (p) => {
-      const { id: _id, ...rest } = p;
-      return rest;
-    }
+  createCustomAgent: withResponseMap(
+    httpPost<
+      AgentMetadata,
+      {
+        name: string;
+        command: string;
+        icon?: string;
+        args?: string[];
+        env?: Array<{ name: string; value: string; description?: string }>;
+        advanced?: {
+          yolo_id?: string;
+          native_skills_dirs?: string[];
+          behavior_policy?: { supports_side_question?: boolean };
+          description?: string;
+        };
+      }
+    >('/api/agents/custom'),
+    fromApiAgentMetadata
   ),
-  deleteCustomAgent: httpDelete<{ deleted: boolean }, { id: string }>((p) => `/api/agents/custom/${p.id}`),
-  setAgentEnabled: httpPatch<AgentMetadata, { id: string; enabled: boolean }>(
-    (p) => `/api/agents/${p.id}/enabled`,
-    (p) => ({ enabled: p.enabled })
+  updateCustomAgent: withResponseMap(
+    httpPut<
+      AgentMetadata,
+      {
+        agent_id: AgentMetadata['agent_id'];
+        name: string;
+        command: string;
+        icon?: string;
+        args?: string[];
+        env?: Array<{ name: string; value: string; description?: string }>;
+        advanced?: {
+          yolo_id?: string;
+          native_skills_dirs?: string[];
+          behavior_policy?: { supports_side_question?: boolean };
+          description?: string;
+        };
+      }
+    >(
+      (p) => `/api/agents/custom/${p.agent_id}`,
+      (p) => {
+        const { agent_id: _agentId, ...rest } = p;
+        return rest;
+      }
+    ),
+    fromApiAgentMetadata
+  ),
+  deleteCustomAgent: httpDelete<{ deleted: boolean }, { agent_id: AgentMetadata['agent_id'] }>(
+    (p) => `/api/agents/custom/${p.agent_id}`
+  ),
+  setAgentEnabled: withResponseMap(
+    httpPatch<AgentMetadata, { agent_id: AgentMetadata['agent_id']; enabled: boolean }>(
+      (p) => `/api/agents/${p.agent_id}/enabled`,
+      (p) => ({ enabled: p.enabled })
+    ),
+    fromApiAgentMetadata
   ),
   checkAgentHealth: httpPost<{ available: boolean; latency?: number; error?: string }, { backend: string }>(
     '/api/agents/health-check'
   ),
-  checkProviderHealth: httpPost<ProviderHealthCheckResponse, ProviderHealthCheckRequest>(
-    '/api/agents/provider-health-check'
+  checkProviderHealth: withResponseMap(
+    httpPost<ProviderHealthCheckResponse, ProviderHealthCheckRequest>(
+      '/api/agents/provider-health-check'
+    ),
+    (response) => ({ ...response, provider_id: parseProviderId(response.provider_id) })
   ),
-  setMode: httpPut<void, { conversation_id: number; mode: string }>(
+  setMode: httpPut<void, { conversation_id: ConversationId; mode: string }>(
     (p) => `/api/conversations/${p.conversation_id}/mode`,
     (p) => ({ mode: p.mode })
   ),
@@ -1042,64 +1504,122 @@ export const acpConversation = {
   // we have nothing to read. AcpModeSelector / AcpModelSelector both fall back
   // to handshake metadata in that case. Silence the bridge log so this
   // ordinary state doesn't pollute Sentry breadcrumbs (ELECTRON-1BT).
-  getMode: httpGet<{ mode: string; initialized: boolean }, { conversation_id: number }>(
+  getMode: httpGet<{ mode: string; initialized: boolean }, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/mode`,
-    { silentStatuses: [404] }
+    {
+      silentStatuses: [404],
+    }
   ),
-  getModel: httpGet<{ model_info: AcpModelInfo | null }, { conversation_id: number }>(
+  getModel: httpGet<{ model_info: AcpModelInfo | null }, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/model`,
-    { silentStatuses: [404] }
+    {
+      silentStatuses: [404],
+    }
   ),
-  setModel: httpPut<void, { conversation_id: number; model_id: string }>(
+  setModel: httpPut<void, { conversation_id: ConversationId; model: string }>(
     (p) => `/api/conversations/${p.conversation_id}/model`,
-    (p) => ({ model_id: p.model_id })
+    (p) => ({ model: p.model })
   ),
 };
+
+/**
+ * Decode the v3 agent catalog contract at the HTTP boundary.
+ *
+ * Every `agent_id` is a bare UUIDv7. Catalog lineage belongs in source
+ * metadata; the removed ambiguous top-level `id` is never accepted.
+ */
+function fromApiAgentMetadata(raw: AgentMetadata): AgentMetadata {
+  const value = raw as AgentMetadata & Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(value, 'id')) {
+    throw new TypeError('AgentMetadata legacy field "id" is not accepted; use "agent_id"');
+  }
+  return { ...raw, agent_id: parseAgentId(value.agent_id) };
+}
 
 // ---------------------------------------------------------------------------
 // MCP Service — routed to /api/mcp/*
 // ---------------------------------------------------------------------------
 
+type ApiMcpServer = Omit<IMcpServer, 'mcp_server_id' | 'original_json'> & {
+  mcp_server_id: unknown;
+  original_json?: string | null;
+};
+
+const fromApiMcpServer = (raw: ApiMcpServer): IMcpServer => {
+  if (Object.prototype.hasOwnProperty.call(raw, 'id')) {
+    throw new TypeError('MCP server legacy field "id" is not accepted; use "mcp_server_id"');
+  }
+  return {
+    ...raw,
+    mcp_server_id: parseMcpServerId(raw.mcp_server_id),
+    original_json: raw.original_json ?? '',
+  };
+};
+
+export type DetectedMcpServer = {
+  name: string;
+  description?: string;
+  transport: IMcpServer['transport'];
+  original_json?: string;
+  importable: boolean;
+  import_skip_reason?: string;
+};
+
 export const mcpService = {
-  listServers: httpGet<IMcpServer[], void>('/api/mcp/servers'),
-  createServer: httpPost<
-    IMcpServer,
-    Pick<IMcpServer, 'name' | 'description' | 'transport' | 'original_json' | 'builtin'>
-  >('/api/mcp/servers'),
-  importServers: httpPost<
-    IMcpServer[],
-    { servers: Array<Pick<IMcpServer, 'name' | 'description' | 'transport' | 'original_json' | 'builtin'>> }
-  >('/api/mcp/servers/import'),
-  updateServer: httpPut<
-    IMcpServer,
-    {
-      id: number;
-      data: Partial<Pick<IMcpServer, 'name' | 'description' | 'transport' | 'original_json' | 'builtin'>>;
-    }
-  >(
-    (p) => `/api/mcp/servers/${p.id}`,
-    (p) => p.data
+  listServers: withResponseMap(
+    httpGet<ApiMcpServer[], void>('/api/mcp/servers'),
+    (servers) => servers.map(fromApiMcpServer)
   ),
-  deleteServer: httpDelete<void, { id: number }>((p) => `/api/mcp/servers/${p.id}`),
-  toggleServer: httpPost<IMcpServer, { id: number }>(
-    (p) => `/api/mcp/servers/${p.id}/toggle`,
-    () => undefined
+  createServer: withResponseMap(
+    httpPost<
+      ApiMcpServer,
+      Pick<IMcpServer, 'name' | 'description' | 'transport' | 'original_json' | 'builtin'>
+    >('/api/mcp/servers'),
+    fromApiMcpServer
   ),
-  batchImportServers: httpPost<
-    IMcpServer[],
-    { servers: Array<Partial<IMcpServer> & Pick<IMcpServer, 'name' | 'transport'>> }
-  >('/api/mcp/servers/import'),
+  importServers: withResponseMap(
+    httpPost<
+      ApiMcpServer[],
+      {
+        servers: Array<Pick<IMcpServer, 'name' | 'description' | 'transport' | 'original_json' | 'builtin'>>;
+      }
+    >('/api/mcp/servers/import'),
+    (servers) => servers.map(fromApiMcpServer)
+  ),
+  updateServer: withResponseMap(
+    httpPut<
+      ApiMcpServer,
+      {
+        mcp_server_id: McpServerId;
+        data: Partial<Pick<IMcpServer, 'name' | 'description' | 'transport' | 'original_json' | 'builtin'>>;
+      }
+    >(
+      (p) => `/api/mcp/servers/${p.mcp_server_id}`,
+      (p) => p.data
+    ),
+    fromApiMcpServer
+  ),
+  deleteServer: httpDelete<void, { mcp_server_id: McpServerId }>(
+    (p) => `/api/mcp/servers/${p.mcp_server_id}`
+  ),
+  toggleServer: withResponseMap(
+    httpPost<ApiMcpServer, { mcp_server_id: McpServerId }>(
+      (p) => `/api/mcp/servers/${p.mcp_server_id}/toggle`,
+      () => undefined
+    ),
+    fromApiMcpServer
+  ),
   getAgentMcpConfigs: httpGet<
     Array<{
       source: string;
-      servers: Array<
-        IMcpServer & {
-          importable: boolean;
-          import_skip_reason?: string;
-        }
-      >;
+      servers: DetectedMcpServer[];
     }>,
-    Array<{ agent_type: string; backend?: string; name: string; cli_path?: string }>
+    Array<{
+      agent_type: string;
+      backend?: string;
+      name: string;
+      cli_path?: string;
+    }>
   >('/api/mcp/agent-configs'),
   testMcpConnection: httpPost<
     {
@@ -1133,7 +1653,7 @@ export const openclawConversation = {
   responseStream: conversation.responseStream,
   getRuntime: httpGet<
     {
-      conversation_id: number;
+      conversation_id: ConversationId;
       runtime: {
         workspace?: string;
         backend?: string;
@@ -1155,7 +1675,7 @@ export const openclawConversation = {
         switched_at?: number;
       };
     },
-    { conversation_id: number }
+    { conversation_id: ConversationId }
   >((p) => `/api/conversations/${p.conversation_id}/openclaw/runtime`),
 };
 
@@ -1163,30 +1683,55 @@ export const openclawConversation = {
 // Remote Agent — routed to /api/remote-agents/*
 // ---------------------------------------------------------------------------
 
+const fromApiRemoteAgent = (
+  value: import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig
+): import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig => ({
+  ...value,
+  remote_agent_id: parseRemoteAgentId(value.remote_agent_id),
+});
+
 export const remoteAgent = {
-  list: httpGet<import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig[], void>('/api/remote-agents'),
-  get: httpGet<import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig | null, { id: number }>(
-    (p) => `/api/remote-agents/${p.id}`
+  list: withResponseMap(
+    httpGet<import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig[], void>('/api/remote-agents'),
+    (items) => items.map(fromApiRemoteAgent)
   ),
-  create: httpPost<
-    import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig,
-    import('@/common/types/agent/remoteAgentTypes').RemoteAgentInput
-  >('/api/remote-agents'),
-  update: httpPut<
-    boolean,
-    { id: number; updates: Partial<import('@/common/types/agent/remoteAgentTypes').RemoteAgentInput> }
-  >(
-    (p) => `/api/remote-agents/${p.id}`,
-    (p) => p.updates
+  get: withResponseMap(
+    httpGet<
+      import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig | null,
+      { remote_agent_id: RemoteAgentId }
+    >((p) => `/api/remote-agents/${p.remote_agent_id}`),
+    (item) => item == null ? null : fromApiRemoteAgent(item)
   ),
-  delete: httpDelete<boolean, { id: number }>((p) => `/api/remote-agents/${p.id}`),
-  testConnection: httpPost<
-    { success: boolean; error?: string },
-    { url: string; auth_type: string; auth_token?: string; allow_insecure?: boolean }
-  >('/api/remote-agents/test-connection'),
-  handshake: httpPost<{ status: 'ok' | 'pending_approval' | 'error'; error?: string }, { id: number }>(
-    (p) => `/api/remote-agents/${p.id}/handshake`
+  create: withResponseMap(
+    httpPost<
+      import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig,
+      import('@/common/types/agent/remoteAgentTypes').RemoteAgentInput
+    >('/api/remote-agents'),
+    fromApiRemoteAgent
   ),
+  update: withResponseMap(
+    httpPut<
+      import('@/common/types/agent/remoteAgentTypes').RemoteAgentConfig,
+      {
+        remote_agent_id: RemoteAgentId;
+        updates: Partial<import('@/common/types/agent/remoteAgentTypes').RemoteAgentInput>;
+      }
+    >(
+      (p) => `/api/remote-agents/${p.remote_agent_id}`,
+      (p) => p.updates
+    ),
+    fromApiRemoteAgent
+  ),
+  delete: httpDelete<void, { remote_agent_id: RemoteAgentId }>(
+    (p) => `/api/remote-agents/${p.remote_agent_id}`
+  ),
+  testConnection: httpPost<void, { url: string; auth_type: string; auth_token?: string; allow_insecure?: boolean }>(
+    '/api/remote-agents/test-connection'
+  ),
+  handshake: httpPost<
+    { status: 'ok' | 'pending_approval' | 'error'; error?: string },
+    { remote_agent_id: RemoteAgentId }
+  >((p) => `/api/remote-agents/${p.remote_agent_id}/handshake`),
 };
 
 // ---------------------------------------------------------------------------
@@ -1200,36 +1745,43 @@ export type PaginatedResult<T> = {
 };
 
 export const database = {
-  getConversationMessages: httpGet<
-    PaginatedResult<import('@/common/chat/chatLib').TMessage>,
-    {
-      conversation_id: number;
-      page?: number;
-      page_size?: number;
-      order?: string;
-      content_mode?: 'compact' | 'full';
-      // Keyset cursor for incremental history loading: '' = newest window,
-      // '<created_at>:<id>' = the page strictly older than that message. When
-      // set (incl. ''), the backend ignores page/offset pagination.
-      cursor?: string;
-    }
-  >((p) => {
-    const params = new URLSearchParams();
-    params.set('page', String(p.page ?? 1));
-    params.set('page_size', String(p.page_size ?? 50));
-    if (p.order) params.set('order', p.order);
-    if (p.content_mode) params.set('content_mode', p.content_mode);
-    // Send even an empty cursor (the "newest window" request) — distinct from
-    // omitting it, which selects the legacy offset path.
-    if (p.cursor !== undefined) params.set('cursor', p.cursor);
-    return `/api/conversations/${p.conversation_id}/messages?${params.toString()}`;
-  }),
-  getConversationMessage: httpGet<
-    import('@/common/chat/chatLib').TMessage,
-    { conversation_id: number; message_id: string }
-  >((p) => `/api/conversations/${p.conversation_id}/messages/${encodeURIComponent(p.message_id)}`),
+  getConversationMessages: withResponseMap(
+    httpGet<
+      PaginatedResult<StoredMessageResponse>,
+      {
+        conversation_id: ConversationId;
+        page?: number;
+        page_size?: number;
+        order?: string;
+        content_mode?: 'compact' | 'full';
+        // Keyset cursor for incremental history loading: '' = newest window,
+        // '<created_at>:<message_id>' = the page strictly older than that
+        // persisted message. When
+        // set (incl. ''), the backend ignores page/offset pagination.
+        cursor?: string;
+      }
+    >((p) => {
+      const params = new URLSearchParams();
+      params.set('page', String(p.page ?? 1));
+      params.set('page_size', String(p.page_size ?? 50));
+      if (p.order) params.set('order', p.order);
+      if (p.content_mode) params.set('content_mode', p.content_mode);
+      // Send even an empty cursor (the "newest window" request) — distinct from
+      // omitting it, which selects offset pagination.
+      if (p.cursor !== undefined) params.set('cursor', p.cursor);
+      return `/api/conversations/${p.conversation_id}/messages?${params.toString()}`;
+    }),
+    (page) => ({ ...page, items: page.items.map(fromApiStoredMessage) })
+  ),
+  getConversationMessage: withResponseMap(
+    httpGet<
+      StoredMessageResponse,
+      { conversation_id: ConversationId; message_id: MessageId }
+    >((p) => `/api/conversations/${p.conversation_id}/messages/${encodeURIComponent(p.message_id)}`),
+    fromApiStoredMessage
+  ),
   getUserConversations: withResponseMap(
-    httpGet<PaginatedResult<import('@/common/config/storage').TChatConversation>, { cursor?: string; limit?: number }>(
+    httpGet<PaginatedResult<unknown>, { cursor?: string; limit?: number }>(
       (p) => {
         const params = new URLSearchParams();
         if (p.cursor) params.set('cursor', p.cursor);
@@ -1254,21 +1806,57 @@ export const database = {
 // ---------------------------------------------------------------------------
 
 function mapPreviewTarget(target: PreviewHistoryTarget): Record<string, unknown> {
-  return { ...target, content_type: target.contentType, contentType: undefined };
+  return {
+    ...target,
+    content_type: target.contentType,
+    contentType: undefined,
+  };
+}
+
+function fromApiPreviewSnapshot(value: PreviewSnapshotInfo): PreviewSnapshotInfo {
+  const raw = value as PreviewSnapshotInfo & { id?: unknown };
+  if (raw.id !== undefined) {
+    throw new TypeError('preview snapshot payload must use snapshot_id, not id');
+  }
+  return {
+    ...value,
+    snapshot_id: parsePreviewSnapshotId(value.snapshot_id),
+  };
 }
 
 export const previewHistory = {
-  list: httpPost<PreviewSnapshotInfo[], { target: PreviewHistoryTarget }>('/api/preview-history/list', (p) => ({
-    target: mapPreviewTarget(p.target),
-  })),
-  save: httpPost<PreviewSnapshotInfo, { target: PreviewHistoryTarget; content: string }>(
-    '/api/preview-history/save',
-    (p) => ({ target: mapPreviewTarget(p.target), content: p.content })
+  list: withResponseMap(
+    httpPost<PreviewSnapshotInfo[], { target: PreviewHistoryTarget }>('/api/preview-history/list', (p) => ({
+      target: mapPreviewTarget(p.target),
+    })),
+    (snapshots) => snapshots.map(fromApiPreviewSnapshot)
   ),
-  getContent: httpPost<
-    { snapshot: PreviewSnapshotInfo; content: string } | null,
-    { target: PreviewHistoryTarget; snapshot_id: string }
-  >('/api/preview-history/get-content', (p) => ({ target: mapPreviewTarget(p.target), snapshot_id: p.snapshot_id })),
+  save: withResponseMap(
+    httpPost<PreviewSnapshotInfo, { target: PreviewHistoryTarget; content: string }>(
+      '/api/preview-history/save',
+      (p) => ({
+        target: mapPreviewTarget(p.target),
+        content: p.content,
+      })
+    ),
+    fromApiPreviewSnapshot
+  ),
+  getContent: withResponseMap(
+    httpPost<
+      { snapshot: PreviewSnapshotInfo; content: string } | null,
+      { target: PreviewHistoryTarget; snapshot_id: PreviewSnapshotInfo['snapshot_id'] }
+    >('/api/preview-history/get-content', (p) => ({
+      target: mapPreviewTarget(p.target),
+      snapshot_id: p.snapshot_id,
+    })),
+    (response) =>
+      response
+        ? {
+            ...response,
+            snapshot: fromApiPreviewSnapshot(response.snapshot),
+          }
+        : null
+  ),
 };
 
 // Preview panel
@@ -1299,25 +1887,30 @@ export const document = {
 // ---------------------------------------------------------------------------
 
 export const pptPreview = {
-  start: httpPost<{ url: string; error?: string }, { file_path: string; workspace?: string }>('/api/ppt-preview/start'),
-  stop: httpPost<void, { file_path: string }>('/api/ppt-preview/stop'),
-  status: wsEmitter<{ state: 'starting' | 'installing' | 'ready' | 'error'; message?: string }>('ppt-preview.status'),
+  start: httpPost<PreviewUrlResponse, { file_path: string; workspace?: string }>('/api/ppt-preview/start'),
+  stop: httpPost<void, { capability: string }>('/api/ppt-preview/stop'),
+  status: wsEmitter<{
+    state: 'starting' | 'installing' | 'ready' | 'error';
+    message?: string;
+  }>('ppt-preview.status'),
 };
 
 export const wordPreview = {
-  start: httpPost<{ url: string; error?: string }, { file_path: string; workspace?: string }>(
-    '/api/word-preview/start'
-  ),
-  stop: httpPost<void, { file_path: string }>('/api/word-preview/stop'),
-  status: wsEmitter<{ state: 'starting' | 'installing' | 'ready' | 'error'; message?: string }>('word-preview.status'),
+  start: httpPost<PreviewUrlResponse, { file_path: string; workspace?: string }>('/api/word-preview/start'),
+  stop: httpPost<void, { capability: string }>('/api/word-preview/stop'),
+  status: wsEmitter<{
+    state: 'starting' | 'installing' | 'ready' | 'error';
+    message?: string;
+  }>('word-preview.status'),
 };
 
 export const excelPreview = {
-  start: httpPost<{ url: string; error?: string }, { file_path: string; workspace?: string }>(
-    '/api/excel-preview/start'
-  ),
-  stop: httpPost<void, { file_path: string }>('/api/excel-preview/stop'),
-  status: wsEmitter<{ state: 'starting' | 'installing' | 'ready' | 'error'; message?: string }>('excel-preview.status'),
+  start: httpPost<PreviewUrlResponse, { file_path: string; workspace?: string }>('/api/excel-preview/start'),
+  stop: httpPost<void, { capability: string }>('/api/excel-preview/stop'),
+  status: wsEmitter<{
+    state: 'starting' | 'installing' | 'ready' | 'error';
+    message?: string;
+  }>('excel-preview.status'),
 };
 
 // ---------------------------------------------------------------------------
@@ -1416,17 +2009,22 @@ export type INotificationOptions = {
   title: string;
   body: string;
   icon?: string;
-  conversation_id?: number;
+  conversation_id?: ConversationId;
 };
 
 export const notification = {
   show: shellProvider<void, INotificationOptions>(
-    (opts) => tauriSendNotification({ title: opts.title, body: opts.body, icon: opts.icon }),
+    (opts) =>
+      tauriSendNotification({
+        title: opts.title,
+        body: opts.body,
+        icon: opts.icon,
+      }),
     undefined
   ),
   // DEGRADE_STUB: click→navigate needs a Rust notification-action listener that
   // emits a Tauri event (see electron-removal-plan C2); inert until then.
-  clicked: noopEmitter<{ conversation_id?: number }>(),
+  clicked: noopEmitter<{ conversation_id?: ConversationId }>(),
 };
 
 // ---------------------------------------------------------------------------
@@ -1516,17 +2114,20 @@ export const webui = {
    * Mint returns the plaintext exactly ONCE (`token`) — it is never persisted nor
    * re-emitted; the backend stores only a hash. `warning` is present when the
    * companion has no resolvable model (the token still mints, but model-dependent
-   * capabilities like `nomi_agent_run` will fail until a provider/model is set).
-   */
+   * capabilities will fail until a provider/model is set).
+  */
   companionAccessToken: {
-    status: httpGet<{ configured: boolean }, { companionId: string }>(
+    status: httpGet<{ configured: boolean }, { companionId: CompanionId }>(
       (p) => `/api/webui/companions/${encodeURIComponent(p.companionId)}/access-token`
     ),
-    mint: httpPost<{ token: string; companion_id: string; warning?: string }, { companionId: string }>(
-      (p) => `/api/webui/companions/${encodeURIComponent(p.companionId)}/access-token`,
-      () => undefined
+    mint: withResponseMap(
+      httpPost<{ token: string; companion_id: CompanionId; warning?: string }, { companionId: CompanionId }>(
+        (p) => `/api/webui/companions/${encodeURIComponent(p.companionId)}/access-token`,
+        () => undefined
+      ),
+      (result) => ({ ...result, companion_id: parseCompanionId(result.companion_id) })
     ),
-    revoke: httpDelete<{ configured: boolean }, { companionId: string }>(
+    revoke: httpDelete<{ configured: boolean }, { companionId: CompanionId }>(
       (p) => `/api/webui/companions/${encodeURIComponent(p.companionId)}/access-token`
     ),
   },
@@ -1536,46 +2137,100 @@ export const webui = {
 // Cron — routed to /api/cron/*
 // ---------------------------------------------------------------------------
 
+function fromApiCronJob(job: ICronJob): ICronJob {
+  if (job.metadata.agent_type === 'nomi' && job.metadata.agent_config?.backend != null) {
+    throw new TypeError(
+      'Nomi cron agent_config.backend is not accepted; use agent_config.provider_id'
+    );
+  }
+  return {
+    ...job,
+    cron_job_id: parseCronJobId(job.cron_job_id),
+    metadata: {
+      ...job.metadata,
+      conversation_id: parseOptionalEntityId('conversation', job.metadata.conversation_id),
+      ...(job.metadata.agent_config == null
+        ? {}
+        : {
+            agent_config: {
+              ...job.metadata.agent_config,
+              provider_id:
+                job.metadata.agent_config.provider_id == null
+                  ? undefined
+                  : parseProviderId(job.metadata.agent_config.provider_id),
+            },
+          }),
+    },
+  };
+}
+
+function fromApiCronJobRun(run: ICronJobRun): ICronJobRun {
+  return {
+    ...run,
+    cron_job_run_id: parseCronJobRunId(run.cron_job_run_id),
+    cron_job_id: parseCronJobId(run.cron_job_id),
+  };
+}
+
 export const cron = {
-  listJobs: httpGet<ICronJob[], void>('/api/cron/jobs'),
-  listJobsByConversation: httpGet<ICronJob[], { conversation_id: number }>(
-    (p) => `/api/cron/jobs?conversation_id=${encodeURIComponent(p.conversation_id)}`
+  listJobs: withResponseMap(httpGet<ICronJob[], void>('/api/cron/jobs'), (jobs) => jobs.map(fromApiCronJob)),
+  listJobsByConversation: withResponseMap(
+    httpGet<ICronJob[], { conversation_id: ConversationId }>(
+      (p) => `/api/cron/jobs?conversation_id=${encodeURIComponent(p.conversation_id)}`
+    ),
+    (jobs) => jobs.map(fromApiCronJob)
   ),
-  getJob: httpGet<ICronJob | null, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}`),
-  addJob: httpPost<ICronJob, ICreateCronJobParams>('/api/cron/jobs'),
-  updateJob: httpPut<ICronJob, { job_id: string; updates: Partial<ICronJob> }>(
-    (p) => `/api/cron/jobs/${p.job_id}`,
+  getJob: withResponseMap(httpGet<ICronJob | null, { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}`), (job) => job ? fromApiCronJob(job) : null),
+  addJob: withResponseMap(httpPost<ICronJob, ICreateCronJobParams>('/api/cron/jobs'), fromApiCronJob),
+  updateJob: withResponseMap(httpPut<ICronJob, { cron_job_id: CronJobId; updates: Partial<ICronJob> }>(
+    (p) => `/api/cron/jobs/${p.cron_job_id}`,
     (p) => ({
       name: p.updates.name,
       description: p.updates.description,
       enabled: p.updates.enabled,
       schedule: p.updates.schedule,
-      message: p.updates.target?.payload.text,
-      execution_mode: p.updates.target?.execution_mode,
+      message: p.updates.message,
+      execution_mode: p.updates.execution_mode,
       agent_config: p.updates.metadata?.agent_config,
       conversation_title: p.updates.metadata?.conversation_title,
       max_retries: p.updates.state?.max_retries,
-      target_kind: p.updates.target?.target_kind,
     })
-  ),
-  removeJob: httpDelete<void, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}`),
-  runNow: httpPost<{ conversation_id: number }, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}/run`),
-  listRuns: httpGet<ICronJobRun[], { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}/runs`),
-  saveSkill: httpPost<void, { job_id: string; content: string }>(
-    (p) => `/api/cron/jobs/${p.job_id}/skill`,
+  ), fromApiCronJob),
+  removeJob: httpDelete<void, { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}`),
+  runNow: {
+    provider: () => {},
+    invoke: async (p: {
+      cron_job_id: CronJobId;
+      idempotency_key: string;
+    }): Promise<{ conversation_id: ConversationId }> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const value = await httpRequest<{ conversation_id: unknown }>(
+        'POST',
+        `/api/cron/jobs/${p.cron_job_id}/run`,
+        undefined,
+        { idempotencyKey }
+      );
+      return { conversation_id: parseConversationId(value.conversation_id) };
+    },
+  },
+  listRuns: withResponseMap(httpGet<ICronJobRun[], { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}/runs`), (runs) => runs.map(fromApiCronJobRun)),
+  saveSkill: httpPost<void, { cron_job_id: CronJobId; content: string }>(
+    (p) => `/api/cron/jobs/${p.cron_job_id}/skill`,
     (p) => ({ content: p.content })
   ),
   hasSkill: withResponseMap(
-    httpGet<{ has_skill: boolean }, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}/skill`),
+    httpGet<{ has_skill: boolean }, { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}/skill`),
     (data) => Boolean(data?.has_skill)
   ),
-  deleteSkill: httpDelete<void, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}/skill`),
-  onJobCreated: wsEmitter<ICronJob>('cron.job-created'),
-  onJobUpdated: wsEmitter<ICronJob>('cron.job-updated'),
-  onJobRemoved: wsEmitter<{ job_id: string }>('cron.job-removed'),
-  onJobExecuted: wsEmitter<{ job_id: string; status: 'ok' | 'error' | 'skipped' | 'missed'; error?: string }>(
-    'cron.job-executed'
-  ),
+  deleteSkill: httpDelete<void, { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}/skill`),
+  onJobCreated: wsMappedEmitter<ICronJob>('cron.job-created', fromApiCronJob),
+  onJobUpdated: wsMappedEmitter<ICronJob>('cron.job-updated', fromApiCronJob),
+  onJobRemoved: wsMappedEmitter<{ cron_job_id: CronJobId }>('cron.job-removed', (value) => ({ cron_job_id: parseCronJobId(value.cron_job_id) })),
+  onJobExecuted: wsMappedEmitter<{
+    cron_job_id: CronJobId;
+    status: 'ok' | 'error' | 'skipped' | 'missed';
+    error?: string;
+  }>('cron.job-executed', (value) => ({ ...value, cron_job_id: parseCronJobId(value.cron_job_id) })),
 };
 
 // ---------------------------------------------------------------------------
@@ -1587,23 +2242,19 @@ export type ICronSchedule =
   | { kind: 'every'; every_ms: number; description: string }
   | { kind: 'cron'; expr: string; tz?: string; description: string };
 
-export type ICronTargetKind = 'agent';
-
 export type ICronJobRunStatus = 'ok' | 'error' | 'skipped' | 'missed';
 
 export interface ICronJob {
-  id: string;
+  cron_job_id: CronJobId;
   name: string;
   description?: string;
   enabled: boolean;
   schedule: ICronSchedule;
-  target: {
-    payload: { kind: 'message'; text: string };
-    execution_mode?: 'existing' | 'new_conversation';
-    target_kind?: ICronTargetKind;
-  };
+  message: string;
+  execution_mode: 'existing' | 'new_conversation';
   metadata: {
-    conversation_id: number;
+    /** Absent until an unbound task materializes its first conversation. */
+    conversation_id?: ConversationId;
     conversation_title?: string;
     agent_type: string;
     created_by: 'user' | 'agent';
@@ -1623,21 +2274,22 @@ export interface ICronJob {
 }
 
 export interface ICronJobRun {
-  id: string;
-  job_id: string;
+  cron_job_run_id: CronJobRunId;
+  cron_job_id: CronJobId;
   executed_at_ms: number;
   status: ICronJobRunStatus;
 }
 
 export interface ICronAgentConfig {
-  backend: string;
+  /** ACP/agent backend only; absent for Nomi jobs. */
+  backend?: string;
   name: string;
   cli_path?: string;
-  is_preset?: boolean;
-  custom_agent_id?: string;
-  preset_agent_type?: string;
+  preset_id?: PresetReference;
   mode?: string;
-  model_id?: string;
+  model?: string;
+  /** Nomi logical reference to the provider business entity. */
+  provider_id?: ProviderId;
   config_options?: Record<string, string>;
   workspace?: string;
   /** Clear the agent context before each scheduled run (existing-conversation jobs only). */
@@ -1650,13 +2302,13 @@ export interface ICreateCronJobParams {
   schedule: ICronSchedule;
   prompt?: string;
   message?: string;
-  conversation_id: number;
+  /** Only specified-conversation creation supplies this; other modes start unbound. */
+  conversation_id?: ConversationId;
   conversation_title?: string;
   agent_type: string;
   created_by: 'user' | 'agent';
   execution_mode?: 'existing' | 'new_conversation';
   agent_config?: ICronAgentConfig;
-  target_kind?: ICronTargetKind;
 }
 
 // ---------------------------------------------------------------------------
@@ -1664,9 +2316,13 @@ export interface ICreateCronJobParams {
 // ---------------------------------------------------------------------------
 
 export interface ITerminalSession {
-  /** Terminal session primary key — backend-minted INTEGER (numeric-id spec),
-   *  rendered as `#N`. */
-  id: number;
+  /** Canonical terminal entity id on the wire. */
+  terminal_id: TerminalId;
+  /**
+   * Conversation that owns an agent-created terminal. Absent for standalone
+   * terminals created explicitly by the user.
+   */
+  owner_conversation_id?: ConversationId;
   name: string;
   cwd: string;
   /** 派生字段（不落库）：cwd 等于或位于默认工作路径之下 / Derived: cwd equals or sits under the backend default work dir. */
@@ -1703,7 +2359,6 @@ export interface ICreateTerminalParams {
   knowledge_base_ids?: string[];
 }
 
-/** Response shape for GET /api/terminals/mcp-register-template. */
 export interface IMcpRegisterTemplate {
   claude_cmd: string;
   claude_json: string;
@@ -1711,47 +2366,133 @@ export interface IMcpRegisterTemplate {
   gemini_json: string;
 }
 
-/** Response shape for POST /api/terminals/register-knowledge. */
 export interface IRegisterKnowledgeOutcome {
   written_path: string;
   scope: string;
   note?: string;
 }
 
-/** Request body for POST /api/terminals/register-knowledge. */
-export interface IRegisterKnowledgeParams {
-  cwd: string;
-  family: string;
+export interface IUnregisterKnowledgeOutcome {
+  path: string;
+  removed: boolean;
 }
 
+export type KnowledgeCliFamily = 'claude' | 'codex' | 'gemini';
+
+export interface IKnowledgeGlobalRegistrationStatus {
+  claude: boolean | null;
+  codex: boolean | null;
+  gemini: boolean | null;
+}
+
+type ApiTerminalSession = Omit<ITerminalSession, 'terminal_id' | 'owner_conversation_id'> & {
+  terminal_id: unknown;
+  owner_conversation_id?: unknown;
+};
+
+const fromApiTerminalSession = (raw: ApiTerminalSession): ITerminalSession => ({
+  ...raw,
+  terminal_id: parseTerminalId(raw.terminal_id),
+  owner_conversation_id: parseOptionalEntityId('conversation', raw.owner_conversation_id),
+});
+
 export const terminal = {
-  list: httpGet<ITerminalSession[], void>('/api/terminals'),
-  get: httpGet<ITerminalSession, { id: number }>((p) => `/api/terminals/${p.id}`),
-  create: httpPost<ITerminalSession, ICreateTerminalParams>('/api/terminals'),
+  list: withResponseMap(
+    httpGet<ApiTerminalSession[], void>('/api/terminals'),
+    (items) => items.map(fromApiTerminalSession),
+  ),
+  listConversation: withResponseMap(
+    httpGet<ApiTerminalSession[], { conversation_id: ConversationId }>(
+      (p) => `/api/conversations/${p.conversation_id}/terminals`,
+    ),
+    (items) => items.map(fromApiTerminalSession),
+  ),
+  get: withResponseMap(
+    httpGet<ApiTerminalSession, { terminal_id: TerminalId }>(
+      (p) => `/api/terminals/${p.terminal_id}`,
+      { timeoutMs: 10_000 }
+    ),
+    fromApiTerminalSession,
+  ),
+  create: withResponseMap(
+    httpPost<ApiTerminalSession, ICreateTerminalParams>('/api/terminals'),
+    fromApiTerminalSession,
+  ),
   mcpRegisterTemplate: httpGet<IMcpRegisterTemplate, void>('/api/terminals/mcp-register-template'),
-  registerKnowledge: httpPost<IRegisterKnowledgeOutcome, IRegisterKnowledgeParams>('/api/terminals/register-knowledge'),
-  input: httpPost<void, { id: number; data_b64: string }>(
-    (p) => `/api/terminals/${p.id}/input`,
+  registerKnowledge: httpPost<
+    IRegisterKnowledgeOutcome,
+    { cwd: string; family: KnowledgeCliFamily }
+  >('/api/terminals/register-knowledge'),
+  registerKnowledgeGlobal: httpPost<
+    IRegisterKnowledgeOutcome,
+    { family: KnowledgeCliFamily }
+  >('/api/terminals/register-knowledge-global'),
+  unregisterKnowledgeGlobal: httpPost<
+    IUnregisterKnowledgeOutcome,
+    { family: KnowledgeCliFamily }
+  >('/api/terminals/unregister-knowledge-global'),
+  knowledgeGlobalStatus: httpGet<IKnowledgeGlobalRegistrationStatus, void>(
+    '/api/terminals/knowledge-global-status'
+  ),
+  input: httpPost<void, { terminal_id: TerminalId; data_b64: string }>(
+    (p) => `/api/terminals/${p.terminal_id}/input`,
     (p) => ({ data_b64: p.data_b64 })
   ),
-  resize: httpPost<void, { id: number; cols: number; rows: number }>(
-    (p) => `/api/terminals/${p.id}/resize`,
-    (p) => ({ cols: p.cols, rows: p.rows })
+  resize: httpPost<void, { terminal_id: TerminalId; cols: number; rows: number }>(
+    (p) => `/api/terminals/${p.terminal_id}/resize`,
+    (p) => ({ cols: p.cols, rows: p.rows }),
+    // Deferred activation is serialized and resize is idempotent, so a client
+    // deadline can safely turn a hung request into the Xterm retry/error path.
+    { timeoutMs: 6_000 }
   ),
-  kill: httpPost<void, { id: number }>((p) => `/api/terminals/${p.id}/kill`),
-  relaunch: httpPost<ITerminalSession, { id: number }>((p) => `/api/terminals/${p.id}/relaunch`),
+  kill: httpPost<void, { terminal_id: TerminalId }>((p) => `/api/terminals/${p.terminal_id}/kill`),
+  relaunch: withResponseMap(
+    httpPost<ApiTerminalSession, { terminal_id: TerminalId }>(
+      (p) => `/api/terminals/${p.terminal_id}/relaunch`
+    ),
+    fromApiTerminalSession,
+  ),
   /** 把会话原地回退为干净的登录 shell(杀掉卡死的 claude/codex 并以 $SHELL 重启同一会话) / Fall back to a clean login shell in place. */
-  relaunchShell: httpPost<ITerminalSession, { id: number }>((p) => `/api/terminals/${p.id}/relaunch-shell`),
-  update: httpPatch<ITerminalSession, { id: number; name?: string; pinned?: boolean }>(
-    (p) => `/api/terminals/${p.id}`,
-    (p) => ({ name: p.name, pinned: p.pinned })
+  relaunchShell: withResponseMap(
+    httpPost<ApiTerminalSession, { terminal_id: TerminalId }>(
+      (p) => `/api/terminals/${p.terminal_id}/relaunch-shell`
+    ),
+    fromApiTerminalSession,
   ),
-  remove: httpDelete<void, { id: number }>((p) => `/api/terminals/${p.id}`),
-  onOutput: wsEmitter<{ id: number; data_b64: string }>('terminal.output'),
-  onExit: wsEmitter<{ id: number; exit_code?: number }>('terminal.exit'),
-  onCreated: wsEmitter<ITerminalSession>('terminal.created'),
-  onUpdated: wsEmitter<ITerminalSession>('terminal.updated'),
-  onRemoved: wsEmitter<{ id: number }>('terminal.removed'),
+  update: withResponseMap(
+    httpPatch<ApiTerminalSession, { terminal_id: TerminalId; name?: string; pinned?: boolean }>(
+      (p) => `/api/terminals/${p.terminal_id}`,
+      (p) => ({ name: p.name, pinned: p.pinned }),
+    ),
+    fromApiTerminalSession,
+  ),
+  remove: httpDelete<void, { terminal_id: TerminalId }>(
+    (p) => `/api/terminals/${p.terminal_id}`
+  ),
+  onOutput: wsMappedEmitter<{ terminal_id: TerminalId; data_b64: string }>(
+    'terminal.output',
+    (raw) => {
+      const event = raw as { terminal_id: unknown; data_b64: string };
+      return { ...event, terminal_id: parseTerminalId(event.terminal_id) };
+    },
+  ),
+  onExit: wsMappedEmitter<{ terminal_id: TerminalId; exit_code?: number }>(
+    'terminal.exit',
+    (raw) => {
+      const event = raw as { terminal_id: unknown; exit_code?: number };
+      return { ...event, terminal_id: parseTerminalId(event.terminal_id) };
+    },
+  ),
+  onCreated: wsMappedEmitter<ITerminalSession, ApiTerminalSession>('terminal.created', (raw) =>
+    fromApiTerminalSession(raw),
+  ),
+  onUpdated: wsMappedEmitter<ITerminalSession, ApiTerminalSession>('terminal.updated', (raw) =>
+    fromApiTerminalSession(raw),
+  ),
+  onRemoved: wsMappedEmitter<{ terminal_id: TerminalId }>('terminal.removed', (raw) => {
+    const event = raw as { terminal_id: unknown };
+    return { terminal_id: parseTerminalId(event.terminal_id) };
+  }),
   /** 在 WebSocket 断线重连成功后触发(本地合成事件,非服务端推送)。XtermView 借此 reset
    *  并重放 scrollback,修复断线期间丢失的重绘帧造成的乱码 / Fires after the WS reconnects
    *  (local synthetic event) so a view can reset + replay the scrollback it missed. */
@@ -1763,12 +2504,12 @@ export const terminal = {
   // conversation workspace endpoint, so the workspace mapper is reused as-is.
   getWorkspace: {
     provider: () => {},
-    invoke: (async (p: { terminal_id: number; cwd: string; path: string; search?: string }) => {
+    invoke: (async (p: { terminal_id: TerminalId; cwd: string; path: string; search?: string }) => {
       const rel = absoluteToRelativePath(p.path, p.cwd);
       const url = `/api/terminals/${p.terminal_id}/workspace?path=${encodeURIComponent(rel)}${p.search ? `&search=${encodeURIComponent(p.search)}` : ''}`;
       const raw = await httpRequest<Array<{ name: string; type: string }>>('GET', url);
       return fromBackendWorkspaceList(raw, p.cwd, rel);
-    }) as (p: { terminal_id: number; cwd: string; path: string; search?: string }) => Promise<IDirOrFile[]>,
+    }) as (p: { terminal_id: TerminalId; cwd: string; path: string; search?: string }) => Promise<IDirOrFile[]>,
   },
 };
 
@@ -1778,9 +2519,11 @@ export const terminal = {
 
 interface ISendMessageParams {
   input: string;
-  conversation_id: number;
+  conversation_id: ConversationId;
   files?: string[];
-  loading_id?: string;
+  idempotency_key: string;
+  /** Automatic Guid/QuickStart handoff; never set for explicit user sends. */
+  initial_only?: boolean;
   inject_skills?: string[];
 }
 
@@ -1788,13 +2531,20 @@ interface ISendMessageParams {
 // use this as the canonical msg_id when rendering an optimistic bubble so the
 // local state aligns with DB rows and WebSocket stream events.
 export interface ISendMessageResult {
-  msg_id: string;
+  msg_id: MessageId;
+  /** The request reused an already accepted Idempotency-Key. */
+  replayed: boolean;
+  /** The durable receipt is terminal; this response did not open a turn. */
+  completed: boolean;
+  result_ok: boolean | null;
+  result_text: string | null;
+  result_error: string | null;
 }
 
 export interface IConfirmMessageParams {
   confirm_key: string;
-  msg_id: string;
-  conversation_id: number;
+  msg_id: MessageId | ConfirmationCorrelationId;
+  conversation_id: ConversationId;
   call_id: string;
 }
 
@@ -1802,6 +2552,15 @@ export interface ICreateConversationParams {
   type: 'acp' | 'codex' | 'openclaw-gateway' | 'nanobot' | 'remote' | 'nomi';
   name?: string;
   model: TProviderWithModel;
+  /** Backend-resolved reusable launch configuration. */
+  preset_id?: PresetReference;
+  preset_overrides?: import('../types/agent/presetTypes').PresetOverrides;
+  delegation_policy?: TDelegationPolicy;
+  execution_model_pool?: TExecutionModelPool;
+  decision_policy?: TDecisionPolicy;
+  /** Optional collaboration authoring default. The first delegated Execution
+   * copies the template and never retains a runtime foreign key. */
+  execution_template_id?: ExecutionTemplateId;
   extra: {
     workspace?: string;
     custom_workspace?: boolean;
@@ -1819,28 +2578,8 @@ export interface ICreateConversationParams {
     web_search_engine?: 'google' | 'default';
     agent_name?: string;
     agent_id?: string;
-    custom_agent_id?: string;
     context?: string;
     context_file_name?: string;
-    preset_rules?: string;
-    /** Legacy field kept for backward-compat only (`#[serde(default)]`); no longer
-     *  drives any lead prompt (the homepage 智能编排 entry was removed). The model
-     *  range (主/协作) is now set per-conversation via the composer's collaborator
-     *  selector into `extra.orchestrator_model_range`. */
-    orchestrator_role?: string;
-    /** Curated model range for the orchestration run this lead conversation
-     *  spawns (homepage「主模型 + 协作模型」picker). `models[0]` = 主模型 (also the
-     *  lead/planner); the rest = 协作模型. Read back by the `nomi_run_create`
-     *  gateway handler from the conversation's extra (deterministic, not via the
-     *  LLM). Absent ⇒ Auto (every enabled model). */
-    orchestrator_model_range?: TModelRange;
-    /** 「agent 集群」意图标记（需求1）：composer 顶部 toggle 选中后落此键。后端
-     *  nomi 工厂据此在常驻 subagent 提示之上追加 CLUSTER_MODE_HINT（对每个任务
-     *  刻意评估是否开集群、太简单先向用户说明原因）。 */
-    agent_cluster_mode?: boolean;
-    /** 节点级审批模式（需求5，迁移 030）：'manual' = 集群节点遇关键决策挂起向
-     *  用户提问；'auto'/缺省 = 全授权。建 run 时由网关从会话 extra 读取生效。 */
-    orchestrator_approval_mode?: string;
     /** Transient: preset opt-in skills. Consumed by backend create handler
      *  and stripped before persistence. */
     preset_enabled_skills?: string[];
@@ -1849,12 +2588,10 @@ export interface ICreateConversationParams {
     exclude_auto_inject_skills?: string[];
     /** Transient: MCP server ids selected on the Guid page. Consumed by the
      *  backend create handler and snapshotted into conversation.extra. */
-    selected_mcp_server_ids?: number[];
+    selected_mcp_server_ids?: McpServerId[];
     /** Transient: session-scoped MCP server configs that are not stored in the
      *  backend catalog (currently built-in MCP servers). */
     selected_session_mcp_servers?: ISessionMcpServer[];
-    preset_context?: string;
-    preset_assistant_id?: string;
     session_mode?: string;
     codex_model?: string;
     current_model_id?: string;
@@ -1871,14 +2608,13 @@ export interface ICreateConversationParams {
     };
     /** Legacy marker for pre-provider-probe health-check conversations. */
     is_health_check?: boolean;
-    remote_agent_id?: number;
+    remote_agent_id?: import('../types/ids').RemoteAgentId;
     extra_skill_paths?: string[];
-    team_id?: string;
   };
 }
 
 interface IResetConversationParams {
-  id?: number;
+  conversation_id: ConversationId;
 }
 
 export interface IDirOrFile {
@@ -1908,21 +2644,29 @@ export type IWorkspaceFlatFile = {
 export interface IResponseMessage {
   type: string;
   data: unknown;
-  /** messages.id stays TEXT (`msg_…`). */
-  msg_id: string;
-  /** Owning conversation id — INTEGER (numeric-id spec). */
-  conversation_id: number;
+  status?: 'finish' | 'pending' | 'error' | 'work';
+  /** Stable backend message UUIDv7. */
+  msg_id: MessageId;
+  /** Stable owning turn identity. It is distinct from msg_id for first-class
+   * terminal/error rows and continuation message segments. */
+  turn_id?: MessageId;
+  /** Canonical owning conversation entity ID. */
+  conversation_id: ConversationId;
   created_at?: number;
   hidden?: boolean;
   /** Replace accumulated text for the same msg_id instead of appending. */
   replace?: boolean;
+  /** This content is a self-contained finalized projection, not a fragment of
+   *  an active model turn. Consumers must render it without raising turn or
+   *  conversation activity state. */
+  stream_complete?: boolean;
   /** Companion wire markers (backend StreamRelay stamps them on every
    *  fragment): true + owning companion id when the conversation is a companion
-   *  companion / channel master session. */
+   *  owned session. */
   companion?: boolean;
-  companion_id?: string | null;
+  companion_id?: CompanionId | null;
   /** IM platform ("telegram" | "lark" | ...) when the conversation is a
-   *  channel master session; null/absent for local conversations. */
+   *  channel-originated turn; null/absent for local conversations. */
   channel_platform?: string | null;
   /** Originating subsystem of the turn's user message (companion/cron/autowork/
    *  idmm); null/absent = typed by a real person. */
@@ -1930,8 +2674,8 @@ export interface IResponseMessage {
 }
 
 export interface IKnowledgeWritebackEvent {
-  conversation_id: number | string;
-  msg_id: string;
+  conversation_id: ConversationId;
+  msg_id: MessageId;
   status:
     | 'started'
     | 'extracting'
@@ -1941,21 +2685,22 @@ export interface IKnowledgeWritebackEvent {
     | 'failed'
     | 'no_candidate'
     | 'no_completer'
-    | 'disabled'
-    | 'interrupted';
+  | 'disabled'
+  | 'interrupted';
   attempt_id?: string;
+  attempt_generation?: number;
   started_at?: number;
   updated_at?: number;
   finished_at?: number | null;
   retryable?: boolean;
   candidates?: number;
   written?: Array<{
-    kb_id?: string | null;
+    kb_id?: KnowledgeBaseId | null;
     rel_path?: string | null;
     staged?: boolean;
   }>;
   failures?: Array<{
-    kb_id?: string | null;
+    kb_id?: KnowledgeBaseId | null;
     rel_path?: string | null;
     error?: string;
   }>;
@@ -1965,15 +2710,15 @@ export interface IKnowledgeWritebackEvent {
  *  channel inbound messages — the companion window renders those as incoming
  *  bubble headers). Same companion wire markers as IResponseMessage. */
 export interface IUserMessageCreatedEvent {
-  conversation_id: number;
-  msg_id: string;
+  conversation_id: ConversationId;
+  msg_id: MessageId;
   content: string;
   position: 'right';
   status: string;
   hidden?: boolean;
   origin?: string | null;
   companion?: boolean;
-  companion_id?: string | null;
+  companion_id?: CompanionId | null;
   channel_platform?: string | null;
   created_at: number;
 }
@@ -1985,11 +2730,11 @@ export interface IConversationArtifactBase<
   Kind extends IConversationArtifactKind,
   Payload extends Record<string, unknown>,
 > {
-  id: number;
-  /** Owning conversation id — INTEGER (numeric-id spec). */
-  conversation_id: number;
-  /** cron_jobs.id stays TEXT (`cron_…`). */
-  cron_job_id?: string;
+  conversation_artifact_id: ConversationArtifactId;
+  /** Owning canonical Conversation entity id. */
+  conversation_id: ConversationId;
+  /** Stable cron job business identity. */
+  cron_job_id?: CronJobId;
   kind: Kind;
   status: IConversationArtifactStatus;
   payload: Payload;
@@ -2000,7 +2745,7 @@ export interface IConversationArtifactBase<
 export type ICronTriggerArtifact = IConversationArtifactBase<
   'cron_trigger',
   {
-    cron_job_id: string;
+    cron_job_id: CronJobId;
     cron_job_name: string;
     triggered_at: number;
   }
@@ -2009,7 +2754,7 @@ export type ICronTriggerArtifact = IConversationArtifactBase<
 export type ISkillSuggestArtifact = IConversationArtifactBase<
   'skill_suggest',
   {
-    cron_job_id: string;
+    cron_job_id: CronJobId;
     name: string;
     description: string;
     skillContent?: string;
@@ -2020,10 +2765,8 @@ export type ISkillSuggestArtifact = IConversationArtifactBase<
 export type IConversationArtifact = ICronTriggerArtifact | ISkillSuggestArtifact;
 
 export interface IConversationTurnStartedEvent {
-  /** Conversation id — INTEGER (numeric-id spec). Named `session_id` on the wire. */
-  session_id: number;
-  conversation_id: number;
-  turn_id?: string;
+  conversation_id: ConversationId;
+  turn_id: MessageId;
   status: 'pending' | 'running' | 'finished';
   phase?: 'starting' | 'thinking' | 'streaming' | 'tooling' | 'waiting_permission' | string;
   state:
@@ -2040,21 +2783,24 @@ export interface IConversationTurnStartedEvent {
   runtime: {
     state: 'idle' | 'starting' | 'running' | 'waiting_confirmation';
     can_send_message: boolean;
-    has_task: boolean;
-    task_status?: 'pending' | 'running' | 'finished';
+    has_runtime: boolean;
+    runtime_status?: 'pending' | 'running' | 'finished';
     is_processing: boolean;
     pending_confirmations: number;
+    active_turn_id?: MessageId;
     processing_started_at?: number;
   };
   companion?: boolean;
-  companion_id?: string | null;
+  companion_id?: CompanionId | null;
   origin?: string | null;
   channel_platform?: string | null;
 }
 
 export interface IConversationTurnCompletedEvent {
-  /** Conversation id — INTEGER (numeric-id spec). Named `session_id` on the wire. */
-  session_id: number;
+  conversation_id: ConversationId;
+  /** Stable turn correlation id. Older servers may omit it; consumers must
+   * retain a runtime-state fallback for backward compatibility. */
+  turn_id?: MessageId;
   status: 'pending' | 'running' | 'finished';
   state:
     | 'ai_generating'
@@ -2069,10 +2815,11 @@ export interface IConversationTurnCompletedEvent {
   runtime: {
     state: 'idle' | 'starting' | 'running' | 'waiting_confirmation';
     can_send_message: boolean;
-    has_task: boolean;
-    task_status?: 'pending' | 'running' | 'finished';
+    has_runtime: boolean;
+    runtime_status?: 'pending' | 'running' | 'finished';
     is_processing: boolean;
     pending_confirmations: number;
+    active_turn_id?: MessageId;
     processing_started_at?: number;
   };
   workspace: string;
@@ -2082,7 +2829,7 @@ export interface IConversationTurnCompletedEvent {
     use_model: string;
   };
   last_message: {
-    id?: string;
+    message_id?: MessageId;
     type?: string;
     content: unknown;
     status?: string | null;
@@ -2091,7 +2838,7 @@ export interface IConversationTurnCompletedEvent {
 }
 
 export interface IConversationListChangedEvent {
-  conversation_id: number;
+  conversation_id: ConversationId;
   action: 'created' | 'updated' | 'deleted';
   source?: string;
 }
@@ -2134,21 +2881,31 @@ export interface IExtensionSettingsTab {
   label: string;
   icon?: string;
   url: string;
-  position?: { relativeTo: string; placement: 'before' | 'after' };
+  position?: { relative_to: string; placement: 'before' | 'after' };
   order: number;
-  extensionName: string;
+  extension_name: string;
 }
 
 export interface IExtensionWebuiContribution {
-  extensionName: string;
-  apiRoutes: Array<{ path: string; auth: boolean }>;
-  staticAssets: Array<{ urlPrefix: string; directory: string }>;
+  extension_name: string;
+  id: string;
+  directory: string;
+  routes: Array<{ path: string; method: string; handler: string }>;
+}
+
+export interface IExtensionMcpServerContribution {
+  source_key: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  transport: unknown;
+  extension_name: string;
 }
 
 export type AgentActivityState = 'idle' | 'writing' | 'researching' | 'executing' | 'syncing' | 'error';
 
 export interface IExtensionAgentActivityEvent {
-  conversationId: number;
+  conversationId: ConversationId;
   at: number;
   kind: 'status' | 'tool' | 'message';
   text: string;
@@ -2178,10 +2935,10 @@ export interface IExtensionAgentActivitySnapshot {
 export const extensions = {
   getThemes: httpGet<ICssTheme[], void>('/api/extensions/themes'),
   getLoadedExtensions: httpGet<IExtensionInfo[], void>('/api/extensions'),
-  getAssistants: httpGet<Record<string, unknown>[], void>('/api/extensions/assistants'),
+  getPresets: httpGet<Record<string, unknown>[], void>('/api/extensions/presets'),
   getAgents: httpGet<Record<string, unknown>[], void>('/api/extensions/agents'),
   getAcpAdapters: httpGet<Record<string, unknown>[], void>('/api/extensions/acp-adapters'),
-  getMcpServers: httpGet<Record<string, unknown>[], void>('/api/extensions/mcp-servers'),
+  getMcpServers: httpGet<IExtensionMcpServerContribution[], void>('/api/extensions/mcp-servers'),
   getSkills: httpGet<Array<{ name: string; description: string; location: string }>, void>('/api/extensions/skills'),
   getSettingsTabs: httpGet<IExtensionSettingsTab[], void>('/api/extensions/settings-tabs'),
   getWebuiContributions: httpGet<IExtensionWebuiContribution[], void>('/api/extensions/webui'),
@@ -2216,10 +2973,16 @@ interface IChannelBridgeResponse {
   error?: string;
 }
 
+type IChannelEnableResponse = {
+  success: boolean;
+  plugin_id?: ChannelPluginId;
+  error?: string;
+};
+
 function toPluginStatus(raw: RawPluginStatus): IChannelPluginStatus {
   return {
-    id: (raw.plugin_id ?? raw.id) as string,
-    type: (raw.type ?? raw.plugin_type) as string,
+    plugin_id: parseChannelPluginId(raw.plugin_id),
+    type: raw.type as string,
     name: raw.name as string,
     enabled: raw.enabled as boolean,
     connected: (raw.connected ?? false) as boolean,
@@ -2228,8 +2991,8 @@ function toPluginStatus(raw: RawPluginStatus): IChannelPluginStatus {
     activeUsers: (raw.active_users ?? 0) as number,
     botUsername: raw.bot_username as string | undefined,
     hasToken: (raw.has_token ?? false) as boolean,
-    companionId: raw.companion_id as string | undefined,
-    publicAgentId: raw.public_agent_id as string | null | undefined,
+    companionId: raw.companion_id == null ? undefined : parseCompanionId(raw.companion_id),
+    publicAgentId: raw.public_agent_id == null ? null : parsePublicAgentId(raw.public_agent_id),
     botKey: raw.bot_key as string | undefined,
     isExtension: raw.is_extension as boolean | undefined,
     extensionMeta: raw.extension_meta as IChannelPluginStatus['extensionMeta'],
@@ -2244,31 +3007,36 @@ function toPairing(raw: RawPairing): IChannelPairingRequest {
     display_name: raw.display_name as string | undefined,
     requestedAt: raw.requested_at as number,
     expiresAt: raw.expires_at as number,
-    channelId: raw.channel_id as string | undefined,
+    channel_plugin_id:
+      raw.channel_plugin_id == null ? undefined : parseChannelPluginId(raw.channel_plugin_id),
   };
 }
 
 function toChannelUser(raw: RawUser): IChannelUser {
   return {
-    id: raw.id as string,
+    channel_user_id: parseChannelUserId(raw.channel_user_id),
     platformUserId: raw.platform_user_id as string,
     platformType: raw.platform_type as string,
     display_name: raw.display_name as string | undefined,
     authorizedAt: raw.authorized_at as number,
     lastActive: raw.last_active as number | undefined,
-    session_id: raw.session_id as string | undefined,
-    channelId: raw.channel_id as string | undefined,
+    channel_session_id:
+      raw.channel_session_id == null ? undefined : parseChannelSessionId(raw.channel_session_id),
+    channel_plugin_id:
+      raw.channel_plugin_id == null ? undefined : parseChannelPluginId(raw.channel_plugin_id),
   };
 }
 
 function toChannelSession(raw: RawSession): IChannelSession {
   return {
-    id: raw.id as string,
-    user_id: raw.user_id as string,
+    channel_session_id: parseChannelSessionId(raw.channel_session_id),
+    channel_user_id: parseChannelUserId(raw.channel_user_id),
     agent_type: raw.agent_type as string,
-    conversation_id: raw.conversation_id as string | undefined,
+    conversation_id: raw.conversation_id == null ? undefined : parseConversationId(raw.conversation_id),
     workspace: raw.workspace as string | undefined,
     chatId: raw.chat_id as string | undefined,
+    channel_plugin_id:
+      raw.channel_plugin_id == null ? undefined : parseChannelPluginId(raw.channel_plugin_id),
     created_at: raw.created_at as number,
     lastActivity: raw.last_activity as number,
   };
@@ -2280,21 +3048,33 @@ export const channel = {
   ),
   /**
    * 启用/更新机器人渠道。寻址契约（对应后端 EnableChannelSpec）：
-   * - `plugin_id` 指向已有渠道行（legacy 调用传平台名）→ 更新该行；
+   * - 裸 UUIDv7 `plugin_id` 指向已有渠道实体 → 更新该实体；
    * - 省略 `plugin_id` 并给 `plugin_type` → 新建一行（每宠多机器人路径）；
    * - `companion_id` 把机器人绑到桌面伙伴，`public_agent_id` 把它绑到对外伙伴
    *   （二者互斥）；同一机器人(bot_key)已绑其他对象时后端 409。
    */
-  enablePlugin: httpPost<
-    IChannelBridgeResponse,
-    { plugin_id?: string; plugin_type?: string; companion_id?: string; public_agent_id?: string; config: Record<string, unknown> }
-  >('/api/channel/plugins/enable'),
-  disablePlugin: httpPost<void, { plugin_id: string }>('/api/channel/plugins/disable'),
+  enablePlugin: withResponseMap(httpPost<
+    { success: boolean; plugin_id?: unknown; error?: string },
+    {
+      plugin_id?: import('../types/ids').ChannelPluginId;
+      plugin_type?: string;
+      companion_id?: CompanionId;
+      public_agent_id?: PublicAgentId;
+      config: Record<string, unknown>;
+    }
+  >('/api/channel/plugins/enable'), (raw): IChannelEnableResponse => {
+    return {
+      success: raw.success,
+      ...(raw.plugin_id == null ? {} : { plugin_id: parseChannelPluginId(raw.plugin_id) }),
+      ...(raw.error == null ? {} : { error: raw.error }),
+    };
+  }),
+  disablePlugin: httpPost<void, { plugin_id: import('../types/ids').ChannelPluginId }>('/api/channel/plugins/disable'),
   /** 删除渠道行：停实例 + 清该渠道会话 + 删行（会话所产生的对话保留）。 */
-  deletePlugin: httpPost<void, { plugin_id: string }>('/api/channel/plugins/delete'),
+  deletePlugin: httpPost<void, { plugin_id: import('../types/ids').ChannelPluginId }>('/api/channel/plugins/delete'),
   testPlugin: httpPost<
     { success: boolean; bot_username?: string; error?: string },
-    { plugin_id: string; token: string; extra_config?: { app_id?: string; app_secret?: string; app_token?: string; homeserver_url?: string; user_id?: string; server_url?: string; nostr_relays?: string } }
+    { plugin_type: string; token: string; extra_config?: { app_id?: string; app_secret?: string; app_token?: string; homeserver_url?: string; user_id?: string; server_url?: string; nostr_relays?: string } }
   >('/api/channel/plugins/test'),
   getPendingPairings: withResponseMap(httpGet<RawPairing[], void>('/api/channel/pairings'), (raw) =>
     raw.map(toPairing)
@@ -2302,30 +3082,39 @@ export const channel = {
   approvePairing: httpPost<void, { code: string }>('/api/channel/pairings/approve'),
   rejectPairing: httpPost<void, { code: string }>('/api/channel/pairings/reject'),
   getAuthorizedUsers: withResponseMap(httpGet<RawUser[], void>('/api/channel/users'), (raw) => raw.map(toChannelUser)),
-  revokeUser: httpPost<void, { user_id: string }>('/api/channel/users/revoke'),
+  revokeUser: httpPost<void, { channel_user_id: import('../types/ids').ChannelUserId }>(
+    '/api/channel/users/revoke'
+  ),
   getActiveSessions: withResponseMap(httpGet<RawSession[], void>('/api/channel/sessions'), (raw) =>
     raw.map(toChannelSession)
   ),
   syncChannelSettings: httpPost<void, { platform: string }>('/api/channel/settings/sync'),
   /**
-   * Bind one companion as the master-agent greeter for an IM platform (spec §4.4/§4.7).
-   * Atomic on the backend: writes the `assistant.{platform}.companionId` client
-   * preference and resets the platform's active sessions in one step.
-   * Omitted/empty `companion_id` clears the binding (falls back to the default companion).
+   * Bind one companion to an IM channel platform.
+   * Atomic on the backend: writes the channel companion preference and resets
+   * the platform's active sessions in one step.
+   * Omitted/null `companion_id` clears the binding; empty strings are invalid.
    * Binding a non-existent companion returns 400 — errors propagate to the caller
    * as `BackendHttpError`.
    */
-  setMasterAgentCompanion: httpPost<void, { platform?: string; plugin_id?: string; companion_id?: string | null }>(
+  setChannelCompanion: httpPost<
+    void,
+    {
+      platform?: string;
+      plugin_id?: import('../types/ids').ChannelPluginId;
+      companion_id?: CompanionId | null;
+    }
+  >(
     '/api/channel/settings/companion'
   ),
   /**
-   * Bind one public agent (对外伙伴) as the master-agent greeter for a channel row.
-   * Symmetric to {@link setMasterAgentCompanion} but for public agents — a channel
+   * Bind one public agent (对外伙伴) to a channel row.
+   * Symmetric to {@link setChannelCompanion} but for public agents — a channel
    * bot serves EITHER a companion OR a public agent (mutually exclusive). Atomic on
    * the backend: persists the binding AND resets only this channel row's sessions.
    * A `null` `public_agent_id` clears the binding.
    */
-  setMasterAgentPublicAgent: httpPost<void, { plugin_id: string; public_agent_id: string | null }>(
+  setChannelPublicAgent: httpPost<void, { plugin_id: import('../types/ids').ChannelPluginId; public_agent_id: PublicAgentId | null }>(
     '/api/channel/settings/public-agent'
   ),
   /**
@@ -2334,20 +3123,20 @@ export const channel = {
    * `x-nomi-local-trust` 头，旧 SSE 流被鉴权中间件 403 → 前端秒弹"微信登录失败"。
    */
   startWeixinLogin: httpPost<void, void>('/api/channel/weixin/login/start'),
-  pairingRequested: wsMappedEmitter<IChannelPairingRequest>('channel.pairing-requested', (raw) =>
+  pairingRequested: wsMappedEmitter<IChannelPairingRequest, unknown>('channel.pairing-requested', (raw) =>
     toPairing(raw as RawPairing)
   ),
-  pluginStatusChanged: wsMappedEmitter<{ plugin_id: string; status: IChannelPluginStatus }>(
-    'channel.plugin-status-changed',
-    (raw) => {
-      const r = raw as Record<string, unknown>;
-      return {
-        plugin_id: r.plugin_id as string,
-        status: toPluginStatus(r.status as RawPluginStatus),
-      };
-    }
-  ),
-  userAuthorized: wsMappedEmitter<IChannelUser>('channel.user-authorized', (raw) => toChannelUser(raw as RawUser)),
+  pluginStatusChanged: wsMappedEmitter<{
+    plugin_id: import('../types/ids').ChannelPluginId;
+    status: IChannelPluginStatus;
+  }>('channel.plugin-status-changed', (raw) => {
+    const r = raw as Record<string, unknown>;
+    return {
+      plugin_id: parseChannelPluginId(r.plugin_id),
+      status: toPluginStatus(r.status as RawPluginStatus),
+    };
+  }),
+  userAuthorized: wsMappedEmitter<IChannelUser, unknown>('channel.user-authorized', (raw) => toChannelUser(raw as RawUser)),
   /**
    * 微信扫码登录生命周期事件（替代旧 SSE 流）。`phase` 区分阶段：
    * `qr`(带 qrcodeData) → `scanned` → 终态 `done`(带 accountId/botToken) 或 `error`(带 message)。
@@ -2376,7 +3165,11 @@ export const hub = {
   retryInstall: httpPost<void, { name: string }>('/api/hub/retry-install'),
   checkUpdates: httpPost<{ name: string }[], void>('/api/hub/check-updates'),
   update: httpPost<void, { name: string }>('/api/hub/update'),
-  onStateChanged: wsEmitter<{ name: string; status: HubExtensionStatus; error?: string }>('hub.state-changed'),
+  onStateChanged: wsEmitter<{
+    name: string;
+    status: HubExtensionStatus;
+    error?: string;
+  }>('hub.state-changed'),
 };
 
 // ── Requirements Platform (需求平台) ─────────────────────────────────
@@ -2384,12 +3177,25 @@ export const hub = {
 export type RequirementStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'cancelled' | 'needs_review';
 
 export interface IAttachment {
-  id: string;
+  id: AttachmentId;
   file_name: string;
   mime: string;
   size_bytes: number;
   created_at: number;
   /** Absolute path resolved by the backend at read time, for image-base64 display. */
+  abs_path: string;
+}
+
+/** Raw attachment shape returned by the backend.
+ * `attachment_id` is the stable UUIDv7 business identity; SQLite row ids
+ * never cross this API boundary.
+ */
+export interface AttachmentResponse {
+  attachment_id: string;
+  file_name: string;
+  mime: string;
+  size_bytes: number;
+  created_at: number;
   abs_path: string;
 }
 
@@ -2399,24 +3205,19 @@ export interface INewAttachmentRef {
   file_name: string;
 }
 
-/** Owner session domain of a requirement (which entity claimed/owns it). */
-export type RequirementOwnerKind = 'conversation' | 'terminal';
-
 export interface IRequirement {
-  /** Requirement primary key — backend-minted INTEGER (numeric-id spec),
-   *  rendered as `#N`. */
-  id: number;
+  /** Stable bare UUIDv7 business identity. SQLite technical row ids never cross this boundary. */
+  requirement_id: RequirementId;
+  /** Compact, immutable human-facing identifier, rendered as `#N`. */
+  display_no: number;
   title: string;
   content: string;
   tag: string;
   order_key: string;
   status: RequirementStatus;
   completion_note?: string;
-  /** Owning session id — a conversation id or terminal session id, both
-   *  INTEGER (double-domain, no FK; disambiguated by owner_kind). */
-  owner_session_id?: number;
-  /** Discriminator for owner_session_id's domain. */
-  owner_kind?: RequirementOwnerKind;
+  owner_conversation_id?: ConversationId;
+  owner_terminal_id?: TerminalId;
   started_at?: number;
   completed_at?: number;
   attempt_count: number;
@@ -2427,14 +3228,29 @@ export interface IRequirement {
   attachments?: IAttachment[];
 }
 
+type RequirementResponse = Omit<
+  IRequirement,
+  'requirement_id' | 'owner_conversation_id' | 'owner_terminal_id' | 'attachments'
+> & {
+  requirement_id: unknown;
+  owner_conversation_id?: unknown;
+  owner_terminal_id?: unknown;
+  attachments?: AttachmentResponse[];
+};
+
 /** Whitelisted sort columns for the requirements list (server validates too). */
-export type RequirementOrderBy = 'id' | 'created_at' | 'updated_at' | 'status';
+export type RequirementOrderBy =
+  | 'display_no'
+  | 'requirement_id'
+  | 'created_at'
+  | 'updated_at'
+  | 'status';
 
 export interface IListRequirementsParams {
   tag?: string;
   status?: RequirementStatus;
-  /** Filter by owning session id (conversation id or terminal session id, INTEGER). */
-  owner_session_id?: number;
+  /** Filter by owning conversation id. */
+  conversation_id?: ConversationId;
   q?: string;
   /** Sort column; omit for the default queue order (sort_seq, priority, created_at). */
   order_by?: RequirementOrderBy;
@@ -2462,7 +3278,7 @@ export interface IUpdateRequirementParams {
   status?: RequirementStatus;
   completion_note?: string;
   add_attachments?: INewAttachmentRef[];
-  remove_attachment_ids?: string[];
+  remove_attachment_ids?: AttachmentId[];
 }
 
 export interface ITagSummary {
@@ -2475,7 +3291,7 @@ export interface ITagSummary {
   needs_review: number;
   total: number;
   /** AutoWork is paused for this tag (a requirement exhausted its retries).
-   * While true, the orchestrator does not claim this tag's requirements until
+   * While true, automatic execution does not claim this tag's requirements until
    * the tag is resumed. */
   paused: boolean;
   /** Why the tag was paused (`requirement_failed` | `manual` | …). */
@@ -2492,21 +3308,33 @@ export interface IBoardResponse {
   needs_review: IRequirement[];
 }
 
+type BoardResponse = Omit<
+  IBoardResponse,
+  'pending' | 'in_progress' | 'done' | 'failed' | 'cancelled' | 'needs_review'
+> & {
+  pending: RequirementResponse[];
+  in_progress: RequirementResponse[];
+  done: RequirementResponse[];
+  failed: RequirementResponse[];
+  cancelled: RequirementResponse[];
+  needs_review: RequirementResponse[];
+};
+
 /** Broadcast (`autowork.tagPaused`) when AutoWork pauses a tag because one of
  * its requirements exhausted its retries. */
 export interface ITagPausedPayload {
   tag: string;
   reason: string;
-  requirement_id?: number;
+  requirement_id?: RequirementId;
 }
 
 export type AutoWorkTargetKind = 'conversation' | 'terminal';
 export type AutoWorkRunState = 'off' | 'idle' | 'active';
+export type SessionCapabilityTargetId = ConversationId | TerminalId;
 
 export interface IAutoWorkConfigParams {
   kind: AutoWorkTargetKind;
-  /** Session id (conversation or terminal, both INTEGER per numeric-id spec). */
-  target_id: number;
+  target_id: SessionCapabilityTargetId;
   enabled: boolean;
   tag?: string;
   max_requirements?: number;
@@ -2518,22 +3346,62 @@ export interface IAutoWorkConfigParams {
 
 export interface IAutoWorkState {
   kind: AutoWorkTargetKind;
-  /** Session id (conversation or terminal, both INTEGER). */
-  target_id: number;
+  target_id: SessionCapabilityTargetId;
   enabled: boolean;
   tag?: string;
   running: boolean;
   run_state: AutoWorkRunState;
-  current_requirement_id?: number;
+  current_requirement_id?: RequirementId;
   completed_count: number;
 }
 
+export const fromAttachmentResponse = (attachment: AttachmentResponse): IAttachment => {
+  const { attachment_id, ...fields } = attachment;
+  return {
+    ...fields,
+    id: parseAttachmentId(attachment_id),
+  };
+};
+
+const fromApiRequirement = (requirement: RequirementResponse): IRequirement => {
+  const {
+    requirement_id,
+    owner_conversation_id,
+    owner_terminal_id,
+    attachments,
+    ...fields
+  } = requirement;
+  return {
+    ...fields,
+    requirement_id: parseRequirementId(requirement_id),
+    ...(owner_conversation_id == null
+      ? {}
+      : { owner_conversation_id: parseConversationId(owner_conversation_id) }),
+    ...(owner_terminal_id == null
+      ? {}
+      : { owner_terminal_id: parseTerminalId(owner_terminal_id) }),
+    ...(attachments == null
+      ? {}
+      : { attachments: attachments.map(fromAttachmentResponse) }),
+  };
+};
+
+const fromApiAutoWorkState = (state: IAutoWorkState): IAutoWorkState => ({
+  ...state,
+  target_id: state.kind === 'conversation'
+    ? parseConversationId(state.target_id)
+    : parseTerminalId(state.target_id),
+  ...(state.current_requirement_id != null
+    ? { current_requirement_id: parseRequirementId(state.current_requirement_id) }
+    : {}),
+});
+
 export const requirements = {
-  list: httpGet<PaginatedResult<IRequirement>, IListRequirementsParams>((p) => {
+  list: withResponseMap(httpGet<PaginatedResult<RequirementResponse>, IListRequirementsParams>((p) => {
     const q = new URLSearchParams();
     if (p?.tag) q.set('tag', p.tag);
     if (p?.status) q.set('status', p.status);
-    if (p?.owner_session_id != null) q.set('owner_session_id', String(p.owner_session_id));
+    if (p?.conversation_id != null) q.set('conversation_id', p.conversation_id);
     if (p?.q) q.set('q', p.q);
     if (p?.order_by) q.set('order_by', p.order_by);
     if (p?.order) q.set('order', p.order);
@@ -2541,32 +3409,58 @@ export const requirements = {
     if (p?.page_size != null) q.set('page_size', String(p.page_size));
     const qs = q.toString();
     return `/api/requirements${qs ? `?${qs}` : ''}`;
-  }),
-  get: httpGet<IRequirement, { id: number }>((p) => `/api/requirements/${p.id}`),
-  create: httpPost<IRequirement, ICreateRequirementParams>('/api/requirements'),
-  update: httpPut<IRequirement, { id: number; updates: IUpdateRequirementParams }>(
-    (p) => `/api/requirements/${p.id}`,
+  }), (page) => ({ ...page, items: page.items.map(fromApiRequirement) })),
+  get: withResponseMap(httpGet<RequirementResponse, { requirement_id: RequirementId }>((p) => `/api/requirements/${p.requirement_id}`), fromApiRequirement),
+  create: withResponseMap(httpPost<RequirementResponse, ICreateRequirementParams>('/api/requirements'), fromApiRequirement),
+  update: withResponseMap(httpPut<RequirementResponse, { requirement_id: RequirementId; updates: IUpdateRequirementParams }>(
+    (p) => `/api/requirements/${p.requirement_id}`,
     (p) => p.updates
-  ),
-  remove: httpDelete<void, { id: number }>((p) => `/api/requirements/${p.id}`),
-  batchDelete: httpPost<{ deleted: number }, { ids: number[] }>('/api/requirements/batch-delete'),
+  ), fromApiRequirement),
+  remove: httpDelete<void, { requirement_id: RequirementId }>((p) => `/api/requirements/${p.requirement_id}`),
+  batchDelete: httpPost<{ deleted: number }, { requirement_ids: RequirementId[] }>('/api/requirements/batch-delete'),
   tags: httpGet<ITagSummary[], void>('/api/requirements/tags'),
-  board: httpGet<IBoardResponse, { tag: string }>((p) => `/api/requirements/board?tag=${encodeURIComponent(p.tag)}`),
-  setAutoWork: httpPost<IAutoWorkState, IAutoWorkConfigParams>('/api/requirements/autowork'),
-  getAutoWork: httpGet<IAutoWorkState, { kind: AutoWorkTargetKind; target_id: number }>(
+  board: withResponseMap(httpGet<BoardResponse, { tag: string }>((p) => `/api/requirements/board?tag=${encodeURIComponent(p.tag)}`), (board): IBoardResponse => ({
+    ...board,
+    pending: board.pending.map(fromApiRequirement),
+    in_progress: board.in_progress.map(fromApiRequirement),
+    done: board.done.map(fromApiRequirement),
+    failed: board.failed.map(fromApiRequirement),
+    cancelled: board.cancelled.map(fromApiRequirement),
+    needs_review: board.needs_review.map(fromApiRequirement),
+  })),
+  setAutoWork: withResponseMap(httpPost<IAutoWorkState, IAutoWorkConfigParams>('/api/requirements/autowork'), fromApiAutoWorkState),
+  getAutoWork: withResponseMap(httpGet<IAutoWorkState, { kind: AutoWorkTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/requirements/autowork/${p.kind}/${p.target_id}`
-  ),
-  resumeTag: httpPost<ITagSummary, { tag: string; requeue_failed?: boolean; requeue_ids?: number[] }>(
+  ), fromApiAutoWorkState),
+  resumeTag: httpPost<ITagSummary, { tag: string; requeue_failed?: boolean; requeue_requirement_ids?: RequirementId[] }>(
     (p) => `/api/requirements/tags/${encodeURIComponent(p.tag)}/resume`,
-    (p) => ({ requeue_failed: p.requeue_failed, requeue_ids: p.requeue_ids })
+    (p) => ({
+      requeue_failed: p.requeue_failed,
+      requeue_requirement_ids: p.requeue_requirement_ids,
+    })
   ),
-  onCreated: wsEmitter<IRequirement>('requirement.created'),
-  onUpdated: wsEmitter<IRequirement>('requirement.updated'),
-  onStatusChanged: wsEmitter<IRequirement>('requirement.statusChanged'),
-  onDeleted: wsEmitter<{ id: number }>('requirement.deleted'),
-  onAutoWork: wsEmitter<IAutoWorkState>('autowork.statusChanged'),
-  onTagPaused: wsEmitter<ITagPausedPayload>('autowork.tagPaused'),
-  tagBindings: httpGet<ITagBindings[], void>('/api/requirements/tag-bindings'),
+  onCreated: wsMappedEmitter<IRequirement, RequirementResponse>('requirement.created', fromApiRequirement),
+  onUpdated: wsMappedEmitter<IRequirement, RequirementResponse>('requirement.updated', fromApiRequirement),
+  onStatusChanged: wsMappedEmitter<IRequirement, RequirementResponse>('requirement.statusChanged', fromApiRequirement),
+  onDeleted: wsMappedEmitter<{ requirement_id: RequirementId }>('requirement.deleted', (value) => ({
+    requirement_id: parseRequirementId(value.requirement_id),
+  })),
+  onAutoWork: wsMappedEmitter<IAutoWorkState>('autowork.statusChanged', fromApiAutoWorkState),
+  onTagPaused: wsMappedEmitter<ITagPausedPayload>('autowork.tagPaused', (value) => ({
+    ...value,
+    ...(value.requirement_id != null ? { requirement_id: parseRequirementId(value.requirement_id) } : {}),
+  })),
+  tagBindings: withResponseMap(httpGet<ITagBindings[], void>('/api/requirements/tag-bindings'), (groups) =>
+    groups.map((group) => ({
+      ...group,
+      bindings: group.bindings.map((binding) => ({
+        ...binding,
+        target_id: binding.kind === 'conversation'
+          ? parseConversationId(binding.target_id)
+          : parseTerminalId(binding.target_id),
+      })),
+    }))
+  ),
 };
 
 // ─────────────────────────── IDMM (Intelligent Decision-Making Mode) ───────────────────────────
@@ -2588,7 +3482,7 @@ export type IdmmScanScope = 'last_turn' | 'last_messages' | 'full_session';
 
 /** Backup ("bypass") model the watch escalates to (empty → global default → session model). */
 export interface IIdmmBypassModelRef {
-  provider_id?: string | null;
+  provider_id?: ProviderId | null;
   model?: string | null;
 }
 
@@ -2673,14 +3567,12 @@ export interface IIdmmConfig {
 /** POST /api/idmm body: kind + target_id + a (flattened) IdmmConfig. */
 export interface IIdmmSetParams extends IIdmmConfig {
   kind: IdmmTargetKind;
-  /** Session id (conversation or terminal, both INTEGER per numeric-id spec). */
-  target_id: number;
+  target_id: SessionCapabilityTargetId;
 }
 
 export interface IIdmmState {
   kind: IdmmTargetKind;
-  /** Session id (conversation or terminal, both INTEGER). */
-  target_id: number;
+  target_id: SessionCapabilityTargetId;
   /** True when either watch is enabled. */
   enabled: boolean;
   run_state: IdmmRunState;
@@ -2701,10 +3593,9 @@ export interface IIdmmState {
  * the backend `InterventionRecord` JSON exactly. `target_id` is polymorphic on
  * the wire (conversation/terminal id serialized as a string). */
 export interface IIdmmIntervention {
-  /** `idmmrec_{uuidv7}` — absent on legacy in-memory payloads. */
-  id: string;
+  intervention_id: IdmmInterventionId;
   target_kind: IdmmTargetKind;
-  target_id: string;
+  target_id: SessionCapabilityTargetId;
   /** Which watch fired: 'fault' | 'decision'. */
   watch: string;
   at: number;
@@ -2725,37 +3616,81 @@ export interface IIdmmIntervention {
 }
 
 export interface IIdmmSettings {
-  backup_provider_id?: string;
+  backup_provider_id?: ProviderId;
   backup_model?: string;
   default_steering_prompt: string;
 }
 
+const parseIdmmTargetId = (kind: IdmmTargetKind, value: unknown): SessionCapabilityTargetId =>
+  kind === 'conversation' ? parseConversationId(value) : parseTerminalId(value);
+
+const fromApiIdmmConfig = (config: IIdmmConfig): IIdmmConfig => ({
+  ...config,
+  fault_watch: {
+    ...config.fault_watch,
+    bypass_model: {
+      ...config.fault_watch.bypass_model,
+      provider_id: config.fault_watch.bypass_model.provider_id == null
+        ? config.fault_watch.bypass_model.provider_id
+        : parseProviderId(config.fault_watch.bypass_model.provider_id),
+    },
+  },
+  decision_watch: {
+    ...config.decision_watch,
+    bypass_model: {
+      ...config.decision_watch.bypass_model,
+      provider_id: config.decision_watch.bypass_model.provider_id == null
+        ? config.decision_watch.bypass_model.provider_id
+        : parseProviderId(config.decision_watch.bypass_model.provider_id),
+    },
+  },
+});
+
+const fromApiIdmmState = (state: IIdmmState): IIdmmState => ({
+  ...state,
+  target_id: parseIdmmTargetId(state.kind, state.target_id),
+  ...(state.config ? { config: fromApiIdmmConfig(state.config) } : {}),
+});
+
+const fromApiIdmmIntervention = (record: IIdmmIntervention): IIdmmIntervention => ({
+  ...record,
+  intervention_id: parseIdmmInterventionId(record.intervention_id),
+  target_id: parseIdmmTargetId(record.target_kind, record.target_id),
+});
+
+const fromApiIdmmSettings = (settings: IIdmmSettings): IIdmmSettings => ({
+  ...settings,
+  ...(settings.backup_provider_id == null
+    ? {}
+    : { backup_provider_id: parseProviderId(settings.backup_provider_id) }),
+});
+
 export const idmm = {
-  set: httpPost<IIdmmState, IIdmmSetParams>('/api/idmm'),
-  getStatus: httpGet<IIdmmState, { kind: IdmmTargetKind; target_id: number }>(
+  set: withResponseMap(httpPost<IIdmmState, IIdmmSetParams>('/api/idmm'), fromApiIdmmState),
+  getStatus: withResponseMap(httpGet<IIdmmState, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}`
-  ),
-  intervene: httpPost<IIdmmState, { kind: IdmmTargetKind; target_id: number }>(
+  ), fromApiIdmmState),
+  intervene: withResponseMap(httpPost<IIdmmState, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}/intervene`,
     () => ({})
-  ),
-  getLog: httpGet<IIdmmIntervention[], { kind: IdmmTargetKind; target_id: number; limit?: number }>(
+  ), fromApiIdmmState),
+  getLog: withResponseMap(httpGet<IIdmmIntervention[], { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId; limit?: number }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}/log${p.limit ? `?limit=${p.limit}` : ''}`
-  ),
-  clearLog: httpDelete<void, { kind: IdmmTargetKind; target_id: number }>(
+  ), (records) => records.map(fromApiIdmmIntervention)),
+  clearLog: httpDelete<void, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}/log`
   ),
   /** Cross-session recent interventions for the global activity overview
    * (most-recent-first, across all targets; honours the same aggressive
    * eviction the per-target records do). */
-  getActivity: httpGet<IIdmmIntervention[], { limit?: number }>(
+  getActivity: withResponseMap(httpGet<IIdmmIntervention[], { limit?: number }>(
     (p) => `/api/idmm/activity${p.limit ? `?limit=${p.limit}` : ''}`
-  ),
+  ), (records) => records.map(fromApiIdmmIntervention)),
   clearActivity: httpDelete<void, void>('/api/idmm/activity'),
-  getSettings: httpGet<IIdmmSettings, void>('/api/idmm/settings'),
-  updateSettings: httpPut<IIdmmSettings, IIdmmSettings>('/api/idmm/settings'),
-  onStatus: wsEmitter<IIdmmState>('idmm.statusChanged'),
-  onIntervention: wsEmitter<IIdmmIntervention>('idmm.intervention'),
+  getSettings: withResponseMap(httpGet<IIdmmSettings, void>('/api/idmm/settings'), fromApiIdmmSettings),
+  updateSettings: withResponseMap(httpPut<IIdmmSettings, IIdmmSettings>('/api/idmm/settings'), fromApiIdmmSettings),
+  onStatus: wsMappedEmitter<IIdmmState>('idmm.statusChanged', fromApiIdmmState),
+  onIntervention: wsMappedEmitter<IIdmmIntervention>('idmm.intervention', fromApiIdmmIntervention),
 };
 
 // ── Phase-3 model failover queue (mirrors `ModelFailoverConfig`, plan D1/D8). ──
@@ -2766,7 +3701,7 @@ export const idmm = {
 
 /** One ordered candidate in the failover queue. */
 export interface IModelFailoverCandidate {
-  provider_id: string;
+  provider_id: ProviderId;
   model: string;
 }
 
@@ -2782,9 +3717,23 @@ export interface IModelFailoverConfig {
   stamp_unhealthy: boolean;
 }
 
+const fromApiModelFailoverConfig = (config: IModelFailoverConfig): IModelFailoverConfig => ({
+  ...config,
+  queue: config.queue.map((candidate) => ({
+    ...candidate,
+    provider_id: parseProviderId(candidate.provider_id),
+  })),
+});
+
 export const agentModelFailover = {
-  getSettings: httpGet<IModelFailoverConfig, void>('/api/agent/model-failover'),
-  updateSettings: httpPut<IModelFailoverConfig, IModelFailoverConfig>('/api/agent/model-failover'),
+  getSettings: withResponseMap(
+    httpGet<IModelFailoverConfig, void>('/api/agent/model-failover'),
+    fromApiModelFailoverConfig
+  ),
+  updateSettings: withResponseMap(
+    httpPut<IModelFailoverConfig, IModelFailoverConfig>('/api/agent/model-failover'),
+    fromApiModelFailoverConfig
+  ),
 };
 
 // ─────────────────────────── Webhook + AutoWork admin ───────────────────────────
@@ -2792,8 +3741,7 @@ export const agentModelFailover = {
 /** AutoWork tag→session binding (a session whose AutoWork is enabled on a tag). */
 export interface ITagBinding {
   kind: AutoWorkTargetKind;
-  /** Session id (conversation or terminal, both INTEGER). */
-  target_id: number;
+  target_id: SessionCapabilityTargetId;
   name: string;
   run_state: AutoWorkRunState;
 }
@@ -2809,7 +3757,7 @@ export type IWebhookPlatform = 'lark' | 'http' | 'slack';
 /** A webhook endpoint. The signing `secret` is never returned — `has_secret`
  * signals whether one is stored. */
 export interface IWebhook {
-  id: number;
+  webhook_id: WebhookId;
   name: string;
   platform: IWebhookPlatform;
   url: string;
@@ -2843,171 +3791,364 @@ export interface IUpdateWebhookParams {
 /** Per-tag settings (bound webhook + description) over the implicit tags. */
 export interface ITagSetting {
   tag: string;
-  webhook_id?: number | null;
+  webhook_id?: WebhookId | null;
   description: string;
   /** Event kinds that trigger a notification for this tag. */
   notify_events: string[];
 }
 
 export interface IUpsertTagSettingParams {
-  /** omit = keep, `null` = clear, number = bind. */
-  webhook_id?: number | null;
+  /** omit = keep, `null` = clear, canonical UUIDv7 webhook ID = bind. */
+  webhook_id?: WebhookId | null;
   description?: string;
   /** omit = keep, array = replace the notify-event set. */
   notify_events?: string[];
 }
 
+const fromApiWebhook = (value: IWebhook): IWebhook => ({
+  ...value,
+  webhook_id: parseWebhookId(value.webhook_id),
+});
+
+const fromApiTagSetting = (value: ITagSetting): ITagSetting => ({
+  ...value,
+  ...(value.webhook_id != null ? { webhook_id: parseWebhookId(value.webhook_id) } : {}),
+});
+
 export const webhook = {
-  list: httpGet<IWebhook[], void>('/api/webhooks'),
-  get: httpGet<IWebhook, { id: number }>((p) => `/api/webhooks/${p.id}`),
-  create: httpPost<IWebhook, ICreateWebhookParams>('/api/webhooks'),
-  update: httpPut<IWebhook, { id: number; updates: IUpdateWebhookParams }>(
-    (p) => `/api/webhooks/${p.id}`,
+  list: withResponseMap(httpGet<IWebhook[], void>('/api/webhooks'), (items) => items.map(fromApiWebhook)),
+  get: withResponseMap(httpGet<IWebhook, { webhook_id: WebhookId }>((p) => `/api/webhooks/${p.webhook_id}`), fromApiWebhook),
+  create: withResponseMap(httpPost<IWebhook, ICreateWebhookParams>('/api/webhooks'), fromApiWebhook),
+  update: withResponseMap(httpPut<IWebhook, { webhook_id: WebhookId; updates: IUpdateWebhookParams }>(
+    (p) => `/api/webhooks/${p.webhook_id}`,
     (p) => p.updates
-  ),
-  remove: httpDelete<void, { id: number }>((p) => `/api/webhooks/${p.id}`),
-  test: httpPost<void, { id: number }>(
-    (p) => `/api/webhooks/${p.id}/test`,
+  ), fromApiWebhook),
+  remove: httpDelete<void, { webhook_id: WebhookId }>((p) => `/api/webhooks/${p.webhook_id}`),
+  test: httpPost<void, { webhook_id: WebhookId }>(
+    (p) => `/api/webhooks/${p.webhook_id}/test`,
     () => ({})
   ),
-  getTagSetting: httpGet<ITagSetting, { tag: string }>((p) => `/api/tags/${encodeURIComponent(p.tag)}/settings`),
-  setTagSetting: httpPut<ITagSetting, { tag: string; updates: IUpsertTagSettingParams }>(
+  getTagSetting: withResponseMap(httpGet<ITagSetting, { tag: string }>((p) => `/api/tags/${encodeURIComponent(p.tag)}/settings`), fromApiTagSetting),
+  setTagSetting: withResponseMap(httpPut<ITagSetting, { tag: string; updates: IUpsertTagSettingParams }>(
     (p) => `/api/tags/${encodeURIComponent(p.tag)}/settings`,
     (p) => p.updates
+  ), fromApiTagSetting),
+};
+
+// Persistent Agent Execution is the sole collaboration transport exposed to the
+// renderer. Planning, routing, scheduling and retries remain implementation
+// details behind this aggregate.
+const executionWireObject = (raw: unknown): Record<string, unknown> => {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new TypeError('agent execution payload must be a JSON object');
+  }
+  return raw as Record<string, unknown>;
+};
+
+const fromApiAgentExecution = (raw: unknown): TAgentExecution => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TAgentExecution),
+    execution_id: parseExecutionId(value.execution_id),
+    lead_conversation_id: value.lead_conversation_id == null ? null : parseConversationId(value.lead_conversation_id),
+  };
+};
+
+const fromApiExecutionParticipant = (raw: unknown): TExecutionParticipant => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TExecutionParticipant),
+    participant_id: parseExecutionParticipantId(value.participant_id),
+    execution_id: parseExecutionId(value.execution_id),
+    source_agent_id: parseAgentId(value.source_agent_id),
+    preset_id: value.preset_id as TExecutionParticipant['preset_id'],
+    provider_id: value.provider_id == null ? null : parseProviderId(value.provider_id),
+  };
+};
+
+const fromApiExecutionStep = (raw: unknown): TExecutionStep => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TExecutionStep),
+    step_id: parseExecutionStepId(value.step_id),
+    execution_id: parseExecutionId(value.execution_id),
+    assigned_participant_id:
+      value.assigned_participant_id == null ? null : parseExecutionParticipantId(value.assigned_participant_id),
+  };
+};
+
+const fromApiExecutionDependency = (raw: unknown): TExecutionStepDependency => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TExecutionStepDependency),
+    execution_id: parseExecutionId(value.execution_id),
+    blocker_step_id: parseExecutionStepId(value.blocker_step_id),
+    blocked_step_id: parseExecutionStepId(value.blocked_step_id),
+  };
+};
+
+const fromApiExecutionAttempt = (raw: unknown): TExecutionAttempt => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TExecutionAttempt),
+    attempt_id: parseExecutionAttemptId(value.attempt_id),
+    execution_id: parseExecutionId(value.execution_id),
+    step_id: parseExecutionStepId(value.step_id),
+    participant_id: value.participant_id == null ? null : parseExecutionParticipantId(value.participant_id),
+    conversation_id: value.conversation_id == null ? null : parseConversationId(value.conversation_id),
+  };
+};
+
+const fromApiAgentExecutionDetail = (raw: unknown): TAgentExecutionDetail => {
+  const value = executionWireObject(raw);
+  return {
+    execution: fromApiAgentExecution(value.execution),
+    participants: (value.participants as unknown[]).map(fromApiExecutionParticipant),
+    steps: (value.steps as unknown[]).map(fromApiExecutionStep),
+    dependencies: (value.dependencies as unknown[]).map(fromApiExecutionDependency),
+    attempts: (value.attempts as unknown[]).map(fromApiExecutionAttempt),
+  };
+};
+
+const fromApiAgentExecutionEvent = (raw: unknown): TAgentExecutionEvent => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TAgentExecutionEvent),
+    execution_id: parseExecutionId(value.execution_id),
+    step_id: value.step_id == null ? null : parseExecutionStepId(value.step_id),
+    attempt_id: value.attempt_id == null ? null : parseExecutionAttemptId(value.attempt_id),
+    actor_conversation_id:
+      value.actor_conversation_id == null ? null : parseConversationId(value.actor_conversation_id),
+    actor_attempt_id: value.actor_attempt_id == null ? null : parseExecutionAttemptId(value.actor_attempt_id),
+    on_behalf_of_user_id: parseUserId(value.on_behalf_of_user_id),
+  };
+};
+
+const fromApiExecutionTemplate = (raw: unknown): TAgentExecutionTemplate => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TAgentExecutionTemplate),
+    execution_template_id: parseExecutionTemplateId(value.execution_template_id),
+  };
+};
+
+const fromApiExecutionTemplateParticipant = (raw: unknown): TAgentExecutionTemplateParticipant => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TAgentExecutionTemplateParticipant),
+    template_participant_id: parseExecutionTemplateParticipantId(value.template_participant_id),
+    source_agent_id: parseAgentId(value.source_agent_id),
+    preset_id: value.preset_id as TAgentExecutionTemplateParticipant['preset_id'],
+    provider_id: value.provider_id == null ? null : parseProviderId(value.provider_id),
+  };
+};
+
+const fromApiExecutionTemplateDetail = (raw: unknown): TAgentExecutionTemplateDetail => {
+  const value = executionWireObject(raw);
+  return {
+    ...fromApiExecutionTemplate(value),
+    participants: (value.participants as unknown[]).map(fromApiExecutionTemplateParticipant),
+  };
+};
+
+export const agentExecution = {
+  list: withResponseMap(
+    httpGet<unknown[], void>('/api/agent-executions'),
+    (raw): TAgentExecution[] => raw.map(fromApiAgentExecution)
+  ),
+  create: withResponseMap(
+    httpPost<unknown, TCreateAgentExecution>('/api/agent-executions'),
+    fromApiAgentExecution
+  ),
+  get: withResponseMap(
+    httpGet<unknown, { execution_id: ExecutionId }>((p) => `/api/agent-executions/${p.execution_id}`),
+    fromApiAgentExecutionDetail
+  ),
+  remove: httpDelete<void, { execution_id: ExecutionId; expected_version: number }>(
+    (p) => `/api/agent-executions/${p.execution_id}?expected_version=${p.expected_version}`
+  ),
+  rename: withResponseMap(
+    httpPatch<unknown, { execution_id: ExecutionId; updates: TRenameAgentExecution }>(
+      (p) => `/api/agent-executions/${p.execution_id}/rename`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecution
+  ),
+  replan: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TReplanAgentExecution }>(
+      (p) => `/api/agent-executions/${p.execution_id}/replan`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  adjust: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TAdjustAgentExecution }>(
+      (p) => `/api/agent-executions/${p.execution_id}/adjust`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  approve: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TVersionedAgentExecutionCommand }>(
+      (p) => `/api/agent-executions/${p.execution_id}/approve`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecution
+  ),
+  pause: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TVersionedAgentExecutionCommand }>(
+      (p) => `/api/agent-executions/${p.execution_id}/pause`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecution
+  ),
+  resume: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TVersionedAgentExecutionCommand }>(
+      (p) => `/api/agent-executions/${p.execution_id}/resume`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecution
+  ),
+  cancel: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TVersionedAgentExecutionCommand }>(
+      (p) => `/api/agent-executions/${p.execution_id}/cancel`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  addSteps: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; updates: TAddExecutionSteps }>(
+      (p) => `/api/agent-executions/${p.execution_id}/steps`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  updateStep: withResponseMap(
+    httpPatch<unknown, { execution_id: ExecutionId; step_id: ExecutionStepId; updates: TUpdateExecutionStep }>(
+      (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}`,
+      (p) => p.updates
+    ),
+    fromApiExecutionStep
+  ),
+  reassign: withResponseMap(
+    httpPut<unknown, { execution_id: ExecutionId; step_id: ExecutionStepId; updates: TReassignExecutionStep }>(
+      (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}/reassign`,
+      (p) => p.updates
+    ),
+    fromApiExecutionStep
+  ),
+  steer: httpPost<void, { execution_id: ExecutionId; step_id: ExecutionStepId; updates: TSteerExecutionStep }>(
+    (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}/steer`,
+    (p) => p.updates
+  ),
+  retry: withResponseMap(
+    httpPost<unknown, { execution_id: ExecutionId; step_id: ExecutionStepId; updates: TRetryExecutionStep }>(
+      (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}/retry`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  adopt: withResponseMap(
+    httpPost<
+      unknown,
+      {
+        execution_id: ExecutionId;
+        step_id: ExecutionStepId;
+        updates: TAdoptExecutionStepOutput;
+      }
+    >(
+      (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}/adopt`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  configure: withResponseMap(
+    httpPatch<unknown, { execution_id: ExecutionId; step_id: ExecutionStepId; updates: TConfigureExecutionStep }>(
+      (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}/configure`,
+      (p) => p.updates
+    ),
+    fromApiExecutionStep
+  ),
+  answerDecision: withResponseMap(
+    httpPost<
+      unknown,
+      {
+        execution_id: ExecutionId;
+        step_id: ExecutionStepId;
+        attempt_id: ExecutionAttemptId;
+        updates: TAnswerExecutionDecision;
+      }
+    >(
+      (p) => `/api/agent-executions/${p.execution_id}/steps/${p.step_id}/attempts/${p.attempt_id}/answer`,
+      (p) => p.updates
+    ),
+    fromApiAgentExecutionDetail
+  ),
+  listEvents: withResponseMap(httpGet<unknown[], { execution_id: ExecutionId; query?: TAgentExecutionEventsQuery }>((p) => {
+    const params = new URLSearchParams();
+    if (p.query?.after_sequence !== undefined) {
+      params.set('after_sequence', String(p.query.after_sequence));
+    }
+    if (p.query?.limit !== undefined) params.set('limit', String(p.query.limit));
+    const query = params.toString();
+    return `/api/agent-executions/${p.execution_id}/events${query ? `?${query}` : ''}`;
+  }), (raw): TAgentExecutionEvent[] => raw.map(fromApiAgentExecutionEvent)),
+  getWorkspace: {
+    provider: () => {},
+    invoke: (async (p: { execution_id: ExecutionId; work_dir: string; path: string; search?: string }) => {
+      const rel = absoluteToRelativePath(p.path, p.work_dir);
+      const url = `/api/agent-executions/${p.execution_id}/workspace?path=${encodeURIComponent(rel)}${p.search ? `&search=${encodeURIComponent(p.search)}` : ''}`;
+      const raw = await httpRequest<Array<{ name: string; type: string }>>('GET', url);
+      return fromBackendWorkspaceList(raw, p.work_dir, rel);
+    }) as (p: { execution_id: ExecutionId; work_dir: string; path: string; search?: string }) => Promise<IDirOrFile[]>,
+  },
+  events: {
+    changed: wsMappedEmitter<TAgentExecutionChangedEvent>('agentExecution.changed', (raw) => {
+      const value = executionWireObject(raw);
+      return { ...(value as unknown as TAgentExecutionChangedEvent), execution_id: parseExecutionId(value.execution_id) };
+    }),
+    leadThinking: wsMappedEmitter<TAgentExecutionLeadThinkingEvent>('agentExecution.leadThinking', (raw) => {
+      const value = executionWireObject(raw);
+      return { ...(value as unknown as TAgentExecutionLeadThinkingEvent), execution_id: parseExecutionId(value.execution_id) };
+    }),
+  },
+};
+
+// Reusable collaboration authoring input. Templates never become runtime
+// state; createExecution copies them once into the canonical execution model.
+export const agentExecutionTemplate = {
+  list: withResponseMap(
+    httpGet<unknown[], void>('/api/agent-execution-templates'),
+    (raw): TAgentExecutionTemplate[] => raw.map(fromApiExecutionTemplate)
+  ),
+  get: withResponseMap(
+    httpGet<unknown, { execution_template_id: ExecutionTemplateId }>(
+      (p) => `/api/agent-execution-templates/${p.execution_template_id}`
+    ),
+    fromApiExecutionTemplateDetail
+  ),
+  create: withResponseMap(
+    httpPost<unknown, TCreateAgentExecutionTemplate>('/api/agent-execution-templates'),
+    fromApiExecutionTemplateDetail
+  ),
+  update: withResponseMap(
+    httpPut<unknown, { execution_template_id: ExecutionTemplateId; updates: TUpdateAgentExecutionTemplate }>(
+      (p) => `/api/agent-execution-templates/${p.execution_template_id}`,
+      (p) => p.updates
+    ),
+    fromApiExecutionTemplateDetail
+  ),
+  remove: httpDelete<void, { execution_template_id: ExecutionTemplateId; expected_version: number }>(
+    (p) => `/api/agent-execution-templates/${p.execution_template_id}?expected_version=${p.expected_version}`
+  ),
+  createExecution: withResponseMap(
+    httpPost<unknown, { execution_template_id: ExecutionTemplateId; request: TCreateExecutionFromTemplate }>(
+      (p) => `/api/agent-execution-templates/${p.execution_template_id}/create-execution`,
+      (p) => p.request
+    ),
+    fromApiAgentExecution
   ),
 };
-
-// ─────────────────────────── 智能编排 (Orchestration) ───────────────────────────
-// REST client for fleets + orchestration workspaces, routed to
-// /api/orchestrator/*. Mirrors the plain-REST webhook block above; IDs are
-// strings (`fleet_…` / `ows_…`).
-
-export const orchestrator = {
-  runs: {
-    // Every run owned by the current user (all workspaces + ad-hoc/workspace-less
-    // runs), newest first — the read path for the read-only Run-history library.
-    listMine: httpGet<TRun[], void>('/api/orchestrator/runs'),
-    // Create an ad-hoc run straight from the「智能编排」Tab's structured form
-    // (no workspace / pre-built fleet — the fleet is synthesized from
-    // `model_range`). Backend defaults autonomy to `interactive`, so the run
-    // parks at `awaiting_plan_approval` until approved. Body matches the wire
-    // shape verbatim, so no mapBody is needed.
-    createAdhoc: httpPost<TRun, TCreateAdhocRun>('/api/orchestrator/runs/adhoc'),
-    get: httpGet<TRunDetail, { id: string }>((p) => `/api/orchestrator/runs/${p.id}`),
-    // Delete a run (owner-scoped). The backend stops any live engine loop first,
-    // then deletes the row — the schema's ON DELETE CASCADE FKs sweep out the
-    // run's tasks/deps/assignments. 403 if the run is owned by another user.
-    remove: httpDelete<void, { id: string }>((p) => `/api/orchestrator/runs/${p.id}`),
-    // Rename a run = change its goal (owner-scoped, PATCH). Body is { goal }.
-    rename: httpPatch<void, { id: string; goal: string }>(
-      (p) => `/api/orchestrator/runs/${p.id}`,
-      (p) => ({ goal: p.goal })
-    ),
-    // Re-plan a run IN PLACE (owner-scoped, POST). Clears the run's old task graph
-    // and re-decomposes against the (optionally) edited goal / model_range /
-    // autonomy / pinned_roles — every edit field is optional (omitted = keep
-    // current). Returns the re-planned run. The backend stops any live engine
-    // loop, applies the edits, clears the old plan, then re-plans + re-arms the
-    // engine for non-`interactive` runs (`interactive` re-parks at approval).
-    replan: httpPost<TRun, { id: string } & TReplanRequest>(
-      (p) => `/api/orchestrator/runs/${p.id}/replan`,
-      ({ id: _id, ...body }) => body
-    ),
-    // Conversation-driven intelligent re-adjust IN PLACE (owner-scoped, POST):
-    // the lead model judges, per task, whether to KEEP the completed work or
-    // re-decompose, and the backend RECONCILEs the run to the result — preserving
-    // the kept tasks + their output (unlike `replan`, which wipes the whole plan),
-    // dropping the un-kept ones, inserting + routing the new tasks, and rebuilding
-    // the deps. Returns the (re-activated) run. Rejected (400) for a blank intent
-    // or a run with any running task (pause first). The backend runs the whole
-    // reconcile + terminal re-activation under the run's per-run lock and re-arms
-    // the engine for a re-activated run, mirroring `rerunTask`.
-    adjustRun: httpPost<TRun, { run_id: string } & TAdjustRunRequest>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/adjust`,
-      ({ run_id: _run_id, ...body }) => body
-    ),
-    cancel: httpPost<void, { id: string }>(
-      (p) => `/api/orchestrator/runs/${p.id}/cancel`,
-      () => undefined
-    ),
-    approve: httpPost<void, { id: string }>(
-      (p) => `/api/orchestrator/runs/${p.id}/approve`,
-      () => undefined
-    ),
-    pause: httpPost<void, { id: string }>(
-      (p) => `/api/orchestrator/runs/${p.id}/pause`,
-      () => undefined
-    ),
-    resume: httpPost<void, { id: string }>(
-      (p) => `/api/orchestrator/runs/${p.id}/resume`,
-      () => undefined
-    ),
-    reassign: httpPut<void, { run_id: string; task_id: string; updates: TReassign }>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/tasks/${p.task_id}/assignment`,
-      (p) => p.updates
-    ),
-    steer: httpPost<void, { run_id: string; task_id: string; updates: TSteer }>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/tasks/${p.task_id}/steer`,
-      (p) => p.updates
-    ),
-    // Re-execute a single node (UC-2a): resets the task + its settled downstream
-    // dependents to pending and re-activates a terminal run, so the engine re-drives
-    // it. Rejected (400) if the task is currently running (pause/stop first).
-    rerunTask: httpPost<void, { run_id: string; task_id: string }>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/tasks/${p.task_id}/rerun`,
-      () => undefined
-    ),
-    // Adopt the node's worker conversation's CURRENT output as the node's product
-    // (UC-2c「采用为该节点产出」): reads the worker's latest assistant text into the
-    // node, marks it done, and re-activates a terminal run so downstream unblocks.
-    // For a failed/stuck node the user kept chatting in the content area. Rejected
-    // (400) if the run is running, or the node has no worker conversation / no
-    // output yet.
-    adoptTaskResult: httpPost<void, { run_id: string; task_id: string }>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/tasks/${p.task_id}/adopt`,
-      () => undefined
-    ),
-    // Fine-tune a node's intent/prompt (UC-2a): replace the task's spec. Rejected
-    // (400) for a blank spec or a running task; a later rerun uses the new spec.
-    updateTaskSpec: httpPatch<void, { run_id: string; task_id: string; updates: TTaskSpecUpdate }>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/tasks/${p.task_id}/spec`,
-      (p) => p.updates
-    ),
-    // 启动前配置台 (迁移 026): set/clear a node's per-task model override + 预置要求.
-    // FULL replace of the three fields (null/blank clears); rejected (400) for a
-    // running task. A pending node picks these up at dispatch; a settled node on
-    // the next rerun.
-    setTaskConfig: httpPatch<void, { run_id: string; task_id: string; updates: TTaskConfigUpdate }>(
-      (p) => `/api/orchestrator/runs/${p.run_id}/tasks/${p.task_id}/config`,
-      (p) => p.updates
-    ),
-    // List one directory level under a run's working directory (read-only). Root
-    // is the run's `work_dir` (server resolves the actual dir); the client passes
-    // an ABSOLUTE path (root or a node's fullPath) which is mapped to a
-    // workspace-relative `path`. Mirrors terminal/conversation `getWorkspace` so
-    // the shared WorkspaceRailBody tree source consumes it unchanged (IDirOrFile[]).
-    getWorkspace: {
-      provider: () => {},
-      invoke: (async (p: { id: string; work_dir: string; path: string; search?: string }) => {
-        const rel = absoluteToRelativePath(p.path, p.work_dir);
-        const url = `/api/orchestrator/runs/${p.id}/workspace?path=${encodeURIComponent(rel)}${p.search ? `&search=${encodeURIComponent(p.search)}` : ''}`;
-        const raw = await httpRequest<Array<{ name: string; type: string }>>('GET', url);
-        return fromBackendWorkspaceList(raw, p.work_dir, rel);
-      }) as (p: { id: string; work_dir: string; path: string; search?: string }) => Promise<IDirOrFile[]>,
-    },
-  },
-  // Realtime WS events from the run engine (OrchestratorRunEventEmitter). Wire
-  // names verbatim from orchestratorEvents.ts.
-  runEvents: {
-    statusChanged: wsEmitter<TOrchRunStatusEvent>('orchestrator.run.statusChanged'),
-    planUpdated: wsEmitter<TOrchRunPlanUpdatedEvent>('orchestrator.run.planUpdated'),
-    completed: wsEmitter<TOrchRunCompletedEvent>('orchestrator.run.completed'),
-    taskStatusChanged: wsEmitter<TOrchTaskStatusEvent>('orchestrator.task.statusChanged'),
-    taskAssigned: wsEmitter<TOrchTaskAssignedEvent>('orchestrator.task.assigned'),
-    leadThinking: wsEmitter<TOrchRunLeadThinkingEvent>('orchestrator.run.leadThinking'),
-  },
-};
-
 // ─────────────────────────── Companion (nomi 桌面伙伴) ───────────────────────────
 
 export interface ICompanionCollectConfig {
@@ -3020,8 +4161,9 @@ export interface ICompanionCollectConfig {
   tool_calls: boolean;
 }
 
-/** One sanitized collected event ({ts,source,name,data}) for the transparency viewer. */
+/** One sanitized collected event ({event_id,ts,source,name,data}) for the transparency viewer. */
 export interface ICompanionCollectedEvent {
+  event_id: string;
   ts: number;
   source: string;
   name: string;
@@ -3031,7 +4173,7 @@ export interface ICompanionCollectedEvent {
 export type ICompanionMemoryKind = 'profile' | 'preference' | 'knowledge' | 'episode' | 'task' | 'affective';
 
 export interface ICompanionMemory {
-  id: string;
+  memory_id: CompanionMemoryId;
   kind: ICompanionMemoryKind;
   content: string;
   tags: string[];
@@ -3045,8 +4187,8 @@ export interface ICompanionMemory {
   last_reinforced_at: number;
   /** `'user'` = shared (all companions) / `'companion'` = private to one. */
   scope_kind: 'user' | 'companion';
-  /** Owning companion id when private; `''` when shared. */
-  scope_companion_id: string;
+  /** Owning canonical companion id when private; `null` when shared. */
+  scope_companion_id: CompanionId | null;
 }
 
 export interface ICompanionMemoryPage {
@@ -3055,7 +4197,7 @@ export interface ICompanionMemoryPage {
 }
 
 export interface ICompanionSuggestion {
-  id: string;
+  suggestion_id: CompanionSuggestionId;
   kind: string;
   title: string;
   body: string;
@@ -3072,16 +4214,17 @@ export interface ICompanionSuggestionPage {
 
 /** A companion's self-evolved skill (registry row + SKILL.md description). snake_case = Rust JSON 1:1. */
 export interface ICompanionSkill {
+  companion_skill_id: CompanionSkillId;
   skill_name: string;
   scope_kind: string;
-  scope_companion_id: string; // '' = shared
+  scope_companion_id: CompanionId | null; // null = shared
   status: 'draft' | 'active' | 'archived';
   source: string;
   confidence: number;
-  provenance: string[]; // session/event ids the skill grew from
+  provenance_event_ids: CompanionEventId[];
   strength: number;
   version: number;
-  superseded_by: string | null;
+  skill_pattern_id: SkillPatternId | null;
   usage_count: number;
   last_used_at: number | null;
   created_at: number;
@@ -3101,12 +4244,13 @@ export interface ICompanionSkillContent {
 
 /** WS payload for companion.skill-drafted / companion.skill-learned. */
 export interface ICompanionSkillEvent {
-  companion_id: string;
+  companion_id: CompanionId;
+  companion_skill_id: CompanionSkillId;
   skill_name: string;
 }
 
 export interface ICompanionLearnRun {
-  id: string;
+  learn_run_id: CompanionLearnRunId;
   started_at: number;
   finished_at?: number | null;
   status: string;
@@ -3118,8 +4262,8 @@ export interface ICompanionLearnRun {
 }
 
 export interface ICompanionStatus {
-  /** Owning companion id (multi-companion; spec 2026-06-11 §4.3). */
-  companion_id: string;
+  /** Owning companion id, or null for the shared-only no-companions fallback. */
+  companion_id: CompanionId | null;
   xp: number;
   level: number;
   mood: string;
@@ -3151,9 +4295,9 @@ export interface ICompanionSourceStats {
 
 /** One archived session-window day-digest (伙伴会话归档回看). */
 export interface ICompanionDayDigest {
-  id: string;
-  companion_id: string;
-  conversation_id: string;
+  session_window_id: CompanionSessionWindowId;
+  companion_id: CompanionId;
+  conversation_id: ConversationId;
   /** Local start day, `YYYYMMDD`. */
   session_day: string;
   started_at: number;
@@ -3171,8 +4315,8 @@ export interface ICompanionDayDigest {
 
 /** 伙伴的唯一专属会话 — 一条真实的 `type='nomi'` 会话。每个伙伴生命周期内恒一条。 */
 export interface ICompanionThread {
-  conversation_id: number;
-  companion_id: string;
+  conversation_id: ConversationId;
+  companion_id: CompanionId;
   title: string;
   created_at: number;
   updated_at: number;
@@ -3188,8 +4332,9 @@ export interface ICompanionPersona {
 
 /** Model reference (provider + model id) as stored in companion configs. */
 export interface ICompanionModelRef {
-  provider_id: string;
+  provider_id: ProviderId;
   model: string;
+  use_model?: string | null;
 }
 
 /** Desktop-companion window settings of one companion (`character` lives on ICompanionProfile). */
@@ -3209,14 +4354,14 @@ export interface ICompanionWindowConfig {
      *  for this companion's desktop window. Absent ⇒ fall back to the tier. `null` in a patch
      *  clears it (RFC 7396) — used by the 总览 size slider's reset. */
     size_px?: number | null;
-    /** Library figure id (`figure_…`) backing this companion; absent for legacy per-companion figures. */
-    figure_id?: string;
+    /** Stable library figure UUIDv7 backing this companion; absent for legacy per-companion figures. */
+    figure_id?: FigureId;
   } | null;
 }
 
 /** A reusable figure in the shared custom-figure library (decoupled from companions). */
 export interface IFigureMeta {
-  id: string;
+  figure_id: FigureId;
   name: string;
   aspect: number;
   head_box: { x: number; y: number; w: number; h?: number };
@@ -3225,7 +4370,7 @@ export interface IFigureMeta {
 }
 
 export type IFigureUpdatePatch = {
-  figure_id: string;
+  figure_id: FigureId;
   name?: string;
   head_box?: { x: number; y: number; w: number; h: number };
   size_tier?: 's' | 'm' | 'l';
@@ -3238,14 +4383,18 @@ export interface ICompanionSkillConfig {
 }
 
 export interface ICompanionProfile {
-  id: string;
+  companion_id: CompanionId;
+  /** Positive dataset-local display ordinal. */
+  seq: number;
   name: string;
   /** Character id (mochi/ink/roux/pixel/bolt/boo); unknown → default. */
   character: string;
   persona: ICompanionPersona;
-  model: ICompanionModelRef;
+  model: ICompanionModelRef | null;
   skills: ICompanionSkillConfig;
   appearance: ICompanionWindowConfig;
+  /** Frozen execution configuration last applied to this companion. */
+  applied_preset?: ResolvedPresetSnapshot;
   created_at: number;
 }
 
@@ -3253,7 +4402,7 @@ export interface ICompanionProfile {
 export interface ICompanionEvolveConfig {
   enabled: boolean;
   interval_minutes: number;
-  model: ICompanionModelRef;
+  model: ICompanionModelRef | null;
   min_pattern_count: number;
   min_distinct_sessions: number;
   reflect_enabled: boolean;
@@ -3275,25 +4424,27 @@ export interface ICompanionSharedConfig {
   learn: {
     enabled: boolean;
     interval_minutes: number;
-    model: ICompanionModelRef;
+    model: ICompanionModelRef | null;
   };
   evolve: ICompanionEvolveConfig;
   /** Session-window archiving (伙伴会话归档). */
   archive: ICompanionArchiveConfig;
-  /** 智能编排：开启后本地伙伴会话可用 nomi_run_create 把复杂大任务拆给子 agent。 */
-  smart_orchestration: boolean;
-  /** Empty when no companion exists yet (zero-companion state is allowed). */
-  default_companion_id: string | null;
+  /** 智能协作：开启后本地伙伴可把复杂任务拆给多个协作者并行推进。 */
+  smart_collaboration: boolean;
+  /** Null when no companion exists yet (zero-companion state is allowed). */
+  default_companion_id: CompanionId | null;
 }
 
-export type ICompanionWithStatus = ICompanionProfile & { status: ICompanionStatus };
+export type ICompanionWithStatus = ICompanionProfile & {
+  status: ICompanionStatus;
+};
 
 /// RFC 7396 merge patch over ICompanionProfile — nested partial objects merge.
 export type ICompanionProfilePatch = {
   name?: string;
   character?: string;
   persona?: Partial<ICompanionPersona>;
-  model?: Partial<ICompanionModelRef>;
+  model?: ICompanionModelRef | null;
   skills?: Partial<ICompanionSkillConfig>;
   appearance?: Partial<ICompanionWindowConfig>;
 };
@@ -3304,11 +4455,11 @@ export type ICompanionSharedConfigPatch = {
   learn?: Partial<{
     enabled: boolean;
     interval_minutes: number;
-    model: ICompanionModelRef;
+    model: ICompanionModelRef | null;
   }>;
   evolve?: Partial<ICompanionEvolveConfig>;
   archive?: Partial<ICompanionArchiveConfig>;
-  smart_orchestration?: boolean;
+  smart_collaboration?: boolean;
 };
 
 /** Export endpoint result — backend echoes the resolved destination path
@@ -3325,46 +4476,196 @@ export interface ICompanionExportResult {
  *  the full companion profile); `companion_id` is set for per-companion scope. The payload
  *  remainder is scope-dependent, hence the open index signature. */
 export interface ICompanionConfigUpdatedEvent {
-  scope?: string;
-  companion_id?: string;
+  scope?: 'shared' | CompanionId;
+  companion_id?: CompanionId;
   /** Scope-dependent payload remainder (shared config or full companion profile). */
   [extra: string]: unknown;
 }
 
 /** `companion.created` */
 export interface ICompanionCreatedEvent {
-  companion_id: string;
+  companion_id: CompanionId;
   profile: ICompanionProfile;
 }
 
 /** `companion.deleted` */
 export interface ICompanionDeletedEvent {
-  companion_id: string;
+  companion_id: CompanionId;
 }
 
+const asWireObject = (value: unknown, label: string): Record<string, unknown> => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`${label} must be a JSON object`);
+  }
+  return value as Record<string, unknown>;
+};
+
+const nullableCompanionId = (value: unknown): CompanionId | null =>
+  value == null ? null : parseCompanionId(value);
+
+const fromApiCompanionMemory = (raw: unknown): ICompanionMemory => {
+  const value = asWireObject(raw, 'companion memory');
+  return {
+    ...(value as unknown as ICompanionMemory),
+    memory_id: parseCompanionMemoryId(value.memory_id),
+    scope_companion_id: nullableCompanionId(value.scope_companion_id),
+  };
+};
+
+const fromApiCompanionSuggestion = (raw: unknown): ICompanionSuggestion => {
+  const value = asWireObject(raw, 'companion suggestion');
+  return {
+    ...(value as unknown as ICompanionSuggestion),
+    suggestion_id: parseCompanionSuggestionId(value.suggestion_id),
+  };
+};
+
+const fromApiCompanionSkill = (raw: unknown): ICompanionSkill => {
+  const value = asWireObject(raw, 'companion skill');
+  if (
+    Object.prototype.hasOwnProperty.call(value, 'provenance') ||
+    Object.prototype.hasOwnProperty.call(value, 'superseded_by')
+  ) {
+    throw new TypeError(
+      'companion skill legacy fields "provenance" and "superseded_by" are not accepted'
+    );
+  }
+  if (!Array.isArray(value.provenance_event_ids)) {
+    throw new TypeError('companion skill provenance_event_ids must be an array');
+  }
+  return {
+    ...(value as unknown as ICompanionSkill),
+    companion_skill_id: parseCompanionSkillId(value.companion_skill_id),
+    scope_companion_id: nullableCompanionId(value.scope_companion_id),
+    provenance_event_ids: value.provenance_event_ids.map(parseCompanionEventId),
+    skill_pattern_id:
+      value.skill_pattern_id == null ? null : parseSkillPatternId(value.skill_pattern_id),
+  };
+};
+
+const fromApiCompanionLearnRun = (raw: unknown): ICompanionLearnRun => {
+  const value = asWireObject(raw, 'companion learn run');
+  return {
+    ...(value as unknown as ICompanionLearnRun),
+    learn_run_id: parseCompanionLearnRunId(value.learn_run_id),
+  };
+};
+
+const fromApiCompanionStatus = (raw: unknown): ICompanionStatus => {
+  const value = asWireObject(raw, 'companion status');
+  return {
+    ...(value as unknown as ICompanionStatus),
+    companion_id: nullableCompanionId(value.companion_id),
+    last_learn: value.last_learn == null ? null : fromApiCompanionLearnRun(value.last_learn),
+  };
+};
+
+const fromApiCompanionWindowConfig = (raw: unknown): ICompanionWindowConfig => {
+  const value = asWireObject(raw, 'companion appearance');
+  if (value.custom_figure == null) {
+    return value as unknown as ICompanionWindowConfig;
+  }
+  const customFigure = asWireObject(value.custom_figure, 'companion custom figure');
+  return {
+    ...(value as unknown as ICompanionWindowConfig),
+    custom_figure: {
+      ...(customFigure as unknown as NonNullable<ICompanionWindowConfig['custom_figure']>),
+      ...(customFigure.figure_id == null ? {} : { figure_id: parseFigureId(customFigure.figure_id) }),
+    },
+  };
+};
+
+const fromApiCompanionProfile = (raw: unknown): ICompanionProfile => {
+  const value = asWireObject(raw, 'companion profile');
+  if ('id' in value) {
+    throw new TypeError('companion profile wire payload must use companion_id, not id');
+  }
+  return {
+    ...(value as unknown as ICompanionProfile),
+    companion_id: parseCompanionId(value.companion_id),
+    appearance: fromApiCompanionWindowConfig(value.appearance),
+  };
+};
+
+const fromApiCompanionWithStatus = (raw: unknown): ICompanionWithStatus => {
+  const value = asWireObject(raw, 'companion profile with status');
+  return {
+    ...fromApiCompanionProfile(value),
+    status: fromApiCompanionStatus(value.status),
+  };
+};
+
+const fromApiCompanionDayDigest = (raw: unknown): ICompanionDayDigest => {
+  const value = asWireObject(raw, 'companion day digest');
+  return {
+    ...(value as unknown as ICompanionDayDigest),
+    session_window_id: parseCompanionSessionWindowId(value.session_window_id),
+    companion_id: parseCompanionId(value.companion_id),
+    conversation_id: parseConversationId(value.conversation_id),
+  };
+};
+
+const fromApiFigure = (raw: unknown): IFigureMeta => {
+  const value = asWireObject(raw, 'companion figure');
+  if ('id' in value) {
+    throw new TypeError('figure wire payload must use figure_id, not id');
+  }
+  return { ...(value as unknown as IFigureMeta), figure_id: parseFigureId(value.figure_id) };
+};
+
+const fromApiCompanionThread = (raw: unknown): ICompanionThread => {
+  const value = asWireObject(raw, 'companion thread');
+  return {
+    ...(value as unknown as ICompanionThread),
+    companion_id: parseCompanionId(value.companion_id),
+    conversation_id: parseConversationId(value.conversation_id),
+  };
+};
+
+const fromApiCompanionSharedConfig = (raw: unknown): ICompanionSharedConfig => {
+  const value = asWireObject(raw, 'companion shared config');
+  return {
+    ...(value as unknown as ICompanionSharedConfig),
+    default_companion_id: nullableCompanionId(value.default_companion_id),
+  };
+};
+
 export const companion = {
-  listMemories: httpGet<
-    ICompanionMemoryPage,
-    { kind?: string; q?: string; status?: string; scope_companion_id?: string; limit?: number; offset?: number }
-  >((p) => {
-    const params = new URLSearchParams();
-    if (p?.kind) params.set('kind', p.kind);
-    if (p?.q) params.set('q', p.q);
-    if (p?.status) params.set('status', p.status);
-    if (p?.scope_companion_id) params.set('scope_companion_id', p.scope_companion_id);
-    if (p?.limit) params.set('limit', String(p.limit));
-    if (p?.offset) params.set('offset', String(p.offset));
-    const qs = params.toString();
-    return `/api/companion/memories${qs ? `?${qs}` : ''}`;
-  }),
-  addMemory: httpPost<ICompanionMemory, { kind: string; content: string; tags?: string[]; scope_companion_id?: string }>(
-    '/api/companion/memories'
+  listMemories: withResponseMap(
+    httpGet<
+      { items: unknown[]; total: number },
+      {
+      kind?: string;
+      q?: string;
+      status?: string;
+      scope_companion_id?: CompanionId;
+      limit?: number;
+      offset?: number;
+      }
+    >((p) => {
+      const params = new URLSearchParams();
+      if (p?.kind) params.set('kind', p.kind);
+      if (p?.q) params.set('q', p.q);
+      if (p?.status) params.set('status', p.status);
+      if (p?.scope_companion_id) params.set('scope_companion_id', p.scope_companion_id);
+      if (p?.limit) params.set('limit', String(p.limit));
+      if (p?.offset) params.set('offset', String(p.offset));
+      const qs = params.toString();
+      return `/api/companion/memories${qs ? `?${qs}` : ''}`;
+    }),
+    (raw): ICompanionMemoryPage => ({ ...raw, items: raw.items.map(fromApiCompanionMemory) })
+  ),
+  addMemory: withResponseMap(
+    httpPost<unknown, { kind: string; content: string; tags?: string[]; scope_companion_id?: CompanionId }>(
+      '/api/companion/memories'
+    ),
+    fromApiCompanionMemory
   ),
   updateMemory: httpPut<
     void,
-    { id: string; content?: string; pinned?: boolean; status?: string; scope_kind?: string; scope_companion_id?: string }
+    { memory_id: CompanionMemoryId; content?: string; pinned?: boolean; status?: string; scope_kind?: string; scope_companion_id?: CompanionId }
   >(
-    (p) => `/api/companion/memories/${p.id}`,
+    (p) => `/api/companion/memories/${p.memory_id}`,
     (p) => ({
       content: p.content,
       pinned: p.pinned,
@@ -3373,73 +4674,137 @@ export const companion = {
       scope_companion_id: p.scope_companion_id,
     })
   ),
-  deleteMemory: httpDelete<void, { id: string }>((p) => `/api/companion/memories/${p.id}`),
-  listSuggestions: httpGet<ICompanionSuggestionPage, { status?: string; limit?: number; offset?: number }>((p) => {
-    const params = new URLSearchParams();
-    if (p?.status) params.set('status', p.status);
-    if (p?.limit) params.set('limit', String(p.limit));
-    if (p?.offset) params.set('offset', String(p.offset));
-    const qs = params.toString();
-    return `/api/companion/suggestions${qs ? `?${qs}` : ''}`;
-  }),
-  decideSuggestion: httpPost<ICompanionSuggestion, { id: string; accept: boolean }>(
-    (p) => `/api/companion/suggestions/${p.id}/decide`,
-    (p) => ({ accept: p.accept })
+  deleteMemory: httpDelete<void, { memory_id: CompanionMemoryId }>((p) => `/api/companion/memories/${p.memory_id}`),
+  listSuggestions: withResponseMap(
+    httpGet<{ items: unknown[]; total: number }, { status?: string; limit?: number; offset?: number }>((p) => {
+      const params = new URLSearchParams();
+      if (p?.status) params.set('status', p.status);
+      if (p?.limit) params.set('limit', String(p.limit));
+      if (p?.offset) params.set('offset', String(p.offset));
+      const qs = params.toString();
+      return `/api/companion/suggestions${qs ? `?${qs}` : ''}`;
+    }),
+    (raw): ICompanionSuggestionPage => ({ ...raw, items: raw.items.map(fromApiCompanionSuggestion) })
   ),
-  // ── Self-evolved skills (P2: see + edit). Keyed by companion_id + skill_name (no standalone id). ──
-  listSkills: httpGet<
-    ICompanionSkillPage,
-    { companion_id: string; include_shared?: boolean; status?: string; limit?: number; offset?: number }
-  >((p) => {
-    const params = new URLSearchParams();
-    if (p.include_shared === false) params.set('include_shared', 'false');
-    if (p.status) params.set('status', p.status);
-    if (p.limit) params.set('limit', String(p.limit));
-    if (p.offset) params.set('offset', String(p.offset));
-    const qs = params.toString();
-    return `/api/companion/companions/${p.companion_id}/skills${qs ? `?${qs}` : ''}`;
-  }),
-  getSkillContent: httpGet<ICompanionSkillContent, { companion_id: string; name: string }>(
-    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}`,
-    { silentStatuses: [404] }
+  decideSuggestion: withResponseMap(
+    httpPost<unknown, { suggestion_id: CompanionSuggestionId; accept: boolean }>(
+      (p) => `/api/companion/suggestions/${p.suggestion_id}/decide`,
+      (p) => ({ accept: p.accept })
+    ),
+    fromApiCompanionSuggestion
   ),
-  writeSkillContent: httpPut<void, { companion_id: string; name: string; content: string }>(
-    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}`,
+  // ── Self-evolved skills (P2: see + edit). Addressed by companion_id + companion_skill_id. ──
+  listSkills: withResponseMap(
+    httpGet<
+      { items: unknown[]; total: number },
+      {
+      companion_id: CompanionId;
+      include_shared?: boolean;
+      status?: string;
+      limit?: number;
+      offset?: number;
+      }
+    >((p) => {
+      const params = new URLSearchParams();
+      if (p.include_shared === false) params.set('include_shared', 'false');
+      if (p.status) params.set('status', p.status);
+      if (p.limit) params.set('limit', String(p.limit));
+      if (p.offset) params.set('offset', String(p.offset));
+      const qs = params.toString();
+      return `/api/companion/companions/${p.companion_id}/skills${qs ? `?${qs}` : ''}`;
+    }),
+    (raw): ICompanionSkillPage => ({ ...raw, items: raw.items.map(fromApiCompanionSkill) })
+  ),
+  getSkillContent: withResponseMap(
+    httpGet<
+      { skill: unknown; content: string },
+      { companion_id: CompanionId; companion_skill_id: CompanionSkillId }
+    >(
+      (p) =>
+        `/api/companion/companions/${p.companion_id}/skills/${p.companion_skill_id}`,
+      { silentStatuses: [404] }
+    ),
+    (raw): ICompanionSkillContent => ({ ...raw, skill: fromApiCompanionSkill(raw.skill) })
+  ),
+  writeSkillContent: httpPut<
+    void,
+    { companion_id: CompanionId; companion_skill_id: CompanionSkillId; content: string }
+  >(
+    (p) =>
+      `/api/companion/companions/${p.companion_id}/skills/${p.companion_skill_id}`,
     (p) => ({ content: p.content })
   ),
-  decideSkill: httpPost<ICompanionSkill, { companion_id: string; name: string; accept: boolean; reason?: string }>(
-    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}/decide`,
-    (p) => ({ accept: p.accept, reason: p.reason })
+  decideSkill: withResponseMap(
+    httpPost<
+      unknown,
+      {
+        companion_id: CompanionId;
+        companion_skill_id: CompanionSkillId;
+        accept: boolean;
+        reason?: string;
+      }
+    >(
+      (p) =>
+        `/api/companion/companions/${p.companion_id}/skills/${p.companion_skill_id}/decide`,
+      (p) => ({ accept: p.accept, reason: p.reason })
+    ),
+    fromApiCompanionSkill
   ),
-  weeklyDigest: httpGet<ICompanionWeeklyDigest, { companion_id: string; days?: number }>(
+  weeklyDigest: httpGet<ICompanionWeeklyDigest, { companion_id: CompanionId; days?: number }>(
     (p) => `/api/companion/companions/${p.companion_id}/weekly-digest${p.days ? `?days=${p.days}` : ''}`
   ),
   /** Archived session-window day-digests (伙伴会话归档回看时间线 / 去年今日). */
-  listDayDigests: httpGet<
-    ICompanionDayDigest[],
-    { companion_id: string; since?: string; until?: string; on_day?: string; limit?: number }
-  >((p) => {
-    const q = new URLSearchParams();
-    if (p.since) q.set('since', p.since);
-    if (p.until) q.set('until', p.until);
-    if (p.on_day) q.set('on_day', p.on_day);
-    if (p.limit) q.set('limit', String(p.limit));
-    const qs = q.toString();
-    return `/api/companion/companions/${p.companion_id}/digests${qs ? `?${qs}` : ''}`;
-  }),
+  listDayDigests: withResponseMap(
+    httpGet<
+      unknown[],
+      {
+      companion_id: CompanionId;
+      since?: string;
+      until?: string;
+      on_day?: string;
+      limit?: number;
+      }
+    >((p) => {
+      const q = new URLSearchParams();
+      if (p.since) q.set('since', p.since);
+      if (p.until) q.set('until', p.until);
+      if (p.on_day) q.set('on_day', p.on_day);
+      if (p.limit) q.set('limit', String(p.limit));
+      const qs = q.toString();
+      return `/api/companion/companions/${p.companion_id}/digests${qs ? `?${qs}` : ''}`;
+    }),
+    (raw): ICompanionDayDigest[] => raw.map(fromApiCompanionDayDigest)
+  ),
   /** Learn-by-demonstration: draft a skill from a work session's tool sequence. Returns the name. */
-  draftFromSession: httpPost<string | null, { companion_id: string; conversation_id: string }>(
+  draftFromSession: httpPost<string | null, { companion_id: CompanionId; conversation_id: ConversationId }>(
     (p) => `/api/companion/companions/${p.companion_id}/skills/from-session`,
     (p) => ({ conversation_id: p.conversation_id })
   ),
   /** Gift a skill to another companion (互教). */
-  giftSkill: httpPost<ICompanionSkill, { companion_id: string; name: string; to_companion_id: string }>(
-    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}/gift`,
-    (p) => ({ to_companion_id: p.to_companion_id })
+  giftSkill: withResponseMap(
+    httpPost<
+      unknown,
+      {
+        companion_id: CompanionId;
+        companion_skill_id: CompanionSkillId;
+        to_companion_id: CompanionId;
+      }
+    >(
+      (p) =>
+        `/api/companion/companions/${p.companion_id}/skills/${p.companion_skill_id}/gift`,
+      (p) => ({ to_companion_id: p.to_companion_id })
+    ),
+    fromApiCompanionSkill
   ),
-  runLearn: httpPost<ICompanionLearnRun, void>('/api/companion/learn/run'),
-  listLearnRuns: httpGet<ICompanionLearnRun[], { limit?: number }>(
-    (p) => `/api/companion/learn/runs${p?.limit ? `?limit=${p.limit}` : ''}`
+  runLearn: withResponseMap(
+    httpPost<unknown, void>('/api/companion/learn/run'),
+    fromApiCompanionLearnRun
+  ),
+  listLearnRuns: withResponseMap(
+    httpGet<unknown[], { limit?: number }>(
+      (p) => `/api/companion/learn/runs${p?.limit ? `?limit=${p.limit}` : ''}`
+    ),
+    (raw): ICompanionLearnRun[] => raw.map(fromApiCompanionLearnRun)
   ),
   eventStats: httpGet<ICompanionSourceStats[], void>('/api/companion/events/stats'),
   recentEvents: httpGet<ICompanionCollectedEvent[], { limit?: number }>(
@@ -3451,91 +4816,206 @@ export const companion = {
   /** Master kill switch: stop all collection + learning + evolution. */
   disableAll: httpPost<ICompanionSharedConfig, void>('/api/companion/disable-all'),
   // ── Multi-companion CRUD (spec §4.3) ──
-  listCompanions: httpGet<ICompanionWithStatus[], void>('/api/companion/companions'),
-  createCompanion: httpPost<ICompanionProfile, { name: string; character: string }>('/api/companion/companions'),
-  getCompanion: httpGet<ICompanionWithStatus, { companion_id: string }>((p) => `/api/companion/companions/${p.companion_id}`),
-  /** RFC 7396 merge patch over one companion's profile (name/character/persona/model/appearance). */
-  patchCompanion: httpPatch<ICompanionProfile, { companion_id: string; patch: ICompanionProfilePatch }>(
-    (p) => `/api/companion/companions/${p.companion_id}`,
-    (p) => p.patch
+  listCompanions: withResponseMap(
+    httpGet<unknown[], void>('/api/companion/companions'),
+    (raw): ICompanionWithStatus[] => raw.map(fromApiCompanionWithStatus)
   ),
-  deleteCompanion: httpDelete<void, { companion_id: string }>((p) => `/api/companion/companions/${p.companion_id}`),
-  getCompanionStatus: httpGet<ICompanionStatus, { companion_id: string }>((p) => `/api/companion/companions/${p.companion_id}/status`),
+  createCompanion: withResponseMap(
+    httpPost<unknown, { name: string; character: string }>('/api/companion/companions'),
+    fromApiCompanionProfile
+  ),
+  getCompanion: withResponseMap(
+    httpGet<unknown, { companion_id: CompanionId }>((p) => `/api/companion/companions/${p.companion_id}`),
+    fromApiCompanionWithStatus
+  ),
+  /** RFC 7396 merge patch over one companion's profile (name/character/persona/model/appearance). */
+  patchCompanion: withResponseMap(
+    httpPatch<unknown, { companion_id: CompanionId; patch: ICompanionProfilePatch }>(
+      (p) => `/api/companion/companions/${p.companion_id}`,
+      (p) => p.patch
+    ),
+    fromApiCompanionProfile
+  ),
+  applyPreset: withResponseMap(
+    httpPost<
+      unknown,
+      { companion_id: CompanionId; preset_id: PresetReference; locale?: string; overrides?: import('../types/agent/presetTypes').PresetOverrides }
+    >(
+      (p) => `/api/companion/companions/${p.companion_id}/apply-preset`,
+      (p) => ({
+        preset_id: p.preset_id,
+        locale: p.locale,
+        overrides: p.overrides ?? {},
+      })
+    ),
+    fromApiCompanionProfile
+  ),
+  deleteCompanion: httpDelete<void, { companion_id: CompanionId }>((p) => `/api/companion/companions/${p.companion_id}`),
+  getCompanionStatus: withResponseMap(
+    httpGet<unknown, { companion_id: CompanionId }>((p) => `/api/companion/companions/${p.companion_id}/status`),
+    fromApiCompanionStatus
+  ),
   /** Ingest a DIY figure image previously landed in the temp upload root via `/api/fs/upload` (two-phase upload). */
-  uploadFigure: httpPost<void, { companion_id: string; source_path: string }>(
+  uploadFigure: httpPost<void, { companion_id: CompanionId; source_path: string }>(
     (p) => `/api/companion/companions/${p.companion_id}/figure`,
     (p) => ({ source_path: p.source_path })
   ),
   // ── Custom-figure library (reusable, decoupled from companions) ──
-  listFigures: httpGet<IFigureMeta[], void>('/api/companion/figures'),
+  listFigures: withResponseMap(
+    httpGet<unknown[], void>('/api/companion/figures'),
+    (raw): IFigureMeta[] => raw.map(fromApiFigure)
+  ),
   /** Create a reusable library figure from a temp upload (two-phase upload). */
-  createFigure: httpPost<
-    IFigureMeta,
-    { source_path: string; name: string; aspect: number; head_box: { x: number; y: number; w: number; h: number }; size_tier: 's' | 'm' | 'l' }
-  >('/api/companion/figures'),
-  updateFigure: httpPatch<IFigureMeta, IFigureUpdatePatch>(
-    (p) => `/api/companion/figures/${p.figure_id}`,
-    (p) => ({ name: p.name, head_box: p.head_box, size_tier: p.size_tier })
+  createFigure: withResponseMap(
+    httpPost<
+      unknown,
+      { source_path: string; name: string; aspect: number; head_box: { x: number; y: number; w: number; h: number }; size_tier: 's' | 'm' | 'l' }
+    >('/api/companion/figures'),
+    fromApiFigure
   ),
-  renameFigure: httpPatch<IFigureMeta, { figure_id: string; name: string }>(
-    (p) => `/api/companion/figures/${p.figure_id}`,
-    (p) => ({ name: p.name })
+  updateFigure: withResponseMap(
+    httpPatch<unknown, IFigureUpdatePatch>(
+      (p) => `/api/companion/figures/${p.figure_id}`,
+      (p) => ({ name: p.name, head_box: p.head_box, size_tier: p.size_tier })
+    ),
+    fromApiFigure
   ),
-  deleteFigure: httpDelete<void, { figure_id: string }>((p) => `/api/companion/figures/${p.figure_id}`),
+  renameFigure: withResponseMap(
+    httpPatch<unknown, { figure_id: FigureId; name: string }>(
+      (p) => `/api/companion/figures/${p.figure_id}`,
+      (p) => ({ name: p.name })
+    ),
+    fromApiFigure
+  ),
+  deleteFigure: httpDelete<void, { figure_id: FigureId }>((p) => `/api/companion/figures/${p.figure_id}`),
   // ── 伙伴单会话（companion single session）──
   // 每个伙伴生命周期内恒一条专属会话；多线程列表/新建/重命名/单删/设活已废除。
-  /** 返回该伙伴唯一会话的 id（无则 null）。
-   *  ⚠ companion 后端域仍以字符串存储 conversation_id（companion_threads.conversation_id
-   *  为 TEXT 主键、CompanionThread.conversation_id: String），而实时 `message.stream` 的
-   *  conversation_id 是数字 i64（stream_relay conv_id()→i64）。下游订阅按 `!==` 严格过滤
-   *  会话：数字 wire 与字符串 id 永不相等 → 实时事件（含 finish）全被丢弃，桌面伙伴气泡/伙伴
-   *  会话卡在「处理中」、仅切换会话重拉 DB 才出结果。这里在 API 边界统一强转为 number，
-   *  与声明类型 `number` 及 wire 对齐，修复 CompanionChat 与桌面伙伴两处流式过滤。 */
+  /** Return this companion's canonical Conversation id, or null. */
   getCompanionSession: withResponseMap(
-    httpGet<{ conversation_id: number | string | null }, { companion_id: string }>(
+    httpGet<{ conversation_id: string | null }, { companion_id: CompanionId }>(
       (p) => `/api/companion/companions/${p.companion_id}/companion/active`
     ),
-    (raw): { conversation_id: number | null } => ({
-      conversation_id: raw.conversation_id == null ? null : Number(raw.conversation_id),
+    (raw): { conversation_id: ConversationId | null } => ({
+      conversation_id: raw.conversation_id == null ? null : parseConversationId(raw.conversation_id),
     })
   ),
-  /** 幂等 ensure：已存在则返回现有唯一会话，不存在则创建（要求 profile.model 已配置，否则 400）。
-   *  同 getCompanionSession：把后端字符串 conversation_id 在边界强转为 number。 */
+  /** Idempotently ensure the companion's unique canonical Conversation. */
   ensureCompanionSession: withResponseMap(
-    httpPost<Omit<ICompanionThread, 'conversation_id'> & { conversation_id: number | string }, { companion_id: string }>(
+    httpPost<unknown, { companion_id: CompanionId }>(
       (p) => `/api/companion/companions/${p.companion_id}/companion/threads`,
       () => ({})
     ),
-    (raw): ICompanionThread => ({ ...raw, conversation_id: Number(raw.conversation_id) })
+    fromApiCompanionThread
   ),
   // ── Shared (cross-companion) config — same /api/companion/config route, multi-companion shape ──
-  getSharedConfig: httpGet<ICompanionSharedConfig, void>('/api/companion/config'),
-  patchSharedConfig: httpPatch<ICompanionSharedConfig, ICompanionSharedConfigPatch>('/api/companion/config'),
+  getSharedConfig: withResponseMap(
+    httpGet<unknown, void>('/api/companion/config'),
+    fromApiCompanionSharedConfig
+  ),
+  patchSharedConfig: withResponseMap(
+    httpPatch<unknown, ICompanionSharedConfigPatch>('/api/companion/config'),
+    fromApiCompanionSharedConfig
+  ),
   // ── Import / export (spec §4.8) ──
   exportMemory: httpPost<ICompanionExportResult, { dest_path: string; include_events: boolean }>('/api/companion/export/memory'),
-  exportCompanion: httpPost<ICompanionExportResult, { companion_id: string; dest_path: string; knowledge_names?: string[] }>(
+  exportCompanion: httpPost<ICompanionExportResult, { companion_id: CompanionId; dest_path: string; knowledge_names?: string[] }>(
     (p) => `/api/companion/export/companions/${p.companion_id}`,
-    (p) => ({ dest_path: p.dest_path, knowledge_names: p.knowledge_names ?? [] })
+    (p) => ({
+      dest_path: p.dest_path,
+      knowledge_names: p.knowledge_names ?? [],
+    })
   ),
   /** Import a memory/companion bundle; the backend dispatches on manifest.kind. */
   importCompanionBundle: httpPost<Record<string, unknown>, { src_path: string }>('/api/companion/import'),
-  onSuggestionCreated: wsEmitter<ICompanionSuggestion & { companion_id?: string }>('companion.suggestion-created'),
+  onSuggestionCreated: wsMappedEmitter<ICompanionSuggestion & { companion_id?: CompanionId }>(
+    'companion.suggestion-created',
+    (raw) => {
+      const value = asWireObject(raw, 'companion suggestion-created event');
+      return {
+        ...fromApiCompanionSuggestion(value),
+        ...(value.companion_id == null ? {} : { companion_id: parseCompanionId(value.companion_id) }),
+      };
+    }
+  ),
   /** A suggestion was accepted/dismissed (any surface) — drop the now-decided
    *  card live so other open surfaces don't keep a stale `new` snapshot that
    *  404s on the next decide. Payload carries the decided suggestion. */
-  onSuggestionDecided: wsEmitter<ICompanionSuggestion>('companion.suggestion-decided'),
-  onLearnStarted: wsEmitter<{ companion_id?: string }>('companion.learn-started'),
-  onLearnFinished: wsEmitter<ICompanionLearnRun & { companion_id?: string }>('companion.learn-finished'),
-  onMoodChanged: wsEmitter<{ mood: string; companion_id?: string }>('companion.mood-changed'),
-  onConfigUpdated: wsEmitter<ICompanionConfigUpdatedEvent>('companion.config-updated'),
-  onMemoryCreated: wsEmitter<ICompanionMemory>('companion.memory-created'),
-  onMemoryUpdated: wsEmitter<ICompanionMemory>('companion.memory-updated'),
-  onMemoryDeleted: wsEmitter<{ id: string }>('companion.memory-deleted'),
-  onSkillDrafted: wsEmitter<ICompanionSkillEvent>('companion.skill-drafted'),
-  onSkillLearned: wsEmitter<ICompanionSkillEvent>('companion.skill-learned'),
-  onSkillArchived: wsEmitter<ICompanionSkillEvent>('companion.skill-archived'),
-  onCompanionCreated: wsEmitter<ICompanionCreatedEvent>('companion.created'),
-  onCompanionDeleted: wsEmitter<ICompanionDeletedEvent>('companion.deleted'),
+  onSuggestionDecided: wsMappedEmitter<ICompanionSuggestion>(
+    'companion.suggestion-decided',
+    fromApiCompanionSuggestion
+  ),
+  onLearnStarted: wsMappedEmitter<{ companion_id?: CompanionId }>('companion.learn-started', (raw) => {
+    const value = asWireObject(raw, 'companion learn-started event');
+    return value.companion_id == null ? {} : { companion_id: parseCompanionId(value.companion_id) };
+  }),
+  onLearnFinished: wsMappedEmitter<ICompanionLearnRun & { companion_id?: CompanionId }>(
+    'companion.learn-finished',
+    (raw) => {
+      const value = asWireObject(raw, 'companion learn-finished event');
+      return {
+        ...fromApiCompanionLearnRun(value),
+        ...(value.companion_id == null ? {} : { companion_id: parseCompanionId(value.companion_id) }),
+      };
+    }
+  ),
+  onMoodChanged: wsMappedEmitter<{ mood: string; companion_id?: CompanionId }>('companion.mood-changed', (raw) => {
+    const value = asWireObject(raw, 'companion mood-changed event');
+    if (typeof value.mood !== 'string') throw new TypeError('companion mood must be a string');
+    return {
+      mood: value.mood,
+      ...(value.companion_id == null ? {} : { companion_id: parseCompanionId(value.companion_id) }),
+    };
+  }),
+  onConfigUpdated: wsMappedEmitter<ICompanionConfigUpdatedEvent>('companion.config-updated', (raw) => {
+    const value = asWireObject(raw, 'companion config-updated event');
+    const scope = value.scope === 'shared' || value.scope == null ? value.scope : parseCompanionId(value.scope);
+    return {
+      ...value,
+      ...(scope == null ? {} : { scope }),
+      ...(value.companion_id == null ? {} : { companion_id: parseCompanionId(value.companion_id) }),
+    };
+  }),
+  onMemoryCreated: wsMappedEmitter<ICompanionMemory>('companion.memory-created', fromApiCompanionMemory),
+  onMemoryUpdated: wsMappedEmitter<ICompanionMemory>('companion.memory-updated', fromApiCompanionMemory),
+  onMemoryDeleted: wsMappedEmitter<{ memory_id: CompanionMemoryId }>('companion.memory-deleted', (raw) => {
+    const value = asWireObject(raw, 'companion memory-deleted event');
+    return { memory_id: parseCompanionMemoryId(value.memory_id) };
+  }),
+  onSkillDrafted: wsMappedEmitter<ICompanionSkillEvent>('companion.skill-drafted', (raw) => {
+    const value = asWireObject(raw, 'companion skill-drafted event');
+    return {
+      companion_id: parseCompanionId(value.companion_id),
+      companion_skill_id: parseCompanionSkillId(value.companion_skill_id),
+      skill_name: String(value.skill_name),
+    };
+  }),
+  onSkillLearned: wsMappedEmitter<ICompanionSkillEvent>('companion.skill-learned', (raw) => {
+    const value = asWireObject(raw, 'companion skill-learned event');
+    return {
+      companion_id: parseCompanionId(value.companion_id),
+      companion_skill_id: parseCompanionSkillId(value.companion_skill_id),
+      skill_name: String(value.skill_name),
+    };
+  }),
+  onSkillArchived: wsMappedEmitter<ICompanionSkillEvent>('companion.skill-archived', (raw) => {
+    const value = asWireObject(raw, 'companion skill-archived event');
+    return {
+      companion_id: parseCompanionId(value.companion_id),
+      companion_skill_id: parseCompanionSkillId(value.companion_skill_id),
+      skill_name: String(value.skill_name),
+    };
+  }),
+  onCompanionCreated: wsMappedEmitter<ICompanionCreatedEvent>('companion.created', (raw) => {
+    const value = asWireObject(raw, 'companion created event');
+    return {
+      companion_id: parseCompanionId(value.companion_id),
+      profile: fromApiCompanionProfile(value.profile),
+    };
+  }),
+  onCompanionDeleted: wsMappedEmitter<ICompanionDeletedEvent>('companion.deleted', (raw) => {
+    const value = asWireObject(raw, 'companion deleted event');
+    return { companion_id: parseCompanionId(value.companion_id) };
+  }),
 };
 
 // ==================== Browser-use credential secrets (P3-X2) ====================
@@ -3551,19 +5031,22 @@ export interface ISecretListItem {
   allowed_origins: string[];
 }
 
-/** Per-pet browser-use credential secret CRUD. `pet_id` is the companion id (the
- *  secret is scoped to that companion's browser). The value is write-only. */
+/** Global browser-use credential secret CRUD. The value is write-only. */
 export const browserSecret = {
-  /** List a pet's registered secrets (name + bound origins; NEVER the value). */
-  list: httpGet<ISecretListItem[], { pet_id: string }>((p) => `/api/browser-secrets/${encodeURIComponent(p.pet_id)}`),
+  /** List registered secrets (name + bound origins; NEVER the value). */
+  list: httpGet<ISecretListItem[], void>('/api/browser-secrets'),
   /** Register (or overwrite) a secret. `value` is encrypted into the vault and never echoed. */
-  register: httpPost<void, { pet_id: string; name: string; value: string; allowed_origins: string[] }>(
-    (p) => `/api/browser-secrets/${encodeURIComponent(p.pet_id)}`,
-    (p) => ({ name: p.name, value: p.value, allowed_origins: p.allowed_origins })
+  register: httpPost<void, { name: string; value: string; allowed_origins: string[] }>(
+    '/api/browser-secrets',
+    (p) => ({
+      name: p.name,
+      value: p.value,
+      allowed_origins: p.allowed_origins,
+    })
   ),
   /** Remove a secret by name. */
-  remove: httpDelete<void, { pet_id: string; name: string }>(
-    (p) => `/api/browser-secrets/${encodeURIComponent(p.pet_id)}/${encodeURIComponent(p.name)}`
+  remove: httpDelete<void, { name: string }>(
+    (p) => `/api/browser-secrets/${encodeURIComponent(p.name)}`
   ),
 };
 
@@ -3616,7 +5099,7 @@ export interface IKnowledgeSource {
   /** Last successful snapshot fetch (epoch ms); absent until the first fetch. */
   lastFetchedAt?: number;
   /** Connector-backed sources: reference to a stored connector credential. */
-  credentialRef?: string;
+  credentialRef?: ConnectorCredentialId;
   /** Connector-specific scope (e.g. Feishu `{ spaceId | space_id }`). Opaque to the core. */
   scope?: Record<string, unknown>;
   /** Connector sync state (cursor + interval + last outcome). */
@@ -3650,7 +5133,7 @@ export interface IKnowledgeAutogenOutcome {
 
 /** A registered knowledge base — a directory of markdown documents. */
 export interface IKnowledgeBase {
-  id: string;
+  knowledge_base_id: KnowledgeBaseId;
   name: string;
   description: string;
   root_path: string;
@@ -3684,7 +5167,7 @@ export interface IKnowledgeTag {
 
 /** A single search hit from cross-base semantic/keyword search. */
 export interface IKnowledgeSearchHit {
-  kb_id: string;
+  kb_id: KnowledgeBaseId;
   kb_name: string;
   rel_path: string;
   heading: string;
@@ -3731,7 +5214,7 @@ export interface IKnowledgeBinding {
    * (toggling bases / write-back) never silently clears it.
    */
   channel_write_enabled: boolean;
-  kb_ids: string[];
+  kb_ids: KnowledgeBaseId[];
 }
 
 export type KnowledgeWritebackMode = 'staged' | 'direct';
@@ -3739,6 +5222,17 @@ export type KnowledgeWritebackMode = 'staged' | 'direct';
 export type KnowledgeWritebackEagerness = 'conservative' | 'aggressive';
 
 export type KnowledgeBindingKind = 'conversation' | 'terminal' | 'companion' | 'workpath';
+export type KnowledgeBindingTarget =
+  | { kind: 'conversation'; target_id: ConversationId }
+  | { kind: 'terminal'; target_id: TerminalId }
+  | { kind: 'companion'; target_id: CompanionId }
+  | { kind: 'workpath'; target_id: string };
+
+/** Untrusted polymorphic target accepted only at the HTTP adapter boundary. */
+type KnowledgeBindingTargetInput = {
+  kind: KnowledgeBindingKind;
+  target_id: unknown;
+};
 
 /** One staged write-back proposal under `_inbox/{scope}/{rel_path}`. */
 export interface IKnowledgeInboxEntry {
@@ -3772,7 +5266,7 @@ export interface IKnowledgeConsumer {
 
 /** Wire-safe connector credential summary (never carries the secret payload). */
 export interface IConnectorCredentialSummary {
-  id: string;
+  credentialId: ConnectorCredentialId;
   /** Connector discriminator: "feishu", … */
   kind: string;
   name: string;
@@ -3797,7 +5291,7 @@ export interface IConnectorIdentity {
 
 /** Which model a public companion answers strangers with (independent of desktop 伙伴). */
 export interface IPublicAgentModel {
-  provider_id: string;
+  provider_id?: ProviderId;
   model: string;
   /** Optional display/override model id the backend may resolve; unset = use `model`. */
   use_model?: string;
@@ -3805,9 +5299,9 @@ export interface IPublicAgentModel {
 
 /** One public companion — an enterprise customer-service agent. */
 export interface IPublicAgent {
-  id: string;
-  /** Local auto-increment ordinal; null on backends that don't assign one. */
-  seq: number | null;
+  public_agent_id: PublicAgentId;
+  /** Local auto-increment ordinal assigned by the backend. */
+  seq: number;
   name: string;
   /** 开场白 / 欢迎语 shown when a stranger opens a conversation. */
   greeting: string;
@@ -3815,11 +5309,13 @@ export interface IPublicAgent {
   tone: string;
   model: IPublicAgentModel;
   /** Platform knowledge-base ids this agent may retrieve from. */
-  knowledge_base_ids: string[];
+  knowledge_base_ids: KnowledgeBaseId[];
   /** 严格模式：only answer from bound knowledge bases (no free-form/general answers). */
   grounded_mode: boolean;
   /** 服务守则 — business scope / off-limits topics / compliance phrasing. */
   service_policy: string;
+  /** Frozen execution configuration last applied to this public companion. */
+  applied_preset?: ResolvedPresetSnapshot;
   /** How many days of audit entries to retain before auto-pruning. */
   audit_retention_days: number;
   /** Whether this agent is live (serving strangers) or paused. */
@@ -3835,7 +5331,7 @@ export type PublicAgentAuditKind = 'turn' | 'exposure_change';
 
 /** One reverse-chronological audit-log row for a public companion. */
 export interface IPublicAgentAuditEntry {
-  id: string;
+  audit_entry_id: PublicAgentAuditEntryId;
   /** Epoch milliseconds. */
   at: number;
   surface: PublicAgentAuditSurface;
@@ -3858,35 +5354,103 @@ export type IPublicAgentPatch = Partial<{
   greeting: string;
   tone: string;
   model: IPublicAgentModel;
-  knowledge_base_ids: string[];
+  knowledge_base_ids: KnowledgeBaseId[];
   grounded_mode: boolean;
   service_policy: string;
   audit_retention_days: number;
   enabled: boolean;
 }>;
 
+const fromApiPublicAgent = (raw: unknown): IPublicAgent => {
+  const agent = asWireObject(raw, 'public agent');
+  if (Object.prototype.hasOwnProperty.call(agent, 'id')) {
+    throw new TypeError('public agent wire payload must use public_agent_id, not id');
+  }
+  const model =
+    agent.model == null
+      ? {}
+      : asWireObject(agent.model, 'public agent model');
+  return {
+    ...(agent as unknown as IPublicAgent),
+    public_agent_id: parsePublicAgentId(agent.public_agent_id),
+    model: {
+      ...(model as unknown as IPublicAgentModel),
+      ...(model.provider_id == null
+        ? {}
+        : { provider_id: parseProviderId(model.provider_id) }),
+    },
+    knowledge_base_ids: (agent.knowledge_base_ids as unknown[]).map(parseKnowledgeBaseId),
+    ...(agent.applied_preset
+      ? {
+          applied_preset: fromApiResolvedPresetSnapshot(
+            agent.applied_preset as ResolvedPresetSnapshot
+          ),
+        }
+      : {}),
+  };
+};
+
+const fromApiPublicAgentAuditPage = (raw: unknown): IPublicAgentAuditPage => {
+  const page = asWireObject(raw, 'public agent audit page');
+  return {
+    ...(page as unknown as IPublicAgentAuditPage),
+    entries: (page.entries as unknown[]).map((rawEntry) => {
+      const entry = asWireObject(rawEntry, 'public agent audit entry');
+      if (Object.prototype.hasOwnProperty.call(entry, 'id')) {
+        throw new TypeError(
+          'public agent audit wire payload must use audit_entry_id, not id'
+        );
+      }
+      return {
+        ...(entry as unknown as IPublicAgentAuditEntry),
+        audit_entry_id: parsePublicAgentAuditEntryId(entry.audit_entry_id),
+      };
+    }),
+  };
+};
+
 export const publicAgent = {
   /** Roster of public companions. */
-  list: httpGet<IPublicAgent[], void>('/api/public-agents'),
+  list: withResponseMap(httpGet<IPublicAgent[], void>('/api/public-agents'), (agents) => agents.map(fromApiPublicAgent)),
   /** Create a new public companion (name only; everything else defaults server-side). */
-  create: httpPost<IPublicAgent, { name: string }>('/api/public-agents'),
-  /** One public companion by id. */
-  get: httpGet<IPublicAgent, { id: string }>((p) => `/api/public-agents/${p.id}`),
+  create: withResponseMap(httpPost<IPublicAgent, { name: string }>('/api/public-agents'), fromApiPublicAgent),
+  /** One public companion by public_agent_id. */
+  get: withResponseMap(httpGet<IPublicAgent, { public_agent_id: PublicAgentId }>(
+    (p) => `/api/public-agents/${p.public_agent_id}`
+  ), fromApiPublicAgent),
   /** RFC 7396-style partial merge over the editable fields. Returns the updated agent. */
-  patch: httpPatch<IPublicAgent, { id: string; patch: IPublicAgentPatch }>(
-    (p) => `/api/public-agents/${p.id}`,
+  patch: withResponseMap(httpPatch<IPublicAgent, { public_agent_id: PublicAgentId; patch: IPublicAgentPatch }>(
+    (p) => `/api/public-agents/${p.public_agent_id}`,
     (p) => p.patch
-  ),
+  ), fromApiPublicAgent),
+  applyPreset: withResponseMap(httpPost<
+    IPublicAgent,
+    {
+      public_agent_id: PublicAgentId;
+      preset_id: PresetReference;
+      locale?: string;
+      overrides?: import('../types/agent/presetTypes').PresetOverrides;
+    }
+  >(
+    (p) => `/api/public-agents/${p.public_agent_id}/apply-preset`,
+    (p) => ({
+      preset_id: p.preset_id,
+      locale: p.locale,
+      overrides: p.overrides ?? {},
+    })
+  ), fromApiPublicAgent),
   /** Delete a public companion (204). */
-  remove: httpDelete<void, { id: string }>((p) => `/api/public-agents/${p.id}`),
+  remove: httpDelete<void, { public_agent_id: PublicAgentId }>(
+    (p) => `/api/public-agents/${p.public_agent_id}`
+  ),
   /**
    * Reverse-chronological (newest-first) audit page. Cursor-paginated by `at` (epoch ms):
    * pass the previous page's `next_cursor` as `cursor` to load older entries. Degrades to
    * an empty page when the backend hasn't shipped the endpoint yet (404 silenced).
    */
-  listAudit: httpGet<
+  listAudit: withResponseMap(httpGet<
     IPublicAgentAuditPage,
-    { id: string; limit?: number; cursor?: number | null; q?: string; kind?: PublicAgentAuditKind; days?: number }
+    { public_agent_id: PublicAgentId; limit?: number; cursor?: number | null; q?: string; kind?: PublicAgentAuditKind; days?: number }
   >((p) => {
     const params = new URLSearchParams();
     params.set('limit', String(p.limit ?? 50));
@@ -3894,11 +5458,14 @@ export const publicAgent = {
     if (p.q) params.set('q', p.q);
     if (p.kind) params.set('kind', p.kind);
     if (p.days != null) params.set('days', String(p.days));
-    return `/api/public-agents/${p.id}/audit?${params.toString()}`;
-  }, { silentStatuses: [404] }),
+    return `/api/public-agents/${p.public_agent_id}/audit?${params.toString()}`;
+  }, { silentStatuses: [404] }), fromApiPublicAgentAuditPage),
   /** Purge audit entries older than N days. Returns how many days were cleared. */
-  clearAudit: httpDelete<{ deleted_days: number }, { id: string; older_than_days: number }>(
-    (p) => `/api/public-agents/${p.id}/audit?older_than_days=${p.older_than_days}`
+  clearAudit: httpDelete<
+    { deleted_days: number },
+    { public_agent_id: PublicAgentId; older_than_days: number }
+  >(
+    (p) => `/api/public-agents/${p.public_agent_id}/audit?older_than_days=${p.older_than_days}`
   ),
 };
 
@@ -3912,91 +5479,166 @@ export const publicAgent = {
  */
 const KB_READ_TIMEOUT_MS = 30_000;
 
+const fromApiKnowledgeBase = (base: IKnowledgeBase): IKnowledgeBase => ({
+  ...base,
+  knowledge_base_id: parseKnowledgeBaseId(base.knowledge_base_id),
+  source: base.source == null
+    ? base.source
+    : {
+        ...base.source,
+        credentialRef: base.source.credentialRef == null
+          ? undefined
+          : parseConnectorCredentialId(base.source.credentialRef),
+      },
+});
+
+const fromApiKnowledgeBinding = (binding: IKnowledgeBinding): IKnowledgeBinding => ({
+  ...binding,
+  kb_ids: binding.kb_ids.map(parseKnowledgeBaseId),
+});
+
+const fromApiConnectorCredential = (
+  credential: IConnectorCredentialSummary
+): IConnectorCredentialSummary => {
+  if (Object.prototype.hasOwnProperty.call(credential, 'id')) {
+    throw new TypeError(
+      'connector credential wire payload must use credentialId, not generic id'
+    );
+  }
+  return {
+    ...credential,
+    credentialId: parseConnectorCredentialId(credential.credentialId),
+  };
+};
+
+const parseKnowledgeBindingTargetId = (
+  kind: KnowledgeBindingKind,
+  value: unknown
+): string | ConversationId | TerminalId | CompanionId => {
+  if (kind === 'conversation') return parseConversationId(value);
+  if (kind === 'terminal') return parseTerminalId(value);
+  if (kind === 'companion') return parseCompanionId(value);
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) {
+    throw new TypeError('workpath binding target must be a non-empty canonical path');
+  }
+  return value;
+};
+
+const parseKnowledgeBindingTarget = (
+  target: KnowledgeBindingTargetInput
+): KnowledgeBindingTarget => {
+  if (target.kind === 'conversation') {
+    return { kind: target.kind, target_id: parseConversationId(target.target_id) };
+  }
+  if (target.kind === 'terminal') {
+    return { kind: target.kind, target_id: parseTerminalId(target.target_id) };
+  }
+  if (target.kind === 'companion') {
+    return { kind: target.kind, target_id: parseCompanionId(target.target_id) };
+  }
+  return {
+    kind: target.kind,
+    target_id: parseKnowledgeBindingTargetId(target.kind, target.target_id),
+  };
+};
+
 export const knowledge = {
-  listBases: httpGet<IKnowledgeBase[], void>('/api/knowledge/bases', { timeoutMs: KB_READ_TIMEOUT_MS }),
-  createBase: httpPost<
+  listBases: withResponseMap(httpGet<IKnowledgeBase[], void>('/api/knowledge/bases', {
+    timeoutMs: KB_READ_TIMEOUT_MS,
+  }), (bases) => bases.map(fromApiKnowledgeBase)),
+  createBase: withResponseMap(httpPost<
     IKnowledgeBase,
     {
       name: string;
       description?: string;
       root_path?: string;
       /** Optional URL source; mode 'snapshot' fetches every entry before the response returns (slow — see source_fetch). */
-      source?: { kind: string; mode: KnowledgeSourceMode; entries?: IKnowledgeSourceEntry[]; credential_ref?: string; scope?: Record<string, unknown>; sync?: { interval_minutes?: number } };
+      source?: { kind: string; mode: KnowledgeSourceMode; entries?: IKnowledgeSourceEntry[]; credentialRef?: ConnectorCredentialId; scope?: Record<string, unknown>; sync?: { intervalMinutes?: number } };
       /** Tag keys to assign at creation time. */
       tags?: string[];
     }
-  >('/api/knowledge/bases'),
-  getBase: httpGet<IKnowledgeBase, { id: string }>((p) => `/api/knowledge/bases/${p.id}`, { timeoutMs: KB_READ_TIMEOUT_MS }),
-  updateBase: httpPut<IKnowledgeBase, { id: string; name?: string; description?: string; tags?: string[] }>(
-    (p) => `/api/knowledge/bases/${p.id}`,
+  >('/api/knowledge/bases'), fromApiKnowledgeBase),
+  getBase: withResponseMap(httpGet<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}`, { timeoutMs: KB_READ_TIMEOUT_MS }), fromApiKnowledgeBase),
+  updateBase: withResponseMap(httpPut<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId; name?: string; description?: string; tags?: string[] }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}`,
     (p) => ({ name: p.name, description: p.description, tags: p.tags })
-  ),
+  ), fromApiKnowledgeBase),
   /** AI overview generation (description + README.md). Slow (LLM round-trip, 30s+); 409 when no AI provider is configured. */
-  autogenBase: httpPost<IKnowledgeAutogenOutcome, { id: string; overwrite_readme?: boolean; provider_id?: string; model?: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/autogen`,
-    (p) => ({ overwrite_readme: p.overwrite_readme ?? false, provider_id: p.provider_id, model: p.model })
-  ),
+  autogenBase: withResponseMap(httpPost<IKnowledgeAutogenOutcome, { knowledge_base_id: KnowledgeBaseId; overwrite_readme?: boolean; provider_id?: ProviderId; model?: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/autogen`,
+    (p) => ({
+      overwrite_readme: p.overwrite_readme ?? false,
+      provider_id: p.provider_id,
+      model: p.model,
+    })
+  ), (outcome) => ({ ...outcome, base: fromApiKnowledgeBase(outcome.base) })),
   /**
    * Stateless AI description draft from a local directory (no base required — used by the create form).
    * Slow (LLM round-trip); 409 when no AI completer is configured, 400 when the path is invalid.
    */
-  generateDescription: httpPost<{ description: string }, { name?: string; root_path: string; provider_id?: string; model?: string }>(
+  generateDescription: httpPost<{ description: string }, { name?: string; root_path: string; provider_id?: ProviderId; model?: string }>(
     '/api/knowledge/description/generate',
     (p) => ({ name: p.name, root_path: p.root_path, provider_id: p.provider_id, model: p.model })
   ),
   /** Stateless AI polish of a hand-written description draft. Slow (LLM round-trip); 409 when no AI completer is configured. */
-  polishDescription: httpPost<{ description: string }, { name?: string; draft: string; provider_id?: string; model?: string }>(
+  polishDescription: httpPost<{ description: string }, { name?: string; draft: string; provider_id?: ProviderId; model?: string }>(
     '/api/knowledge/description/polish',
     (p) => ({ name: p.name, draft: p.draft, provider_id: p.provider_id, model: p.model })
   ),
   /** Re-fetch every URL-source entry into snapshots/ (works for live-mode sources too); 400 when the base has no source. */
-  refreshSource: httpPost<IKnowledgeSourceFetchSummary, { id: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/refresh-source`,
+  refreshSource: httpPost<IKnowledgeSourceFetchSummary, { knowledge_base_id: KnowledgeBaseId }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/refresh-source`,
     () => undefined
   ),
   /** Attach / replace / clear a base's source config (e.g. wire a Feishu connector onto an existing base). */
-  setSource: httpPut<IKnowledgeBase, { id: string; source: IKnowledgeSource | null }>(
-    (p) => `/api/knowledge/bases/${p.id}/source`,
+  setSource: withResponseMap(httpPut<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId; source: IKnowledgeSource | null }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/source`,
     (p) => ({ source: p.source })
+  ), fromApiKnowledgeBase),
+  deleteBase: httpDelete<void, { knowledge_base_id: KnowledgeBaseId; purge?: boolean }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}${p.purge ? '?purge=true' : ''}`
   ),
-  deleteBase: httpDelete<void, { id: string; purge?: boolean }>(
-    (p) => `/api/knowledge/bases/${p.id}${p.purge ? '?purge=true' : ''}`
-  ),
-  listFiles: httpGet<IKnowledgeFileEntry[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/files`, { timeoutMs: KB_READ_TIMEOUT_MS }),
-  listTree: httpGet<IKnowledgeTreeEntry[], { id: string; path?: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/tree${p.path ? `?path=${encodeURIComponent(p.path)}` : ''}`,
+  listFiles: httpGet<IKnowledgeFileEntry[], { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}/files`, { timeoutMs: KB_READ_TIMEOUT_MS }),
+  listTree: httpGet<IKnowledgeTreeEntry[], { knowledge_base_id: KnowledgeBaseId; path?: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/tree${p.path ? `?path=${encodeURIComponent(p.path)}` : ''}`,
     { timeoutMs: KB_READ_TIMEOUT_MS }
   ),
-  createFolder: httpPost<IKnowledgeTreeEntry, { id: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/folder`,
+  createFolder: httpPost<IKnowledgeTreeEntry, { knowledge_base_id: KnowledgeBaseId; path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/folder`,
     (p) => ({ path: p.path })
   ),
-  deleteFolder: httpDelete<void, { id: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/folder?path=${encodeURIComponent(p.path)}`
+  deleteFolder: httpDelete<void, { knowledge_base_id: KnowledgeBaseId; path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/folder?path=${encodeURIComponent(p.path)}`
   ),
-  renameTreeEntry: httpPost<IKnowledgeTreeEntry, { id: string; path: string; newName: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/tree/rename`,
+  renameTreeEntry: httpPost<IKnowledgeTreeEntry, { knowledge_base_id: KnowledgeBaseId; path: string; newName: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/tree/rename`,
     (p) => ({ path: p.path, new_name: p.newName })
   ),
-  readFile: httpGet<IKnowledgeFileContent, { id: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/file?path=${encodeURIComponent(p.path)}`,
+  readFile: httpGet<IKnowledgeFileContent, { knowledge_base_id: KnowledgeBaseId; path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file?path=${encodeURIComponent(p.path)}`,
     { timeoutMs: KB_READ_TIMEOUT_MS }
   ),
-  writeFile: httpPut<void, { id: string; path: string; content: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/file`,
+  writeFile: httpPut<void, { knowledge_base_id: KnowledgeBaseId; path: string; content: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file`,
     (p) => ({ path: p.path, content: p.content })
   ),
-  deleteFile: httpDelete<void, { id: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/file?path=${encodeURIComponent(p.path)}`
+  deleteFile: httpDelete<void, { knowledge_base_id: KnowledgeBaseId; path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file?path=${encodeURIComponent(p.path)}`
   ),
-  getBinding: httpGet<IKnowledgeBinding, { kind: KnowledgeBindingKind; target_id: string }>(
+  getBinding: withResponseMap(httpGet<IKnowledgeBinding, KnowledgeBindingTargetInput>(
     // workpath target_id is a filesystem path containing `/`; encode so it
     // stays a single path segment (`/`→`%2F`). conversation/terminal ids have
     // no `/`, so their encoded form is byte-identical — no regression.
-    (p) => `/api/knowledge/binding/${p.kind}/${encodeURIComponent(p.target_id)}`
-  ),
-  setBinding: httpPost<IKnowledgeBinding, { kind: KnowledgeBindingKind; target_id: string } & IKnowledgeBinding>(
-    (p) => `/api/knowledge/binding/${p.kind}/${encodeURIComponent(p.target_id)}`,
+    (p) => {
+      const target = parseKnowledgeBindingTarget(p);
+      return `/api/knowledge/binding/${target.kind}/${encodeURIComponent(target.target_id)}`;
+    }
+  ), fromApiKnowledgeBinding),
+  setBinding: withResponseMap(httpPost<IKnowledgeBinding, KnowledgeBindingTargetInput & IKnowledgeBinding>(
+    (p) => {
+      const target = parseKnowledgeBindingTarget(p);
+      return `/api/knowledge/binding/${target.kind}/${encodeURIComponent(target.target_id)}`;
+    },
     // Forward EVERY binding field by destructuring off the routing params only.
     // A hand-maintained whitelist here silently dropped writeback_mode,
     // writeback_eagerness and channel_write_enabled in turn (the backend POST
@@ -4006,59 +5648,69 @@ export const knowledge = {
       const { kind: _kind, target_id: _target_id, ...body } = p;
       return body;
     }
-  ),
+  ), fromApiKnowledgeBinding),
   // ── Import / export (spec 2026-06-11 §4.8: zip with manifest.kind="knowledge-base") ──
-  exportBase: httpPost<{ dest_path: string }, { id: string; dest_path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/export`,
+  exportBase: httpPost<{ dest_path: string }, { knowledge_base_id: KnowledgeBaseId; dest_path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/export`,
     (p) => ({ dest_path: p.dest_path })
   ),
   /** Import a knowledge-base bundle — a new managed base is provisioned (name conflicts get a "(2)" suffix). */
-  importBase: httpPost<IKnowledgeBase, { src_path: string }>('/api/knowledge/bases/import'),
+  importBase: withResponseMap(httpPost<IKnowledgeBase, { src_path: string }>('/api/knowledge/bases/import'), fromApiKnowledgeBase),
   // ── P4 inbox review (staged write-back proposals) ──
   /** List staged write-back proposals under `_inbox/` (group by `scope` client-side). */
-  listInbox: httpGet<IKnowledgeInboxEntry[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/inbox`, { timeoutMs: KB_READ_TIMEOUT_MS }),
+  listInbox: httpGet<IKnowledgeInboxEntry[], { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}/inbox`, { timeoutMs: KB_READ_TIMEOUT_MS }),
   /** Server-computed unified diff of one proposal vs. the current base document. */
-  getInboxDiff: httpGet<IKnowledgeInboxDiff, { id: string; scope: string; path: string }>(
+  getInboxDiff: httpGet<IKnowledgeInboxDiff, { knowledge_base_id: KnowledgeBaseId; scope: string; path: string }>(
     (p) =>
-      `/api/knowledge/bases/${p.id}/inbox/diff?scope=${encodeURIComponent(p.scope)}&path=${encodeURIComponent(p.path)}`
+      `/api/knowledge/bases/${p.knowledge_base_id}/inbox/diff?scope=${encodeURIComponent(p.scope)}&path=${encodeURIComponent(p.path)}`
   ),
   /** Accept a proposal: overwrite the base document and drop the staged copy. */
-  mergeInbox: httpPost<{ merged_path: string }, { id: string; scope: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/inbox/merge`,
+  mergeInbox: httpPost<{ merged_path: string }, { knowledge_base_id: KnowledgeBaseId; scope: string; path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/inbox/merge`,
     (p) => ({ scope: p.scope, path: p.path })
   ),
   /** Discard a proposal (delete the staged copy, base untouched). */
-  discardInbox: httpPost<void, { id: string; scope: string; path: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/inbox/discard`,
+  discardInbox: httpPost<void, { knowledge_base_id: KnowledgeBaseId; scope: string; path: string }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/inbox/discard`,
     (p) => ({ scope: p.scope, path: p.path })
   ),
   /** Bindings currently mounting this base (enabled AND disabled). */
-  listConsumers: httpGet<IKnowledgeConsumer[], { id: string }>((p) => `/api/knowledge/bases/${p.id}/consumers`, { timeoutMs: KB_READ_TIMEOUT_MS }),
+  listConsumers: httpGet<IKnowledgeConsumer[], { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}/consumers`, { timeoutMs: KB_READ_TIMEOUT_MS }),
   /** Total unreviewed staged proposals across all bases (sidebar red-dot signal). */
   pendingInboxCount: httpGet<number, void>('/api/knowledge/inbox/pending-count', { timeoutMs: KB_READ_TIMEOUT_MS }),
   // ── P3 source connectors (Feishu, …) ──
   /** Pull a connector-backed base's remote docs into snapshots/ (distinct from refresh-source). */
-  syncSource: httpPost<IKnowledgeSourceFetchSummary, { id: string }>(
-    (p) => `/api/knowledge/bases/${p.id}/sync`,
+  syncSource: httpPost<IKnowledgeSourceFetchSummary, { knowledge_base_id: KnowledgeBaseId }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/sync`,
     () => undefined
   ),
-  listCredentials: httpGet<IConnectorCredentialSummary[], void>('/api/knowledge/connectors/credentials'),
+  listCredentials: withResponseMap(httpGet<IConnectorCredentialSummary[], void>('/api/knowledge/connectors/credentials'), (items) => items.map(fromApiConnectorCredential)),
   /** Validate then store a connector credential (probed before encryption; returns a secret-free summary). */
-  createCredential: httpPost<IConnectorCredentialSummary, { kind: string; name: string; payload: Record<string, unknown> }>(
+  createCredential: withResponseMap(httpPost<IConnectorCredentialSummary, { kind: string; name: string; payload: Record<string, unknown> }>(
     '/api/knowledge/connectors/credentials',
     (p) => ({ kind: p.kind, name: p.name, payload: p.payload })
+  ), fromApiConnectorCredential),
+  deleteCredential: httpDelete<void, { credential_id: ConnectorCredentialId }>(
+    (p) => `/api/knowledge/connectors/credentials/${p.credential_id}`
   ),
-  deleteCredential: httpDelete<void, { id: string }>((p) => `/api/knowledge/connectors/credentials/${p.id}`),
   /** Re-probe a stored credential against its remote (the "test connection" action). */
-  testCredential: httpPost<IConnectorIdentity, { id: string }>(
-    (p) => `/api/knowledge/connectors/credentials/${p.id}/test`,
+  testCredential: httpPost<IConnectorIdentity, { credential_id: ConnectorCredentialId }>(
+    (p) => `/api/knowledge/connectors/credentials/${p.credential_id}/test`,
     () => undefined
   ),
-  onBaseCreated: wsEmitter<IKnowledgeBase>('knowledge.base-created'),
-  onBaseUpdated: wsEmitter<IKnowledgeBase>('knowledge.base-updated'),
-  onBaseDeleted: wsEmitter<{ id: string }>('knowledge.base-deleted'),
-  onBindingChanged: wsEmitter<{ target_kind: string; target_id: string } & IKnowledgeBinding>(
-    'knowledge.binding-changed'
+  onBaseCreated: wsMappedEmitter<IKnowledgeBase>('knowledge.base-created', fromApiKnowledgeBase),
+  onBaseUpdated: wsMappedEmitter<IKnowledgeBase>('knowledge.base-updated', fromApiKnowledgeBase),
+  onBaseDeleted: wsMappedEmitter<{ knowledge_base_id: KnowledgeBaseId }>(
+    'knowledge.base-deleted',
+    (value) => ({ knowledge_base_id: parseKnowledgeBaseId(value.knowledge_base_id) })
+  ),
+  onBindingChanged: wsMappedEmitter<{ target_kind: KnowledgeBindingKind; target_id: string | ConversationId | TerminalId | CompanionId } & IKnowledgeBinding>(
+    'knowledge.binding-changed',
+    (value) => ({
+      ...fromApiKnowledgeBinding(value),
+      target_kind: value.target_kind,
+      target_id: parseKnowledgeBindingTargetId(value.target_kind, value.target_id),
+    })
   ),
   /** A tag was created/renamed/recolored/reordered/deleted — re-list tags. */
   onTagChanged: wsEmitter<Record<string, never>>('knowledge.tag-changed'),
@@ -4074,16 +5726,20 @@ export const knowledge = {
   ),
   deleteTag: httpDelete<void, { key: string }>((p) => `/api/knowledge/tags/${p.key}`),
   // ── Cross-base search ──
-  search: httpPost<IKnowledgeSearchHit[], { kbIds: string[]; query: string; limit?: number }>(
+  search: withResponseMap(httpPost<IKnowledgeSearchHit[], { kbIds: KnowledgeBaseId[]; query: string; limit?: number }>(
     '/api/knowledge/search',
-    (p) => ({ kbIds: p.kbIds, query: p.query, limit: p.limit })
-  ),
+    (p) => ({
+      kbIds: p.kbIds,
+      query: p.query,
+      limit: p.limit,
+    })
+  ), (hits) => hits.map((hit) => ({ ...hit, kb_id: parseKnowledgeBaseId(hit.kb_id) }))),
   // ── Batch inbox operations ──
-  mergeAllInbox: httpPost<void, { kbId: string; scope?: string }>(
+  mergeAllInbox: httpPost<void, { kbId: KnowledgeBaseId; scope?: string }>(
     '/api/knowledge/inbox/merge-all',
     (p) => ({ kbId: p.kbId, scope: p.scope })
   ),
-  discardAllInbox: httpPost<void, { kbId: string; scope?: string }>(
+  discardAllInbox: httpPost<void, { kbId: KnowledgeBaseId; scope?: string }>(
     '/api/knowledge/inbox/discard-all',
     (p) => ({ kbId: p.kbId, scope: p.scope })
   ),
