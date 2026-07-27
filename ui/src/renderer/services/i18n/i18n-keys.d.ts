@@ -1869,6 +1869,7 @@ export type I18nKey =
   | 'knowledge.quick.blankTitle'
   | 'knowledge.quick.captureWeb'
   | 'knowledge.quick.createOk'
+  | 'knowledge.quick.createOkAuto'
   | 'knowledge.quick.desktopOnly'
   | 'knowledge.quick.localDesc'
   | 'knowledge.quick.localTitle'

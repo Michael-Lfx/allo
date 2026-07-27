@@ -161,7 +161,26 @@ fn format_hits(query: &str, hits: &[KnowledgeHit]) -> String {
         "\nTo read a full document, call knowledge_read with its `handle`. \
          To update one, call knowledge_write with that same `handle` (do NOT rebuild the path).",
     );
+    append_structured_hits_trailer(&mut out, hits);
     out
+}
+
+/// Machine-readable hit trailer for UI chips. Agents can ignore it.
+fn append_structured_hits_trailer(out: &mut String, hits: &[KnowledgeHit]) {
+    let items: Vec<Value> = hits
+        .iter()
+        .map(|h| {
+            json!({
+                "kb_id": h.kb_id.as_str(),
+                "rel_path": h.rel_path,
+                "heading": h.heading,
+                "snippet": h.snippet,
+                "handle": h.handle,
+            })
+        })
+        .collect();
+    out.push_str("\n__NOMIFUN_KB_HITS__\n");
+    out.push_str(&serde_json::to_string(&items).unwrap_or_else(|_| "[]".into()));
 }
 
 // ── knowledge_read ─────────────────────────────────────────────────────────
@@ -576,6 +595,11 @@ mod tests {
         assert!(
             res.content.contains("knowledge_read") || res.content.contains("knowledge_write"),
             "must instruct handle use: {}",
+            res.content
+        );
+        assert!(
+            res.content.contains("__NOMIFUN_KB_HITS__") && res.content.contains("\"kb_id\""),
+            "must append structured hit trailer: {}",
             res.content
         );
         assert_eq!(*sink.last_query.lock().unwrap(), "回滚", "query must be trimmed");

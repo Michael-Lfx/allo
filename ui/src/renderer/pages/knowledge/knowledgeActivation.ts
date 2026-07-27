@@ -9,6 +9,8 @@ export type KnowledgeActivationPayload = {
   knowledge_base_id: KnowledgeBaseId;
   suggest_prompt: string;
   binding: IKnowledgeBinding;
+  /** When true, Guid auto-sends the suggest prompt after applying the binding. */
+  auto_send?: boolean;
 };
 
 export function stashKnowledgeActivation(payload: KnowledgeActivationPayload): void {
@@ -29,6 +31,7 @@ export function consumeKnowledgeActivation(): KnowledgeActivationPayload | null 
     return {
       knowledge_base_id: parsed.knowledge_base_id,
       suggest_prompt: parsed.suggest_prompt,
+      auto_send: parsed.auto_send === true,
       binding: {
         ...defaultKnowledgeBinding(),
         ...parsed.binding,

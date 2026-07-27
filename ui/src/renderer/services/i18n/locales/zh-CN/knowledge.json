@@ -356,6 +356,7 @@
     "blankDesc": "先建空库，稍后再放资料",
     "captureWeb": "抓取并开始",
     "createOk": "知识库已就绪，去对话里试试",
+    "createOkAuto": "知识库已就绪，正在打开对话并提问…",
     "desktopOnly": "选择本地目录需要桌面端",
     "urlRequired": "请粘贴一个网页 URL",
     "selectedPath": "已选：{{path}}",

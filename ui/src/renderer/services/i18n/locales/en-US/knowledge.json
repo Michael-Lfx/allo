@@ -356,6 +356,7 @@
     "blankDesc": "Create empty, add material later",
     "captureWeb": "Capture and start",
     "createOk": "Knowledge base ready — try it in chat",
+    "createOkAuto": "Knowledge base ready — opening chat and asking…",
     "desktopOnly": "Picking a local folder requires the desktop app",
     "urlRequired": "Paste a web URL",
     "selectedPath": "Selected: {{path}}",

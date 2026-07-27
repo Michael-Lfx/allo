@@ -256,11 +256,16 @@ const GuidPage: React.FC = () => {
   const advancedConfig = useGuidAdvancedConfig();
 
   // Knowledge activation hand-off from QuickCapture / empty-state sample seed.
+  // When auto_send is set, arm the same pendingAutoSend path used by model/workspace gates
+  // so create → applyBinding → initial message runs without a second click.
   useEffect(() => {
     const activation = consumeKnowledgeActivation();
     if (!activation) return;
     advancedConfig.setKnowledge(activation.binding);
     guidInput.setInput(activation.suggest_prompt);
+    if (activation.auto_send) {
+      pendingAutoSendRef.current = true;
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one-shot on mount
 
   const mention = useGuidMention({
@@ -383,6 +388,20 @@ const GuidPage: React.FC = () => {
 
   sendRef.current = send.sendMessageHandler;
   inputSnapshotRef.current = guidInput.input;
+
+  // Fire knowledge-activation auto-send once the suggest prompt is in the composer.
+  // If model/workspace is missing, sendMessageHandler re-arms pendingAutoSendRef via
+  // onNeedModel / onNeedWorkspace and the existing recovery paths finish the send.
+  useEffect(() => {
+    if (!pendingAutoSendRef.current) return;
+    if (!guidInput.input.trim()) return;
+    const timer = window.setTimeout(() => {
+      if (!pendingAutoSendRef.current) return;
+      pendingAutoSendRef.current = false;
+      sendRef.current?.();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [guidInput.input]);
 
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleInputChange = useCallback(

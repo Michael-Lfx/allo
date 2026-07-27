@@ -14,6 +14,14 @@ describe('GuidPage advanced controls', () => {
     expect(source.includes('<KnowledgeControl')).toBe(true);
   });
 
+  test('auto-sends knowledge activation suggest prompts after consume', () => {
+    const source = readSource(new URL('./GuidPage.tsx', import.meta.url));
+    expect(source.includes('consumeKnowledgeActivation')).toBe(true);
+    expect(source.includes('activation.auto_send')).toBe(true);
+    expect(source.includes('pendingAutoSendRef.current = true')).toBe(true);
+    expect(source.includes('sendRef.current?.()')).toBe(true);
+  });
+
   test('keeps advanced drafts focused on knowledge, AutoWork, and IDMM', () => {
     const source = readSource(new URL('./hooks/useGuidAdvancedConfig.ts', import.meta.url));
 

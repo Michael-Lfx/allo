@@ -6,55 +6,8 @@ import { BookOne } from '@icon-park/react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { parseHitCount, parseHits } from './KnowledgeSearchChip.parse';
 import './MessageToolDetails.css';
-
-type ParsedHit = {
-  path: string;
-  heading?: string;
-  snippet?: string;
-  kbId?: string;
-};
-
-/** Parse a hit count from the knowledge_search output text
- *  ("N result(s) for …" / "No matches …"). Count, 0 for explicit no-match,
- *  or null when undeterminable (e.g. still running). */
-function parseHitCount(output: string | undefined): number | null {
-  if (!output) return null;
-  const m = output.match(/^\s*(\d+)\s+result/);
-  if (m) return Number(m[1]);
-  if (/^\s*No matches/.test(output)) return 0;
-  return null;
-}
-
-/** Best-effort extraction of hit rows from tool output for Grounded Trail cards. */
-function parseHits(output: string | undefined): ParsedHit[] {
-  if (!output) return [];
-  const hits: ParsedHit[] = [];
-  const blocks = output.split(/\n(?=[-*•]|\d+\.|\[)/);
-  for (const block of blocks) {
-    const pathMatch =
-      block.match(/(?:path|file|rel_path)[:\s]+([^\s,]+\.md)/i) ||
-      block.match(/([A-Za-z0-9_./-]+\.md)/);
-    if (!pathMatch) continue;
-    const headingMatch = block.match(/(?:heading|title)[:\s]+(.+)/i);
-    const snippetMatch = block.match(/(?:snippet|excerpt)[:\s]+([\s\S]+)/i);
-    const kbMatch = block.match(/(?:kb[_ ]?id)[:\s]+([0-9a-f-]{20,})/i);
-    hits.push({
-      path: pathMatch[1].trim(),
-      heading: headingMatch?.[1]?.trim(),
-      snippet: snippetMatch?.[1]?.trim().slice(0, 160),
-      kbId: kbMatch?.[1]?.trim(),
-    });
-    if (hits.length >= 5) break;
-  }
-  if (hits.length === 0) {
-    for (const m of output.matchAll(/([A-Za-z0-9_./-]+\.md)/g)) {
-      hits.push({ path: m[1] });
-      if (hits.length >= 5) break;
-    }
-  }
-  return hits;
-}
 
 const KnowledgeSearchChip: React.FC<{ message: IMessageToolCall }> = ({ message }) => {
   const { t } = useTranslation();

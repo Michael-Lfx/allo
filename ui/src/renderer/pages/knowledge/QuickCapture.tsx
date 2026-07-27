@@ -46,6 +46,7 @@ const QuickCapture: React.FC<QuickCaptureProps> = ({
         knowledge_base_id: knowledgeBaseId,
         suggest_prompt: suggestPrompt,
         binding: bindingForNewBase(knowledgeBaseId),
+        auto_send: true,
       });
       onClose();
       navigate('/guid');
@@ -62,7 +63,11 @@ const QuickCapture: React.FC<QuickCaptureProps> = ({
           root_path: overrides?.root_path,
           url: overrides?.url,
         });
-        Message.success(t('knowledge.quick.createOk', { defaultValue: '知识库已就绪，去对话里试试' }));
+        Message.success(
+          t('knowledge.quick.createOkAuto', {
+            defaultValue: '知识库已就绪，正在打开对话并提问…',
+          })
+        );
         finishActivation(outcome.base.knowledge_base_id, outcome.suggest_prompt);
       } catch (e) {
         Message.error(knowledgeErrorText(e));

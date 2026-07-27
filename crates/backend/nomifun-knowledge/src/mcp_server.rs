@@ -476,6 +476,7 @@ fn render_hits(query: &str, hits: &[KnowledgeSearchHit]) -> String {
     }
     let mut out = format!("{} result(s) for \"{}\":\n", hits.len(), query);
     for (i, h) in hits.iter().enumerate() {
+        let handle = encode_doc_handle(&h.kb_id, &h.rel_path);
         out.push_str(&format!(
             "{}. [{}] {} — {}\n   {}\n   handle: {}\n",
             i + 1,
@@ -483,13 +484,27 @@ fn render_hits(query: &str, hits: &[KnowledgeSearchHit]) -> String {
             h.rel_path,
             if h.heading.is_empty() { "(no heading)" } else { &h.heading },
             h.snippet,
-            encode_doc_handle(&h.kb_id, &h.rel_path),
+            handle,
         ));
     }
     out.push_str(
         "\nTo read a full document, call knowledge_read with its `handle`. To update one, call \
          knowledge_write with that same `handle` (do NOT rebuild the path).",
     );
+    let items: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "kb_id": h.kb_id.as_str(),
+                "rel_path": h.rel_path,
+                "heading": h.heading,
+                "snippet": h.snippet,
+                "handle": encode_doc_handle(&h.kb_id, &h.rel_path),
+            })
+        })
+        .collect();
+    out.push_str("\n__NOMIFUN_KB_HITS__\n");
+    out.push_str(&serde_json::to_string(&items).unwrap_or_else(|_| "[]".into()));
     out
 }
 
@@ -541,6 +556,9 @@ mod tests {
         assert!(out.contains("运维手册"), "kb name: {out}");
         assert!(out.contains("handle: kdoc_"), "handle: {out}");
         assert!(out.contains("knowledge_read") || out.contains("knowledge_write"), "tool hint: {out}");
+        assert!(out.contains("__NOMIFUN_KB_HITS__"), "structured trailer: {out}");
+        assert!(out.contains("\"kb_id\""), "kb_id in trailer: {out}");
+        assert!(out.contains("\"rel_path\""), "rel_path in trailer: {out}");
     }
 
     #[test]

@@ -230,7 +230,8 @@ impl KnowledgeService {
         let files = self.list_files(id).await?;
         if files.iter().any(|f| f.rel_path.eq_ignore_ascii_case("PRODUCT_FAQ.md")) {
             return Ok(
-                "根据产品 FAQ，知识库是什么？怎样让 Agent 使用它？".to_owned(),
+                "请先调用 knowledge_search 检索已挂载的知识库（查询「知识库」或「FAQ」），再根据命中内容回答：知识库是什么？怎样让 Agent 使用它？"
+                    .to_owned(),
             );
         }
         if let Some(first) = files.first() {
@@ -241,7 +242,7 @@ impl KnowledgeService {
                 .unwrap_or(first.rel_path.as_str())
                 .trim_end_matches(".md");
             return Ok(format!(
-                "根据「{}」知识库中的「{}」，总结最重要的三点。",
+                "请先调用 knowledge_search 检索已挂载的「{}」知识库（查询「{}」），再根据命中内容总结最重要的三点。",
                 info.name, stem
             ));
         }
@@ -267,7 +268,9 @@ impl KnowledgeService {
 }
 
 fn default_suggest_prompt(name: &str) -> String {
-    format!("根据「{name}」知识库，总结最重要的三点是什么？")
+    format!(
+        "请先调用 knowledge_search 检索已挂载的「{name}」知识库，再根据命中内容总结最重要的三点。"
+    )
 }
 
 #[cfg(test)]
