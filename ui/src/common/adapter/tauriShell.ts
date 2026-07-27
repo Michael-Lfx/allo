@@ -167,6 +167,21 @@ export async function tauriOpenDialog(options?: ShellOpenDialogOptions): Promise
   return Array.isArray(result) ? result : [result];
 }
 
+/** Electron-style SaveDialog options. */
+export interface ShellSaveDialogOptions {
+  defaultPath?: string;
+  filters?: Array<{ name: string; extensions: string[] }>;
+}
+
+/** Native save-file dialog (tauri-plugin-dialog). Returns absolute path or null if cancelled. */
+export async function tauriSaveDialog(options?: ShellSaveDialogOptions): Promise<string | null> {
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  return save({
+    defaultPath: options?.defaultPath,
+    filters: options?.filters,
+  });
+}
+
 /** OS auto-launch (tauri-plugin-autostart). */
 export async function tauriIsAutostartEnabled(): Promise<boolean> {
   const { isEnabled } = await import('@tauri-apps/plugin-autostart');

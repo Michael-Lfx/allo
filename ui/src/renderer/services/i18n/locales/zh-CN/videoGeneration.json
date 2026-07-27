@@ -14,6 +14,10 @@
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
     "untitled": "未命名任务",
+    "importProject": "导入工程",
+    "importDesktopOnly": "导入工程仅桌面端可用。",
+    "importOk": "工程已导入",
+    "importFailed": "导入失败",
     "empty": {
       "title": "你的第一支影片从上方开始",
       "desc": "写下一个画面或故事，Flowy 会先给你一版可编辑分镜。"
@@ -136,7 +140,13 @@
     "delete": "删除",
     "deleteConfirm": "确定删除该任务？产物将一并清除。",
     "deleteOk": "已删除任务",
-    "deleteFailed": "删除失败"
+    "deleteFailed": "删除失败",
+    "exportProject": "导出工程",
+    "exportDesktopOnly": "导出工程仅桌面端可用。",
+    "exportBusy": "规划或渲染进行中，请完成后再导出。",
+    "exportOk": "工程已导出",
+    "exportFailed": "导出失败",
+    "exportFilter": "Nomi 视频工程"
   },
   "workspace": {
     "back": "返回列表",
@@ -266,8 +276,12 @@
     "briefAndModels": "创意简报与模型设置",
     "modelSettings": "模型设置",
     "filmReady": "成片已就绪",
-    "filmReadyHint": "播放检查，或下载到本地继续发布。",
+    "filmReadyHint": "播放检查，或打开视频所在文件夹。",
     "download": "下载成片",
+    "reveal": "打开视频所在位置",
+    "revealMissing": "找不到成片本地路径，请刷新后重试。",
+    "revealDesktopOnly": "打开视频所在位置仅桌面端可用。",
+    "revealFailed": "无法打开视频所在位置",
     "reviseTitle": "想怎样修改这个镜头？",
     "reviseHint": "直接描述结果，不需要填写技术文件路径。",
     "revisePlaceholder": "例如：让镜头更紧张，加入快速推镜和更强的雨势",

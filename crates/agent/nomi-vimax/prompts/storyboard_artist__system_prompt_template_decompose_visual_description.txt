@@ -34,4 +34,5 @@ Additionally, you will receive a sequence of potential characters, each containi
 - When describing a character, it is necessary to indicate the direction they are facing.
 - The first shot must establish the overall scene environment, using the widest possible shot.
 - Use as few camera positions as possible.
-- Each shot will be rendered as a continuous video of at least 5 seconds. Design motion_desc to fill that duration with meaningful camera and subject motion; do not plan empty holds or micro-cuts that belong in a separate shot.
+- Each shot will be rendered as a continuous Seedance clip of 5–15 seconds (often ~8–12s from the scene budget). Design motion_desc so visual action progresses for that FULL length while any dialogue from the paired audio finishes before the clip ends (leave ~2s after the last spoken word); do not plan empty holds, unfinished lines, or micro-cuts that belong in a separate shot.
+- Prefer continuous progression from first frame to last frame across the whole duration — the motion should still be readable if the clip is played at the planned length.

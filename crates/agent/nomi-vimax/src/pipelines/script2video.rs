@@ -627,6 +627,10 @@ impl Script2VideoPipeline {
 
     /// Submit video-generation API calls one-by-one.
     /// On failure/cancel, stop immediately; already-saved clips remain for resume.
+    ///
+    /// Same-camera adjacent shots reuse the previous clip's extracted last frame as
+    /// the next I2V first_frame (match-cut continuity). Cross-camera cuts keep the
+    /// planned first_frame so angle changes stay intentional.
     async fn generate_videos_sequential(
         &self,
         shots: &[ShotDescription],
@@ -639,6 +643,25 @@ impl Script2VideoPipeline {
         let total = shots.len().max(1);
         let mut ok = 0usize;
         let mut errors: Vec<String> = Vec::new();
+        let target = load_target_duration_secs(&self.working_dir).await;
+        let needs: Vec<u32> = shots
+            .iter()
+            .map(|s| {
+                crate::planning::estimate_shot_need_secs(
+                    s.audio_desc.as_deref(),
+                    &s.motion_desc,
+                    &s.variation_type,
+                )
+            })
+            .collect();
+        let clip_durs = crate::planning::allocate_clip_durations_for_content(target, &needs);
+        tracing::info!(
+            target = ?target,
+            needs = ?needs,
+            durations = ?clip_durs,
+            "content-aware shot durations (audio+motion)"
+        );
+
         for (i, shot) in shots.iter().enumerate() {
             if self.cancel_requested() {
                 emit(
@@ -655,10 +678,61 @@ impl Script2VideoPipeline {
                 &format!("串行生成镜头视频（{}/{}）· 镜头 {}", i + 1, total, shot.idx),
                 pct,
             );
+
+            let continuity_first = if i > 0 {
+                let prev = &shots[i - 1];
+                if prev.cam_idx == shot.cam_idx {
+                    match ensure_shot_video_last_frame(&self.working_dir, prev.idx).await {
+                        Ok(Some(path)) => {
+                            emit(
+                                progress,
+                                "video_continuity",
+                                &format!(
+                                    "Shot {}: same-camera continuity from shot {} video last frame",
+                                    shot.idx, prev.idx
+                                ),
+                            );
+                            Some(path)
+                        }
+                        Ok(None) => None,
+                        Err(e) => {
+                            tracing::warn!(
+                                shot = shot.idx,
+                                prev = prev.idx,
+                                error = %e,
+                                "failed to extract previous video last frame; using planned first_frame"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let duration_secs = clip_durs.get(i).copied().unwrap_or_else(|| {
+                needs.get(i).copied().unwrap_or_else(|| {
+                    crate::planning::clip_duration_secs(target, shots.len())
+                })
+            });
+            emit(
+                progress,
+                "video_duration",
+                &format!(
+                    "Shot {}: render {}s (need≈{}s from audio/motion)",
+                    shot.idx,
+                    duration_secs,
+                    needs.get(i).copied().unwrap_or(duration_secs)
+                ),
+            );
+
             match self
                 .generate_video_for_shot(
                     shot,
-                    shots.len(),
+                    duration_secs,
+                    continuity_first.as_deref(),
                     characters,
                     registry,
                     world_pairs,
@@ -669,6 +743,8 @@ impl Script2VideoPipeline {
             {
                 Ok(()) => {
                     ok += 1;
+                    // Prefetch tail for the next same-camera shot (also helps resume).
+                    let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx).await;
                     emit_pct(
                         progress,
                         "video_clip_done",
@@ -1064,10 +1140,11 @@ impl Script2VideoPipeline {
     async fn generate_video_for_shot(
         &self,
         shot: &ShotDescription,
-        shot_count: usize,
+        duration_secs: u32,
+        continuity_first_frame: Option<&Path>,
         characters: &[CharacterInScene],
-        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-        world_pairs: &[(PathBuf, String)],
+        _registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        _world_pairs: &[(PathBuf, String)],
         style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
@@ -1083,39 +1160,39 @@ impl Script2VideoPipeline {
             );
             return Ok(());
         }
-        let ff = shot_dir.join("first_frame.png");
-        if !ff.exists() {
+        let planned_ff = shot_dir.join("first_frame.png");
+        if !planned_ff.exists() {
             return Err(VimaxError::msg(format!(
                 "first_frame missing for shot {}",
                 shot.idx
             )));
         }
+        // Prefer previous same-camera video last frame for temporal continuity.
+        // Keep planned first_frame.png on disk unchanged (resume / revise / privacy retry).
+        let using_video_continuity = continuity_first_frame.is_some_and(|p| p.is_file());
+        let ff: PathBuf = if using_video_continuity {
+            continuity_first_frame.unwrap().to_path_buf()
+        } else {
+            planned_ff.clone()
+        };
         let lf = shot_dir.join("last_frame.png");
         let use_last = matches!(shot.variation_type.as_str(), "medium" | "large") && lf.exists();
-        // Cast three-views + matched env/prop plates as video reference_image (OSS HTTPS URLs).
-        let mut vis_idxs: Vec<i32> = shot.ff_vis_char_idxs.clone();
-        for idx in &shot.lf_vis_char_idxs {
-            if !vis_idxs.contains(idx) {
-                vis_idxs.push(*idx);
-            }
-        }
-        let mut ref_pairs = portrait_pairs(characters, &vis_idxs, registry);
-        ref_pairs.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 3));
-        // Prefer cast → env → prop; hard-cap for Seedance payload/latency.
-        ref_pairs = pick_video_ref_strip(ref_pairs);
-        let cast_ref_paths: Vec<PathBuf> = ref_pairs.iter().map(|(p, _)| p.clone()).collect();
-        let cast_ref_slices: Vec<&Path> = cast_ref_paths.iter().map(|p| p.as_path()).collect();
-        let prompt = i2v_motion_prompt(shot, characters, style, &ref_pairs);
-        let target = load_target_duration_secs(&self.working_dir).await;
-        let duration_secs = crate::planning::clip_duration_secs(target, shot_count);
+        // Seedance forbids mixing first/last_frame with reference_image. Cast identity is
+        // locked by the frame(s) + text identity clause — do NOT attach three-views here.
+        let prompt = i2v_motion_prompt(
+            shot,
+            characters,
+            style,
+            &[],
+            duration_secs,
+            using_video_continuity,
+        );
         emit(
             progress,
             "video_clip_start",
             &format!(
-                "Generating shot {} video ({}s; {} ref image(s); may queue / rate-limit)",
-                shot.idx,
-                duration_secs,
-                cast_ref_slices.len()
+                "Generating shot {} video ({}s; frame I2V; continuity={}; may queue / rate-limit)",
+                shot.idx, duration_secs, using_video_continuity
             ),
         );
 
@@ -1125,9 +1202,9 @@ impl Script2VideoPipeline {
             .video
             .generate(
                 &prompt,
-                Some(&ff),
+                Some(ff.as_path()),
                 last_ref,
-                &cast_ref_slices,
+                &[],
                 duration_secs,
                 &video_path,
             )
@@ -1153,7 +1230,8 @@ impl Script2VideoPipeline {
                 let bak = shot_dir.join("last_frame.privacy_bak.png");
                 let _ = tokio::fs::rename(&lf, &bak).await;
             }
-            self.regenerate_stylized_first_frame(shot, &ff, style, characters)
+            // Privacy retry always uses a freshly drawn planned first_frame (not video continuity).
+            self.regenerate_stylized_first_frame(shot, &planned_ff, style, characters)
                 .await?;
 
             let retry_i2v = self
@@ -1161,9 +1239,9 @@ impl Script2VideoPipeline {
                 .video
                 .generate(
                     &prompt,
-                    Some(&ff),
+                    Some(&planned_ff),
                     None,
-                    &cast_ref_slices,
+                    &[],
                     duration_secs,
                     &video_path,
                 )
@@ -1192,7 +1270,14 @@ impl Script2VideoPipeline {
                 );
                 self.backends
                     .video
-                    .generate(&t2v_prompt, None, None, &[], duration_secs, &video_path)
+                    .generate(
+                        &t2v_prompt,
+                        None,
+                        None,
+                        &[],
+                        duration_secs,
+                        &video_path,
+                    )
                     .await
                     .map_err(|t2v_err| {
                         VimaxError::Video(format!(
@@ -1355,33 +1440,6 @@ const MAX_FRAME_REF_IMAGES: usize = 8;
 const MAX_FRAME_PORTRAIT_REFS: usize = 4;
 const MAX_FRAME_ENV_REFS: usize = 2;
 const MAX_FRAME_PROP_REFS: usize = 1;
-const MAX_VIDEO_REF_IMAGES: usize = 6;
-const MAX_VIDEO_CAST_REFS: usize = 4;
-
-fn pick_video_ref_strip(pairs: Vec<(PathBuf, String)>) -> Vec<(PathBuf, String)> {
-    let mut portraits = Vec::new();
-    let mut envs = Vec::new();
-    let mut props = Vec::new();
-    for (p, t) in pairs {
-        let s = p.to_string_lossy().to_ascii_lowercase();
-        if s.contains("character_portrait") || s.contains("three_view") {
-            portraits.push((p, t));
-        } else if s.contains("environments") || s.contains("environment_plate") {
-            envs.push((p, t));
-        } else if s.contains("props") || s.contains("_prop") {
-            props.push((p, t));
-        }
-    }
-    let mut out = Vec::new();
-    out.extend(portraits.drain(..).take(MAX_VIDEO_CAST_REFS));
-    if out.len() < MAX_VIDEO_REF_IMAGES {
-        out.extend(envs.drain(..).take((MAX_VIDEO_REF_IMAGES - out.len()).min(2)));
-    }
-    if out.len() < MAX_VIDEO_REF_IMAGES {
-        out.extend(props.drain(..).take(1.min(MAX_VIDEO_REF_IMAGES - out.len())));
-    }
-    out
-}
 
 fn pick_frame_ref_strip(
     pairs: Vec<(PathBuf, String)>,
@@ -1497,6 +1555,28 @@ fn continuity_frame_path(working_dir: &Path, shot_idx: i32) -> Option<PathBuf> {
     }
 }
 
+/// Extract (or reuse) the last frame of a finished shot video for next-shot continuity.
+async fn ensure_shot_video_last_frame(
+    working_dir: &Path,
+    shot_idx: i32,
+) -> VimaxResult<Option<PathBuf>> {
+    let dir = working_dir.join("shots").join(shot_idx.to_string());
+    let video = dir.join("video.mp4");
+    if !media_local::is_usable_video_file(&video) {
+        return Ok(None);
+    }
+    let out = dir.join("video_last_frame.png");
+    if media_local::is_usable_image_file(&out) {
+        return Ok(Some(out));
+    }
+    media_local::extract_last_frame(&video, &out).await?;
+    if media_local::is_usable_image_file(&out) {
+        Ok(Some(out))
+    } else {
+        Ok(None)
+    }
+}
+
 async fn load_target_duration_secs(working_dir: &Path) -> Option<u32> {
     for dir in [working_dir, working_dir.parent().unwrap_or(working_dir)] {
         let p = dir.join("target_duration_secs.txt");
@@ -1531,9 +1611,10 @@ fn i2v_motion_prompt(
     characters: &[CharacterInScene],
     style: &str,
     ref_pairs: &[(PathBuf, String)],
+    duration_secs: u32,
+    from_prev_video_tail: bool,
 ) -> String {
     let motion = shot.motion_desc.trim();
-    let audio = shot.audio_desc.as_deref().unwrap_or("").trim();
     let style_clause = crate::planning::style_prompt_clause(style);
     let identity = character_identity_clause(characters, &shot.ff_vis_char_idxs, style);
     let plot: String = shot.ff_desc.chars().take(180).collect();
@@ -1562,12 +1643,69 @@ fn i2v_motion_prompt(
 Use *_three_view.png for cast identity, *_environment_plate.png for location, *_prop.png for objects. "
         )
     };
+    let continuity_clause = if from_prev_video_tail {
+        "CONTINUITY: opening frame is the previous shot's ending — begin motion immediately; \
+do not hold or re-establish the same pose; seamless match-cut continuation. "
+    } else {
+        ""
+    };
+    let audio_block = seedance_audio_caption_block(shot.audio_desc.as_deref());
     format!(
-        "{style_clause} {identity}{ref_clause}PLOT LOCK: stay on this scene — {plot}.{end_plot} \
-Do not invent new characters, locations, outfits, or story beats. \
-Continuous motion for the full clip; camera and subjects must clearly move and progress; do not freeze or loop the opening pose.\n\
-Motion: {motion}\nAudio: {audio}"
+        "{style_clause} {identity}{ref_clause}{continuity_clause}\
+DURATION LOCK: this clip is {duration_secs}s — complete the dialogue/action inside {duration_secs}s; \
+no unfinished lines; sustain clear motion for the FULL {duration_secs}s (do not freeze or loop the opening pose).\n\
+PLOT LOCK: stay on this scene — {plot}.{end_plot} \
+Do not invent new characters, locations, outfits, or story beats.\n\
+Motion: {motion}\n\
+Throughout: {audio_block}\n\
+Keep it subtitle-free. Do not generate on-screen captions, logos, or watermarks."
     )
+}
+
+/// Seedance 2.0 audio captions use typed brackets:
+/// dialogue `{…}`, SFX `<…>`, music `(…)`.
+/// Empty captions with `generate_audio=true` fail with InvalidParameter.
+fn seedance_audio_caption_block(audio_desc: Option<&str>) -> String {
+    let raw = audio_desc.unwrap_or("").trim();
+    if raw.is_empty() {
+        return "<subtle environmental ambience and soft foley matching on-screen action> \
+(quiet atmospheric underscore)"
+            .to_string();
+    }
+    // Already Seedance-typed — keep as-is.
+    let has_typed = raw.contains('{')
+        || raw.contains('}')
+        || raw.contains('<')
+        || raw.contains('>')
+        || (raw.contains('(') && raw.contains(')'));
+    if has_typed {
+        return raw.to_string();
+    }
+
+    let lower = raw.to_ascii_lowercase();
+    let looks_dialogue = raw.contains('「')
+        || raw.contains('」')
+        || raw.contains('"')
+        || raw.contains('“')
+        || raw.contains('”')
+        || raw.contains('\'')
+        || lower.contains("says")
+        || lower.contains("dialogue")
+        || lower.contains("speech")
+        || lower.contains("voice")
+        || lower.contains("台词")
+        || lower.contains("说道")
+        || lower.contains("喊道")
+        || lower.contains("怒吼")
+        || lower.contains("嘶吼")
+        || lower.contains("说话");
+    if looks_dialogue {
+        format!(
+            "{{{raw}}} <scene-matched foley> (soft atmospheric underscore)"
+        )
+    } else {
+        format!("<{raw}> (soft atmospheric underscore)")
+    }
 }
 
 fn is_seedance_privacy_image_err(err: &VimaxError) -> bool {
@@ -1586,14 +1724,23 @@ fn should_retry_seedance_without_photoreal_frame(err: &VimaxError) -> bool {
     if is_seedance_privacy_image_err(err) {
         return true;
     }
+    // Caption/audio-schema failures must not trigger frame redraw.
     let s = err.to_string().to_ascii_lowercase();
+    if s.contains("captions are not enough")
+        || (s.contains("caption") && s.contains("empty"))
+        || (s.contains("caption") && s.contains("not enough"))
+    {
+        return false;
+    }
     let not_other = !s.contains("insufficient")
         && !s.contains("额度")
         && !s.contains("duration")
         && !s.contains("cancelled")
         && !s.contains("取消")
         && !s.contains("timeout")
-        && !s.contains("超时");
+        && !s.contains("超时")
+        && !s.contains("invalidparameter")
+        && !s.contains("cannot be mixed");
     // Match opaque gateway wraps AND explicit upstream 400 from FlowyClaw detail.
     let opaque = s.contains("视频生成服务暂时不可用")
         || s.contains("temporarily unavailable")

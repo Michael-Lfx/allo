@@ -130,6 +130,29 @@ impl VimaxApiService {
     pub fn artifact_path(&self, id: &str, rel: &str) -> Result<PathBuf, AppError> {
         self.inner.artifact_path(id, rel).map_err(map_vimax_err)
     }
+
+    /// Export session project to a local `.nomivimax` path chosen by the client.
+    pub async fn export_session(
+        &self,
+        id: &str,
+        dest_path: impl AsRef<Path>,
+    ) -> Result<PathBuf, AppError> {
+        self.inner
+            .export_session(id, dest_path)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    /// Import a local `.nomivimax` archive as a new session.
+    pub async fn import_session(
+        &self,
+        archive_path: impl AsRef<Path>,
+    ) -> Result<SessionRecord, AppError> {
+        self.inner
+            .import_session(archive_path)
+            .await
+            .map_err(map_vimax_err)
+    }
 }
 
 fn load_flowy(data_dir: &Path) -> Option<FlowyVimaxServices> {

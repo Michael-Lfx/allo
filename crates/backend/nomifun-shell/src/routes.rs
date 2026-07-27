@@ -640,7 +640,6 @@ mod tests {
             client_pref_service: nomifun_system::ClientPrefService::new(repo),
             data_dir: tmp.path().to_path_buf(),
             provider_service: None,
-            lazy_local_model_runtime: None,
         };
         let app = shell_routes(state);
 
