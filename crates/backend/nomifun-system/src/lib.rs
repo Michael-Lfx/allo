@@ -11,6 +11,7 @@ pub mod provider;
 pub mod provider_deletion;
 pub mod routes;
 pub mod settings;
+pub mod support_logs;
 pub mod sysinfo;
 pub mod version;
 

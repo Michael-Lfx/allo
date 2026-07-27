@@ -14,9 +14,10 @@ use nomifun_api_types::{
     ModelProfileUpsertRequest, ModelsDevLookupQuery, ModelsDevLookupResponse, ModelsDevRefreshRequest,
     ModelsDevSearchQuery, ModelsDevSearchResponse, ModelsDevStatusResponse, ProtocolDetectionResponse,
     ProviderResponse, ResolveModelsRequest, ResolveModelsResponse,
-    SetManagedModelEnabledRequest, SetManagedModelServiceEnabledRequest, SystemInfoResponse,
-    SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
-    UpdateProviderRequest, UpdateSettingsRequest, UpdateWorkDirRequest,
+    SetManagedModelEnabledRequest, SetManagedModelServiceEnabledRequest, SupportLogsPackResponse,
+    SystemInfoResponse, SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult,
+    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
+    UpdateWorkDirRequest,
 };
 use nomifun_common::AppError;
 
@@ -118,6 +119,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/models-dev/lookup", get(models_dev_lookup))
         .route("/api/models-dev/search", get(models_dev_search))
         .route("/api/system/info", get(get_system_info))
+        .route("/api/system/support-logs/pack", post(pack_support_logs))
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/factory-reset", post(factory_reset))
         .route("/api/system/work-dir", post(set_work_dir))
@@ -483,6 +485,12 @@ async fn models_dev_search(
 async fn get_system_info() -> Json<ApiResponse<SystemInfoResponse>> {
     let info = crate::sysinfo::get_system_info();
     Json(ApiResponse::ok(info))
+}
+
+async fn pack_support_logs() -> Result<Json<ApiResponse<SupportLogsPackResponse>>, AppError> {
+    let info = crate::sysinfo::get_system_info();
+    let packed = crate::support_logs::pack_support_logs(std::path::Path::new(&info.log_dir))?;
+    Ok(Json(ApiResponse::ok(packed)))
 }
 
 async fn check_update(

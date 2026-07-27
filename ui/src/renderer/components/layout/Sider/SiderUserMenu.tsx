@@ -1,13 +1,18 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { Logout, Right, Theme, User } from '@icon-park/react';
+import { Logout, Message, Right, Theme, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { ipcBridge } from '@/common';
 import type { IMediaCredits } from '@/common/adapter/ipcBridge';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
+import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import SiderThemePanel from './SiderThemePanel';
 
 interface SiderUserMenuProps {
@@ -33,6 +38,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   onLogout,
 }) => {
   const { t } = useTranslation();
+  const { openSupportChat, hasUnread, unreadCount } = useSupportChat();
   const displayName = userLabel?.trim() || '—';
   const planText = planLabel?.trim() || '';
   const [menuVisible, setMenuVisible] = useState(false);
@@ -67,11 +73,25 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     onLogout?.();
   };
 
+  const handleOpenSupportChat = () => {
+    setMenuVisible(false);
+    setSkinVisible(false);
+    openSupportChat();
+  };
+
   const creditsText = creditsLoading
     ? t('common.userMenu.loadingCredits', { defaultValue: '加载中…' })
     : credits != null
       ? String(credits.balance)
       : t('common.userMenu.creditsUnavailable', { defaultValue: '—' });
+
+  const unreadBadge = unreadCount > 99 ? '99+' : String(unreadCount);
+  const supportLabel = hasUnread
+    ? t('common.userMenu.contactSupportWithUnread', {
+        defaultValue: '联系客服，{{count}} 条未读回复',
+        count: unreadCount,
+      })
+    : t('common.userMenu.contactSupport', { defaultValue: '联系客服' });
 
   const menuContent = (
     <div className='w-192px flex flex-col gap-1px p-4px'>
@@ -104,6 +124,23 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           <Right theme='outline' size='12' fill='currentColor' className='shrink-0 text-t-tertiary' />
         </button>
       </Popover>
+
+      <button
+        type='button'
+        className={menuRowClass}
+        aria-label={supportLabel}
+        onClick={handleOpenSupportChat}
+      >
+        <Message theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+        <span className='flex-1 text-12px text-t-primary'>
+          {t('common.userMenu.contactSupport', { defaultValue: '联系客服' })}
+        </span>
+        {hasUnread ? (
+          <span className='min-w-16px h-16px px-4px rd-full bg-danger text-white text-10px leading-16px text-center tabular-nums'>
+            {unreadBadge}
+          </span>
+        ) : null}
+      </button>
 
       {showLogout && onLogout && (
         <>
@@ -138,7 +175,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     >
       <span
         className={classNames(
-          'flex items-center justify-center shrink-0 text-t-secondary bg-fill-2',
+          'relative flex items-center justify-center shrink-0 text-t-secondary bg-fill-2',
           collapsed ? 'size-22px rd-6px' : 'size-28px rd-full'
         )}
       >
@@ -149,6 +186,12 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           className='block leading-none'
           style={{ lineHeight: 0 }}
         />
+        {hasUnread ? (
+          <span
+            className='absolute top-0 right-0 size-8px rd-full bg-danger border-2 border-solid border-[var(--color-bg-1)]'
+            aria-hidden
+          />
+        ) : null}
       </span>
       {!collapsed && (
         <span className='min-w-0 flex-1 flex flex-col justify-center gap-1px'>

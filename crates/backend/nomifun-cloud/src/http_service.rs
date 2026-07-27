@@ -12,6 +12,12 @@ use crate::{
     AuthManager, AuthPollResult, AuthUserInput, LoginMethod, PendingLogin, ServerClientError,
 };
 use crate::activation::DeviceActivation;
+use crate::flowy::FlowyApiClient;
+use crate::session::ServerSession;
+use nomifun_api_types::{
+    CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
+    CloudImSendMessageRequest,
+};
 use nomifun_common::AppError;
 
 #[derive(Clone)]
@@ -292,5 +298,159 @@ impl CloudService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(nomifun_api_types::CloudDeviceActivationRetryResponse { reported })
+    }
+
+    /// Build an authenticated Flowy IM client. Fails closed when JWT is missing.
+    pub(crate) async fn im_client_and_session(
+        &self,
+    ) -> Result<(FlowyApiClient, ServerSession), AppError> {
+        let cfg = self.gateway_config();
+        if !cfg.server.api_ready() {
+            return Err(AppError::BadRequest(
+                "server base_url not configured".into(),
+            ));
+        }
+        let session = ServerSession::from_config(&cfg.server, &self.data_dir);
+        let token = require_im_access_token(
+            session
+                .access_token()
+                .await
+                .map_err(map_im_client_error)?,
+        )?;
+        let _ = token;
+        let client = FlowyApiClient::new(&cfg.server).map_err(map_im_client_error)?;
+        Ok((client, session))
+    }
+
+    pub async fn get_im_conversation(
+        &self,
+        app: Option<&str>,
+    ) -> Result<CloudImConversation, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .get_im_conversation(&session, app)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_im_messages(
+        &self,
+        after_seq: Option<i64>,
+        before_seq: Option<i64>,
+        limit: i64,
+    ) -> Result<CloudImMessageList, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_im_messages(&session, after_seq, before_seq, limit)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn send_im_message(
+        &self,
+        request: CloudImSendMessageRequest,
+    ) -> Result<CloudImMessage, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .send_im_message(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn upload_im_log(
+        &self,
+        file_bytes: Vec<u8>,
+        file_name: &str,
+        content_type: &str,
+    ) -> Result<CloudImLogUploadResponse, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        let result = client
+            .upload_feedback_log(&session, file_bytes, file_name, content_type)
+            .await
+            .map_err(map_im_client_error)?;
+        Ok(result)
+    }
+
+    pub async fn upload_im_screenshot(
+        &self,
+        file_bytes: Vec<u8>,
+        file_name: &str,
+        content_type: &str,
+    ) -> Result<CloudImLogUploadResponse, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        let result = client
+            .upload_feedback_screenshot(&session, file_bytes, file_name, content_type)
+            .await
+            .map_err(map_im_client_error)?;
+        Ok(result)
+    }
+
+    pub async fn mark_im_read(&self, last_read_seq: i64) -> Result<CloudImConversation, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .mark_im_read(&session, last_read_seq)
+            .await
+            .map_err(map_im_client_error)
+    }
+}
+
+fn require_im_access_token(token: Option<String>) -> Result<String, AppError> {
+    token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| AppError::Unauthorized("not logged in to Flowy server".into()))
+}
+
+fn map_im_client_error(err: ServerClientError) -> AppError {
+    match err {
+        ServerClientError::AuthRequired(msg) => AppError::Unauthorized(msg),
+        ServerClientError::MissingBaseUrl => {
+            AppError::BadRequest("server base_url not configured".into())
+        }
+        ServerClientError::Disabled => AppError::BadRequest("server client disabled".into()),
+        ServerClientError::NotConfigured(msg) => AppError::BadRequest(msg),
+        ServerClientError::Api { code, msg } if code == 401 || code == 403 => {
+            AppError::Unauthorized(msg)
+        }
+        ServerClientError::Api { code, msg } if code == 400 => AppError::BadRequest(msg),
+        ServerClientError::Server {
+            status: 401 | 403,
+            body,
+            ..
+        } => AppError::Unauthorized(truncate_diag(&body)),
+        ServerClientError::Server {
+            status: 400,
+            body,
+            ..
+        } => AppError::BadRequest(truncate_diag(&body)),
+        other => AppError::BadGateway(truncate_diag(&other.to_string())),
+    }
+}
+
+fn truncate_diag(message: &str) -> String {
+    const MAX: usize = 500;
+    let trimmed = message.trim();
+    if trimmed.chars().count() <= MAX {
+        trimmed.to_string()
+    } else {
+        let mut out: String = trimmed.chars().take(MAX).collect();
+        out.push('…');
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn im_client_and_session_requires_auth() {
+        let err = require_im_access_token(None).expect_err("missing token");
+        assert!(matches!(err, AppError::Unauthorized(_)));
+
+        let err = require_im_access_token(Some("   ".into())).expect_err("blank token");
+        assert!(matches!(err, AppError::Unauthorized(_)));
+
+        let token = require_im_access_token(Some("jwt-abc".into())).expect("token");
+        assert_eq!(token, "jwt-abc");
     }
 }

@@ -16,6 +16,7 @@ import { AuthProvider } from './hooks/context/AuthContext';
 import { CloudAuthProvider } from './hooks/context/CloudAuthContext';
 import { FeedbackProvider } from './hooks/context/FeedbackContext';
 import { ThemeProvider } from './hooks/context/ThemeContext';
+import { SupportChatProvider } from './features/supportChat/SupportChatProvider';
 
 // Arco Design
 import { ConfigProvider } from '@arco-design/web-react';
@@ -75,7 +76,11 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
     React.createElement(
       CloudAuthProvider,
       null,
-      React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+      React.createElement(
+        SupportChatProvider,
+        null,
+        React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+      )
     )
   );
 

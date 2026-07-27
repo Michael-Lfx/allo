@@ -6239,3 +6239,145 @@ export const cloud = {
   /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
   syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
 };
+
+// ---------------------------------------------------------------------------
+// Flowy cloud IM (customer support) — /api/cloud/im/*
+// ---------------------------------------------------------------------------
+
+export interface ICloudImConversation {
+  id: number;
+  userId: number;
+  externalChannelCode: string;
+  app: string;
+  status: string;
+  assigneeSysUserId?: number | null;
+  lastSeq: number;
+  lastMessageId?: number | null;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  lastSenderType?: string | null;
+  userUnreadCount: number;
+  opsUnreadCount: number;
+  hasUnread: boolean;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+}
+
+export interface ICloudImMessage {
+  id: number;
+  conversationId: number;
+  seq: number;
+  clientMsgId?: string | null;
+  senderType: string;
+  senderId?: number | null;
+  msgType: string;
+  content: string;
+  status: string;
+  createdAt: string;
+  duplicate?: boolean;
+  /** Attachment snapshot for `image` / `file` messages. */
+  payload?: ICloudImAttachmentPayload | null;
+  logPayload?: ICloudImAttachmentPayload | null;
+}
+
+export interface ICloudImAttachmentPayload {
+  objectKey?: string;
+  /** CDN URL when available. */
+  url?: string;
+  name: string;
+  contentType: string;
+  byteSize: number;
+  account?: Record<string, unknown>;
+  device?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ICloudImLogUploadResponse {
+  ossId: number;
+  url?: string;
+  name: string;
+  contentType: string;
+  byteSize: number;
+  objectKey?: string;
+}
+
+export interface ISupportLogsPackResponse {
+  zipPath: string;
+  fileName: string;
+  byteSize: number;
+  includedFiles: string[];
+  truncated: boolean;
+}
+
+export interface ICloudImMessageList {
+  list: ICloudImMessage[];
+}
+
+export type ICloudImApp = 'flowymes';
+
+export const cloudIm = {
+  getConversation: httpGet<ICloudImConversation, { app?: ICloudImApp }>((p) => {
+    const qs = new URLSearchParams();
+    if (p?.app) qs.set('app', p.app);
+    const query = qs.toString();
+    return `/api/cloud/im/conversation${query ? `?${query}` : ''}`;
+  }),
+  listMessages: httpGet<
+    ICloudImMessageList,
+    { afterSeq?: number; beforeSeq?: number; limit?: number }
+  >((p) => {
+    const qs = new URLSearchParams();
+    if (p?.afterSeq != null) qs.set('afterSeq', String(p.afterSeq));
+    if (p?.beforeSeq != null) qs.set('beforeSeq', String(p.beforeSeq));
+    if (p?.limit != null) qs.set('limit', String(p.limit));
+    const query = qs.toString();
+    return `/api/cloud/im/messages${query ? `?${query}` : ''}`;
+  }),
+  sendMessage: httpPost<
+    ICloudImMessage,
+    {
+      clientMsgId: string;
+      content: string;
+      msgType: 'text' | 'image';
+      app?: ICloudImApp;
+      payload?: ICloudImAttachmentPayload;
+      logPayload?: ICloudImAttachmentPayload;
+    }
+  >('/api/cloud/im/messages', (p) => ({
+    clientMsgId: p.clientMsgId,
+    content: p.content,
+    msgType: p.msgType,
+    ...(p.app ? { app: p.app } : {}),
+    ...(p.payload ? { payload: p.payload } : {}),
+    ...(p.logPayload ? { logPayload: p.logPayload } : {}),
+  })),
+  uploadLog: httpMultipartPost<ICloudImLogUploadResponse, { file: Blob; fileName: string }>(
+    '/api/cloud/im/logs/upload',
+    ({ file, fileName }) => {
+      const form = new FormData();
+      form.append('file', file, fileName);
+      return form;
+    }
+  ),
+  /** Proxies FlowyClaw `POST /uploads/feedback/screenshot`; response fields feed IM `payload`. */
+  uploadScreenshot: httpMultipartPost<ICloudImLogUploadResponse, { file: Blob; fileName: string }>(
+    '/api/cloud/im/screenshots/upload',
+    ({ file, fileName }) => {
+      const form = new FormData();
+      form.append('file', file, fileName);
+      return form;
+    }
+  ),
+  uploadLogFromPath: httpPost<
+    ICloudImLogUploadResponse,
+    { zipPath: string; fileName?: string }
+  >('/api/cloud/im/logs/upload-from-path', (p) => ({
+    zipPath: p.zipPath,
+    ...(p.fileName ? { fileName: p.fileName } : {}),
+  })),
+  markRead: httpPost<ICloudImConversation, { lastReadSeq: number }>('/api/cloud/im/read', (p) => ({
+    lastReadSeq: p.lastReadSeq,
+  })),
+  packSupportLogs: httpPost<ISupportLogsPackResponse, void>('/api/system/support-logs/pack'),
+};

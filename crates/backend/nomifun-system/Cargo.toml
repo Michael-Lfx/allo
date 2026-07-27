@@ -23,6 +23,10 @@ aws-config.workspace = true
 aws-sdk-bedrock.workspace = true
 semver.workspace = true
 dirs.workspace = true
+zip.workspace = true
+nomi-redact.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+chrono.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true }
