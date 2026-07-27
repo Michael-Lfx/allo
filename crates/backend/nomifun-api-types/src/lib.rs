@@ -8,6 +8,7 @@ mod agent_execution_template;
 mod auth;
 mod channel;
 mod cloud;
+mod cloud_im;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -111,6 +112,10 @@ pub use cloud::{
     CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudSyncModelsResponse,
     CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
 };
+pub use cloud_im::{
+    CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
+    CloudImMessageList, CloudImReadRequest, CloudImSendMessageRequest,
+};
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,
 };
@@ -166,8 +171,8 @@ pub use knowledge::{
     UpdateKnowledgeTagRequest,
 };
 pub use lifecycle::{
-    GitHubReleaseAsset, SystemInfoResponse, UpdateCheckRequest, UpdateCheckResult,
-    UpdateReleaseInfo, UpdateWorkDirRequest,
+    GitHubReleaseAsset, SupportLogsPackResponse, SystemInfoResponse, UpdateCheckRequest,
+    UpdateCheckResult, UpdateReleaseInfo, UpdateWorkDirRequest,
 };
 pub use managed_model::{
     ManagedModel, ManagedModelHealthBatchResult, ManagedModelHealthErrorKind,

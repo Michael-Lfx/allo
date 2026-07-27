@@ -16,6 +16,17 @@ pub struct SystemInfoResponse {
     pub arch: String,
 }
 
+/// Response for `POST /api/system/support-logs/pack`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportLogsPackResponse {
+    pub zip_path: String,
+    pub file_name: String,
+    pub byte_size: i64,
+    pub included_files: Vec<String>,
+    pub truncated: bool,
+}
+
 /// Request body for `POST /api/system/check-update`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

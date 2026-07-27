@@ -510,6 +510,12 @@ body[arco-theme='dark'] .sider-soft-popover .arco-popover-arrow {
   padding: 20px 24px 16px;
 }
 
+.support-chat-modal .arco-modal-body,
+.support-chat-modal .nomifun-modal-header {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 .nomifun-modal-title {
   font-size: 18px;
   font-weight: 500;
