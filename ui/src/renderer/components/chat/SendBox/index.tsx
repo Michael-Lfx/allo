@@ -1310,7 +1310,7 @@ const SendBox: React.FC<{
     if (isUploading || isStopping) return;
     // 编辑模式：提交走截断重跑而非普通发送。
     if (editingMsgId && onEditResubmit) {
-      if (!input.trim()) return;
+      if (isLoading || !input.trim()) return;
       const finalMessage = input;
       const targetId = editingMsgId;
       const targetCreatedAt = editingCreatedAtRef.current;
