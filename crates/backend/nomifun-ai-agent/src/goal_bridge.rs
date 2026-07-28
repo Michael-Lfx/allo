@@ -12,7 +12,7 @@
 
 use nomi_agent::goal::runtime::GoalRuntime;
 use nomi_agent::goal::state::{GoalContract, GoalState, GoalStatus, GoalVerdict};
-use nomifun_api_types::GoalStatusResponse;
+use nomifun_api_types::{GoalContractDto, GoalStatusResponse};
 use nomifun_db::{GoalRow, UpsertGoalParams};
 
 /// Serialize a status enum to its snake_case wire string ("active", …).
@@ -117,6 +117,30 @@ pub fn goal_row_to_state(row: &GoalRow) -> GoalState {
     }
 }
 
+/// Engine contract → wire DTO (identical five snake_case fields).
+pub fn engine_contract_to_dto(contract: &GoalContract) -> GoalContractDto {
+    GoalContractDto {
+        outcome: contract.outcome.clone(),
+        verification: contract.verification.clone(),
+        constraints: contract.constraints.clone(),
+        boundaries: contract.boundaries.clone(),
+        stop_when: contract.stop_when.clone(),
+    }
+}
+
+/// Wire DTO → engine contract. An all-empty DTO round-trips to an all-empty
+/// `GoalContract`, which `GoalRuntime::set_contract` normalizes back to
+/// `None` (clears the contract).
+pub fn dto_to_engine_contract(dto: GoalContractDto) -> GoalContract {
+    GoalContract {
+        outcome: dto.outcome,
+        verification: dto.verification,
+        constraints: dto.constraints,
+        boundaries: dto.boundaries,
+        stop_when: dto.stop_when,
+    }
+}
+
 /// Engine snapshot → wire DTO for `/goal status` and every action response.
 pub fn goal_state_to_response(state: &GoalState) -> GoalStatusResponse {
     GoalStatusResponse {
@@ -133,6 +157,9 @@ pub fn goal_state_to_response(state: &GoalState) -> GoalStatusResponse {
         last_turn_at: state.last_turn_at,
         waiting_until: state.waiting_until,
         waiting_reason: state.waiting_reason.clone(),
+        waiting_on_pid: state.waiting_on_pid,
+        waiting_on_session: state.waiting_on_session.clone(),
+        contract: state.contract.as_ref().map(engine_contract_to_dto),
     }
 }
 
@@ -198,6 +225,32 @@ pub fn clear_subgoals_row(row: &GoalRow) -> UpsertGoalParams {
     let rt = GoalRuntime::from_state(goal_row_to_state(row));
     while rt.remove_subgoal(1) {}
     goal_state_to_upsert(&row.session_id, &rt.snapshot())
+}
+
+/// Set / replace the completion contract on a persisted goal row without a
+/// live runtime (`set_contract`, or applying a draft). An all-empty contract
+/// clears it — `GoalRuntime::set_contract` normalization, not ours.
+pub fn set_contract_row(row: &GoalRow, contract: GoalContract) -> UpsertGoalParams {
+    let rt = GoalRuntime::from_state(goal_row_to_state(row));
+    rt.set_contract(contract);
+    goal_state_to_upsert(&row.session_id, &rt.snapshot())
+}
+
+/// Park a persisted goal row on a pid barrier without a live runtime
+/// (`/goal wait <pid>`). `None` = rejected (pid 0, or the goal is neither
+/// Active nor Waiting) — engine semantics via `GoalRuntime::wait_on_pid`.
+pub fn wait_on_pid_row(row: &GoalRow, pid: u32) -> Option<UpsertGoalParams> {
+    let rt = GoalRuntime::from_state(goal_row_to_state(row));
+    rt.wait_on_pid(pid)
+        .then(|| goal_state_to_upsert(&row.session_id, &rt.snapshot()))
+}
+
+/// Drop the wait barrier on a persisted goal row without a live runtime
+/// (`/goal unwait`). `None` = the goal was not waiting.
+pub fn unwait_row(row: &GoalRow) -> Option<UpsertGoalParams> {
+    let rt = GoalRuntime::from_state(goal_row_to_state(row));
+    rt.unwait()
+        .then(|| goal_state_to_upsert(&row.session_id, &rt.snapshot()))
 }
 
 fn now_epoch_ms() -> i64 {
@@ -449,5 +502,99 @@ mod tests {
         assert_eq!(cleared.subgoals_json, "[]");
         assert_eq!(cleared.status, "active");
         assert_eq!(cleared.objective, "ship");
+    }
+
+    #[test]
+    fn response_carries_contract_and_process_barrier_fields() {
+        let mut state = sample_state();
+        state.status = GoalStatus::Waiting;
+        state.waiting_on_pid = Some(4242);
+        state.waiting_on_session = Some("conv-bg".into());
+        state.contract = Some(GoalContract {
+            outcome: "feature shipped".into(),
+            verification: "cargo test passes".into(),
+            ..Default::default()
+        });
+
+        let resp = goal_state_to_response(&state);
+        assert_eq!(resp.waiting_on_pid, Some(4242));
+        assert_eq!(resp.waiting_on_session.as_deref(), Some("conv-bg"));
+        let dto = resp.contract.unwrap();
+        assert_eq!(dto.outcome, "feature shipped");
+        assert_eq!(dto.verification, "cargo test passes");
+        assert!(dto.stop_when.is_empty());
+
+        // The same fields ride the upsert (turn-persist path, phase-1 cols).
+        let params = goal_state_to_upsert("conv-1", &state);
+        assert_eq!(params.waiting_on_pid, Some(4242));
+        assert_eq!(params.waiting_on_session.as_deref(), Some("conv-bg"));
+        let json = params.contract_json.expect("contract must persist");
+        let back: GoalContract = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.outcome, "feature shipped");
+
+        // DTO ↔ engine conversion is lossless.
+        let engine = dto_to_engine_contract(engine_contract_to_dto(state.contract.as_ref().unwrap()));
+        assert_eq!(Some(engine), state.contract);
+    }
+
+    #[test]
+    fn db_only_contract_and_wait_edits_reuse_engine_guards() {
+        let state = GoalState::new("ship".into(), 8);
+        let params = goal_state_to_upsert("conv-1", &state);
+        let mut row = GoalRow {
+            id: 1,
+            session_id: params.session_id.clone(),
+            objective: params.objective.clone(),
+            status: params.status.clone(),
+            turns_used: 0,
+            max_turns: params.max_turns,
+            created_at: params.created_at,
+            last_turn_at: None,
+            last_verdict: None,
+            last_reason: None,
+            paused_reason: None,
+            consecutive_parse_failures: 0,
+            consecutive_transport_failures: 0,
+            subgoals_json: "[]".into(),
+            contract_json: None,
+            waiting_on_pid: None,
+            waiting_on_session: None,
+            waiting_until: None,
+            waiting_reason: None,
+            updated_at: 0,
+            version: 0,
+        };
+
+        // set_contract persists the JSON payload; an all-empty one clears it.
+        let set = set_contract_row(
+            &row,
+            GoalContract {
+                outcome: "shipped".into(),
+                ..Default::default()
+            },
+        );
+        assert!(set.contract_json.as_deref().unwrap().contains("shipped"));
+        let cleared = set_contract_row(&row, GoalContract::default());
+        assert!(cleared.contract_json.is_none());
+
+        // wait: pid 0 rejected; a real pid parks the row on the barrier.
+        assert!(wait_on_pid_row(&row, 0).is_none());
+        let waiting = wait_on_pid_row(&row, 4242).unwrap();
+        assert_eq!(waiting.status, "waiting");
+        assert_eq!(waiting.waiting_on_pid, Some(4242));
+        assert!(waiting.waiting_reason.is_some());
+
+        // unwait: only a Waiting row flips back to Active.
+        assert!(unwait_row(&row).is_none());
+        row.status = "waiting".into();
+        row.waiting_on_pid = Some(4242);
+        let resumed = unwait_row(&row).unwrap();
+        assert_eq!(resumed.status, "active");
+        assert!(resumed.waiting_on_pid.is_none());
+
+        // Terminal rows never flip (guards come from GoalRuntime itself).
+        row.status = "complete".into();
+        assert!(wait_on_pid_row(&row, 4242).is_none());
+        assert!(unwait_row(&row).is_none());
     }
 }

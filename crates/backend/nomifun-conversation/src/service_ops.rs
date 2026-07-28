@@ -233,7 +233,7 @@ impl ConversationService {
                 repo.clear(conversation_id).await?;
                 Ok(GoalStatusResponse::default())
             }
-            "status" | "list_subgoals" => Ok(repo
+            "status" | "list_subgoals" | "show" => Ok(repo
                 .load_by_session(conversation_id)
                 .await?
                 .map(|row| goal_bridge::goal_row_to_response(&row))
@@ -265,6 +265,46 @@ impl ConversationService {
             "clear_subgoals" => {
                 let row = self.require_goal_row(&*repo, conversation_id).await?;
                 let params = goal_bridge::clear_subgoals_row(&row);
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            // Drafting needs the session's LLM configuration, which only the
+            // live manager holds — there is no offline provider path here.
+            "draft" => Err(AppError::BadRequest(
+                "Contract drafting requires a running agent session".into(),
+            )),
+            "set_contract" => {
+                let contract = req
+                    .contract
+                    .clone()
+                    .ok_or_else(|| AppError::BadRequest("contract is required".into()))?;
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                // An all-empty contract clears it (engine-guard round-trip).
+                let params = goal_bridge::set_contract_row(
+                    &row,
+                    goal_bridge::dto_to_engine_contract(contract),
+                );
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "wait" => {
+                let pid = req
+                    .pid
+                    .ok_or_else(|| AppError::BadRequest("pid is required".into()))?;
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::wait_on_pid_row(&row, pid).ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "Cannot wait on pid {pid}: pid must be non-zero and the goal must be active or waiting"
+                    ))
+                })?;
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "unwait" => {
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::unwait_row(&row).ok_or_else(|| {
+                    AppError::BadRequest("The goal is not waiting".to_owned())
+                })?;
                 let row = repo.upsert(&params).await?;
                 Ok(goal_bridge::goal_row_to_response(&row))
             }
@@ -301,6 +341,8 @@ impl ConversationService {
                 reason: None,
                 subgoal: None,
                 index_1based: None,
+                pid: None,
+                contract: None,
             };
             if let Ok(resp) = runtime.goal_action(status_probe).await {
                 return Ok(resp);

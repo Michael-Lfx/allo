@@ -191,6 +191,9 @@ pub struct NomiAgentManager {
     /// factory, same slot pattern as `register_cron_sink`). `None` = goal
     /// persistence off; goals still run, nothing is saved or restored.
     goal_repo: std::sync::RwLock<Option<Arc<dyn nomifun_db::IGoalRepository>>>,
+    /// Gateway data dir hosting the agent process registry — source for the
+    /// goal wait probe and the per-turn background-process snapshot.
+    goal_registry_data_dir: PathBuf,
 }
 
 impl Drop for NomiAgentManager {
@@ -235,7 +238,8 @@ pub(crate) const KNOWLEDGE_WRITE_TOOL_NAME: &str = "knowledge_write";
 /// are NOT engine slash commands: the frontend maps them onto
 /// `POST /api/conversations/{id}/goal` actions (set/status/pause/resume/clear
 /// plus the subgoal family: add_subgoal/list_subgoals/remove_subgoal/
-/// clear_subgoals).
+/// clear_subgoals, and the contract/barrier family: draft/set_contract/show/
+/// wait/unwait).
 pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
     [
         (
@@ -253,6 +257,16 @@ pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
         ("subgoal list", "List the goal's criteria with their numbers"),
         ("subgoal remove", "Remove one criterion by number: /subgoal remove <n>"),
         ("subgoal clear", "Remove all criteria (the goal itself stays active)"),
+        (
+            "goal draft",
+            "Draft a completion contract from the goal objective with the LLM and apply it",
+        ),
+        ("goal show", "Show the goal with its contract, criteria and wait barriers"),
+        (
+            "goal wait",
+            "Park the goal on a process: /goal wait <pid> — judging resumes when it exits",
+        ),
+        ("goal unwait", "Drop the wait barrier and resume goal judging"),
     ]
     .into_iter()
     .map(|(command, description)| SlashCommandItem {
@@ -721,6 +735,15 @@ impl NomiAgentManager {
             );
             engine.set_moa_state(nomi_agent::moa::MoaState::new(moa.config, moa.slots));
         }
+        // Goal wait-barrier probe: answers pid/session liveness from the agent
+        // process registry, so judge- or user-issued wait barriers release once
+        // the awaited process is unregistered. Installed before any goal state
+        // exists — the engine re-injects it into every future goal runtime
+        // (`set_goal` / `set_goal_state`). Fail-open by design: a probe that
+        // cannot answer reports "not alive" and the barrier lifts.
+        engine.set_goal_wait_probe(Arc::new(crate::goal_probe::RegistryGoalWaitProbe::new(
+            gateway_data_dir.clone(),
+        )));
         // Goal restore injection: re-hydrate a persisted active/paused goal
         // (or an explicit resume_state carried in the build extra) as-is —
         // status, turns_used, breaker counters and created_at are NOT reset.
@@ -910,6 +933,7 @@ impl NomiAgentManager {
             moa_slot_prices,
             goal_runtime: std::sync::RwLock::new(goal_runtime),
             goal_repo: std::sync::RwLock::new(None),
+            goal_registry_data_dir: gateway_data_dir,
         })
     }
 
@@ -1093,6 +1117,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             *self.active_turn.lock().unwrap_or_else(|e| e.into_inner()) = Some(runtime_turn);
             (token, runtime_turn)
         };
+
+        // Refresh the goal judge's background-process context for this turn
+        // (goal sessions only) — a cheap registry read through the shared
+        // handle, never the engine mutex.
+        self.refresh_goal_background_processes();
 
         // Backstop: guarantee a terminal event even if this turn unwinds
         // abnormally (engine panic / early-return). Disarmed on the normal path
@@ -2152,6 +2181,19 @@ impl NomiAgentManager {
             .and_then(|slot| slot.clone())
     }
 
+    /// Snapshot the process registry into the goal judge's background-process
+    /// context. No-op for non-goal sessions; acts through the shared goal
+    /// handle, so it never waits on the engine mutex.
+    fn refresh_goal_background_processes(&self) {
+        let Some(rt) = self.goal_runtime_handle() else {
+            return;
+        };
+        rt.set_background_processes(crate::goal_probe::conversation_background_processes(
+            &self.goal_registry_data_dir,
+            self.runtime.conversation_id(),
+        ));
+    }
+
     /// Best-effort goal snapshot persistence — spawned so it never blocks or
     /// fails the caller (turn completion / user goal actions). No-op when no
     /// repository was registered.
@@ -2172,7 +2214,8 @@ impl NomiAgentManager {
         });
     }
 
-    /// Execute a user `/goal` action (set / pause / resume / clear / status).
+    /// Execute a user `/goal` action (set / pause / resume / clear / status /
+    /// the subgoal family / draft / set_contract / wait / unwait).
     ///
     /// pause/resume/clear act through the shared goal handle — NOT the engine
     /// mutex — so they take effect in real time while `execute_turn` holds the
@@ -2255,7 +2298,7 @@ impl NomiAgentManager {
                     None => GoalStatusResponse::default(),
                 })
             }
-            "status" | "list_subgoals" => Ok(self.goal_status()),
+            "status" | "list_subgoals" | "show" => Ok(self.goal_status()),
             "add_subgoal" => {
                 let text = req
                     .subgoal
@@ -2290,6 +2333,74 @@ impl NomiAgentManager {
                 // the DB fallback's `clear_subgoals_row`).
                 let rt = self.require_goal_runtime()?;
                 while rt.remove_subgoal(1) {}
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "draft" => {
+                let rt = self.require_goal_runtime()?;
+                // Explicit request objective wins; else draft from the goal's
+                // own objective.
+                let objective = req
+                    .objective
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| rt.snapshot().objective);
+                // Same resolved provider/model the engine runs on, WITHOUT
+                // the engine mutex (`execute_turn` may hold it for the whole
+                // turn). Reuses the distillation config snapshot.
+                let provider = nomi_providers::create_provider(&self.distill_cfg);
+                let client = nomi_agent::goal::judge::ProviderJudgeClient::new(
+                    provider,
+                    self.distill_cfg.model.clone(),
+                );
+                let contract = nomi_agent::goal::judge::draft_contract(&objective, &client)
+                    .await
+                    .map_err(|e| match e {
+                        nomi_agent::goal::judge::ContractDraftError::EmptyObjective => {
+                            AppError::BadRequest("objective must not be empty".into())
+                        }
+                        other => AppError::BadGateway(format!("Contract draft failed: {other}")),
+                    })?;
+                rt.set_contract(contract);
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "set_contract" => {
+                let contract = req
+                    .contract
+                    .clone()
+                    .ok_or_else(|| AppError::BadRequest("contract is required".into()))?;
+                let rt = self.require_goal_runtime()?;
+                // An all-empty contract clears it (the runtime normalizes to
+                // None) — same convention as the DB fallback.
+                rt.set_contract(crate::goal_bridge::dto_to_engine_contract(contract));
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "wait" => {
+                let pid = req
+                    .pid
+                    .ok_or_else(|| AppError::BadRequest("pid is required".into()))?;
+                let rt = self.require_goal_runtime()?;
+                if !rt.wait_on_pid(pid) {
+                    return Err(AppError::BadRequest(format!(
+                        "Cannot wait on pid {pid}: pid must be non-zero and the goal must be active or waiting"
+                    )));
+                }
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "unwait" => {
+                let rt = self.require_goal_runtime()?;
+                if !rt.unwait() {
+                    return Err(AppError::BadRequest("The goal is not waiting".into()));
+                }
                 let snapshot = rt.snapshot();
                 self.spawn_goal_persist(snapshot.clone());
                 Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
@@ -3367,6 +3478,7 @@ mod tests {
             moa_slot_prices: Vec::new(),
             goal_runtime: std::sync::RwLock::new(None),
             goal_repo: std::sync::RwLock::new(None),
+            goal_registry_data_dir: std::env::temp_dir(),
         }
     }
 
@@ -3566,6 +3678,7 @@ mod tests {
             moa_slot_prices: Vec::new(),
             goal_runtime: std::sync::RwLock::new(None),
             goal_repo: std::sync::RwLock::new(None),
+            goal_registry_data_dir: std::env::temp_dir(),
         };
         let attachment_dir = tempfile::tempdir().unwrap();
         let missing_image = attachment_dir

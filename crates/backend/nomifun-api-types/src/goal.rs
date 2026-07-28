@@ -11,12 +11,14 @@ use serde::{Deserialize, Serialize};
 pub struct GoalActionRequest {
     /// One of `"set"` | `"pause"` | `"resume"` | `"clear"` | `"status"` |
     /// `"add_subgoal"` | `"remove_subgoal"` | `"clear_subgoals"` |
-    /// `"list_subgoals"`. `"status"` is accepted for slash-command symmetry
-    /// and behaves like the GET endpoint (no mutation); `"list_subgoals"` is
-    /// an alias of `"status"` — the response's `subgoals` field already
-    /// carries the full list.
+    /// `"list_subgoals"` | `"draft"` | `"set_contract"` | `"show"` |
+    /// `"wait"` | `"unwait"`. `"status"` is accepted for slash-command
+    /// symmetry and behaves like the GET endpoint (no mutation);
+    /// `"list_subgoals"` and `"show"` are aliases of `"status"` — the
+    /// response already carries the full `subgoals` list and the `contract`.
     pub action: String,
-    /// Objective text. Required for `action = "set"`, ignored otherwise.
+    /// Objective text. Required for `action = "set"`. Optional for
+    /// `action = "draft"` (falls back to the active goal's objective).
     #[serde(default)]
     pub objective: Option<String>,
     /// Auto-continuation budget for `action = "set"`. Falls back to the
@@ -33,6 +35,30 @@ pub struct GoalActionRequest {
     /// (matches the numbering shown by `/subgoal list`).
     #[serde(default)]
     pub index_1based: Option<u64>,
+    /// Process id to park the goal on. Required for `action = "wait"`.
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// Completion contract. Required for `action = "set_contract"`; an
+    /// all-empty contract clears the current one (engine semantics).
+    #[serde(default)]
+    pub contract: Option<GoalContractDto>,
+}
+
+/// Five-field completion contract, mirroring the engine's `GoalContract`
+/// wire shape (snake_case, all fields default to empty strings).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GoalContractDto {
+    /// The single end state that must be true when done.
+    pub outcome: String,
+    /// The specific test / command / artifact that proves the outcome.
+    pub verification: String,
+    /// What must not be broken / violated along the way.
+    pub constraints: String,
+    /// What is in scope (and implicitly, what is not).
+    pub boundaries: String,
+    /// The condition under which the agent should stop and ask the user.
+    pub stop_when: String,
 }
 
 /// Goal snapshot returned by both the GET endpoint and every POST action.
@@ -75,6 +101,16 @@ pub struct GoalStatusResponse {
     /// Human-readable reason for the wait barrier.
     #[serde(default)]
     pub waiting_reason: Option<String>,
+    /// Process id the goal is parked on. Present while `status` is
+    /// `"waiting"` on a pid barrier.
+    #[serde(default)]
+    pub waiting_on_pid: Option<u32>,
+    /// Background-process session id the goal is parked on.
+    #[serde(default)]
+    pub waiting_on_session: Option<String>,
+    /// The goal's completion contract, when one was drafted or set.
+    #[serde(default)]
+    pub contract: Option<GoalContractDto>,
 }
 
 #[cfg(test)]
@@ -105,6 +141,24 @@ mod tests {
     }
 
     #[test]
+    fn goal_action_request_carries_contract_and_wait_fields() {
+        let req: GoalActionRequest =
+            serde_json::from_str(r#"{"action":"wait","pid":4242}"#).unwrap();
+        assert_eq!(req.pid, Some(4242));
+
+        // A partial contract object fills the missing fields with "".
+        let req: GoalActionRequest = serde_json::from_str(
+            r#"{"action":"set_contract","contract":{"outcome":"shipped","stop_when":"3 failures"}}"#,
+        )
+        .unwrap();
+        let contract = req.contract.unwrap();
+        assert_eq!(contract.outcome, "shipped");
+        assert_eq!(contract.stop_when, "3 failures");
+        assert!(contract.verification.is_empty());
+        assert!(contract.boundaries.is_empty());
+    }
+
+    #[test]
     fn goal_status_response_round_trips_inactive_default() {
         let json = serde_json::to_string(&GoalStatusResponse::default()).unwrap();
         let parsed: GoalStatusResponse = serde_json::from_str(&json).unwrap();
@@ -113,5 +167,8 @@ mod tests {
         assert!(parsed.subgoals.is_empty());
         assert!(parsed.waiting_until.is_none());
         assert!(parsed.waiting_reason.is_none());
+        assert!(parsed.waiting_on_pid.is_none());
+        assert!(parsed.waiting_on_session.is_none());
+        assert!(parsed.contract.is_none());
     }
 }

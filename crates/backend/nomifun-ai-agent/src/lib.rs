@@ -11,6 +11,7 @@ pub mod capability;
 pub mod cc_switch;
 pub mod factory;
 pub mod goal_bridge;
+pub(crate) mod goal_probe;
 pub(crate) mod idle_scanner;
 pub mod auxiliary_provider;
 pub mod extraction_scanner;

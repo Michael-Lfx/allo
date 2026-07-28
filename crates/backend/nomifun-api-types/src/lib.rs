@@ -156,7 +156,7 @@ pub use file::{
     SnapshotStageRequest, SnapshotWorkspaceRequest, WorkspaceFlatFileResponse,
     WorkspaceOfficeWatchRequest, WriteFileRequest, ZipFileEntry, ZipRequest,
 };
-pub use goal::{GoalActionRequest, GoalStatusResponse};
+pub use goal::{GoalActionRequest, GoalContractDto, GoalStatusResponse};
 pub use idmm::{
     BlockedBehavior, BudgetConfig, BypassModelRef, CategoryMode, CategoryRules, DecisionStrategy,
     DecisionWatchConfig, FaultWatchConfig, IdmmBinding, IdmmConfig, IdmmRunState, IdmmSettings, IdmmState,
