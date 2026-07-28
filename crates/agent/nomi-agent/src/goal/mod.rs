@@ -10,6 +10,9 @@ pub mod runtime;
 pub mod state;
 pub mod tool;
 
-pub use judge::{GoalJudgeClient, JudgeOutcome, ProviderJudgeClient, WaitDirective};
-pub use runtime::{GoalRuntime, GoalSpec};
+pub use judge::{
+    BackgroundProcessInfo, ContractDraftError, GoalJudgeClient, JudgeOutcome, ProviderJudgeClient,
+    WaitDirective, draft_contract,
+};
+pub use runtime::{GoalRuntime, GoalSpec, GoalWaitProbe};
 pub use state::{GoalContract, GoalState, GoalStatus, GoalVerdict};

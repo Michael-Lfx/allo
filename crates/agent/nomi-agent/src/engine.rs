@@ -681,6 +681,10 @@ pub struct AgentEngine {
     /// Opt-in goal-driven continuation. `None` (the default) means the engine
     /// behaves exactly as before — no continuation, no `update_goal` tool.
     goal: Option<crate::goal::runtime::GoalRuntime>,
+    /// Host-injected liveness probe backing the goal's pid/session wait
+    /// barriers. Kept on the engine so a probe installed before `set_goal`
+    /// still reaches the runtime; without one those barriers fail open.
+    goal_wait_probe: Option<Arc<dyn crate::goal::runtime::GoalWaitProbe>>,
     /// Detects degenerate loops (the identical tool call repeated turn after
     /// turn) and triggers a one-time corrective nudge. Always on — a safety net
     /// alongside the hard `max_turns` cap. (Loop-agent robustness)
@@ -789,6 +793,7 @@ impl AgentEngine {
             max_recent_images: config.tools.max_recent_images,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,
@@ -881,6 +886,7 @@ impl AgentEngine {
             max_recent_images: config.tools.max_recent_images,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,
@@ -964,6 +970,9 @@ impl AgentEngine {
     /// blocked, or the auto-continuation cap (or `max_turns`) is hit.
     pub fn set_goal(&mut self, objective: String, max_auto_continuations: usize) {
         let rt = crate::goal::runtime::GoalRuntime::new(objective, max_auto_continuations);
+        if let Some(probe) = self.goal_wait_probe.as_ref() {
+            rt.set_wait_probe(Arc::clone(probe));
+        }
         self.tools
             .register(Box::new(crate::goal::tool::UpdateGoalTool::new(
                 rt.shared_state(),
@@ -986,6 +995,9 @@ impl AgentEngine {
             Some(rt) => rt.restore(state),
             None => {
                 let rt = crate::goal::runtime::GoalRuntime::from_state(state);
+                if let Some(probe) = self.goal_wait_probe.as_ref() {
+                    rt.set_wait_probe(Arc::clone(probe));
+                }
                 self.tools
                     .register(Box::new(crate::goal::tool::UpdateGoalTool::new(
                         rt.shared_state(),
@@ -1037,6 +1049,57 @@ impl AgentEngine {
         self.goal
             .as_ref()
             .is_some_and(|g| g.remove_subgoal(index_1based))
+    }
+
+    /// Set / replace the active goal's completion contract (passthrough to
+    /// `GoalRuntime::set_contract`; an all-empty contract clears it). The
+    /// contract rides out through `goal_state()` snapshots. Safe no-op when
+    /// this is not a goal session.
+    pub fn goal_set_contract(&self, contract: crate::goal::state::GoalContract) {
+        if let Some(g) = self.goal.as_ref() {
+            g.set_contract(contract);
+        }
+    }
+
+    /// Install the host's liveness probe backing the goal's pid/session wait
+    /// barriers (see [`GoalWaitProbe`](crate::goal::runtime::GoalWaitProbe)).
+    /// Reaches the current goal runtime immediately and every later
+    /// `set_goal` / `set_goal_state` one. Without a probe those barriers
+    /// keep the fail-open behavior (release at the next evaluation point).
+    pub fn set_goal_wait_probe(&mut self, probe: Arc<dyn crate::goal::runtime::GoalWaitProbe>) {
+        if let Some(g) = self.goal.as_ref() {
+            g.set_wait_probe(Arc::clone(&probe));
+        }
+        self.goal_wait_probe = Some(probe);
+    }
+
+    /// Manually park the goal on a pid barrier (`/goal wait <pid>`;
+    /// passthrough to `GoalRuntime::wait_on_pid` — overrides any judge-set
+    /// barrier). Returns `false` when this is not a goal session, the pid is
+    /// 0, or the goal cannot wait (terminal/paused).
+    pub fn goal_wait_on_pid(&self, pid: u32) -> bool {
+        self.goal.as_ref().is_some_and(|g| g.wait_on_pid(pid))
+    }
+
+    /// Drop the goal's wait barrier and resume Active judging (`/goal
+    /// unwait`; passthrough to `GoalRuntime::unwait`). Returns `false` when
+    /// this is not a goal session or the goal was not waiting.
+    pub fn goal_unwait(&self) -> bool {
+        self.goal.as_ref().is_some_and(|g| g.unwait())
+    }
+
+    /// Replace the host-gathered background-process snapshot rendered into
+    /// the judge prompt (passthrough to
+    /// `GoalRuntime::set_background_processes`). The host refreshes this
+    /// before each turn — nomi-agent never scans processes itself. Safe
+    /// no-op when this is not a goal session.
+    pub fn goal_set_background_processes(
+        &self,
+        processes: Vec<crate::goal::judge::BackgroundProcessInfo>,
+    ) {
+        if let Some(g) = self.goal.as_ref() {
+            g.set_background_processes(processes);
+        }
     }
 
     /// Initialize a new session for this Agent engine.
@@ -3878,6 +3941,7 @@ mod set_config_tests {
             max_recent_images: 3,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,
@@ -3907,6 +3971,10 @@ mod set_config_tests {
         engine.goal_clear();
         engine.goal_add_subgoal("criterion");
         assert!(!engine.goal_remove_subgoal(1));
+        engine.goal_set_contract(crate::goal::state::GoalContract::default());
+        assert!(!engine.goal_wait_on_pid(4242));
+        assert!(!engine.goal_unwait());
+        engine.goal_set_background_processes(vec![]);
         assert!(engine.goal_state().is_none());
     }
 
@@ -3986,6 +4054,70 @@ mod set_config_tests {
         assert!(!engine.goal_remove_subgoal(5));
         assert!(engine.goal_remove_subgoal(1));
         assert_eq!(engine.goal_state().unwrap().subgoals, vec!["docs updated"]);
+    }
+
+    #[test]
+    fn goal_contract_passthrough_reaches_the_runtime() {
+        let mut engine = make_engine("goal-contract");
+        engine.set_goal("ship it".into(), 8);
+
+        engine.goal_set_contract(crate::goal::state::GoalContract {
+            outcome: "feature shipped".into(),
+            verification: "cargo test passes".into(),
+            ..Default::default()
+        });
+        // The contract rides out through goal_state() snapshots.
+        let c = engine.goal_state().unwrap().contract.unwrap();
+        assert_eq!(c.outcome, "feature shipped");
+        assert_eq!(c.verification, "cargo test passes");
+
+        // An all-empty contract clears it again.
+        engine.goal_set_contract(crate::goal::state::GoalContract::default());
+        assert!(engine.goal_state().unwrap().contract.is_none());
+    }
+
+    #[test]
+    fn goal_wait_passthroughs_reach_the_runtime() {
+        let mut engine = make_engine("goal-wait");
+        engine.set_goal("ship it".into(), 8);
+
+        assert!(!engine.goal_wait_on_pid(0)); // pid 0 rejected
+        assert!(engine.goal_wait_on_pid(4242));
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.status, crate::goal::state::GoalStatus::Waiting);
+        assert_eq!(s.waiting_on_pid, Some(4242));
+
+        assert!(engine.goal_unwait());
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.status, crate::goal::state::GoalStatus::Active);
+        assert!(s.waiting_on_pid.is_none());
+        assert!(!engine.goal_unwait()); // not waiting anymore
+    }
+
+    #[test]
+    fn goal_wait_probe_reaches_current_and_future_runtimes() {
+        struct AliveProbe;
+        impl crate::goal::runtime::GoalWaitProbe for AliveProbe {
+            fn is_pid_alive(&self, _pid: u32) -> bool {
+                true
+            }
+            fn is_session_active(&self, _session_id: &str) -> bool {
+                true
+            }
+        }
+
+        // Probe installed before the goal exists still reaches the runtime
+        // set_goal creates later (the engine keeps it and re-injects).
+        let mut engine = make_engine("goal-probe");
+        engine.set_goal_wait_probe(Arc::new(AliveProbe));
+        engine.set_goal("ship it".into(), 8);
+        assert!(engine.goal_wait_on_pid(4242));
+
+        // And installing it after set_goal reaches the current runtime too.
+        let mut engine = make_engine("goal-probe-late");
+        engine.set_goal("ship it".into(), 8);
+        engine.set_goal_wait_probe(Arc::new(AliveProbe));
+        assert!(engine.goal_wait_on_pid(7));
     }
 
     #[tokio::test]
@@ -5519,6 +5651,7 @@ mod phase6_tests {
             max_recent_images: 3,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,
@@ -5798,6 +5931,7 @@ mod compact_tests {
             max_recent_images: 3,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,
@@ -6350,6 +6484,7 @@ mod plan_mode_tests {
             max_recent_images: 3,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,
@@ -6573,6 +6708,7 @@ mod handle_command_tests {
             max_recent_images: 3,
             commands: crate::commands::default_registry(),
             goal: None,
+            goal_wait_probe: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             context_contributors: Vec::new(),
             steering_inbox: None,

@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use nomi_types::message::{ContentBlock, Message, Role};
 
-use crate::goal::judge::{self, GoalJudgeClient, WaitDirective};
+use crate::goal::judge::{self, BackgroundProcessInfo, GoalJudgeClient, WaitDirective};
 use crate::goal::state::{
-    GoalState, GoalStatus, GoalVerdict, MAX_CONSECUTIVE_PARSE_FAILURES,
-    MAX_CONSECUTIVE_TRANSPORT_FAILURES, epoch_ms, render_subgoals_block,
+    GoalContract, GoalState, GoalStatus, GoalVerdict, MAX_CONSECUTIVE_PARSE_FAILURES,
+    MAX_CONSECUTIVE_TRANSPORT_FAILURES, epoch_ms, render_contract_block, render_subgoals_block,
 };
 
 const CONTINUATION_TEMPLATE: &str = include_str!("templates/continuation.md");
@@ -14,6 +14,10 @@ const CONTINUATION_TEMPLATE: &str = include_str!("templates/continuation.md");
 /// within one goal session with unchanged subgoals the rendered prompt is
 /// byte-identical across turns — prompt-cache friendly.
 const CONTINUATION_SUBGOALS_TEMPLATE: &str = include_str!("templates/continuation_subgoals.md");
+/// Variant rendered when the goal carries a (non-empty) completion contract.
+/// Takes priority over the subgoals variant — with both present the subgoals
+/// fold into the contract block itself (hermes: single source of truth).
+const CONTINUATION_CONTRACT_TEMPLATE: &str = include_str!("templates/continuation_contract.md");
 
 /// What a caller supplies to start a goal-driven session.
 #[derive(Debug, Clone)]
@@ -31,6 +35,19 @@ impl GoalSpec {
     }
 }
 
+/// Host-implemented liveness probe backing the pid/session wait barriers
+/// (hermes checks these via psutil / its process registry; nomi-agent never
+/// scans processes itself). Both checks are deliberately fail-open: on any
+/// doubt return `false` — a stale barrier never wedges the loop; worst case
+/// the goal resumes one turn early, which is safe.
+pub trait GoalWaitProbe: Send + Sync {
+    /// Whether the process is still running. `false` releases the barrier.
+    fn is_pid_alive(&self, pid: u32) -> bool;
+    /// Whether the session is still active, i.e. neither exited nor had its
+    /// watch trigger fire (hermes `_session_waiting`). `false` releases.
+    fn is_session_active(&self, session_id: &str) -> bool;
+}
+
 /// Engine-side goal runtime: holds the shared state (also held by
 /// `UpdateGoalTool`), runs the judge at each natural-termination point, and
 /// renders the continuation prompt.
@@ -42,21 +59,33 @@ impl GoalSpec {
 #[derive(Clone)]
 pub struct GoalRuntime {
     state: Arc<Mutex<GoalState>>,
+    /// Optional host-injected liveness probe for pid/session barriers.
+    /// `None` (no probe wired) keeps the fail-open behavior: those barriers
+    /// release at the next evaluation point instead of parking forever.
+    probe: Arc<Mutex<Option<Arc<dyn GoalWaitProbe>>>>,
+    /// Host-supplied snapshot of live background processes, rendered into
+    /// the judge prompt so it can return pid/session wait directives.
+    background: Arc<Mutex<Vec<BackgroundProcessInfo>>>,
 }
 
 impl GoalRuntime {
     pub fn new(objective: String, max_auto_continuations: usize) -> Self {
         Self {
             state: Arc::new(Mutex::new(GoalState::new(objective, max_auto_continuations))),
+            probe: Arc::new(Mutex::new(None)),
+            background: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Rebuild a runtime from a complete state snapshot (restore semantics:
     /// every field — turns_used/status/counters/created_at — is taken as-is).
-    /// Counterpart of `new()`, which starts a fresh goal.
+    /// Counterpart of `new()`, which starts a fresh goal. The probe is not
+    /// part of the snapshot — the host re-injects it after restoring.
     pub fn from_state(state: GoalState) -> Self {
         Self {
             state: Arc::new(Mutex::new(state)),
+            probe: Arc::new(Mutex::new(None)),
+            background: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -83,14 +112,17 @@ impl GoalRuntime {
     ///
     /// - non-Active status (incl. a terminal state the model already declared
     ///   via `update_goal` — first terminal state wins, no judge call) → None
-    /// - parked on a live time barrier (`Waiting`, `waiting_until` in the
-    ///   future) → None without a judge call or budget burn; once the
-    ///   deadline has passed the barrier lazily clears and this same call
-    ///   resumes normal judging (hermes lazy auto-clear)
+    /// - parked on a live wait barrier (`Waiting` with a future deadline, a
+    ///   pid the probe reports alive, or a session the probe reports active)
+    ///   → None without a judge call or budget burn; once the barrier
+    ///   releases (deadline passed / pid dead / session done / no probe
+    ///   wired) it lazily clears and this same call resumes normal judging
+    ///   (hermes lazy auto-clear, fail-open without a probe)
     /// - auto-continuation budget exhausted → None
     /// - judge says done → status becomes `Complete`, None
-    /// - judge says wait with a time directive → status becomes `Waiting`,
-    ///   `waiting_until`/`waiting_reason` set, None — no budget consumed
+    /// - judge says wait with a directive → status becomes `Waiting` with the
+    ///   matching barrier field + `waiting_reason` set, None — no budget
+    ///   consumed
     /// - circuit breaker tripped (parse/transport failures) → `Paused`, None
     ///
     /// The judge call is a one-shot side request that never touches the main
@@ -102,30 +134,38 @@ impl GoalRuntime {
     ) -> Option<Message> {
         // Snapshot what the judge needs, then release the lock — it must not
         // be held across the await below.
-        let (objective, subgoals) = {
+        let (objective, subgoals, contract) = {
             let mut g = self.state.lock().unwrap();
             if g.status == GoalStatus::Waiting {
-                if g.waiting_until.is_some_and(|until| epoch_ms() < until) {
-                    // Parked on a live time barrier: quiesce — no judge call,
-                    // no budget burn. The engine stops naturally this turn.
+                let probe = self.probe.lock().unwrap().clone();
+                if wait_barrier_holds(&g, probe.as_deref()) {
+                    // Parked on a live barrier: quiesce — no judge call, no
+                    // budget burn. The engine stops naturally this turn.
                     return None;
                 }
-                // Deadline passed — or a barrier kind this phase cannot check
-                // (pid/session restored via set_goal_state; those land in
-                // phase 3). Fail open: lazily clear the barrier, go back to
-                // Active and fall through to normal judging right here.
-                // TODO(phase 3): honor waiting_on_pid / waiting_on_session
-                // via the process supervisor instead of failing open.
+                // Barrier released: deadline passed, pid dead, session done,
+                // or no probe wired (fail open — a stale barrier must never
+                // wedge the loop). Lazily clear it, go back to Active and
+                // fall through to normal judging right here.
                 g.status = GoalStatus::Active;
                 g.clear_wait_barrier();
             }
             if !g.should_continue() {
                 return None;
             }
-            (g.objective.clone(), g.subgoals.clone())
+            (g.objective.clone(), g.subgoals.clone(), g.contract.clone())
         };
+        let background = self.background.lock().unwrap().clone();
 
-        let outcome = judge::judge_goal(&objective, &subgoals, last_response, judge_client).await;
+        let outcome = judge::judge_goal(
+            &objective,
+            &subgoals,
+            contract.as_ref(),
+            &background,
+            last_response,
+            judge_client,
+        )
+        .await;
 
         let mut g = self.state.lock().unwrap();
         // Re-check: a terminal state declared via `update_goal` mid-flight
@@ -176,26 +216,37 @@ impl GoalRuntime {
             return None;
         }
 
-        // TODO(phase 3): Pid/Session directives need the process supervisor;
-        // until then a wait verdict without a time target downgrades to a
-        // normal continuation. Skipped (judge couldn't run) also fails open
-        // to Continue.
+        // Park on the wait barrier the directive names. Deliberately does
+        // NOT consume turns_used / auto_continuations — waiting is not
+        // progress, and the budget should measure real agent work (task
+        // contract; hermes parks without burning a continuation either).
+        // Skipped (judge couldn't run) still fails open to Continue.
         if outcome.verdict == GoalVerdict::Wait
-            && let Some(WaitDirective::Seconds(secs)) = outcome.wait_directive
+            && let Some(directive) = outcome.wait_directive.clone()
         {
-            // Park on the time barrier. Deliberately does NOT consume
-            // turns_used / auto_continuations — waiting is not progress, and
-            // the budget should measure real agent work (task contract;
-            // hermes parks without burning a continuation either).
             g.status = GoalStatus::Waiting;
-            g.waiting_until = Some(epoch_ms() + secs.saturating_mul(1000));
+            g.clear_wait_barrier();
+            match directive {
+                WaitDirective::Seconds(secs) => {
+                    g.waiting_until = Some(epoch_ms() + secs.saturating_mul(1000));
+                }
+                WaitDirective::Pid(pid) => g.waiting_on_pid = Some(pid),
+                WaitDirective::Session(session_id) => {
+                    g.waiting_on_session = Some(session_id);
+                }
+            }
             g.waiting_reason = Some(outcome.reason.clone());
             return None;
         }
 
         g.turns_used += 1;
         g.auto_continuations += 1;
-        let prompt = render_continuation(&g.objective, g.blocked_threshold, &g.subgoals);
+        let prompt = render_continuation(
+            &g.objective,
+            g.blocked_threshold,
+            &g.subgoals,
+            g.contract.as_ref(),
+        );
         Some(Message::now(
             Role::User,
             vec![ContentBlock::Text { text: prompt }],
@@ -233,12 +284,13 @@ impl GoalRuntime {
     }
 
     /// Clear the goal entirely (terminal; nothing continues afterwards).
-    /// Hermes `/goal clear` wipes everything: subgoals and any wait barrier
-    /// go with it.
+    /// Hermes `/goal clear` wipes everything: subgoals, the contract and any
+    /// wait barrier go with it.
     pub fn clear(&self) {
         let mut g = self.state.lock().unwrap();
         g.status = GoalStatus::Cleared;
         g.subgoals.clear();
+        g.contract = None;
         g.clear_wait_barrier();
     }
 
@@ -262,20 +314,104 @@ impl GoalRuntime {
         g.subgoals.remove(index_1based - 1);
         true
     }
+
+    /// Set / replace the goal's completion contract (`/goal contract`, or a
+    /// backend applying a [`judge::draft_contract`] result). An all-empty
+    /// contract normalizes to `None` so the prompt shape cleanly falls back
+    /// to the plain / subgoals variants.
+    pub fn set_contract(&self, contract: GoalContract) {
+        self.state.lock().unwrap().contract = if contract.is_empty() {
+            None
+        } else {
+            Some(contract)
+        };
+    }
+
+    /// Inject the host's liveness probe backing pid/session wait barriers.
+    /// Without one, those barriers fail open at the next evaluation point.
+    pub fn set_wait_probe(&self, probe: Arc<dyn GoalWaitProbe>) {
+        *self.probe.lock().unwrap() = Some(probe);
+    }
+
+    /// Replace the host-gathered background-process snapshot rendered into
+    /// the judge prompt. The host refreshes this before each turn; nomi-agent
+    /// never scans processes itself.
+    pub fn set_background_processes(&self, processes: Vec<BackgroundProcessInfo>) {
+        *self.background.lock().unwrap() = processes;
+    }
+
+    /// Manually park the goal on a pid barrier (`/goal wait <pid>`). Replaces
+    /// any judge-set barrier — the user's directive wins. Only applies to a
+    /// goal that can still run (Active or already Waiting); returns whether
+    /// it was applied.
+    pub fn wait_on_pid(&self, pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        let mut g = self.state.lock().unwrap();
+        if !matches!(g.status, GoalStatus::Active | GoalStatus::Waiting) {
+            return false;
+        }
+        g.clear_wait_barrier();
+        g.status = GoalStatus::Waiting;
+        g.waiting_on_pid = Some(pid);
+        g.waiting_reason = Some(format!("user-requested wait on pid {pid}"));
+        true
+    }
+
+    /// Manually drop the wait barrier and go back to Active judging
+    /// (`/goal unwait`). Returns `false` when the goal was not waiting.
+    pub fn unwait(&self) -> bool {
+        let mut g = self.state.lock().unwrap();
+        if g.status != GoalStatus::Waiting {
+            return false;
+        }
+        g.status = GoalStatus::Active;
+        g.clear_wait_barrier();
+        true
+    }
 }
 
-/// Render the continuation prompt. Template substitution is deterministic:
-/// same objective/threshold/subgoals → byte-identical output (prompt-cache
-/// stability within one goal session).
-fn render_continuation(objective: &str, blocked_threshold: usize, subgoals: &[String]) -> String {
-    let template = if subgoals.is_empty() {
+/// Whether the goal's wait barrier is still holding. Hermes `is_waiting`
+/// priority: session > pid > time. The pid/session kinds hold only while a
+/// probe positively reports liveness — no probe (or a dead/finished target)
+/// releases the barrier (fail open; a stale barrier never wedges the loop).
+fn wait_barrier_holds(g: &GoalState, probe: Option<&dyn GoalWaitProbe>) -> bool {
+    if let Some(session_id) = g.waiting_on_session.as_deref() {
+        return probe.is_some_and(|p| p.is_session_active(session_id));
+    }
+    if let Some(pid) = g.waiting_on_pid {
+        return probe.is_some_and(|p| p.is_pid_alive(pid));
+    }
+    g.waiting_until.is_some_and(|until| epoch_ms() < until)
+}
+
+/// Render the continuation prompt. Template priority mirrors the judge
+/// prompt: contract > subgoals > plain, with subgoals folding into the
+/// contract block when both are present. Substitution is deterministic:
+/// same objective/threshold/subgoals/contract → byte-identical output
+/// (prompt-cache stability within one goal session).
+fn render_continuation(
+    objective: &str,
+    blocked_threshold: usize,
+    subgoals: &[String],
+    contract: Option<&GoalContract>,
+) -> String {
+    let contract = contract.filter(|c| !c.is_empty());
+    let template = if contract.is_some() {
+        CONTINUATION_CONTRACT_TEMPLATE
+    } else if subgoals.is_empty() {
         CONTINUATION_TEMPLATE
     } else {
         CONTINUATION_SUBGOALS_TEMPLATE
     };
+    let contract_block = contract
+        .map(|c| render_contract_block(c, subgoals))
+        .unwrap_or_default();
     template
         .replace("{{objective}}", objective)
         .replace("{{subgoals}}", &render_subgoals_block(subgoals))
+        .replace("{{contract}}", &contract_block)
         .replace("{{blocked_threshold}}", &blocked_threshold.to_string())
 }
 
@@ -283,6 +419,36 @@ fn render_continuation(objective: &str, blocked_threshold: usize, subgoals: &[St
 mod tests {
     use super::*;
     use crate::goal::judge::tests::MockJudgeClient;
+
+    /// Scripted probe: fixed answers, with call counters for assertions.
+    struct MockProbe {
+        pid_alive: bool,
+        session_active: bool,
+        pid_checks: std::sync::atomic::AtomicUsize,
+        session_checks: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockProbe {
+        fn new(pid_alive: bool, session_active: bool) -> Self {
+            Self {
+                pid_alive,
+                session_active,
+                pid_checks: std::sync::atomic::AtomicUsize::new(0),
+                session_checks: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl GoalWaitProbe for MockProbe {
+        fn is_pid_alive(&self, _pid: u32) -> bool {
+            self.pid_checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.pid_alive
+        }
+        fn is_session_active(&self, _session_id: &str) -> bool {
+            self.session_checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.session_active
+        }
+    }
 
     fn continue_reply() -> Result<String, String> {
         Ok(r#"{"verdict": "continue", "reason": "keep going"}"#.to_string())
@@ -382,17 +548,150 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pid_wait_directive_downgrades_to_continue_in_phase_2() {
+    async fn pid_wait_directive_parks_and_fails_open_without_probe() {
         let rt = GoalRuntime::new("ship the feature".into(), 8);
-        let judge = MockJudgeClient::new(vec![Ok(
-            r#"{"verdict": "wait", "wait_on_pid": 4242, "reason": "build running"}"#.to_string(),
-        )]);
-        // TODO(phase 3): once the process barrier lands this parks instead.
-        assert!(rt.evaluate_and_continue("building", &judge).await.is_some());
+        let judge = MockJudgeClient::new(vec![
+            Ok(r#"{"verdict": "wait", "wait_on_pid": 4242, "reason": "build running"}"#
+                .to_string()),
+            continue_reply(),
+        ]);
+        // The directive parks on the pid barrier without burning budget.
+        assert!(rt.evaluate_and_continue("building", &judge).await.is_none());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Waiting);
+        assert_eq!(s.waiting_on_pid, Some(4242));
+        assert_eq!(s.waiting_reason.as_deref(), Some("build running"));
+        assert_eq!(s.turns_used, 0);
+        assert_eq!(s.auto_continuations, 0);
+
+        // No probe wired → fail open at the next evaluation point: the
+        // barrier lazily clears and normal judging resumes immediately.
+        assert!(rt.evaluate_and_continue("progress", &judge).await.is_some());
         let s = rt.snapshot();
         assert_eq!(s.status, GoalStatus::Active);
         assert!(s.waiting_on_pid.is_none());
         assert_eq!(s.turns_used, 1);
+    }
+
+    #[tokio::test]
+    async fn pid_barrier_parks_while_probe_says_alive_and_releases_when_dead() {
+        let rt = GoalRuntime::new("ship the feature".into(), 8);
+        let probe = Arc::new(MockProbe::new(true, true));
+        rt.set_wait_probe(probe.clone());
+        let judge = MockJudgeClient::new(vec![
+            Ok(r#"{"verdict": "wait", "wait_on_pid": 4242, "reason": "build running"}"#
+                .to_string()),
+            continue_reply(),
+        ]);
+        assert!(rt.evaluate_and_continue("building", &judge).await.is_none());
+        assert_eq!(rt.snapshot().status, GoalStatus::Waiting);
+
+        // Probe says alive → stay parked: no judge call, no budget burn.
+        assert!(rt.evaluate_and_continue("still building", &judge).await.is_none());
+        assert_eq!(judge.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(probe.pid_checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(rt.snapshot().status, GoalStatus::Waiting);
+
+        // Process died → barrier releases, judging resumes in the same call.
+        rt.set_wait_probe(Arc::new(MockProbe::new(false, true)));
+        assert!(rt.evaluate_and_continue("build done", &judge).await.is_some());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Active);
+        assert!(s.waiting_on_pid.is_none());
+        assert!(s.waiting_reason.is_none());
+        assert_eq!(s.turns_used, 1);
+    }
+
+    #[tokio::test]
+    async fn session_barrier_parks_and_releases_via_probe() {
+        let rt = GoalRuntime::new("ship the feature".into(), 8);
+        rt.set_wait_probe(Arc::new(MockProbe::new(true, true)));
+        let judge = MockJudgeClient::new(vec![
+            Ok(
+                r#"{"verdict": "wait", "wait_on_session": "sess-1", "reason": "watching CI"}"#
+                    .to_string(),
+            ),
+            continue_reply(),
+        ]);
+        assert!(rt.evaluate_and_continue("watching", &judge).await.is_none());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Waiting);
+        assert_eq!(s.waiting_on_session.as_deref(), Some("sess-1"));
+
+        // Active session → parked without consulting the judge.
+        assert!(rt.evaluate_and_continue("waiting", &judge).await.is_none());
+        assert_eq!(judge.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Session finished (exited or watch trigger fired) → resume.
+        rt.set_wait_probe(Arc::new(MockProbe::new(true, false)));
+        assert!(rt.evaluate_and_continue("CI done", &judge).await.is_some());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Active);
+        assert!(s.waiting_on_session.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_barrier_has_priority_over_pid_barrier() {
+        // Hermes is_waiting priority: session > pid > time. With both fields
+        // set (e.g. a restored snapshot), only the session check runs.
+        let rt = GoalRuntime::new("ship it".into(), 8);
+        let probe = Arc::new(MockProbe::new(true, true));
+        rt.set_wait_probe(probe.clone());
+        let shared = rt.shared_state();
+        {
+            let mut g = shared.lock().unwrap();
+            g.status = GoalStatus::Waiting;
+            g.waiting_on_session = Some("sess-1".into());
+            g.waiting_on_pid = Some(4242);
+        }
+        let judge = MockJudgeClient::new(vec![]);
+        assert!(rt.evaluate_and_continue("p", &judge).await.is_none());
+        assert_eq!(probe.session_checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(probe.pid_checks.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn manual_wait_on_pid_and_unwait() {
+        let rt = GoalRuntime::new("ship it".into(), 8);
+        // User parks the goal on a pid — overrides any judge barrier.
+        rt.shared_state().lock().unwrap().waiting_until = Some(epoch_ms() + 60_000);
+        assert!(rt.wait_on_pid(4242));
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Waiting);
+        assert_eq!(s.waiting_on_pid, Some(4242));
+        assert!(s.waiting_until.is_none()); // old barrier replaced
+        assert!(s.waiting_reason.as_deref().unwrap().contains("pid 4242"));
+
+        // Pid 0 and terminal goals are rejected.
+        assert!(!rt.wait_on_pid(0));
+
+        // unwait drops the barrier and goes back to Active.
+        assert!(rt.unwait());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Active);
+        assert!(s.waiting_on_pid.is_none());
+        assert!(s.waiting_reason.is_none());
+        // Not waiting anymore — a second unwait is a no-op.
+        assert!(!rt.unwait());
+
+        rt.clear();
+        assert!(!rt.wait_on_pid(4242)); // terminal — rejected
+        assert!(!rt.unwait());
+    }
+
+    #[tokio::test]
+    async fn manual_pid_wait_parks_with_probe_until_death() {
+        let rt = GoalRuntime::new("ship it".into(), 8);
+        rt.set_wait_probe(Arc::new(MockProbe::new(true, true)));
+        assert!(rt.wait_on_pid(7));
+        let judge = MockJudgeClient::new(vec![continue_reply()]);
+        // Alive → parked, judge never consulted.
+        assert!(rt.evaluate_and_continue("p", &judge).await.is_none());
+        assert_eq!(judge.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Dead → resumes.
+        rt.set_wait_probe(Arc::new(MockProbe::new(false, true)));
+        assert!(rt.evaluate_and_continue("p", &judge).await.is_some());
+        assert_eq!(rt.snapshot().status, GoalStatus::Active);
     }
 
     #[tokio::test]
@@ -604,36 +903,101 @@ mod tests {
 
     #[test]
     fn continuation_render_is_byte_stable() {
-        // Prompt-cache guard: same inputs → byte-identical output, for both
+        // Prompt-cache guard: same inputs → byte-identical output, for all
         // template variants.
         let subgoals = vec!["tests added".to_string(), "docs updated".to_string()];
+        let contract = GoalContract {
+            outcome: "shipped".into(),
+            verification: "tests pass".into(),
+            ..Default::default()
+        };
         assert_eq!(
-            render_continuation("ship it", 3, &[]),
-            render_continuation("ship it", 3, &[]),
+            render_continuation("ship it", 3, &[], None),
+            render_continuation("ship it", 3, &[], None),
         );
         assert_eq!(
-            render_continuation("ship it", 3, &subgoals),
-            render_continuation("ship it", 3, &subgoals),
+            render_continuation("ship it", 3, &subgoals, None),
+            render_continuation("ship it", 3, &subgoals, None),
         );
-        // And the two variants differ only by the presence of the block.
-        assert!(!render_continuation("ship it", 3, &[]).contains("<subgoals>"));
-        assert!(render_continuation("ship it", 3, &subgoals).contains("<subgoals>"));
+        assert_eq!(
+            render_continuation("ship it", 3, &subgoals, Some(&contract)),
+            render_continuation("ship it", 3, &subgoals, Some(&contract)),
+        );
+        // And the variants differ only by the presence of their blocks.
+        assert!(!render_continuation("ship it", 3, &[], None).contains("<subgoals>"));
+        assert!(render_continuation("ship it", 3, &subgoals, None).contains("<subgoals>"));
+        assert!(!render_continuation("ship it", 3, &[], None).contains("<contract>"));
+        assert!(render_continuation("ship it", 3, &[], Some(&contract)).contains("<contract>"));
+        // An empty contract degrades byte-identically to the plain variants.
+        assert_eq!(
+            render_continuation("ship it", 3, &[], Some(&GoalContract::default())),
+            render_continuation("ship it", 3, &[], None),
+        );
+        assert_eq!(
+            render_continuation("ship it", 3, &subgoals, Some(&GoalContract::default())),
+            render_continuation("ship it", 3, &subgoals, None),
+        );
+    }
+
+    #[tokio::test]
+    async fn continuation_with_contract_renders_contract_block() {
+        let rt = GoalRuntime::new("ship it".into(), 8);
+        rt.set_contract(GoalContract {
+            outcome: "feature shipped".into(),
+            verification: "cargo test passes".into(),
+            ..Default::default()
+        });
+        // With both present, subgoals fold into the contract block instead
+        // of rendering their own <subgoals> section.
+        rt.add_subgoal("docs updated");
+        let judge = MockJudgeClient::new(vec![continue_reply()]);
+        let msg = rt.evaluate_and_continue("progress", &judge).await.unwrap();
+        let text = match &msg.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("<contract>"));
+        assert!(text.contains("- Outcome: feature shipped"));
+        assert!(text.contains("- Verification: cargo test passes"));
+        assert!(text.contains("- Extra criterion 1: docs updated"));
+        assert!(!text.contains("<subgoals>"));
+        assert!(!text.contains("{{")); // all placeholders substituted
+    }
+
+    #[test]
+    fn set_contract_normalizes_empty_to_none() {
+        let rt = GoalRuntime::new("ship it".into(), 8);
+        rt.set_contract(GoalContract {
+            outcome: "shipped".into(),
+            ..Default::default()
+        });
+        assert!(rt.snapshot().contract.is_some());
+        // Replacing with an all-empty contract clears it — the prompt shape
+        // cleanly falls back to the plain / subgoals variants.
+        rt.set_contract(GoalContract::default());
+        assert!(rt.snapshot().contract.is_none());
     }
 
     #[tokio::test]
     async fn resume_preserves_subgoals_and_clear_wipes_them() {
         let rt = GoalRuntime::new("ship it".into(), 8);
         rt.add_subgoal("tests added");
+        rt.set_contract(GoalContract {
+            outcome: "shipped".into(),
+            ..Default::default()
+        });
 
         rt.pause("user asked");
         rt.resume();
         // Hermes: resume starts the budget fresh but keeps the criteria.
         assert_eq!(rt.snapshot().subgoals, vec!["tests added"]);
+        assert!(rt.snapshot().contract.is_some());
 
         rt.clear();
         let s = rt.snapshot();
-        // Hermes: clear wipes everything.
+        // Hermes: clear wipes everything — subgoals and contract included.
         assert_eq!(s.status, GoalStatus::Cleared);
         assert!(s.subgoals.is_empty());
+        assert!(s.contract.is_none());
     }
 }

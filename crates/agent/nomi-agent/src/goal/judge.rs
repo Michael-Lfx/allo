@@ -15,7 +15,9 @@ use nomi_providers::LlmProvider;
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
 
-use crate::goal::state::{GoalVerdict, render_subgoals_block};
+use crate::goal::state::{
+    GoalContract, GoalVerdict, render_contract_block, render_subgoals_block,
+};
 
 /// Judge output budget. Reasoning models burn tokens on hidden reasoning
 /// before the visible one-line JSON verdict; tight caps truncate the JSON
@@ -26,19 +28,20 @@ const JUDGE_MAX_TOKENS: u32 = 4096;
 /// Wall-clock cap for one judge call (stream open + collection).
 const JUDGE_TIMEOUT_SECS: u64 = 30;
 
-/// Cap how much of the goal / last response we send to the judge.
+/// Cap how much of the goal / contract / last response we send to the judge.
 const JUDGE_GOAL_SNIPPET_CHARS: usize = 2000;
+const JUDGE_CONTRACT_SNIPPET_CHARS: usize = 2500;
 const JUDGE_RESPONSE_SNIPPET_CHARS: usize = 4000;
 
 /// Three-verdict judge contract (port of hermes `JUDGE_SYSTEM_PROMPT`).
-/// Phase 2 advertises only the time-based wait directive (`wait_for_seconds`)
-/// — pid/session barriers need the process supervisor (phase 3), and
-/// advertising them before the runtime can honor them would only produce
-/// busy-work continuations.
+/// Advertises all three wait directives — the runtime honors pid/session
+/// barriers through the host-injected [`GoalWaitProbe`]
+/// (`crate::goal::runtime::GoalWaitProbe`) and the time barrier natively.
 const JUDGE_SYSTEM_PROMPT: &str = "\
 You are a strict judge evaluating whether an autonomous agent has achieved a \
-user's stated goal. You receive the goal text and the agent's most recent \
-response. Decide one of three verdicts.\n\n\
+user's stated goal. You receive the goal text, the agent's most recent \
+response, and — when present — a list of background processes the agent has \
+running. Decide one of three verdicts.\n\n\
 DONE — the goal is fully satisfied:\n\
 - The response explicitly confirms the goal was completed, OR\n\
 - The response clearly shows the final deliverable was produced, OR\n\
@@ -46,33 +49,174 @@ DONE — the goal is fully satisfied:\n\
 input (treat this as DONE with reason describing the block).\n\n\
 WAIT — the goal is NOT done, but the next step is to wait for async work to \
 finish rather than act again. Choose this ONLY when the agent's progress is \
-genuinely gated on something running on its own (a build, CI, a long test \
-run) and re-poking now would be pure busy-work. If the agent says it is \
-rate-limited / backing off / must wait a fixed period — return seconds in \
-``wait_for_seconds``. Picking WAIT parks the loop without burning a turn; \
-it resumes automatically when the time elapses.\n\n\
+genuinely gated on something running on its own:\n\
+- A background process listed below is still running AND the response shows \
+the agent is waiting on its result (e.g. a CI poller, build, test run, \
+deploy). If the process has a session id, return it in ``wait_on_session`` \
+— that releases when the process exits OR its watch_patterns trigger fires \
+(use this for a long-lived watcher that signals mid-run and may never \
+exit). Otherwise return its pid in ``wait_on_pid`` (releases on exit only).\n\
+- The agent says it is rate-limited / backing off / must wait a fixed \
+period — return seconds in ``wait_for_seconds``.\n\
+Picking WAIT parks the loop without burning a turn; it resumes \
+automatically when the pid exits or the time elapses. Do NOT pick WAIT just \
+because work remains — only when re-poking now would be pure busy-work \
+because the agent can't progress until the async thing finishes.\n\n\
 CONTINUE — not done, and there is a concrete next step the agent can take \
 right now. This is the default when in doubt.\n\n\
 Reply ONLY with a single JSON object on one line. Shapes:\n\
 {\"verdict\": \"done\", \"reason\": \"<one sentence>\"}\n\
 {\"verdict\": \"continue\", \"reason\": \"<one sentence>\"}\n\
+{\"verdict\": \"wait\", \"wait_on_session\": \"<id>\", \"reason\": \"<one sentence>\"}\n\
+{\"verdict\": \"wait\", \"wait_on_pid\": <int>, \"reason\": \"<one sentence>\"}\n\
 {\"verdict\": \"wait\", \"wait_for_seconds\": <int>, \"reason\": \"<one sentence>\"}\n\
 The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still \
 accepted (true=done, false=continue).";
 
-/// Port of hermes `JUDGE_USER_PROMPT_TEMPLATE` /
-/// `JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE`. With subgoals present the
-/// judge must find concrete evidence for EVERY numbered criterion before it
-/// may return done; without subgoals the prompt is byte-identical to the
-/// phase-1 shape (no behavior change for the common path). Contract /
-/// background blocks render additively in phase 3.
-fn render_judge_user_prompt(goal: &str, subgoals: &[String], response: &str) -> String {
+/// System prompt for contract drafting (port of hermes
+/// `DRAFT_CONTRACT_SYSTEM_PROMPT`) — turns a plain-language objective into a
+/// structured completion contract the user can review before activating.
+const DRAFT_CONTRACT_SYSTEM_PROMPT: &str = "\
+You turn a user's plain-language objective into a structured completion \
+contract for an autonomous coding agent. The contract has five fields:\n\
+- outcome: the single end state that must be true when done\n\
+- verification: the specific test / command / artifact that PROVES the \
+outcome (must be concrete and checkable)\n\
+- constraints: what must NOT change or regress\n\
+- boundaries: which files, dirs, tools, or systems are in scope\n\
+- stop_when: the condition under which the agent should stop and ask for \
+human input instead of pushing on\n\n\
+Infer sensible, specific values from the objective and any project context \
+implied by it. Prefer concrete verification (a named test command, a build, \
+a benchmark) over vague phrases. Keep each field to one or two sentences. \
+If a field genuinely cannot be inferred, use an empty string for it.\n\n\
+Reply ONLY with a single JSON object on one line:\n\
+{\"outcome\": \"...\", \"verification\": \"...\", \"constraints\": \"...\", \
+\"boundaries\": \"...\", \"stop_when\": \"...\"}";
+
+/// One live background process the host supplies for the judge prompt
+/// (mirrors a hermes `process_registry.list_sessions()` entry). The host
+/// gathers these — nomi-agent never scans processes itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BackgroundProcessInfo {
+    pub pid: u32,
+    /// Process-runtime session id, when the process runs under one. Lets the
+    /// judge return `wait_on_session` (releases on the session's own trigger).
+    pub session_id: Option<String>,
+    pub command: String,
+    pub uptime_seconds: Option<u64>,
+    /// Tail of the process's recent output.
+    pub output_preview: Option<String>,
+    /// Watch patterns the session was started with (trigger fires mid-run).
+    pub watch_patterns: Vec<String>,
+    /// Whether a watch pattern already matched.
+    pub watch_hit: bool,
+    pub notify_on_complete: bool,
+    /// Exited processes are nothing to wait on — skipped in the prompt.
+    pub exited: bool,
+}
+
+/// Render the live background-process list for the judge prompt (port of
+/// hermes `_render_background_block`). Returns an empty string when nothing
+/// is running, so the prompt stays byte-identical to the no-background case.
+fn render_background_block(processes: &[BackgroundProcessInfo]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for p in processes {
+        if p.exited || p.pid == 0 {
+            continue;
+        }
+        let cmd = truncate_chars(p.command.replace('\n', " ").trim(), 120);
+        let mut line = format!("- pid {}", p.pid);
+        if let Some(sid) = p.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            line.push_str(&format!(" / session {sid}"));
+        }
+        line.push_str(&format!(": {cmd}"));
+        if let Some(uptime) = p.uptime_seconds {
+            line.push_str(&format!(" (running {uptime}s)"));
+        }
+        // Surface the process's own trigger so the judge can wait on a
+        // mid-run signal (watch-pattern) or completion, not just exit.
+        if !p.watch_patterns.is_empty() {
+            let hit = if p.watch_hit { " [already matched]" } else { "" };
+            line.push_str(&format!(" | watch_patterns={:?}{hit}", p.watch_patterns));
+        } else if p.notify_on_complete {
+            line.push_str(" | notify_on_complete");
+        }
+        let tail = truncate_chars(
+            p.output_preview.as_deref().unwrap_or("").replace('\n', " ").trim(),
+            120,
+        );
+        if !tail.is_empty() {
+            line.push_str(&format!(" | recent output: {tail}"));
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Background processes the agent currently has running (it may be \
+         waiting on one of these):\n{}\n\n",
+        lines.join("\n")
+    )
+}
+
+/// Port of the hermes judge user-prompt family. Template priority mirrors
+/// hermes `judge_goal`: contract > subgoals > plain. With a contract present
+/// the Verification criterion is the sole authoritative definition of done
+/// and any subgoals fold into the contract block as extra criteria; with
+/// subgoals only, the judge must find concrete evidence for EVERY numbered
+/// criterion. Without either, the prompt is byte-identical to the phase-1
+/// shape. The background block renders additively in all three shapes (empty
+/// → byte-identical to the no-background case).
+fn render_judge_user_prompt(
+    goal: &str,
+    subgoals: &[String],
+    contract: Option<&GoalContract>,
+    background: &[BackgroundProcessInfo],
+    response: &str,
+) -> String {
     let goal = truncate_chars(goal, JUDGE_GOAL_SNIPPET_CHARS);
     let response = truncate_chars(response, JUDGE_RESPONSE_SNIPPET_CHARS);
+    let background_block = render_background_block(background);
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-    if subgoals.is_empty() {
+    if let Some(contract) = contract.filter(|c| !c.is_empty()) {
+        let contract_block = truncate_chars(
+            &render_contract_block(contract, subgoals),
+            JUDGE_CONTRACT_SNIPPET_CHARS,
+        );
+        format!(
+            "Goal:\n{goal}\n\n\
+             Completion contract (the authoritative definition of done):\n\
+             {contract_block}\n\n\
+             Agent's most recent response:\n{response}\n\n\
+             {background_block}\
+             Current time: {now}\n\n\
+             Decision rules:\n\
+             - The goal is DONE only when the Verification criterion is \
+             satisfied AND the response shows concrete evidence of it (a \
+             command result, file contents excerpt, test/benchmark output) \
+             — not a claim like 'done' or 'all tests pass' without \
+             evidence.\n\
+             - If any stated Constraint was violated, the goal is NOT done \
+             — CONTINUE.\n\
+             - If the response shows the agent is waiting on a listed \
+             background process to satisfy the Verification criterion (e.g. \
+             CI is the verification and it's still running), return WAIT on \
+             that process instead of re-poking — re-poking now would be \
+             pure busy-work.\n\
+             - If the response explains the work is blocked / unachievable \
+             / needs user input (e.g. the stated Stop condition was hit), \
+             treat it as DONE with the reason describing the block.\n\
+             - Otherwise the goal is NOT done — CONTINUE.\n\n\
+             Is the goal satisfied per its completion contract — done, \
+             continue, or wait?",
+        )
+    } else if subgoals.is_empty() {
         format!(
             "Goal:\n{goal}\n\nAgent's most recent response:\n{response}\n\n\
+             {background_block}\
              Current time: {now}\n\n\
              Is the goal satisfied — done, continue, or wait?",
         )
@@ -82,6 +226,7 @@ fn render_judge_user_prompt(goal: &str, subgoals: &[String], response: &str) -> 
              Additional criteria the user added mid-loop (all must also be \
              satisfied for the goal to be DONE):\n{subgoals_block}\n\n\
              Agent's most recent response:\n{response}\n\n\
+             {background_block}\
              Current time: {now}\n\n\
              Decision: For each numbered criterion above, find concrete \
              evidence in the agent's response that the criterion is \
@@ -107,16 +252,16 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 /// A concrete wait target extracted from a `wait` verdict (port of hermes
-/// `wait_directive`). Phase 2 honors `Seconds`; `Pid`/`Session` are parsed
-/// for forward-compat but the runtime downgrades them to a normal
-/// continuation until phase 3 wires the process supervisor in.
+/// `wait_directive`). `Seconds` parks on the wall clock; `Pid` / `Session`
+/// park on the host-injected `GoalWaitProbe` (without a probe they fail open
+/// at the next evaluation point).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaitDirective {
     /// Park for a fixed number of seconds (rate-limit backoff, cooldown).
     Seconds(u64),
-    /// Park until the process exits (phase 3).
+    /// Park until the process exits.
     Pid(u32),
-    /// Park until the session exits or its watch trigger fires (phase 3).
+    /// Park until the session exits or its watch trigger fires.
     Session(String),
 }
 
@@ -219,12 +364,16 @@ impl GoalJudgeClient for ProviderJudgeClient {
     }
 }
 
-/// Ask the judge whether `objective` (and every subgoal, when present) is
-/// satisfied by `last_response`. Never errors — every failure mode maps onto
-/// a conservative [`JudgeOutcome`] (fail-open, never a false `Done`).
+/// Ask the judge whether `objective` (and every subgoal / the contract's
+/// Verification criterion, when present) is satisfied by `last_response`.
+/// `background` is the host-gathered live process snapshot the judge may
+/// return a wait directive against. Never errors — every failure mode maps
+/// onto a conservative [`JudgeOutcome`] (fail-open, never a false `Done`).
 pub async fn judge_goal(
     objective: &str,
     subgoals: &[String],
+    contract: Option<&GoalContract>,
+    background: &[BackgroundProcessInfo],
     last_response: &str,
     client: &dyn GoalJudgeClient,
 ) -> JudgeOutcome {
@@ -236,7 +385,7 @@ pub async fn judge_goal(
         return JudgeOutcome::ok(GoalVerdict::Continue, "empty response (nothing to evaluate)");
     }
 
-    let user_prompt = render_judge_user_prompt(objective, subgoals, last_response);
+    let user_prompt = render_judge_user_prompt(objective, subgoals, contract, background, last_response);
     let raw = match client.complete(JUDGE_SYSTEM_PROMPT, &user_prompt).await {
         Ok(raw) => raw,
         Err(e) => {
@@ -268,25 +417,13 @@ pub async fn judge_goal(
     }
 }
 
-/// Parse the judge's reply. Fail-open on unusable output (port of hermes
-/// `_parse_judge_response`). Returns `(verdict, reason, parse_failed,
-/// wait_directive)`.
-///
-/// Accepts both the new `{"verdict": ...}` shape and the legacy
-/// `{"done": <bool>}` shape; strips markdown code fences; extracts the first
-/// JSON object embedded in prose. A `wait` verdict must carry a concrete
-/// target (session > pid > seconds, hermes priority); wait with no usable
-/// target is downgraded to `continue` — can't park on nothing.
-pub(crate) fn parse_judge_response(raw: &str) -> (GoalVerdict, String, bool, Option<WaitDirective>) {
-    if raw.trim().is_empty() {
-        return (
-            GoalVerdict::Continue,
-            "judge returned empty response".to_string(),
-            true,
-            None,
-        );
-    }
-
+/// Best-effort JSON recovery from a model reply (port of hermes
+/// `_extract_json_object` / the fence-stripping half of
+/// `_parse_judge_response`): strips markdown code fences, then parses the
+/// whole blob or pulls the first `{...}` out of surrounding prose. `None`
+/// when no JSON object can be recovered. Shared by the judge parser and the
+/// contract drafter.
+fn extract_json_object(raw: &str) -> Option<serde_json::Value> {
     let mut text = raw.trim().to_string();
 
     // Strip markdown code fences the model may wrap JSON in.
@@ -307,8 +444,29 @@ pub(crate) fn parse_judge_response(raw: &str) -> (GoalVerdict, String, bool, Opt
         }
         serde_json::from_str(&text[start..=end]).ok()
     });
+    data.filter(|d| d.is_object())
+}
 
-    let Some(data) = data.filter(|d| d.is_object()) else {
+/// Parse the judge's reply. Fail-open on unusable output (port of hermes
+/// `_parse_judge_response`). Returns `(verdict, reason, parse_failed,
+/// wait_directive)`.
+///
+/// Accepts both the new `{"verdict": ...}` shape and the legacy
+/// `{"done": <bool>}` shape; strips markdown code fences; extracts the first
+/// JSON object embedded in prose. A `wait` verdict must carry a concrete
+/// target (session > pid > seconds, hermes priority); wait with no usable
+/// target is downgraded to `continue` — can't park on nothing.
+pub(crate) fn parse_judge_response(raw: &str) -> (GoalVerdict, String, bool, Option<WaitDirective>) {
+    if raw.trim().is_empty() {
+        return (
+            GoalVerdict::Continue,
+            "judge returned empty response".to_string(),
+            true,
+            None,
+        );
+    }
+
+    let Some(data) = extract_json_object(raw) else {
         return (
             GoalVerdict::Continue,
             format!("judge reply was not JSON: {}", truncate_chars(raw, 200)),
@@ -402,6 +560,89 @@ fn first_positive_int(data: &serde_json::Value, keys: &[&str]) -> Option<u64> {
         }
     }
     None
+}
+
+/// Why [`draft_contract`] could not produce a contract. Explicit errors (not
+/// a panic, not a silent empty contract) so the backend can surface the right
+/// message and fall back to a bare free-form goal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContractDraftError {
+    /// The objective was blank — nothing to draft from.
+    EmptyObjective,
+    /// The drafting LLM was unreachable (auth, timeout, DNS, stream error).
+    Transport(String),
+    /// The model replied, but no JSON contract could be recovered. Carries a
+    /// truncated excerpt of the raw reply for diagnostics.
+    Unparsable(String),
+    /// The reply parsed, but every contract field came back empty.
+    EmptyContract,
+}
+
+impl std::fmt::Display for ContractDraftError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyObjective => write!(f, "cannot draft a contract from an empty objective"),
+            Self::Transport(e) => write!(f, "contract draft request failed: {e}"),
+            Self::Unparsable(raw) => write!(f, "contract draft reply was not JSON: {raw}"),
+            Self::EmptyContract => write!(f, "contract draft produced no usable fields"),
+        }
+    }
+}
+
+impl std::error::Error for ContractDraftError {}
+
+/// Cap how much of the user's objective we send to the drafting model
+/// (hermes truncates at 4000).
+const DRAFT_OBJECTIVE_SNIPPET_CHARS: usize = 4000;
+
+/// Expand a plain-language objective into a structured [`GoalContract`]
+/// (port of hermes `draft_contract`). One side LLM call on the same narrow
+/// [`GoalJudgeClient`] interface the judge uses — never a conversation turn,
+/// so the main prompt cache stays intact. Missing fields default to empty
+/// strings (hermes `GoalContract.from_dict` semantics); an unusable reply is
+/// an explicit [`ContractDraftError`], never a panic. The backend applies
+/// the result via `AgentEngine::goal_set_contract` (and may show it to the
+/// user for review first).
+pub async fn draft_contract(
+    objective: &str,
+    client: &dyn GoalJudgeClient,
+) -> Result<GoalContract, ContractDraftError> {
+    let objective = objective.trim();
+    if objective.is_empty() {
+        return Err(ContractDraftError::EmptyObjective);
+    }
+
+    let user_prompt = format!(
+        "Objective:\n{}",
+        truncate_chars(objective, DRAFT_OBJECTIVE_SNIPPET_CHARS)
+    );
+    let raw = client
+        .complete(DRAFT_CONTRACT_SYSTEM_PROMPT, &user_prompt)
+        .await
+        .map_err(ContractDraftError::Transport)?;
+
+    let Some(data) = extract_json_object(&raw) else {
+        return Err(ContractDraftError::Unparsable(truncate_chars(&raw, 200)));
+    };
+    let field = |key: &str| -> String {
+        match data.get(key) {
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            // Tolerate a model emitting a non-string scalar; null/missing → empty.
+            Some(serde_json::Value::Null) | None => String::new(),
+            Some(v) => v.to_string(),
+        }
+    };
+    let contract = GoalContract {
+        outcome: field("outcome"),
+        verification: field("verification"),
+        constraints: field("constraints"),
+        boundaries: field("boundaries"),
+        stop_when: field("stop_when"),
+    };
+    if contract.is_empty() {
+        return Err(ContractDraftError::EmptyContract);
+    }
+    Ok(contract)
 }
 
 #[cfg(test)]
@@ -623,18 +864,29 @@ pub(crate) mod tests {
 
     // ── render_judge_user_prompt ──────────────────────────────────
 
+    fn sample_contract() -> GoalContract {
+        GoalContract {
+            outcome: "all goal tests pass".to_string(),
+            verification: "cargo test -p nomi-agent --lib goal exits 0".to_string(),
+            constraints: "no serialization contract changes".to_string(),
+            boundaries: "crates/agent/nomi-agent only".to_string(),
+            stop_when: "a pre-existing test fails".to_string(),
+        }
+    }
+
     #[test]
     fn judge_prompt_without_subgoals_has_no_criteria_block() {
-        let p = render_judge_user_prompt("ship it", &[], "progress");
+        let p = render_judge_user_prompt("ship it", &[], None, &[], "progress");
         assert!(p.contains("Goal:\nship it"));
         assert!(!p.contains("Additional criteria"));
+        assert!(!p.contains("Completion contract"));
         assert!(p.contains("Is the goal satisfied — done, continue, or wait?"));
     }
 
     #[test]
     fn judge_prompt_with_subgoals_lists_every_criterion() {
         let subgoals = vec!["tests added".to_string(), "docs updated".to_string()];
-        let p = render_judge_user_prompt("ship it", &subgoals, "progress");
+        let p = render_judge_user_prompt("ship it", &subgoals, None, &[], "progress");
         assert!(p.contains("Additional criteria the user added mid-loop"));
         assert!(p.contains("- 1. tests added"));
         assert!(p.contains("- 2. docs updated"));
@@ -642,12 +894,173 @@ pub(crate) mod tests {
         assert!(p.contains("Is the goal AND every additional criterion satisfied?"));
     }
 
+    #[test]
+    fn judge_prompt_with_contract_makes_verification_authoritative() {
+        let contract = sample_contract();
+        let p = render_judge_user_prompt("ship it", &[], Some(&contract), &[], "progress");
+        assert!(p.contains("Completion contract (the authoritative definition of done):"));
+        assert!(p.contains("- Verification: cargo test -p nomi-agent --lib goal exits 0"));
+        assert!(p.contains("- Stop when blocked: a pre-existing test fails"));
+        // Decision rules: verification is authoritative, constraints enforced,
+        // a hit stop condition maps to DONE-with-block-reason.
+        assert!(p.contains("DONE only when the Verification criterion"));
+        assert!(p.contains("If any stated Constraint was violated"));
+        assert!(p.contains("the stated Stop condition was hit"));
+        assert!(p.contains(
+            "Is the goal satisfied per its completion contract — done, continue, or wait?"
+        ));
+        // Contract shape supersedes both other shapes.
+        assert!(!p.contains("Additional criteria"));
+    }
+
+    #[test]
+    fn judge_prompt_with_contract_and_subgoals_folds_criteria_into_contract_block() {
+        // Hermes: with a contract present, subgoals fold into the contract
+        // block as extra criteria instead of rendering their own section.
+        let contract = sample_contract();
+        let subgoals = vec!["tests added".to_string(), "docs updated".to_string()];
+        let p = render_judge_user_prompt("ship it", &subgoals, Some(&contract), &[], "progress");
+        assert!(p.contains("Completion contract"));
+        assert!(p.contains("- Extra criterion 1: tests added"));
+        assert!(p.contains("- Extra criterion 2: docs updated"));
+        assert!(!p.contains("Additional criteria the user added mid-loop"));
+        assert!(!p.contains("Is the goal AND every additional criterion satisfied?"));
+    }
+
+    #[test]
+    fn empty_contract_falls_back_to_plain_prompt() {
+        let p = render_judge_user_prompt(
+            "ship it",
+            &[],
+            Some(&GoalContract::default()),
+            &[],
+            "progress",
+        );
+        assert!(!p.contains("Completion contract"));
+        assert!(p.contains("Is the goal satisfied — done, continue, or wait?"));
+    }
+
+    // ── background-process block ────────────────────────────────────────
+
+    #[test]
+    fn background_block_renders_running_processes_only() {
+        let procs = vec![
+            BackgroundProcessInfo {
+                pid: 4242,
+                session_id: Some("sess-1".to_string()),
+                command: "cargo watch -x test".to_string(),
+                uptime_seconds: Some(90),
+                output_preview: Some("Compiling nomi-agent".to_string()),
+                watch_patterns: vec!["tests passed".to_string()],
+                watch_hit: true,
+                ..Default::default()
+            },
+            BackgroundProcessInfo {
+                pid: 7,
+                command: "already gone".to_string(),
+                exited: true,
+                ..Default::default()
+            },
+        ];
+        let block = render_background_block(&procs);
+        assert!(block.contains("Background processes the agent currently has running"));
+        assert!(block.contains("- pid 4242 / session sess-1: cargo watch -x test (running 90s)"));
+        assert!(block.contains("watch_patterns=[\"tests passed\"] [already matched]"));
+        assert!(block.contains("recent output: Compiling nomi-agent"));
+        assert!(!block.contains("already gone"));
+    }
+
+    #[test]
+    fn background_block_is_empty_for_no_running_processes() {
+        assert_eq!(render_background_block(&[]), "");
+        // Exited-only lists degrade to the empty string too, keeping the
+        // judge prompt byte-identical to the no-background case.
+        let exited = vec![BackgroundProcessInfo {
+            pid: 1,
+            command: "x".to_string(),
+            exited: true,
+            ..Default::default()
+        }];
+        assert_eq!(render_background_block(&exited), "");
+    }
+
+    #[test]
+    fn judge_prompt_renders_background_block_between_response_and_time() {
+        let procs = vec![BackgroundProcessInfo {
+            pid: 99,
+            command: "npm run build".to_string(),
+            ..Default::default()
+        }];
+        let p = render_judge_user_prompt("ship it", &[], None, &procs, "progress");
+        let response_at = p.find("Agent's most recent response:").unwrap();
+        let block_at = p.find("Background processes").unwrap();
+        let time_at = p.find("Current time:").unwrap();
+        assert!(response_at < block_at && block_at < time_at);
+        // Without background the prompt stays byte-identical in shape.
+        let bare = render_judge_user_prompt("ship it", &[], None, &[], "progress");
+        assert!(!bare.contains("Background processes"));
+    }
+
+    // ── draft_contract ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn draft_contract_parses_full_reply() {
+        let client = MockJudgeClient::new(vec![Ok(r#"{"outcome": "o", "verification": "v", "constraints": "c", "boundaries": "b", "stop_when": "s"}"#.into())]);
+        let c = draft_contract("ship the feature", &client).await.unwrap();
+        assert_eq!(c.outcome, "o");
+        assert_eq!(c.verification, "v");
+        assert_eq!(c.constraints, "c");
+        assert_eq!(c.boundaries, "b");
+        assert_eq!(c.stop_when, "s");
+    }
+
+    #[tokio::test]
+    async fn draft_contract_defaults_missing_fields_to_empty() {
+        // Hermes from_dict semantics: absent fields become empty strings.
+        let client = MockJudgeClient::new(vec![Ok(
+            r#"```json
+{"outcome": "o", "verification": "v"}
+```"#
+                .into(),
+        )]);
+        let c = draft_contract("ship it", &client).await.unwrap();
+        assert_eq!(c.outcome, "o");
+        assert_eq!(c.verification, "v");
+        assert_eq!(c.constraints, "");
+        assert_eq!(c.boundaries, "");
+        assert_eq!(c.stop_when, "");
+    }
+
+    #[tokio::test]
+    async fn draft_contract_rejects_unusable_replies() {
+        let client = MockJudgeClient::new(vec![Ok("no json here".to_string())]);
+        let err = draft_contract("ship it", &client).await.unwrap_err();
+        assert!(matches!(err, ContractDraftError::Unparsable(_)));
+
+        let client = MockJudgeClient::new(vec![Err("401".to_string())]);
+        let err = draft_contract("ship it", &client).await.unwrap_err();
+        assert!(matches!(err, ContractDraftError::Transport(_)));
+
+        // Parsed but all-empty contract is an explicit error, not Ok(empty).
+        let client = MockJudgeClient::new(vec![Ok(r#"{"outcome": ""}"#.to_string())]);
+        let err = draft_contract("ship it", &client).await.unwrap_err();
+        assert_eq!(err, ContractDraftError::EmptyContract);
+    }
+
+    #[tokio::test]
+    async fn draft_contract_rejects_empty_objective_without_calling_client() {
+        let client = MockJudgeClient::new(vec![]);
+        let err = draft_contract("   ", &client).await.unwrap_err();
+        assert_eq!(err, ContractDraftError::EmptyObjective);
+        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
     // ── judge_goal ──────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn empty_goal_is_skipped_without_calling_client() {
         let client = MockJudgeClient::new(vec![]);
-        let out = judge_goal("  ", &[], "some response", &client).await;
+        let out = judge_goal("  ", &[], None, &[], "some response", &client).await;
         assert_eq!(out.verdict, GoalVerdict::Skipped);
         assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
@@ -655,7 +1068,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn empty_response_continues_without_calling_client() {
         let client = MockJudgeClient::new(vec![]);
-        let out = judge_goal("ship it", &[], "", &client).await;
+        let out = judge_goal("ship it", &[], None, &[], "", &client).await;
         assert_eq!(out.verdict, GoalVerdict::Continue);
         assert!(!out.parse_failed);
         assert!(!out.transport_failed);
@@ -665,7 +1078,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn transport_error_flags_transport_failed() {
         let client = MockJudgeClient::new(vec![Err("401 unauthorized".to_string())]);
-        let out = judge_goal("ship it", &[], "did stuff", &client).await;
+        let out = judge_goal("ship it", &[], None, &[], "did stuff", &client).await;
         assert_eq!(out.verdict, GoalVerdict::Continue);
         assert!(out.transport_failed);
         assert!(!out.parse_failed);
@@ -674,7 +1087,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn parse_error_flags_parse_failed() {
         let client = MockJudgeClient::new(vec![Ok("not json at all".to_string())]);
-        let out = judge_goal("ship it", &[], "did stuff", &client).await;
+        let out = judge_goal("ship it", &[], None, &[], "did stuff", &client).await;
         assert_eq!(out.verdict, GoalVerdict::Continue);
         assert!(out.parse_failed);
         assert!(!out.transport_failed);
@@ -684,7 +1097,7 @@ pub(crate) mod tests {
     async fn done_reply_yields_done() {
         let client =
             MockJudgeClient::new(vec![Ok(r#"{"verdict": "done", "reason": "verified"}"#.into())]);
-        let out = judge_goal("ship it", &[], "shipped and tested", &client).await;
+        let out = judge_goal("ship it", &[], None, &[], "shipped and tested", &client).await;
         assert_eq!(out.verdict, GoalVerdict::Done);
         assert_eq!(out.reason, "verified");
         assert!(!out.parse_failed);
