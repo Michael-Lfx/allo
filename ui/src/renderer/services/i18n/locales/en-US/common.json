@@ -9,7 +9,7 @@
     "settings": "Settings"
   },
   "navExpand": "Expand app navigation",
-  "navCollapse": "Collapse app navigation",
+  "navCollapse": "Hide Sidebar",
   "send": "Send",
   "cancel": "Cancel",
   "save": "Save",
@@ -19,7 +19,7 @@
   "folder": "Folder",
   "filePicker": {
     "recent": "Recent",
-    "chooseDifferentFolder": "Choose a different folder"
+    "chooseDifferentFolder": "Open Folder"
   },
   "upload": "Upload",
   "model": "Model",

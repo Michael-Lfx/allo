@@ -30,7 +30,8 @@
     "clearWorkspace": "清除",
     "specifyWorkspace": "选择项目文件夹",
     "searchPlaceholder": "搜索项目…",
-    "defaultWorkspace": "默认工作路径（Nomi 管理）"
+    "defaultWorkspace": "默认工作路径（Nomi 管理）",
+    "recentWorkspaces": "最近"
   },
   "scanning": {
     "initialMessage": "当前Agent不可用, 正在检测其他可用agent...",

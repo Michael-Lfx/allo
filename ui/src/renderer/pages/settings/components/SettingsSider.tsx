@@ -6,12 +6,16 @@ import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
 import {
+  BookOpen,
   Computer,
   Cpu,
   Earth,
+  Headset,
   Info,
   Lightning,
   LinkCloud,
+  ListView,
+  Peoples,
   Pic,
   Brain,
   ChartPie,
@@ -35,6 +39,10 @@ export const BUILTIN_TAB_IDS = [
   'poi',
   'insights',
   'media',
+  'nomi',
+  'public-companions',
+  'learn',
+  'requirements',
   'open-capabilities',
   'cloud-login',
   'about',
@@ -59,6 +67,7 @@ export const LEGACY_ANCHOR_REMAP: Record<string, string> = {
  */
 const GROUP_HEADER_BEFORE: Record<string, string> = {
   system: 'settings.groupApp',
+  'open-capabilities': 'settings.groupCapabilities',
   about: 'settings.groupAbout',
 };
 
@@ -93,12 +102,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         icon: <Cpu />,
         path: 'execution-engines',
       },
-      capabilities: {
-        id: 'capabilities',
-        label: t('settings.capabilities', { defaultValue: 'Capabilities' }),
-        icon: <Lightning />,
-        path: 'capabilities',
-      },
       system: { id: 'system', label: t('settings.system'), icon: <System />, path: 'system' },
       'browser-use': {
         id: 'browser-use',
@@ -129,6 +132,31 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.mediaNav'),
         icon: <Pic />,
         path: 'media',
+      },
+      // Desktop companion & public companions — reuse original icons and i18n keys from main sider
+      nomi: {
+        id: 'nomi',
+        label: t('nomi.siderTitle', { defaultValue: '桌面伙伴' }),
+        icon: <Peoples />,
+        path: 'nomi',
+      },
+      'public-companions': {
+        id: 'public-companions',
+        label: t('publicCompanion.siderTitle', { defaultValue: '对外伙伴' }),
+        icon: <Headset />,
+        path: 'public-companions',
+      },
+      learn: {
+        id: 'learn',
+        label: t('learning.title', { defaultValue: '学习' }),
+        icon: <BookOpen />,
+        path: 'learn',
+      },
+      requirements: {
+        id: 'requirements',
+        label: t('requirements.title', { defaultValue: '需求平台' }),
+        icon: <ListView />,
+        path: 'requirements',
       },
       'open-capabilities': {
         id: 'open-capabilities',
@@ -232,7 +260,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
       })}
     >
       {menus.map((item, index) => {
-        const isSelected = pathname.includes(item.path);
+        const isSelected = pathname === `/settings/${item.path}` || pathname.startsWith(`/settings/${item.path}/`);
         const groupHeaderKey = groupHeaderAt.get(index);
         const groupHeader =
           groupHeaderKey && !collapsed ? (
@@ -256,7 +284,9 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
                   }
                 )}
                 onClick={() => {
-                  Promise.resolve(navigate(`/settings/${item.path}`, { replace: true })).catch((error) => {
+                  // Absolute paths (e.g. /nomi) navigate directly; relative paths are settings sub-routes
+                  const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
+                  Promise.resolve(navigate(target, { replace: true })).catch((error) => {
                     console.error('Navigation failed:', error);
                   });
                 }}

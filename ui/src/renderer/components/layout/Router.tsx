@@ -288,6 +288,15 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
           <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
+          {/* Feature pages embedded inside Settings */}
+          <Route path='/settings/nomi' element={withRouteFallback(NomiConfigPage)} />
+          <Route path='/settings/public-companions' element={withRouteFallback(PublicCompanionRosterPage)} />
+          <Route path='/settings/learn' element={withRouteFallback(LearningPage)} />
+          <Route path='/settings/requirements' element={withRouteFallback(RequirementsLayout)}>
+            <Route index element={withRouteFallback(WorkspacePage)} />
+            <Route path='extensions' element={withRouteFallback(ExtensionsPage)} />
+            <Route path='sources' element={withRouteFallback(SourcesPage)} />
+          </Route>
           <Route path='/settings/ext/:tabId' element={withRouteFallback(ExtensionSettingsPage)} />
           <Route path='/settings/webhook' element={<Navigate to='/requirements/extensions?tab=notify' replace />} />
           <Route path='/settings' element={<Navigate to='/settings/system' replace />} />

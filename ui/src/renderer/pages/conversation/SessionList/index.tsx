@@ -5,6 +5,7 @@ import type { TChatConversation } from '@/common/config/storage';
 import type { ConversationId, TerminalId } from '@/common/types/ids';
 import BatchActionBar from '@/renderer/components/base/BatchActionBar';
 import DirectorySelectionModal from '@/renderer/components/settings/DirectorySelectionModal';
+import { getRecentWorkspaces } from '@/renderer/components/workspace/recentWorkspaces';
 import { useConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
 import { useCronJobsMap } from '@/renderer/pages/cron';
 import { useTerminalSessions } from '@/renderer/pages/terminal/useTerminalSessions';
@@ -12,8 +13,8 @@ import { emitter } from '@/renderer/utils/emitter';
 import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { scrollSidebarItemIntoView } from '@/renderer/utils/ui/scrollIntoView';
 import { cleanupSiderTooltips } from '@/renderer/utils/ui/siderTooltip';
-import { Empty, Input, Message, Modal } from '@arco-design/web-react';
-import { FolderOpen } from '@icon-park/react';
+import { Input, Message, Modal } from '@arco-design/web-react';
+import { FolderOpen, Plus, Right } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -69,6 +70,15 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  // 控制工作路径列表的展开/收起
+  const [expanded, setExpanded] = useState(true);
+  // 悬浮菜单位置和状态
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  // 每次打开悬浮菜单时重新读取 localStorage（addRecentWorkspace 写入后需要刷新快照）
+  const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>(() => getRecentWorkspaces());
   const {
     getJobStatus,
     markAsRead,
@@ -405,6 +415,62 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     scrollSidebarItemIntoView(pending.kind === 'interactive' ? 'c-' + pending.id : 'terminal-' + pending.id);
   }, [tree, revealTick, expandWorkpathDrawer, expandWorkpathSubgroup]);
 
+  /* ------------------------- workspace dropdown UI ------------------------- */
+
+  const handleOpenDropdown = useCallback(() => {
+    const el = dropdownTriggerRef.current;
+    if (!el) return;
+    setRecentWorkspaces(getRecentWorkspaces());
+    const rect = el.getBoundingClientRect();
+    // position below the trigger, aligned to left edge
+    setDropdownStyle({
+      position: 'fixed' as const,
+      left: rect.left,
+      top: rect.bottom + 6,
+      minWidth: 280,
+      maxWidth: 360,
+      zIndex: 99999,
+    });
+    setDropdownOpen(true);
+  }, []);
+
+  const handleCloseDropdown = useCallback(() => {
+    setDropdownOpen(false);
+  }, []);
+
+  const toggleDropdownOpen = useCallback(() => {
+    if (dropdownOpen) {
+      handleCloseDropdown();
+    } else {
+      handleOpenDropdown();
+    }
+  }, [dropdownOpen, handleOpenDropdown, handleCloseDropdown]);
+
+  // 点击外部关闭悬浮菜单 + Escape 键关闭
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        dropdownTriggerRef.current &&
+        !dropdownTriggerRef.current.contains(target) &&
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target)
+      ) {
+        handleCloseDropdown();
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleCloseDropdown();
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [dropdownOpen, handleCloseDropdown]);
+
   /* ---------------------------------- row render ---------------------------------- */
 
   const getConversationRowProps = useCallback(
@@ -626,6 +692,121 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
         onConfirm={handleSelectExportDirectoryFromModal}
         onCancel={() => setShowExportDirectorySelector(false)}
       />
+
+      {/* Workspace dropdown */}
+      {dropdownOpen && (
+        <div
+          ref={dropdownRef}
+          style={{
+            ...dropdownStyle,
+            background: 'var(--color-bg-1, #fff)',
+            border: '1px solid var(--color-border-2)',
+            borderRadius: '12px',
+            padding: '6px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.08), 0 12px 32px rgba(0,0,0,0.06)',
+            userSelect: 'none',
+          }}>
+          {/* Open Folder button */}
+          <button
+            type='button'
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              width: '100%',
+              padding: '8px 10px',
+              border: 'none',
+              borderRadius: '10px',
+              background: 'transparent',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontFamily: 'inherit',
+              textAlign: 'left',
+              color: 'var(--color-text-1)',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-fill-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            onClick={() => {
+              ipcBridge.dialog.showOpen
+                .invoke({ properties: ['openDirectory', 'createDirectory'] })
+                .then((paths) => {
+                  const projectPath = paths?.[0]?.trim();
+                  if (!projectPath) return;
+                  import('@/renderer/pages/conversation/SessionList/utils/projectWorkpaths').then(({ addProjectWorkpath }) => {
+                    import('@/renderer/components/workspace').then(({ addRecentWorkspace }) => {
+                      addProjectWorkpath(projectPath);
+                      addRecentWorkspace(projectPath);
+                      void navigate('/guid', { state: { workspace: projectPath } });
+                      Message.success(t('sessionList.createProjectSuccess'));
+                    });
+                  });
+                })
+                .catch((error) => {
+                  console.error('[Workspace] Failed to open directory:', error);
+                });
+            }}>
+            <svg width='14' height='14' fill='none' stroke='currentColor' strokeWidth='1.8' viewBox='0 0 24 24' style={{ flexShrink: 0, color: 'var(--color-text-3)' }}>
+              <path d='M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z' />
+            </svg>
+            <span>{t('common.filePicker.chooseDifferentFolder')}</span>
+          </button>
+
+          {/* Recents section */}
+          {recentWorkspaces.length > 0 && (
+            <>
+              <div style={{ height: '1px', background: 'var(--color-border-2)', margin: '4px', opacity: 0.6 }} />
+              <div style={{ padding: '6px 10px', fontSize: '11px', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-3)' }}>
+                {t('guid.workspace.recentWorkspaces') || '最近使用'}
+              </div>
+              <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                {recentWorkspaces.slice(0, 5).map((path) => {
+                  const name = path.split(/[\\/]/).pop() || path;
+                  return (
+                    <button
+                      type='button'
+                      key={path}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '8px 10px',
+                        border: 'none',
+                        borderRadius: '10px',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontFamily: 'inherit',
+                        textAlign: 'left',
+                        color: 'var(--color-text-1)',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-fill-2)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                      onClick={() => {
+                        import('@/renderer/pages/conversation/SessionList/utils/projectWorkpaths').then(({ addProjectWorkpath }) => {
+                          import('@/renderer/components/workspace').then(({ addRecentWorkspace }) => {
+                            addProjectWorkpath(path);
+                            addRecentWorkspace(path);
+                            void navigate('/guid', { state: { workspace: path } });
+                            handleCloseDropdown();
+                          });
+                        });
+                      }}>
+                      <svg width='13' height='13' fill='none' stroke='currentColor' strokeWidth='1.8' viewBox='0 0 24 24' style={{ flexShrink: 0, color: 'var(--color-text-3)' }}>
+                        <path d='M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z' />
+                      </svg>
+                      <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'baseline', gap: '6px', whiteSpace: 'nowrap', overflow: 'hidden' }}>
+                        <span style={{ fontSize: '13px', lineHeight: '18px', fontWeight: 500, flexShrink: 0 }}>{name}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px', lineHeight: '18px', color: 'var(--color-text-3)' }}>{path}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 
@@ -653,12 +834,10 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     );
   }
 
-  const isEmpty = conversations.length === 0 && terminals.length === 0;
-
   return (
     <>
       {modals}
-      <div className='min-w-0'>
+      <div className='min-w-0 mt-10px'>
         {/* 桌面伙伴专属工作空间分组（roster-driven，置于项目/工作路径之上）。仅交互式、
             不在此新建；可折叠（状态持久化于 useWorkpathUiState，默认展开）；
             点击伙伴行跳转其唯一会话 /conversation/:id。 */}
@@ -669,18 +848,64 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           onToggleExpanded={ui.toggleCompanionGroup}
         />
 
-        <div data-testid='workpath-section-toolbar' className='px-2px pb-6px'>
-          <div className='h-22px px-2px flex items-center justify-between gap-8px select-none'>
-            <span className='text-13px text-t-tertiary font-[500] leading-none tracking-wide truncate'>
-              {t('sessionList.workpathSection')}
+        <div data-testid='workpath-section-toolbar' className='pl-10px pr-4px pb-6px flex items-center justify-between'>
+          {/* Left text — click to fold/unfold the workpath list */}
+          <button
+            type='button'
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            className='group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left opacity-75 transition-opacity hover:opacity-100 relative'
+          >
+            <span className='text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
+              {t('sessionList.workspaces')}
             </span>
-            {totalSelectable > 0 && (
-              <span className='text-12px text-t-tertiary leading-none shrink-0'>{totalSelectable}</span>
+            {/* Arrow icon - shown on hover of the title button, rotates based on expanded state */}
+            {(!collapsed || dropdownOpen) && (
+              <div
+                className={`ml-1 shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-200 ${
+                  expanded ? 'rotate-90' : ''
+                } collapsed-hidden`}
+                style={{
+                  transformOrigin: 'center center',
+                }}
+              >
+                <Right
+                  theme='outline'
+                  size='12'
+                  fill='currentColor'
+                  className='block leading-none'
+                />
+              </div>
             )}
-          </div>
+          </button>
+          {/* Right plus button */}
+          <button
+            ref={dropdownTriggerRef}
+            type='button'
+            onClick={toggleDropdownOpen}
+            aria-label={t('common.add') || '添加'}
+            style={{
+              border: 'none',
+              outline: 'none',
+              background: 'transparent',
+              padding: 0,
+              margin: 0,
+            }}
+            className={`h-22px px-8px flex items-center gap-4px select-none cursor-pointer rd-6px transition-all group ${
+              dropdownOpen
+                ? 'bg-fill-2'
+                : 'hover:bg-fill-2'
+            }`}>
+            <Plus
+              theme='outline'
+              size='13'
+              fill='currentColor'
+              className={`transition-transform duration-200 ${dropdownOpen ? 'rotate-45' : ''}`}
+            />
+          </button>
         </div>
 
-        {tree.map((node) => (
+        {expanded && tree.map((node) => (
           <WorkpathDrawer
             key={node.key}
             node={node}
@@ -699,12 +924,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           />
         ))}
 
-        {/* 空态：default 抽屉常显（tree 恒含 default 节点）+ 新建引导文案 */}
-        {isEmpty && (
-          <div className='py-32px flex-center'>
-            <Empty description={t('sessionList.empty')} />
-          </div>
-        )}
+        {/* 空态提示已移除（导航精简） */}
 
         {/* Batch action bar — spans both session kinds */}
         {batchMode && (

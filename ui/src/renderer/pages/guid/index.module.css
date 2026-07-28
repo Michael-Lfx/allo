@@ -2028,24 +2028,50 @@ button.guidResourceCard:focus-visible {
 
 /* workspace dropdown popup — portal-rendered, position set via JS */
 .wsDropdown {
-  background: var(--bg-base, #fff);
+  background: var(--color-bg-1, #fff);
   border: 1px solid var(--color-border-2);
   border-radius: 12px;
   padding: 6px;
   box-shadow:
-    0 10px 32px rgba(0, 0, 0, 0.1),
-    0 2px 6px rgba(0, 0, 0, 0.06);
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    0 12px 32px rgba(0, 0, 0, 0.06);
   min-width: 230px;
   max-height: 360px;
   overflow-y: auto;
+  animation: wsDropdownFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: bottom left;
+  user-select: none;
+  will-change: opacity, transform;
+}
+
+@keyframes wsDropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wsDropdownFadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
 }
 
 :global([data-theme='dark']) .wsDropdown {
   background: var(--color-bg-2, #262626);
   border-color: var(--color-border-3, #3a3a3a);
   box-shadow:
-    0 10px 32px rgba(0, 0, 0, 0.35),
-    0 2px 6px rgba(0, 0, 0, 0.2);
+    0 4px 12px rgba(0, 0, 0, 0.25),
+    0 12px 32px rgba(0, 0, 0, 0.15);
 }
 
 .wsDropdownSearch {
@@ -2077,20 +2103,41 @@ button.guidResourceCard:focus-visible {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   cursor: pointer;
   font-size: 13px;
   font-family: inherit;
   text-align: left;
   color: var(--color-text-1);
-  transition: background 0.1s;
+  transition: background 0.12s ease, transform 0.1s ease;
 }
 
 .wsDropdownItem:hover {
-  background: var(--color-fill-2);
+  background: color-mix(in srgb, var(--color-fill-2) 80%, transparent);
+}
+
+.wsDropdownItem:hover svg {
+  color: var(--color-text-2);
+}
+
+:global([data-theme='dark']) .wsDropdownItem:hover {
+  background: color-mix(in srgb, var(--color-fill-2) 60%, transparent);
+}
+
+.wsDropdownItem:hover .wsDropdownItemName {
+  color: var(--color-text-2);
+}
+
+.wsDropdownItem:active {
+  transform: scale(0.98);
+}
+
+.wsDropdownItem:focus-visible {
+  outline: 2px solid var(--color-fill-4);
+  outline-offset: -2px;
 }
 
 .wsDropdownItemActive {
@@ -2099,6 +2146,15 @@ button.guidResourceCard:focus-visible {
 }
 
 .wsDropdownItemAccent {
+  color: var(--aou-7);
+  font-weight: 500;
+}
+
+.wsDropdownItemAccent svg {
+  color: var(--aou-7);
+}
+
+.wsDropdownItemAccent:hover svg {
   color: var(--aou-7);
 }
 
@@ -2120,10 +2176,57 @@ button.guidResourceCard:focus-visible {
   cursor: not-allowed;
 }
 
+:global([data-theme='dark']) .wsDropdownSep {
+  background: color-mix(in srgb, var(--color-border-2) 50%, transparent);
+}
+
 .wsDropdownSep {
   height: 1px;
   background: var(--color-border-2);
-  margin: 4px 0;
+  margin: 4px 4px;
+  opacity: 0.6;
+}
+
+.wsDropdownItemName {
+  color: var(--color-text-3);
+}
+
+/* Workspace dropdown title section */
+.wsDropdownTitle {
+  color: var(--color-text-3);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+/* Recents container with thin scrollbar */
+.wsDropdownRecentsContainer {
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-fill-3) 60%, transparent) transparent;
+}
+
+.wsDropdownRecentsContainer::-webkit-scrollbar {
+  width: 4px;
+}
+
+.wsDropdownRecentsContainer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wsDropdownRecentsContainer::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-fill-3) 60%, transparent);
+  border-radius: 2px;
+}
+
+:global([data-theme='dark']) .wsDropdownRecentsContainer::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-fill-3) 40%, transparent);
+}
+
+.wsDropdownRecentsContainer::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-fill-3);
 }
 
 .lightPlaceholder::placeholder {

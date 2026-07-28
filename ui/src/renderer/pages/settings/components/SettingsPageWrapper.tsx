@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { Computer, Cpu, Earth, Info, Lightning, LinkCloud, Pic, Brain, ChartPie, CloudStorage, Puzzle, Send, System } from '@icon-park/react';
+import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, LinkCloud, ListView, Peoples, Pic, Brain, ChartPie, CloudStorage, Puzzle, Send, System } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -91,6 +91,31 @@ export function getBuiltinSettingsNavItems(
       label: t('settings.mediaNav'),
       icon: <Pic theme='outline' size='16' />,
       path: 'media',
+    },
+    // Desktop companion & public companions — reuse original icons and i18n keys from main sider
+    nomi: {
+      id: 'nomi',
+      label: t('nomi.siderTitle', { defaultValue: '桌面伙伴' }),
+      icon: <Peoples theme='outline' size='16' />,
+      path: 'nomi',
+    },
+    'public-companions': {
+      id: 'public-companions',
+      label: t('publicCompanion.siderTitle', { defaultValue: '对外伙伴' }),
+      icon: <Headset theme='outline' size='16' />,
+      path: 'public-companions',
+    },
+    learn: {
+      id: 'learn',
+      label: t('learning.title', { defaultValue: '学习' }),
+      icon: <BookOpen theme='outline' size='16' />,
+      path: 'learn',
+    },
+    requirements: {
+      id: 'requirements',
+      label: t('requirements.title', { defaultValue: '需求平台' }),
+      icon: <ListView theme='outline' size='16' />,
+      path: 'requirements',
     },
     'open-capabilities': {
       id: 'open-capabilities',
@@ -211,7 +236,9 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
                     'settings-mobile-top-nav__item--active': active,
                   })}
                   onClick={() => {
-                    void navigate(`/settings/${item.path}`, { replace: true });
+                    // Absolute paths (e.g. /nomi) navigate directly; relative paths are settings sub-routes
+                    const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
+                    void navigate(target, { replace: true });
                   }}
                 >
                   <span className='settings-mobile-top-nav__icon'>{item.icon}</span>

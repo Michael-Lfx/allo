@@ -9,18 +9,14 @@ import {
   isSameSessionTarget,
   type SessionTarget,
 } from '@/common/types/ids';
-import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
+import InstantHoverTooltip, { type InstantHoverTooltipProps } from '@renderer/components/base/InstantHoverTooltip';
 import MobileConversationBrand from './MobileConversationBrand';
 import TitlebarLanguageMenu from './TitlebarLanguageMenu';
 import TitlebarUpdateButton from './TitlebarUpdateButton';
 import WindowControls from '../WindowControls';
 import { WORKSPACE_STATE_EVENT, dispatchWorkspaceToggleEvent } from '@renderer/utils/workspace/workspaceEvents';
 import type { WorkspaceStateDetail } from '@renderer/utils/workspace/workspaceEvents';
-import {
-  SESSION_SIDER_STATE_EVENT,
-  dispatchSessionSiderToggleEvent,
-} from '@renderer/utils/workspace/sessionSiderEvents';
-import type { SessionSiderStateDetail } from '@renderer/utils/workspace/sessionSiderEvents';
+
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useNavigationHistory } from '@/renderer/hooks/context/NavigationHistoryContext';
 import { isDesktopShell, isMacOS } from '@/renderer/utils/platform';
@@ -72,7 +68,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const { t } = useTranslation();
   const appTitle = useMemo(() => 'Flowy', []);
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(true);
-  const [sessionSiderCollapsed, setSessionSiderCollapsed] = useState(false);
+
   const [mobileCenterTitle, setMobileCenterTitle] = useState(appTitle);
   const [mobileCenterOffset, setMobileCenterOffset] = useState(0);
   const layout = useLayoutContext();
@@ -111,23 +107,6 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     };
   }, [activeWorkspaceTarget]);
 
-  // 同步会话二级侧栏折叠状态，使标题栏开关图标保持一致
-  // Sync session secondary-sidebar collapsed state for the titlebar toggle icon
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
-    const handler = (event: Event) => {
-      const customEvent = event as CustomEvent<SessionSiderStateDetail>;
-      if (typeof customEvent.detail?.collapsed === 'boolean') {
-        setSessionSiderCollapsed(customEvent.detail.collapsed);
-      }
-    };
-    window.addEventListener(SESSION_SIDER_STATE_EVENT, handler as EventListener);
-    return () => {
-      window.removeEventListener(SESSION_SIDER_STATE_EVENT, handler as EventListener);
-    };
-  }, []);
 
   const isDesktopRuntime = isDesktopShell();
   const isMacRuntime = isDesktopRuntime && isMacOS();
@@ -165,9 +144,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     location.pathname.startsWith('/conversation/') ||
     location.pathname === '/terminal-new' ||
     location.pathname.startsWith('/terminal/');
-  const sessionToggleTooltip = sessionSiderCollapsed
-    ? t('sessionList.expandList', { defaultValue: '展开会话列表' })
-    : t('sessionList.collapseList', { defaultValue: '收起会话列表' });
+
 
   const handleSiderToggle = () => {
     if (!showSiderToggle || !layout?.setSiderCollapsed) return;
@@ -297,8 +274,8 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     };
   }, [isMacRuntime, showSiderToggle, layout?.isMobile]);
 
-  const renderIconButton = ({ tooltip, className, children, disabled, onClick }: TitlebarIconButtonOptions) => (
-    <InstantHoverTooltip content={tooltip} position='bottom'>
+  const renderIconButton = ({ tooltip, className, children, disabled, onClick, position }: TitlebarIconButtonOptions & { position?: InstantHoverTooltipProps['position'] }) => (
+    <InstantHoverTooltip content={tooltip} position={position ?? 'bottom'}>
       <button type='button' className={className} onClick={onClick} disabled={disabled} aria-label={tooltip}>
         {children}
       </button>
@@ -370,18 +347,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
             })}
           </>
         )}
-        {isSessionRoute && (
-          renderIconButton({
-            tooltip: sessionToggleTooltip,
-            className: 'app-titlebar__button app-titlebar__button--nav',
-            onClick: () => dispatchSessionSiderToggleEvent(),
-            children: sessionSiderCollapsed ? (
-              <ExpandRight theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />
-            ) : (
-              <ExpandLeft theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />
-            ),
-          })
-        )}
+
       </div>
       <div
         className={classNames('app-titlebar__brand', {

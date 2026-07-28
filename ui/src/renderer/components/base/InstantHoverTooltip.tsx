@@ -4,10 +4,10 @@ import classNames from 'classnames';
 import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-type InstantHoverTooltipProps = {
+export type InstantHoverTooltipProps = {
   content: React.ReactNode;
   children: React.ReactNode;
-  position?: 'top' | 'right' | 'bottom';
+  position?: 'top' | 'right' | 'bottom' | 'left';
   className?: string;
 };
 
@@ -21,7 +21,8 @@ const GAP_PX = 6;
 const transformClassName: Record<NonNullable<InstantHoverTooltipProps['position']>, string> = {
   top: '-translate-x-1/2 -translate-y-full',
   right: '-translate-y-1/2',
-  bottom: '-translate-x-1/2',
+  bottom: '-translate-x-1/2 translate-y-1px',
+  left: '',
 };
 
 export function computeTooltipCoords(rect: DOMRect, position: NonNullable<InstantHoverTooltipProps['position']>): TooltipCoords {
@@ -31,11 +32,11 @@ export function computeTooltipCoords(rect: DOMRect, position: NonNullable<Instan
     case 'right':
       return { top: rect.top + rect.height / 2, left: rect.right + GAP_PX };
     case 'bottom':
-      return { top: rect.bottom + GAP_PX, left: rect.left + rect.width / 2 };
-    default: {
-      const exhaustive: never = position;
-      return exhaustive;
-    }
+      // 底部居中显示
+      const centeredLeft = rect.left + rect.width / 2;
+      return { top: rect.bottom + GAP_PX, left: centeredLeft };
+    default:
+      return { top: rect.top, left: rect.left };
   }
 }
 

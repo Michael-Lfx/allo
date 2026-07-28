@@ -9,7 +9,7 @@
     "settings": "设置"
   },
   "navExpand": "展开应用导航",
-  "navCollapse": "收起应用导航",
+  "navCollapse": "隐藏侧边栏",
   "send": "发送",
   "cancel": "取消",
   "save": "保存",
@@ -19,7 +19,7 @@
   "folder": "文件夹",
   "filePicker": {
     "recent": "最近使用",
-    "chooseDifferentFolder": "选择其他目录"
+    "chooseDifferentFolder": "打开文件夹"
   },
   "upload": "上传",
   "model": "模型",

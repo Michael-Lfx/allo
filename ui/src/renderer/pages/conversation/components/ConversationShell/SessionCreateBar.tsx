@@ -53,11 +53,8 @@ const SessionCreateBar: React.FC<SessionCreateBarProps> = ({
 
   return (
     <div className='shrink-0 px-10px pt-12px pb-8px flex flex-col gap-8px'>
-      {/* Title strip + secondary actions */}
+      {/* 标题条已移除（导航精简），仅保留显示设置齿轮 */}
       <div className='flex items-center h-22px px-2px select-none'>
-        <span className='text-13px text-t-tertiary font-[500] leading-none tracking-wide'>
-          {t('sessionList.title')}
-        </span>
         <div className='ml-auto flex items-center gap-2px'>
           <SessionDisplaySettingsPopover
             preferences={displayPreferences}

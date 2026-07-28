@@ -353,6 +353,7 @@
   "promptTimeout": "LLM 请求超时时间（秒）",
   "promptTimeoutDesc": "单次模型请求等待的最长时间，超出后中止本次请求。",
   "groupApp": "应用",
+  "groupCapabilities": "能力扩展",
   "groupAbout": "其他",
   "poiNav": "兴趣主题",
   "insightsNav": "洞察贡献",

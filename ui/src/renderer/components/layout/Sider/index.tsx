@@ -1,5 +1,5 @@
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -10,7 +10,10 @@ import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge';
+import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
+import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import {
+  ConversationSiderActions,
   SiderConfigGroup,
   SiderConversationEntry,
   SiderKnowledgeEntry,
@@ -56,6 +59,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const navigate = useNavigate();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
+  const [batchMode, setBatchMode] = useState(false);
+  const { preferences: displayPreferences } = useSidebarDisplayPreferences();
   const isSettings = pathname.startsWith('/settings');
   const lastNonSettingsPathRef = useRef('/guid');
   const isDesktop = isDesktopShell();
@@ -71,7 +76,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
   const planLabel = whoami?.plan ?? '';
 
-  // The "会话" entry stays active across every route owned by ConversationShell.
   const isSessionRoute =
     pathname === '/guid' ||
     pathname.startsWith('/conversation/') ||
@@ -99,17 +103,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   );
 
   const handleConversationClick = () => navTo('/guid');
-  const handleScheduledClick = () => navTo('/scheduled');
-  const handleRequirementsClick = () => navTo('/requirements');
-  const handleKnowledgeClick = () => navTo('/knowledge');
-  const handleLearningClick = () => navTo('/learn');
-  const handleNomiClick = () => navTo('/nomi');
   const handleVideoGenerationClick = () => navTo('/video-generation');
+  const handleScheduledClick = () => navTo('/scheduled');
+  const handleKnowledgeClick = () => navTo('/knowledge');
+  const handleNomiClick = () => navTo('/nomi');
   const handlePublicServiceClick = () => navTo('/public-companions');
+  const handleLearningClick = () => navTo('/learn');
+  const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
-
+  
   const handleSettingsClick = () => {
     cleanupSiderTooltips();
     blurActiveElement();
@@ -175,23 +179,13 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           </Suspense>
         ) : (
           <div className='size-full flex flex-col gap-2px'>
-            {/* 常用 — high-frequency primary destinations */}
-            <SiderSectionHeader label={t('common.siderSection.common')} collapsed={collapsed} />
-            {/* Conversations — opens the session secondary sidebar (ContentSider) */}
+            {/* 会话 — 一级菜单入口 */}
             <SiderConversationEntry
               isMobile={isMobile}
               isActive={isSessionRoute}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
-            />
-            {/* Work partner (桌面伙伴) — demo path 2 */}
-            <SiderNomiEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/nomi')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleNomiClick}
             />
             {/* ViMax video generation */}
             <SiderVideoGenerationEntry
@@ -200,25 +194,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleVideoGenerationClick}
-            />
-            {/* 对外服务 — public-facing customer-service agents (对外伙伴), a domain
-                fully separate from the desktop-companion group above. */}
-            <SiderSectionHeader label={t('common.siderSection.publicService')} collapsed={collapsed} />
-            <SiderPublicServiceEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/public-companions')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handlePublicServiceClick}
-            />
-            {/* 数据空间 — learning and knowledge; workshop/assets stay deferred */}
-            <SiderSectionHeader label={t('common.siderSection.data')} collapsed={collapsed} />
-            <SiderLearningEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/learn')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleLearningClick}
             />
             <SiderKnowledgeEntry
               isMobile={isMobile}
@@ -229,7 +204,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               dot={pendingInboxCount > 0}
             />
             {/* 自动化 — automation platforms */}
-            <SiderSectionHeader label={t('common.siderSection.automation')} collapsed={collapsed} />
             <SiderScheduledEntry
               isMobile={isMobile}
               isActive={pathname === '/scheduled'}
@@ -237,26 +211,18 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleScheduledClick}
             />
-            <SiderRequirementsEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/requirements')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleRequirementsClick}
-            />
-            {/* Config One — presets / skills / MCP as secondary under Config */}
-            <SiderSectionHeader label={t('common.siderSection.config', { defaultValue: '配置' })} collapsed={collapsed} />
-            <SiderConfigGroup
-              isMobile={isMobile}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              presetsActive={pathname.startsWith('/presets')}
-              skillsActive={pathname.startsWith('/skills')}
-              mcpActive={pathname.startsWith('/mcp')}
-              onPresets={handlePresetClick}
-              onSkills={handleSkillsClick}
-              onMcp={handleMcpClick}
-            />
+            {/* 项目/工作路径树 — 仅保留列表 */}
+            {!collapsed && (
+              <div className='pl-5px pr-8px pb-8px'>
+                <WorkpathSessionList
+                  collapsed={false}
+                  tooltipEnabled={false}
+                  batchMode={batchMode}
+                  displayPreferences={displayPreferences}
+                  onBatchModeChange={setBatchMode}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>

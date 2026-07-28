@@ -353,6 +353,7 @@
   "promptTimeout": "LLM Prompt Timeout (s)",
   "promptTimeoutDesc": "Maximum wait time for a single model request before aborting it.",
   "groupApp": "Application",
+  "groupCapabilities": "Capabilities",
   "groupAbout": "Other",
   "poiNav": "Interest Topics",
   "insightsNav": "Insights",

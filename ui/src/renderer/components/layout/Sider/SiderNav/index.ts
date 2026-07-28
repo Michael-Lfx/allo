@@ -18,3 +18,4 @@ export { default as SiderSearchEntry } from './SiderSearchEntry';
 export { default as SiderSectionHeader } from './SiderSectionHeader';
 export { default as SiderWorkshopEntry } from './SiderWorkshopEntry';
 export { default as SiderVideoGenerationEntry } from './SiderVideoGenerationEntry';
+export { default as SiderWorkspacesEntry } from './SiderWorkspacesEntry';

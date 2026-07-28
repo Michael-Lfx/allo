@@ -3,6 +3,7 @@
   "companionGroup": "桌面伙伴",
   "companionManage": "管理桌面伙伴",
   "companionTip": "陪伴/总控为主，工作请创建会话/项目",
+  "workspaces": "工作区",
   "workpathSection": "项目/工作路径",
   "defaultWorkpath": "默认工作路径",
   "interactiveGroup": "交互会话",
@@ -44,7 +45,6 @@
   "removeWorkpathConfirm": "从侧边栏移除「{{path}}」？不会删除本地文件或已有会话。",
   "removeWorkpathWithSessionsConfirm": "从已创建项目列表移除「{{path}}」？本地文件和 {{count}} 个会话不会被删除，该路径仍会因为已有会话显示在侧边栏。",
   "removeWorkpathSuccess": "工作路径已移除",
-  "collapseList": "收起会话列表",
-  "expandList": "展开会话列表",
+
   "empty": "暂无会话，点击上方「新建会话」或「创建项目」开始"
 }
