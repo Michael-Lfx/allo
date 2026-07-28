@@ -1,14 +1,12 @@
 {
   "name": "nomifun-tauri",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.3",
   "license": "Apache-2.0",
-  "workspaces": [
-    "ui"
-  ],
+  "workspaces": ["ui"],
   "scripts": {
-    "dev": "bun scripts/prune-build.mjs && bun scripts/free-ports.mjs 5173 && bun scripts/kill-stale-dev.mjs && bun scripts/ensure-ui-dist.mjs && bun scripts/run-dev.mjs",
-    "dev:web": "bun scripts/prune-build.mjs && bun scripts/free-ports.mjs 5173 8787 && concurrently -k -n api,ui -c blue,magenta \"cargo run -p nomifun-web -- --port 8787 --api-only --insecure-no-auth\" \"bun run --filter=./ui dev:web\"",
+    "dev": "bun scripts/prune-build.mjs && bun scripts/free-ports.mjs 5173 && bun scripts/kill-stale-dev.mjs && NOMI_CHANNEL=dev tauri dev --config apps/desktop/tauri.conf.json --config apps/desktop/tauri.dev.conf.json",
+    "dev:web": "bun scripts/prune-build.mjs && bun scripts/free-ports.mjs 5173 8787 && NOMI_CHANNEL=dev concurrently -k -n api,ui -c blue,magenta \"cargo run -p nomifun-web -- --port 8787 --api-only --insecure-no-auth\" \"bun run --filter=./ui dev:web\"",
     "dev:ui": "bun run --filter=./ui dev",
     "build": "CI=true tauri build --config apps/desktop/tauri.conf.json && bun scripts/prune-build.mjs --post",
     "build:fast": "CI=true NOMI_CHANNEL=dev tauri build --debug --no-bundle --config apps/desktop/tauri.conf.json --config apps/desktop/tauri.dev.conf.json",
@@ -18,7 +16,6 @@
     "build:signed": "bash scripts/desktop-build-signed.sh",
     "build:updater": "CI=true tauri build --config apps/desktop/tauri.conf.json --config '{\"bundle\":{\"createUpdaterArtifacts\":true}}' && bun scripts/prune-build.mjs --post",
     "make:latest": "bun scripts/make-latest-json.mjs",
-    "upload:modelscope": "bun scripts/run-upload-modelscope.mjs --dist-dir dist/desktop/",
     "release:mac": "bun scripts/run-mac-release.mjs",
     "release:win": "bun scripts/run-win-release.mjs",
     "release:linux": "bun scripts/run-linux-release.mjs",
@@ -33,7 +30,6 @@
     "typecheck": "bun run --filter=./ui typecheck",
     "check:i18n": "bun scripts/generate-i18n-types.mjs --check",
     "check:theme": "bun scripts/check-theme-contract.mjs",
-    "check:ux-baseline": "bun scripts/ux-visual-baseline.mjs",
     "check:icons": "bun scripts/check-icon-imports.mjs",
     "check:process-runtime-boundary": "bun scripts/check-process-runtime-boundary.mjs",
     "check:agent-vocabulary": "bun scripts/check-agent-vocabulary.mjs",

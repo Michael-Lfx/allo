@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "apps/web", "apps/desktop"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "local/nomifun-tauri"
@@ -30,8 +30,6 @@ nomifun-cron = { path = "crates/backend/nomifun-cron" }
 nomifun-requirement = { path = "crates/backend/nomifun-requirement" }
 nomifun-idmm = { path = "crates/backend/nomifun-idmm" }
 nomifun-knowledge = { path = "crates/backend/nomifun-knowledge" }
-nomifun-learning = { path = "crates/backend/nomifun-learning" }
-nomifun-poi = { path = "crates/backend/nomifun-poi" }
 nomifun-companion = { path = "crates/backend/nomifun-companion" }
 nomifun-gateway = { path = "crates/backend/nomifun-gateway" }
 nomifun-public = { path = "crates/backend/nomifun-public" }
@@ -44,14 +42,9 @@ nomifun-public-agent = { path = "crates/backend/nomifun-public-agent" }
 nomifun-workshop = { path = "crates/backend/nomifun-workshop" }
 nomifun-creation = { path = "crates/backend/nomifun-creation" }
 nomifun-app = { path = "crates/backend/nomifun-app" }
-nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
-nomifun-insights = { path = "crates/backend/nomifun-insights" }
-nomifun-media = { path = "crates/backend/nomifun-media" }
-nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
-nomifun-models-dev = { path = "crates/shared/nomifun-models-dev" }
 nomi-redact = { path = "crates/shared/nomi-redact" }
 nomi-process-runtime = { path = "crates/shared/nomi-process-runtime" }
 
@@ -65,17 +58,11 @@ nomi-tools = { path = "crates/agent/nomi-tools" }
 nomi-mcp = { path = "crates/agent/nomi-mcp" }
 nomi-skills = { path = "crates/agent/nomi-skills" }
 nomi-memory = { path = "crates/agent/nomi-memory" }
-nomi-poi = { path = "crates/agent/nomi-poi" }
-nomi-auxiliary = { path = "crates/agent/nomi-auxiliary" }
-nomi-insights-core = { path = "crates/agent/nomi-insights-core" }
-nomi-media = { path = "crates/agent/nomi-media" }
-nomi-vimax = { path = "crates/agent/nomi-vimax" }
 nomi-agent = { path = "crates/agent/nomi-agent" }
 nomi-computer = { path = "crates/agent/nomi-computer" }
 nomi-a11y = { path = "crates/agent/nomi-a11y" }
 nomi-browser-engine = { path = "crates/agent/nomi-browser-engine" }
 nomi-browser = { path = "crates/agent/nomi-browser" }
-flowy-web = { path = "crates/agent/flowy-web" }
 
 # --- Core framework ---
 tokio = { version = "1", features = ["full"] }
@@ -131,10 +118,8 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 prost = "0.13"
 semver = "1"
 dirs = "6"
-strsim = "0.11"
 regex = "1"
 sys-locale = "0.3"
-fuzzy-matcher = "0.3"
 
 # --- File system ---
 include_dir = "0.7"
@@ -147,8 +132,6 @@ zip = "2"
 # Node portable-runtime archive extraction (provisioner): tar.gz on unix/macos.
 flate2 = "1"
 tar = "0.4"
-# ffmpeg managed install (linux static builds are tar.xz).
-xz2 = "0.1"
 git2 = { version = "0.20", default-features = false }
 mime_guess = "2"
 rust-embed = "8"
@@ -218,7 +201,7 @@ crossterm = "0.29"
 is-terminal = "0.4"
 
 # --- Computer / browser use ---
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 xcap = "0.9"
 enigo = "0.6"
 # In-process self-hosted CDP browser engine (nomi-browser-engine). 0.9.1 has NO
@@ -274,10 +257,10 @@ debug = false
 [profile.test.package."*"]
 debug = false
 
-# Size-optimized release profile. The packaged `Flowy.exe` is the first
+# Size-optimized release profile. The packaged `nomifun-desktop.exe` is the first
 # and largest file the NSIS installer writes, and an oversized *unsigned* binary
 # is the dominant cause of end-user "Extract: error writing to file
-# Flowy.exe" failures: the longer the write window, the more likely
+# nomifun-desktop.exe" failures: the longer the write window, the more likely
 # antivirus real-time scanning locks/quarantines the half-written exe (and the
 # bigger the download). Cargo's default release profile (no LTO,
 # codegen-units=16) left the binary at ~140 MB. These knobs cut the machine-code
