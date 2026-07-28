@@ -510,11 +510,13 @@
       "stopWhen": "Stop when"
     },
     "toast": {
-      "set": "Goal set: {{objective}}",
+      "setStarted": "Goal set, starting: {{objective}}",
+      "setDeferred": "Goal set — the loop continues after the current turn: {{objective}}",
       "paused": "Goal paused",
       "resumed": "Goal resumed and will continue automatically",
       "cleared": "Goal cleared",
       "status": "Current goal: {{objective}}",
+      "statusDetailed": "Verdict: {{verdict}} · Turn {{used}}/{{max}}",
       "statusNone": "No goal is set for this conversation",
       "failed": "Goal action failed, please try again later",
       "subgoalAdded": "Subgoal added: {{subgoal}}",
@@ -523,6 +525,7 @@
       "subgoalListTitle": "Subgoals ({{count}}):",
       "subgoalListEmpty": "The current goal has no subgoals",
       "subgoalInvalidIndex": "Use /subgoal remove <n> to remove a subgoal (see /subgoal list for numbering)",
+      "subgoalEmptyText": "Subgoal text cannot be empty — use /subgoal add <text>",
       "waitInvalidPid": "Use /goal wait <pid> with a numeric process id",
       "drafting": "Drafting the completion contract…",
       "drafted": "Contract drafted and applied:",

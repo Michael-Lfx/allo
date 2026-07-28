@@ -83,19 +83,29 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
   const { t } = useTranslation();
 
   const run = useCallback(
-    async (invocation: GoalSlashInvocation) => {
+    async (
+      invocation: GoalSlashInvocation,
+      // `setToast` 区分 set 成功后的两种后续：'started'（首轮立即发送）与
+      // 'deferred'（会话忙碌，当前回合结束后由 judge 接管续作）。
+      options?: { setToast?: 'started' | 'deferred' }
+    ): Promise<boolean> => {
       if (!conversation_id) {
-        return;
+        return false;
       }
       // Malformed `/subgoal remove <n>` / `/goal wait <pid>` — hint the user
       // without a request.
       if (invocation.action === 'invalid_subgoal_index') {
         Message.error(t('conversation.goal.toast.subgoalInvalidIndex'));
-        return;
+        return false;
       }
       if (invocation.action === 'invalid_wait_pid') {
         Message.error(t('conversation.goal.toast.waitInvalidPid'));
-        return;
+        return false;
+      }
+      // Bare `/subgoal add` — an empty subgoal text, hinted locally.
+      if (invocation.action === 'invalid_subgoal_text') {
+        Message.error(t('conversation.goal.toast.subgoalEmptyText'));
+        return false;
       }
       if (invocation.action === 'draft') {
         Message.loading({ id: DRAFT_LOADING_TOAST_ID, content: t('conversation.goal.toast.drafting'), duration: 0 });
@@ -115,7 +125,12 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
         switch (invocation.action) {
           case 'set':
             Message.success(
-              t('conversation.goal.toast.set', { objective: summarizeObjective(invocation.objective) })
+              t(
+                options?.setToast === 'deferred'
+                  ? 'conversation.goal.toast.setDeferred'
+                  : 'conversation.goal.toast.setStarted',
+                { objective: summarizeObjective(invocation.objective) }
+              )
             );
             break;
           case 'pause':
@@ -129,9 +144,30 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
             break;
           case 'status':
             if (status?.active && status.objective) {
-              Message.info(
-                t('conversation.goal.toast.status', { objective: summarizeObjective(status.objective) })
-              );
+              // 目标一行 + 裁决/回合预算一行 + 屏障行（若在等待）。
+              const lines: React.ReactNode[] = [
+                React.createElement(
+                  'div',
+                  { key: 'objective' },
+                  t('conversation.goal.toast.status', { objective: summarizeObjective(status.objective) })
+                ),
+                React.createElement(
+                  'div',
+                  { key: 'detail' },
+                  t('conversation.goal.toast.statusDetailed', {
+                    verdict: status.last_verdict ?? '—',
+                    used: status.turns_used ?? 0,
+                    max: status.max_turns ?? '—',
+                  })
+                ),
+              ];
+              const barrier = waitBarrierLine(status, t);
+              if (barrier) {
+                lines.push(React.createElement('div', { key: 'barrier' }, barrier));
+              }
+              Message.info({
+                content: React.createElement('div', { style: { textAlign: 'left' } }, ...lines),
+              });
             } else {
               Message.info(t('conversation.goal.toast.statusNone'));
             }
@@ -227,6 +263,7 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
             Message.success(t('conversation.goal.toast.unwaitDone'));
             break;
         }
+        return true;
       } catch (error) {
         console.error('[useGoalCommand] Goal action failed:', error);
         // 后端的 400/502 文本（如 "No goal is set…"）比通用失败文案更有用。
@@ -239,6 +276,7 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
         } else {
           Message.error(content);
         }
+        return false;
       }
     },
     [conversation_id, t]

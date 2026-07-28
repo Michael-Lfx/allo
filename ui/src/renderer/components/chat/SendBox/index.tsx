@@ -1379,6 +1379,28 @@ const SendBox: React.FC<{
         historyDraftRef.current = null;
         setHistoryNavigationIndex(null);
         setInput('');
+        // `/goal <text>`（set）需立即启动首轮：设定成功后把 objective 原文
+        // 作为普通用户消息走既有发送管线。set 分支遵守忙碌门控——turn
+        // 进行中只设定目标（当前回合结束后由 judge 接管续作），不强行插消息；
+        // set 失败（API 报错）则不发送。
+        if (goalInvocation.action === 'set') {
+          const busy = !allowSendWhileLoading && (isLoading || loading);
+          const objective = goalInvocation.objective;
+          void goalCommand.run(goalInvocation, { setToast: busy ? 'deferred' : 'started' }).then((ok) => {
+            if (!ok || busy) {
+              return;
+            }
+            setIsLoading(true);
+            onSend(objective)
+              .catch(() => {
+                setInput(objective);
+              })
+              .finally(() => {
+                setIsLoading(false);
+              });
+          });
+          return;
+        }
         void goalCommand.run(goalInvocation);
         return;
       }

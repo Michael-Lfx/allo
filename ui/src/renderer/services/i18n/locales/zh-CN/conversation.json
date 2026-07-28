@@ -510,11 +510,13 @@
       "stopWhen": "停止条件"
     },
     "toast": {
-      "set": "目标已设定：{{objective}}",
+      "setStarted": "目标已设定，开始执行：{{objective}}",
+      "setDeferred": "目标已设定，将在当前回合结束后自动续作：{{objective}}",
       "paused": "目标已暂停",
       "resumed": "目标已恢复，将继续自动推进",
       "cleared": "目标已清除",
       "status": "当前目标：{{objective}}",
+      "statusDetailed": "裁决：{{verdict}} · 第 {{used}}/{{max}} 轮",
       "statusNone": "当前会话未设置目标",
       "failed": "目标操作失败，请稍后重试",
       "subgoalAdded": "已添加子目标：{{subgoal}}",
@@ -523,6 +525,7 @@
       "subgoalListTitle": "子目标（共 {{count}} 项）：",
       "subgoalListEmpty": "当前目标没有子目标",
       "subgoalInvalidIndex": "请使用 /subgoal remove <编号> 移除子目标（编号见 /subgoal list）",
+      "subgoalEmptyText": "子目标内容不能为空，请使用 /subgoal add <内容>",
       "waitInvalidPid": "请使用 /goal wait <pid> 指定进程编号",
       "drafting": "正在起草完成合约…",
       "drafted": "合约已起草并应用：",

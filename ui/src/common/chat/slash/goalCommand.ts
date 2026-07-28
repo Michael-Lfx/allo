@@ -14,7 +14,7 @@
  * - `/goal show` → show (status alias; response carries the contract)
  * - `/goal wait <pid>` → wait (pid barrier)
  * - `/goal unwait` → unwait
- * - `/subgoal <text>` → add_subgoal
+ * - `/subgoal <text>` (or `/subgoal add <text>`) → add_subgoal
  * - `/subgoal list` (or bare `/subgoal`) → list_subgoals
  * - `/subgoal remove <n>` → remove_subgoal (n is 1-based, matching the list numbering)
  * - `/subgoal clear` → clear_subgoals
@@ -39,6 +39,9 @@ export type GoalSlashInvocation =
   /** `/subgoal remove` with a missing/non-numeric index — surfaced as a user
    *  hint instead of a request. */
   | { action: 'invalid_subgoal_index' }
+  /** `/subgoal add` with no text — surfaced as a user hint instead of a
+   *  request. */
+  | { action: 'invalid_subgoal_text' }
   /** `/goal wait` with a missing/non-numeric pid — surfaced as a user hint
    *  instead of a request. */
   | { action: 'invalid_wait_pid' };
@@ -106,6 +109,15 @@ function parseSubgoalSlashCommand(input: string): GoalSlashInvocation | null {
       return { action: 'invalid_subgoal_index' };
     }
     return { action: 'remove_subgoal', index_1based: index };
+  }
+  // `/subgoal add <text>` alias — strip the keyword so it does not leak into
+  // the subgoal text; a bare `add` is an empty subgoal, hinted locally.
+  if (keyword === 'add' || keyword.startsWith('add ')) {
+    const text = arg.slice('add'.length).trim();
+    if (!text) {
+      return { action: 'invalid_subgoal_text' };
+    }
+    return { action: 'add_subgoal', subgoal: text };
   }
   return { action: 'add_subgoal', subgoal: arg };
 }

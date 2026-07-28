@@ -52,6 +52,10 @@ completion contract, and the active wait barrier.
 
 Notes:
 
+- Setting a goal immediately sends the objective as an ordinary first user
+  message, kicking off the first turn. If a turn is already running, the goal
+  is only registered — the judge takes over once the current turn finishes
+  (your own messages always take priority over automatic continuations).
 - `/goal draft` is an LLM call and takes a few seconds; the UI shows a loading
   toast and then the drafted contract, field by field.
 - `/goal wait` rejects pid `0` and non-numeric input locally; the backend also
