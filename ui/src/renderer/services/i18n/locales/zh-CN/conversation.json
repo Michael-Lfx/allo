@@ -496,7 +496,18 @@
       "clearConfirm": "确定清除当前目标？子目标也会一并删除。",
       "waitingCountdown": "等待中，{{time}} 后恢复",
       "waitElapsed": "等待结束，将在下一回合恢复",
+      "waitingOnSession": "等待后台会话 {{session}}",
+      "waitingOnPid": "等待进程 {{pid}} 退出",
+      "unwait": "解除等待",
+      "contractToggle": "完成合约",
       "subgoalsToggle": "子目标 {{count}} 项"
+    },
+    "contract": {
+      "outcome": "结果",
+      "verification": "验证",
+      "constraints": "约束",
+      "boundaries": "范围",
+      "stopWhen": "停止条件"
     },
     "toast": {
       "set": "目标已设定：{{objective}}",
@@ -511,7 +522,15 @@
       "subgoalsCleared": "已清空子目标",
       "subgoalListTitle": "子目标（共 {{count}} 项）：",
       "subgoalListEmpty": "当前目标没有子目标",
-      "subgoalInvalidIndex": "请使用 /subgoal remove <编号> 移除子目标（编号见 /subgoal list）"
+      "subgoalInvalidIndex": "请使用 /subgoal remove <编号> 移除子目标（编号见 /subgoal list）",
+      "waitInvalidPid": "请使用 /goal wait <pid> 指定进程编号",
+      "drafting": "正在起草完成合约…",
+      "drafted": "合约已起草并应用：",
+      "contractSet": "合约已更新",
+      "noContract": "未设置完成合约（可用 /goal draft 起草）",
+      "waitSet": "已在进程 {{pid}} 上等待，进程退出后恢复",
+      "unwaitDone": "已解除等待，目标将继续推进",
+      "failedWithReason": "目标操作失败：{{reason}}"
     }
   },
   "commandQueue": {

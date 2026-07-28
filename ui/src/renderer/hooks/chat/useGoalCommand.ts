@@ -1,12 +1,17 @@
 import type { ConversationId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
+import type { GoalContractDto, GoalStatusResponse } from '@/common/adapter/ipcBridge';
 import type { GoalSlashInvocation } from '@/common/chat/slash/goalCommand';
 import { emitter } from '@/renderer/utils/emitter';
 import { Message } from '@arco-design/web-react';
 import React, { useCallback } from 'react';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
 const OBJECTIVE_TOAST_MAX_CHARS = 60;
+
+// draft 是 LLM 调用，会慢；用固定 id 的 loading toast，完成/失败时原地替换。
+const DRAFT_LOADING_TOAST_ID = 'goal-draft-loading';
 
 function summarizeObjective(objective: string): string {
   const normalized = objective.replace(/\s+/g, ' ').trim();
@@ -14,6 +19,55 @@ function summarizeObjective(objective: string): string {
     return normalized;
   }
   return `${normalized.slice(0, OBJECTIVE_TOAST_MAX_CHARS)}…`;
+}
+
+/** [label, value] pairs for the contract fields that carry a value. */
+export function goalContractEntries(contract: GoalContractDto, t: TFunction): Array<[string, string]> {
+  const fields: Array<[string, string]> = [
+    [t('conversation.goal.contract.outcome'), contract.outcome],
+    [t('conversation.goal.contract.verification'), contract.verification],
+    [t('conversation.goal.contract.constraints'), contract.constraints],
+    [t('conversation.goal.contract.boundaries'), contract.boundaries],
+    [t('conversation.goal.contract.stopWhen'), contract.stop_when],
+  ];
+  return fields.filter(([, value]) => value.trim().length > 0);
+}
+
+/** Multi-line toast body: title + one line per non-empty contract field. */
+function contractToastContent(title: string, contract: GoalContractDto, t: TFunction): React.ReactNode {
+  return React.createElement(
+    'div',
+    { style: { textAlign: 'left' } },
+    React.createElement('div', { key: 'title' }, title),
+    ...goalContractEntries(contract, t).map(([label, value], i) =>
+      React.createElement('div', { key: i }, `${label}: ${summarizeObjective(value)}`)
+    )
+  );
+}
+
+/** One-line description of the active wait barrier, if any. */
+function waitBarrierLine(status: GoalStatusResponse, t: TFunction): string | null {
+  if (status.status !== 'waiting') return null;
+  if (status.waiting_on_session) {
+    return t('conversation.goal.notice.waitingOnSession', { session: status.waiting_on_session });
+  }
+  if (status.waiting_on_pid != null) {
+    return t('conversation.goal.notice.waitingOnPid', { pid: status.waiting_on_pid });
+  }
+  if (status.waiting_until != null) {
+    return t('conversation.goal.notice.waiting', { objective: '' }).trim();
+  }
+  return null;
+}
+
+function backendErrorMessage(error: unknown): string | null {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error) {
+    return error;
+  }
+  return null;
 }
 
 /**
@@ -33,18 +87,29 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
       if (!conversation_id) {
         return;
       }
-      // Malformed `/subgoal remove <n>` — hint the user without a request.
+      // Malformed `/subgoal remove <n>` / `/goal wait <pid>` — hint the user
+      // without a request.
       if (invocation.action === 'invalid_subgoal_index') {
         Message.error(t('conversation.goal.toast.subgoalInvalidIndex'));
         return;
+      }
+      if (invocation.action === 'invalid_wait_pid') {
+        Message.error(t('conversation.goal.toast.waitInvalidPid'));
+        return;
+      }
+      if (invocation.action === 'draft') {
+        Message.loading({ id: DRAFT_LOADING_TOAST_ID, content: t('conversation.goal.toast.drafting'), duration: 0 });
       }
       try {
         const status = await ipcBridge.conversation.goalAction.invoke({
           conversation_id,
           action: invocation.action,
-          objective: invocation.action === 'set' ? invocation.objective : undefined,
+          objective:
+            invocation.action === 'set' || invocation.action === 'draft' ? invocation.objective : undefined,
           subgoal: invocation.action === 'add_subgoal' ? invocation.subgoal : undefined,
           index_1based: invocation.action === 'remove_subgoal' ? invocation.index_1based : undefined,
+          pid: invocation.action === 'wait' ? invocation.pid : undefined,
+          contract: invocation.action === 'set_contract' ? invocation.contract : undefined,
         });
         emitter.emit('goal.status.refresh', { conversation_id, status });
         switch (invocation.action) {
@@ -107,10 +172,73 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
             }
             break;
           }
+          case 'draft':
+            if (status?.contract) {
+              Message.success({
+                id: DRAFT_LOADING_TOAST_ID,
+                content: contractToastContent(t('conversation.goal.toast.drafted'), status.contract, t),
+              });
+            } else {
+              Message.success({ id: DRAFT_LOADING_TOAST_ID, content: t('conversation.goal.toast.drafted') });
+            }
+            break;
+          case 'set_contract':
+            Message.success(t('conversation.goal.toast.contractSet'));
+            break;
+          case 'show':
+            if (!status?.active) {
+              Message.info(t('conversation.goal.toast.statusNone'));
+            } else {
+              // 目标一行 + 契约字段行（若有）+ 屏障行（若在等待）。
+              const lines: React.ReactNode[] = [
+                React.createElement(
+                  'div',
+                  { key: 'objective' },
+                  t('conversation.goal.toast.status', { objective: summarizeObjective(status.objective ?? '') })
+                ),
+              ];
+              if (status.contract) {
+                const entries = goalContractEntries(status.contract, t);
+                if (entries.length > 0) {
+                  lines.push(
+                    ...entries.map(([label, value], i) =>
+                      React.createElement('div', { key: `c-${i}` }, `${label}: ${summarizeObjective(value)}`)
+                    )
+                  );
+                }
+              } else {
+                lines.push(
+                  React.createElement('div', { key: 'no-contract' }, t('conversation.goal.toast.noContract'))
+                );
+              }
+              const barrier = waitBarrierLine(status, t);
+              if (barrier) {
+                lines.push(React.createElement('div', { key: 'barrier' }, barrier));
+              }
+              Message.info({
+                content: React.createElement('div', { style: { textAlign: 'left' } }, ...lines),
+              });
+            }
+            break;
+          case 'wait':
+            Message.success(t('conversation.goal.toast.waitSet', { pid: invocation.pid }));
+            break;
+          case 'unwait':
+            Message.success(t('conversation.goal.toast.unwaitDone'));
+            break;
         }
       } catch (error) {
         console.error('[useGoalCommand] Goal action failed:', error);
-        Message.error(t('conversation.goal.toast.failed'));
+        // 后端的 400/502 文本（如 "No goal is set…"）比通用失败文案更有用。
+        const detail = backendErrorMessage(error);
+        const content = detail
+          ? t('conversation.goal.toast.failedWithReason', { reason: detail })
+          : t('conversation.goal.toast.failed');
+        if (invocation.action === 'draft') {
+          Message.error({ id: DRAFT_LOADING_TOAST_ID, content });
+        } else {
+          Message.error(content);
+        }
       }
     },
     [conversation_id, t]

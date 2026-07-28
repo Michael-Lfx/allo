@@ -496,7 +496,18 @@
       "clearConfirm": "Clear the current goal? Its subgoals will be removed too.",
       "waitingCountdown": "Waiting, resumes in {{time}}",
       "waitElapsed": "Wait elapsed, resuming on the next turn",
+      "waitingOnSession": "Waiting on background session {{session}}",
+      "waitingOnPid": "Waiting for process {{pid}} to exit",
+      "unwait": "Unwait",
+      "contractToggle": "Completion contract",
       "subgoalsToggle": "Subgoals ({{count}})"
+    },
+    "contract": {
+      "outcome": "Outcome",
+      "verification": "Verification",
+      "constraints": "Constraints",
+      "boundaries": "Boundaries",
+      "stopWhen": "Stop when"
     },
     "toast": {
       "set": "Goal set: {{objective}}",
@@ -511,7 +522,15 @@
       "subgoalsCleared": "Subgoals cleared",
       "subgoalListTitle": "Subgoals ({{count}}):",
       "subgoalListEmpty": "The current goal has no subgoals",
-      "subgoalInvalidIndex": "Use /subgoal remove <n> to remove a subgoal (see /subgoal list for numbering)"
+      "subgoalInvalidIndex": "Use /subgoal remove <n> to remove a subgoal (see /subgoal list for numbering)",
+      "waitInvalidPid": "Use /goal wait <pid> with a numeric process id",
+      "drafting": "Drafting the completion contract…",
+      "drafted": "Contract drafted and applied:",
+      "contractSet": "Contract updated",
+      "noContract": "No completion contract (use /goal draft to create one)",
+      "waitSet": "Waiting on process {{pid}}; resumes when it exits",
+      "unwaitDone": "Wait barrier cleared; the goal will continue",
+      "failedWithReason": "Goal action failed: {{reason}}"
     }
   },
   "commandQueue": {

@@ -1,7 +1,7 @@
 import type { ConversationId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import type { GoalStatusResponse } from '@/common/adapter/ipcBridge';
-import { useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
+import { goalContractEntries, useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
 import { useAddEventListener } from '@/renderer/utils/emitter';
 import { Button, Popconfirm } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -28,15 +28,17 @@ function formatRemaining(ms: number): string {
  * Goal status + progress rail for the conversation surface, mirroring
  * TurnStatusRail's visual language (dot + 12px secondary text). Beyond the
  * one-line status it renders a turns progress bar, pause/resume/clear
- * controls (wired through useGoalCommand), a wait-barrier countdown while
- * `status === 'waiting'` and a collapsible numbered subgoal list (numbering
- * matches `/subgoal remove <n>`). Renders nothing when the conversation has
- * no goal snapshot.
+ * controls (wired through useGoalCommand), the wait barrier while
+ * `status === 'waiting'` (session > pid > timed countdown, with an unwait
+ * control), a collapsible completion-contract block and a collapsible
+ * numbered subgoal list (numbering matches `/subgoal remove <n>`). Renders
+ * nothing when the conversation has no goal snapshot.
  */
 const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conversation_id }) => {
   const { t } = useTranslation();
   const [goal, setGoal] = useState<GoalStatusResponse | null>(null);
   const [subgoalsExpanded, setSubgoalsExpanded] = useState(false);
+  const [contractExpanded, setContractExpanded] = useState(false);
   const goalCommand = useGoalCommand(conversation_id);
 
   const refresh = useCallback(async () => {
@@ -51,6 +53,7 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
   useEffect(() => {
     setGoal(null);
     setSubgoalsExpanded(false);
+    setContractExpanded(false);
     void refresh();
   }, [refresh]);
 
@@ -151,6 +154,25 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
 
   const remainingMs = waitingUntil != null ? waitingUntil - nowMs : undefined;
   const subgoals = goal.subgoals ?? [];
+  // 屏障可能并存；主行按 session > pid > time 优先级展示，其余并列在同一行。
+  const isWaiting = goal.status === 'waiting';
+  const barrierLines: string[] = [];
+  if (isWaiting) {
+    if (goal.waiting_on_session) {
+      barrierLines.push(t('conversation.goal.notice.waitingOnSession', { session: goal.waiting_on_session }));
+    }
+    if (goal.waiting_on_pid != null) {
+      barrierLines.push(t('conversation.goal.notice.waitingOnPid', { pid: goal.waiting_on_pid }));
+    }
+    if (remainingMs != null) {
+      barrierLines.push(
+        remainingMs > 0
+          ? t('conversation.goal.notice.waitingCountdown', { time: formatRemaining(remainingMs) })
+          : t('conversation.goal.notice.waitElapsed')
+      );
+    }
+  }
+  const contractEntries = goal.contract ? goalContractEntries(goal.contract, t) : [];
 
   return (
     <div
@@ -206,15 +228,40 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
           />
         </div>
       )}
-      {remainingMs != null && (
-        <div className='flex items-center gap-8px text-t-tertiary' data-testid='goal-wait-countdown'>
-          <span>
-            {remainingMs > 0
-              ? t('conversation.goal.notice.waitingCountdown', { time: formatRemaining(remainingMs) })
-              : t('conversation.goal.notice.waitElapsed')}
-          </span>
+      {isWaiting && (
+        <div className='flex items-center gap-8px text-t-tertiary' data-testid='goal-wait-barrier'>
+          {barrierLines.length > 0 && <span className='truncate'>{barrierLines.join(' · ')}</span>}
           {goal.waiting_reason && (
             <span className='truncate'>{t('conversation.goal.notice.reason', { reason: goal.waiting_reason })}</span>
+          )}
+          <Button
+            className='shrink-0'
+            size='mini'
+            type='text'
+            onClick={() => void goalCommand.run({ action: 'unwait' })}
+          >
+            {t('conversation.goal.notice.unwait')}
+          </Button>
+        </div>
+      )}
+      {contractEntries.length > 0 && (
+        <div data-testid='goal-contract'>
+          <button
+            type='button'
+            className='bg-transparent border-none p-0 cursor-pointer text-12px text-t-tertiary hover:text-t-secondary'
+            aria-expanded={contractExpanded}
+            onClick={() => setContractExpanded((v) => !v)}
+          >
+            {`${contractExpanded ? '▾' : '▸'} ${t('conversation.goal.notice.contractToggle')}`}
+          </button>
+          {contractExpanded && (
+            <div className='mt-2px pl-16px flex flex-col gap-2px text-t-tertiary'>
+              {contractEntries.map(([label, value], index) => (
+                <div key={index} className='truncate'>
+                  {`${label}: ${value}`}
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

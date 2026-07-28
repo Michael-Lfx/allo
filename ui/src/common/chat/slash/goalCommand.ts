@@ -10,11 +10,17 @@
  * - `/goal <text>`  → set (text is the objective)
  * - `/goal status` / `/goal pause` / `/goal resume` / `/goal clear` → verbatim action
  * - `/goal` (no argument) → status
+ * - `/goal draft [text]` → draft (text is an optional objective override)
+ * - `/goal show` → show (status alias; response carries the contract)
+ * - `/goal wait <pid>` → wait (pid barrier)
+ * - `/goal unwait` → unwait
  * - `/subgoal <text>` → add_subgoal
  * - `/subgoal list` (or bare `/subgoal`) → list_subgoals
  * - `/subgoal remove <n>` → remove_subgoal (n is 1-based, matching the list numbering)
  * - `/subgoal clear` → clear_subgoals
  */
+
+import type { GoalContractDto } from '@/common/adapter/ipcBridge';
 
 export type GoalSlashInvocation =
   | { action: 'status' | 'pause' | 'resume' | 'clear' }
@@ -23,9 +29,19 @@ export type GoalSlashInvocation =
   | { action: 'remove_subgoal'; index_1based: number }
   | { action: 'clear_subgoals' }
   | { action: 'list_subgoals' }
+  | { action: 'draft'; objective?: string }
+  | { action: 'show' }
+  | { action: 'wait'; pid: number }
+  | { action: 'unwait' }
+  /** No slash command maps here — programmatic entry for contract editing
+   *  UIs (an all-empty contract clears the current one). */
+  | { action: 'set_contract'; contract: GoalContractDto }
   /** `/subgoal remove` with a missing/non-numeric index — surfaced as a user
    *  hint instead of a request. */
-  | { action: 'invalid_subgoal_index' };
+  | { action: 'invalid_subgoal_index' }
+  /** `/goal wait` with a missing/non-numeric pid — surfaced as a user hint
+   *  instead of a request. */
+  | { action: 'invalid_wait_pid' };
 
 const GOAL_COMMAND_RE = /^\/goal(?:\s+([\s\S]+))?$/i;
 
@@ -45,6 +61,24 @@ export function parseGoalSlashCommand(input: string): GoalSlashInvocation | null
   const keyword = arg.toLowerCase();
   if (GOAL_SUBCOMMANDS.has(keyword)) {
     return { action: keyword as 'status' | 'pause' | 'resume' | 'clear' };
+  }
+  if (keyword === 'show') {
+    return { action: 'show' };
+  }
+  if (keyword === 'unwait') {
+    return { action: 'unwait' };
+  }
+  if (keyword === 'draft' || keyword.startsWith('draft ')) {
+    const objective = arg.slice('draft'.length).trim();
+    return objective ? { action: 'draft', objective } : { action: 'draft' };
+  }
+  if (keyword === 'wait' || keyword.startsWith('wait ')) {
+    const rawPid = arg.slice('wait'.length).trim();
+    const pid = Number(rawPid);
+    if (!rawPid || !Number.isInteger(pid) || pid < 1) {
+      return { action: 'invalid_wait_pid' };
+    }
+    return { action: 'wait', pid };
   }
   return { action: 'set', objective: arg };
 }
