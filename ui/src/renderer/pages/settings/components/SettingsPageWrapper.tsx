@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, LinkCloud, Pic, Brain, ChartPie, CloudStorage, Puzzle, Send, System } from '@icon-park/react';
+import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Send, System } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -103,12 +103,6 @@ export function getBuiltinSettingsNavItems(
       label: t('learning.title', { defaultValue: '学习' }),
       icon: <BookOpen theme='outline' size='16' />,
       path: 'learn',
-    },
-    'open-capabilities': {
-      id: 'open-capabilities',
-      label: t('settings.openCapabilities.railTitle', { defaultValue: '远程&开放能力' }),
-      icon: <LinkCloud theme='outline' size='16' />,
-      path: 'open-capabilities',
     },
     'cloud-login': {
       id: 'cloud-login',

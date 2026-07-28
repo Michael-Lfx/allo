@@ -16,9 +16,12 @@ describe('settings navigation', () => {
     }
   });
 
-  test('exposes execution engines as a first-level settings page', () => {
+  test('hides remote and open capabilities from settings navigation', () => {
     const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
     const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
+
+    expect(siderSource.includes("'open-capabilities'")).toBe(false);
+    expect(pageWrapperSource.includes("id: 'open-capabilities'")).toBe(false);
 
     for (const id of [
       'system',
@@ -28,7 +31,6 @@ describe('settings navigation', () => {
       'poi',
       'insights',
       'media',
-      'open-capabilities',
       'cloud-login',
       'about',
     ]) {
@@ -39,8 +41,8 @@ describe('settings navigation', () => {
     expect(siderSource.indexOf("'system'")).toBeLessThan(siderSource.indexOf("'execution-engines'"));
     expect(siderSource.indexOf("'execution-engines'")).toBeLessThan(siderSource.indexOf("'browser-use'"));
     expect(siderSource.indexOf("'browser-use'")).toBeLessThan(siderSource.indexOf("'computer-use'"));
-    expect(siderSource.indexOf("'computer-use'")).toBeLessThan(siderSource.indexOf("'open-capabilities'"));
-    expect(siderSource.indexOf("'open-capabilities'")).toBeLessThan(siderSource.indexOf("'about'"));
+    expect(siderSource.indexOf("'computer-use'")).toBeLessThan(siderSource.indexOf("'cloud-login'"));
+    expect(siderSource.indexOf("'cloud-login'")).toBeLessThan(siderSource.indexOf("'about'"));
   });
 
   test('routes execution engines directly and keeps legacy links compatible', () => {

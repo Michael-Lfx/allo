@@ -13,7 +13,6 @@ import {
   Headset,
   Info,
   Lightning,
-  LinkCloud,
   Pic,
   Brain,
   ChartPie,
@@ -39,7 +38,6 @@ export const BUILTIN_TAB_IDS = [
   'media',
   'public-companions',
   'learn',
-  'open-capabilities',
   'cloud-login',
   'about',
 ] as const;
@@ -63,7 +61,6 @@ export const LEGACY_ANCHOR_REMAP: Record<string, string> = {
  */
 const GROUP_HEADER_BEFORE: Record<string, string> = {
   system: 'settings.groupApp',
-  'open-capabilities': 'settings.groupCapabilities',
   about: 'settings.groupAbout',
 };
 
@@ -140,12 +137,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('learning.title', { defaultValue: '学习' }),
         icon: <BookOpen />,
         path: 'learn',
-      },
-      'open-capabilities': {
-        id: 'open-capabilities',
-        label: t('settings.openCapabilities.railTitle', { defaultValue: '远程&开放能力' }),
-        icon: <LinkCloud />,
-        path: 'open-capabilities',
       },
       'cloud-login': {
         id: 'cloud-login',
