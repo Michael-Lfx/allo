@@ -971,6 +971,55 @@ impl AgentEngine {
         self.goal = Some(rt);
     }
 
+    /// Restore-semantics counterpart of [`Self::set_goal`]: inject a complete
+    /// [`GoalState`](crate::goal::state::GoalState) snapshot as-is (status,
+    /// turns_used, breaker counters, created_at — nothing is reset), for the
+    /// backend re-hydrating a paused/active goal from the DB. `set_goal`
+    /// starts a *fresh* goal instead.
+    ///
+    /// On a non-goal engine this establishes the goal runtime (registering
+    /// the `update_goal` tool, like `set_goal`). On an existing goal session
+    /// it swaps the state in place, keeping the already-registered tool's
+    /// shared handle valid.
+    pub fn set_goal_state(&mut self, state: crate::goal::state::GoalState) {
+        match self.goal.as_ref() {
+            Some(rt) => rt.restore(state),
+            None => {
+                let rt = crate::goal::runtime::GoalRuntime::from_state(state);
+                self.tools
+                    .register(Box::new(crate::goal::tool::UpdateGoalTool::new(
+                        rt.shared_state(),
+                    )));
+                self.goal = Some(rt);
+            }
+        }
+    }
+
+    /// Pause the goal (passthrough to `GoalRuntime::pause`). Safe no-op when
+    /// this is not a goal session or the goal is already terminal.
+    pub fn goal_pause(&self, reason: Option<String>) {
+        if let Some(g) = self.goal.as_ref() {
+            g.pause(reason.as_deref().unwrap_or("user-paused"));
+        }
+    }
+
+    /// Resume a paused goal (passthrough to `GoalRuntime::resume`; resets the
+    /// breaker counters and the continuation budget). Safe no-op when this is
+    /// not a goal session or the goal is not paused.
+    pub fn goal_resume(&self) {
+        if let Some(g) = self.goal.as_ref() {
+            g.resume();
+        }
+    }
+
+    /// Clear the goal (passthrough to `GoalRuntime::clear`; terminal). Safe
+    /// no-op when this is not a goal session.
+    pub fn goal_clear(&self) {
+        if let Some(g) = self.goal.as_ref() {
+            g.clear();
+        }
+    }
+
     /// Initialize a new session for this Agent engine.
     pub fn init_session(
         &mut self,
@@ -3819,6 +3868,75 @@ mod set_config_tests {
         assert_eq!(engine.context_window(), engine.compact_config.context_window as u64);
         engine.compact_state.last_input_tokens = 12_345;
         assert_eq!(engine.context_tokens(), 12_345);
+    }
+
+    #[test]
+    fn goal_passthroughs_are_noops_without_a_goal_session() {
+        let engine = make_engine("goal-noop");
+        // None of these may panic or establish state on a non-goal engine.
+        engine.goal_pause(Some("reason".into()));
+        engine.goal_resume();
+        engine.goal_clear();
+        assert!(engine.goal_state().is_none());
+    }
+
+    #[test]
+    fn goal_pause_and_resume_pass_through_to_runtime() {
+        let mut engine = make_engine("goal-pause-resume");
+        engine.set_goal("ship it".into(), 8);
+
+        engine.goal_pause(None);
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.status, crate::goal::state::GoalStatus::Paused);
+        assert_eq!(s.paused_reason.as_deref(), Some("user-paused"));
+
+        engine.goal_resume();
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.status, crate::goal::state::GoalStatus::Active);
+        assert!(s.paused_reason.is_none());
+
+        engine.goal_clear();
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.status, crate::goal::state::GoalStatus::Cleared);
+    }
+
+    #[test]
+    fn set_goal_state_establishes_runtime_on_fresh_engine() {
+        let mut engine = make_engine("goal-restore-fresh");
+        let mut snapshot = crate::goal::state::GoalState::new("restored objective".into(), 8);
+        snapshot.status = crate::goal::state::GoalStatus::Paused;
+        snapshot.turns_used = 4;
+        snapshot.consecutive_transport_failures = 2;
+        snapshot.created_at = 42;
+
+        engine.set_goal_state(snapshot);
+
+        // Snapshot fields are taken as-is (restore, not a fresh goal)…
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.objective, "restored objective");
+        assert_eq!(s.status, crate::goal::state::GoalStatus::Paused);
+        assert_eq!(s.turns_used, 4);
+        assert_eq!(s.consecutive_transport_failures, 2);
+        assert_eq!(s.created_at, 42);
+        // …and the update_goal tool got registered, like set_goal does.
+        assert!(engine.tool_names().iter().any(|n| n == "update_goal"));
+    }
+
+    #[test]
+    fn set_goal_state_swaps_in_place_on_existing_goal_session() {
+        let mut engine = make_engine("goal-restore-swap");
+        engine.set_goal("original".into(), 8);
+
+        let mut snapshot = crate::goal::state::GoalState::new("replacement".into(), 8);
+        snapshot.turns_used = 7;
+        engine.set_goal_state(snapshot);
+
+        let s = engine.goal_state().unwrap();
+        assert_eq!(s.objective, "replacement");
+        assert_eq!(s.turns_used, 7);
+        // In-place swap: exactly one update_goal registration, no duplicate.
+        let count = engine.tool_names().iter().filter(|n| *n == "update_goal").count();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

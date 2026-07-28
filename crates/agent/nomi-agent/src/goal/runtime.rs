@@ -40,6 +40,21 @@ impl GoalRuntime {
         }
     }
 
+    /// Rebuild a runtime from a complete state snapshot (restore semantics:
+    /// every field — turns_used/status/counters/created_at — is taken as-is).
+    /// Counterpart of `new()`, which starts a fresh goal.
+    pub fn from_state(state: GoalState) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    /// Replace the entire state in place. Mutates *inside* the shared Arc so
+    /// an already-registered `UpdateGoalTool` keeps observing the same slot.
+    pub fn restore(&self, state: GoalState) {
+        *self.state.lock().unwrap() = state;
+    }
+
     /// Clone the shared handle for injection into `UpdateGoalTool`.
     pub fn shared_state(&self) -> Arc<Mutex<GoalState>> {
         Arc::clone(&self.state)
@@ -347,6 +362,33 @@ mod tests {
         let judge = MockJudgeClient::new(vec![continue_reply()]);
         assert!(rt.evaluate_and_continue("p", &judge).await.is_none());
         assert_eq!(judge.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn from_state_and_restore_preserve_all_fields() {
+        let mut snapshot = GoalState::new("restore me".into(), 8);
+        snapshot.status = GoalStatus::Paused;
+        snapshot.paused_reason = Some("budget".into());
+        snapshot.turns_used = 5;
+        snapshot.auto_continuations = 5;
+        snapshot.consecutive_parse_failures = 2;
+        snapshot.created_at = 42;
+
+        let rt = GoalRuntime::from_state(snapshot.clone());
+        let s = rt.snapshot();
+        assert_eq!(s.status, GoalStatus::Paused);
+        assert_eq!(s.turns_used, 5);
+        assert_eq!(s.consecutive_parse_failures, 2);
+        assert_eq!(s.created_at, 42);
+
+        // restore() swaps in place: a shared handle taken *before* the swap
+        // (e.g. by UpdateGoalTool) observes the new state afterwards.
+        let shared = rt.shared_state();
+        snapshot.status = GoalStatus::Active;
+        snapshot.turns_used = 6;
+        rt.restore(snapshot);
+        assert_eq!(shared.lock().unwrap().status, GoalStatus::Active);
+        assert_eq!(shared.lock().unwrap().turns_used, 6);
     }
 
     #[tokio::test]
