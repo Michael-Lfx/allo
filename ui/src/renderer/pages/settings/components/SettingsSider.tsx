@@ -14,8 +14,6 @@ import {
   Info,
   Lightning,
   LinkCloud,
-  ListView,
-  Peoples,
   Pic,
   Brain,
   ChartPie,
@@ -39,10 +37,8 @@ export const BUILTIN_TAB_IDS = [
   'poi',
   'insights',
   'media',
-  'nomi',
   'public-companions',
   'learn',
-  'requirements',
   'open-capabilities',
   'cloud-login',
   'about',
@@ -133,13 +129,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         icon: <Pic />,
         path: 'media',
       },
-      // Desktop companion & public companions — reuse original icons and i18n keys from main sider
-      nomi: {
-        id: 'nomi',
-        label: t('nomi.siderTitle', { defaultValue: '桌面伙伴' }),
-        icon: <Peoples />,
-        path: 'nomi',
-      },
       'public-companions': {
         id: 'public-companions',
         label: t('publicCompanion.siderTitle', { defaultValue: '对外伙伴' }),
@@ -151,12 +140,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('learning.title', { defaultValue: '学习' }),
         icon: <BookOpen />,
         path: 'learn',
-      },
-      requirements: {
-        id: 'requirements',
-        label: t('requirements.title', { defaultValue: '需求平台' }),
-        icon: <ListView />,
-        path: 'requirements',
       },
       'open-capabilities': {
         id: 'open-capabilities',

@@ -7,7 +7,6 @@ import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
-import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import MobileWorkspaceOverlay from './MobileWorkspaceOverlay';
@@ -57,7 +56,7 @@ export interface ChatLayoutProps {
   headerExtra?: React.ReactNode;
   /**
    * Hide the session-capability controls baked into the header
-   * (AutoWork / IDMM / Knowledge).
+   * (IDMM / Knowledge).
    * Used by surfaces that deliberately offer a reduced feature set — e.g. the
    * desktop companion chat tab. Defaults to false (full conversation page).
    */
@@ -306,7 +305,6 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       <div className='flex items-center gap-12px shrink-0'>
         {!props.hideAdvancedControls && conversation_id != null && (
           <>
-            <AutoWorkControl target={{ kind: 'conversation', id: conversation_id }} />
             <IdmmControl target={{ kind: 'conversation', id: conversation_id }} />
             <KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />
           </>

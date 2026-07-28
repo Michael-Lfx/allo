@@ -6,6 +6,16 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('settings navigation', () => {
+  test('hides desktop companion and requirements from settings navigation', () => {
+    const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
+    const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
+
+    for (const id of ['nomi', 'requirements']) {
+      expect(siderSource.includes(`id: '${id}'`)).toBe(false);
+      expect(pageWrapperSource.includes(`id: '${id}'`)).toBe(false);
+    }
+  });
+
   test('exposes execution engines as a first-level settings page', () => {
     const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
     const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
