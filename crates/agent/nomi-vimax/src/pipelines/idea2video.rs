@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::agents::{CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, WorldAssetsPlanner};
+use crate::agents::{
+    CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, WorldAssetsPlanner,
+    has_usable_portrait,
+};
 use crate::error::VimaxResult;
 use crate::media_local;
 use crate::planning::{
@@ -14,6 +17,9 @@ use crate::planning::{
 use crate::progress::ProgressCallback;
 use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
+use super::cameo_bind::{
+    apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
+};
 use super::script2video::Script2VideoPipeline;
 use super::{PipelineBackends, emit_pct, load_or_write_json, load_or_write_text, safe_component};
 
@@ -132,12 +138,18 @@ impl Idea2VideoPipeline {
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
 
         emit_pct(&progress, "extract_characters", "正在从故事中提取角色", 25.0);
+        let session_root = resolve_session_root(&self.working_dir);
+        let cameo_hint = cameo_extractor_hint(&session_root);
         let characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
+            let story_for_extract = format!("{story}{cameo_hint}");
             self.character_extractor
-                .extract_characters(&story, &style)
+                .extract_characters(&story_for_extract, &style)
                 .await
         })
         .await?;
+
+        emit_pct(&progress, "cameo_bind", "正在绑定用户角色参考图", 30.0);
+        apply_session_cameos(&self.working_dir, &characters).await?;
 
         // Global cast bible during planning (before per-scene storyboards).
         emit_pct(
@@ -158,10 +170,7 @@ impl Idea2VideoPipeline {
                 if !character.is_visible {
                     continue;
                 }
-                if crate::agents::has_usable_portrait_sheet(
-                    &registry,
-                    &character.identifier_in_scene,
-                ) {
+                if has_usable_portrait(&registry, &character.identifier_in_scene) {
                     continue;
                 }
                 registry.remove(&character.identifier_in_scene);
@@ -197,8 +206,19 @@ impl Idea2VideoPipeline {
                 Arc::clone(&self.backends.chat),
                 Arc::clone(&self.backends.image),
             );
+            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             // Prefer full story for location/prop coverage across scenes.
-            let _ = planner.ensure(&self.working_dir, &story, &style).await?;
+            // When Cameo photos exist, plates are style-locked to those uploads.
+            let _ = planner
+                .ensure(
+                    &self.working_dir,
+                    &story,
+                    &style,
+                    &style_refs,
+                    &scene_hint,
+                    &lock_token,
+                )
+                .await?;
             emit_pct(
                 &progress,
                 "world_assets_done",
@@ -320,6 +340,8 @@ impl Idea2VideoPipeline {
             &tokio::fs::read_to_string(self.working_dir.join("characters.json")).await?,
         )?;
 
+        apply_session_cameos(&self.working_dir, &characters).await?;
+
         // Global portraits at idea root — single source of truth for all scenes.
         let registry_path = self.working_dir.join("character_portraits_registry.json");
         {
@@ -334,10 +356,7 @@ impl Idea2VideoPipeline {
                 if !character.is_visible {
                     continue;
                 }
-                if crate::agents::has_usable_portrait_sheet(
-                    &registry,
-                    &character.identifier_in_scene,
-                ) {
+                if has_usable_portrait(&registry, &character.identifier_in_scene) {
                     continue;
                 }
                 missing = true;
@@ -354,10 +373,7 @@ impl Idea2VideoPipeline {
                     if !character.is_visible {
                         continue;
                     }
-                    if crate::agents::has_usable_portrait_sheet(
-                        &registry,
-                        &character.identifier_in_scene,
-                    ) {
+                    if has_usable_portrait(&registry, &character.identifier_in_scene) {
                         continue;
                     }
                     registry.remove(&character.identifier_in_scene);

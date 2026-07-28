@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
 use nomi_vimax::{
-    ArtifactNode, FlowyVimaxServices, RenderStatus, SessionRecord, VimaxService, WorkflowKind,
+    ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus, SessionRecord,
+    VimaxService, WorkflowKind,
 };
 use nomifun_common::AppError;
 
@@ -152,6 +153,46 @@ impl VimaxApiService {
             .import_session(archive_path)
             .await
             .map_err(map_vimax_err)
+    }
+
+    pub fn list_cameos(&self, id: &str) -> Result<Vec<CameoPhotoEntry>, AppError> {
+        self.inner.list_cameos(id).map_err(map_vimax_err)
+    }
+
+    pub async fn upload_cameo(
+        &self,
+        id: &str,
+        bytes: Vec<u8>,
+        character_name: String,
+        description: String,
+    ) -> Result<CameoPhotoEntry, AppError> {
+        self.inner
+            .upload_cameo(id, bytes, character_name, description)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn update_cameo(
+        &self,
+        id: &str,
+        photo_id: &str,
+        update: CameoUpdate,
+    ) -> Result<CameoPhotoEntry, AppError> {
+        self.inner
+            .update_cameo(id, photo_id, update)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn delete_cameo(&self, id: &str, photo_id: &str) -> Result<(), AppError> {
+        self.inner
+            .delete_cameo(id, photo_id)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub fn cameo_photo_path(&self, id: &str, photo_id: &str) -> Result<PathBuf, AppError> {
+        self.inner.cameo_photo_path(id, photo_id).map_err(map_vimax_err)
     }
 }
 

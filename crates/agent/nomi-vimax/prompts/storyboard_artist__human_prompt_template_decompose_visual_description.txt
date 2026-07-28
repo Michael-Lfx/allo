@@ -6,3 +6,4 @@
 <CHARACTERS>
 {characters_str}
 </CHARACTERS>
+{continuity_block}

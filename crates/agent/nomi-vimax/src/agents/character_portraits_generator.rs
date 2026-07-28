@@ -152,6 +152,27 @@ pub fn has_usable_portrait_sheet(
         .unwrap_or(false)
 }
 
+/// True when registry points at a usable user-uploaded Cameo for this character.
+pub fn has_usable_cameo(
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    identifier: &str,
+) -> bool {
+    registry
+        .get(identifier)
+        .and_then(|views| views.get("cameo"))
+        .and_then(|item| item.get("path"))
+        .map(|p| crate::media_local::is_usable_image_file(Path::new(p)))
+        .unwrap_or(false)
+}
+
+/// True when the character already has a usable identity reference (user Cameo or AI sheet).
+pub fn has_usable_portrait(
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    identifier: &str,
+) -> bool {
+    has_usable_cameo(registry, identifier) || has_usable_portrait_sheet(registry, identifier)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

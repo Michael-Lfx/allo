@@ -55,6 +55,17 @@
       "product": "为一款极简咖啡机制作 30 秒发布短片",
       "story": "雨夜里，最后一班列车驶入无人车站",
       "brand": "用电影感镜头讲述一双跑鞋的一天"
+    },
+    "cameo": {
+      "title": "角色参考图（Cameo）",
+      "hint": "可选：上传人物照片并填写角色名，成片会尽量保持外貌一致。",
+      "add": "添加照片",
+      "dropHint": "拖拽或点击上传 PNG / JPEG / WEBP（最多 8 张）",
+      "namePlaceholder": "角色名（需与故事中角色对应）",
+      "descPlaceholder": "可选描述（身份/服装提示）",
+      "remove": "移除",
+      "uploading": "正在上传角色参考图…",
+      "uploadFailed": "角色参考图上传失败"
     }
   },
   "workflow": {
@@ -153,6 +164,11 @@
     "loadError": "加载失败",
     "refresh": "刷新",
     "workflowLocked": "工作流在创建后已锁定，不可更改。",
+    "cameo": {
+      "title": "已绑定角色参考图",
+      "empty": "暂无 Cameo。可在创建时上传，删除后请重新规划以更新绑定。",
+      "delete": "删除"
+    },
     "plan": "开始规划",
     "planContinue": "从断点继续规划",
     "planStarted": "已开始规划",

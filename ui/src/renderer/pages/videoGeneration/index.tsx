@@ -15,7 +15,14 @@ import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
-import { createSession, deleteSession, importSession, listSessions, planSession } from './api';
+import {
+  createSession,
+  deleteSession,
+  importSession,
+  listSessions,
+  planSession,
+  uploadCameo,
+} from './api';
 import type { PlanBody, SessionSummary } from './types';
 import SessionCard from './components/SessionCard';
 import VideoCreateComposer, {
@@ -109,6 +116,15 @@ const VideoGenerationListPage: React.FC = () => {
           session_id: created.id,
         });
         try {
+          const pendingCameos = draft.cameos.filter((c) => c.file && c.characterName.trim());
+          for (const cameo of pendingCameos) {
+            await uploadCameo(
+              created.id,
+              cameo.file!,
+              cameo.characterName.trim(),
+              cameo.description.trim()
+            );
+          }
           await planSession(created.id, sourceBodyForDraft(draft));
           trackFunnelEvent('first_task_started', {
             feature: 'video_generation',

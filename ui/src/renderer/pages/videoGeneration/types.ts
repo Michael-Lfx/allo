@@ -64,6 +64,31 @@ export interface PlanBody {
   target_duration_secs?: number;
 }
 
+/** Server-side Cameo photo metadata (`GET/POST /api/vimax/sessions/:id/cameos`). */
+export interface CameoPhoto {
+  id: string;
+  rel_path: string;
+  character_name: string;
+  description: string;
+  sha256?: string;
+  width?: number;
+  height?: number;
+  created_at?: string;
+  updated_at?: string;
+  bound_identifier?: string | null;
+}
+
+/** Local draft row before upload (File stays in memory only). */
+export interface CameoDraftItem {
+  localId: string;
+  characterName: string;
+  description: string;
+  /** Present only while the create form is open; not persisted to sessionStorage. */
+  file?: File;
+  /** Object URL for local preview; revoke when removed. */
+  previewUrl?: string;
+}
+
 export interface RenderBody {
   llm_model?: string;
   image_model?: string;

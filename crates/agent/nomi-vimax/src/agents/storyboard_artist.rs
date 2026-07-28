@@ -56,6 +56,17 @@ impl StoryboardArtist {
         brief: &ShotBriefDescription,
         characters: &[CharacterInScene],
     ) -> VimaxResult<ShotDescription> {
+        self.decompose_visual_description_with_continuity(brief, characters, None)
+            .await
+    }
+
+    /// Decompose a shot; when `previous_lf_desc` is set, force ff_desc to continue from it.
+    pub async fn decompose_visual_description_with_continuity(
+        &self,
+        brief: &ShotBriefDescription,
+        characters: &[CharacterInScene],
+        previous_lf_desc: Option<&str>,
+    ) -> VimaxResult<ShotDescription> {
         let characters_str = characters
             .iter()
             .enumerate()
@@ -67,11 +78,22 @@ impl StoryboardArtist {
             "../../prompts/storyboard_artist__system_prompt_template_decompose_visual_description.txt"
         )
         .replace("{format_instructions}", VIS_DECOMPOSE);
+        let continuity_block = match previous_lf_desc.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(prev) => format!(
+                "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
+CRITICAL CONTINUITY: This shot is timeline-adjacent to the previous shot in the SAME scene. \
+The first_frame description MUST start from (or seamlessly continue) the previous shot's last frame above — \
+same cast identity, wardrobe, lighting mood, and set. You may reframe (new cam_idx / shot size) but do NOT \
+reset to an unrelated establishing pose. Cross-scene continuity does NOT apply here.\n"
+            ),
+            None => String::new(),
+        };
         let user = include_str!(
             "../../prompts/storyboard_artist__human_prompt_template_decompose_visual_description.txt"
         )
         .replace("{visual_desc}", &brief.visual_desc)
-        .replace("{characters_str}", &characters_str);
+        .replace("{characters_str}", &characters_str)
+        .replace("{continuity_block}", &continuity_block);
 
         let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]

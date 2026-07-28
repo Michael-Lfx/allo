@@ -6,8 +6,9 @@ import { useTranslation } from 'react-i18next';
 import { Button, Input, InputNumber } from '@arco-design/web-react';
 import { BookOpen, FileText, Lightning, SettingTwo, VideoOne } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
-import type { VimaxWorkflow } from '../types';
+import type { CameoDraftItem, VimaxWorkflow } from '../types';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from '../visualStylePresets';
+import CameoCastEditor from './CameoCastEditor';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
 import VisualStyleSelect from './VisualStyleSelect';
 import styles from '../index.module.css';
@@ -22,6 +23,8 @@ export interface VideoCreateDraft {
   style: string;
   targetDurationSecs: number;
   models: VimaxModelSelection;
+  /** Local Cameo drafts; `file` is memory-only and not persisted. */
+  cameos: CameoDraftItem[];
 }
 
 interface VideoCreateComposerProps {
@@ -43,6 +46,7 @@ function loadDraft(): VideoCreateDraft {
     style: DEFAULT_VISUAL_STYLE_PROMPT,
     targetDurationSecs: 30,
     models: EMPTY_MODELS,
+    cameos: [],
   };
   try {
     const parsed = JSON.parse(window.sessionStorage.getItem(DRAFT_KEY) ?? '') as Partial<VideoCreateDraft>;
@@ -50,6 +54,15 @@ function loadDraft(): VideoCreateDraft {
       parsed.workflow === 'script2video' || parsed.workflow === 'novel2video'
         ? parsed.workflow
         : 'idea2video';
+    const cameos: CameoDraftItem[] = Array.isArray(parsed.cameos)
+      ? parsed.cameos
+          .filter((c): c is CameoDraftItem => !!c && typeof c === 'object')
+          .map((c, idx) => ({
+            localId: typeof c.localId === 'string' ? c.localId : `restored_${idx}`,
+            characterName: typeof c.characterName === 'string' ? c.characterName : '',
+            description: typeof c.description === 'string' ? c.description : '',
+          }))
+      : [];
     return {
       workflow,
       sourceText: typeof parsed.sourceText === 'string' ? parsed.sourceText : '',
@@ -65,6 +78,7 @@ function loadDraft(): VideoCreateDraft {
         image_model: parsed.models?.image_model ?? '',
         video_model: parsed.models?.video_model ?? '',
       },
+      cameos,
     };
   } catch {
     return fallback;
@@ -89,7 +103,16 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
 
   useEffect(() => {
     try {
-      window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      // Never persist File / object URLs — only serializable cameo metadata.
+      const persistable = {
+        ...draft,
+        cameos: draft.cameos.map(({ localId, characterName, description }) => ({
+          localId,
+          characterName,
+          description,
+        })),
+      };
+      window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(persistable));
     } catch {
       // Storage may be unavailable in hardened webviews.
     }
@@ -164,6 +187,8 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
       setModelMissing(true);
       return;
     }
+    const missingName = draft.cameos.some((c) => c.file && !c.characterName.trim());
+    if (missingName) return;
     onSubmit({ ...draft, sourceText: draft.sourceText.trim() });
   };
 
@@ -214,6 +239,11 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                 submit();
               }
             }}
+          />
+          <CameoCastEditor
+            value={draft.cameos}
+            onChange={(cameos) => setDraft((current) => ({ ...current, cameos }))}
+            disabled={loading}
           />
           <div className='mt-10px flex flex-wrap items-center justify-between gap-10px border-t border-b-0 border-l-0 border-r-0 border-solid border-[var(--color-border-2)] pt-10px'>
             <Button

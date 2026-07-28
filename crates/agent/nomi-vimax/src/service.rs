@@ -16,7 +16,8 @@ use crate::pipelines::{
 };
 use crate::progress::{RenderStatus, RunStatus};
 use crate::session::{
-    ArtifactNode, SessionIndex, SessionRecord, apply_status_to_record,
+    ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, apply_status_to_record,
+    cameo,
 };
 
 fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> String {
@@ -151,6 +152,75 @@ impl VimaxService {
 
     pub fn artifact_path(&self, id: &str, rel: &str) -> VimaxResult<PathBuf> {
         self.index.artifact_abs_path(id, rel)
+    }
+
+    /// List Cameo photos for a session (scrubs orphan entries).
+    pub fn list_cameos(&self, id: &str) -> VimaxResult<Vec<CameoPhotoEntry>> {
+        let working = self.index.working_dir(id)?;
+        cameo::list_photos(&working)
+    }
+
+    /// Upload and normalize a Cameo photo (PNG/JPEG/WEBP → PNG).
+    pub async fn upload_cameo(
+        self: &Arc<Self>,
+        id: &str,
+        bytes: Vec<u8>,
+        character_name: String,
+        description: String,
+    ) -> VimaxResult<CameoPhotoEntry> {
+        self.ensure_cameo_mutable(id).await?;
+        let working = self.index.working_dir(id)?;
+        tokio::task::spawn_blocking(move || {
+            cameo::upload_photo(&working, &bytes, &character_name, &description)
+        })
+        .await
+        .map_err(|e| VimaxError::msg(format!("cameo upload join error: {e}")))?
+    }
+
+    pub async fn update_cameo(
+        self: &Arc<Self>,
+        id: &str,
+        photo_id: &str,
+        update: CameoUpdate,
+    ) -> VimaxResult<CameoPhotoEntry> {
+        self.ensure_cameo_mutable(id).await?;
+        let working = self.index.working_dir(id)?;
+        let photo_id = photo_id.to_string();
+        tokio::task::spawn_blocking(move || cameo::update_photo(&working, &photo_id, update))
+            .await
+            .map_err(|e| VimaxError::msg(format!("cameo update join error: {e}")))?
+    }
+
+    pub async fn delete_cameo(self: &Arc<Self>, id: &str, photo_id: &str) -> VimaxResult<()> {
+        self.ensure_cameo_mutable(id).await?;
+        let working = self.index.working_dir(id)?;
+        let photo_id = photo_id.to_string();
+        tokio::task::spawn_blocking(move || cameo::delete_photo(&working, &photo_id))
+            .await
+            .map_err(|e| VimaxError::msg(format!("cameo delete join error: {e}")))?
+    }
+
+    pub fn cameo_photo_path(&self, id: &str, photo_id: &str) -> VimaxResult<PathBuf> {
+        let working = self.index.working_dir(id)?;
+        cameo::photo_abs_path(&working, photo_id)
+    }
+
+    async fn ensure_cameo_mutable(&self, id: &str) -> VimaxResult<()> {
+        let record = self.index.get(id)?;
+        if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
+            return Err(VimaxError::InvalidParams(
+                "cannot modify cameo photos while the project is planning or rendering".into(),
+            ));
+        }
+        let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = map.get(id)
+            && matches!(s.status, RunStatus::Planning | RunStatus::Rendering)
+        {
+            return Err(VimaxError::InvalidParams(
+                "cannot modify cameo photos while the project is planning or rendering".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Export a finished (non-running) session to a `.nomivimax` archive on disk.

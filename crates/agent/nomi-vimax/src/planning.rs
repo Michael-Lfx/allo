@@ -490,6 +490,10 @@ If a speech beat is longer, SPLIT into another shot OR shorten the line — do n
          - Prefer fewer longer shots when there is dialogue; pack action + reaction into the same framing \
 so the full {per_shot}s feels purposeful (not frozen on the opening pose).\n\
          - Reuse cam_idx whenever possible. Prefer in-shot motion over cutting.\n\
+         - SHOT CONTINUITY (this scene only): for every adjacent pair of shots, shot N+1 must open from \
+shot N's ending state so Seedance can match-cut (first frame of next = last frame of previous). \
+Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over. \
+Do NOT require continuity from the previous scene's final shot into this scene's first shot.\n\
          - If you would create more than {max_shots} shots, merge beats instead.",
         scene_num = scene_idx + 1,
     );
@@ -858,6 +862,8 @@ mod tests {
         // Should not claim THIS SCENE is 30s.
         assert!(s.contains("30"));
         assert!(s.contains("THIS SCENE budget"));
+        assert!(s.contains("SHOT CONTINUITY"));
+        assert!(s.contains("Do NOT require continuity from the previous scene"));
     }
 
     #[test]
