@@ -233,7 +233,9 @@ pub(crate) const KNOWLEDGE_WRITE_TOOL_NAME: &str = "knowledge_write";
 
 /// The host-resolved `/goal` command set advertised to the UI picker. These
 /// are NOT engine slash commands: the frontend maps them onto
-/// `POST /api/conversations/{id}/goal` actions (set/status/pause/resume/clear).
+/// `POST /api/conversations/{id}/goal` actions (set/status/pause/resume/clear
+/// plus the subgoal family: add_subgoal/list_subgoals/remove_subgoal/
+/// clear_subgoals).
 pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
     [
         (
@@ -244,6 +246,13 @@ pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
         ("goal pause", "Pause goal auto-continuation (resume later with /goal resume)"),
         ("goal resume", "Resume a paused goal with a fresh continuation budget"),
         ("goal clear", "Clear the goal and stop auto-continuation"),
+        (
+            "subgoal",
+            "Add a completion criterion to the goal: /subgoal <text> — the judge requires every criterion",
+        ),
+        ("subgoal list", "List the goal's criteria with their numbers"),
+        ("subgoal remove", "Remove one criterion by number: /subgoal remove <n>"),
+        ("subgoal clear", "Remove all criteria (the goal itself stays active)"),
     ]
     .into_iter()
     .map(|(command, description)| SlashCommandItem {
@@ -2246,7 +2255,45 @@ impl NomiAgentManager {
                     None => GoalStatusResponse::default(),
                 })
             }
-            "status" => Ok(self.goal_status()),
+            "status" | "list_subgoals" => Ok(self.goal_status()),
+            "add_subgoal" => {
+                let text = req
+                    .subgoal
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::BadRequest("subgoal must not be empty".into()))?;
+                let rt = self.require_goal_runtime()?;
+                rt.add_subgoal(text);
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "remove_subgoal" => {
+                let index = req
+                    .index_1based
+                    .ok_or_else(|| AppError::BadRequest("index_1based is required".into()))?
+                    as usize;
+                let rt = self.require_goal_runtime()?;
+                if !rt.remove_subgoal(index) {
+                    return Err(AppError::BadRequest(format!(
+                        "Subgoal index {index} is out of range"
+                    )));
+                }
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "clear_subgoals" => {
+                // The runtime exposes no bulk clear — repeated engine-guarded
+                // removal keeps the goal itself untouched (same approach as
+                // the DB fallback's `clear_subgoals_row`).
+                let rt = self.require_goal_runtime()?;
+                while rt.remove_subgoal(1) {}
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
             other => Err(AppError::BadRequest(format!("Unknown goal action '{other}'"))),
         }
     }

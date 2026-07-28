@@ -233,11 +233,41 @@ impl ConversationService {
                 repo.clear(conversation_id).await?;
                 Ok(GoalStatusResponse::default())
             }
-            "status" => Ok(repo
+            "status" | "list_subgoals" => Ok(repo
                 .load_by_session(conversation_id)
                 .await?
                 .map(|row| goal_bridge::goal_row_to_response(&row))
                 .unwrap_or_default()),
+            "add_subgoal" => {
+                let text = req
+                    .subgoal
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::BadRequest("subgoal must not be empty".into()))?;
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::add_subgoal_row(&row, text);
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "remove_subgoal" => {
+                let index = req
+                    .index_1based
+                    .ok_or_else(|| AppError::BadRequest("index_1based is required".into()))?
+                    as usize;
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::remove_subgoal_row(&row, index).ok_or_else(|| {
+                    AppError::BadRequest(format!("Subgoal index {index} is out of range"))
+                })?;
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "clear_subgoals" => {
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::clear_subgoals_row(&row);
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
             other => Err(AppError::BadRequest(format!("Unknown goal action '{other}'"))),
         }
     }
@@ -269,6 +299,8 @@ impl ConversationService {
                 objective: None,
                 max_turns: None,
                 reason: None,
+                subgoal: None,
+                index_1based: None,
             };
             if let Ok(resp) = runtime.goal_action(status_probe).await {
                 return Ok(resp);

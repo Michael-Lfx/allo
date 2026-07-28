@@ -131,6 +131,8 @@ pub fn goal_state_to_response(state: &GoalState) -> GoalStatusResponse {
         subgoals: state.subgoals.clone(),
         created_at: Some(state.created_at),
         last_turn_at: state.last_turn_at,
+        waiting_until: state.waiting_until,
+        waiting_reason: state.waiting_reason.clone(),
     }
 }
 
@@ -168,6 +170,33 @@ pub fn pause_persisted_row(row: &GoalRow, reason: &str) -> UpsertGoalParams {
 pub fn resume_persisted_row(row: &GoalRow) -> UpsertGoalParams {
     let rt = GoalRuntime::from_state(goal_row_to_state(row));
     rt.resume();
+    goal_state_to_upsert(&row.session_id, &rt.snapshot())
+}
+
+/// Append a criterion to a persisted goal row without a live runtime
+/// (`/subgoal <text>`). Whitespace-trimmed; empty text is the engine's
+/// no-op, callers validate first for a clear error.
+pub fn add_subgoal_row(row: &GoalRow, text: &str) -> UpsertGoalParams {
+    let rt = GoalRuntime::from_state(goal_row_to_state(row));
+    rt.add_subgoal(text);
+    goal_state_to_upsert(&row.session_id, &rt.snapshot())
+}
+
+/// Remove the 1-based `index`-th criterion from a persisted goal row.
+/// `None` = out of range (incl. 0), engine semantics — the caller surfaces
+/// the error instead of upserting an unchanged row.
+pub fn remove_subgoal_row(row: &GoalRow, index_1based: usize) -> Option<UpsertGoalParams> {
+    let rt = GoalRuntime::from_state(goal_row_to_state(row));
+    rt.remove_subgoal(index_1based)
+        .then(|| goal_state_to_upsert(&row.session_id, &rt.snapshot()))
+}
+
+/// Drop every criterion from a persisted goal row (`/subgoal clear`) while
+/// leaving the goal itself untouched. Implemented as repeated engine-guarded
+/// removal, mirroring the live-runtime path.
+pub fn clear_subgoals_row(row: &GoalRow) -> UpsertGoalParams {
+    let rt = GoalRuntime::from_state(goal_row_to_state(row));
+    while rt.remove_subgoal(1) {}
     goal_state_to_upsert(&row.session_id, &rt.snapshot())
 }
 
@@ -358,5 +387,67 @@ mod tests {
         assert_eq!(params.status, "active");
         assert_eq!(params.max_turns, 12);
         assert_eq!(params.turns_used, 0);
+    }
+
+    #[test]
+    fn response_carries_waiting_barrier_fields() {
+        let mut state = sample_state();
+        state.status = GoalStatus::Waiting;
+        state.waiting_until = Some(99_000);
+        state.waiting_reason = Some("cooling down".into());
+        let resp = goal_state_to_response(&state);
+        assert_eq!(resp.status.as_deref(), Some("waiting"));
+        assert_eq!(resp.waiting_until, Some(99_000));
+        assert_eq!(resp.waiting_reason.as_deref(), Some("cooling down"));
+
+        // Waiting fields also survive the row round-trip (DB fallback path).
+        let params = goal_state_to_upsert("conv-1", &state);
+        assert_eq!(params.waiting_until, Some(99_000));
+        assert_eq!(params.waiting_reason.as_deref(), Some("cooling down"));
+    }
+
+    #[test]
+    fn db_only_subgoal_edits_reuse_engine_guards() {
+        let state = GoalState::new("ship".into(), 8);
+        let params = goal_state_to_upsert("conv-1", &state);
+        let row = GoalRow {
+            id: 1,
+            session_id: params.session_id.clone(),
+            objective: params.objective.clone(),
+            status: params.status.clone(),
+            turns_used: 0,
+            max_turns: params.max_turns,
+            created_at: params.created_at,
+            last_turn_at: None,
+            last_verdict: None,
+            last_reason: None,
+            paused_reason: None,
+            consecutive_parse_failures: 0,
+            consecutive_transport_failures: 0,
+            subgoals_json: r#"["a","b"]"#.into(),
+            contract_json: None,
+            waiting_on_pid: None,
+            waiting_on_session: None,
+            waiting_until: None,
+            waiting_reason: None,
+            updated_at: 0,
+            version: 0,
+        };
+
+        // Append trims and keeps existing criteria.
+        let added = add_subgoal_row(&row, "  c  ");
+        assert_eq!(added.subgoals_json, r#"["a","b","c"]"#);
+
+        // 1-based removal; 0 / out-of-range → None (engine semantics).
+        assert!(remove_subgoal_row(&row, 0).is_none());
+        assert!(remove_subgoal_row(&row, 3).is_none());
+        let removed = remove_subgoal_row(&row, 1).unwrap();
+        assert_eq!(removed.subgoals_json, r#"["b"]"#);
+
+        // Clear empties the list but never touches the goal itself.
+        let cleared = clear_subgoals_row(&row);
+        assert_eq!(cleared.subgoals_json, "[]");
+        assert_eq!(cleared.status, "active");
+        assert_eq!(cleared.objective, "ship");
     }
 }

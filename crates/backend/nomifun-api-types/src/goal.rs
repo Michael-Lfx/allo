@@ -9,9 +9,12 @@ use serde::{Deserialize, Serialize};
 /// POST body for a goal action on a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoalActionRequest {
-    /// One of `"set"` | `"pause"` | `"resume"` | `"clear"` | `"status"`.
-    /// `"status"` is accepted for slash-command symmetry and behaves like
-    /// the GET endpoint (no mutation).
+    /// One of `"set"` | `"pause"` | `"resume"` | `"clear"` | `"status"` |
+    /// `"add_subgoal"` | `"remove_subgoal"` | `"clear_subgoals"` |
+    /// `"list_subgoals"`. `"status"` is accepted for slash-command symmetry
+    /// and behaves like the GET endpoint (no mutation); `"list_subgoals"` is
+    /// an alias of `"status"` — the response's `subgoals` field already
+    /// carries the full list.
     pub action: String,
     /// Objective text. Required for `action = "set"`, ignored otherwise.
     #[serde(default)]
@@ -23,6 +26,13 @@ pub struct GoalActionRequest {
     /// Optional human-readable pause reason for `action = "pause"`.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Criterion text. Required for `action = "add_subgoal"`.
+    #[serde(default)]
+    pub subgoal: Option<String>,
+    /// 1-based criterion index. Required for `action = "remove_subgoal"`
+    /// (matches the numbering shown by `/subgoal list`).
+    #[serde(default)]
+    pub index_1based: Option<u64>,
 }
 
 /// Goal snapshot returned by both the GET endpoint and every POST action.
@@ -58,6 +68,13 @@ pub struct GoalStatusResponse {
     /// Epoch milliseconds of the last goal-judged turn.
     #[serde(default)]
     pub last_turn_at: Option<u64>,
+    /// Time-based wait barrier deadline (epoch ms). Present while `status`
+    /// is `"waiting"` on a timed barrier — the frontend renders a countdown.
+    #[serde(default)]
+    pub waiting_until: Option<u64>,
+    /// Human-readable reason for the wait barrier.
+    #[serde(default)]
+    pub waiting_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -71,6 +88,20 @@ mod tests {
         assert!(req.objective.is_none());
         assert!(req.max_turns.is_none());
         assert!(req.reason.is_none());
+        assert!(req.subgoal.is_none());
+        assert!(req.index_1based.is_none());
+    }
+
+    #[test]
+    fn goal_action_request_carries_subgoal_fields() {
+        let req: GoalActionRequest =
+            serde_json::from_str(r#"{"action":"add_subgoal","subgoal":"tests added"}"#).unwrap();
+        assert_eq!(req.action, "add_subgoal");
+        assert_eq!(req.subgoal.as_deref(), Some("tests added"));
+
+        let req: GoalActionRequest =
+            serde_json::from_str(r#"{"action":"remove_subgoal","index_1based":2}"#).unwrap();
+        assert_eq!(req.index_1based, Some(2));
     }
 
     #[test]
@@ -80,5 +111,7 @@ mod tests {
         assert!(!parsed.active);
         assert!(parsed.status.is_none());
         assert!(parsed.subgoals.is_empty());
+        assert!(parsed.waiting_until.is_none());
+        assert!(parsed.waiting_reason.is_none());
     }
 }
