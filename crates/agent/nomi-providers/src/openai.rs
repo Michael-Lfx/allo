@@ -119,6 +119,27 @@ impl OpenAIProvider {
                                 }
                             }
                         }
+                        // The engine rides out-of-band guidance (loop-guard
+                        // nudge, drained steering) on the same message as the
+                        // tool results. The OpenAI wire format has no slot for
+                        // it inside a `tool` message, so it follows as its own
+                        // user message instead of being discarded.
+                        let trailing: String = msg
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let trailing = strip_patterns_from_text(&trailing, compat);
+                        if !trailing.is_empty() {
+                            result.push(json!({
+                                "role": "user",
+                                "content": trailing
+                            }));
+                        }
                     } else {
                         // Check if the message contains any image blocks
                         let has_images = msg
@@ -2739,6 +2760,41 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .starts_with("data:image/png;base64,")
+        );
+    }
+
+    #[test]
+    fn trailing_text_on_a_tool_result_message_survives_as_a_user_message() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+        // The engine appends the loop-guard nudge and drained steering messages
+        // as trailing Text blocks on the same User message that carries the
+        // tool results. Dropping them silently disables both mechanisms.
+        let messages = vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: "skill body".to_string(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                ContentBlock::Text {
+                    text: "Loop guard: stop repeating the same action.".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "steer: answer from the skill list".to_string(),
+                },
+            ],
+        )];
+        let compat = nomi_config::compat::ProviderCompat::openai_defaults();
+        let result = OpenAIProvider::build_messages(&messages, "", &compat, false);
+
+        assert_eq!(result[0]["role"], "tool");
+        assert_eq!(result[0]["tool_call_id"], "call_1");
+        assert_eq!(result[1]["role"], "user");
+        assert_eq!(
+            result[1]["content"],
+            "Loop guard: stop repeating the same action.\nsteer: answer from the skill list"
         );
     }
 

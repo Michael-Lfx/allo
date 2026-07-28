@@ -104,7 +104,7 @@
       "name": "nomifun-skills",
       "name_i18n": { "zh-CN": "nomifun-skills" },
       "description_i18n": {
-        "zh-CN": "访问 Nomi Skills 注册表的技能，可发现和下载 AI agent 技能，并管理 Nomi Skills 平台上的 agent 凭据。"
+        "zh-CN": "发现并安装社区 AI agent 技能。用户询问是否有某类 skill、需要 ClawHub/SkillHub 市场技能，或需要安装技能时使用。本技能已完整内置，无需先拉取远端 SKILL.md。"
       },
       "audience_tags": ["developer", "general"],
       "scenario_tags": ["setup"]
