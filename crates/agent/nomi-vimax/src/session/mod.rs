@@ -13,7 +13,9 @@ use crate::error::{VimaxError, VimaxResult};
 use crate::progress::{RenderStatus, RunStatus};
 
 pub mod archive;
+pub mod cameo;
 pub use archive::{ARCHIVE_EXTENSION, ArchiveManifest};
+pub use cameo::{CameoManifest, CameoPhotoEntry, CameoUpdate};
 
 const STALE_KEYS: &[&str] = &[
     "story",
@@ -358,6 +360,10 @@ impl SessionIndex {
                 .join("novel_compressed.txt")
                 .exists(),
         );
+        map.insert(
+            "cameo/manifest.json".into(),
+            root.join(cameo::CAMEO_MANIFEST_REL).exists(),
+        );
         Ok(map)
     }
 
@@ -465,6 +471,8 @@ impl SessionIndex {
             let _ = std::fs::remove_dir_all(&final_abs);
             return Err(e);
         }
+        // Drop orphan cameo pointers after import (files may have been missing in archive).
+        let _ = cameo::scrub_manifest(&final_abs);
         Ok(record)
     }
 }
@@ -646,6 +654,38 @@ mod import_export_tests {
         // Original still listed.
         let list = index.list().unwrap();
         assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn export_import_preserves_cameo_photos() {
+        use image::{ImageFormat, Rgb, RgbImage};
+
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let created = index
+            .create(WorkflowKind::Idea2Video, Some("Cameo Share".into()))
+            .unwrap();
+        let working = index.working_dir(&created.session_id).unwrap();
+        let mut jpeg = Vec::new();
+        RgbImage::from_pixel(20, 16, Rgb([1, 2, 3]))
+            .write_to(&mut std::io::Cursor::new(&mut jpeg), ImageFormat::Jpeg)
+            .unwrap();
+        let entry = cameo::upload_photo(&working, &jpeg, "Hero", "me").unwrap();
+        let png_bytes = std::fs::read(working.join(&entry.rel_path)).unwrap();
+
+        let archive = dir.path().join("cameo.nomivimax");
+        index
+            .export_to_path(&created.session_id, &archive)
+            .unwrap();
+        let imported = index.import_from_path(&archive).unwrap();
+        let imported_working = index.working_dir(&imported.session_id).unwrap();
+        let photos = cameo::list_photos(&imported_working).unwrap();
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos[0].character_name, "Hero");
+        assert_eq!(
+            std::fs::read(imported_working.join(&photos[0].rel_path)).unwrap(),
+            png_bytes
+        );
     }
 
     #[test]

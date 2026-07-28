@@ -1,5 +1,6 @@
 //! Script2Video / Idea2Video / Novel2Video pipeline entrypoints.
 
+mod cameo_bind;
 mod idea2video;
 mod novel2video;
 mod script2video;

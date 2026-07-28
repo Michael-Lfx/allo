@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use crate::agents::{
     CameraImageGenerator, CharacterExtractor, CharacterPortraitsGenerator, ReferenceImageSelector,
-    StoryboardArtist, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
+    StoryboardArtist, WorldAssetsPlanner, has_usable_portrait, rank_world_pairs_for_frame,
+    world_asset_pairs,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
@@ -14,6 +15,9 @@ use crate::media_local;
 use crate::progress::ProgressCallback;
 use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
+use super::cameo_bind::{
+    apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
+};
 use super::{
     PipelineBackends, emit, emit_pct, group_shots_into_cameras, load_or_write_json,
     resolve_film_root, safe_component, sanitize_camera_tree,
@@ -23,7 +27,6 @@ pub struct Script2VideoPipeline {
     backends: PipelineBackends,
     working_dir: PathBuf,
     character_extractor: CharacterExtractor,
-    portraits: CharacterPortraitsGenerator,
     storyboard: StoryboardArtist,
     camera_gen: CameraImageGenerator,
     ref_selector: ReferenceImageSelector,
@@ -32,7 +35,6 @@ pub struct Script2VideoPipeline {
 impl Script2VideoPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         let character_extractor = CharacterExtractor::new(Arc::clone(&backends.chat));
-        let portraits = CharacterPortraitsGenerator::new(Arc::clone(&backends.image));
         let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat));
         let camera_gen = CameraImageGenerator::new(Arc::clone(&backends.chat));
         let ref_selector = ReferenceImageSelector::new(Arc::clone(&backends.chat));
@@ -40,7 +42,6 @@ impl Script2VideoPipeline {
             backends,
             working_dir,
             character_extractor,
-            portraits,
             storyboard,
             camera_gen,
             ref_selector,
@@ -70,6 +71,9 @@ impl Script2VideoPipeline {
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
         let characters = self.extract_characters(script, &style).await?;
 
+        emit_pct(&progress, "cameo_bind", "正在绑定用户角色参考图", 18.0);
+        apply_session_cameos(&self.working_dir, &characters).await?;
+
         // Global cast bible during planning (ViMax generates before frames; we also
         // expose portraits as plan artifacts so users can review identity early).
         emit_pct(
@@ -94,7 +98,17 @@ impl Script2VideoPipeline {
                 Arc::clone(&self.backends.chat),
                 Arc::clone(&self.backends.image),
             );
-            let _ = planner.ensure(&film_root, script, &style).await?;
+            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
+            let _ = planner
+                .ensure(
+                    &film_root,
+                    script,
+                    &style,
+                    &style_refs,
+                    &scene_hint,
+                    &lock_token,
+                )
+                .await?;
         }
 
         emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
@@ -159,7 +173,17 @@ impl Script2VideoPipeline {
                 Arc::clone(&self.backends.chat),
                 Arc::clone(&self.backends.image),
             );
-            let reg = planner.ensure(&film_root, script, &style).await?;
+            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
+            let reg = planner
+                .ensure(
+                    &film_root,
+                    script,
+                    &style,
+                    &style_refs,
+                    &scene_hint,
+                    &lock_token,
+                )
+                .await?;
             world_asset_pairs(&reg)
         };
 
@@ -197,7 +221,9 @@ impl Script2VideoPipeline {
         } else {
             emit(&progress, "concat_start", "正在拼接镜头视频");
             let mut clips: Vec<PathBuf> = Vec::new();
-            for shot in &plan.shot_descriptions {
+            let mut ordered_shots = plan.shot_descriptions.clone();
+            ordered_shots.sort_by_key(|s| s.idx);
+            for shot in &ordered_shots {
                 let clip = self
                     .working_dir
                     .join("shots")
@@ -241,7 +267,8 @@ impl Script2VideoPipeline {
             }
         }
         let style = style.to_string();
-        let script = script.to_string();
+        let session_root = resolve_session_root(&self.working_dir);
+        let script = format!("{script}{}", cameo_extractor_hint(&session_root));
         load_or_write_json(&path, || async {
             self.character_extractor
                 .extract_characters(&script, &style)
@@ -311,45 +338,35 @@ impl Script2VideoPipeline {
         let shots_root = self.working_dir.join("shots");
         tokio::fs::create_dir_all(&shots_root).await?;
 
-        let mut pending = Vec::new();
-        let mut existing: Vec<(i32, ShotDescription)> = Vec::new();
-        for brief in briefs {
-            let path = shots_root
-                .join(brief.idx.to_string())
-                .join("shot_description.json");
-            if path.exists() {
-                existing.push((brief.idx, read_json_artifact(&path).await?));
-            } else {
-                pending.push(brief.clone());
-            }
-        }
+        // Sequential by timeline idx so each shot's ff can continue from the previous lf.
+        let mut ordered = briefs.to_vec();
+        ordered.sort_by_key(|b| b.idx);
 
-        let mut set = tokio::task::JoinSet::new();
-        let sem = Arc::new(tokio::sync::Semaphore::new(5));
-        for brief in pending {
-            let storyboard = StoryboardArtist::new(Arc::clone(&self.backends.chat));
-            let characters = characters.to_vec();
+        let mut out: Vec<ShotDescription> = Vec::with_capacity(ordered.len());
+        let mut prev_lf: Option<String> = None;
+        let storyboard = StoryboardArtist::new(Arc::clone(&self.backends.chat));
+
+        for brief in &ordered {
             let path = shots_root
                 .join(brief.idx.to_string())
                 .join("shot_description.json");
-            let permit = Arc::clone(&sem);
-            set.spawn(async move {
-                let _permit = permit
-                    .acquire()
-                    .await
-                    .map_err(|_| VimaxError::msg("semaphore closed"))?;
+            let desc = if path.exists() {
+                read_json_artifact(&path).await?
+            } else {
                 let desc = storyboard
-                    .decompose_visual_description(&brief, &characters)
+                    .decompose_visual_description_with_continuity(
+                        brief,
+                        characters,
+                        prev_lf.as_deref(),
+                    )
                     .await?;
                 write_json_artifact(&path, &desc).await?;
-                Ok::<_, VimaxError>((brief.idx, desc))
-            });
+                desc
+            };
+            prev_lf = Some(desc.lf_desc.clone());
+            out.push(desc);
         }
-        while let Some(joined) = set.join_next().await {
-            existing.push(joined.map_err(|e| VimaxError::msg(e.to_string()))??);
-        }
-        existing.sort_by_key(|(idx, _)| *idx);
-        let out: Vec<_> = existing.into_iter().map(|(_, d)| d).collect();
+
         write_json_artifact(&self.working_dir.join("shot_descriptions.json"), &out).await?;
         Ok(out)
     }
@@ -402,11 +419,11 @@ impl Script2VideoPipeline {
             if !character.is_visible {
                 continue;
             }
-            // Skip only when a usable single three-view sheet already exists.
-            if crate::agents::has_usable_portrait_sheet(&registry, &character.identifier_in_scene) {
+            // Skip when user Cameo or a usable three-view sheet already exists.
+            if has_usable_portrait(&registry, &character.identifier_in_scene) {
                 continue;
             }
-            // Drop stale multi-view registry rows so we rewrite to sheet-only.
+            // Drop stale AI / unusable Cameo rows before regenerating the sheet.
             registry.remove(&character.identifier_in_scene);
             emit(
                 progress,
@@ -628,9 +645,9 @@ impl Script2VideoPipeline {
     /// Submit video-generation API calls one-by-one.
     /// On failure/cancel, stop immediately; already-saved clips remain for resume.
     ///
-    /// Same-camera adjacent shots reuse the previous clip's extracted last frame as
-    /// the next I2V first_frame (match-cut continuity). Cross-camera cuts keep the
-    /// planned first_frame so angle changes stay intentional.
+    /// Within a scene, every timeline-adjacent shot reuses the previous clip's
+    /// extracted last frame as the next I2V first_frame (match-cut continuity).
+    /// Cross-scene continuity is intentionally skipped (each scene has its own pipeline).
     async fn generate_videos_sequential(
         &self,
         shots: &[ShotDescription],
@@ -640,6 +657,11 @@ impl Script2VideoPipeline {
         style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
+        // Always drive continuity by timeline idx, not whatever order the planner cached.
+        let mut shots = shots.to_vec();
+        shots.sort_by_key(|s| s.idx);
+        let shots = &shots[..];
+
         let total = shots.len().max(1);
         let mut ok = 0usize;
         let mut errors: Vec<String> = Vec::new();
@@ -679,34 +701,41 @@ impl Script2VideoPipeline {
                 pct,
             );
 
+            // Timeline-adjacent continuity inside this scene (any camera):
+            // next I2V first_frame MUST be previous shot's video_last_frame.png.
             let continuity_first = if i > 0 {
                 let prev = &shots[i - 1];
-                if prev.cam_idx == shot.cam_idx {
-                    match ensure_shot_video_last_frame(&self.working_dir, prev.idx).await {
-                        Ok(Some(path)) => {
-                            emit(
-                                progress,
-                                "video_continuity",
-                                &format!(
-                                    "Shot {}: same-camera continuity from shot {} video last frame",
-                                    shot.idx, prev.idx
-                                ),
-                            );
-                            Some(path)
-                        }
-                        Ok(None) => None,
-                        Err(e) => {
-                            tracing::warn!(
-                                shot = shot.idx,
-                                prev = prev.idx,
-                                error = %e,
-                                "failed to extract previous video last frame; using planned first_frame"
-                            );
-                            None
-                        }
+                match ensure_shot_video_last_frame(&self.working_dir, prev.idx, true).await {
+                    Ok(Some(path)) => {
+                        emit(
+                            progress,
+                            "video_continuity",
+                            &format!(
+                                "Shot {}: I2V first_frame ← shot {} video_last_frame.png (cam {}→{})",
+                                shot.idx, prev.idx, prev.cam_idx, shot.cam_idx
+                            ),
+                        );
+                        tracing::info!(
+                            shot = shot.idx,
+                            prev = prev.idx,
+                            continuity = %path.display(),
+                            "adjacent shot video continuity locked to previous video_last_frame"
+                        );
+                        Some(path)
                     }
-                } else {
-                    None
+                    Ok(None) => {
+                        return Err(VimaxError::Video(format!(
+                            "Shot {}: cannot continue from previous shot {} — video.mp4 missing/invalid, \
+so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
+                            shot.idx, prev.idx, prev.idx
+                        )));
+                    }
+                    Err(e) => {
+                        return Err(VimaxError::Video(format!(
+                            "Shot {}: failed to extract previous shot {} video_last_frame.png: {e}",
+                            shot.idx, prev.idx
+                        )));
+                    }
                 }
             } else {
                 None
@@ -743,8 +772,8 @@ impl Script2VideoPipeline {
             {
                 Ok(()) => {
                     ok += 1;
-                    // Prefetch tail for the next same-camera shot (also helps resume).
-                    let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx).await;
+                    // Always refresh tail for the next adjacent shot.
+                    let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx, true).await;
                     emit_pct(
                         progress,
                         "video_clip_done",
@@ -809,6 +838,8 @@ impl Script2VideoPipeline {
             .join(first_shot_idx.to_string());
         tokio::fs::create_dir_all(&shot_dir).await?;
         let first_ff = shot_dir.join("first_frame.png");
+        restore_canonical_frame_from_privacy_bak(&first_ff).await;
+        restore_canonical_frame_from_privacy_bak(&shot_dir.join("last_frame.png")).await;
 
         if !first_ff.exists() {
             emit(
@@ -824,30 +855,56 @@ impl Script2VideoPipeline {
                 4,
             ));
 
-            // Prefer image continuity from parent frame over a billed transition video.
-            if let Some(parent_shot_idx) = camera.parent_shot_idx {
-                if let Some(parent_ref) =
-                    continuity_frame_path(&self.working_dir, parent_shot_idx)
-                {
-                    let missing = camera.missing_info.as_deref().unwrap_or("");
+            // Timeline-adjacent predecessor in this scene (any camera).
+            // Cross-scene continuity is intentionally skipped (separate working dirs).
+            if let Some(prev) = timeline_predecessor(shots, first_shot_idx) {
+                if let Some(prev_path) = continuity_frame_path(&self.working_dir, prev.idx) {
                     available.push((
-                        parent_ref,
+                        prev_path,
                         format!(
-                            "Parent-camera continuity frame (most recent). Keep identity, wardrobe, lighting, and style; reframe to the NEW camera angle for this shot. Changed/missing elements vs parent: {}",
-                            if missing.is_empty() {
-                                "none — change framing/angle only"
-                            } else {
-                                missing
-                            }
+                            "Immediate previous shot ending frame in this scene (timeline continuity). \
+Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting, and set. Previous ending: {}. New beat: {}",
+                            prev.lf_desc, first_shot.ff_desc
                         ),
                     ));
                     emit(
                         progress,
                         "frame_start",
                         &format!(
-                            "shot {first_shot_idx}: using parent shot {parent_shot_idx} frame (skip transition video)"
+                            "shot {first_shot_idx}: timeline continuity from previous shot {}",
+                            prev.idx
                         ),
                     );
+                }
+            }
+
+            // Prefer image continuity from parent frame over a billed transition video.
+            if let Some(parent_shot_idx) = camera.parent_shot_idx {
+                if let Some(parent_ref) =
+                    continuity_frame_path(&self.working_dir, parent_shot_idx)
+                {
+                    let already = available.iter().any(|(p, _)| p == &parent_ref);
+                    if !already {
+                        let missing = camera.missing_info.as_deref().unwrap_or("");
+                        available.push((
+                            parent_ref,
+                            format!(
+                                "Parent-camera continuity frame (most recent). Keep identity, wardrobe, lighting, and style; reframe to the NEW camera angle for this shot. Changed/missing elements vs parent: {}",
+                                if missing.is_empty() {
+                                    "none — change framing/angle only"
+                                } else {
+                                    missing
+                                }
+                            ),
+                        ));
+                        emit(
+                            progress,
+                            "frame_start",
+                            &format!(
+                                "shot {first_shot_idx}: using parent shot {parent_shot_idx} frame (skip transition video)"
+                            ),
+                        );
+                    }
                 }
             }
 
@@ -866,15 +923,13 @@ impl Script2VideoPipeline {
         }
 
         // Same-camera shots chain from the previous ending frame (not the establishing first_frame).
+        // Always generate last_frame so Seedance flf2v and next-shot continuity can use it.
         let mut continuity = ContinuityRef {
             path: first_ff.clone(),
             desc: first_shot.ff_desc.clone(),
         };
-        let need_last = |s: &ShotDescription| {
-            matches!(s.variation_type.as_str(), "medium" | "large")
-        };
 
-        if need_last(first_shot) {
+        {
             let lf = shot_dir.join("last_frame.png");
             if !lf.exists() {
                 let mut available =
@@ -921,6 +976,9 @@ impl Script2VideoPipeline {
             tokio::fs::create_dir_all(&sdir).await?;
 
             let ff = sdir.join("first_frame.png");
+            let lf = sdir.join("last_frame.png");
+            restore_canonical_frame_from_privacy_bak(&ff).await;
+            restore_canonical_frame_from_privacy_bak(&lf).await;
             if !ff.exists() {
                 // Always generate a distinct first frame. Byte-copying the previous
                 // frame makes Seedance I2V freeze on the same opening for ~4s.
@@ -948,7 +1006,7 @@ impl Script2VideoPipeline {
                 .await?;
             }
 
-            if need_last(shot) {
+            {
                 let lf = sdir.join("last_frame.png");
                 if !lf.exists() {
                     let mut available =
@@ -1143,8 +1201,8 @@ impl Script2VideoPipeline {
         duration_secs: u32,
         continuity_first_frame: Option<&Path>,
         characters: &[CharacterInScene],
-        _registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-        _world_pairs: &[(PathBuf, String)],
+        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        world_pairs: &[(PathBuf, String)],
         style: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
@@ -1161,22 +1219,38 @@ impl Script2VideoPipeline {
             return Ok(());
         }
         let planned_ff = shot_dir.join("first_frame.png");
+        let lf = shot_dir.join("last_frame.png");
+        // Older privacy retries renamed multi-ref frames to *.privacy_bak.png and
+        // overwrote the canonical paths with text-only drawings — restore them.
+        restore_canonical_frame_from_privacy_bak(&planned_ff).await;
+        restore_canonical_frame_from_privacy_bak(&lf).await;
         if !planned_ff.exists() {
             return Err(VimaxError::msg(format!(
                 "first_frame missing for shot {}",
                 shot.idx
             )));
         }
-        // Prefer previous same-camera video last frame for temporal continuity.
-        // Keep planned first_frame.png on disk unchanged (resume / revise / privacy retry).
-        let using_video_continuity = continuity_first_frame.is_some_and(|p| p.is_file());
-        let ff: PathBuf = if using_video_continuity {
-            continuity_first_frame.unwrap().to_path_buf()
-        } else {
-            planned_ff.clone()
-        };
-        let lf = shot_dir.join("last_frame.png");
-        let use_last = matches!(shot.variation_type.as_str(), "medium" | "large") && lf.exists();
+        // Prefer previous adjacent shot's video_last_frame.png for temporal continuity.
+        // Keep planned first_frame.png on disk unchanged (resume / revise / UI reference art).
+        let continuity_source = continuity_first_frame
+            .filter(|p| media_local::is_usable_image_file(p))
+            .map(|p| p.to_path_buf());
+        let using_video_continuity = continuity_source.is_some();
+        let ff: PathBuf = continuity_source
+            .clone()
+            .unwrap_or_else(|| planned_ff.clone());
+        // Audit copy: what Seedance actually received as first_frame for this shot video.
+        let i2v_ff_audit = shot_dir.join("i2v_first_frame.png");
+        if let Err(e) = tokio::fs::copy(&ff, &i2v_ff_audit).await {
+            tracing::warn!(
+                shot = shot.idx,
+                from = %ff.display(),
+                error = %e,
+                "failed to write i2v_first_frame.png audit copy"
+            );
+        }
+        // Always pass last_frame when available so Seedance flf2v constrains the ending.
+        let use_last = lf.exists();
         // Seedance forbids mixing first/last_frame with reference_image. Cast identity is
         // locked by the frame(s) + text identity clause — do NOT attach three-views here.
         let prompt = i2v_motion_prompt(
@@ -1191,9 +1265,20 @@ impl Script2VideoPipeline {
             progress,
             "video_clip_start",
             &format!(
-                "Generating shot {} video ({}s; frame I2V; continuity={}; may queue / rate-limit)",
-                shot.idx, duration_secs, using_video_continuity
+                "Generating shot {} video ({}s; I2V first←{}; continuity={}; last_frame={}; may queue / rate-limit)",
+                shot.idx,
+                duration_secs,
+                ff.file_name().and_then(|s| s.to_str()).unwrap_or("?"),
+                using_video_continuity,
+                use_last
             ),
+        );
+        tracing::info!(
+            shot = shot.idx,
+            i2v_first = %ff.display(),
+            continuity = using_video_continuity,
+            last_frame = use_last,
+            "video I2V frame binding"
         );
 
         let last_ref = if use_last { Some(lf.as_path()) } else { None };
@@ -1220,27 +1305,57 @@ impl Script2VideoPipeline {
                 progress,
                 "video_clip_start",
                 &format!(
-                    "Shot {}: possible real-person / privacy block on frame ({}). Redrawing stylized first frame…",
+                    "Shot {}: possible real-person / privacy block on frame ({}). Drawing stylized I2V frames (canonical multi-ref frames kept; continuity source preserved)…",
                     shot.idx,
                     truncate_err(&err, 120)
                 ),
             );
-            // Drop last_frame for retry — it often shares the same faces.
-            if lf.exists() {
-                let bak = shot_dir.join("last_frame.privacy_bak.png");
-                let _ = tokio::fs::rename(&lf, &bak).await;
-            }
-            // Privacy retry always uses a freshly drawn planned first_frame (not video continuity).
-            self.regenerate_stylized_first_frame(shot, &planned_ff, style, characters)
+            // Privacy retry MUST keep adjacent continuity: stylize the same continuity
+            // source (previous video_last_frame) — never fall back to this shot's planned_ff.
+            let stylized_ff = self
+                .ensure_stylized_i2v_frame(
+                    shot,
+                    if using_video_continuity {
+                        "continuity_first_frame"
+                    } else {
+                        "first_frame"
+                    },
+                    &ff,
+                    &shot.ff_desc,
+                    &shot.ff_vis_char_idxs,
+                    style,
+                    characters,
+                    registry,
+                    world_pairs,
+                )
                 .await?;
+            let _ = tokio::fs::copy(&stylized_ff, &i2v_ff_audit).await;
+            let stylized_lf = if lf.exists() {
+                Some(
+                    self.ensure_stylized_i2v_frame(
+                        shot,
+                        "last_frame",
+                        &lf,
+                        &shot.lf_desc,
+                        &shot.lf_vis_char_idxs,
+                        style,
+                        characters,
+                        registry,
+                        world_pairs,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
 
             let retry_i2v = self
                 .backends
                 .video
                 .generate(
                     &prompt,
-                    Some(&planned_ff),
-                    None,
+                    Some(&stylized_ff),
+                    stylized_lf.as_deref(),
                     &[],
                     duration_secs,
                     &video_path,
@@ -1303,29 +1418,96 @@ impl Script2VideoPipeline {
         Ok(())
     }
 
-    /// Text-only redraw when privacy filter rejects photoreal I2V — honor user style.
-    async fn regenerate_stylized_first_frame(
+    /// Privacy-safe I2V sidecar frame. Never overwrites the multi-ref canonical path.
+    /// Still binds cast / env / prop plates so identity stays consistent.
+    async fn ensure_stylized_i2v_frame(
         &self,
         shot: &ShotDescription,
-        frame_path: &Path,
+        frame_type: &str,
+        canonical_path: &Path,
+        frame_desc: &str,
+        vis_char_idxs: &[i32],
         style: &str,
         characters: &[CharacterInScene],
-    ) -> VimaxResult<()> {
-        if frame_path.exists() {
-            let bak = frame_path.with_extension("privacy_bak.png");
-            let _ = tokio::fs::rename(frame_path, &bak).await;
+        registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+        world_pairs: &[(PathBuf, String)],
+    ) -> VimaxResult<PathBuf> {
+        let stylized_path = frame_i2v_stylized_path(canonical_path);
+        media_local::scrub_unusable_image(&stylized_path)?;
+        if media_local::is_usable_image_file(&stylized_path) {
+            return Ok(stylized_path);
         }
+
+        let mut available = portrait_pairs(characters, vis_char_idxs, registry);
+        available.extend(rank_world_pairs_for_frame(frame_desc, world_pairs, 4));
+        // Prefer composition layout from the multi-ref canonical without treating it as
+        // a photoreal face bible (portraits already cover identity).
+        if media_local::is_usable_image_file(canonical_path) {
+            available.push((
+                canonical_path.to_path_buf(),
+                format!(
+                    "Composition / blocking layout for this {frame_type} — restyle faces heavily; keep pose, framing, and set."
+                ),
+            ));
+        }
+        let catalog = available.clone();
+        let mut pairs = available;
+        ensure_frame_refs(&mut pairs, &catalog, characters, vis_char_idxs);
+        pairs.sort_by_key(|(p, _)| {
+            let s = p.to_string_lossy().to_ascii_lowercase();
+            if s.contains("character_portrait") || s.contains("three_view") || s.contains("cameo") {
+                0u8
+            } else if s.contains("environments") || s.contains("props") {
+                1u8
+            } else {
+                2u8
+            }
+        });
+        let portrait_budget = vis_char_idxs.len().clamp(1, MAX_FRAME_PORTRAIT_REFS);
+        let pairs = pick_frame_ref_strip(pairs, portrait_budget);
+
         let style_clause = crate::planning::style_prompt_clause(style);
-        let identity = character_identity_clause(characters, &shot.ff_vis_char_idxs, style);
-        let plot_lock: String = shot.ff_desc.chars().take(220).collect();
+        let identity = character_identity_clause(characters, vis_char_idxs, style);
+        let plot_lock: String = frame_desc.chars().take(220).collect();
+        let mut prefix = String::new();
+        for (i, (path, text)) in pairs.iter().enumerate() {
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("ref.png");
+            let hint: String = text.chars().take(90).collect();
+            prefix.push_str(&format!("[{name}] (image #{i}): {hint}. "));
+        }
+        let continuity_lock = if frame_type.contains("continuity") {
+            "CONTINUITY LOCK: this sidecar is the previous shot's ending frame — preserve the exact pose, framing, wardrobe, lighting, and set; only stylize faces for privacy. Do NOT invent a new establishing composition. "
+        } else {
+            ""
+        };
         let prompt = format!(
-            "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity} Wide 16:9. Scene: {}",
-            shot.ff_desc
+            "{style_clause} PRIVACY SAFE REDRAW for video I2V (sidecar only). \
+Heavily stylize all faces — clearly fictional / non-photoreal; no real-person likeness. \
+Keep wardrobe, pose, framing, set, and props locked to the references. \
+{continuity_lock}PLOT LOCK: {plot_lock}. {identity}{prefix}Wide 16:9. Scene: {frame_desc}"
+        );
+        let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
+        tracing::info!(
+            shot = shot.idx,
+            frame_type,
+            refs = refs.len(),
+            out = %stylized_path.display(),
+            "generating stylized I2V sidecar (canonical multi-ref frame preserved)"
         );
         self.backends
             .image
-            .generate(&prompt, &[], frame_path)
-            .await
+            .generate(&prompt, &refs, &stylized_path)
+            .await?;
+        if !media_local::is_usable_image_file(&stylized_path) {
+            return Err(VimaxError::msg(format!(
+                "stylized {frame_type} I2V sidecar missing after generation for shot {}",
+                shot.idx
+            )));
+        }
+        Ok(stylized_path)
     }
 }
 
@@ -1347,25 +1529,34 @@ fn portrait_pairs(
         if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
             if let Some(views) = registry.get(&ch.identifier_in_scene) {
                 let feats = ch.static_features.trim();
-                // Prefer the single three-view sheet (one plate per character).
-                if let Some(sheet) = views.get("sheet").or_else(|| views.get("front")) {
+                // Prefer user Cameo, then the single three-view sheet.
+                let preferred = views
+                    .get("cameo")
+                    .or_else(|| views.get("sheet"))
+                    .or_else(|| views.get("front"));
+                if let Some(sheet) = preferred {
                     if let Some(p) = sheet.get("path") {
                         let path = PathBuf::from(p);
-                        let file_name = path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("three_view.png");
-                        let desc = sheet.get("description").cloned().unwrap_or_else(|| {
-                            format!(
-                                "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
-                                ch.identifier_in_scene
-                            )
-                        });
-                        available.push((path, desc));
-                        continue;
+                        if media_local::is_usable_image_file(&path) {
+                            let file_name = path
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("portrait.png");
+                            let desc = sheet.get("description").cloned().unwrap_or_else(|| {
+                                format!(
+                                    "File [{file_name}] = GLOBAL character bible for <{}>: {feats}. Lock face/hair/outfit.",
+                                    ch.identifier_in_scene
+                                )
+                            });
+                            available.push((path, desc));
+                            continue;
+                        }
                     }
                 }
                 for (view, item) in views {
+                    if view == "cameo" || view == "sheet" || view == "front" {
+                        continue;
+                    }
                     if let Some(p) = item.get("path") {
                         available.push((
                             PathBuf::from(p),
@@ -1452,7 +1643,11 @@ fn pick_frame_ref_strip(
     let mut rest = Vec::new();
     for (p, t) in pairs {
         let s = p.to_string_lossy().to_ascii_lowercase();
-        if s.contains("character_portrait") || s.contains("three_view") {
+        if s.contains("character_portrait")
+            || s.contains("three_view")
+            || s.contains("_cameo")
+            || s.contains("/cameo/")
+        {
             portraits.push((p, t));
         } else if s.contains("environments") {
             envs.push((p, t));
@@ -1462,6 +1657,15 @@ fn pick_frame_ref_strip(
             rest.push((p, t));
         }
     }
+    // Keep user Cameo plates ahead of AI three-views within the portrait budget.
+    portraits.sort_by_key(|(p, _)| {
+        let s = p.to_string_lossy().to_ascii_lowercase();
+        if s.contains("_cameo") || s.contains("/cameo/") {
+            0u8
+        } else {
+            1u8
+        }
+    });
     let mut out = Vec::new();
     out.extend(portraits.drain(..).take(portrait_budget));
     out.extend(envs.drain(..).take(MAX_FRAME_ENV_REFS));
@@ -1491,7 +1695,10 @@ fn ensure_frame_refs(
     let path_key = |p: &Path| p.to_string_lossy().to_ascii_lowercase();
     let is_portrait = |p: &Path| {
         let s = path_key(p);
-        s.contains("character_portrait") || s.contains("three_view")
+        s.contains("character_portrait")
+            || s.contains("three_view")
+            || s.contains("_cameo")
+            || s.contains("/cameo/")
     };
     let mentions_id = |text: &str, id: &str| text.to_ascii_lowercase().contains(&id.to_ascii_lowercase());
 
@@ -1555,10 +1762,70 @@ fn continuity_frame_path(working_dir: &Path, shot_idx: i32) -> Option<PathBuf> {
     }
 }
 
+/// `first_frame.png` → `first_frame.privacy_bak.png` (legacy privacy overwrite backup).
+fn frame_privacy_bak_path(canonical: &Path) -> PathBuf {
+    canonical.with_extension("privacy_bak.png")
+}
+
+/// `first_frame.png` → `first_frame.i2v_stylized.png` (privacy-safe I2V sidecar).
+fn frame_i2v_stylized_path(canonical: &Path) -> PathBuf {
+    canonical.with_extension("i2v_stylized.png")
+}
+
+/// Restore multi-ref canonical frames that an older privacy retry renamed to `*.privacy_bak.png`.
+async fn restore_canonical_frame_from_privacy_bak(canonical: &Path) {
+    let bak = frame_privacy_bak_path(canonical);
+    if !media_local::is_usable_image_file(&bak) {
+        return;
+    }
+    let stylized = frame_i2v_stylized_path(canonical);
+    if media_local::is_usable_image_file(canonical) {
+        // Keep the text-only overwrite as an I2V sidecar if one isn't already present.
+        if !media_local::is_usable_image_file(&stylized) {
+            if let Err(e) = tokio::fs::rename(canonical, &stylized).await {
+                tracing::warn!(
+                    from = %canonical.display(),
+                    to = %stylized.display(),
+                    error = %e,
+                    "failed to move overwritten frame aside before privacy_bak restore"
+                );
+                return;
+            }
+        } else {
+            let _ = tokio::fs::remove_file(canonical).await;
+        }
+    }
+    match tokio::fs::rename(&bak, canonical).await {
+        Ok(()) => tracing::info!(
+            path = %canonical.display(),
+            "restored multi-ref frame from privacy_bak"
+        ),
+        Err(e) => tracing::warn!(
+            from = %bak.display(),
+            to = %canonical.display(),
+            error = %e,
+            "failed to restore multi-ref frame from privacy_bak"
+        ),
+    }
+}
+
+/// Previous shot in timeline order within the same scene (by idx).
+fn timeline_predecessor<'a>(
+    shots: &'a [ShotDescription],
+    shot_idx: i32,
+) -> Option<&'a ShotDescription> {
+    shots
+        .iter()
+        .filter(|s| s.idx < shot_idx)
+        .max_by_key(|s| s.idx)
+}
+
 /// Extract (or reuse) the last frame of a finished shot video for next-shot continuity.
+/// When `force` is true, always re-extract from video.mp4 so the tail matches the latest clip.
 async fn ensure_shot_video_last_frame(
     working_dir: &Path,
     shot_idx: i32,
+    force: bool,
 ) -> VimaxResult<Option<PathBuf>> {
     let dir = working_dir.join("shots").join(shot_idx.to_string());
     let video = dir.join("video.mp4");
@@ -1566,7 +1833,9 @@ async fn ensure_shot_video_last_frame(
         return Ok(None);
     }
     let out = dir.join("video_last_frame.png");
-    if media_local::is_usable_image_file(&out) {
+    if force {
+        let _ = tokio::fs::remove_file(&out).await;
+    } else if media_local::is_usable_image_file(&out) {
         return Ok(Some(out));
     }
     media_local::extract_last_frame(&video, &out).await?;
@@ -1644,8 +1913,9 @@ Use *_three_view.png for cast identity, *_environment_plate.png for location, *_
         )
     };
     let continuity_clause = if from_prev_video_tail {
-        "CONTINUITY: opening frame is the previous shot's ending — begin motion immediately; \
-do not hold or re-establish the same pose; seamless match-cut continuation. "
+        "CONTINUITY: opening frame is the previous adjacent shot's ending in this scene — begin motion immediately; \
+do not hold or re-establish the same pose; seamless match-cut continuation into this beat \
+(camera/angle may already differ; keep identity and set). "
     } else {
         ""
     };
@@ -1757,5 +2027,49 @@ fn truncate_err(err: &VimaxError, max_chars: usize) -> String {
         s
     } else {
         format!("{}…", s.chars().take(max_chars).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod continuity_tests {
+    use super::*;
+
+    fn shot(idx: i32, cam_idx: i32) -> ShotDescription {
+        ShotDescription {
+            idx,
+            is_last: false,
+            cam_idx,
+            visual_desc: String::new(),
+            variation_type: "small".into(),
+            variation_reason: String::new(),
+            ff_desc: format!("ff{idx}"),
+            ff_vis_char_idxs: vec![],
+            lf_desc: format!("lf{idx}"),
+            lf_vis_char_idxs: vec![],
+            motion_desc: String::new(),
+            audio_desc: None,
+        }
+    }
+
+    #[test]
+    fn timeline_predecessor_finds_previous_idx_across_cameras() {
+        let shots = vec![shot(0, 0), shot(1, 1), shot(2, 0)];
+        let prev = timeline_predecessor(&shots, 2).expect("prev");
+        assert_eq!(prev.idx, 1);
+        assert_eq!(prev.cam_idx, 1);
+        assert!(timeline_predecessor(&shots, 0).is_none());
+    }
+
+    #[test]
+    fn privacy_bak_and_stylized_sidecar_paths() {
+        let canonical = PathBuf::from("shots/0/first_frame.png");
+        assert_eq!(
+            frame_privacy_bak_path(&canonical),
+            PathBuf::from("shots/0/first_frame.privacy_bak.png")
+        );
+        assert_eq!(
+            frame_i2v_stylized_path(&canonical),
+            PathBuf::from("shots/0/first_frame.i2v_stylized.png")
+        );
     }
 }

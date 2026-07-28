@@ -160,6 +160,10 @@ path = "tests/remote_mcp_smoke.rs"
 name = "content_e2e_suite"
 path = "tests/suites/content.rs"
 
+[[test]]
+name = "vimax_cameo_e2e"
+path = "tests/vimax_cameo_e2e.rs"
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot"]
 telegram = ["nomifun-channel/telegram"]

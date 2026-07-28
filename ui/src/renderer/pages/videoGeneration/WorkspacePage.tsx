@@ -54,6 +54,7 @@ import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from '.
 import StoryboardBoard from './components/StoryboardBoard';
 import StudioStageRail from './components/StudioStageRail';
 import VisualStyleSelect from './components/VisualStyleSelect';
+import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
 import type { VideoCreateDraft } from './components/VideoCreateComposer';
 import type { StoryboardScene } from './artifactPresentation';
 import { findStoryboardPath } from './artifactPresentation';
@@ -855,6 +856,9 @@ const WorkspacePage: React.FC = () => {
               disabled={busy}
               className='!text-14px !leading-23px'
             />
+            {sessionId ? (
+              <WorkspaceCameoStrip sessionId={sessionId} disabled={busy} />
+            ) : null}
             <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-3'}`}>
               <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 {t('videoGeneration.workspace.source.durationLabel', {

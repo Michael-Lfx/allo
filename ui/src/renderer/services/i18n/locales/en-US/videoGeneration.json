@@ -55,6 +55,17 @@
       "product": "Create a 30-second launch film for a minimal coffee machine",
       "story": "The last train arrives at an empty station on a rainy night",
       "brand": "Tell a day in the life of a running shoe with cinematic shots"
+    },
+    "cameo": {
+      "title": "Character references (Cameo)",
+      "hint": "Optional: upload character photos and names so the film keeps a consistent look.",
+      "add": "Add photo",
+      "dropHint": "Drop or click to upload PNG / JPEG / WEBP (up to 8)",
+      "namePlaceholder": "Character name (match the story cast)",
+      "descPlaceholder": "Optional note (identity / wardrobe)",
+      "remove": "Remove",
+      "uploading": "Uploading character references…",
+      "uploadFailed": "Failed to upload character reference"
     }
   },
   "workflow": {
@@ -153,6 +164,11 @@
     "loadError": "Failed to load",
     "refresh": "Refresh",
     "workflowLocked": "Workflow is locked after creation.",
+    "cameo": {
+      "title": "Bound character references",
+      "empty": "No Cameo yet. Upload at create time; re-plan after deleting to refresh bindings.",
+      "delete": "Delete"
+    },
     "plan": "Start planning",
     "planContinue": "Resume planning",
     "planStarted": "Planning started",

@@ -11,6 +11,7 @@ import { buildBackendAuthHeaders, getBaseUrl, httpRequest } from '@/common/adapt
 import type {
   ArtifactContent,
   ArtifactNode,
+  CameoPhoto,
   CreateSessionBody,
   PlanBody,
   RenderBody,
@@ -212,4 +213,96 @@ function looksLikeJson(s: string): boolean {
 /** True while the backend is actively working (poll every 2s). */
 export function isActiveStatus(status: string | null | undefined): boolean {
   return status === 'planning' || status === 'rendering';
+}
+
+export async function listCameos(sessionId: string): Promise<CameoPhoto[]> {
+  const data = await httpRequest<CameoPhoto[] | { photos: CameoPhoto[] }>(
+    'GET',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos`
+  );
+  if (Array.isArray(data)) return data;
+  return data?.photos ?? [];
+}
+
+/** Absolute URL for a Cameo preview image (requires auth headers → prefer blob fetch). */
+export function cameoFileUrl(sessionId: string, cameoId: string): string {
+  return `${getBaseUrl()}${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos/${encodeURIComponent(cameoId)}/file`;
+}
+
+export async function loadCameoPreviewUrl(sessionId: string, cameoId: string): Promise<string> {
+  const url = cameoFileUrl(sessionId, cameoId);
+  const headers: Record<string, string> = { ...buildBackendAuthHeaders('GET') };
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    throw new Error(`Failed to load cameo (${response.status})`);
+  }
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
+export function uploadCameo(
+  sessionId: string,
+  file: File,
+  characterName: string,
+  description = '',
+  onProgress?: (percent: number) => void
+): Promise<CameoPhoto> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('character_name', characterName);
+  if (description.trim()) formData.append('description', description);
+
+  return new Promise<CameoPhoto>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${getBaseUrl()}${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos`);
+    for (const [name, value] of Object.entries(buildBackendAuthHeaders('POST'))) {
+      xhr.setRequestHeader(name, value);
+    }
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+    }
+    xhr.addEventListener('load', () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`Cameo upload failed: ${xhr.status} ${xhr.statusText}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(xhr.responseText) as unknown;
+        const photo =
+          parsed && typeof parsed === 'object' && 'data' in parsed
+            ? (parsed as { data: CameoPhoto }).data
+            : (parsed as CameoPhoto);
+        if (!photo || typeof photo !== 'object' || typeof photo.id !== 'string') {
+          reject(new Error('Cameo upload failed: unexpected response'));
+        } else {
+          resolve(photo);
+        }
+      } catch {
+        reject(new Error('Cameo upload failed: invalid server response'));
+      }
+    });
+    xhr.addEventListener('error', () => reject(new Error('Cameo upload failed: network error')));
+    xhr.send(formData);
+  });
+}
+
+export async function updateCameo(
+  sessionId: string,
+  cameoId: string,
+  body: { character_name?: string; description?: string }
+): Promise<CameoPhoto> {
+  return httpRequest<CameoPhoto>(
+    'PATCH',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos/${encodeURIComponent(cameoId)}`,
+    body
+  );
+}
+
+export async function deleteCameo(sessionId: string, cameoId: string): Promise<void> {
+  await httpRequest<unknown>(
+    'DELETE',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos/${encodeURIComponent(cameoId)}`
+  );
 }

@@ -60,6 +60,45 @@ pub fn write_image_bytes_as_png(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     Ok(())
 }
 
+/// Sidecar path used for atomic image writes (`photo.png` → `photo.png.part`).
+pub fn image_part_path(out_path: &Path) -> PathBuf {
+    let mut s = out_path.as_os_str().to_owned();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+/// Decode image bytes, normalize to PNG via a `.part` sidecar, then rename into place.
+pub fn write_image_bytes_atomic(bytes: &[u8], out_path: &Path) -> VimaxResult<()> {
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    let part = image_part_path(out_path);
+    write_image_bytes_as_png(bytes, &part)?;
+    if out_path.exists() {
+        let _ = std::fs::remove_file(out_path);
+    }
+    std::fs::rename(&part, out_path).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        VimaxError::Media(format!(
+            "failed to finalize image {}: {e}",
+            out_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+/// Remove incomplete / unusable image artifacts so resume will regenerate them.
+pub fn scrub_unusable_image(path: &Path) -> VimaxResult<()> {
+    let part = image_part_path(path);
+    if part.exists() {
+        let _ = std::fs::remove_file(&part);
+    }
+    if path.exists() && !is_usable_image_file(path) {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
+}
+
 /// Tile reference images into one horizontal strip (fallback for single-slot img2img APIs).
 /// Panel order should be: character bible(s) → empty set plate → prop/continuity.
 pub fn compose_reference_strip(paths: &[&Path], out_path: &Path) -> VimaxResult<()> {
@@ -479,6 +518,27 @@ mod tests {
         std::fs::write(&p, b"<html>error</html>").unwrap();
         assert!(!is_usable_image_file(&p));
         assert!(image_magic_kind(b"<html>error</html>").is_none());
+    }
+
+    #[test]
+    fn atomic_image_write_and_scrub() {
+        use image::{ImageFormat, Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.png");
+        let mut jpeg = Vec::new();
+        RgbImage::from_pixel(8, 8, Rgb([9, 8, 7]))
+            .write_to(&mut std::io::Cursor::new(&mut jpeg), ImageFormat::Jpeg)
+            .unwrap();
+        write_image_bytes_atomic(&jpeg, &path).unwrap();
+        assert!(is_usable_image_file(&path));
+        assert!(!image_part_path(&path).exists());
+        assert_eq!(
+            image_magic_kind(&std::fs::read(&path).unwrap()),
+            Some("png")
+        );
+        std::fs::write(&path, b"<html>").unwrap();
+        scrub_unusable_image(&path).unwrap();
+        assert!(!path.exists());
     }
 }
 

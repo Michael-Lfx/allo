@@ -14,7 +14,9 @@ mod world_assets;
 
 pub use camera_image_generator::CameraImageGenerator;
 pub use character_extractor::CharacterExtractor;
-pub use character_portraits_generator::{CharacterPortraitsGenerator, has_usable_portrait_sheet};
+pub use character_portraits_generator::{
+    CharacterPortraitsGenerator, has_usable_cameo, has_usable_portrait, has_usable_portrait_sheet,
+};
 pub use event_extractor::EventExtractor;
 pub use global_information_planner::GlobalInformationPlanner;
 pub use novel_compressor::NovelCompressor;

@@ -48,15 +48,25 @@ impl WorldAssetsPlanner {
         Self { chat, image }
     }
 
-    pub async fn extract(&self, script_or_story: &str, style: &str) -> VimaxResult<WorldAssetsSpec> {
+    pub async fn extract(
+        &self,
+        script_or_story: &str,
+        style: &str,
+        scene_hint: &str,
+    ) -> VimaxResult<WorldAssetsSpec> {
         let style = crate::planning::resolve_visual_style(style);
         let system = include_str!(
             "../../prompts/world_assets__system_prompt_template_extract.txt"
         )
         .replace("{format_instructions}", WORLD_ASSETS);
+        let text = if scene_hint.trim().is_empty() {
+            script_or_story.to_string()
+        } else {
+            format!("{script_or_story}{scene_hint}")
+        };
         let user = include_str!("../../prompts/world_assets__human_prompt_template_extract.txt")
             .replace("{style}", &style)
-            .replace("{text}", script_or_story);
+            .replace("{text}", &text);
         let raw = self.chat.complete_text(&system, &user).await?;
         let mut spec: WorldAssetsSpec = parse_llm_json(&raw)?;
         if spec.environments.len() > 5 {
@@ -77,23 +87,70 @@ impl WorldAssetsPlanner {
     }
 
     /// Extract (if needed) and generate missing environment / prop plates under `film_root`.
+    ///
+    /// When `style_refs` / `style_lock_token` come from user Cameo photos, plates are
+    /// regenerated if the lock token changes so scenery stays consistent with uploads.
     pub async fn ensure(
         &self,
         film_root: &Path,
         script_or_story: &str,
         style: &str,
+        style_refs: &[PathBuf],
+        scene_hint: &str,
+        style_lock_token: &str,
     ) -> VimaxResult<WorldAssetRegistry> {
         tokio::fs::create_dir_all(film_root).await?;
         let spec_path = film_root.join("world_assets.json");
         let registry_path = film_root.join("world_assets_registry.json");
+        let lock_path = film_root.join("world_assets_cameo_lock.txt");
 
         let style = crate::planning::resolve_visual_style(style);
-        let theme = theme_excerpt(script_or_story);
+        let theme = {
+            let base = theme_excerpt(script_or_story);
+            if scene_hint.trim().is_empty() {
+                base
+            } else {
+                // Keep theme short but bias toward Cameo scene cues.
+                let cue: String = scene_hint
+                    .split_whitespace()
+                    .filter(|w| {
+                        let t = w.trim_matches(|c: char| !c.is_alphanumeric());
+                        t.chars().count() >= 2
+                    })
+                    .take(24)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{base} | cameo-world: {}", cue.chars().take(100).collect::<String>())
+            }
+        };
+
+        // Cameo set changed (or plates were made without Cameo): drop stale world plates.
+        if !style_lock_token.is_empty() {
+            let prev = tokio::fs::read_to_string(&lock_path)
+                .await
+                .unwrap_or_default();
+            let prev = prev.trim().to_string();
+            if prev != style_lock_token {
+                tracing::info!(
+                    film_root = %film_root.display(),
+                    "cameo style lock changed — regenerating world asset plates"
+                );
+                invalidate_world_asset_artifacts(film_root).await?;
+            }
+        }
+
+        let style_ref_paths: Vec<&Path> = style_refs
+            .iter()
+            .filter(|p| crate::media_local::is_usable_image_file(p))
+            .map(|p| p.as_path())
+            .collect();
 
         let spec: WorldAssetsSpec = if spec_path.exists() {
             read_json_artifact(&spec_path).await?
         } else {
-            let spec = self.extract(script_or_story, &style).await?;
+            let spec = self
+                .extract(script_or_story, &style, scene_hint)
+                .await?;
             write_json_artifact(&spec_path, &spec).await?;
             spec
         };
@@ -137,18 +194,24 @@ impl WorldAssetsPlanner {
                 .replace("{slugline}", &env.slugline)
                 .replace("{description}", &desc)
                 .replace("{style}", &style_clause);
-                self.generate_empty_plate(&prompt, &out).await?;
+                self.generate_empty_plate(&prompt, &style_ref_paths, &out)
+                    .await?;
             }
             let detail: String = strip_people_mentions(&env.description)
                 .chars()
                 .take(120)
                 .collect();
+            let cameo_note = if style_ref_paths.is_empty() {
+                String::new()
+            } else {
+                " Style-locked to user Cameo references.".into()
+            };
             env_map.insert(
                 key.clone(),
                 asset_item(
                     &out,
                     &format!(
-                        "File [{plate_name}] = GLOBAL EMPTY environment plate (no people): {key}. {detail}. Lock architecture, lighting, set dressing only."
+                        "File [{plate_name}] = GLOBAL EMPTY environment plate (no people): {key}. {detail}. Lock architecture, lighting, set dressing only.{cameo_note}"
                     ),
                 ),
             );
@@ -176,18 +239,24 @@ impl WorldAssetsPlanner {
                     .replace("{name}", &prop.name)
                     .replace("{description}", &desc)
                     .replace("{style}", &style_clause);
-                self.generate_empty_plate(&prompt, &out).await?;
+                self.generate_empty_plate(&prompt, &style_ref_paths, &out)
+                    .await?;
             }
             let detail: String = strip_people_mentions(&prop.description)
                 .chars()
                 .take(100)
                 .collect();
+            let cameo_note = if style_ref_paths.is_empty() {
+                String::new()
+            } else {
+                " Style-locked to user Cameo references.".into()
+            };
             prop_map.insert(
                 key.clone(),
                 asset_item(
                     &out,
                     &format!(
-                        "File [{prop_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors."
+                        "File [{prop_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors.{cameo_note}"
                     ),
                 ),
             );
@@ -196,14 +265,51 @@ impl WorldAssetsPlanner {
         registry.insert("environments".into(), env_map);
         registry.insert("props".into(), prop_map);
         write_json_artifact(&registry_path, &registry).await?;
+        if !style_lock_token.is_empty() {
+            crate::session::write_text_artifact(&lock_path, style_lock_token).await?;
+        }
         Ok(registry)
     }
 
-    /// Generate vacant plate; if vision sees people, retry with stronger empty-set prompts.
-    async fn generate_empty_plate(&self, prompt: &str, out: &Path) -> VimaxResult<()> {
-        self.image.generate(prompt, &[], out).await?;
+    /// Generate vacant plate; optional Cameo style refs; fall back to text-only if people leak.
+    async fn generate_empty_plate(
+        &self,
+        prompt: &str,
+        style_refs: &[&Path],
+        out: &Path,
+    ) -> VimaxResult<()> {
+        let prompted = if style_refs.is_empty() {
+            prompt.to_string()
+        } else {
+            format!(
+                "{prompt}\n\n\
+STYLE/SCENE CONTEXT from reference image(s): match era, palette, materials, lighting mood, \
+and setting type from the references. Do NOT copy any person, face, body, hand, or silhouette \
+from the references. Output must remain a completely unoccupied empty-set plate."
+            )
+        };
+
+        self.image.generate(&prompted, style_refs, out).await?;
         if !self.plate_has_people(out).await {
             return Ok(());
+        }
+
+        // Cameo refs often contain faces — if they leak into the plate, drop refs and retry.
+        if !style_refs.is_empty() {
+            tracing::warn!(
+                path = %out.display(),
+                refs = style_refs.len(),
+                "world asset plate contains people with Cameo style refs; retrying without image refs"
+            );
+            let _ = tokio::fs::remove_file(out).await;
+            let no_ref_prompt = format!(
+                "{prompt}\nCRITICAL: match the era/palette/materials described in Theme, but \
+                 draw a vacant plate only — ZERO people, ZERO faces, ZERO silhouettes, ZERO hands."
+            );
+            self.image.generate(&no_ref_prompt, &[], out).await?;
+            if !self.plate_has_people(out).await {
+                return Ok(());
+            }
         }
 
         for attempt in 1..=2 {
@@ -273,6 +379,26 @@ impl WorldAssetsPlanner {
             || trimmed.starts_with('是')
             || trimmed.starts_with("有人")
     }
+}
+
+async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
+    for name in ["environments", "props"] {
+        let dir = film_root.join(name);
+        if dir.is_dir() {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+        }
+    }
+    for name in [
+        "world_assets.json",
+        "world_assets_registry.json",
+        "world_assets_cameo_lock.txt",
+    ] {
+        let p = film_root.join(name);
+        if p.exists() {
+            let _ = tokio::fs::remove_file(&p).await;
+        }
+    }
+    Ok(())
 }
 
 fn asset_item(path: &Path, description: &str) -> HashMap<String, String> {

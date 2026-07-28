@@ -36,3 +36,5 @@ Additionally, you will receive a sequence of potential characters, each containi
 - Use as few camera positions as possible.
 - Each shot will be rendered as a continuous Seedance clip of 5–15 seconds (often ~8–12s from the scene budget). Design motion_desc so visual action progresses for that FULL length while any dialogue from the paired audio finishes before the clip ends (leave ~2s after the last spoken word); do not plan empty holds, unfinished lines, or micro-cuts that belong in a separate shot.
 - Prefer continuous progression from first frame to last frame across the whole duration — the motion should still be readable if the clip is played at the planned length.
+- If <PREVIOUS_SHOT_LAST_FRAME> is provided, the first_frame description MUST continue from that ending state (same cast, wardrobe, lighting mood, set). Reframing is allowed; a full reset is not. This applies only within the same scene.
+- Always write a distinct, usable last_frame description (even for 'small' variation) — every shot is rendered with first+last frame guidance, and the next adjacent shot will open from this last frame.
