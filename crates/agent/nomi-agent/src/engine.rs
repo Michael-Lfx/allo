@@ -1020,6 +1020,25 @@ impl AgentEngine {
         }
     }
 
+    /// Append a user-added goal criterion (passthrough to
+    /// `GoalRuntime::add_subgoal`; whitespace-trimmed, empty text ignored).
+    /// The judge and the continuation prompt render every criterion until all
+    /// are proven satisfied. Safe no-op when this is not a goal session.
+    pub fn goal_add_subgoal(&self, text: &str) {
+        if let Some(g) = self.goal.as_ref() {
+            g.add_subgoal(text);
+        }
+    }
+
+    /// Remove the 1-based `index`-th goal criterion (passthrough to
+    /// `GoalRuntime::remove_subgoal`). Returns `false` when the index is out
+    /// of range or this is not a goal session.
+    pub fn goal_remove_subgoal(&self, index_1based: usize) -> bool {
+        self.goal
+            .as_ref()
+            .is_some_and(|g| g.remove_subgoal(index_1based))
+    }
+
     /// Initialize a new session for this Agent engine.
     pub fn init_session(
         &mut self,
@@ -3886,6 +3905,8 @@ mod set_config_tests {
         engine.goal_pause(Some("reason".into()));
         engine.goal_resume();
         engine.goal_clear();
+        engine.goal_add_subgoal("criterion");
+        assert!(!engine.goal_remove_subgoal(1));
         assert!(engine.goal_state().is_none());
     }
 
@@ -3946,6 +3967,25 @@ mod set_config_tests {
         // In-place swap: exactly one update_goal registration, no duplicate.
         let count = engine.tool_names().iter().filter(|n| *n == "update_goal").count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn goal_subgoal_passthroughs_reach_the_runtime() {
+        let mut engine = make_engine("goal-subgoals");
+        engine.set_goal("ship it".into(), 8);
+
+        engine.goal_add_subgoal("tests added");
+        engine.goal_add_subgoal("docs updated");
+        assert_eq!(
+            engine.goal_state().unwrap().subgoals,
+            vec!["tests added", "docs updated"]
+        );
+
+        // 1-based removal with out-of-range → false.
+        assert!(!engine.goal_remove_subgoal(0));
+        assert!(!engine.goal_remove_subgoal(5));
+        assert!(engine.goal_remove_subgoal(1));
+        assert_eq!(engine.goal_state().unwrap().subgoals, vec!["docs updated"]);
     }
 
     #[tokio::test]

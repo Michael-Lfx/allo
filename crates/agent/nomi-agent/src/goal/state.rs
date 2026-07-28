@@ -26,15 +26,16 @@ pub enum GoalStatus {
     Blocked,
     /// Auto-paused (circuit breaker) or user-paused; `paused_reason` says why.
     Paused,
-    /// Reserved for phase 2: parked on a wait barrier (pid / session / time).
+    /// Parked on a wait barrier. Phase 2 honors the time barrier
+    /// (`waiting_until`); pid/session barriers land in phase 3.
     Waiting,
-    /// Reserved for phase 2: explicitly cleared by the user (`/goal clear`).
+    /// Explicitly cleared by the user (`/goal clear`). Terminal.
     Cleared,
 }
 
 /// The judge's three-way verdict, plus `Skipped` when the judge could not run
-/// at all (empty goal). `Wait` is parsed in phase 1 but handled as `Continue`
-/// by the runtime — the wait barrier lands in phase 2.
+/// at all (empty goal). A `Wait` verdict with a time directive parks the loop
+/// on a wait barrier (phase 2); pid/session barriers land in phase 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalVerdict {
@@ -118,17 +119,22 @@ pub struct GoalState {
     pub created_at: u64,
     /// When the last goal evaluation finished (epoch ms).
     pub last_turn_at: Option<u64>,
-    /// Reserved for phase 2: user-added criteria (`/subgoal`).
+    /// User-added criteria appended mid-loop (`/subgoal`). When non-empty the
+    /// judge prompt and continuation prompt both render them so the agent
+    /// works toward them and the judge factors them into the verdict.
     pub subgoals: Vec<String>,
-    /// Reserved for phase 2/3: structured completion contract.
+    /// Reserved for phase 3: structured completion contract.
     pub contract: Option<GoalContract>,
-    /// Reserved for phase 2: time-based wait barrier deadline (epoch ms).
+    /// Time-based wait barrier deadline (epoch ms). While `status` is
+    /// `Waiting` and this deadline lies in the future, the continuation hook
+    /// quiesces — no judge call, no budget burn. Lazily auto-cleared once the
+    /// deadline passes (next evaluation resumes normal judging).
     pub waiting_until: Option<u64>,
-    /// Reserved for phase 2: pid-based wait barrier (releases on exit).
+    /// Reserved for phase 3: pid-based wait barrier (releases on exit).
     pub waiting_on_pid: Option<u32>,
-    /// Reserved for phase 2: session-based wait barrier (exit OR watch trigger).
+    /// Reserved for phase 3: session-based wait barrier (exit OR watch trigger).
     pub waiting_on_session: Option<String>,
-    /// Reserved for phase 2: human-readable reason for the wait barrier.
+    /// Human-readable reason for the wait barrier.
     pub waiting_reason: Option<String>,
 }
 
@@ -167,6 +173,28 @@ impl GoalState {
     pub fn should_continue(&self) -> bool {
         self.status == GoalStatus::Active && self.auto_continuations < self.max_auto_continuations
     }
+
+    /// Drop every wait-barrier field. Hermes semantics: a barrier is
+    /// meaningless once the goal is paused/resumed/cleared, and it is lazily
+    /// cleared when its deadline passes.
+    pub(crate) fn clear_wait_barrier(&mut self) {
+        self.waiting_until = None;
+        self.waiting_on_pid = None;
+        self.waiting_on_session = None;
+        self.waiting_reason = None;
+    }
+}
+
+/// Render user-added subgoals as a numbered `- N. text` block (port of hermes
+/// `render_subgoals_block`). Empty string when there are none — callers must
+/// then keep the prompt byte-identical to the no-subgoals shape.
+pub(crate) fn render_subgoals_block(subgoals: &[String]) -> String {
+    subgoals
+        .iter()
+        .enumerate()
+        .map(|(i, text)| format!("- {}. {}", i + 1, text))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
