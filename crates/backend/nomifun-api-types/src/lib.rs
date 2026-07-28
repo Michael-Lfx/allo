@@ -17,6 +17,7 @@ mod custom_agent;
 mod exposure;
 mod extension;
 mod file;
+mod goal;
 mod idmm;
 mod insights;
 mod knowledge;
@@ -155,6 +156,7 @@ pub use file::{
     SnapshotStageRequest, SnapshotWorkspaceRequest, WorkspaceFlatFileResponse,
     WorkspaceOfficeWatchRequest, WriteFileRequest, ZipFileEntry, ZipRequest,
 };
+pub use goal::{GoalActionRequest, GoalStatusResponse};
 pub use idmm::{
     BlockedBehavior, BudgetConfig, BypassModelRef, CategoryMode, CategoryRules, DecisionStrategy,
     DecisionWatchConfig, FaultWatchConfig, IdmmBinding, IdmmConfig, IdmmRunState, IdmmSettings, IdmmState,

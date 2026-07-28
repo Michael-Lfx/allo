@@ -103,6 +103,7 @@ fn make_factory(
         knowledge_retrieval: None,
         knowledge_writeback: None,
         poi_service: None,
+        goal_repo: None,
     })
 }
 

@@ -1074,6 +1074,15 @@ impl AgentEngine {
         self.goal.as_ref().map(|g| g.snapshot())
     }
 
+    /// Clone of the goal runtime *handle* (shared `Arc` state, see
+    /// [`GoalRuntime`](crate::goal::runtime::GoalRuntime)'s `Clone`). Lets the
+    /// host pause/resume/clear the goal in real time while `execute_turn`
+    /// holds the engine — the next natural-termination point observes the
+    /// change. `None` when this is not a goal session.
+    pub fn goal_runtime_handle(&self) -> Option<crate::goal::runtime::GoalRuntime> {
+        self.goal.clone()
+    }
+
     /// Install bootstrap-captured system prompt sections used for category bucketing.
     pub fn set_system_prompt_sections(&mut self, sections: HashMap<&'static str, String>) {
         self.system_prompt_sections = sections;

@@ -213,6 +213,12 @@ pub struct NomiResolvedConfig {
     /// Opt-in goal-driven continuation (objective + auto-continuation cap).
     /// `None` (default) = normal one-shot turn behavior.
     pub goal: Option<nomi_agent::goal::runtime::GoalSpec>,
+    /// Restore-semantics goal snapshot (persisted DB row or an explicit
+    /// `resume_state` carried in the build extra). When `Some`, the manager
+    /// injects it via `engine.set_goal_state` right after bootstrap — status /
+    /// turns_used / breaker counters / created_at are taken as-is. Wins over
+    /// `goal` (the fresh-start spec) because `set_goal_state` swaps in place.
+    pub goal_resume_state: Option<nomi_agent::goal::state::GoalState>,
     /// Opt-in Mixture-of-Agents fan-out: bridged engine config + host-resolved
     /// reference slots. `None` (default) = single-model behavior; the manager
     /// injects a fresh `MoaState` into the engine only when `Some`.

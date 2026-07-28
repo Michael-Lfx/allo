@@ -239,6 +239,12 @@ pub struct AgentFactoryDeps {
     /// POI service for per-turn prefetch in ACP prompt pipeline. `None` disables
     /// interest prefetch (tests, standalone).
     pub poi_service: Option<Arc<nomifun_poi::PoiService>>,
+    /// Goal persistence repository. When `Some`, the Nomi factory loads a
+    /// persisted active/paused goal at session build (restore injection) and
+    /// the manager writes goal snapshots back after every turn / user goal
+    /// action. `None` = goal persistence off (fail-safe: sessions still run
+    /// goals in memory, nothing is saved or restored).
+    pub goal_repo: Option<Arc<dyn nomifun_db::IGoalRepository>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.

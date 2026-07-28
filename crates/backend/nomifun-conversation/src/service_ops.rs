@@ -9,8 +9,9 @@
 //! over 2000 lines.
 
 use nomifun_api_types::{
-    AgentModeResponse, GetModelInfoResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
-    SideQuestionResponse, SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
+    AgentModeResponse, GetModelInfoResponse, GoalActionRequest, GoalStatusResponse, SetModeRequest,
+    SetModelRequest, SideQuestionRequest, SideQuestionResponse, SlashCommandItem,
+    WorkspaceBrowseQuery, WorkspaceEntry,
 };
 use nomifun_common::AppError;
 use nomifun_file::list_workspace_level;
@@ -159,6 +160,128 @@ impl ConversationService {
         self.require_owned_conversation(user_id, conversation_id)
             .await?;
         self.runtime_handle(conversation_id)?.get_openclaw_runtime().await
+    }
+
+    // ── Goal (auto-continuation) ────────────────────────────────────
+
+    /// Apply a `/goal` action. A live agent runtime handles it in real time
+    /// (and mirrors the result to the DB itself); without a runtime the
+    /// action operates straight on the persisted snapshot, so the next
+    /// session build restore-injects the outcome.
+    pub async fn goal_action(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        req: GoalActionRequest,
+    ) -> Result<GoalStatusResponse, AppError> {
+        self.require_owned_conversation(user_id, conversation_id)
+            .await?;
+        match self.optional_runtime_handle(conversation_id) {
+            Some(runtime) => runtime.goal_action(req).await,
+            None => self.goal_action_on_db(conversation_id, req).await,
+        }
+    }
+
+    /// No-runtime fallback: mutate the persisted goal row via the shared
+    /// `goal_bridge` helpers so the transition guards (terminal states never
+    /// flip, resume resets counters) are the engine's own.
+    async fn goal_action_on_db(
+        &self,
+        conversation_id: &str,
+        req: GoalActionRequest,
+    ) -> Result<GoalStatusResponse, AppError> {
+        use nomifun_ai_agent::goal_bridge;
+
+        let Some(repo) = self.goal_repo_slot() else {
+            return Err(AppError::BadRequest(
+                "The agent is not running and goal persistence is not enabled".into(),
+            ));
+        };
+        match req.action.as_str() {
+            "set" => {
+                let objective = req
+                    .objective
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::BadRequest("objective must not be empty".into()))?;
+                // Same default/clamp as the live manager path.
+                let max_turns = req.max_turns.unwrap_or(8).clamp(1, 100) as usize;
+                let params =
+                    goal_bridge::fresh_goal_upsert(conversation_id, objective.to_owned(), max_turns);
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "pause" => {
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::pause_persisted_row(
+                    &row,
+                    req.reason.as_deref().unwrap_or("user-paused"),
+                );
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "resume" => {
+                let row = self.require_goal_row(&*repo, conversation_id).await?;
+                let params = goal_bridge::resume_persisted_row(&row);
+                let row = repo.upsert(&params).await?;
+                Ok(goal_bridge::goal_row_to_response(&row))
+            }
+            "clear" => {
+                // Delete (not mark cleared): a cleared goal must never be
+                // restore-injected into a future session build.
+                repo.clear(conversation_id).await?;
+                Ok(GoalStatusResponse::default())
+            }
+            "status" => Ok(repo
+                .load_by_session(conversation_id)
+                .await?
+                .map(|row| goal_bridge::goal_row_to_response(&row))
+                .unwrap_or_default()),
+            other => Err(AppError::BadRequest(format!("Unknown goal action '{other}'"))),
+        }
+    }
+
+    async fn require_goal_row(
+        &self,
+        repo: &dyn nomifun_db::IGoalRepository,
+        conversation_id: &str,
+    ) -> Result<nomifun_db::GoalRow, AppError> {
+        repo.load_by_session(conversation_id)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("No goal is set for this conversation".into()))
+    }
+
+    /// Read the goal snapshot. Never errors on "no goal": a live Nomi
+    /// runtime answers in real time; agent types without a goal runtime and
+    /// non-running conversations fall back to the persisted row; no row (or
+    /// persistence unwired) degrades to `active: false`.
+    pub async fn get_goal_status(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<GoalStatusResponse, AppError> {
+        self.require_owned_conversation(user_id, conversation_id)
+            .await?;
+        if let Some(runtime) = self.optional_runtime_handle(conversation_id) {
+            let status_probe = GoalActionRequest {
+                action: "status".into(),
+                objective: None,
+                max_turns: None,
+                reason: None,
+            };
+            if let Ok(resp) = runtime.goal_action(status_probe).await {
+                return Ok(resp);
+            }
+        }
+        let Some(repo) = self.goal_repo_slot() else {
+            return Ok(GoalStatusResponse::default());
+        };
+        Ok(repo
+            .load_by_session(conversation_id)
+            .await?
+            .map(|row| nomifun_ai_agent::goal_bridge::goal_row_to_response(&row))
+            .unwrap_or_default())
     }
 
     // ── Workspace browsing ──────────────────────────────────────────

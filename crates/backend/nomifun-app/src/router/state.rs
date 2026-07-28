@@ -642,6 +642,11 @@ pub fn build_conversation_state(
         Arc::new(SqliteProviderRepository::new(services.database.pool().clone())),
         Arc::new(SqliteClientPreferenceRepository::new(services.database.pool().clone())),
     );
+    // Goal persistence for the `/goal` route's no-runtime fallback (running
+    // agents persist through the factory-injected repo instead).
+    conversation_service.with_goal_repo(Arc::new(nomifun_db::SqliteGoalRepository::new(
+        services.database.pool().clone(),
+    )));
     // Wire the LLM auto-title completer: a new conversation's first user
     // message is summarized into a short work-content title via the default
     // provider/model (same resolution as `LiveTerminalTitleCompleter`).

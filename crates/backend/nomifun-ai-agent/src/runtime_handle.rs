@@ -459,6 +459,27 @@ impl AgentRuntimeHandle {
         }
     }
 
+    /// Execute a `/goal` action (set / pause / resume / clear / status) on the
+    /// running agent. Only the Nomi native engine hosts a goal runtime; every
+    /// other variant is an external process without one, so they return a
+    /// `BadRequest` the route surfaces as-is. Non-running conversations are
+    /// handled by the conversation service's DB fallback, not here.
+    pub async fn goal_action(
+        &self,
+        req: nomifun_api_types::GoalActionRequest,
+    ) -> Result<nomifun_api_types::GoalStatusResponse, AppError> {
+        match self {
+            Self::Nomi(m) => m.goal_action(req).await,
+            Self::Acp(_) | Self::OpenClaw(_) | Self::Nanobot(_) | Self::Remote(_) => Err(
+                AppError::BadRequest("Goals are not supported for this agent type".into()),
+            ),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Mock(_) => Err(AppError::BadRequest(
+                "Goals are not supported for this agent type".into(),
+            )),
+        }
+    }
+
     /// Queue trusted host resource state without creating a turn or pretending
     /// the event came from the user.
     ///

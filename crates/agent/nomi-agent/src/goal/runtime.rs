@@ -29,6 +29,12 @@ impl GoalSpec {
 /// Engine-side goal runtime: holds the shared state (also held by
 /// `UpdateGoalTool`), runs the judge at each natural-termination point, and
 /// renders the continuation prompt.
+///
+/// `Clone` duplicates the *handle*, not the state: clones share the same
+/// `Arc<Mutex<GoalState>>`, so a host-side clone (taken via
+/// `AgentEngine::goal_runtime_handle`) can pause/resume/clear a goal while
+/// the engine itself is busy inside `execute_turn`.
+#[derive(Clone)]
 pub struct GoalRuntime {
     state: Arc<Mutex<GoalState>>,
 }

@@ -10,6 +10,7 @@ mod client_preference;
 pub mod conversation;
 pub mod creation_task;
 pub mod cron;
+pub mod goal;
 pub mod idmm_intervention;
 pub mod companion_token;
 pub mod knowledge;
@@ -33,6 +34,7 @@ mod sqlite_connector_credential;
 mod sqlite_conversation;
 mod sqlite_creation_task;
 mod sqlite_cron;
+mod sqlite_goal;
 mod sqlite_idmm_intervention;
 mod sqlite_companion_token;
 mod sqlite_knowledge;
@@ -74,6 +76,7 @@ pub use creation_task::{
     CreateCreationTaskParams, ICreationTaskRepository, ListCreationTasksParams, UpdateCreationTaskParams,
 };
 pub use cron::ICronRepository;
+pub use goal::{IGoalRepository, UpsertGoalParams};
 pub use idmm_intervention::{
     IIdmmInterventionRepository, IdmmActionReservationKey, IdmmActionReserveResult,
     IdmmActionSettleResult, IdmmActionSettlement, IdmmActionTurnIdentity,
@@ -105,6 +108,7 @@ pub use sqlite_connector_credential::SqliteConnectorCredentialRepository;
 pub use sqlite_conversation::SqliteConversationRepository;
 pub use sqlite_creation_task::SqliteCreationTaskRepository;
 pub use sqlite_cron::SqliteCronRepository;
+pub use sqlite_goal::SqliteGoalRepository;
 pub use sqlite_idmm_intervention::SqliteIdmmInterventionRepository;
 pub use sqlite_companion_token::SqliteCompanionTokenRepository;
 pub use sqlite_knowledge::SqliteKnowledgeRepository;

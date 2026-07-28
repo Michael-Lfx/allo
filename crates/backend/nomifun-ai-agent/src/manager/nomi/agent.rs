@@ -20,7 +20,7 @@ use nomi_protocol::commands::SessionMode;
 use nomi_protocol::events::ToolCategory;
 use nomi_protocol::{ToolApprovalManager, ToolApprovalResult};
 use nomi_types::message::ContentBlock;
-use nomifun_api_types::{AgentModeResponse, SlashCommandItem};
+use nomifun_api_types::{AgentModeResponse, GoalActionRequest, GoalStatusResponse, SlashCommandItem};
 use nomifun_common::{
     AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, ErrorChain, TimestampMs, now_ms,
 };
@@ -180,6 +180,17 @@ pub struct NomiAgentManager {
     /// off). Joined by label with the engine's per-turn usage to price each
     /// turn's fan-out in `TurnCompleted.moa`.
     moa_slot_prices: Vec<crate::types::MoaSlotPrice>,
+    /// Real-time goal handle — a clone of the engine's `GoalRuntime` sharing
+    /// the same `Arc<Mutex<GoalState>>` as the registered `update_goal` tool.
+    /// pause/resume/clear/status act through it WITHOUT the engine mutex, so
+    /// they take effect while `execute_turn` holds the engine (the next
+    /// natural-termination point observes the change). Slot is refreshed by
+    /// `goal_action("set")` when it registers a fresh runtime.
+    goal_runtime: std::sync::RwLock<Option<nomi_agent::goal::runtime::GoalRuntime>>,
+    /// Goal persistence repository (post-construction registration by the
+    /// factory, same slot pattern as `register_cron_sink`). `None` = goal
+    /// persistence off; goals still run, nothing is saved or restored.
+    goal_repo: std::sync::RwLock<Option<Arc<dyn nomifun_db::IGoalRepository>>>,
 }
 
 impl Drop for NomiAgentManager {
@@ -219,6 +230,28 @@ pub(crate) fn should_register_knowledge_write(
 /// companion/channel sessions have no confirmation UI), mirroring the companion
 /// memory tools.
 pub(crate) const KNOWLEDGE_WRITE_TOOL_NAME: &str = "knowledge_write";
+
+/// The host-resolved `/goal` command set advertised to the UI picker. These
+/// are NOT engine slash commands: the frontend maps them onto
+/// `POST /api/conversations/{id}/goal` actions (set/status/pause/resume/clear).
+pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
+    [
+        (
+            "goal",
+            "Set a session goal: /goal <objective> — the agent auto-continues until the goal is judged complete",
+        ),
+        ("goal status", "Show the current goal, its status and continuation budget"),
+        ("goal pause", "Pause goal auto-continuation (resume later with /goal resume)"),
+        ("goal resume", "Resume a paused goal with a fresh continuation budget"),
+        ("goal clear", "Clear the goal and stop auto-continuation"),
+    ]
+    .into_iter()
+    .map(|(command, description)| SlashCommandItem {
+        command: command.to_owned(),
+        description: description.to_owned(),
+    })
+    .collect()
+}
 
 /// Cap on race-tail re-runs within a single turn-claim. The race window is
 /// sub-millisecond, so a tiny bound guarantees termination even if a steerer
@@ -679,6 +712,21 @@ impl NomiAgentManager {
             );
             engine.set_moa_state(nomi_agent::moa::MoaState::new(moa.config, moa.slots));
         }
+        // Goal restore injection: re-hydrate a persisted active/paused goal
+        // (or an explicit resume_state carried in the build extra) as-is —
+        // status, turns_used, breaker counters and created_at are NOT reset.
+        // Runs right after bootstrap: it either swaps the spec-built
+        // runtime's state in place or registers a fresh runtime + the
+        // update_goal tool (see `AgentEngine::set_goal_state`).
+        if let Some(state) = config_extra.goal_resume_state.clone() {
+            info!(
+                conversation_id = %conversation_id,
+                goal_status = crate::goal_bridge::goal_status_str(state.status),
+                goal_turns_used = state.turns_used,
+                "Restoring persisted goal state into nomi engine"
+            );
+            engine.set_goal_state(state);
+        }
         if let Some(sink) = requirement_sink {
             engine
                 .registry_mut()
@@ -798,14 +846,21 @@ impl NomiAgentManager {
         let protocol_sink = BackendProtocolSink::new(runtime.event_sender(), confirmations.clone());
         engine.set_approval_manager(approval_manager.clone());
         engine.set_protocol_writer(Arc::new(protocol_sink));
-        let slash_commands = engine
+        let mut slash_commands: Vec<SlashCommandItem> = engine
             .slash_command_list()
             .into_iter()
             .map(|(command, description)| SlashCommandItem { command, description })
             .collect();
+        // Host-level /goal command set: resolved by the backend goal route
+        // (`POST /api/conversations/{id}/goal`), not by an engine-registered
+        // SlashCommand — appended here so the UI picker advertises them.
+        slash_commands.extend(goal_slash_commands());
 
         runtime.transition_to(ConversationStatus::Pending);
         let process_supervisor = engine.process_supervisor_handle();
+        // Shared goal handle (None when this is not a goal session). Taken
+        // while the engine is still ours, before it goes behind the mutex.
+        let goal_runtime = engine.goal_runtime_handle();
 
         // MoA catalog price snapshot (empty when MoA is off) — joined with the
         // engine's per-turn usage to price each turn's fan-out.
@@ -844,6 +899,8 @@ impl NomiAgentManager {
             knowledge_auto_rag,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
             moa_slot_prices,
+            goal_runtime: std::sync::RwLock::new(goal_runtime),
+            goal_repo: std::sync::RwLock::new(None),
         })
     }
 
@@ -1302,6 +1359,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 // Empty (no fan-out this turn) → `moa: None`, wire-identical
                 // to a single-model turn.
                 let moa = build_moa_turn_stats(engine.moa_turn_usage(), &self.moa_slot_prices);
+                // Goal snapshot is read here too — after the turn finished,
+                // before `drop(engine)` — and persisted fire-and-forget once
+                // the lock is released (turn-end 落库 point).
+                let goal_snapshot = engine.goal_state();
                 self.runtime.emit(AgentStreamEvent::TurnCompleted(TurnCompletedEventData {
                     elapsed_ms,
                     input_tokens: agent_result.usage.input_tokens,
@@ -1350,6 +1411,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     None
                 };
                 drop(engine); // never hold the engine mutex across the provider call
+
+                if let Some(state) = goal_snapshot {
+                    self.spawn_goal_persist(state);
+                }
 
                 let distill_completed = match distill_job {
                     Some((cfg, dir, transcript)) => {
@@ -2053,6 +2118,152 @@ impl NomiAgentManager {
 
     pub async fn get_slash_commands(&self) -> Result<Vec<SlashCommandItem>, AppError> {
         Ok(self.slash_commands.clone())
+    }
+
+    /// Register the goal persistence repository. Called by the factory right
+    /// after construction (same slot pattern as `register_cron_sink`); absent
+    /// registration leaves goal persistence off (fail-safe).
+    pub fn register_goal_persistence(&self, repo: Arc<dyn nomifun_db::IGoalRepository>) {
+        if let Ok(mut slot) = self.goal_repo.write() {
+            *slot = Some(repo);
+        }
+    }
+
+    fn goal_repo_handle(&self) -> Option<Arc<dyn nomifun_db::IGoalRepository>> {
+        self.goal_repo
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    fn goal_runtime_handle(&self) -> Option<nomi_agent::goal::runtime::GoalRuntime> {
+        self.goal_runtime
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Best-effort goal snapshot persistence — spawned so it never blocks or
+    /// fails the caller (turn completion / user goal actions). No-op when no
+    /// repository was registered.
+    fn spawn_goal_persist(&self, state: nomi_agent::goal::state::GoalState) {
+        let Some(repo) = self.goal_repo_handle() else {
+            return;
+        };
+        let session_id = self.runtime.conversation_id().to_string();
+        tokio::spawn(async move {
+            let params = crate::goal_bridge::goal_state_to_upsert(&session_id, &state);
+            if let Err(e) = repo.upsert(&params).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to persist goal snapshot"
+                );
+            }
+        });
+    }
+
+    /// Execute a user `/goal` action (set / pause / resume / clear / status).
+    ///
+    /// pause/resume/clear act through the shared goal handle — NOT the engine
+    /// mutex — so they take effect in real time while `execute_turn` holds the
+    /// engine (the goal loop's next natural-termination point observes the
+    /// change). Only "set" on a session without a goal must wait for the
+    /// engine lock, because registering the `update_goal` tool needs `&mut`.
+    /// Every state change is mirrored to the DB (best-effort, fail-safe).
+    pub async fn goal_action(&self, req: GoalActionRequest) -> Result<GoalStatusResponse, AppError> {
+        match req.action.as_str() {
+            "set" => {
+                let objective = req
+                    .objective
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::BadRequest("objective must not be empty".into()))?;
+                let max_turns = req.max_turns.unwrap_or(8).clamp(1, 100) as usize;
+                let state =
+                    nomi_agent::goal::state::GoalState::new(objective.to_owned(), max_turns);
+                match self.goal_runtime_handle() {
+                    // Already a goal session: swap the state in place through
+                    // the shared handle (works mid-turn; the update_goal tool
+                    // keeps observing the same slot).
+                    Some(rt) => rt.restore(state.clone()),
+                    // First goal for this session: register runtime + tool on
+                    // the engine, then cache the shared handle.
+                    None => {
+                        let mut engine = self.engine.lock().await;
+                        engine.set_goal_state(state.clone());
+                        let handle = engine.goal_runtime_handle();
+                        drop(engine);
+                        if let Ok(mut slot) = self.goal_runtime.write() {
+                            *slot = handle;
+                        }
+                    }
+                }
+                info!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    max_turns,
+                    "Goal set"
+                );
+                self.spawn_goal_persist(state.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&state))
+            }
+            "pause" => {
+                let rt = self.require_goal_runtime()?;
+                rt.pause(req.reason.as_deref().unwrap_or("user-paused"));
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "resume" => {
+                let rt = self.require_goal_runtime()?;
+                rt.resume();
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "clear" => {
+                let rt = self.goal_runtime_handle();
+                if let Some(rt) = rt.as_ref() {
+                    rt.clear();
+                }
+                // The DB row is deleted (not marked cleared): a cleared goal
+                // must never be restore-injected into a future session build.
+                if let Some(repo) = self.goal_repo_handle() {
+                    let session_id = self.runtime.conversation_id().to_string();
+                    tokio::spawn(async move {
+                        if let Err(e) = repo.clear(&session_id).await {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %e,
+                                "Failed to clear persisted goal"
+                            );
+                        }
+                    });
+                }
+                Ok(match rt {
+                    Some(rt) => crate::goal_bridge::goal_state_to_response(&rt.snapshot()),
+                    None => GoalStatusResponse::default(),
+                })
+            }
+            "status" => Ok(self.goal_status()),
+            other => Err(AppError::BadRequest(format!("Unknown goal action '{other}'"))),
+        }
+    }
+
+    /// Live goal snapshot for `/goal status` — read through the shared handle
+    /// (never waits on the engine mutex). `active: false` when this session
+    /// has no goal.
+    pub fn goal_status(&self) -> GoalStatusResponse {
+        match self.goal_runtime_handle() {
+            Some(rt) => crate::goal_bridge::goal_state_to_response(&rt.snapshot()),
+            None => GoalStatusResponse::default(),
+        }
+    }
+
+    fn require_goal_runtime(&self) -> Result<nomi_agent::goal::runtime::GoalRuntime, AppError> {
+        self.goal_runtime_handle()
+            .ok_or_else(|| AppError::BadRequest("No goal is set for this conversation".into()))
     }
 
     /// Clear the conversation context ("release model context"): stop any
@@ -2785,6 +2996,7 @@ mod tests {
             browser_unrestricted_approval: false,
             browser_visual_fallback: false,
             goal: None,
+            goal_resume_state: None,
             moa: None,
             browser_secret_vault: None,
             owner_token: None,
@@ -3106,6 +3318,8 @@ mod tests {
             knowledge_auto_rag: None,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
             moa_slot_prices: Vec::new(),
+            goal_runtime: std::sync::RwLock::new(None),
+            goal_repo: std::sync::RwLock::new(None),
         }
     }
 
@@ -3303,6 +3517,8 @@ mod tests {
             knowledge_auto_rag: None,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
             moa_slot_prices: Vec::new(),
+            goal_runtime: std::sync::RwLock::new(None),
+            goal_repo: std::sync::RwLock::new(None),
         };
         let attachment_dir = tempfile::tempdir().unwrap();
         let missing_image = attachment_dir

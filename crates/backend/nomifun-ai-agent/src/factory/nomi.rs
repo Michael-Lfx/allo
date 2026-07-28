@@ -604,6 +604,45 @@ pub(super) async fn build(
         );
     }
 
+    // Goal restore source, first match wins: an explicit `resume_state`
+    // carried in the build extra, else the persisted active/paused/waiting
+    // row for this conversation (goal persistence on). Terminal rows
+    // (complete/blocked/cleared) stay in the DB for audit but never restart
+    // continuation; a corrupt payload fails soft to "no restore".
+    let goal_resume_state: Option<nomi_agent::goal::state::GoalState> =
+        match overrides.goal.as_ref().and_then(|g| g.resume_state.clone()) {
+            Some(raw) => match serde_json::from_value(raw) {
+                Ok(state) => Some(state),
+                Err(e) => {
+                    warn!(
+                        conversation_id = %ctx.conversation_id,
+                        error = %e,
+                        "Ignoring malformed goal resume_state in build extra"
+                    );
+                    None
+                }
+            },
+            None => match deps.goal_repo.as_ref() {
+                Some(repo) => match repo.load_by_session(&ctx.conversation_id).await {
+                    Ok(Some(row))
+                        if crate::goal_bridge::goal_status_is_restorable(&row.status) =>
+                    {
+                        Some(crate::goal_bridge::goal_row_to_state(&row))
+                    }
+                    Ok(_) => None,
+                    Err(e) => {
+                        warn!(
+                            conversation_id = %ctx.conversation_id,
+                            error = %e,
+                            "Failed to load persisted goal; session starts without restore"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            },
+        };
+
     let config = NomiResolvedConfig {
         provider: fields.provider,
         api_key: fields.api_key,
@@ -658,6 +697,7 @@ pub(super) async fn build(
                 g.max_auto_continuations.unwrap_or(8),
             )
         }),
+        goal_resume_state,
         // MoA bridge payload (resolved above; None = single-model, zero change).
         moa,
         // Shared browser secret-vault descriptor (built above; None when
@@ -776,6 +816,12 @@ pub(super) async fn build(
         host_wiring,
     )
     .await?;
+    // Goal persistence: wire the repository so the manager mirrors every goal
+    // state change (turn end / user actions) into the `goals` table. Absent
+    // (`None`) = persistence off, goals stay in-memory only (fail-safe).
+    if let Some(goal_repo) = deps.goal_repo.clone() {
+        agent.register_goal_persistence(goal_repo);
+    }
     // Native cron tools persist background work and can recursively create
     // model traffic. They are host-control capabilities, not part of the
     // secondary principal's model-only ceiling. Register them only for the

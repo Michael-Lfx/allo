@@ -253,6 +253,13 @@ pub struct NomiGoalSpec {
     /// Cap on automatic continuations (anti-runaway). Defaults to 8 when unset.
     #[serde(default)]
     pub max_auto_continuations: Option<usize>,
+    /// Optional full `GoalState` snapshot (engine snake_case JSON contract)
+    /// used to restore a persisted goal instead of starting a fresh one.
+    /// When set, the factory injects it via `engine.set_goal_state` and
+    /// `objective` / `max_auto_continuations` above are informational only.
+    /// `None` (the default) keeps the original fresh-goal behavior.
+    #[serde(default)]
+    pub resume_state: Option<serde_json::Value>,
 }
 
 /// Opt-in Mixture-of-Agents settings for a session. When present and
