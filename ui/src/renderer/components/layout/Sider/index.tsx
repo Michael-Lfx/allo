@@ -27,6 +27,7 @@ import {
   SiderVideoGenerationEntry,
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
+import styles from './Sider.module.css';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -172,13 +173,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   return (
     <div className='size-full flex flex-col'>
       {/* Main content area */}
-      <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
-        {isSettings ? (
+      {isSettings ? (
+        <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
           <Suspense fallback={<div className='size-full' />}>
             <SettingsSider collapsed={collapsed} tooltipEnabled={tooltipEnabled} />
           </Suspense>
-        ) : (
-          <div className='size-full flex flex-col gap-2px'>
+        </div>
+      ) : (
+        <div className='flex-1 min-h-0 flex flex-col'>
+          <div data-testid='sider-primary-nav' className='shrink-0 flex flex-col gap-2px'>
             {/* 会话 — 一级菜单入口 */}
             <SiderConversationEntry
               isMobile={isMobile}
@@ -211,21 +214,24 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleScheduledClick}
             />
-            {/* 项目/工作路径树 — 仅保留列表 */}
-            {!collapsed && (
-              <div className='pl-5px pr-8px pb-8px'>
-                <WorkpathSessionList
-                  collapsed={false}
-                  tooltipEnabled={false}
-                  batchMode={batchMode}
-                  displayPreferences={displayPreferences}
-                  onBatchModeChange={setBatchMode}
-                />
-              </div>
-            )}
           </div>
-        )}
-      </div>
+          {/* 项目/工作路径树 — 独立滚动，一级菜单保持固定 */}
+          {!collapsed && (
+            <div
+              data-testid='sider-workspaces-scroll-area'
+              className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pl-5px pr-8px pt-2px pb-8px`}
+            >
+              <WorkpathSessionList
+                collapsed={false}
+                tooltipEnabled={false}
+                batchMode={batchMode}
+                displayPreferences={displayPreferences}
+                onBatchModeChange={setBatchMode}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {/* Bottom pinned group (设置) — Model & Agent and Open Capabilities sit directly above Settings */}
       <div className='shrink-0 mt-auto pt-8px flex flex-col gap-2px border-t border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-b-0'>
         {!SERVER_MANAGED_MODELS && (
