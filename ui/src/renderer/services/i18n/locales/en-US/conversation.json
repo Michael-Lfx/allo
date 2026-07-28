@@ -489,7 +489,14 @@
       "paused": "Goal paused: {{objective}}",
       "blocked": "Goal blocked: {{objective}}",
       "cleared": "Goal cleared",
-      "reason": " ({{reason}})"
+      "reason": " ({{reason}})",
+      "pause": "Pause",
+      "resume": "Resume",
+      "clearAction": "Clear",
+      "clearConfirm": "Clear the current goal? Its subgoals will be removed too.",
+      "waitingCountdown": "Waiting, resumes in {{time}}",
+      "waitElapsed": "Wait elapsed, resuming on the next turn",
+      "subgoalsToggle": "Subgoals ({{count}})"
     },
     "toast": {
       "set": "Goal set: {{objective}}",
@@ -498,7 +505,13 @@
       "cleared": "Goal cleared",
       "status": "Current goal: {{objective}}",
       "statusNone": "No goal is set for this conversation",
-      "failed": "Goal action failed, please try again later"
+      "failed": "Goal action failed, please try again later",
+      "subgoalAdded": "Subgoal added: {{subgoal}}",
+      "subgoalRemoved": "Subgoal #{{index}} removed",
+      "subgoalsCleared": "Subgoals cleared",
+      "subgoalListTitle": "Subgoals ({{count}}):",
+      "subgoalListEmpty": "The current goal has no subgoals",
+      "subgoalInvalidIndex": "Use /subgoal remove <n> to remove a subgoal (see /subgoal list for numbering)"
     }
   },
   "commandQueue": {

@@ -480,8 +480,8 @@ const SendBox: React.FC<{
   });
   const btwCommand = useBtwCommand(conversationContext?.conversation_id, enableBtw);
   const btwQuestion = useMemo(() => extractBtwQuestion(input), [input]);
-  // /goal 家族命令为 host-resolved：提交时拦截并映射为 goal API 调用，不作为普通
-  // 消息发给 agent。仅 nomi 会话启用——后端 goal 端点只支持 nomi runtime。
+  // /goal 与 /subgoal 家族命令为 host-resolved：提交时拦截并映射为 goal API 调用，
+  // 不作为普通消息发给 agent。仅 nomi 会话启用——后端 goal 端点只支持 nomi runtime。
   const goalCommand = useGoalCommand(
     conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
     conversationContext?.type === 'nomi'
@@ -1372,7 +1372,7 @@ const SendBox: React.FC<{
       return;
     }
 
-    // 拦截 /goal 家族命令（在忙碌门控之前：暂停/恢复/清除在 turn 运行中也应可用）
+    // 拦截 /goal 与 /subgoal 家族命令（在忙碌门控之前：暂停/恢复/清除在 turn 运行中也应可用）
     if (goalCommand.enabled) {
       const goalInvocation = parseGoalSlashCommand(input);
       if (goalInvocation) {

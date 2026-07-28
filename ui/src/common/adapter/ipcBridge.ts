@@ -707,9 +707,11 @@ export const conversation = {
   getGoalStatus: httpGet<GoalStatusResponse, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/goal`
   ),
-  /** Host-resolved `/goal` slash-command family → one POST per action.
-   *  `set` requires a non-empty objective; `max_turns` defaults to 8 and is
-   *  clamped to 1..100 server-side. Every action answers the fresh snapshot. */
+  /** Host-resolved `/goal` + `/subgoal` slash-command families → one POST per
+   *  action. `set` requires a non-empty objective; `max_turns` defaults to 8
+   *  and is clamped to 1..100 server-side. `add_subgoal` requires a non-empty
+   *  `subgoal`; `remove_subgoal` requires `index_1based` (1-based, matching
+   *  `/subgoal list` numbering). Every action answers the fresh snapshot. */
   goalAction: httpPost<
     GoalStatusResponse,
     {
@@ -718,10 +720,19 @@ export const conversation = {
       objective?: string;
       max_turns?: number;
       reason?: string;
+      subgoal?: string;
+      index_1based?: number;
     }
   >(
     (p) => `/api/conversations/${p.conversation_id}/goal`,
-    (p) => ({ action: p.action, objective: p.objective, max_turns: p.max_turns, reason: p.reason })
+    (p) => ({
+      action: p.action,
+      objective: p.objective,
+      max_turns: p.max_turns,
+      reason: p.reason,
+      subgoal: p.subgoal,
+      index_1based: p.index_1based,
+    })
   ),
   askSideQuestion: httpPost<ConversationSideQuestionResult, { conversation_id: ConversationId; question: string }>(
     (p) => `/api/conversations/${p.conversation_id}/side-question`,
@@ -2916,8 +2927,19 @@ export type ConversationSideQuestionResult =
   | { status: 'invalid'; reason: 'emptyQuestion' }
   | { status: 'toolsRequired' };
 
-/** Goal action verbs accepted by POST /api/conversations/{id}/goal. */
-export type GoalAction = 'set' | 'pause' | 'resume' | 'clear' | 'status';
+/** Goal action verbs accepted by POST /api/conversations/{id}/goal.
+ *  `list_subgoals` is a server-side alias of `status` (the response's
+ *  `subgoals` field already carries the full list). */
+export type GoalAction =
+  | 'set'
+  | 'pause'
+  | 'resume'
+  | 'clear'
+  | 'status'
+  | 'add_subgoal'
+  | 'remove_subgoal'
+  | 'clear_subgoals'
+  | 'list_subgoals';
 
 /**
  * Wire DTO of GET/POST /api/conversations/{id}/goal (backend
@@ -2938,6 +2960,11 @@ export interface GoalStatusResponse {
   subgoals: string[];
   created_at?: number;
   last_turn_at?: number;
+  /** Timed wait-barrier deadline (epoch ms); present only while `status` is
+   *  `'waiting'` on a timed barrier — used for the countdown rendering. */
+  waiting_until?: number;
+  /** Human-readable reason for the wait barrier. */
+  waiting_reason?: string;
 }
 
 interface IBridgeResponse<D = {}> {

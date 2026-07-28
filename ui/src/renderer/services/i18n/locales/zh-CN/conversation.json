@@ -489,7 +489,14 @@
       "paused": "目标已暂停：{{objective}}",
       "blocked": "目标受阻：{{objective}}",
       "cleared": "目标已清除",
-      "reason": "（{{reason}}）"
+      "reason": "（{{reason}}）",
+      "pause": "暂停",
+      "resume": "继续",
+      "clearAction": "清除",
+      "clearConfirm": "确定清除当前目标？子目标也会一并删除。",
+      "waitingCountdown": "等待中，{{time}} 后恢复",
+      "waitElapsed": "等待结束，将在下一回合恢复",
+      "subgoalsToggle": "子目标 {{count}} 项"
     },
     "toast": {
       "set": "目标已设定：{{objective}}",
@@ -498,7 +505,13 @@
       "cleared": "目标已清除",
       "status": "当前目标：{{objective}}",
       "statusNone": "当前会话未设置目标",
-      "failed": "目标操作失败，请稍后重试"
+      "failed": "目标操作失败，请稍后重试",
+      "subgoalAdded": "已添加子目标：{{subgoal}}",
+      "subgoalRemoved": "已移除子目标 #{{index}}",
+      "subgoalsCleared": "已清空子目标",
+      "subgoalListTitle": "子目标（共 {{count}} 项）：",
+      "subgoalListEmpty": "当前目标没有子目标",
+      "subgoalInvalidIndex": "请使用 /subgoal remove <编号> 移除子目标（编号见 /subgoal list）"
     }
   },
   "commandQueue": {
