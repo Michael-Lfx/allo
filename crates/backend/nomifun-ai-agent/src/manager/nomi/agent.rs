@@ -2358,11 +2358,29 @@ impl NomiAgentManager {
                 );
                 let contract = nomi_agent::goal::judge::draft_contract(&objective, &client)
                     .await
-                    .map_err(|e| match e {
-                        nomi_agent::goal::judge::ContractDraftError::EmptyObjective => {
-                            AppError::BadRequest("objective must not be empty".into())
+                    .map_err(|e| {
+                        use nomi_agent::goal::judge::ContractDraftError;
+                        // Full detail (may embed raw LLM output / provider
+                        // error text) goes to the log only — the user-facing
+                        // message stays fixed and sanitized.
+                        tracing::warn!(
+                            conversation_id = %self.runtime.conversation_id(),
+                            error = %e,
+                            "Goal contract draft failed"
+                        );
+                        match e {
+                            ContractDraftError::EmptyObjective => {
+                                AppError::BadRequest("objective must not be empty".into())
+                            }
+                            ContractDraftError::Transport(_) => AppError::BadGateway(
+                                "Contract draft failed due to a model transport error".into(),
+                            ),
+                            ContractDraftError::Unparsable(_) | ContractDraftError::EmptyContract => {
+                                AppError::BadGateway(
+                                    "Contract draft failed: model reply was unusable".into(),
+                                )
+                            }
                         }
-                        other => AppError::BadGateway(format!("Contract draft failed: {other}")),
                     })?;
                 rt.set_contract(contract);
                 let snapshot = rt.snapshot();

@@ -24,6 +24,12 @@ impl SqliteGoalRepository {
 #[async_trait::async_trait]
 impl IGoalRepository for SqliteGoalRepository {
     async fn upsert(&self, params: &UpsertGoalParams) -> Result<GoalRow, DbError> {
+        // `version = goals.version + 1` is an unconditional bump: it counts
+        // modifications for auditing, it is NOT an optimistic lock. There is
+        // no `WHERE version = expected` guard, so concurrent upserts are
+        // last-writer-wins. This is intentional under the single-writer
+        // product model; a future multi-writer design would add an
+        // `expected_version` conditional update here.
         let sql = format!(
             "INSERT INTO goals (\
                 session_id, objective, status, turns_used, max_turns, \

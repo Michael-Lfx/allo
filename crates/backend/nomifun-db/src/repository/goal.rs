@@ -39,7 +39,9 @@ pub struct UpsertGoalParams {
 pub trait IGoalRepository: Send + Sync {
     /// Insert or replace the goal snapshot for a session. On conflict every
     /// snapshot column is replaced and `version` is bumped by one. Returns
-    /// the persisted row.
+    /// the persisted row. `version` is an audit-only modification counter,
+    /// NOT an optimistic lock — the upsert is unconditional last-writer-wins
+    /// (single-writer product model).
     async fn upsert(&self, params: &UpsertGoalParams) -> Result<GoalRow, DbError>;
 
     /// Return the goal snapshot for a session, or `None`.

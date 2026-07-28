@@ -101,8 +101,12 @@ pub fn goal_row_to_state(row: &GoalRow) -> GoalState {
         last_verdict: row.last_verdict.as_deref().and_then(parse_goal_verdict),
         last_reason: row.last_reason.clone(),
         paused_reason: row.paused_reason.clone(),
-        consecutive_parse_failures: row.consecutive_parse_failures.max(0) as u32,
-        consecutive_transport_failures: row.consecutive_transport_failures.max(0) as u32,
+        // Deliberately reset on restore, like `auto_continuations`: the
+        // breaker streaks describe one live run and restart with the new
+        // process (docs/guides/goals.md). The columns still persist the last
+        // run's values for inspection — they are just never re-injected.
+        consecutive_parse_failures: 0,
+        consecutive_transport_failures: 0,
         created_at: row.created_at.max(0) as u64,
         last_turn_at: row.last_turn_at.map(|v| v.max(0) as u64),
         subgoals: serde_json::from_str(&row.subgoals_json).unwrap_or_default(),
@@ -272,6 +276,7 @@ mod tests {
         s.last_reason = Some("keep going".into());
         s.paused_reason = Some("user-paused".into());
         s.consecutive_parse_failures = 2;
+        s.consecutive_transport_failures = 1;
         s.created_at = 42;
         s.last_turn_at = Some(43);
         s.subgoals = vec!["a".into(), "b".into()];
@@ -287,6 +292,9 @@ mod tests {
         assert_eq!(params.max_turns, 8);
         assert_eq!(params.last_verdict.as_deref(), Some("continue"));
         assert_eq!(params.subgoals_json, r#"["a","b"]"#);
+        // The breaker streaks ARE persisted (audit trail of the last run)…
+        assert_eq!(params.consecutive_parse_failures, 2);
+        assert_eq!(params.consecutive_transport_failures, 1);
 
         let row = GoalRow {
             id: 1,
@@ -318,11 +326,14 @@ mod tests {
         assert_eq!(restored.max_auto_continuations, 8);
         assert_eq!(restored.last_verdict, Some(GoalVerdict::Continue));
         assert_eq!(restored.paused_reason.as_deref(), Some("user-paused"));
-        assert_eq!(restored.consecutive_parse_failures, 2);
         assert_eq!(restored.created_at, 42);
         assert_eq!(restored.subgoals, vec!["a".to_owned(), "b".to_owned()]);
-        // Deliberately reset on restore: fresh continuation budget window.
+        // Deliberately reset on restore: fresh continuation budget window…
         assert_eq!(restored.auto_continuations, 0);
+        // …and fresh circuit-breaker streaks — a restored goal never resumes
+        // mid-breaker (the persisted values are audit-only).
+        assert_eq!(restored.consecutive_parse_failures, 0);
+        assert_eq!(restored.consecutive_transport_failures, 0);
     }
 
     #[test]

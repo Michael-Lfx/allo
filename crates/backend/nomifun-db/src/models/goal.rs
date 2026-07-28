@@ -7,8 +7,10 @@ use sqlx::FromRow;
 /// Column semantics mirror `nomi_agent::goal::state::GoalState`:
 /// `max_turns` stores the engine's `max_auto_continuations` budget and
 /// `subgoals_json` / `contract_json` hold the engine-owned JSON payloads
-/// verbatim. `version` is a repository-owned optimistic-lock counter bumped
-/// on every conflicting upsert.
+/// verbatim. `version` is a monotonically-incrementing audit counter (NOT an
+/// optimistic-lock version): the current product is a single-writer model
+/// (last-writer-wins). If multi-writer concurrency is introduced in the
+/// future, extend the upsert with an `expected_version` conditional update.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct GoalRow {
     pub id: i64,
