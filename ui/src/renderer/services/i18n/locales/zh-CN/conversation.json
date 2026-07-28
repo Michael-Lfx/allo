@@ -480,6 +480,27 @@
     "toolsRequired": "/btw 只能根据当前对话中已有的内容作答，无法搜索、浏览或获取新信息。",
     "error": "顺便提问失败。"
   },
+  "goal": {
+    "notice": {
+      "active": "目标进行中：{{objective}}",
+      "waiting": "目标等待中：{{objective}}",
+      "turns": "第 {{used}}/{{max}} 轮",
+      "complete": "目标已达成：{{objective}}",
+      "paused": "目标已暂停：{{objective}}",
+      "blocked": "目标受阻：{{objective}}",
+      "cleared": "目标已清除",
+      "reason": "（{{reason}}）"
+    },
+    "toast": {
+      "set": "目标已设定：{{objective}}",
+      "paused": "目标已暂停",
+      "resumed": "目标已恢复，将继续自动推进",
+      "cleared": "目标已清除",
+      "status": "当前目标：{{objective}}",
+      "statusNone": "当前会话未设置目标",
+      "failed": "目标操作失败，请稍后重试"
+    }
+  },
   "commandQueue": {
     "title": "排队指令",
     "clear": "清空队列",

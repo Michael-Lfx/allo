@@ -7,6 +7,8 @@ import BtwOverlay from '@/renderer/components/chat/BtwOverlay';
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
 import { useBtwCommand } from '@/renderer/components/chat/BtwOverlay/useBtwCommand';
+import { parseGoalSlashCommand } from '@/common/chat/slash/goalCommand';
+import { useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
 import { useSlashCommandController } from '@/renderer/hooks/chat/useSlashCommandController';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -478,6 +480,12 @@ const SendBox: React.FC<{
   });
   const btwCommand = useBtwCommand(conversationContext?.conversation_id, enableBtw);
   const btwQuestion = useMemo(() => extractBtwQuestion(input), [input]);
+  // /goal 家族命令为 host-resolved：提交时拦截并映射为 goal API 调用，不作为普通
+  // 消息发给 agent。仅 nomi 会话启用——后端 goal 端点只支持 nomi runtime。
+  const goalCommand = useGoalCommand(
+    conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
+    conversationContext?.type === 'nomi'
+  );
   const activeAtFileQuery = useMemo(() => {
     if (!conversationContext?.workspace) {
       return null;
@@ -1362,6 +1370,18 @@ const SendBox: React.FC<{
       setInput('');
       void btwCommand.ask(normalizedQuestion);
       return;
+    }
+
+    // 拦截 /goal 家族命令（在忙碌门控之前：暂停/恢复/清除在 turn 运行中也应可用）
+    if (goalCommand.enabled) {
+      const goalInvocation = parseGoalSlashCommand(input);
+      if (goalInvocation) {
+        historyDraftRef.current = null;
+        setHistoryNavigationIndex(null);
+        setInput('');
+        void goalCommand.run(goalInvocation);
+        return;
+      }
     }
 
     if (!allowSendWhileLoading && (isLoading || loading)) {

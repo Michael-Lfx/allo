@@ -702,6 +702,27 @@ export const conversation = {
   getSlashCommands: httpGet<Array<{ command: string; description: string }>, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/slash-commands`
   ),
+  /** Live goal snapshot; `active: false` when the conversation has no goal
+   *  (never errors just because no goal exists). */
+  getGoalStatus: httpGet<GoalStatusResponse, { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/goal`
+  ),
+  /** Host-resolved `/goal` slash-command family → one POST per action.
+   *  `set` requires a non-empty objective; `max_turns` defaults to 8 and is
+   *  clamped to 1..100 server-side. Every action answers the fresh snapshot. */
+  goalAction: httpPost<
+    GoalStatusResponse,
+    {
+      conversation_id: ConversationId;
+      action: GoalAction;
+      objective?: string;
+      max_turns?: number;
+      reason?: string;
+    }
+  >(
+    (p) => `/api/conversations/${p.conversation_id}/goal`,
+    (p) => ({ action: p.action, objective: p.objective, max_turns: p.max_turns, reason: p.reason })
+  ),
   askSideQuestion: httpPost<ConversationSideQuestionResult, { conversation_id: ConversationId; question: string }>(
     (p) => `/api/conversations/${p.conversation_id}/side-question`,
     (p) => ({ question: p.question })
@@ -2894,6 +2915,30 @@ export type ConversationSideQuestionResult =
   | { status: 'unsupported' }
   | { status: 'invalid'; reason: 'emptyQuestion' }
   | { status: 'toolsRequired' };
+
+/** Goal action verbs accepted by POST /api/conversations/{id}/goal. */
+export type GoalAction = 'set' | 'pause' | 'resume' | 'clear' | 'status';
+
+/**
+ * Wire DTO of GET/POST /api/conversations/{id}/goal (backend
+ * `nomifun_api_types::GoalStatusResponse`). `active` means "a goal snapshot
+ * exists for this conversation"; all snapshot fields are absent/empty when
+ * `active === false`. Timestamps are epoch milliseconds.
+ */
+export interface GoalStatusResponse {
+  active: boolean;
+  objective?: string;
+  status?: 'active' | 'complete' | 'blocked' | 'paused' | 'waiting' | 'cleared';
+  turns_used?: number;
+  max_turns?: number;
+  /** Absent before the first judge verdict. */
+  last_verdict?: 'done' | 'continue' | 'wait' | 'skipped';
+  last_reason?: string;
+  paused_reason?: string;
+  subgoals: string[];
+  created_at?: number;
+  last_turn_at?: number;
+}
 
 interface IBridgeResponse<D = {}> {
   success: boolean;
