@@ -717,6 +717,10 @@ pub struct AgentEngine {
     /// provider retries from moving the boundary into the middle of one
     /// logical user turn. Compaction and context clearing invalidate it.
     editable_turn: Option<EditableTurnCheckpoint>,
+    /// Mixture of Agents state, injected by the host via [`Self::set_moa_state`].
+    /// `None` (the default) → the reference fan-out never runs and behaviour
+    /// is identical to a build without MoA.
+    moa: Option<crate::moa::MoaState>,
 }
 
 impl AgentEngine {
@@ -793,6 +797,7 @@ impl AgentEngine {
             system_prompt_sections: HashMap::new(),
             last_context_breakdown: None,
             editable_turn: None,
+            moa: None,
         }
     }
 
@@ -884,6 +889,7 @@ impl AgentEngine {
             system_prompt_sections: HashMap::new(),
             last_context_breakdown: None,
             editable_turn,
+            moa: None,
         }
     }
 
@@ -899,6 +905,13 @@ impl AgentEngine {
             hooks.set_process_supervisor(Arc::clone(&supervisor));
         }
         self.process_supervisor = Some(supervisor);
+    }
+
+    /// Install host-resolved Mixture of Agents state. The engine stays
+    /// host-agnostic: slot resolution (provider configs, labels, context
+    /// windows) happens on the host side before injection.
+    pub fn set_moa_state(&mut self, state: crate::moa::MoaState) {
+        self.moa = Some(state);
     }
 
     /// Reusable exact turn boundary for every subprocess registered by this
@@ -994,6 +1007,15 @@ impl AgentEngine {
     /// Cursor-style category breakdown for the last provider request, if any.
     pub fn context_breakdown(&self) -> Option<&ContextUsageBreakdown> {
         self.last_context_breakdown.as_ref()
+    }
+
+    /// Per-slot MoA advisor usage accumulated over the current user turn.
+    /// Empty slice when MoA is disabled or no real fan-out ran this turn.
+    pub fn moa_turn_usage(&self) -> &[crate::moa::MoaSlotTurnUsage] {
+        self.moa
+            .as_ref()
+            .map(|m| m.turn_slot_usage())
+            .unwrap_or(&[])
     }
 
     /// Install bootstrap-captured system prompt sections used for category bucketing.
@@ -1398,6 +1420,11 @@ impl AgentEngine {
         // Persist before the first provider await. A stop or process exit must
         // not discard rewind authority for the accepted user message.
         self.save_session();
+        // New user turn: reset MoA cadence counters (the advice cache is kept —
+        // the new turn's signature naturally misses it).
+        if let Some(moa) = self.moa.as_mut() {
+            moa.reset_turn();
+        }
 
         let mut turn: usize = 0;
         let mut tool_retry_tracker = ToolRetryTracker::default();
@@ -1471,6 +1498,65 @@ impl AgentEngine {
                     turn_tail_extras.push(extra);
                 }
             }
+            // Mixture of Agents: consult the reference models and ride their
+            // guidance on the turn tail. Like every other turn-tail extra it
+            // only lands on the request copy built below, so the persisted
+            // history prefix stays byte-stable. A user interrupt drops this
+            // future, which aborts the fan-out JoinSet with it.
+            if self.moa.as_ref().is_some_and(|m| m.is_active()) {
+                let runner = crate::moa::runner::MoaRunner::new();
+                let moa_state = self.moa.as_mut().expect("checked active above");
+                let privacy =
+                    crate::moa::redact::PrivacyLevel::from_str(&moa_state.config.privacy_filter);
+                match runner.run(moa_state, &self.messages).await {
+                    Some(outcome) => {
+                        if !outcome.from_cache {
+                            // Trace first: it persists the raw fan-out
+                            // (inputs, outputs, usage) before any display
+                            // redaction; cache-hit rounds yield no trace.
+                            let moa_state = self.moa.as_ref().expect("checked active above");
+                            if let Some(trace_json) =
+                                crate::moa::trace::build_trace_json(msg_id, moa_state, &outcome)
+                            {
+                                self.output.emit_moa_trace(msg_id, &trace_json);
+                            }
+                            let total = outcome.advices.len() as u32;
+                            for (idx, advice) in outcome.advices.iter().enumerate() {
+                                // Display path: `display` and `full` levels
+                                // redact what the user sees.
+                                let display_text = crate::moa::redact::redact_for_display(
+                                    &advice.text,
+                                    privacy,
+                                );
+                                self.output.emit_moa_reference(
+                                    msg_id,
+                                    &advice.label,
+                                    &display_text,
+                                    idx as u32 + 1,
+                                    total,
+                                );
+                                self.output.emit_moa_progress(msg_id, idx as u32 + 1, total);
+                            }
+                            self.total_usage.input_tokens += outcome.usage.input_tokens;
+                            self.total_usage.output_tokens += outcome.usage.output_tokens;
+                            self.total_usage.cache_creation_tokens +=
+                                outcome.usage.cache_creation_tokens;
+                            self.total_usage.cache_read_tokens += outcome.usage.cache_read_tokens;
+                        }
+                        // Guidance path: the cache always stores raw advice;
+                        // only the `full` level redacts what the aggregator
+                        // model gets to see, re-applied on every round.
+                        let guided =
+                            crate::moa::redact::redact_for_guidance(&outcome.advices, privacy);
+                        turn_tail_extras
+                            .push(crate::moa::guidance::format_guidance(&guided));
+                    }
+                    // All references failed: note it and act single-model.
+                    None => self.output.emit_info(
+                        "MoA: all reference models failed — continuing with the session model alone.",
+                    ),
+                }
+            }
             let turn_tail =
                 crate::context_contributor::build_turn_tail_context(turn_tail_extras.clone());
             // Hot-path note: `LlmRequest` owns its message array across the
@@ -1517,6 +1603,7 @@ impl AgentEngine {
                 max_tokens: self.max_tokens,
                 thinking: self.thinking.clone(),
                 reasoning_effort: self.current_reasoning_effort.clone(),
+                temperature: None,
             };
 
             efficiency.observe_model_turn_attempt();
@@ -3703,6 +3790,7 @@ mod set_config_tests {
             system_prompt_sections: std::collections::HashMap::new(),
             last_context_breakdown: None,
             editable_turn: None,
+            moa: None,
         }
     }
 
@@ -5253,6 +5341,7 @@ mod phase6_tests {
             system_prompt_sections: std::collections::HashMap::new(),
             last_context_breakdown: None,
             editable_turn: None,
+            moa: None,
         }
     }
 
@@ -5531,6 +5620,7 @@ mod compact_tests {
             system_prompt_sections: std::collections::HashMap::new(),
             last_context_breakdown: None,
             editable_turn: None,
+            moa: None,
         }
     }
 
@@ -6082,6 +6172,7 @@ mod plan_mode_tests {
             system_prompt_sections: std::collections::HashMap::new(),
             last_context_breakdown: None,
             editable_turn: None,
+            moa: None,
         }
     }
 
@@ -6304,6 +6395,7 @@ mod handle_command_tests {
             system_prompt_sections: std::collections::HashMap::new(),
             last_context_breakdown: None,
             editable_turn: None,
+            moa: None,
         }
     }
 

@@ -46,6 +46,7 @@ impl nomi_browser::extract::ExtractModel for SessionExtractModel {
             max_tokens: self.max_tokens,
             thinking: None,
             reasoning_effort: None,
+            temperature: None,
         };
         let mut rx = self
             .provider
@@ -110,6 +111,7 @@ impl SessionVisualLocator {
             max_tokens: self.max_tokens,
             thinking: None,
             reasoning_effort: None,
+            temperature: None,
         };
 
         let mut rx = self

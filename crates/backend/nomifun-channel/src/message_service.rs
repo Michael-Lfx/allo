@@ -833,6 +833,9 @@ impl ChannelMessageService {
             | AgentStreamEvent::RequestTrace(_)
             | AgentStreamEvent::SlashCommandsUpdated(_)
             | AgentStreamEvent::SessionAssigned(_) => None,
+            // MoA reference/progress events are UI-only auxiliary stream data;
+            // they never surface as channel messages.
+            AgentStreamEvent::MoaReference(_) | AgentStreamEvent::MoaProgress(_) => None,
         }
     }
 
@@ -1519,6 +1522,29 @@ mod tests {
     fn start_event_produces_none() {
         let event = AgentStreamEvent::Start(StartEventData { session_id: None });
         assert!(ChannelMessageService::process_stream_event(&event).is_none());
+    }
+
+    #[test]
+    fn moa_events_produce_none() {
+        use nomifun_ai_agent::protocol::events::{MoaProgressEventData, MoaReferenceEventData};
+
+        // MoA reference/progress are UI-only auxiliary stream events and must
+        // never surface as channel messages.
+        let reference = AgentStreamEvent::MoaReference(MoaReferenceEventData {
+            msg_id: "m1".into(),
+            label: "provider/model".into(),
+            text: "advice".into(),
+            index: 1,
+            total: 2,
+        });
+        assert!(ChannelMessageService::process_stream_event(&reference).is_none());
+
+        let progress = AgentStreamEvent::MoaProgress(MoaProgressEventData {
+            msg_id: "m1".into(),
+            done: 1,
+            total: 2,
+        });
+        assert!(ChannelMessageService::process_stream_event(&progress).is_none());
     }
 
     #[test]

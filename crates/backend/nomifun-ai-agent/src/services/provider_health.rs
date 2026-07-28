@@ -176,6 +176,7 @@ impl ProviderHealthCheckService {
             browser_unrestricted_approval: false,
             browser_visual_fallback: false,
             goal: None,
+            moa: None,
             browser_secret_vault: None,
             owner_token: None,
             // 健康探针一回合、不用工具：不安装 embedded AgentExecution。
@@ -719,6 +720,7 @@ mod tests {
             browser_unrestricted_approval: false,
             browser_visual_fallback: false,
             goal: None,
+            moa: None,
             browser_secret_vault: None,
             owner_token: None,
             install_embedded_agent_execution: false,
@@ -811,6 +813,7 @@ mod tests {
             browser_unrestricted_approval: false,
             browser_visual_fallback: false,
             goal: None,
+            moa: None,
             browser_secret_vault: None,
             owner_token: None,
             install_embedded_agent_execution: false,

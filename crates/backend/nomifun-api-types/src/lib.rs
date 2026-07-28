@@ -54,9 +54,9 @@ pub use acp::{
     WorkspaceEntry,
 };
 pub use agent_build_extra::{
-    AcpBuildExtra, AcpModelInfo, NomiBuildExtra, NomiGoalSpec, OpenClawBuildExtra,
-    OpenClawGatewayConfig, RemoteBuildExtra, SessionMcpServer, SessionMcpTransport,
-    SlashCommandItem,
+    AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
+    OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra, SessionMcpServer,
+    SessionMcpTransport, SlashCommandItem,
 };
 pub use agent_discovery::{
     AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy,

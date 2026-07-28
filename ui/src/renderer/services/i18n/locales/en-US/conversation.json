@@ -554,6 +554,8 @@
     "cacheTitle": "Cache details",
     "cacheReadTokens": "Cache read",
     "cacheWriteTokens": "Cache write",
+    "moaTitle": "MoA references",
+    "moaTotal": "Total cost",
     "status": {
       "unknown": "No data",
       "healthy": "Healthy",

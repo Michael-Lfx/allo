@@ -213,6 +213,10 @@ pub struct NomiResolvedConfig {
     /// Opt-in goal-driven continuation (objective + auto-continuation cap).
     /// `None` (default) = normal one-shot turn behavior.
     pub goal: Option<nomi_agent::goal::runtime::GoalSpec>,
+    /// Opt-in Mixture-of-Agents fan-out: bridged engine config + host-resolved
+    /// reference slots. `None` (default) = single-model behavior; the manager
+    /// injects a fresh `MoaState` into the engine only when `Some`.
+    pub moa: Option<ResolvedMoaBridge>,
     /// Shared browser secret-vault descriptor (vault path + machine-bound key).
     /// Bootstrap passes it to the Hub-backed Browser tool policy so
     /// user-registered `secret:NAME` values resolve under origin checks and
@@ -241,6 +245,34 @@ pub struct NomiResolvedConfig {
     /// manager 灌进 `config.tools.write_root`。与 gateway file-service 的
     /// `PathAuthority` 同一信任模型（见 file-access-authority spec）。
     pub write_root: Option<String>,
+}
+
+/// Host-resolved Mixture-of-Agents payload carried from the factory to the
+/// nomi manager. Kept as (config, slots) parts — not a ready `MoaState` — so
+/// `NomiResolvedConfig` stays `Clone` and the manager builds a fresh state
+/// (turn bookkeeping starts empty) via `MoaState::new` at engine assembly.
+#[derive(Debug, Clone)]
+pub struct ResolvedMoaBridge {
+    pub config: nomi_config::config::MoaConfig,
+    pub slots: Vec<nomi_agent::moa::MoaResolvedSlot>,
+    /// Per-slot catalog pricing (USD per million tokens), aligned to `slots`
+    /// by label. A slot with no catalog price carries `None` costs, so the
+    /// manager reports token counts without a cost figure for it.
+    pub slot_prices: Vec<MoaSlotPrice>,
+    /// Where to append per-message MoA trace records
+    /// (`<data_dir>/moa-trace/<conversation_id>.jsonl`). `None` = tracing off.
+    pub trace_path: Option<std::path::PathBuf>,
+}
+
+/// Catalog pricing for one MoA reference slot (USD per million tokens).
+/// `None` = the models.dev catalog has no price for that side, so the turn
+/// stats report tokens without a dollar figure.
+#[derive(Debug, Clone)]
+pub struct MoaSlotPrice {
+    /// Slot label, matching `MoaResolvedSlot::label` (`"provider_id/model"`).
+    pub label: String,
+    pub cost_input: Option<f64>,
+    pub cost_output: Option<f64>,
 }
 
 /// Shared browser secret-vault location plus its machine-bound key.

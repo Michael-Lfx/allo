@@ -100,6 +100,10 @@ impl AnthropicProvider {
             });
         }
 
+        if let Some(t) = request.temperature {
+            body["temperature"] = json!(t);
+        }
+
         body
     }
 
@@ -272,5 +276,54 @@ impl LlmProvider for AnthropicProvider {
         });
 
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nomi_types::message::{ContentBlock, Message, Role};
+
+    use super::*;
+
+    fn minimal_request() -> LlmRequest {
+        LlmRequest {
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            system: "You are helpful.".to_string(),
+            messages: vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "Hello".to_string(),
+                }],
+            )],
+            tools: vec![],
+            max_tokens: 1024,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+        }
+    }
+
+    #[test]
+    fn temperature_some_is_serialized() {
+        let provider = AnthropicProvider::new(
+            "test-key",
+            "http://localhost",
+            ProviderCompat::anthropic_defaults(),
+        );
+        let mut request = minimal_request();
+        request.temperature = Some(0.5);
+        let body = provider.build_request_body(&request, false);
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn temperature_none_is_omitted() {
+        let provider = AnthropicProvider::new(
+            "test-key",
+            "http://localhost",
+            ProviderCompat::anthropic_defaults(),
+        );
+        let body = provider.build_request_body(&minimal_request(), false);
+        assert!(body.get("temperature").is_none());
     }
 }

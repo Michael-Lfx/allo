@@ -151,6 +151,10 @@
   "option": "Option",
   "noOptionsAvailable": "No options available",
   "processing": "Processing...",
+  "moa": {
+    "referenceTitle": "Reference advice",
+    "progress": "MoA {{done}}/{{total}}"
+  },
   "responseSentSuccessfully": "Response sent successfully",
   "confirmation": {
     "applyChange": "Apply this change?",

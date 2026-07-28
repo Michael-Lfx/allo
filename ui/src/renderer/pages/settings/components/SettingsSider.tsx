@@ -20,6 +20,7 @@ import {
   Robot,
   System,
   Tool,
+  TreeDiagram,
 } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useMemo } from 'react';
@@ -36,6 +37,7 @@ export const BUILTIN_TAB_IDS = [
   'computer-use',
   'poi',
   'insights',
+  'moa',
   'media',
   'public-companions',
   'presets',
@@ -123,6 +125,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.insightsNav'),
         icon: <ChartPie />,
         path: 'insights',
+      },
+      moa: {
+        id: 'moa',
+        label: t('settings.moaNav'),
+        icon: <TreeDiagram />,
+        path: 'moa',
       },
       media: {
         id: 'media',

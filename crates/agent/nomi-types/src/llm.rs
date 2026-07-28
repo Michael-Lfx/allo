@@ -15,6 +15,10 @@ pub struct LlmRequest {
     pub thinking: Option<ThinkingConfig>,
     /// Optional: reasoning effort for OpenAI reasoning models (low/medium/high)
     pub reasoning_effort: Option<String>,
+    /// Optional: sampling temperature. `None` (the default everywhere except
+    /// explicitly configured advisory slots) omits the field from the provider
+    /// request body, leaving the provider's own default in effect.
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone)]

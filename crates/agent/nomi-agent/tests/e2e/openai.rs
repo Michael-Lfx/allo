@@ -50,6 +50,7 @@ fn openai_config(api_key: &str) -> Config {
         mcp: McpConfig::default(),
         logging: nomi_config::logging::LoggingConfig::default(),
         memory: nomi_config::config::MemoryConfig::default(),
+        moa: nomi_config::config::MoaConfig::default(),
     }
 }
 

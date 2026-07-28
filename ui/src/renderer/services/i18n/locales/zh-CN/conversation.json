@@ -554,6 +554,8 @@
     "cacheTitle": "缓存明细",
     "cacheReadTokens": "缓存读取",
     "cacheWriteTokens": "缓存写入",
+    "moaTitle": "MoA 参考模型",
+    "moaTotal": "合计成本",
     "status": {
       "unknown": "暂无数据",
       "healthy": "充足",

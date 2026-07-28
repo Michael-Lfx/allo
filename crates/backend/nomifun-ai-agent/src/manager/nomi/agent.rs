@@ -34,7 +34,9 @@ use crate::capability::backend_output_sink::BackendOutputSink;
 use crate::capability::backend_protocol_sink::BackendProtocolSink;
 use crate::capability::session_lifecycle::{PostTurnReviewHook, TurnContext};
 use crate::capability::turn_review::LightweightTurnReviewer;
-use crate::protocol::events::{AgentStreamEvent, TurnCompletedEventData, TurnStopReason};
+use crate::protocol::events::{
+    AgentStreamEvent, MoaSlotStatsData, MoaTurnStatsData, TurnCompletedEventData, TurnStopReason,
+};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::{NomiResolvedConfig, SendMessageData};
 
@@ -174,6 +176,10 @@ pub struct NomiAgentManager {
     /// asynchronously after a human-origin turn completes — fire-and-forget,
     /// never blocks the conversation loop.
     post_turn_review: std::sync::RwLock<Vec<Arc<dyn PostTurnReviewHook>>>,
+    /// Catalog price snapshot for the MoA reference slots (empty when MoA is
+    /// off). Joined by label with the engine's per-turn usage to price each
+    /// turn's fan-out in `TurnCompleted.moa`.
+    moa_slot_prices: Vec<crate::types::MoaSlotPrice>,
 }
 
 impl Drop for NomiAgentManager {
@@ -430,7 +436,9 @@ impl NomiAgentManager {
         let backend_output_sink = Arc::new(
             BackendOutputSink::new(runtime.event_sender())
                 .with_distill_dir(distill_dir.clone())
-                .with_artifact_workspace(&workspace),
+                .with_artifact_workspace(&workspace)
+                // MoA trace sink target (factory-resolved; None = tracing off).
+                .with_moa_trace_path(config_extra.moa.as_ref().and_then(|moa| moa.trace_path.clone())),
         );
         let sink: Arc<dyn OutputSink> = backend_output_sink.clone();
 
@@ -661,6 +669,16 @@ impl NomiAgentManager {
             .map_err(|e| AppError::Internal(format!("Agent bootstrap failed: {e}")))?;
 
         let mut engine = result.engine;
+        // MoA bridge: inject the factory-resolved reference slots. Not calling
+        // `set_moa_state` keeps the engine byte-identical to a no-MoA build.
+        if let Some(moa) = config_extra.moa.clone() {
+            debug!(
+                conversation_id = %conversation_id,
+                reference_slots = moa.slots.len(),
+                "Enabling MoA reference fan-out on nomi engine"
+            );
+            engine.set_moa_state(nomi_agent::moa::MoaState::new(moa.config, moa.slots));
+        }
         if let Some(sink) = requirement_sink {
             engine
                 .registry_mut()
@@ -789,6 +807,14 @@ impl NomiAgentManager {
         runtime.transition_to(ConversationStatus::Pending);
         let process_supervisor = engine.process_supervisor_handle();
 
+        // MoA catalog price snapshot (empty when MoA is off) — joined with the
+        // engine's per-turn usage to price each turn's fan-out.
+        let moa_slot_prices = config_extra
+            .moa
+            .as_ref()
+            .map(|moa| moa.slot_prices.clone())
+            .unwrap_or_default();
+
         Ok(Self {
             runtime,
             backend_output_sink,
@@ -817,6 +843,7 @@ impl NomiAgentManager {
             knowledge_prelude: std::sync::Mutex::new(knowledge_prelude),
             knowledge_auto_rag,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
+            moa_slot_prices,
         })
     }
 
@@ -1270,6 +1297,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 let context_breakdown = engine
                     .context_breakdown()
                     .map(crate::protocol::events::ContextBreakdownData::from);
+                // MoA per-turn usage is read here — after the turn finished,
+                // before the next turn resets it (and before `drop(engine)`).
+                // Empty (no fan-out this turn) → `moa: None`, wire-identical
+                // to a single-model turn.
+                let moa = build_moa_turn_stats(engine.moa_turn_usage(), &self.moa_slot_prices);
                 self.runtime.emit(AgentStreamEvent::TurnCompleted(TurnCompletedEventData {
                     elapsed_ms,
                     input_tokens: agent_result.usage.input_tokens,
@@ -1280,6 +1312,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     context_window,
                     stop_reason: Some(stop_reason),
                     context_breakdown,
+                    moa,
                 }));
 
                 // —— Post-session memory distillation (exact turn child) ——
@@ -2111,6 +2144,63 @@ fn nomi_engine_error_to_send_error(error_msg: String) -> AgentSendError {
     AgentSendError::from_app_error(AppError::Internal(error_msg))
 }
 
+/// Assemble the per-turn MoA stats block from the engine's turn usage and the
+/// factory's catalog price snapshot (joined by slot label). Empty usage (no
+/// fan-out ran this turn) → `None` so the `TurnCompleted` wire shape stays
+/// byte-identical to a single-model turn. Usage rows sharing a label (multiple
+/// fan-outs in one turn) are first aggregated into one row per label — keeping
+/// first-seen order — and cost is computed on the aggregated tokens. A slot
+/// missing either side's price reports tokens without a cost; `total_cost_usd`
+/// sums only the known costs and is `None` when no slot is priced (never a
+/// misleading zero).
+fn build_moa_turn_stats(
+    usage: &[nomi_agent::moa::MoaSlotTurnUsage],
+    prices: &[crate::types::MoaSlotPrice],
+) -> Option<MoaTurnStatsData> {
+    if usage.is_empty() {
+        return None;
+    }
+    // Per-label aggregation with stable first-seen order; a Vec lookup keeps
+    // the order deterministic (no HashMap iteration order) at trivial N.
+    let mut aggregated: Vec<(&str, (u64, u64))> = Vec::new();
+    for slot in usage {
+        match aggregated.iter_mut().find(|(label, _)| *label == slot.label) {
+            Some((_, (input, output))) => {
+                *input = input.saturating_add(slot.input_tokens);
+                *output = output.saturating_add(slot.output_tokens);
+            }
+            None => aggregated.push((&slot.label, (slot.input_tokens, slot.output_tokens))),
+        }
+    }
+    let slots: Vec<MoaSlotStatsData> = aggregated
+        .into_iter()
+        .map(|(label, (input_tokens, output_tokens))| {
+            let cost_usd = prices
+                .iter()
+                .find(|price| price.label == label)
+                .and_then(|price| match (price.cost_input, price.cost_output) {
+                    // Catalog prices are USD per million tokens.
+                    (Some(cost_in), Some(cost_out)) => Some(
+                        input_tokens as f64 * cost_in / 1e6
+                            + output_tokens as f64 * cost_out / 1e6,
+                    ),
+                    _ => None,
+                });
+            MoaSlotStatsData {
+                label: label.to_owned(),
+                input_tokens,
+                output_tokens,
+                cost_usd,
+            }
+        })
+        .collect();
+    let total_cost_usd = slots
+        .iter()
+        .filter_map(|slot| slot.cost_usd)
+        .fold(None, |total: Option<f64>, cost| Some(total.unwrap_or(0.0) + cost));
+    Some(MoaTurnStatsData { slots, total_cost_usd })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2695,6 +2785,7 @@ mod tests {
             browser_unrestricted_approval: false,
             browser_visual_fallback: false,
             goal: None,
+            moa: None,
             browser_secret_vault: None,
             owner_token: None,
             install_embedded_agent_execution: true,
@@ -3014,6 +3105,7 @@ mod tests {
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
+            moa_slot_prices: Vec::new(),
         }
     }
 
@@ -3210,6 +3302,7 @@ mod tests {
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
+            moa_slot_prices: Vec::new(),
         };
         let attachment_dir = tempfile::tempdir().unwrap();
         let missing_image = attachment_dir
@@ -4602,5 +4695,106 @@ mod turn_completed_mapping_tests {
         assert_eq!(map_engine_stop_reason(StopReason::MaxTokens), TurnStopReason::MaxTokens);
         // Per-turn request cap — likewise a truncated turn.
         assert_eq!(map_engine_stop_reason(StopReason::MaxTurns), TurnStopReason::MaxTurnRequests);
+    }
+}
+
+#[cfg(test)]
+mod moa_turn_stats_tests {
+    use super::build_moa_turn_stats;
+    use crate::types::MoaSlotPrice;
+    use nomi_agent::moa::MoaSlotTurnUsage;
+
+    fn usage(label: &str, input: u64, output: u64) -> MoaSlotTurnUsage {
+        MoaSlotTurnUsage {
+            label: label.into(),
+            input_tokens: input,
+            output_tokens: output,
+        }
+    }
+
+    fn price(label: &str, cost_in: Option<f64>, cost_out: Option<f64>) -> MoaSlotPrice {
+        MoaSlotPrice {
+            label: label.into(),
+            cost_input: cost_in,
+            cost_output: cost_out,
+        }
+    }
+
+    #[test]
+    fn empty_usage_means_no_stats_block() {
+        // No fan-out this turn → the TurnCompleted wire shape must stay
+        // byte-identical to a single-model turn.
+        assert!(build_moa_turn_stats(&[], &[price("p/m", Some(1.0), Some(2.0))]).is_none());
+    }
+
+    #[test]
+    fn prices_join_by_label_and_scale_per_million() {
+        // 1_000_000 in × $3/M + 500_000 out × $15/M = $10.50.
+        let stats = build_moa_turn_stats(
+            &[usage("p1/m1", 1_000_000, 500_000)],
+            &[price("p1/m1", Some(3.0), Some(15.0))],
+        )
+        .unwrap();
+        assert_eq!(stats.slots.len(), 1);
+        assert_eq!(stats.slots[0].input_tokens, 1_000_000);
+        assert!((stats.slots[0].cost_usd.unwrap() - 10.5).abs() < 1e-9);
+        assert!((stats.total_cost_usd.unwrap() - 10.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn missing_either_price_side_drops_the_slot_cost() {
+        // Unpriced output side, unknown label, and a fully priced slot: only
+        // the priced slot contributes cost; the others still report tokens.
+        let stats = build_moa_turn_stats(
+            &[
+                usage("p1/half", 100, 100),
+                usage("p2/unknown", 200, 0),
+                usage("p3/priced", 1_000_000, 0),
+            ],
+            &[
+                price("p1/half", Some(1.0), None),
+                price("p3/priced", Some(2.0), Some(4.0)),
+            ],
+        )
+        .unwrap();
+        assert!(stats.slots[0].cost_usd.is_none());
+        assert!(stats.slots[1].cost_usd.is_none());
+        assert!((stats.slots[2].cost_usd.unwrap() - 2.0).abs() < 1e-9);
+        // Total = the one known cost (partial totals are still totals of Some).
+        assert!((stats.total_cost_usd.unwrap() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn all_unpriced_slots_leave_total_none() {
+        // A failed slot reports zero tokens; with no catalog price anywhere
+        // the total stays None (never a misleading $0).
+        let stats = build_moa_turn_stats(&[usage("p1/m1", 0, 0)], &[]).unwrap();
+        assert!(stats.slots[0].cost_usd.is_none());
+        assert!(stats.total_cost_usd.is_none());
+    }
+
+    #[test]
+    fn same_label_rows_aggregate_into_one_line() {
+        // Two fan-outs by the same slot in one turn: tokens add up into a
+        // single row (first-seen order kept) and cost is computed on the
+        // aggregated totals. 300k in × $2/M + 60k out × $10/M = $1.20.
+        let stats = build_moa_turn_stats(
+            &[
+                usage("p1/m1", 100_000, 20_000),
+                usage("p2/m2", 50, 5),
+                usage("p1/m1", 200_000, 40_000),
+            ],
+            &[price("p1/m1", Some(2.0), Some(10.0))],
+        )
+        .unwrap();
+        assert_eq!(stats.slots.len(), 2);
+        assert_eq!(stats.slots[0].label, "p1/m1");
+        assert_eq!(stats.slots[0].input_tokens, 300_000);
+        assert_eq!(stats.slots[0].output_tokens, 60_000);
+        assert!((stats.slots[0].cost_usd.unwrap() - 1.2).abs() < 1e-9);
+        assert_eq!(stats.slots[1].label, "p2/m2");
+        assert_eq!(stats.slots[1].input_tokens, 50);
+        assert!(stats.slots[1].cost_usd.is_none());
+        assert!((stats.total_cost_usd.unwrap() - 1.2).abs() < 1e-9);
     }
 }

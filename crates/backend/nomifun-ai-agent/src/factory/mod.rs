@@ -6,6 +6,7 @@ pub mod provider_config;
 mod acp;
 pub(crate) mod construction_guard;
 mod context;
+pub(crate) mod moa;
 mod nanobot;
 pub(crate) mod nomi;
 mod openclaw;

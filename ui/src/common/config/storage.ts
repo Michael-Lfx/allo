@@ -1,5 +1,6 @@
 
 
+import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
 import type { SpeechToTextConfig } from '@/common/types/provider/speech';
 import type { PresetReference, ResolvedPresetSnapshot } from '@/common/types/agent/presetTypes';
 import type {
@@ -253,6 +254,9 @@ export interface TokenUsageData {
   context_window?: number;
   /** Cursor-style category breakdown for the last provider request. */
   context_breakdown?: ContextBreakdownData | null;
+  /** MoA reference fan-out stats for the last turn (nomi turn_completed
+   * carries it); null/absent when the turn had no fan-out. */
+  moa?: MoaTurnStatsData | null;
 }
 
 export type TChatConversation =

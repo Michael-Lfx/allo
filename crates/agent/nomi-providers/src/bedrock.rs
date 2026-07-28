@@ -95,6 +95,10 @@ impl BedrockProvider {
             });
         }
 
+        if let Some(t) = request.temperature {
+            body["temperature"] = json!(t);
+        }
+
         body
     }
 
@@ -734,6 +738,7 @@ mod tests {
             max_tokens: 16,
             thinking: None,
             reasoning_effort: None,
+            temperature: None,
         };
 
         let body = provider.build_request_body(&request);
@@ -742,6 +747,53 @@ mod tests {
         assert!(schema["properties"].get("file_path").is_some());
         assert!(schema["properties"].get("file_paths").is_some());
         assert!(schema.get("oneOf").is_none());
+    }
+
+    fn temperature_request() -> LlmRequest {
+        LlmRequest {
+            model: "anthropic.claude-test".into(),
+            system: "test".into(),
+            messages: vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "hi".into() }],
+            )],
+            tools: vec![],
+            max_tokens: 16,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+        }
+    }
+
+    #[test]
+    fn bedrock_temperature_some_is_serialized() {
+        let provider = BedrockProvider::new(
+            "us-east-1",
+            AwsCredentials::Environment,
+            false,
+            ProviderCompat::bedrock_defaults(),
+        );
+        let mut request = temperature_request();
+        request.temperature = Some(0.5);
+
+        let body = provider.build_request_body(&request);
+
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn bedrock_temperature_none_is_omitted() {
+        let provider = BedrockProvider::new(
+            "us-east-1",
+            AwsCredentials::Environment,
+            false,
+            ProviderCompat::bedrock_defaults(),
+        );
+        let request = temperature_request();
+
+        let body = provider.build_request_body(&request);
+
+        assert!(body.get("temperature").is_none());
     }
 
     #[tokio::test]

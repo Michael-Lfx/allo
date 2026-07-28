@@ -6,6 +6,8 @@ import { transformMessage, transformUserCreatedEvent } from '@/common/chat/chatL
 import { isToolGroupStatusActive, normalizeToolGroupStatus } from '@/common/chat/toolGroupStatus';
 import { extractResponseTextChunk, optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import type { IResponseMessage } from '@/common/adapter/ipcBridge';
+import type { MoaProgressEventData } from '@/common/protocolBindings/MoaProgressEventData';
+import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
 import type { TChatConversation, TokenUsageData } from '@/common/config/storage';
 import { uuid } from '@/common/utils';
 import { useAddOrUpdateMessage } from '@/renderer/pages/conversation/Messages/hooks';
@@ -17,6 +19,7 @@ import {
 } from '@/renderer/pages/conversation/utils/conversationRuntime';
 import { emitter } from '@/renderer/utils/emitter';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ThoughtData } from '../thoughtTypes';
 import {
   reconcileConversationTurnAfterAcceptedReplay,
@@ -114,6 +117,10 @@ export const useNomiMessage = (
   const readOnly = options?.readOnly === true;
   const onConfigChangedRef = useRef(onConfigChanged);
   const addOrUpdateMessage = useAddOrUpdateMessage();
+  const { t } = useTranslation();
+  // Mirror t into a ref so the (non-resubscribing) stream closure can
+  // translate status text without being a dependency.
+  const translateRef = useRef(t);
   // Single source of truth for the turn's activity state (design §3.2): a pure
   // reducer over lifecycle events replaces three hand-synced booleans.
   const [turnState, dispatchTurn] = useReducer(nomiTurnReducer, initialNomiTurnState);
@@ -173,6 +180,10 @@ export const useNomiMessage = (
   useEffect(() => {
     onConfigChangedRef.current = onConfigChanged;
   }, [onConfigChanged]);
+
+  useEffect(() => {
+    translateRef.current = t;
+  }, [t]);
 
   const dispatchPresentationEvent = useCallback((event: TurnPresentationEvent) => {
     dispatchPresentation(event);
@@ -561,6 +572,7 @@ export const useNomiMessage = (
                   context_tokens?: number;
                   context_window?: number;
                   context_breakdown?: TokenUsageData['context_breakdown'];
+                  moa?: MoaTurnStatsData | null;
                 }
               | undefined;
             if (metrics && typeof metrics === 'object') {
@@ -576,6 +588,7 @@ export const useNomiMessage = (
                 context_tokens: metrics.context_tokens,
                 context_window: metrics.context_window,
                 context_breakdown: metrics.context_breakdown,
+                moa: metrics.moa ?? null,
               };
               setTokenUsage(newTokenUsage);
               if (!readOnly) {
@@ -668,6 +681,28 @@ export const useNomiMessage = (
           // Confirmation-shaped (legacy), which matches MessagePermission, not
           // MessageAcpPermission. Re-tag so transformMessage routes it correctly.
           addOrUpdateMessage(transformMessage({ ...message, type: 'permission' }));
+          break;
+        case 'moa_reference':
+          // One advisor suggestion; composeMessage folds repeated frames into a
+          // single collapsible card per msg_id + label.
+          dispatchTurnIfOpen({ type: 'activity' });
+          addOrUpdateMessage(transformMessage(message));
+          break;
+        case 'moa_progress':
+          dispatchTurnIfOpen({ type: 'activity' });
+          {
+            const progress = (message.data ?? {}) as Partial<MoaProgressEventData>;
+            const done = typeof progress.done === 'number' ? progress.done : 0;
+            const total = typeof progress.total === 'number' ? progress.total : 0;
+            dispatchPresentationEvent({
+              type: 'preparing',
+              detail: translateRef.current('messages.moa.progress', {
+                done,
+                total,
+                defaultValue: 'MoA {{done}}/{{total}}',
+              }),
+            });
+          }
           break;
         case 'config_changed':
           onConfigChangedRef.current?.(message.data as Record<string, unknown>);
