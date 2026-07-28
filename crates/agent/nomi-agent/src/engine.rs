@@ -1018,6 +1018,13 @@ impl AgentEngine {
             .unwrap_or(&[])
     }
 
+    /// Serializable snapshot of the goal state for host emission alongside
+    /// `AgentResult` / output events (same pattern as `moa_turn_usage`).
+    /// `None` when this is not a goal session.
+    pub fn goal_state(&self) -> Option<crate::goal::state::GoalState> {
+        self.goal.as_ref().map(|g| g.snapshot())
+    }
+
     /// Install bootstrap-captured system prompt sections used for category bucketing.
     pub fn set_system_prompt_sections(&mut self, sections: HashMap<&'static str, String>) {
         self.system_prompt_sections = sections;
@@ -2060,9 +2067,21 @@ impl AgentEngine {
                 }
 
                 // Goal-driven continuation hook (only fires for opt-in goal
-                // sessions). Compute the continuation first so the immutable
-                // borrow of `self.goal` ends before we mutate `self.messages`.
-                let continuation = self.goal.as_ref().and_then(|g| g.maybe_continuation());
+                // sessions). The judge rides the engine's main provider as a
+                // one-shot side request — it never touches the system prompt
+                // or conversation history, so the prompt cache stays intact.
+                // The temporary borrow of `self.goal` ends with the match arm,
+                // before we mutate `self.messages`.
+                let continuation = match self.goal.as_ref() {
+                    Some(g) => {
+                        let judge = crate::goal::judge::ProviderJudgeClient::new(
+                            Arc::clone(&self.provider),
+                            self.model.clone(),
+                        );
+                        g.evaluate_and_continue(&assistant_text, &judge).await
+                    }
+                    None => None,
+                };
                 if let Some(cont) = continuation {
                     self.messages.push(cont);
                     self.save_session();
