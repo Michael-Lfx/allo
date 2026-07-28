@@ -232,6 +232,20 @@ pub struct ActivityView {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticItem {
+    pub lesson_id: LearningLessonId,
+    pub lesson_title: String,
+    pub activity: ActivityView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticPlan {
+    pub course_id: LearningCourseId,
+    pub total_concepts: i64,
+    pub items: Vec<DiagnosticItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ConceptView {
     pub id: LearningConceptId,
     pub key: String,

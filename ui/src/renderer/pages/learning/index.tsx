@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -20,6 +20,8 @@ import {
 
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
+import { parseKnowledgeBaseId } from '@/common/types/ids';
+import Markdown from '@renderer/components/Markdown';
 import KnowledgeModelSelector, {
   useKnowledgeAutogenModel,
 } from '../knowledge/KnowledgeModelSelector';
@@ -29,6 +31,7 @@ import type {
   AttemptResult,
   CourseDetail,
   CourseSummary,
+  DiagnosticPlan,
   DueReview,
   Lesson,
   LessonStatus,
@@ -182,11 +185,13 @@ function ReviewQueue({
 function ActivityBlock({
   activity,
   disabled,
+  loading,
   result,
   onSubmit,
 }: {
   activity: Activity;
   disabled: boolean;
+  loading?: boolean;
   result?: AttemptResult;
   onSubmit: (activity: Activity, response: unknown) => void;
 }) {
@@ -216,8 +221,8 @@ function ActivityBlock({
           value={response === undefined ? undefined : String(response)}
           onChange={(value) => setResponse(value === 'true')}
         >
-          <Radio value='true'>True</Radio>
-          <Radio value='false'>False</Radio>
+          <Radio value='true'>{t('learning.trueLabel')}</Radio>
+          <Radio value='false'>{t('learning.falseLabel')}</Radio>
         </Radio.Group>
       )}
       {isReflection && (
@@ -233,7 +238,7 @@ function ActivityBlock({
           type='primary'
           size='small'
           disabled={!hasResponse || disabled}
-          loading={disabled}
+          loading={loading}
           onClick={() => onSubmit(activity, response)}
         >
           {t('learning.submit')}
@@ -249,8 +254,162 @@ function ActivityBlock({
   );
 }
 
+function DiagnosticModal({
+  plan,
+  index,
+  result,
+  busy,
+  onSubmit,
+  onNext,
+  onCancel,
+}: {
+  plan: DiagnosticPlan | null;
+  index: number;
+  result?: AttemptResult;
+  busy: boolean;
+  onSubmit: (activity: Activity, response: unknown) => Promise<void>;
+  onNext: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const item = plan?.items[index];
+  const isLast = plan !== null && index === plan.items.length - 1;
+  return (
+    <Modal
+      title={t('learning.diagnosticTitle')}
+      visible={item !== undefined}
+      footer={null}
+      closable={!busy}
+      maskClosable={!busy}
+      onCancel={onCancel}
+      style={{ width: 640 }}
+    >
+      {plan && item && (
+        <div className='flex flex-col gap-14px'>
+          <div>
+            <div className='mb-6px flex items-center justify-between text-13px text-t-secondary'>
+              <span>{item.lesson_title}</span>
+              <span>
+                {index + 1}/{plan.items.length}
+              </span>
+            </div>
+            <Progress
+              percent={Math.round(((index + (result ? 1 : 0)) / plan.items.length) * 100)}
+              showText={false}
+              size='small'
+            />
+          </div>
+          <ActivityBlock
+            key={item.activity.id}
+            activity={item.activity}
+            disabled={busy || result !== undefined}
+            loading={busy}
+            result={result}
+            onSubmit={(activity, response) => void onSubmit(activity, response)}
+          />
+          {result && (
+            <Button type='primary' long onClick={onNext}>
+              {isLast ? t('learning.viewDiagnosticResult') : t('learning.nextQuestion')}
+            </Button>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function sliceSourceContent(
+  content: string,
+  start: number | null,
+  end: number | null
+): string {
+  if (start === null && end === null) return content;
+  const chars = Array.from(content);
+  const from = Math.max(0, start ?? 0);
+  const to = Math.min(chars.length, end ?? chars.length);
+  if (from >= to) return content;
+  return chars.slice(from, to).join('');
+}
+
+function LessonSourcePanel({
+  knowledgeBaseId,
+  source,
+}: {
+  knowledgeBaseId: string;
+  source: NonNullable<Lesson['source']>;
+}) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setContent(null);
+    void ipcBridge.knowledge.readFile
+      .invoke({
+        knowledge_base_id: parseKnowledgeBaseId(knowledgeBaseId),
+        path: source.path,
+      })
+      .then((file) => {
+        if (cancelled) return;
+        setContent(sliceSourceContent(file.content, source.start, source.end));
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [knowledgeBaseId, source.end, source.path, source.start]);
+
+  return (
+    <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
+      <div className='mb-10px flex flex-wrap items-center justify-between gap-8px'>
+        <div className='min-w-0'>
+          <div className='font-600 text-t-primary'>{t('learning.readSource')}</div>
+          <Text type='secondary' className='break-all'>
+            {source.path}
+            {source.start !== null ? `:${source.start}` : ''}
+            {source.end !== null ? `-${source.end}` : ''}
+          </Text>
+        </div>
+        <Button
+          size='mini'
+          onClick={() =>
+            navigate(
+              `/knowledge/${knowledgeBaseId}?highlight=${encodeURIComponent(source.path)}`
+            )
+          }
+        >
+          {t('learning.openInKnowledge')}
+        </Button>
+      </div>
+      {loading && (
+        <div className='flex justify-center py-18px'>
+          <Spin tip={t('learning.sourceLoading')} />
+        </div>
+      )}
+      {error && <Alert type='error' content={`${t('learning.sourceLoadFailed')}: ${error}`} />}
+      {!loading && !error && content !== null && (
+        <div className='max-h-420px overflow-auto rounded-8px bg-[var(--color-fill-1)] p-12px'>
+          <Markdown className='text-13px'>{content}</Markdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LessonBlock({
   lesson,
+  sourceKbId,
   enrolled,
   busyId,
   attemptResults,
@@ -258,6 +417,7 @@ function LessonBlock({
   onAttempt,
 }: {
   lesson: Lesson;
+  sourceKbId: string | null;
   enrolled: boolean;
   busyId: string | null;
   attemptResults: Record<string, AttemptResult>;
@@ -275,12 +435,6 @@ function LessonBlock({
         <Text type='secondary'>
           {lesson.estimated_minutes} {t('learning.minutes')}
         </Text>
-        {lesson.source && (
-          <Text type='secondary'>
-            {t('learning.source')}: {lesson.source.path}
-            {lesson.source.start !== null ? `:${lesson.source.start}` : ''}
-          </Text>
-        )}
         {enrolled && lesson.status !== 'completed' && (
           <Button
             size='small'
@@ -292,6 +446,14 @@ function LessonBlock({
           </Button>
         )}
       </div>
+      {sourceKbId && lesson.source && (
+        <LessonSourcePanel knowledgeBaseId={sourceKbId} source={lesson.source} />
+      )}
+      {!sourceKbId && lesson.source && (
+        <Text type='secondary'>
+          {t('learning.source')}: {lesson.source.path}
+        </Text>
+      )}
       {lesson.activities.length > 0 && (
         <div className='flex flex-col gap-10px'>
           <div className='text-13px font-600 text-t-secondary'>{t('learning.activities')}</div>
@@ -300,6 +462,7 @@ function LessonBlock({
               key={activity.id}
               activity={activity}
               disabled={busyId === activity.id || !enrolled}
+              loading={busyId === activity.id}
               result={attemptResults[activity.id]}
               onSubmit={onAttempt}
             />
@@ -316,6 +479,7 @@ function CourseWorkspace({
   attemptResults,
   onBack,
   onEnroll,
+  onDiagnostic,
   onProgress,
   onAttempt,
 }: {
@@ -324,16 +488,28 @@ function CourseWorkspace({
   attemptResults: Record<string, AttemptResult>;
   onBack: () => void;
   onEnroll: () => void;
+  onDiagnostic: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const recommendedLessonRef = useRef<HTMLDivElement>(null);
   const { course } = detail;
   const percent =
     course.total_lessons === 0
       ? 0
       : Math.round((course.completed_lessons / course.total_lessons) * 100);
+  const recommendedLesson = useMemo(
+    () =>
+      detail.modules
+        .flatMap((module) => module.lessons)
+        .find((lesson) => lesson.id === detail.next_lesson_id),
+    [detail.modules, detail.next_lesson_id]
+  );
+  const allConceptsMastered =
+    detail.concepts.length > 0 &&
+    detail.concepts.every((concept) => concept.mastery !== null && concept.mastery >= 0.8);
   return (
     <div className='mx-auto flex max-w-1100px flex-col gap-18px p-24px'>
       <div>
@@ -347,9 +523,13 @@ function CourseWorkspace({
             </Title>
             <Paragraph className='!mb-0 !mt-6px text-t-secondary'>{course.description}</Paragraph>
           </div>
-          {!detail.enrollment_id && (
+          {!detail.enrollment_id ? (
             <Button type='primary' loading={busyId === course.id} onClick={onEnroll}>
               {t('learning.enroll')}
+            </Button>
+          ) : (
+            <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
+              {t('learning.startDiagnostic')}
             </Button>
           )}
         </div>
@@ -377,6 +557,33 @@ function CourseWorkspace({
         </div>
       </Card>
 
+      {detail.enrollment_id && recommendedLesson && (
+        <Card>
+          <div className='flex flex-wrap items-center justify-between gap-12px'>
+            <div>
+              <div className='font-600'>{t('learning.recommendedNext')}</div>
+              <Text type='secondary'>
+                {recommendedLesson.title} · {t('learning.recommendationReason')}
+              </Text>
+            </div>
+            <Button
+              type='primary'
+              onClick={() =>
+                recommendedLessonRef.current?.scrollIntoView({
+                  behavior: 'smooth',
+                  block: 'center',
+                })
+              }
+            >
+              {t('learning.goToLesson')}
+            </Button>
+          </div>
+        </Card>
+      )}
+      {detail.enrollment_id && !recommendedLesson && allConceptsMastered && (
+        <Alert type='success' content={t('learning.allConceptsMastered')} />
+      )}
+
       <Collapse defaultActiveKey={detail.modules.map((module) => module.id)}>
         {detail.modules.map((module) => (
           <Collapse.Item
@@ -387,13 +594,23 @@ function CourseWorkspace({
             {module.description && (
               <Paragraph className='mt-0 text-t-secondary'>{module.description}</Paragraph>
             )}
-            <Collapse>
+            <Collapse
+              key={`${module.id}:${detail.next_lesson_id ?? 'none'}`}
+              defaultActiveKey={
+                module.lessons.some((lesson) => lesson.id === detail.next_lesson_id)
+                  ? [detail.next_lesson_id as string]
+                  : []
+              }
+            >
               {module.lessons.map((lesson) => (
                 <Collapse.Item
                   key={lesson.id}
                   name={lesson.id}
                   header={
-                    <div className='flex flex-1 items-center justify-between gap-8px'>
+                    <div
+                      ref={lesson.id === detail.next_lesson_id ? recommendedLessonRef : undefined}
+                      className='flex flex-1 items-center justify-between gap-8px'
+                    >
                       <span>{lesson.title}</span>
                       <Tag color={statusColors[lesson.status]}>
                         {statusLabel(lesson.status, t)}
@@ -403,6 +620,7 @@ function CourseWorkspace({
                 >
                   <LessonBlock
                     lesson={lesson}
+                    sourceKbId={course.source_kb_id}
                     enrolled={detail.enrollment_id !== null}
                     busyId={busyId}
                     attemptResults={attemptResults}
@@ -456,6 +674,9 @@ const LearningPage: React.FC = () => {
   const [generationDomain, setGenerationDomain] = useState('');
   const [packJson, setPackJson] = useState(EMPTY_PACK);
   const [attemptResults, setAttemptResults] = useState<Record<string, AttemptResult>>({});
+  const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
+  const [diagnosticIndex, setDiagnosticIndex] = useState(0);
+  const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -534,8 +755,17 @@ const LearningPage: React.FC = () => {
         provider_id: modelChoice?.provider_id,
         model: modelChoice?.model,
       });
+      let enrolled = false;
+      try {
+        await learningApi.enroll(generated.course.id);
+        enrolled = true;
+      } catch {
+        // Course is still usable; user can enroll manually on the detail page.
+      }
       setGenerateVisible(false);
-      Message.success(t('learning.generateSuccess'));
+      Message.success(
+        enrolled ? t('learning.generateAndEnrollSuccess') : t('learning.generateSuccess')
+      );
       navigate(`/learn/${generated.course.id}`);
     } catch (actionError) {
       Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
@@ -556,6 +786,54 @@ const LearningPage: React.FC = () => {
       setBusyId(null);
     }
   }, [id, load, t]);
+
+  const startDiagnostic = useCallback(async () => {
+    if (!id) return;
+    setBusyId('diagnostic');
+    try {
+      const plan = await learningApi.getDiagnostic(id);
+      if (plan.items.length === 0) {
+        Message.warning(t('learning.noDiagnosticQuestions'));
+        return;
+      }
+      setDiagnosticIndex(0);
+      setDiagnosticResult(undefined);
+      setDiagnosticPlan(plan);
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setBusyId(null);
+    }
+  }, [id, t]);
+
+  const submitDiagnostic = useCallback(
+    async (activity: Activity, response: unknown) => {
+      setBusyId(activity.id);
+      try {
+        const result = await learningApi.submitAttempt(activity.id, response);
+        setAttemptResults((current) => ({ ...current, [activity.id]: result }));
+        setDiagnosticResult(result);
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [t]
+  );
+
+  const advanceDiagnostic = useCallback(() => {
+    if (!diagnosticPlan) return;
+    if (diagnosticIndex < diagnosticPlan.items.length - 1) {
+      setDiagnosticIndex((current) => current + 1);
+      setDiagnosticResult(undefined);
+      return;
+    }
+    setDiagnosticPlan(null);
+    setDiagnosticResult(undefined);
+    Message.success(t('learning.diagnosticComplete'));
+    void load();
+  }, [diagnosticIndex, diagnosticPlan, load, t]);
 
   const updateProgress = useCallback(
     async (lesson: Lesson, status: LessonStatus) => {
@@ -611,6 +889,7 @@ const LearningPage: React.FC = () => {
       )),
     [courses, navigate]
   );
+  const diagnosticActivityId = diagnosticPlan?.items[diagnosticIndex]?.activity.id;
 
   if (loading && !detail && courses.length === 0) {
     return (
@@ -622,15 +901,32 @@ const LearningPage: React.FC = () => {
 
   if (detail) {
     return (
-      <CourseWorkspace
-        detail={detail}
-        busyId={busyId}
-        attemptResults={attemptResults}
-        onBack={() => navigate('/learn')}
-        onEnroll={enroll}
-        onProgress={updateProgress}
-        onAttempt={submitAttempt}
-      />
+      <>
+        <CourseWorkspace
+          detail={detail}
+          busyId={busyId}
+          attemptResults={attemptResults}
+          onBack={() => navigate('/learn')}
+          onEnroll={enroll}
+          onDiagnostic={() => void startDiagnostic()}
+          onProgress={updateProgress}
+          onAttempt={submitAttempt}
+        />
+        <DiagnosticModal
+          plan={diagnosticPlan}
+          index={diagnosticIndex}
+          result={diagnosticResult}
+          busy={diagnosticActivityId !== undefined && busyId === diagnosticActivityId}
+          onSubmit={submitDiagnostic}
+          onNext={advanceDiagnostic}
+          onCancel={() => {
+            if (busyId === null) {
+              setDiagnosticPlan(null);
+              setDiagnosticResult(undefined);
+            }
+          }}
+        />
+      </>
     );
   }
 

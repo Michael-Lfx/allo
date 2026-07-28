@@ -3,6 +3,7 @@ import type {
   AttemptResult,
   CourseDetail,
   CourseSummary,
+  DiagnosticPlan,
   DueReview,
   GenerateCourseRequest,
   LessonStatus,
@@ -20,6 +21,11 @@ export const learningApi = {
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/${encodeURIComponent(id)}/enroll`),
+  getDiagnostic: (id: string, limit = 10) =>
+    httpRequest<DiagnosticPlan>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(id)}/diagnostic?limit=${limit}`
+    ),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
   submitAttempt: (id: string, response: unknown) =>

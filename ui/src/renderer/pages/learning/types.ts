@@ -33,6 +33,18 @@ export interface Activity {
   concepts: string[];
 }
 
+export interface DiagnosticItem {
+  lesson_id: string;
+  lesson_title: string;
+  activity: Activity;
+}
+
+export interface DiagnosticPlan {
+  course_id: string;
+  total_concepts: number;
+  items: DiagnosticItem[];
+}
+
 export interface Lesson {
   id: string;
   title: string;

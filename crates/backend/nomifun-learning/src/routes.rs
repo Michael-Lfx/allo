@@ -27,6 +27,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}/enroll", post(enroll))
         .route(
+            "/api/learning/courses/{id}/diagnostic",
+            get(diagnostic_plan),
+        )
+        .route(
             "/api/learning/lessons/{id}/progress",
             post(update_lesson_progress),
         )
@@ -88,6 +92,31 @@ async fn enroll(
     state.service.enroll(&id, &user.id).await?;
     Ok(Json(ApiResponse::ok(
         state.service.course_detail(&id, Some(&user.id)).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct DiagnosticQuery {
+    #[serde(default = "default_diagnostic_limit")]
+    limit: i64,
+}
+
+const fn default_diagnostic_limit() -> i64 {
+    10
+}
+
+async fn diagnostic_plan(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<DiagnosticQuery>,
+) -> Result<Json<ApiResponse<crate::models::DiagnosticPlan>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .diagnostic_plan(&id, &user.id, query.limit)
+            .await?,
     )))
 }
 

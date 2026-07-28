@@ -14,8 +14,8 @@ use sqlx::{Row, Sqlite, Transaction};
 
 use crate::models::{
     ActivityKind, ActivityView, AttemptResult, ConceptView, CourseDetail, CoursePack, CourseSummary,
-    DueReview, GenerateCourseRequest, LessonStatus, LessonView, ModuleView, ReviewRating,
-    ReviewResult, SourceSpan, StoredActivityConfig,
+    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest, LessonStatus, LessonView,
+    ModuleView, ReviewRating, ReviewResult, SourceSpan, StoredActivityConfig,
 };
 use crate::scheduler::schedule_review;
 
@@ -333,7 +333,6 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let mut modules = Vec::with_capacity(module_rows.len());
-        let mut next_lesson_id = None;
         for module_row in module_rows {
             let module_id: LearningModuleId =
                 parse_id(module_row.try_get("module_id").map_err(internal)?)?;
@@ -358,9 +357,6 @@ impl LearningService {
                 let status_text: String = lesson_row.try_get("status").map_err(internal)?;
                 let status = LessonStatus::try_from(status_text.as_str())
                     .map_err(AppError::Internal)?;
-                if next_lesson_id.is_none() && status != LessonStatus::Completed {
-                    next_lesson_id = Some(lesson_id.clone());
-                }
                 let source_path: Option<String> =
                     lesson_row.try_get("source_path").map_err(internal)?;
                 let source = source_path.map(|path| SourceSpan {
@@ -394,6 +390,7 @@ impl LearningService {
         let concepts = self
             .course_concepts(course_id, enrollment_id.as_ref())
             .await?;
+        let next_lesson_id = recommend_next_lesson(&modules, &concepts);
         let due_review_count = if let Some(enrollment_id) = &enrollment_id {
             sqlx::query_scalar(
                 "SELECT COUNT(*) FROM learning_review_items \
@@ -415,6 +412,54 @@ impl LearningService {
             concepts,
             next_lesson_id,
             due_review_count,
+        })
+    }
+
+    pub async fn diagnostic_plan(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+        limit: i64,
+    ) -> Result<DiagnosticPlan, AppError> {
+        let detail = self.course_detail(course_id, Some(user_id)).await?;
+        if detail.enrollment_id.is_none() {
+            return Err(AppError::Conflict(
+                "enroll in the course before starting a diagnostic".into(),
+            ));
+        }
+        let mut covered_concepts = HashSet::new();
+        let mut items = Vec::new();
+        let limit = limit.clamp(1, 20) as usize;
+        let total_concepts = detail.concepts.len() as i64;
+        'modules: for module in detail.modules {
+            for lesson in module.lessons {
+                for activity in lesson.activities {
+                    if activity.kind == ActivityKind::Reflection
+                        || !activity
+                            .concepts
+                            .iter()
+                            .any(|concept| !covered_concepts.contains(concept.as_str()))
+                    {
+                        continue;
+                    }
+                    for concept in &activity.concepts {
+                        covered_concepts.insert(concept.as_str().to_owned());
+                    }
+                    items.push(DiagnosticItem {
+                        lesson_id: lesson.id.clone(),
+                        lesson_title: lesson.title.clone(),
+                        activity,
+                    });
+                    if items.len() >= limit {
+                        break 'modules;
+                    }
+                }
+            }
+        }
+        Ok(DiagnosticPlan {
+            course_id: course_id.clone(),
+            total_concepts,
+            items,
         })
     }
 
@@ -813,6 +858,78 @@ impl LearningService {
     }
 }
 
+const MASTERY_RECOMMENDATION_THRESHOLD: f64 = 0.8;
+
+fn recommend_next_lesson(
+    modules: &[ModuleView],
+    concepts: &[ConceptView],
+) -> Option<LearningLessonId> {
+    if let Some(lesson) = modules
+        .iter()
+        .flat_map(|module| &module.lessons)
+        .find(|lesson| lesson.status == LessonStatus::InProgress)
+    {
+        return Some(lesson.id.clone());
+    }
+    let mastery: HashMap<&str, f64> = concepts
+        .iter()
+        .filter_map(|concept| {
+            concept
+                .mastery
+                .map(|value| (concept.id.as_str(), value))
+        })
+        .collect();
+    let concept_by_id: HashMap<&str, &ConceptView> = concepts
+        .iter()
+        .map(|concept| (concept.id.as_str(), concept))
+        .collect();
+    let lessons: Vec<&LessonView> = modules
+        .iter()
+        .flat_map(|module| &module.lessons)
+        .collect();
+    for lesson in lessons
+        .iter()
+        .copied()
+        .filter(|lesson| lesson.status != LessonStatus::Completed)
+    {
+        if lesson.concepts.is_empty() {
+            return Some(lesson.id.clone());
+        }
+        let deficient: Vec<&ConceptView> = lesson
+            .concepts
+            .iter()
+            .filter(|concept| {
+                mastery.get(concept.as_str()).copied().unwrap_or(0.0)
+                    < MASTERY_RECOMMENDATION_THRESHOLD
+            })
+            .filter_map(|concept| concept_by_id.get(concept.as_str()).copied())
+            .collect();
+        if deficient.is_empty() {
+            continue;
+        }
+        for prerequisite in deficient
+            .iter()
+            .flat_map(|concept| &concept.prerequisites)
+            .filter(|prerequisite| {
+                mastery
+                    .get(prerequisite.as_str())
+                    .copied()
+                    .unwrap_or(0.0)
+                    < MASTERY_RECOMMENDATION_THRESHOLD
+            })
+        {
+            if let Some(prerequisite_lesson) = lessons
+                .iter()
+                .find(|candidate| candidate.concepts.contains(prerequisite))
+            {
+                return Some(prerequisite_lesson.id.clone());
+            }
+        }
+        return Some(lesson.id.clone());
+    }
+    None
+}
+
 fn validate_generation_request(request: &GenerateCourseRequest) -> Result<(), AppError> {
     if request.provider_id.is_some() != request.model.is_some() {
         return Err(AppError::BadRequest(
@@ -1013,11 +1130,9 @@ fn evaluate(
     let correct = match kind {
         ActivityKind::SingleChoice => response.as_str() == config.answer.as_str(),
         ActivityKind::TrueFalse => response.as_bool() == config.answer.as_bool(),
-        ActivityKind::Reflection => match response {
-            Value::String(value) => !value.trim().is_empty(),
-            Value::Null => false,
-            _ => true,
-        },
+        ActivityKind::Reflection => response
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty()),
     };
     if kind == ActivityKind::Reflection && !correct {
         return Err(AppError::BadRequest(
@@ -1247,6 +1362,61 @@ mod tests {
         assert_eq!(score, 0.0);
     }
 
+    #[test]
+    fn recommendation_repairs_out_of_order_prerequisites() {
+        let prerequisite_id = LearningConceptId::new();
+        let advanced_id = LearningConceptId::new();
+        let prerequisite_lesson_id = LearningLessonId::new();
+        let advanced_lesson_id = LearningLessonId::new();
+        let lesson = |id: LearningLessonId, title: &str, concept: LearningConceptId| LessonView {
+            id,
+            title: title.into(),
+            summary: String::new(),
+            position: 0,
+            estimated_minutes: 10,
+            source: None,
+            status: LessonStatus::NotStarted,
+            concepts: vec![concept],
+            activities: Vec::new(),
+        };
+        let modules = vec![ModuleView {
+            id: LearningModuleId::new(),
+            title: "Module".into(),
+            description: String::new(),
+            position: 0,
+            lessons: vec![
+                lesson(advanced_lesson_id, "Advanced", advanced_id.clone()),
+                lesson(
+                    prerequisite_lesson_id.clone(),
+                    "Prerequisite",
+                    prerequisite_id.clone(),
+                ),
+            ],
+        }];
+        let concepts = vec![
+            ConceptView {
+                id: prerequisite_id.clone(),
+                key: "prerequisite".into(),
+                title: "Prerequisite".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+                mastery: None,
+            },
+            ConceptView {
+                id: advanced_id,
+                key: "advanced".into(),
+                title: "Advanced".into(),
+                description: String::new(),
+                prerequisites: vec![prerequisite_id],
+                mastery: None,
+            },
+        ];
+        assert_eq!(
+            recommend_next_lesson(&modules, &concepts),
+            Some(prerequisite_lesson_id)
+        );
+    }
+
     #[tokio::test]
     async fn imports_enrolls_and_updates_mastery() {
         let database = nomifun_db::init_database_memory().await.unwrap();
@@ -1261,6 +1431,16 @@ mod tests {
             .course_detail(&course.course.id, Some(&user_id))
             .await
             .unwrap();
+        assert_eq!(
+            detail.next_lesson_id.as_ref(),
+            Some(&detail.modules[0].lessons[0].id)
+        );
+        let diagnostic = service
+            .diagnostic_plan(&course.course.id, &user_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(diagnostic.total_concepts, 1);
+        assert_eq!(diagnostic.items.len(), 1);
         let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
         let result = service
             .submit_attempt(&activity_id, &user_id, Value::Bool(true))
@@ -1272,5 +1452,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.concepts[0].mastery, Some(1.0));
+        assert_eq!(detail.next_lesson_id, None);
     }
 }
