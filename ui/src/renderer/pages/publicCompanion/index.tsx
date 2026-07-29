@@ -31,7 +31,7 @@ const PublicCompanionRosterPage: React.FC = () => {
     void navigate(`/public-companions/${publicAgentId}`);
 
   return (
-    <div className='w-full min-h-full box-border overflow-y-auto px-16px py-20px'>
+    <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
       <div className='mx-auto flex w-full max-w-[1160px] box-border flex-col gap-16px'>
         {/* Header */}
         <div className='flex items-start justify-between gap-16px flex-wrap'>

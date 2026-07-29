@@ -2,7 +2,6 @@
 
 import classNames from 'classnames';
 import React from 'react';
-import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { SettingsViewModeProvider } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
 
 interface HubPageShellProps {
@@ -36,17 +35,10 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
   hideHeader = false,
   children,
 }) => {
-  const layout = useLayoutContext();
-  const isMobile = layout?.isMobile ?? false;
-
   return (
     <SettingsViewModeProvider value='page'>
       <div
-        className={classNames(
-          'w-full min-h-full box-border overflow-y-auto',
-          className,
-          isMobile ? 'px-16px py-16px' : 'px-12px md:px-40px py-32px'
-        )}
+        className={classNames('app-page-shell w-full min-h-full box-border overflow-y-auto', className)}
       >
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
           {!hideHeader && (

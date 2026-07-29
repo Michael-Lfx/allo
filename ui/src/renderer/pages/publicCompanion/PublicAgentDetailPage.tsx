@@ -108,7 +108,7 @@ const PublicAgentDetailPage: React.FC = () => {
   const backToRoster = () => void navigate('/public-companions');
 
   return (
-    <div className='w-full min-h-full box-border overflow-y-auto px-16px py-20px'>
+    <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
       {holder}
       <div className='mx-auto flex w-full max-w-[1160px] box-border flex-col gap-16px'>
         {/* Back link */}

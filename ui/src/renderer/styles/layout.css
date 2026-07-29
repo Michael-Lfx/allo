@@ -39,6 +39,19 @@
   border-right: 1px solid var(--border-base);
 }
 
+/* Shared page frame for settings and standalone hubs. Keeping this at the
+   layout layer prevents individual modules from drifting in background or spacing. */
+.app-page-shell {
+  padding: var(--flowy-space-6) var(--flowy-space-7);
+  background-color: var(--bg-base);
+}
+
+@media (max-width: 767px) {
+  .app-page-shell {
+    padding: var(--flowy-space-4);
+  }
+}
+
 /* Arco Layout inner container needs flex layout so Header + Content + Footer
    stack vertically and Content fills the remaining space (avoids a fixed
    calc() that breaks when header height changes). */

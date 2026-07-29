@@ -511,8 +511,9 @@ function CourseWorkspace({
     detail.concepts.length > 0 &&
     detail.concepts.every((concept) => concept.mastery !== null && concept.mastery >= 0.8);
   return (
-    <div className='mx-auto flex max-w-1100px flex-col gap-18px p-24px'>
-      <div>
+    <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
+      <div className='mx-auto flex w-full md:max-w-1200px flex-col gap-18px'>
+        <div>
         <Button type='text' onClick={onBack}>
           {t('learning.back')}
         </Button>
@@ -634,7 +635,7 @@ function CourseWorkspace({
         ))}
       </Collapse>
 
-      <Card title={t('learning.concepts')}>
+        <Card title={t('learning.concepts')}>
         <div className='grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-10px'>
           {detail.concepts.map((concept) => (
             <div
@@ -650,7 +651,8 @@ function CourseWorkspace({
             </div>
           ))}
         </div>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -931,8 +933,9 @@ const LearningPage: React.FC = () => {
   }
 
   return (
-    <div className='mx-auto flex max-w-1180px flex-col gap-20px p-24px'>
-      <div className='flex flex-wrap items-start justify-between gap-16px'>
+    <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
+      <div className='mx-auto flex w-full md:max-w-1200px flex-col gap-20px'>
+        <div className='flex flex-wrap items-start justify-between gap-16px'>
         <div>
           <Title heading={3} className='!m-0'>
             {t('learning.title')}
@@ -965,7 +968,7 @@ const LearningPage: React.FC = () => {
         <ReviewQueue reviews={reviews} busyId={busyId} onRate={rateReview} />
       </section>
 
-      <Modal
+        <Modal
         title={t('learning.generateTitle')}
         visible={generateVisible}
         confirmLoading={busyId === 'generate'}
@@ -1012,9 +1015,9 @@ const LearningPage: React.FC = () => {
             />
           </div>
         </div>
-      </Modal>
+        </Modal>
 
-      <Modal
+        <Modal
         title={t('learning.importTitle')}
         visible={importVisible}
         confirmLoading={busyId === 'import'}
@@ -1029,7 +1032,8 @@ const LearningPage: React.FC = () => {
           autoSize={{ minRows: 18, maxRows: 28 }}
           onChange={setPackJson}
         />
-      </Modal>
+        </Modal>
+      </div>
     </div>
   );
 };
