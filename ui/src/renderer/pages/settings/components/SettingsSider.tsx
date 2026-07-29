@@ -6,7 +6,6 @@ import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
 import {
-  BookOpen,
   Computer,
   Cpu,
   Earth,
@@ -39,7 +38,6 @@ export const BUILTIN_TAB_IDS = [
   'insights',
   'media',
   'public-companions',
-  'learn',
   'presets',
   'skills',
   'mcp',
@@ -137,12 +135,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('publicCompanion.siderTitle', { defaultValue: '对外伙伴' }),
         icon: <Headset />,
         path: 'public-companions',
-      },
-      learn: {
-        id: 'learn',
-        label: t('learning.title', { defaultValue: '学习' }),
-        icon: <BookOpen />,
-        path: 'learn',
       },
       presets: {
         id: 'presets',
