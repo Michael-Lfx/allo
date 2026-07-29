@@ -5573,6 +5573,7 @@ dependencies = [
  "image",
  "indexmap 2.14.0",
  "nomi-config",
+ "nomi-protocol",
  "nomi-tools",
  "nomi-types",
  "nomifun-cloud",

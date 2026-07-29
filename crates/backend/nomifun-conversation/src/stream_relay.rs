@@ -2143,7 +2143,10 @@ impl StreamRelay {
                             }
 
                             let segment = active_thinking.get_or_insert_with(|| ThinkingSegmentState {
-                                id: Self::mint_segment_msg_id(&mut used_primary_segment_msg_id, &self.msg_id),
+                                // The turn's primary ID belongs to its final text row.  Thinking
+                                // can precede that text, so it must never claim the ID first:
+                                // another durable text projection may already own it.
+                                id: ConversationService::mint_msg_id(),
                                 buffer: String::new(),
                                 started_at: now_ms(),
                                 completed_duration_ms: None,
@@ -8938,7 +8941,7 @@ mod tests {
         let inserts = repo.take_inserts();
         let thinking_msgs: Vec<_> = inserts.iter().filter(|msg| msg.r#type == "thinking").collect();
         assert_eq!(thinking_msgs.len(), 2, "thinking should split across tool boundaries");
-        assert_eq!(thinking_msgs[0].msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
+        assert_ne!(thinking_msgs[0].msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_ne!(thinking_msgs[0].msg_id, thinking_msgs[1].msg_id);
 
         let mut done_msg_ids = Vec::new();
@@ -8948,7 +8951,7 @@ mod tests {
             }
         }
         assert_eq!(done_msg_ids.len(), 2);
-        assert_eq!(done_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
+        assert_ne!(done_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(done_msg_ids[0], done_msg_ids[1]);
     }
 
@@ -8991,7 +8994,8 @@ mod tests {
 
         assert_eq!(thinking_msgs.len(), 1);
         assert_eq!(text_msgs.len(), 1);
-        assert_eq!(thinking_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_ne!(thinking_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(text_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(thinking_msgs[0].message_id, text_msgs[0].message_id);
 
         let mut text_msg_ids = Vec::new();
@@ -9008,14 +9012,78 @@ mod tests {
             }
         }
 
-        assert_eq!(thinking_done_ids, vec![TEST_ASSISTANT_MESSAGE_ID.to_string()]);
+        assert_eq!(thinking_done_ids.len(), 1);
+        assert_ne!(thinking_done_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(text_msg_ids.len(), 1);
-        assert_ne!(text_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(text_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(
             outcome.final_text_msg_id.as_deref(),
             Some(text_msg_ids[0].as_str()),
             "turn-final post-processing should target the final assistant text segment, not the thinking segment"
         );
+    }
+
+    #[tokio::test]
+    async fn thinking_does_not_claim_the_primary_text_message_id() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.reject_duplicate_message_inserts();
+        repo.inserts.lock().unwrap().push(MessageRow {
+            id: 0,
+            message_id: TEST_ASSISTANT_MESSAGE_ID.into(),
+            conversation_id: test_conversation_id(),
+            msg_id: Some(TEST_ASSISTANT_MESSAGE_ID.into()),
+            r#type: "text".into(),
+            content: json!({ "content": "already persisted" }).to_string(),
+            position: Some("left".into()),
+            status: Some("work".into()),
+            hidden: false,
+            created_at: now_ms(),
+        });
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
+            content: "reasoning before a tool".into(),
+            subject: None,
+            duration: None,
+            status: Some("thinking".into()),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-primary-text".into(),
+            name: "read_file".into(),
+            args: json!({ "path": "a.ts" }),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+            artifacts: Vec::new(),
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+        let inserts = repo.take_inserts();
+        let thinking = inserts
+            .iter()
+            .find(|row| row.r#type == "thinking")
+            .expect("thinking must persist alongside the primary text row");
+        assert_ne!(thinking.message_id, TEST_ASSISTANT_MESSAGE_ID);
     }
 
     #[tokio::test]

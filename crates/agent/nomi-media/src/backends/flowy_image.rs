@@ -40,10 +40,10 @@ impl ImageGenBackend for FlowyImageGenBackend {
         self.services.ensure_image_credits().await?;
 
         report_media_progress(image_resolving_model());
-        let model = self
-            .services
-            .resolve_image_model(request.model.as_deref())
-            .await?;
+        // Conversation image generation shares the Media settings selection.
+        // Tool-call model arguments must not cause the conversation and media
+        // surfaces to use different Flowy image models.
+        let model = self.services.default_image_model().await?;
 
         let flowy_req = ImageGenerationRequest {
             model: model.clone(),
