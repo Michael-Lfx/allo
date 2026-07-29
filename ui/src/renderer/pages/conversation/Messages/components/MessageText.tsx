@@ -1,4 +1,8 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import {
   preferKnowledgeWritebackState,
@@ -9,7 +13,6 @@ import {
 import { ipcBridge } from '@/common';
 import { toDisplayText } from '@/common/chat/displayText';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Message, Tooltip } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Copy, Edit, Info, Loading } from '@icon-park/react';
@@ -27,8 +30,6 @@ import { stripThinkTags, hasThinkTags } from '@renderer/utils/chat/thinkTagFilte
 import { stripSkillSuggest, hasSkillSuggest } from '@renderer/utils/chat/skillSuggestParser';
 import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { parseMessageFileMarker } from './messageFileMarker';
-import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
-import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 
 /**
  * Format a timestamp for message display.
@@ -309,7 +310,11 @@ const useFormatContent = (content: string) => {
   }, [content]);
 };
 
-const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = ({ message, hideActions = false }) => {
+const MessageText: React.FC<{
+  message: IMessageText;
+  hideActions?: boolean;
+  actionsOnly?: boolean;
+}> = ({ message, hideActions = false, actionsOnly = false }) => {
   // Filter think tags from content before rendering
   // 在渲染前过滤 think 标签
   const contentToRender = useMemo(() => {
@@ -333,8 +338,6 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
   const writebackState = !isUserMessage ? message.content.knowledge_writeback : undefined;
   const shouldRenderPlainText = isUserMessage;
   const conversationContext = useConversationContextSafe();
-  const layout = useLayoutContext();
-  const isMobile = layout?.isMobile ?? false;
   const shouldShowActions = !hideActions;
   const resolvedFiles = useMemo(
     () => files.map((file_path) => resolveMessageFilePath(file_path, conversationContext?.workspace)),
@@ -365,10 +368,6 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
       .then(() => {
         setShowCopyAlert(true);
         setTimeout(() => setShowCopyAlert(false), 2000);
-        if (!isUserMessage) {
-          confirmFirstValue({ source: 'copy_answer' });
-          markFirstWinCompleted();
-        }
       })
       .catch(() => {
         Message.error(t('common.copyFailed'));
@@ -377,20 +376,14 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
 
   const copyButton = (
     <Tooltip content={t('common.copy', { defaultValue: 'Copy' })}>
-      <button
-        type='button'
-        className={classNames(
-          'p-4px rd-4px cursor-pointer hover:bg-3 transition-colors border-0 bg-transparent',
-          isMobile
-            ? 'opacity-100'
-            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
-        )}
+      <div
+        data-testid='message-copy-action'
+        className='flex h-24px w-24px shrink-0 items-center justify-center rd-4px cursor-pointer text-t-secondary hover:bg-3 transition-colors'
         onClick={handleCopy}
         style={{ lineHeight: 0 }}
-        aria-label={t('common.copy', { defaultValue: 'Copy' })}
       >
-        <Copy theme='outline' size='16' fill={iconColors.secondary} />
-      </button>
+        <Copy theme='outline' size='16' fill='currentColor' />
+      </div>
     </Tooltip>
   );
 
@@ -413,20 +406,13 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
 
   const editButton = canEdit ? (
     <Tooltip content={t('conversation.editMessage.action', { defaultValue: 'Edit' })}>
-      <button
-        type='button'
-        className={classNames(
-          'p-4px rd-4px cursor-pointer hover:bg-3 transition-colors border-0 bg-transparent',
-          isMobile
-            ? 'opacity-100'
-            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
-        )}
+      <div
+        className='p-4px rd-4px cursor-pointer hover:bg-3 transition-colors opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
         onClick={handleEdit}
         style={{ lineHeight: 0 }}
-        aria-label={t('conversation.editMessage.action', { defaultValue: 'Edit' })}
       >
         <Edit theme='outline' size='16' fill={iconColors.secondary} />
-      </button>
+      </div>
     </Tooltip>
   ) : null;
 
@@ -435,6 +421,41 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
   const senderAgentType = message.content.senderAgentType;
   const senderConversationId = message.content.senderConversationId;
   const fallbackBackendLogo = senderAgentType ? getAgentLogo(senderAgentType) : null;
+  const actionsRow = shouldShowActions ? (
+    <div
+      data-testid='message-actions'
+      className={classNames('message-text-actions h-28px flex items-center mt-4px gap-6px text-t-secondary', {
+        'flex-row-reverse': isUserMessage,
+      })}
+    >
+      {copyButton}
+      {editButton}
+      {message.created_at && (
+        <span className='text-12px leading-20px text-inherit select-none'>
+          {formatMessageTime(message.created_at)}
+        </span>
+      )}
+    </div>
+  ) : null;
+  const copyAlert = showCopyAlert ? (
+    <Alert
+      type='success'
+      content={t('messages.copySuccess')}
+      showIcon
+      className='fixed top-20px left-50% transform -translate-x-50% z-9999 w-max max-w-[80%]'
+      style={{ boxShadow: '0px 2px 12px rgba(0,0,0,0.12)' }}
+      closable={false}
+    />
+  ) : null;
+
+  if (actionsOnly) {
+    return (
+      <>
+        {actionsRow}
+        {copyAlert}
+      </>
+    );
+  }
 
   return (
     <>
@@ -467,15 +488,11 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
         )}
         {hasRenderableContent && (
           <div
-            className={classNames(
-              'min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px',
-              {
-                'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
-                'bg-3 p-6px md:p-8px': isAgentMessage,
-                'w-full': !(isUserMessage || cronMeta || isAgentMessage),
-                'message-bubble-enter': !isUserMessage,
-              }
-            )}
+            className={classNames('min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px', {
+              'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
+              'bg-3 p-6px md:p-8px': isAgentMessage,
+              'w-full': !(isUserMessage || cronMeta || isAgentMessage),
+            })}
             style={{
               ...(isUserMessage || cronMeta
                 ? { borderRadius: '8px 0 8px 8px', color: 'var(--text-primary)' }
@@ -521,37 +538,9 @@ const MessageText: React.FC<{ message: IMessageText; hideActions?: boolean }> = 
             messageId={message.message_id ?? message.msg_id}
           />
         )}
-        {shouldShowActions && (
-          <div
-            className={classNames('h-32px flex items-center mt-4px gap-8px', {
-              'flex-row-reverse': isUserMessage,
-            })}
-          >
-            {copyButton}
-            {editButton}
-            {message.created_at && (
-              <span
-                className={classNames(
-                  'text-12px text-t-secondary select-none',
-                  isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 transition-opacity'
-                )}
-              >
-                {formatMessageTime(message.created_at)}
-              </span>
-            )}
-          </div>
-        )}
+        {actionsRow}
       </div>
-      {showCopyAlert && (
-        <Alert
-          type='success'
-          content={t('messages.copySuccess')}
-          showIcon
-          className='fixed top-20px left-50% transform -translate-x-50% z-9999 w-max max-w-[80%]'
-          style={{ boxShadow: '0px 2px 12px rgba(0,0,0,0.12)' }}
-          closable={false}
-        />
-      )}
+      {copyAlert}
     </>
   );
 };
