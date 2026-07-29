@@ -22,4 +22,10 @@ describe('PresetSettings page shell', () => {
     expect(source.includes('lazyload')).toBe(false);
     expect(source.includes('flex-1 min-h-0')).toBe(true);
   });
+
+  test('suppresses the duplicate page-level header', () => {
+    const source = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(source.includes('hideHeader')).toBe(true);
+  });
 });

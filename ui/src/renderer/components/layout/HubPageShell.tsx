@@ -14,6 +14,8 @@ interface HubPageShellProps {
   maxWidthClass?: string;
   /** Rendered between the header and the body (e.g. a segmented tab bar). */
   toolbar?: React.ReactNode;
+  /** Suppress the page-level title block when the body provides its own heading. */
+  hideHeader?: boolean;
   children: React.ReactNode;
 }
 
@@ -31,6 +33,7 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
   className,
   maxWidthClass = 'md:max-w-1100px',
   toolbar,
+  hideHeader = false,
   children,
 }) => {
   const layout = useLayoutContext();
@@ -46,10 +49,12 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
         )}
       >
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
-          <div className='mb-18px'>
-            <div className='text-22px font-600 text-t-primary leading-tight'>{title}</div>
-            {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}
-          </div>
+          {!hideHeader && (
+            <div className='mb-18px'>
+              <div className='text-22px font-600 text-t-primary leading-tight'>{title}</div>
+              {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}
+            </div>
+          )}
           {toolbar && <div className='mb-20px'>{toolbar}</div>}
           {children}
         </div>
