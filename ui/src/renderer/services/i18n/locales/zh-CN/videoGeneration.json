@@ -311,6 +311,8 @@
       "editable": "可编辑",
       "preparing": "正在整理分镜画面",
       "preparingHint": "规划完成后，镜头会按故事顺序出现在这里。",
+      "firstFramePending": "首帧待生成",
+      "firstFramePendingHint": "首帧图片将在生成视频阶段生成并展示",
       "shotAlt": "镜头 {{number}}",
       "shotNumber": "镜头 {{number}}",
       "visualDirection": "画面描述",

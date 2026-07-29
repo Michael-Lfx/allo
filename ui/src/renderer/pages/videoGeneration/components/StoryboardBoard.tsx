@@ -31,6 +31,7 @@ interface SceneMediaProps {
 }
 
 const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact, alt }) => {
+  const { t } = useTranslation();
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -68,7 +69,37 @@ const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact
     [url]
   );
 
-  if (!path || failed) {
+  if (!path) {
+    return (
+      <div
+        className={`flex flex-col items-center justify-center text-center ${
+          compact ? 'gap-4px px-8px' : 'gap-8px px-24px'
+        }`}
+        role='status'
+      >
+        <VideoOne
+          theme='outline'
+          size={compact ? 18 : 30}
+          className='text-white/35'
+        />
+        <div
+          className={`font-600 text-white/72 ${compact ? 'text-10px leading-14px' : 'text-13px'}`}
+        >
+          {t('videoGeneration.studio.storyboard.firstFramePending', {
+            defaultValue: 'First frame pending',
+          })}
+        </div>
+        {compact ? null : (
+          <div className='max-w-320px text-12px leading-18px text-white/45'>
+            {t('videoGeneration.studio.storyboard.firstFramePendingHint', {
+              defaultValue: 'First-frame images are created and shown during video generation',
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (failed) {
     return <VideoOne theme='outline' size={compact ? 20 : 34} className='opacity-35' />;
   }
   if (!url) return <Spin size={compact ? 12 : 18} />;
