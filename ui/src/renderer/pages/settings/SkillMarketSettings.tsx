@@ -191,10 +191,11 @@ const SkillMarketSettings: React.FC = () => {
         : t('settings.skillsMarket.noMatch', { defaultValue: '没有符合当前筛选条件的技能。' });
 
   return (
-    <div className='flex flex-col h-full w-full'>
+    <div className='w-full pb-16px'>
       {messageContext}
-      <div className='space-y-16px pb-24px'>
-        <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
+      <div className='space-y-16px'>
+        <div className='py-2'>
+          <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
           <div className='flex flex-col gap-16px mb-20px'>
             <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
               <div className='min-w-0'>
@@ -322,6 +323,7 @@ const SkillMarketSettings: React.FC = () => {
               </Button>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

@@ -26,8 +26,8 @@ const SkillsSettingsPage: React.FC = () => {
   useEffect(() => {
     const tab = searchParams.get('tab');
     const nextTab = isSkillsTab(tab) ? tab : 'library';
-    if (nextTab !== activeTab) setActiveTab(nextTab);
-  }, [activeTab, searchParams]);
+    setActiveTab(nextTab);
+  }, [searchParams]);
 
   const handleTabChange = (key: string) => {
     if (!isSkillsTab(key)) return;
@@ -44,8 +44,7 @@ const SkillsSettingsPage: React.FC = () => {
         activeTab={activeTab}
         onChange={handleTabChange}
         type='line'
-        lazyload
-        className='flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
+        className='skills-settings-hub-tabs [&>.arco-tabs-content]:pt-0 [&_.arco-tabs-header-nav]:!min-h-40px [&_.arco-tabs-header-title]:!py-8px [&_.arco-tabs-header-title]:!font-500 [&_.arco-tabs-header-title]:!leading-22px'
       >
         <Tabs.TabPane
           key='library'
