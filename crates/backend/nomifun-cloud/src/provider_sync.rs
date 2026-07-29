@@ -66,22 +66,28 @@ pub async fn sync_flowy_builtin_provider(
 
     let models_json = catalog_fields
         .as_ref()
-        .map(|(ids, _)| serde_json::to_string(ids))
+        .map(|fields| serde_json::to_string(&fields.model_ids))
         .transpose()
         .map_err(|e| format!("serialize models: {e}"))?;
     let descriptions_json = catalog_fields
         .as_ref()
-        .map(|(_, desc)| desc.as_str());
+        .map(|fields| fields.descriptions_json.as_str());
+    let context_limits_json = catalog_fields
+        .as_ref()
+        .map(|fields| fields.context_limits_json.as_str());
 
     // Drop per-model enable flags for ids no longer in the catalog so delisted
     // models cannot linger in auxiliary maps after a successful replace.
-    let pruned_enabled_json = if let Some((ids, _)) = catalog_fields.as_ref() {
+    let pruned_enabled_json = if let Some(fields) = catalog_fields.as_ref() {
         let existing_enabled = provider_repo
             .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
             .await
             .map_err(|e| e.to_string())?
             .and_then(|row| row.model_enabled);
-        Some(prune_model_enabled_json(existing_enabled.as_deref(), ids)?)
+        Some(prune_model_enabled_json(
+            existing_enabled.as_deref(),
+            &fields.model_ids,
+        )?)
     } else {
         None
     };
@@ -103,6 +109,16 @@ pub async fn sync_flowy_builtin_provider(
                     models: models_json.as_deref(),
                     enabled: Some(true),
                     capabilities: Some(FLOWY_CAPABILITIES_JSON),
+                    // Replace per-model context limits from catalog `extra` on
+                    // successful sync so Context Usage / compact budgets track
+                    // each model's declared window (not the 128k engine default).
+                    model_context_limits: context_limits_json.map(|s| {
+                        if s == "{}" {
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    }),
                     model_descriptions: descriptions_json.map(Some),
                     model_enabled: pruned_enabled_json
                         .as_deref()
@@ -115,18 +131,16 @@ pub async fn sync_flowy_builtin_provider(
             .await
             .map_err(|e| e.to_string())?;
     } else {
-        let (models, descriptions) = match &catalog_fields {
-            Some((ids, desc)) => (
-                serde_json::to_string(ids).map_err(|e| format!("serialize models: {e}"))?,
-                desc.clone(),
-            ),
-            None => {
-                let (ids, desc) = fallback_model_fields(server);
-                (
-                    serde_json::to_string(&ids).map_err(|e| format!("serialize models: {e}"))?,
-                    desc,
-                )
-            }
+        let fields = match &catalog_fields {
+            Some(fields) => fields.clone(),
+            None => fallback_model_fields(server),
+        };
+        let models =
+            serde_json::to_string(&fields.model_ids).map_err(|e| format!("serialize models: {e}"))?;
+        let context_limits = if fields.context_limits_json == "{}" {
+            None
+        } else {
+            Some(fields.context_limits_json.as_str())
         };
         provider_repo
             .create(CreateProviderParams {
@@ -138,9 +152,9 @@ pub async fn sync_flowy_builtin_provider(
                 models: &models,
                 enabled: true,
                 capabilities: FLOWY_CAPABILITIES_JSON,
-                model_context_limits: None,
+                model_context_limits: context_limits,
                 model_protocols: None,
-                model_descriptions: Some(descriptions.as_str()),
+                model_descriptions: Some(fields.descriptions_json.as_str()),
                 model_enabled: None,
                 model_health: None,
                 bedrock_config: None,
@@ -154,7 +168,7 @@ pub async fn sync_flowy_builtin_provider(
     disable_non_flowy_providers(provider_repo).await?;
     let model_count = catalog_fields
         .as_ref()
-        .map(|(ids, _)| ids.len())
+        .map(|fields| fields.model_ids.len())
         .unwrap_or(0);
     info!(
         flowy_models = model_count,
@@ -178,10 +192,15 @@ async fn fetch_chat_models(
     Ok(resp.cloud)
 }
 
-fn build_model_fields(
-    entries: &[ClawModelEntry],
-    server: &ServerConfig,
-) -> (Vec<String>, String) {
+#[derive(Debug, Clone)]
+struct BuiltModelFields {
+    model_ids: Vec<String>,
+    descriptions_json: String,
+    /// Per-model context windows from catalog `extra.context_window`.
+    context_limits_json: String,
+}
+
+fn build_model_fields(entries: &[ClawModelEntry], server: &ServerConfig) -> BuiltModelFields {
     let default_model = server.effective_default_llm_model();
     let mut model_ids: Vec<String> = entries.iter().map(|e| e.api_model_id()).collect();
     model_ids.sort();
@@ -191,8 +210,14 @@ fn build_model_fields(
     promote_default_model(&mut model_ids, &default_model);
 
     let mut descriptions = HashMap::new();
+    let mut context_limits = HashMap::new();
     for entry in entries {
-        descriptions.insert(entry.api_model_id(), display_name_for_entry(entry));
+        let id = entry.api_model_id();
+        descriptions.insert(id.clone(), display_name_for_entry(entry));
+        if let Some(window) = entry.model_extra().context_window_tokens() {
+            // Keep first positive window if duplicate ids appear.
+            context_limits.entry(id).or_insert(window as i64);
+        }
     }
     for id in &model_ids {
         descriptions
@@ -200,21 +225,26 @@ fn build_model_fields(
             .or_insert_with(|| display_name_for_id(id));
     }
 
-    let model_descriptions_json =
-        serde_json::to_string(&descriptions).unwrap_or_else(|_| "{}".to_string());
-    (model_ids, model_descriptions_json)
+    BuiltModelFields {
+        model_ids,
+        descriptions_json: serde_json::to_string(&descriptions).unwrap_or_else(|_| "{}".to_string()),
+        context_limits_json: serde_json::to_string(&context_limits)
+            .unwrap_or_else(|_| "{}".to_string()),
+    }
 }
 
-fn fallback_model_fields(server: &ServerConfig) -> (Vec<String>, String) {
+fn fallback_model_fields(server: &ServerConfig) -> BuiltModelFields {
     let default_model = server.effective_default_llm_model();
     let model_ids = vec![default_model.clone()];
     let descriptions = HashMap::from([(
         default_model.clone(),
         display_name_for_id(&default_model),
     )]);
-    let model_descriptions_json =
-        serde_json::to_string(&descriptions).unwrap_or_else(|_| "{}".to_string());
-    (model_ids, model_descriptions_json)
+    BuiltModelFields {
+        model_ids,
+        descriptions_json: serde_json::to_string(&descriptions).unwrap_or_else(|_| "{}".to_string()),
+        context_limits_json: "{}".to_string(),
+    }
 }
 
 fn display_name_for_entry(entry: &ClawModelEntry) -> String {
@@ -361,9 +391,53 @@ mod tests {
                 category: 1,
             },
         ];
-        let (ids, _) = build_model_fields(&entries, &server);
-        assert_eq!(ids, vec!["AIPC-also".to_string(), "AIPC-keep".to_string()]);
-        assert!(!ids.iter().any(|id| id == "AIPC-delisted"));
+        let fields = build_model_fields(&entries, &server);
+        assert_eq!(
+            fields.model_ids,
+            vec!["AIPC-also".to_string(), "AIPC-keep".to_string()]
+        );
+        assert!(!fields.model_ids.iter().any(|id| id == "AIPC-delisted"));
+        assert_eq!(fields.context_limits_json, "{}");
+    }
+
+    #[test]
+    fn build_model_fields_projects_context_window_from_extra() {
+        let server = ServerConfig::default();
+        let entries = vec![
+            ClawModelEntry {
+                id: "AIPC-qwen-long".into(),
+                name: "qwen-long".into(),
+                extra: r#"{"input":["text","image"],"reasoning":false,"tools":true,"context_window":200000,"credit_rate":1}"#.into(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+            },
+            ClawModelEntry {
+                id: "AIPC-tiny".into(),
+                name: "tiny".into(),
+                extra: r#"{"input":["text"],"reasoning":true,"tools":false,"context_window":32000,"credit_rate":0.5}"#.into(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+            },
+            ClawModelEntry {
+                id: "AIPC-no-extra".into(),
+                name: "no-extra".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+            },
+        ];
+        let fields = build_model_fields(&entries, &server);
+        let limits: HashMap<String, i64> =
+            serde_json::from_str(&fields.context_limits_json).unwrap();
+        assert_eq!(limits.get("AIPC-qwen-long"), Some(&200_000));
+        assert_eq!(limits.get("AIPC-tiny"), Some(&32_000));
+        assert!(!limits.contains_key("AIPC-no-extra"));
     }
 
     #[test]
