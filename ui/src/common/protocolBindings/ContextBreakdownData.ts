@@ -4,13 +4,4 @@ import type { SummarizedConversationPropertiesData } from "./SummarizedConversat
 /**
  * Cursor-style context occupancy categories for one provider request.
  */
-export type ContextBreakdownData = { 
-system_prompt: number, 
-tool_definitions: number, 
-rules: number, 
-skills: number, 
-mcp_and_dynamic_tools: number, 
-subagent_definitions: number, 
-summarized_conversation: number, 
-conversation: number, 
-summarized: SummarizedConversationPropertiesData | null, };
+export type ContextBreakdownData = { system_prompt: number, tool_definitions: number, rules: number, skills: number, mcp_and_dynamic_tools: number, delegate_definitions: number, summarized_conversation: number, conversation: number, summarized: SummarizedConversationPropertiesData | null, };

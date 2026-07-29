@@ -29,7 +29,7 @@ context_window: number,
 /**
  * Why the turn ended (mirrors Finish), for a single self-contained record.
  */
-stop_reason: TurnStopReason | null,
+stop_reason: TurnStopReason | null, 
 /**
  * Cursor-style category breakdown for the last provider request.
  */

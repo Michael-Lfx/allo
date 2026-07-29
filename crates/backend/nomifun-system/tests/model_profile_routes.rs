@@ -98,7 +98,7 @@ async fn create_stepfun_plan_provider(db: &nomifun_db::Database) -> String {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let v = body_json(resp).await;
-    v["data"]["id"].as_str().unwrap().to_string()
+    v["data"]["provider_id"].as_str().unwrap().to_string()
 }
 
 #[tokio::test]

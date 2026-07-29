@@ -22,7 +22,7 @@ const FILE_UNCHANGED_STUB: &str = "File unchanged since last read. The content f
      instead of re-reading.";
 
 /// Soft-miss guidance when the model probes for optional session memory.
-/// Must stay `is_error: false` so orchestration does not cascade-skip the
+/// Must stay `is_error: false` so coordination does not cascade-skip the
 /// rest of the turn (agents often Read MEMORY.md at startup even when the
 /// runtime already injects memory, or when no memory file exists yet).
 const MEMORY_MD_SOFT_MISS: &str = "No MEMORY.md found; continue without prior memory. \

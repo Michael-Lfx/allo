@@ -31,7 +31,7 @@ pub struct ContextUsageBreakdown {
     #[serde(default)]
     pub mcp_and_dynamic_tools: u64,
     #[serde(default)]
-    pub subagent_definitions: u64,
+    pub delegate_definitions: u64,
     #[serde(default)]
     pub summarized_conversation: u64,
     #[serde(default)]
@@ -47,7 +47,7 @@ impl ContextUsageBreakdown {
             .saturating_add(self.rules)
             .saturating_add(self.skills)
             .saturating_add(self.mcp_and_dynamic_tools)
-            .saturating_add(self.subagent_definitions)
+            .saturating_add(self.delegate_definitions)
             .saturating_add(self.summarized_conversation)
             .saturating_add(self.conversation)
     }
@@ -80,7 +80,7 @@ impl ContextUsageBreakdown {
             self.rules,
             self.skills,
             self.mcp_and_dynamic_tools,
-            self.subagent_definitions,
+            self.delegate_definitions,
             self.summarized_conversation,
             self.conversation,
         ];
@@ -111,7 +111,7 @@ impl ContextUsageBreakdown {
         self.rules = scaled[2];
         self.skills = scaled[3];
         self.mcp_and_dynamic_tools = scaled[4];
-        self.subagent_definitions = scaled[5];
+        self.delegate_definitions = scaled[5];
         self.summarized_conversation = scaled[6];
         self.conversation = scaled[7];
         self.summarized = summarized;
@@ -130,7 +130,7 @@ mod tests {
             rules: 50,
             skills: 25,
             mcp_and_dynamic_tools: 25,
-            subagent_definitions: 10,
+            delegate_definitions: 10,
             summarized_conversation: 90,
             conversation: 500,
             summarized: None,

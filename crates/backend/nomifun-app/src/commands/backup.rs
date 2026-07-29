@@ -116,7 +116,7 @@ async fn create_offline_backup_locked(
     let source = BackupSource::new(data_dir, work_dir);
     validate_backup_source_roots(source)
         .map_err(|error| anyhow::anyhow!("validate backup source roots: {error}"))?;
-    let database_path = data_dir.join("nomifun-backend.db");
+    let database_path = nomifun_common::storage_paths::resolve_database_path(data_dir);
     ensure_regular_source_file(&database_path, "database")?;
 
     nomifun_common::factory_reset::ensure_current_v3_work_root_owner(
@@ -709,7 +709,7 @@ mod tests {
         let bundle = root.path().join("bundle");
         let destination = root.path().join("restored");
         fs::create_dir(&source).unwrap();
-        let database_path = source.join("nomifun-backend.db");
+        let database_path = source.join(nomifun_common::storage_paths::DATABASE_FILE);
         let database = nomifun_db::init_database(&database_path).await.unwrap();
         let installation_owner =
             nomifun_db::installation_owner_id(database.pool()).await.unwrap();
@@ -768,7 +768,9 @@ mod tests {
             &outcome.destination_storage_generation,
         )
         .unwrap();
-        let restored = nomifun_db::init_database(&destination.join("nomifun-backend.db"))
+        let restored = nomifun_db::init_database(
+            &destination.join(nomifun_common::storage_paths::DATABASE_FILE),
+        )
             .await
             .unwrap();
         let restored_id: String = nomifun_db::sqlx::query_scalar(
@@ -802,7 +804,9 @@ mod tests {
         let root = canonical_tempdir();
         let source = root.path().join("source");
         fs::create_dir(&source).unwrap();
-        let database = nomifun_db::init_database(&source.join("nomifun-backend.db"))
+        let database = nomifun_db::init_database(
+            &source.join(nomifun_common::storage_paths::DATABASE_FILE),
+        )
             .await
             .unwrap();
         database.close().await;
@@ -844,7 +848,9 @@ mod tests {
         let root = canonical_tempdir();
         let source = root.path().join("source");
         fs::create_dir(&source).unwrap();
-        let database = nomifun_db::init_database(&source.join("nomifun-backend.db"))
+        let database = nomifun_db::init_database(
+            &source.join(nomifun_common::storage_paths::DATABASE_FILE),
+        )
             .await
             .unwrap();
         nomifun_db::sqlx::query(

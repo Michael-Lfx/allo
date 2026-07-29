@@ -396,8 +396,6 @@
   "insightsNav": "洞察贡献",
   "mediaNav": "媒体生成",
   "cloudLoginNav": "云账号",
-  "agentRuntime": "Agent 运行",
-  "agentRuntimeSection": "运行参数",
   "agentLimits": "Agent 参数",
   "agentParameters": "执行引擎参数",
   "agentIdleTimeout": "执行引擎空闲超时（分钟）",

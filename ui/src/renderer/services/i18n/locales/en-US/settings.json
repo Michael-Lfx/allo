@@ -396,8 +396,6 @@
   "insightsNav": "Insights",
   "mediaNav": "Media",
   "cloudLoginNav": "Cloud Account",
-  "agentRuntime": "Agent Runtime",
-  "agentRuntimeSection": "Runtime limits",
   "agentLimits": "Agent limits",
   "agentParameters": "Execution Engine Runtime",
   "agentIdleTimeout": "Execution Engine Idle Timeout (min)",

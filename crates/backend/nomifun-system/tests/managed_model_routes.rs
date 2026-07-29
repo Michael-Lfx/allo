@@ -9,8 +9,8 @@ use nomifun_db::{
     SqliteProviderRepository, SqliteSettingsRepository, init_database_memory,
 };
 use nomifun_system::{
-    ClientPrefService, ManagedModelServer, ModelFetchService,
-    ModelProfileService, ProtocolDetectionService, ProviderService, SettingsService,
+    ClientPrefService, ManagedModelServer, ModelFetchService, ModelProfileService,
+    ModelsCatalogService, ProtocolDetectionService, ProviderService, SettingsService,
     SystemRouterState, VersionCheckService, start_and_provision_free_model,
     system_routes,
 };
@@ -25,6 +25,8 @@ async fn setup() -> (
 ) {
     let db = init_database_memory().await.unwrap();
     let provider_repo = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
+    let profile_repo = Arc::new(SqliteModelProfileRepository::new(db.pool().clone()));
+    let provider_repo_for_state = provider_repo.clone();
     let (managed, server) =
         start_and_provision_free_model(provider_repo.clone(), TEST_KEY)
             .await
@@ -43,8 +45,11 @@ async fn setup() -> (
             TEST_KEY,
             http.clone(),
         ),
-        model_profile_service: ModelProfileService::new(Arc::new(
-            SqliteModelProfileRepository::new(db.pool().clone()),
+        model_profile_service: ModelProfileService::new(profile_repo.clone()),
+        models_catalog_service: Arc::new(ModelsCatalogService::new(
+            nomifun_models_dev::shared_client(),
+            profile_repo,
+            provider_repo_for_state,
         )),
         managed_model_service: Some(managed),
         protocol_detection_service: ProtocolDetectionService::new(http.clone()),

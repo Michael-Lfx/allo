@@ -518,7 +518,7 @@
       "rules": "规则",
       "skills": "技能",
       "mcpDynamicTools": "MCP 与动态工具",
-      "subagentDefinitions": "子代理定义",
+      "delegateDefinitions": "委派定义",
       "summarizedConversation": "摘要会话",
       "conversation": "会话内容"
     },

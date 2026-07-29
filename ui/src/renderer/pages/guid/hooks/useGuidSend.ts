@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
+ * Copyright 2025-2026 Flowy (nomifun.com)
  * SPDX-License-Identifier: Apache-2.0
  * Based on AionUi (https://github.com/iOfficeAI/AionUi)
  */
@@ -20,12 +20,16 @@ import { toSessionMcpServer } from '@/renderer/hooks/mcp/catalog';
 import { emitter } from '@/renderer/utils/emitter';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
 import { Message } from '@arco-design/web-react';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { type TFunction } from 'i18next';
 import type { NavigateFunction } from 'react-router-dom';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
-import type { PendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
+import type {
+  PendingConversation,
+  PendingConversationStage,
+} from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import type { AcpModelInfo, AvailableAgent, EffectiveAgentInfo } from '../types';
@@ -54,6 +58,8 @@ export type GuidSendDeps = {
   selectedAgent: string;
   selectedAgentKey: string;
   selectedAgentInfo: AvailableAgent | undefined;
+  is_presetAgent: boolean;
+  is_presetAgentPending: boolean;
   selectedMode: string;
   selectedAcpModel: string | null;
   currentAcpCachedModelInfo: AcpModelInfo | null;
@@ -98,10 +104,20 @@ export type GuidSendDeps = {
   navigate: NavigateFunction;
   t: TFunction;
 
+  /** When Nomi needs a model and none is configured, open in-place setup instead of only toasting. */
+  onNeedModel?: () => void;
+  /** When the selected intent requires a workspace, open the folder picker instead of sending. */
+  onNeedWorkspace?: () => void;
+  /** Unified readiness gate from Guid readiness resolver. */
+  readinessReady?: boolean;
+  readinessBlocker?: 'model' | 'workspace' | null;
+
   /** Show the instant "creating conversation" loading overlay the moment the
    * user sends, before the create round-trip resolves. Optional so callers
    * outside the conversation shell degrade gracefully. */
   beginPending?: (payload: PendingConversation) => void;
+  /** Reflect a real create/configure/navigation milestone in the overlay. */
+  advancePending?: (stage: PendingConversationStage) => void;
   /** Tear the loading overlay down (on success after navigate, or on failure). */
   endPending?: () => void;
 };
@@ -128,6 +144,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAgent,
     selectedAgentKey,
     selectedAgentInfo,
+    is_presetAgent,
+    is_presetAgentPending,
     selectedMode,
     selectedAcpModel,
     currentAcpCachedModelInfo,
@@ -152,7 +170,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     setMentionActiveIndex,
     navigate,
     t,
+    onNeedModel,
+    onNeedWorkspace,
+    readinessReady,
+    readinessBlocker,
     beginPending,
+    advancePending,
     endPending,
   } = deps;
   const sendingRef = useRef(false);
@@ -167,10 +190,13 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     // "conversation N is already running".
     const entryPlan = planGuidEntry(input, autoWork);
 
-    const agentInfo = selectedAgentInfo;
     const preset_id = presetIdFromSelectionKey(selectedAgentKey);
-    const is_preset = preset_id !== undefined;
-    if (is_preset && (!agentInfo || agentInfo.preset_id !== preset_id)) {
+    if (is_presetAgentPending && !selectedAgentInfo && !findAgentByKey(selectedAgentKey)) {
+      return;
+    }
+    const agentInfo = selectedAgentInfo ?? findAgentByKey(selectedAgentKey);
+    const is_preset = is_presetAgent || is_presetAgentPending || preset_id !== undefined;
+    if (preset_id && (!agentInfo || agentInfo.preset_id !== preset_id)) {
       throw new TypeError(
         'The selected preset is no longer available. Refresh the preset catalog or choose another preset.',
       );
@@ -192,6 +218,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     const selectedSessionMcpServers = availableMcpServers
       .filter((server) => selectedMcpServerIdSet.has(server.mcp_server_id) && server.builtin === true)
       .map((server) => toSessionMcpServer(server));
+    // Config One: omit Guid MCP keys when launching a preset with no local override
+    // so create_inner can inject snapshot.mcp_server_ids.
+    const presetUsesSnapshotMcp = is_preset && selectedUserMcpServerIds.length === 0;
 
     const finalEffectiveAgentType = effectiveAgentType;
 
@@ -224,6 +253,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       });
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke(openclawConversationParams);
 
         if (!conversation || !conversation.id) {
@@ -235,6 +265,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
         // conversation page consumes the initial message.
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -254,6 +285,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create OpenClaw conversation:', error);
@@ -282,6 +314,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       });
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke(nanobotConversationParams);
 
         if (!conversation || !conversation.id) {
@@ -293,6 +326,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
         // conversation page consumes the initial message.
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -312,6 +346,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create Nanobot conversation:', error);
@@ -324,10 +359,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     if (selectedAgent === 'nomi' || (is_preset && finalEffectiveAgentType === 'nomi')) {
       if (!current_model) {
         Message.warning(t('conversation.noModelConfigured'));
+        onNeedModel?.();
         return;
       }
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke({
           type: 'nomi',
           name: entryPlan.conversationName,
@@ -343,10 +380,14 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             custom_workspace: isCustomWorkspace,
             preset_enabled_skills: enabled_skills_to_send,
             exclude_auto_inject_skills: excludeBuiltinSkills,
-            selected_mcp_server_ids: selectedUserMcpServerIds,
+            ...(presetUsesSnapshotMcp
+              ? {}
+              : {
+                  selected_mcp_server_ids: selectedUserMcpServerIds,
+                  selected_session_mcp_servers: selectedAllSessionMcpServers,
+                }),
             // Nomi consumes the authoritative session snapshot instead of
             // reloading only user servers from the global MCP repository.
-            selected_session_mcp_servers: selectedAllSessionMcpServers,
             session_mode: selectedMode,
           },
         });
@@ -360,6 +401,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
         // conversation page consumes the initial message.
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -379,6 +421,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create Nomi conversation:', error);
@@ -428,14 +471,19 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         extra: {
           default_files: files,
           exclude_auto_inject_skills: excludeBuiltinSkills,
-          selected_mcp_server_ids: selectedUserMcpServerIds,
-          selected_session_mcp_servers: selectedSessionMcpServers,
+          ...(presetUsesSnapshotMcp
+            ? {}
+            : {
+                selected_mcp_server_ids: selectedUserMcpServerIds,
+                selected_session_mcp_servers: selectedSessionMcpServers,
+              }),
           // Bare Agents may still carry a one-off skill selection.
           ...(is_preset ? {} : guidEnabledSkills?.length ? { preset_enabled_skills: guidEnabledSkills } : {}),
         },
       });
 
       try {
+        advancePending?.('creating');
         const conversation = await ipcBridge.conversation.create.invoke(agentConversationParams);
         if (!conversation || !conversation.id) {
           console.error('Failed to create ACP conversation - conversation object is null or missing id');
@@ -443,6 +491,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
         assertCreatedConversationPreset(conversation, preset_id);
 
+        advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
         emitter.emit('chat.history.refresh');
@@ -464,6 +513,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create ACP conversation:', error);
@@ -477,6 +527,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAgent,
     selectedAgentKey,
     selectedAgentInfo,
+    is_presetAgent,
+    is_presetAgentPending,
     selectedMode,
     selectedAcpModel,
     currentAcpCachedModelInfo,
@@ -495,16 +547,46 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     executionTemplateId,
     navigate,
     t,
+    onNeedModel,
+    advancePending,
+  ]);
+
+  const needsModelBeforeSend = useMemo(() => {
+    const agentInfo = selectedAgentInfo ?? findAgentByKey(selectedAgentKey);
+    const isPreset = is_presetAgent || is_presetAgentPending;
+    const effectiveType = getEffectiveAgentType(agentInfo).agent_type;
+    return !current_model && (selectedAgent === 'nomi' || (isPreset && effectiveType === 'nomi'));
+  }, [
+    current_model,
+    findAgentByKey,
+    getEffectiveAgentType,
+    is_presetAgent,
+    is_presetAgentPending,
+    selectedAgent,
+    selectedAgentInfo,
+    selectedAgentKey,
   ]);
 
   const sendMessageHandler = useCallback(() => {
     if (loading || sendingRef.current) return;
+    if (readinessBlocker === 'model' || needsModelBeforeSend) {
+      trackFunnelEvent('task_drafted', { blocker: 'model' });
+      Message.warning(t('conversation.noModelConfigured'));
+      onNeedModel?.();
+      return;
+    }
+    if (readinessBlocker === 'workspace' || readinessReady === false) {
+      if (readinessBlocker === 'workspace') {
+        trackFunnelEvent('task_drafted', { blocker: 'workspace' });
+        onNeedWorkspace?.();
+        return;
+      }
+    }
+    if (input.trim()) {
+      trackFunnelEvent('task_drafted', { source: 'guid' });
+    }
     sendingRef.current = true;
     setLoading(true);
-    // Instant feedback: switch the content region to a conversation-shaped
-    // loading overlay (echoed message + "creating…") the moment the user sends,
-    // BEFORE the create round-trip resolves. Captured here because `.then` below
-    // clears `input`. AutoWork entries send no first message → different caption.
     beginPending?.({
       input,
       files: files.length > 0 ? files : undefined,
@@ -512,6 +594,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     });
     handleSend()
       .then(() => {
+        trackFunnelEvent('task_accepted', { source: 'guid' });
+        trackFunnelEvent('first_task_started', { source: 'guid' });
         setInput('');
         setMentionOpen(false);
         setMentionQuery(null);
@@ -527,9 +611,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       .finally(() => {
         sendingRef.current = false;
         setLoading(false);
-        // Tear down the overlay: on success the real conversation page has
-        // already been navigated to (deferred one frame inside `end`); on
-        // failure we uncover the composer with the input preserved.
         endPending?.();
       });
   }, [
@@ -549,10 +630,20 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     autoWork,
     beginPending,
     endPending,
+    needsModelBeforeSend,
+    onNeedModel,
+    onNeedWorkspace,
+    readinessReady,
+    readinessBlocker,
   ]);
 
   // Calculate button disabled state
-  const isButtonDisabled = loading || !input.trim();
+  const resolvedPresetSelection = useMemo(
+    () => selectedAgentInfo ?? (is_presetAgentPending ? findAgentByKey(selectedAgentKey) : undefined),
+    [selectedAgentInfo, is_presetAgentPending, findAgentByKey, selectedAgentKey]
+  );
+  const isButtonDisabled =
+    loading || !input.trim() || (is_presetAgentPending && !resolvedPresetSelection);
 
   return {
     handleSend,

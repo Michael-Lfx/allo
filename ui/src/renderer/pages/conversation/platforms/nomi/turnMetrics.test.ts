@@ -135,7 +135,7 @@ describe('buildContextBreakdownViewModel', () => {
         rules: 451,
         skills: 2_200,
         mcp_and_dynamic_tools: 856,
-        subagent_definitions: 1_000,
+        delegate_definitions: 1_000,
         summarized_conversation: 7_200,
         conversation: 68_500,
       },

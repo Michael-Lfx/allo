@@ -730,7 +730,7 @@ mod tests {
             .insert_suggestion("insight", "最近常调编译错误", "看看构建脚本", None)
             .await
             .unwrap();
-        learner.store.decide_suggestion(&s.id, false).await.unwrap();
+        learner.store.decide_suggestion(&s.suggestion_id, false).await.unwrap();
 
         let run = learner.run_once().await.unwrap();
         assert_eq!(run.suggestions_added, 0, "a just-dismissed idea is not re-raised within the window");
@@ -813,7 +813,9 @@ mod tests {
         assert!(config.learn.model.is_none());
         let companions_dir = dir.path().join("companions");
         let shared_dir = dir.path().join("shared");
-        let registry = Arc::new(CompanionRegistry::scan(companions_dir.clone(), shared_dir.clone()));
+        let registry = Arc::new(
+            CompanionRegistry::scan(companions_dir.clone(), shared_dir.clone()).unwrap(),
+        );
         let mut companion = registry.create("测试宠", "ink").await.unwrap();
         let provider_id = nomifun_common::ProviderId::new().into_string();
         companion.model = Some(nomifun_common::ProviderWithModel {
@@ -821,9 +823,11 @@ mod tests {
             model: "chat-model".into(),
             use_model: None,
         });
-        companion.save(&companions_dir.join(&companion.id)).unwrap();
-        let registry = Arc::new(CompanionRegistry::scan(companions_dir, shared_dir));
-        config.default_companion_id = Some(companion.id.clone());
+        companion
+            .save(&companions_dir.join(&companion.companion_id))
+            .unwrap();
+        let registry = Arc::new(CompanionRegistry::scan(companions_dir, shared_dir).unwrap());
+        config.default_companion_id = Some(companion.companion_id.clone());
         let learner = Learner {
             companion_dir: dir.path().to_path_buf(),
             config: Arc::new(RwLock::new(config)),

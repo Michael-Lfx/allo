@@ -57,10 +57,15 @@ async fn create_conversation_with_workspace(
         csrf,
     );
     let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
     let json = common::body_json(resp).await;
+    assert!(
+        status.is_success(),
+        "create conversation failed ({status}): {json}"
+    );
     json["data"]["conversation_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("conversation creation failed: {json}"))
+        .unwrap_or_else(|| panic!("missing conversation_id in {json}"))
         .to_owned()
 }
 
@@ -73,10 +78,15 @@ async fn create_conversation(app: &mut axum::Router, token: &str, csrf: &str, na
         csrf,
     );
     let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
     let json = common::body_json(resp).await;
+    assert!(
+        status.is_success(),
+        "create conversation failed ({status}): {json}"
+    );
     json["data"]["conversation_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("conversation creation failed: {json}"))
+        .unwrap_or_else(|| panic!("missing conversation_id in {json}"))
         .to_owned()
 }
 
@@ -362,6 +372,68 @@ async fn slash_commands_no_active_task() {
     let conv_id = create_conversation(&mut app, &token, &csrf, "Slash Test", "acp").await;
 
     let req = get_with_token(&format!("/api/conversations/{conv_id}/slash-commands"), &token);
+    let resp = app.oneshot(req).await.unwrap();
+    // No active agent → empty list (soft read)
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["data"].as_array().unwrap().is_empty());
+}
+
+// ── Soft reads: mode / model / usage (no runtime → empty defaults) ─
+
+#[tokio::test]
+async fn get_mode_no_active_runtime_returns_default() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_owner(&mut app, &services).await;
+    let conv_id = create_conversation(&mut app, &token, &csrf, "Mode Soft", "acp").await;
+
+    let req = get_with_token(&format!("/api/conversations/{conv_id}/mode"), &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["data"]["mode"], "default");
+    assert_eq!(json["data"]["initialized"], false);
+}
+
+#[tokio::test]
+async fn get_model_no_active_runtime_returns_null() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_owner(&mut app, &services).await;
+    let conv_id = create_conversation(&mut app, &token, &csrf, "Model Soft", "acp").await;
+
+    let req = get_with_token(&format!("/api/conversations/{conv_id}/model"), &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["data"]["model_info"].is_null());
+}
+
+#[tokio::test]
+async fn get_usage_no_active_runtime_returns_null() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_owner(&mut app, &services).await;
+    let conv_id = create_conversation(&mut app, &token, &csrf, "Usage Soft", "acp").await;
+
+    let req = get_with_token(&format!("/api/conversations/{conv_id}/usage"), &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["data"].is_null());
+}
+
+#[tokio::test]
+async fn set_mode_no_active_runtime_still_404() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_owner(&mut app, &services).await;
+    let conv_id = create_conversation(&mut app, &token, &csrf, "Mode Write", "acp").await;
+
+    let req = json_with_token(
+        "PUT",
+        &format!("/api/conversations/{conv_id}/mode"),
+        json!({ "mode": "code" }),
+        &token,
+        &csrf,
+    );
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

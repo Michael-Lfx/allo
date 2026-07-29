@@ -1,4 +1,4 @@
-//! Auth flow orchestration across login methods.
+//! Auth flow coordination across login methods.
 
 use std::path::PathBuf;
 use std::sync::Arc;

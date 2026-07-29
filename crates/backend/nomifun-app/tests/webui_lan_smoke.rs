@@ -37,7 +37,7 @@ async fn webui_lan_start_smoke() {
     // Isolate the data dir via --data-dir below (NOT a process-global env var):
     // these tests run in parallel, so a shared set_var("NOMIFUN_DATA_DIR") would
     // race and two backends could resolve to the SAME dir → "data directory
-    // already in use by another running NomiFun backend".
+    // already in use by another running Flowy backend".
     let spa_dir = tmp.path().join("spa");
     std::fs::create_dir_all(&spa_dir).unwrap();
     std::fs::write(
@@ -113,7 +113,9 @@ async fn webui_lan_spa_deep_link_serves_app_shell() {
 }
 
 /// HTTP-layer regression coverage for custom-protocol builds, which can have an
-/// embedded frontend source but no external webui-dist directory.
+/// embedded frontend source but no external webui-dist directory. A separate
+/// desktop test exercises Tauri's generated custom-protocol context and exact
+/// frontend build-ID pairing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn webui_lan_embedded_asset_source_needs_no_filesystem_shell() {
     const INDEX: &str = "<!doctype html><title>EMBEDDED_WEBUI_MARKER</title>";
@@ -283,7 +285,7 @@ async fn figure_image_get_is_public_but_listing_stays_authenticated() {
     // Isolate the data dir via --data-dir below (NOT a process-global env var):
     // these tests run in parallel, so a shared set_var("NOMIFUN_DATA_DIR") would
     // race and two backends could resolve to the SAME dir → "data directory
-    // already in use by another running NomiFun backend".
+    // already in use by another running Flowy backend".
     let cli = isolated_cli(tmp.path());
     let merged_path = std::env::var("PATH").unwrap_or_default();
     let (server, _keep) =
@@ -338,7 +340,7 @@ async fn webui_lan_dev_proxy_serves_live_frontend() {
     // Isolate the data dir via --data-dir below (NOT a process-global env var):
     // these tests run in parallel, so a shared set_var("NOMIFUN_DATA_DIR") would
     // race and two backends could resolve to the SAME dir → "data directory
-    // already in use by another running NomiFun backend".
+    // already in use by another running Flowy backend".
     // Mock vite dev server: returns a recognizable marker for any path.
     let mock = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -414,7 +416,7 @@ async fn webui_enable_preserves_user_set_username_and_reports_persisted_state() 
     // Simulate the user renaming the admin from the panel while WebUI is OFF:
     // this leaves `password_hash` empty. Open the SAME db file the server uses
     // (WAL allows a second connection) and rewrite the username directly.
-    let db_path = tmp.path().join("nomifun-backend.db");
+    let db_path = tmp.path().join(nomifun_common::storage_paths::DATABASE_FILE);
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
         .await
         .expect("open backend db");
@@ -454,7 +456,8 @@ async fn webui_enable_preserves_user_set_username_and_reports_persisted_state() 
 }
 
 /// Browser login contract regression: the desktop-generated credentials must
-/// authenticate through the real LAN listener with the bundled WebUI schema.
+/// authenticate through the real LAN listener when the request body matches
+/// the strict `/login` schema used by the bundled WebUI.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn webui_browser_login_contract_accepts_generated_credentials() {
     let tmp = tempfile::TempDir::new().unwrap();

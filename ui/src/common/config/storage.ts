@@ -227,7 +227,7 @@ export type ContextBreakdownData = {
   rules?: number;
   skills?: number;
   mcp_and_dynamic_tools?: number;
-  subagent_definitions?: number;
+  delegate_definitions?: number;
   summarized_conversation?: number;
   conversation?: number;
   summarized?: SummarizedConversationProperties | null;

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 /**
  * IPC Bridge → HTTP/WS adapter.
@@ -27,6 +23,7 @@ import {
   tauriGetZoom,
   tauriIsAutostartEnabled,
   tauriOpenDialog,
+  tauriSaveDialog,
   tauriRelaunch,
   tauriSendNotification,
   tauriSetAutostart,
@@ -43,6 +40,7 @@ import {
   tauriWindowToggleMaximize,
   tauriWindowUnmaximize,
   type ShellOpenDialogOptions,
+  type ShellSaveDialogOptions,
 } from './tauriShell';
 import {
   autoUpdateStatusEmitter,
@@ -89,6 +87,9 @@ import {
   type FetchModelsResponse,
   type ModelProfileKeyRequest,
   type ModelProfileUpsertRequest,
+  type ModelsDevLookupResponse,
+  type ModelsDevSearchResponse,
+  type ModelsDevStatusResponse,
   type ProviderResponse,
   type ProviderHealthCheckRequest,
   type ProviderHealthCheckResponse,
@@ -105,7 +106,7 @@ import type {
   SetManagedModelEnabledRequest,
   SetManagedModelServiceEnabledRequest,
 } from '../types/provider/managedModelService';
-import type { SpeechToTextRequest, SpeechToTextResult } from '../types/provider/speech';
+import { buildSpeechToTextFormData, type SpeechToTextRequest, type SpeechToTextResult } from '../types/provider/speech';
 import type {
   TAdoptExecutionStepOutput,
   TAdjustAgentExecution,
@@ -232,6 +233,7 @@ import {
 import {
   httpDelete,
   httpGet,
+  httpMultipartPost,
   httpPatch,
   httpPost,
   httpPut,
@@ -601,7 +603,7 @@ export const conversation = {
     httpGet<unknown[], { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}/conversations`),
     (list) => list.map(fromApiConversation)
   ),
-  remove: httpDelete<boolean, { conversation_id: ConversationId }>(
+  remove: httpDelete<void, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}`
   ),
   // updates 额外允许顶层 `pinned`：对应 conversations 表真列（UpdateConversationRequest.pinned，
@@ -609,13 +611,15 @@ export const conversation = {
   update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean }; merge_extra?: boolean }>(
     (p) => `/api/conversations/${p.conversation_id}`,
     (p) => {
+      // `merge_extra` is a client-only hint: the backend always merges `extra`
+      // and UpdateConversationRequest uses deny_unknown_fields, so forwarding
+      // the flag makes every metrics / workspace PATCH fail deserialization.
       const updates = p.updates as Record<string, unknown>;
       const { model: rawModel, ...rest } = updates;
       const model = toApiModelOptional(rawModel as TProviderWithModel | undefined);
       return {
         ...rest,
         ...(model ? { model } : {}),
-        merge_extra: p.merge_extra,
       };
     }
   ),
@@ -976,31 +980,32 @@ export const application = {
 // only render under `isDesktopShell()`), and `shellProvider` additionally guards
 // each call with `isTauriRuntime()`, so the WebUI browser degrades to the safe fallback.
 
-/** Releases page shown in the modal's "go to release" affordance. */
-const GITHUB_RELEASES_PAGE = 'https://github.com/nomifun/nomifun-tauri/releases/latest';
+/** Releases page shown in the modal's manual-download fallback (WebUI only). */
+const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo';
 
 export const update = {
   open: noopEmitter<{ source?: 'menu' | 'about' }>(),
   check: shellProvider<IBridgeResponse<UpdateCheckResult>, UpdateCheckRequest>(async () => {
-    // Reuses the check started by autoUpdate.check (the modal calls that first),
-    // so this is the SAME round-trip, not a second network call.
-    const currentVersion = await tauriUpdateCurrentVersion();
-    const info = await tauriUpdateCheck(false);
-    if (!info) {
-      return { success: true, data: { currentVersion, updateAvailable: false } };
+    try {
+      const currentVersion = await tauriUpdateCurrentVersion();
+      const info = await tauriUpdateCheck(false);
+      if (!info) {
+        return { success: true, data: { currentVersion, updateAvailable: false } };
+      }
+      const latest: UpdateReleaseInfo = {
+        tagName: `v${info.version}`,
+        version: info.version,
+        body: info.releaseNotes,
+        htmlUrl: MODELSCOPE_RELEASE_PAGE,
+        prerelease: false,
+        draft: false,
+        assets: [],
+      };
+      return { success: true, data: { currentVersion, updateAvailable: true, latest } };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, msg };
     }
-    const latest: UpdateReleaseInfo = {
-      tagName: `v${info.version}`,
-      version: info.version,
-      body: info.releaseNotes,
-      htmlUrl: GITHUB_RELEASES_PAGE,
-      prerelease: false,
-      draft: false,
-      assets: [],
-      // recommendedAsset intentionally omitted: the plugin handles download +
-      // install, so the modal routes through the autoUpdate.* channels below.
-    };
-    return { success: true, data: { currentVersion, updateAvailable: true, latest } };
   }, { success: false, msg: 'Updater is unavailable outside the desktop shell' }),
   // Unused under Tauri (no recommendedAsset → the modal never takes the manual
   // download path); kept for API compatibility with the modal's manual branch.
@@ -1022,14 +1027,17 @@ export const autoUpdate = {
     }>,
     { includePrerelease?: boolean }
   >(async () => {
-    // `force` so each modal open / retry performs a fresh check; update.check
-    // (called right after) then reuses this same in-flight result.
-    const info = await tauriUpdateCheck(true);
-    if (!info) return { success: true, data: {} };
-    return {
-      success: true,
-      data: { updateInfo: { version: info.version, releaseDate: info.releaseDate, releaseNotes: info.releaseNotes } },
-    };
+    try {
+      const info = await tauriUpdateCheck(true);
+      if (!info) return { success: true, data: {} };
+      return {
+        success: true,
+        data: { updateInfo: { version: info.version, releaseDate: info.releaseDate, releaseNotes: info.releaseNotes } },
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, msg };
+    }
   }, { success: false }),
   download: shellProvider<IBridgeResponse, void>(async () => {
     await tauriUpdateDownload((s) => autoUpdateStatusEmitter.emit(s));
@@ -1057,6 +1065,11 @@ export const dialog = {
   showOpen: shellProvider<string[] | undefined, ShellOpenDialogOptions | void>(
     (opts) => tauriOpenDialog(opts || undefined),
     (opts) => bridge.invoke<string[] | undefined>('show-open', opts || undefined)
+  ),
+  /** Native save dialog (desktop only; web returns null). */
+  showSave: shellProvider<string | null, ShellSaveDialogOptions | void>(
+    (opts) => tauriSaveDialog(opts || undefined),
+    async () => null
   ),
 };
 
@@ -1190,7 +1203,10 @@ export const fs = {
 // ---------------------------------------------------------------------------
 
 export const speechToText = {
-  transcribe: httpPost<SpeechToTextResult, SpeechToTextRequest>('/api/stt'),
+  transcribe: httpMultipartPost<SpeechToTextResult, SpeechToTextRequest>(
+    '/api/stt',
+    ({ blob, languageHint }) => buildSpeechToTextFormData(blob, languageHint)
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -1354,7 +1370,7 @@ export const mode = {
 };
 
 // ---------------------------------------------------------------------------
-// NomiFun-managed free-model service
+// Flowy-managed free-model service
 // ---------------------------------------------------------------------------
 
 export const managedModelService = {
@@ -1413,6 +1429,27 @@ export const modelProfile = {
       })),
     })
   ),
+};
+
+// ---------------------------------------------------------------------------
+// models.dev registry — routed to /api/models-dev/*
+// ---------------------------------------------------------------------------
+
+export const modelsDev = {
+  status: httpGet<ModelsDevStatusResponse, void>('/api/models-dev/status'),
+  refresh: httpPost<ModelsDevStatusResponse, { force?: boolean }>('/api/models-dev/refresh', (p) => ({
+    force: p?.force ?? false,
+  })),
+  lookup: httpGet<ModelsDevLookupResponse, { platform: string; model: string }>(
+    (p) =>
+      `/api/models-dev/lookup?platform=${encodeURIComponent(p.platform)}&model=${encodeURIComponent(p.model)}`
+  ),
+  search: httpGet<ModelsDevSearchResponse, { q: string; platform?: string; limit?: number }>((p) => {
+    const qs = new URLSearchParams({ q: p.q });
+    if (p.platform) qs.set('platform', p.platform);
+    if (p.limit != null) qs.set('limit', String(p.limit));
+    return `/api/models-dev/search?${qs}`;
+  }),
 };
 
 // ---------------------------------------------------------------------------
@@ -1499,22 +1536,14 @@ export const acpConversation = {
     (p) => `/api/conversations/${p.conversation_id}/mode`,
     (p) => ({ mode: p.mode })
   ),
-  // 404 is the expected pre-warmup response from `/api/conversations/:id/mode`
-  // and `/api/conversations/:id/model` — the agent has not attached yet, so
-  // we have nothing to read. AcpModeSelector / AcpModelSelector both fall back
-  // to handshake metadata in that case. Silence the bridge log so this
-  // ordinary state doesn't pollute Sentry breadcrumbs (ELECTRON-1BT).
+  // Soft reads: no active runtime returns 200 with
+  // `{ mode: 'default', initialized: false }` / `{ model_info: null }`.
+  // Missing conversation still 404s (real not-found).
   getMode: httpGet<{ mode: string; initialized: boolean }, { conversation_id: ConversationId }>(
-    (p) => `/api/conversations/${p.conversation_id}/mode`,
-    {
-      silentStatuses: [404],
-    }
+    (p) => `/api/conversations/${p.conversation_id}/mode`
   ),
   getModel: httpGet<{ model_info: AcpModelInfo | null }, { conversation_id: ConversationId }>(
-    (p) => `/api/conversations/${p.conversation_id}/model`,
-    {
-      silentStatuses: [404],
-    }
+    (p) => `/api/conversations/${p.conversation_id}/model`
   ),
   setModel: httpPut<void, { conversation_id: ConversationId; model: string }>(
     (p) => `/api/conversations/${p.conversation_id}/model`,
@@ -2182,7 +2211,7 @@ export const cron = {
   ),
   getJob: withResponseMap(httpGet<ICronJob | null, { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}`), (job) => job ? fromApiCronJob(job) : null),
   addJob: withResponseMap(httpPost<ICronJob, ICreateCronJobParams>('/api/cron/jobs'), fromApiCronJob),
-  updateJob: withResponseMap(httpPut<ICronJob, { cron_job_id: CronJobId; updates: Partial<ICronJob> }>(
+  updateJob: withResponseMap(httpPut<ICronJob, { cron_job_id: CronJobId; updates: IUpdateCronJobParams }>(
     (p) => `/api/cron/jobs/${p.cron_job_id}`,
     (p) => ({
       name: p.updates.name,
@@ -2190,10 +2219,9 @@ export const cron = {
       enabled: p.updates.enabled,
       schedule: p.updates.schedule,
       message: p.updates.message,
-      execution_mode: p.updates.execution_mode,
-      agent_config: p.updates.metadata?.agent_config,
-      conversation_title: p.updates.metadata?.conversation_title,
-      max_retries: p.updates.state?.max_retries,
+      agent_config: p.updates.agent_config,
+      conversation_title: p.updates.conversation_title,
+      max_retries: p.updates.max_retries,
     })
   ), fromApiCronJob),
   removeJob: httpDelete<void, { cron_job_id: CronJobId }>((p) => `/api/cron/jobs/${p.cron_job_id}`),
@@ -2311,6 +2339,23 @@ export interface ICreateCronJobParams {
   agent_config?: ICronAgentConfig;
 }
 
+/**
+ * Mutable fields accepted by PUT /api/cron/jobs/{cron_job_id}.
+ *
+ * Keep this separate from ICronJob: response-only and creation-only fields
+ * (especially execution_mode) must never leak into the strict update DTO.
+ */
+export interface IUpdateCronJobParams {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+  schedule?: ICronSchedule;
+  message?: string;
+  agent_config?: ICronAgentConfig;
+  conversation_title?: string;
+  max_retries?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Terminal — routed to /api/terminals/*
 // ---------------------------------------------------------------------------
@@ -2355,7 +2400,7 @@ export interface ICreateTerminalParams {
   rows?: number;
   /** 推迟到首个 resize(携带真实尺寸)再 spawn PTY,使全屏 TUI(claude)首帧即按正确尺寸绘制,避免「进入即花屏、需手动调尺寸」 / Defer the PTY spawn until the first resize carries the real size. */
   defer_spawn?: boolean;
-  /** 创建即绑定的知识库 id；启动时挂载到 {cwd}/.nomi/knowledge/ / Knowledge bases bound at creation, mounted before the PTY spawns. */
+  /** 创建即绑定的知识库 id；启动时挂载到 {cwd}/.flowy/knowledge/ / Knowledge bases bound at creation, mounted before the PTY spawns. */
   knowledge_base_ids?: string[];
 }
 
@@ -2973,6 +3018,12 @@ interface IChannelBridgeResponse {
   error?: string;
 }
 
+function requireSuccessfulChannelResponse(raw: IChannelBridgeResponse): void {
+  if (!raw.success) {
+    throw new Error(raw.error || raw.message || 'Channel operation failed');
+  }
+}
+
 type IChannelEnableResponse = {
   success: boolean;
   plugin_id?: ChannelPluginId;
@@ -2988,6 +3039,7 @@ function toPluginStatus(raw: RawPluginStatus): IChannelPluginStatus {
     connected: (raw.connected ?? false) as boolean,
     status: raw.status as string | undefined,
     last_connected: raw.last_connected as number | undefined,
+    error: raw.error as string | undefined,
     activeUsers: (raw.active_users ?? 0) as number,
     botUsername: raw.bot_username as string | undefined,
     hasToken: (raw.has_token ?? false) as boolean,
@@ -3069,9 +3121,19 @@ export const channel = {
       ...(raw.error == null ? {} : { error: raw.error }),
     };
   }),
-  disablePlugin: httpPost<void, { plugin_id: import('../types/ids').ChannelPluginId }>('/api/channel/plugins/disable'),
+  disablePlugin: withResponseMap(
+    httpPost<IChannelBridgeResponse, { plugin_id: import('../types/ids').ChannelPluginId }>(
+      '/api/channel/plugins/disable'
+    ),
+    requireSuccessfulChannelResponse
+  ),
   /** 删除渠道行：停实例 + 清该渠道会话 + 删行（会话所产生的对话保留）。 */
-  deletePlugin: httpPost<void, { plugin_id: import('../types/ids').ChannelPluginId }>('/api/channel/plugins/delete'),
+  deletePlugin: withResponseMap(
+    httpPost<IChannelBridgeResponse, { plugin_id: import('../types/ids').ChannelPluginId }>(
+      '/api/channel/plugins/delete'
+    ),
+    requireSuccessfulChannelResponse
+  ),
   testPlugin: httpPost<
     { success: boolean; bot_username?: string; error?: string },
     { plugin_type: string; token: string; extra_config?: { app_id?: string; app_secret?: string; app_token?: string; homeserver_url?: string; user_id?: string; server_url?: string; nostr_relays?: string } }
@@ -3137,6 +3199,9 @@ export const channel = {
     };
   }),
   userAuthorized: wsMappedEmitter<IChannelUser, unknown>('channel.user-authorized', (raw) => toChannelUser(raw as RawUser)),
+  /** Channel events are not replayed; reload durable pairings/users after a
+   * successful WebSocket reconnect to cover the disconnected interval. */
+  reconnected: wsEmitter<undefined>('ws.reconnected'),
   /**
    * 微信扫码登录生命周期事件（替代旧 SSE 流）。`phase` 区分阶段：
    * `qr`(带 qrcodeData) → `scanned` → 终态 `done`(带 accountId/botToken) 或 `error`(带 message)。
@@ -3353,6 +3418,8 @@ export interface IAutoWorkState {
   run_state: AutoWorkRunState;
   current_requirement_id?: RequirementId;
   completed_count: number;
+  /** True when this enable call just auto-armed IDMM fault watch (rule_only). */
+  fault_watch_auto_armed?: boolean;
 }
 
 export const fromAttachmentResponse = (attachment: AttachmentResponse): IAttachment => {
@@ -3458,6 +3525,9 @@ export const requirements = {
         target_id: binding.kind === 'conversation'
           ? parseConversationId(binding.target_id)
           : parseTerminalId(binding.target_id),
+        ...(binding.current_requirement_id
+          ? { current_requirement_id: parseRequirementId(binding.current_requirement_id) }
+          : {}),
       })),
     }))
   ),
@@ -3467,6 +3537,14 @@ export const requirements = {
 
 export type IdmmTargetKind = 'conversation' | 'terminal';
 export type IdmmRunState = 'off' | 'armed' | 'intervening';
+
+/** Lightweight IDMM-enabled session row from `GET /api/idmm/bindings`. */
+export interface IIdmmBinding {
+  kind: IdmmTargetKind;
+  target_id: SessionCapabilityTargetId;
+  enabled: boolean;
+  run_state: IdmmRunState;
+}
 
 // ── Phase-2 dual-watch config (mirrors `nomifun-api-types/src/idmm.rs` D1/D2). ──
 // IDMM is reorganized into two independently-toggleable, default-off watches that
@@ -3670,6 +3748,13 @@ export const idmm = {
   getStatus: withResponseMap(httpGet<IIdmmState, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}`
   ), fromApiIdmmState),
+  /** Bulk hydrate of IDMM-enabled sessions (sidebar capability map). */
+  listBindings: withResponseMap(httpGet<IIdmmBinding[], void>('/api/idmm/bindings'), (rows) =>
+    rows.map((row) => ({
+      ...row,
+      target_id: parseIdmmTargetId(row.kind, row.target_id),
+    }))
+  ),
   intervene: withResponseMap(httpPost<IIdmmState, { kind: IdmmTargetKind; target_id: SessionCapabilityTargetId }>(
     (p) => `/api/idmm/${p.kind}/${p.target_id}/intervene`,
     () => ({})
@@ -3744,6 +3829,8 @@ export interface ITagBinding {
   target_id: SessionCapabilityTargetId;
   name: string;
   run_state: AutoWorkRunState;
+  current_requirement_id?: RequirementId;
+  lease_expires_at?: number;
 }
 
 /** All AutoWork bindings for one tag (used by 标签会话管理). */
@@ -4293,6 +4380,72 @@ export interface ICompanionSourceStats {
   total: number;
 }
 
+/** Collector source recommendation (optimization 10). */
+export interface ICompanionSourceRecommendation {
+  source: string;
+  today_count: number;
+  total_count: number;
+  event_types: string[];
+  recommendation: string;
+  reason: string;
+}
+
+/** Learning graph node (optimization 7). */
+export interface ICompanionLearningGraphNode {
+  id: string;
+  label: string;
+  node_type: string;
+  status: string;
+  kind: string;
+  strength: number;
+  usage_count: number;
+  importance: number;
+}
+
+/** Learning graph edge (optimization 7). */
+export interface ICompanionLearningGraphEdge {
+  source: string;
+  target: string;
+  edge_type: string;
+}
+
+/** Learning graph (optimization 7). */
+export interface ICompanionLearningGraph {
+  nodes: ICompanionLearningGraphNode[];
+  edges: ICompanionLearningGraphEdge[];
+}
+
+/** Local analytics (optimization 8). */
+export interface ILocalAnalytics {
+  conversations: {
+    total_conversations: number;
+    active_conversations_7d: number;
+    total_messages: number;
+    messages_7d: number;
+  };
+  skills: {
+    by_status: { active: number; draft: number; archived: number };
+    by_source: { mined: number; manual: number; imported: number };
+    top_by_usage: { name: string; usage_count: number; strength: number }[];
+    avg_strength: number;
+    avg_confidence: number;
+  };
+  memories: {
+    total_active: number;
+    by_kind: { profile: number; preference: number; knowledge: number; episode: number; task: number; affective: number };
+    avg_importance: number;
+    avg_strength: number;
+    pinned: number;
+  };
+  learning: {
+    total_runs: number;
+    runs_7d: number;
+    total_memories_added: number;
+    total_suggestions_added: number;
+  };
+  generated_at: number;
+}
+
 /** One archived session-window day-digest (伙伴会话归档回看). */
 export interface ICompanionDayDigest {
   session_window_id: CompanionSessionWindowId;
@@ -4324,10 +4477,17 @@ export interface ICompanionThread {
 
 // ── Multi-companion (spec docs/superpowers/specs/2026-06-11-unified-memory-knowledge-design.md §4.3/§4.7/§4.8) ──
 
-/** Persona of one companion (same shape as the legacy single-companion config persona). */
+/** One user-authored companion persona (chip title + prompt body). */
+export interface ICustomPersona {
+  id: string;
+  title: string;
+  body: string;
+}
+
+/** Persona of one companion: built-in key or a custom persona id. */
 export interface ICompanionPersona {
-  preset: string;
-  custom: string;
+  selected: string;
+  customs: ICustomPersona[];
 }
 
 /** Model reference (provider + model id) as stored in companion configs. */
@@ -4408,6 +4568,8 @@ export interface ICompanionEvolveConfig {
   reflect_enabled: boolean;
   auto_activate: boolean;
   auto_threshold: number;
+  /** Periodically fold semantically-redundant existing skills into one (archives the rest). */
+  consolidate_enabled: boolean;
 }
 
 /** Shared session-window archiving settings (伙伴会话窗口归档). Default OFF (opt-in). */
@@ -4750,6 +4912,11 @@ export const companion = {
     ),
     fromApiCompanionSkill
   ),
+  /** Manually archive an active skill (soft, reversible — recoverable under the Archived filter). */
+  archiveSkill: httpPost<ICompanionSkill, { companion_id: CompanionId; name: string }>(
+    (p) => `/api/companion/companions/${p.companion_id}/skills/${encodeURIComponent(p.name)}/archive`,
+    () => ({})
+  ),
   weeklyDigest: httpGet<ICompanionWeeklyDigest, { companion_id: CompanionId; days?: number }>(
     (p) => `/api/companion/companions/${p.companion_id}/weekly-digest${p.days ? `?days=${p.days}` : ''}`
   ),
@@ -4807,6 +4974,14 @@ export const companion = {
     (raw): ICompanionLearnRun[] => raw.map(fromApiCompanionLearnRun)
   ),
   eventStats: httpGet<ICompanionSourceStats[], void>('/api/companion/events/stats'),
+  /** Collector source smart recommendations (optimization 10). */
+  sourceRecommendations: httpGet<ICompanionSourceRecommendation[], void>('/api/companion/events/source-recommendations'),
+  /** Learning graph for a companion (optimization 7). */
+  learningGraph: httpGet<ICompanionLearningGraph, { companion_id: string }>(
+    (p) => `/api/companion/companions/${p.companion_id}/learning-graph`
+  ),
+  /** Local usage analytics (optimization 8). */
+  localAnalytics: httpGet<ILocalAnalytics, void>('/api/companion/analytics/local'),
   recentEvents: httpGet<ICompanionCollectedEvent[], { limit?: number }>(
     (p) => `/api/companion/events/recent${p?.limit ? `?limit=${p.limit}` : ''}`
   ),
@@ -5173,6 +5348,12 @@ export interface IKnowledgeSearchHit {
   heading: string;
   snippet: string;
   score: number;
+}
+
+export interface IKnowledgeQuickCreateOutcome {
+  base: IKnowledgeBase;
+  suggest_prompt: string;
+  binding?: IKnowledgeBinding | null;
 }
 
 export interface IKnowledgeFileEntry {
@@ -5558,6 +5739,31 @@ export const knowledge = {
       tags?: string[];
     }
   >('/api/knowledge/bases'), fromApiKnowledgeBase),
+  /** One-shot activation create (sample/blank/local/web) with optional binding. */
+  quickCreate: withResponseMap(httpPost<
+    IKnowledgeQuickCreateOutcome,
+    {
+      seed: 'sample' | 'blank' | 'local' | 'web';
+      name?: string;
+      description?: string;
+      root_path?: string;
+      url?: string;
+      bind_kind?: KnowledgeBindingKind;
+      bind_target_id?: string;
+    }
+  >('/api/knowledge/bases/quick', (p) => ({
+    seed: p.seed,
+    name: p.name,
+    description: p.description,
+    rootPath: p.root_path,
+    url: p.url,
+    bindKind: p.bind_kind,
+    bindTargetId: p.bind_target_id,
+  })), (outcome) => ({
+    ...outcome,
+    base: fromApiKnowledgeBase(outcome.base),
+    binding: outcome.binding ? fromApiKnowledgeBinding(outcome.binding) : outcome.binding,
+  })),
   getBase: withResponseMap(httpGet<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}`, { timeoutMs: KB_READ_TIMEOUT_MS }), fromApiKnowledgeBase),
   updateBase: withResponseMap(httpPut<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId; name?: string; description?: string; tags?: string[] }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}`,
@@ -5621,6 +5827,13 @@ export const knowledge = {
   writeFile: httpPut<void, { knowledge_base_id: KnowledgeBaseId; path: string; content: string }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file`,
     (p) => ({ path: p.path, content: p.content })
+  ),
+  uploadFiles: httpPost<{ written: number }, { knowledge_base_id: KnowledgeBaseId; files: Array<{ path: string; content: string }> }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/upload`,
+    (p) => ({ files: p.files })
+  ),
+  suggestPrompt: httpPost<{ prompt: string }, { knowledge_base_id: KnowledgeBaseId }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/suggest-prompt`
   ),
   deleteFile: httpDelete<void, { knowledge_base_id: KnowledgeBaseId; path: string }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/file?path=${encodeURIComponent(p.path)}`
@@ -5743,4 +5956,490 @@ export const knowledge = {
     '/api/knowledge/inbox/discard-all',
     (p) => ({ kbId: p.kbId, scope: p.scope })
   ),
+};
+
+// ---------------------------------------------------------------------------
+// POI (interest topics) — /api/poi/*
+// ---------------------------------------------------------------------------
+
+export interface IPoiTopic {
+  id: string;
+  label: string;
+  summary: string;
+  weight: number;
+  status: string;
+  source: string;
+  confidence: number;
+  evidenceCount: number;
+  tags: string[];
+  pinned: boolean;
+  lastSeenAt: string;
+}
+
+export interface IPoiTopicListResponse {
+  topics: IPoiTopic[];
+  databasePath: string;
+}
+
+export interface IPoiStatusResponse {
+  enabled: boolean;
+  extractMode: string;
+  perTurnBuffer: boolean;
+  perTurnPersist: boolean;
+  sessionEndLlm: boolean;
+  topicCount: number;
+  databasePath: string;
+}
+
+export interface IPoiSettings {
+  enabled: boolean;
+  maxTopics: number;
+  snapshotTopK: number;
+  prefetchTopK: number;
+  charBudgetSnapshot: number;
+  charBudgetPrefetch: number;
+  extractMode: string;
+  decayHalfLifeDays: number;
+  llmOnSessionEnd: boolean;
+  perTurnBuffer: boolean;
+  perTurnPersist: boolean;
+  promoteMinEvidence: number;
+  promoteMinConfidence: number;
+  minTurnChars: number;
+  autoExtractEnabled: boolean;
+  autoExtractMinTurns: number;
+  autoExtractMinUserChars: number;
+  autoExtractIdleSecs: number;
+  /** Fixed flowy-cloud model id, or null/empty to use the first available cloud model. */
+  llmModel?: string | null;
+  starterEnabled?: boolean;
+  startersPerTopic?: number;
+  maxStartersGlobal?: number;
+  starterPageSize?: number;
+}
+
+export interface IPoiStarter {
+  id: string;
+  topicId: string;
+  topicLabel: string;
+  text: string;
+  locale: string;
+  source: string;
+}
+
+export interface IPoiStarterListParams {
+  limit?: number;
+  offset?: number;
+  seed?: number;
+  locale?: string;
+}
+
+export interface IPoiStarterListResponse {
+  starters: IPoiStarter[];
+  total: number;
+  hasMore: boolean;
+  /** `local` from user POI store, or `preset` from remote curated defaults. */
+  source: string;
+}
+
+export type IUpdatePoiSettings = Partial<IPoiSettings>;
+
+function buildPoiStartersPath(params?: IPoiStarterListParams): string {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set('limit', String(params.limit));
+  if (params?.offset != null) qs.set('offset', String(params.offset));
+  if (params?.seed != null) qs.set('seed', String(params.seed));
+  if (params?.locale) qs.set('locale', params.locale);
+  const query = qs.toString();
+  return query ? `/api/poi/starters?${query}` : '/api/poi/starters';
+}
+
+export const poi = {
+  listTopics: httpGet<IPoiTopicListResponse, void>('/api/poi/topics'),
+  clearTopics: httpDelete<void, void>('/api/poi/topics'),
+  deleteTopic: httpDelete<void, { id: string }>((p) => `/api/poi/topics/${encodeURIComponent(p.id)}`),
+  listStarters: httpGet<IPoiStarterListResponse, IPoiStarterListParams>(
+    (p) => buildPoiStartersPath(p)
+  ),
+  status: httpGet<IPoiStatusResponse, void>('/api/poi/status'),
+  getSettings: httpGet<IPoiSettings, void>('/api/poi/settings'),
+  updateSettings: httpPatch<IPoiSettings, IUpdatePoiSettings>('/api/poi/settings'),
+  pinTopic: httpPost<IPoiTopic, { id: string; pinned: boolean }>(
+    (p) => `/api/poi/topics/${encodeURIComponent(p.id)}/pin`,
+    (p) => ({ pinned: p.pinned })
+  ),
+  setTopicStatus: httpPut<IPoiTopic, { id: string; status: string }>(
+    (p) => `/api/poi/topics/${encodeURIComponent(p.id)}/status`,
+    (p) => ({ status: p.status })
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Insights contribution — /api/insights/contribution/*
+// ---------------------------------------------------------------------------
+
+export interface IInsightsContributionStatus {
+  enabled: boolean;
+  on_session_end: boolean;
+  auto_extract_enabled: boolean;
+  auto_extract_idle_secs: number;
+  skill_mining_enabled: boolean;
+  min_evidence_tier: string;
+  require_skill_binding: boolean;
+  min_work_turns: number;
+  redacted_body: boolean;
+  endpoint: string;
+  auth_configured: boolean;
+  upload_ready: boolean;
+  outbox_pending: number;
+  outbox_failed: number;
+  outbox_sent: number;
+  installation_id: string;
+  consent_version: string;
+}
+
+export interface IUpdateInsightsContribution {
+  enabled?: boolean;
+  endpoint?: string;
+  auth_token?: string;
+  on_session_end?: boolean;
+  auto_extract_enabled?: boolean;
+  auto_extract_idle_secs?: number;
+  skill_mining_enabled?: boolean;
+  redacted_body?: boolean;
+}
+
+export interface IInsightsFlushResponse {
+  uploaded: number;
+  duplicates: number;
+  rejected: number;
+  skipped_no_endpoint: boolean;
+}
+
+export interface IInsightsResetOutboxRequest {
+  clear_all?: boolean;
+}
+
+export interface IInsightsResetOutboxResponse {
+  affected: number;
+  outbox_pending: number;
+  outbox_failed: number;
+  outbox_sent: number;
+}
+
+export const insights = {
+  getStatus: httpGet<IInsightsContributionStatus, void>('/api/insights/contribution/status'),
+  updateContribution: httpPost<IInsightsContributionStatus, IUpdateInsightsContribution>(
+    '/api/insights/contribution'
+  ),
+  flushContribution: httpPost<IInsightsFlushResponse, void>('/api/insights/contribution/flush'),
+  resetOutbox: httpPost<IInsightsResetOutboxResponse, IInsightsResetOutboxRequest>(
+    '/api/insights/contribution/reset'
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Media generation — /api/media/*
+// ---------------------------------------------------------------------------
+
+export interface IMediaSettings {
+  provider: string;
+  image_model: string;
+  video_model: string;
+  image_save_locally: boolean;
+  video_save_locally: boolean;
+  video_default_duration: number;
+  video_default_aspect_ratio: string;
+  video_default_resolution: string;
+  workflows_enabled: boolean;
+  workflows_max_retries: number;
+  workflows_async_execution: boolean;
+  workflows_llm_prompt_refine: boolean;
+  workflows_check_credits: boolean;
+  flowy_media_exposed: boolean;
+}
+
+export type IUpdateMediaSettings = Partial<
+  Pick<
+    IMediaSettings,
+    | 'provider'
+    | 'image_model'
+    | 'video_model'
+    | 'image_save_locally'
+    | 'video_save_locally'
+    | 'video_default_duration'
+    | 'workflows_enabled'
+    | 'workflows_max_retries'
+  >
+>;
+
+export interface IMediaCredits {
+  balance: number;
+  authenticated: boolean;
+}
+
+export interface IMediaModelList {
+  image_models: string[];
+  video_models: string[];
+}
+
+export interface IMediaWorkflowHistoryItem {
+  run_id: string;
+  workflow_id: string;
+  status: string;
+  current_step?: string;
+  error?: string;
+  artifacts: unknown[];
+}
+
+export interface IMediaWorkflowHistory {
+  runs: IMediaWorkflowHistoryItem[];
+}
+
+export const media = {
+  getSettings: httpGet<IMediaSettings, void>('/api/media/settings'),
+  updateSettings: httpPatch<IMediaSettings, IUpdateMediaSettings>('/api/media/settings'),
+  getCredits: httpGet<IMediaCredits, void>('/api/media/credits'),
+  listModels: httpGet<IMediaModelList, void>('/api/media/models'),
+  workflowHistory: httpGet<IMediaWorkflowHistory, { limit?: number }>(
+    (p) => `/api/media/workflows/history${p.limit ? `?limit=${p.limit}` : ''}`
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Flowy cloud account — /api/cloud/*
+// ---------------------------------------------------------------------------
+
+export interface ICloudServerSettings {
+  enabled: boolean;
+  baseUrl: string;
+  channel: string;
+  app: string;
+}
+
+export type IUpdateCloudServerSettings = Partial<ICloudServerSettings>;
+
+export interface ICloudWhoami {
+  authenticated: boolean;
+  userId?: string;
+  username?: string;
+  email?: string;
+  serverBaseUrl?: string;
+  /** Display label, e.g. "Free Plan" / "Pro Plan". */
+  plan?: string;
+  /** Raw plan code, e.g. "FreePlan". */
+  planCode?: string;
+}
+
+export interface ICloudDeviceActivationStatus {
+  authenticated: boolean;
+  serialNumber?: string;
+  appVersion?: string;
+  activatedForVersion: boolean;
+  lastReportedIp?: string;
+}
+
+export interface ICloudDeviceActivationRetryResponse {
+  reported: boolean;
+}
+
+export interface ICloudSyncModelsResponse {
+  synced: boolean;
+}
+
+export interface ICloudLoginStartResponse {
+  pendingId: string;
+  method: string;
+  message: string;
+  expiresAt?: string;
+}
+
+export type ICloudLoginInput =
+  | { type: 'email'; address: string }
+  | { type: 'otp_code'; code: string }
+  | { type: 'poll' };
+
+export interface ICloudLoginContinueRequest {
+  pendingId: string;
+  input: ICloudLoginInput;
+}
+
+export type ICloudLoginContinueResponse =
+  | {
+      status: 'pending';
+      pendingId: string;
+      method: string;
+      message: string;
+      expiresAt?: string;
+    }
+  | {
+      status: 'success';
+      authenticated: boolean;
+      userId?: string;
+      username?: string;
+      email?: string;
+    }
+  | {
+      status: 'failed';
+      error: string;
+    };
+
+export const cloud = {
+  getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
+  updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
+  whoami: httpGet<ICloudWhoami, void>('/api/cloud/whoami'),
+  deviceStatus: httpGet<ICloudDeviceActivationStatus, void>('/api/cloud/device/status'),
+  retryDeviceActivation: httpPost<ICloudDeviceActivationRetryResponse, void>('/api/cloud/device/activate'),
+  loginStart: httpPost<ICloudLoginStartResponse, { method?: string }>('/api/cloud/login/start', (p) => ({
+    method: p?.method ?? 'email_otp',
+  })),
+  loginContinue: httpPost<ICloudLoginContinueResponse, ICloudLoginContinueRequest>(
+    '/api/cloud/login/continue',
+    (p) => ({ pendingId: p.pendingId, input: p.input })
+  ),
+  logout: httpPost<boolean, void>('/api/cloud/logout'),
+  /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
+  syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
+};
+
+// ---------------------------------------------------------------------------
+// Flowy cloud IM (customer support) — /api/cloud/im/*
+// ---------------------------------------------------------------------------
+
+export interface ICloudImConversation {
+  id: number;
+  userId: number;
+  externalChannelCode: string;
+  app: string;
+  status: string;
+  assigneeSysUserId?: number | null;
+  lastSeq: number;
+  lastMessageId?: number | null;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  lastSenderType?: string | null;
+  userUnreadCount: number;
+  opsUnreadCount: number;
+  hasUnread: boolean;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+}
+
+export interface ICloudImMessage {
+  id: number;
+  conversationId: number;
+  seq: number;
+  clientMsgId?: string | null;
+  senderType: string;
+  senderId?: number | null;
+  msgType: string;
+  content: string;
+  status: string;
+  createdAt: string;
+  duplicate?: boolean;
+  /** Attachment snapshot for `image` / `file` messages. */
+  payload?: ICloudImAttachmentPayload | null;
+  logPayload?: ICloudImAttachmentPayload | null;
+}
+
+export interface ICloudImAttachmentPayload {
+  objectKey?: string;
+  /** CDN URL when available. */
+  url?: string;
+  name: string;
+  contentType: string;
+  byteSize: number;
+  account?: Record<string, unknown>;
+  device?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ICloudImLogUploadResponse {
+  ossId: number;
+  url?: string;
+  name: string;
+  contentType: string;
+  byteSize: number;
+  objectKey?: string;
+}
+
+export interface ISupportLogsPackResponse {
+  zipPath: string;
+  fileName: string;
+  byteSize: number;
+  includedFiles: string[];
+  truncated: boolean;
+}
+
+export interface ICloudImMessageList {
+  list: ICloudImMessage[];
+}
+
+export type ICloudImApp = 'flowymes';
+
+export const cloudIm = {
+  getConversation: httpGet<ICloudImConversation, { app?: ICloudImApp }>((p) => {
+    const qs = new URLSearchParams();
+    if (p?.app) qs.set('app', p.app);
+    const query = qs.toString();
+    return `/api/cloud/im/conversation${query ? `?${query}` : ''}`;
+  }),
+  listMessages: httpGet<
+    ICloudImMessageList,
+    { afterSeq?: number; beforeSeq?: number; limit?: number }
+  >((p) => {
+    const qs = new URLSearchParams();
+    if (p?.afterSeq != null) qs.set('afterSeq', String(p.afterSeq));
+    if (p?.beforeSeq != null) qs.set('beforeSeq', String(p.beforeSeq));
+    if (p?.limit != null) qs.set('limit', String(p.limit));
+    const query = qs.toString();
+    return `/api/cloud/im/messages${query ? `?${query}` : ''}`;
+  }),
+  sendMessage: httpPost<
+    ICloudImMessage,
+    {
+      clientMsgId: string;
+      content: string;
+      msgType: 'text' | 'image';
+      app?: ICloudImApp;
+      payload?: ICloudImAttachmentPayload;
+      logPayload?: ICloudImAttachmentPayload;
+    }
+  >('/api/cloud/im/messages', (p) => ({
+    clientMsgId: p.clientMsgId,
+    content: p.content,
+    msgType: p.msgType,
+    ...(p.app ? { app: p.app } : {}),
+    ...(p.payload ? { payload: p.payload } : {}),
+    ...(p.logPayload ? { logPayload: p.logPayload } : {}),
+  })),
+  uploadLog: httpMultipartPost<ICloudImLogUploadResponse, { file: Blob; fileName: string }>(
+    '/api/cloud/im/logs/upload',
+    ({ file, fileName }) => {
+      const form = new FormData();
+      form.append('file', file, fileName);
+      return form;
+    }
+  ),
+  /** Proxies FlowyClaw `POST /uploads/feedback/screenshot`; response fields feed IM `payload`. */
+  uploadScreenshot: httpMultipartPost<ICloudImLogUploadResponse, { file: Blob; fileName: string }>(
+    '/api/cloud/im/screenshots/upload',
+    ({ file, fileName }) => {
+      const form = new FormData();
+      form.append('file', file, fileName);
+      return form;
+    }
+  ),
+  uploadLogFromPath: httpPost<
+    ICloudImLogUploadResponse,
+    { zipPath: string; fileName?: string }
+  >('/api/cloud/im/logs/upload-from-path', (p) => ({
+    zipPath: p.zipPath,
+    ...(p.fileName ? { fileName: p.fileName } : {}),
+  })),
+  markRead: httpPost<ICloudImConversation, { lastReadSeq: number }>('/api/cloud/im/read', (p) => ({
+    lastReadSeq: p.lastReadSeq,
+  })),
+  packSupportLogs: httpPost<ISupportLogsPackResponse, void>('/api/system/support-logs/pack'),
 };

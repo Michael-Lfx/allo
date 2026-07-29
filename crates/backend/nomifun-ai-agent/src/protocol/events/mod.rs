@@ -163,7 +163,7 @@ pub struct ContextBreakdownData {
     pub mcp_and_dynamic_tools: u64,
     #[serde(default)]
     #[ts(type = "number")]
-    pub subagent_definitions: u64,
+    pub delegate_definitions: u64,
     #[serde(default)]
     #[ts(type = "number")]
     pub summarized_conversation: u64,
@@ -182,7 +182,7 @@ impl From<&nomi_types::context_usage::ContextUsageBreakdown> for ContextBreakdow
             rules: value.rules,
             skills: value.skills,
             mcp_and_dynamic_tools: value.mcp_and_dynamic_tools,
-            subagent_definitions: value.subagent_definitions,
+            delegate_definitions: value.delegate_definitions,
             summarized_conversation: value.summarized_conversation,
             conversation: value.conversation,
             summarized: value.summarized.as_ref().map(|meta| SummarizedConversationPropertiesData {
@@ -2603,7 +2603,7 @@ mod tests {
                 rules: 50,
                 skills: 25,
                 mcp_and_dynamic_tools: 25,
-                subagent_definitions: 10,
+                delegate_definitions: 10,
                 summarized_conversation: 90,
                 conversation: 7500,
                 summarized: Some(SummarizedConversationPropertiesData {

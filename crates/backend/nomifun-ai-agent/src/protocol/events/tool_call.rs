@@ -483,6 +483,7 @@ mod supersede_tests {
             input: None,
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         let canonical = ToolCallEventData {
@@ -493,6 +494,7 @@ mod supersede_tests {
             input: Some(json!({"action": "navigate", "url": "https://example.com"})),
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         assert!(should_supersede_preview(&preview, &canonical));
@@ -508,6 +510,7 @@ mod supersede_tests {
             input: Some(json!({"url": "https://www.bing.com/search?q=test"})),
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         let canonical = ToolCallEventData {
@@ -518,6 +521,7 @@ mod supersede_tests {
             input: Some(json!({"action": "navigate", "url": "https://www.bing.com/search?q=test"})),
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         assert!(should_supersede_preview(&preview, &canonical));
@@ -533,6 +537,7 @@ mod supersede_tests {
             input: None,
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         let canonical = ToolCallEventData {
@@ -543,6 +548,7 @@ mod supersede_tests {
             input: Some(json!({"path": "/tmp/a.txt"})),
             output: Some("ok".into()),
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         assert!(!should_supersede_preview(&preview, &canonical));
@@ -558,6 +564,7 @@ mod supersede_tests {
             input: Some(json!({"path": "/tmp/a.txt"})),
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         let canonical = ToolCallEventData {
@@ -568,6 +575,7 @@ mod supersede_tests {
             input: Some(json!({"path": "/tmp/b.txt"})),
             output: None,
             description: None,
+            retry: None,
             artifacts: vec![],
         };
         assert!(!should_supersede_preview(&preview, &canonical));

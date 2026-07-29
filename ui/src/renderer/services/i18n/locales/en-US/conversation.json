@@ -518,7 +518,7 @@
       "rules": "Rules",
       "skills": "Skills",
       "mcpDynamicTools": "MCP & dynamic tools",
-      "subagentDefinitions": "Subagent definitions",
+      "delegateDefinitions": "Delegate definitions",
       "summarizedConversation": "Summarized conversation",
       "conversation": "Conversation"
     },

@@ -34,7 +34,8 @@ async fn fresh_db() -> Database {
 fn conversation_row(status: &str) -> ConversationRow {
     let now = now_ms();
     ConversationRow {
-        id: ConversationId::new().into_string(),
+        id: 0,
+        conversation_id: ConversationId::new().into_string(),
         user_id: OWNER.to_owned(),
         name: "Ghost turn".to_owned(),
         r#type: "gemini".to_owned(),
@@ -60,7 +61,8 @@ fn conversation_row(status: &str) -> ConversationRow {
 
 fn dangling_thinking_message(conv_id: &str) -> MessageRow {
     MessageRow {
-        id: MessageId::new().into_string(),
+        id: 0,
+        message_id: MessageId::new().into_string(),
         conversation_id: conv_id.to_owned(),
         msg_id: Some(MessageId::new().into_string()),
         r#type: "thinking".to_owned(),
@@ -102,7 +104,7 @@ async fn boot_reconcile_settles_a_ghost_thinking_conversation_end_to_end() {
 
     // 1. Recreate the exact state a mid-"thinking" kill leaves on disk.
     let ghost = conversation_row("pending");
-    let conv_id = ghost.id.clone();
+    let conv_id = ghost.conversation_id.clone();
     conv_repo.create(&ghost).await.expect("create conversation");
     conv_repo
         .update(
@@ -124,7 +126,7 @@ async fn boot_reconcile_settles_a_ghost_thinking_conversation_end_to_end() {
     let before = conv_repo.get(&conv_id).await.unwrap().unwrap();
     assert_eq!(before.status.as_deref(), Some("running"));
     assert_eq!(
-        acp_repo.get(&conv_id).await.unwrap().unwrap().session_id.as_deref(),
+        acp_repo.get(&conv_id).await.unwrap().unwrap().acp_session_id.as_deref(),
         Some("sess-interrupted-turn")
     );
 
@@ -142,7 +144,7 @@ async fn boot_reconcile_settles_a_ghost_thinking_conversation_end_to_end() {
 
     let session_after = acp_repo.get(&conv_id).await.unwrap().unwrap();
     assert_eq!(
-        session_after.session_id, None,
+        session_after.acp_session_id, None,
         "resumable ACP session must be cleared so the next prompt opens a fresh session"
     );
 
@@ -177,7 +179,7 @@ async fn boot_reconcile_leaves_healthy_conversations_untouched() {
     // A normal, already-finished conversation with a live ACP session must not
     // be swept — the boot sweep targets only `running` crash remnants.
     let healthy = conversation_row("finished");
-    let conv_id = healthy.id.clone();
+    let conv_id = healthy.conversation_id.clone();
     conv_repo.create(&healthy).await.expect("create conversation");
     bind_acp_session(&acp_repo, &conv_id).await;
 
@@ -187,7 +189,7 @@ async fn boot_reconcile_leaves_healthy_conversations_untouched() {
     let after = conv_repo.get(&conv_id).await.unwrap().unwrap();
     assert_eq!(after.status.as_deref(), Some("finished"));
     assert_eq!(
-        acp_repo.get(&conv_id).await.unwrap().unwrap().session_id.as_deref(),
+        acp_repo.get(&conv_id).await.unwrap().unwrap().acp_session_id.as_deref(),
         Some("sess-interrupted-turn"),
         "a healthy conversation's ACP session must be left intact"
     );

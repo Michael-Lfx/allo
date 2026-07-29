@@ -25,10 +25,11 @@ impl ShellService {
     pub async fn show_item_in_folder(&self, file_path: &str) -> Result<(), ShellError> {
         let path = validate_path_exists(file_path)?;
         if cfg!(target_os = "macos") {
-            self.opener.run_command("open", &["-R", &path.to_string_lossy()]).await
+            self.opener
+                .run_command("open", &["-R", &path.to_string_lossy()])
+                .await
         } else if cfg!(target_os = "windows") {
-            let parent = path.parent().unwrap_or(&path);
-            self.opener.run_command("explorer", &[&parent.to_string_lossy()]).await
+            self.show_item_in_folder_windows(&path).await
         } else {
             let parent = path.parent().unwrap_or(&path);
             self.open_linux_path(parent).await
@@ -123,10 +124,48 @@ impl ShellService {
         if cfg!(target_os = "macos") {
             self.opener.run_command("open", &[&path_str]).await
         } else if cfg!(target_os = "windows") {
-            self.opener.run_command("explorer", &[&path_str]).await
+            let win_path = windows_shell_path(path);
+            match self.opener.run_command("explorer", &[&win_path]).await {
+                Ok(()) => Ok(()),
+                // explorer often exits 1 even after successfully opening a folder
+                // (especially when reusing an existing shell process).
+                Err(ShellError::CommandFailed(msg)) if explorer_benign_exit(&msg) => Ok(()),
+                Err(e) => Err(e),
+            }
         } else {
             self.open_linux_path(path).await
         }
+    }
+
+    /// Windows Explorer reveal: prefer `/select,<file>` so the item is highlighted.
+    ///
+    /// Two Windows quirks must be handled:
+    /// 1. `std::fs::canonicalize` yields `\\?\C:\...` verbatim paths that explorer
+    ///    rejects — strip that prefix before invoking.
+    /// 2. `explorer.exe` frequently returns exit code 1 even when the folder opens
+    ///    successfully; treat that as success.
+    #[cfg(windows)]
+    async fn show_item_in_folder_windows(&self, path: &Path) -> Result<(), ShellError> {
+        let win_path = windows_shell_path(path);
+        let select_arg = format!("/select,{win_path}");
+        match self.opener.run_command("explorer", &[&select_arg]).await {
+            Ok(()) => Ok(()),
+            Err(ShellError::CommandFailed(msg)) if explorer_benign_exit(&msg) => Ok(()),
+            Err(first_err) => {
+                // Fallback: open the parent folder via ShellExecute (no exit-code trap).
+                let parent = path.parent().unwrap_or(path);
+                let parent_win = windows_shell_path(parent);
+                match self.opener.open_detached(&parent_win) {
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(first_err),
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    async fn show_item_in_folder_windows(&self, _path: &Path) -> Result<(), ShellError> {
+        unreachable!("windows-only helper")
     }
 
     async fn try_linux_terminal(&self, path: &str) -> Result<(), ShellError> {
@@ -244,17 +283,6 @@ fn linux_terminal_candidates(path: &str) -> Vec<(&'static str, Vec<String>)> {
     ]
 }
 
-fn validate_file_exists(file_path: &str) -> Result<std::path::PathBuf, ShellError> {
-    let path = Path::new(file_path);
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| ShellError::FileNotFound(file_path.to_owned()))?;
-    if !canonical.is_file() {
-        return Err(ShellError::FileNotFound(file_path.to_owned()));
-    }
-    Ok(canonical)
-}
-
 fn validate_path_exists(file_path: &str) -> Result<std::path::PathBuf, ShellError> {
     let path = Path::new(file_path);
     let canonical = path
@@ -263,7 +291,7 @@ fn validate_path_exists(file_path: &str) -> Result<std::path::PathBuf, ShellErro
     if !canonical.exists() {
         return Err(ShellError::FileNotFound(file_path.to_owned()));
     }
-    Ok(canonical)
+    Ok(strip_windows_verbatim_prefix(canonical))
 }
 
 fn validate_directory_exists(dir_path: &str) -> Result<std::path::PathBuf, ShellError> {
@@ -274,7 +302,18 @@ fn validate_directory_exists(dir_path: &str) -> Result<std::path::PathBuf, Shell
     if !canonical.is_dir() {
         return Err(ShellError::DirectoryNotFound(dir_path.to_owned()));
     }
-    Ok(canonical)
+    Ok(strip_windows_verbatim_prefix(canonical))
+}
+
+fn validate_file_exists(file_path: &str) -> Result<std::path::PathBuf, ShellError> {
+    let path = Path::new(file_path);
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| ShellError::FileNotFound(file_path.to_owned()))?;
+    if !canonical.is_file() {
+        return Err(ShellError::FileNotFound(file_path.to_owned()));
+    }
+    Ok(strip_windows_verbatim_prefix(canonical))
 }
 
 fn validate_url(url: &str) -> Result<(), ShellError> {
@@ -310,6 +349,57 @@ fn validate_launch_target(target: &str) -> Result<(), ShellError> {
         )));
     }
     Ok(())
+}
+
+/// Strip Windows `\\?\` / `\\?\UNC\` verbatim prefixes that `canonicalize` adds.
+/// Explorer and many ShellExecute targets reject those forms.
+fn strip_windows_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return path;
+        };
+        match prefix.kind() {
+            Prefix::VerbatimDisk(_) => {
+                let s = path.to_string_lossy();
+                if let Some(rest) = s.strip_prefix(r"\\?\") {
+                    return std::path::PathBuf::from(rest);
+                }
+            }
+            Prefix::VerbatimUNC(_, _) => {
+                let s = path.to_string_lossy();
+                if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                    return std::path::PathBuf::from(format!(r"\\{rest}"));
+                }
+            }
+            _ => {}
+        }
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
+}
+
+/// Path string suitable for `explorer.exe` / ShellExecute on Windows.
+fn windows_shell_path(path: &Path) -> String {
+    strip_windows_verbatim_prefix(path.to_path_buf())
+        .to_string_lossy()
+        .replace('/', "\\")
+}
+
+/// `explorer.exe` commonly returns exit code 1 after successfully opening a
+/// folder (especially when an existing explorer process handles the request).
+fn explorer_benign_exit(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("explorer")
+        && (lower.contains("exit code: 1")
+            || lower.contains("exit code 1")
+            || lower.contains("exit status: 1")
+            || lower.contains("exit status 1"))
 }
 
 /// Fail closed on Agent-initiated web-page opens through the OS browser.
@@ -684,6 +774,36 @@ mod tests {
             candidates.iter().any(|(program, args)| *program == "x-terminal-emulator"
                 && args.iter().any(|arg| arg == "/tmp/project")),
             "generic terminal fallback should carry the working directory as a discrete argv"
+        );
+    }
+
+    #[test]
+    fn explorer_benign_exit_detects_exit_code_1() {
+        assert!(explorer_benign_exit(
+            "explorer exited with status exit code: 1: "
+        ));
+        assert!(!explorer_benign_exit(
+            "explorer exited with status exit code: 2: boom"
+        ));
+        assert!(!explorer_benign_exit("code exited with status exit code: 1"));
+    }
+
+    #[test]
+    fn windows_shell_path_normalizes_slashes() {
+        let p = Path::new(r"C:/Users/demo/video.mp4");
+        let s = windows_shell_path(p);
+        assert!(!s.contains('/'), "{s}");
+        assert!(s.contains('\\') || !cfg!(windows), "{s}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn strip_verbatim_prefix_removes_extended_path() {
+        let verbatim = std::path::PathBuf::from(r"\\?\C:\Users\demo\file.mp4");
+        let stripped = strip_windows_verbatim_prefix(verbatim);
+        assert_eq!(
+            stripped.to_string_lossy().as_ref(),
+            r"C:\Users\demo\file.mp4"
         );
     }
 }

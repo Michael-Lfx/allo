@@ -781,7 +781,13 @@ mod tests {
         let public_error = remote_error(&error).to_string();
         assert!(!public_error.contains(secret));
         assert!(!public_error.contains("?key="));
-        assert!(public_error.contains("Could not connect"));
+        // Windows may classify refused loopback as timeout rather than connect.
+        assert!(
+            public_error.contains("Could not connect")
+                || public_error.contains("timed out")
+                || public_error.contains("failed before a response was received"),
+            "unexpected public error: {public_error}"
+        );
     }
 
     #[test]

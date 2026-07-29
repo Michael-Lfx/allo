@@ -119,7 +119,7 @@ export const CONTEXT_USAGE_CATEGORY_ORDER = [
   'rules',
   'skills',
   'mcp_and_dynamic_tools',
-  'subagent_definitions',
+  'delegate_definitions',
   'summarized_conversation',
   'conversation',
 ] as const;
@@ -132,7 +132,7 @@ export const CONTEXT_USAGE_CATEGORY_COLORS: Record<ContextUsageCategory, string>
   rules: '#059669',
   skills: '#B45309',
   mcp_and_dynamic_tools: '#DB2777',
-  subagent_definitions: '#2563EB',
+  delegate_definitions: '#2563EB',
   summarized_conversation: '#E11D48',
   conversation: '#EF4444',
 };

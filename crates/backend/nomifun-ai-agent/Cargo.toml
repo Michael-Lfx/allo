@@ -15,7 +15,10 @@ nomifun-extension.workspace = true
 nomifun-knowledge.workspace = true
 nomifun-terminal.workspace = true
 nomifun-api-types.workspace = true
+nomifun-poi.workspace = true
+nomifun-insights.workspace = true
 nomifun-net.workspace = true
+nomifun-models-dev.workspace = true
 reqwest.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -43,10 +46,14 @@ nomi-agent.workspace = true
 nomi-types.workspace = true
 nomi-protocol.workspace = true
 nomi-config.workspace = true
+nomi-insights-core.workspace = true
+nomi-poi.workspace = true
+nomi-auxiliary.workspace = true
 nomi-mcp.workspace = true
 nomi-providers.workspace = true
 nomi-memory.workspace = true
 nomi-redact.workspace = true
+nomi-media.workspace = true
 # Rendering page-fetch backend for knowledge URL sources. This adapter consumes
 # the application-owned Browser Session Hub while the knowledge crate remains
 # independent of the browser platform.

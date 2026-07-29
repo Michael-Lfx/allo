@@ -1,4 +1,4 @@
-//! Flowy-backed media generation and multi-step workflow orchestration.
+//! Flowy-backed media generation and multi-step workflow coordination.
 
 pub mod assets;
 pub mod backends;

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import {
   preferKnowledgeWritebackState,
@@ -13,6 +9,7 @@ import {
 import { ipcBridge } from '@/common';
 import { toDisplayText } from '@/common/chat/displayText';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
+import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Message, Tooltip } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Copy, Edit, Info, Loading } from '@icon-park/react';
@@ -30,6 +27,8 @@ import { stripThinkTags, hasThinkTags } from '@renderer/utils/chat/thinkTagFilte
 import { stripSkillSuggest, hasSkillSuggest } from '@renderer/utils/chat/skillSuggestParser';
 import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { parseMessageFileMarker } from './messageFileMarker';
+import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
+import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 
 /**
  * Format a timestamp for message display.
@@ -338,6 +337,8 @@ const MessageText: React.FC<{
   const writebackState = !isUserMessage ? message.content.knowledge_writeback : undefined;
   const shouldRenderPlainText = isUserMessage;
   const conversationContext = useConversationContextSafe();
+  const layout = useLayoutContext();
+  const isMobile = layout?.isMobile ?? false;
   const shouldShowActions = !hideActions;
   const resolvedFiles = useMemo(
     () => files.map((file_path) => resolveMessageFilePath(file_path, conversationContext?.workspace)),
@@ -368,6 +369,10 @@ const MessageText: React.FC<{
       .then(() => {
         setShowCopyAlert(true);
         setTimeout(() => setShowCopyAlert(false), 2000);
+        if (!isUserMessage) {
+          confirmFirstValue({ source: 'copy_answer' });
+          markFirstWinCompleted();
+        }
       })
       .catch(() => {
         Message.error(t('common.copyFailed'));
@@ -381,6 +386,7 @@ const MessageText: React.FC<{
         className='flex h-24px w-24px shrink-0 items-center justify-center rd-4px cursor-pointer text-t-secondary hover:bg-3 transition-colors'
         onClick={handleCopy}
         style={{ lineHeight: 0 }}
+        aria-label={t('common.copy', { defaultValue: 'Copy' })}
       >
         <Copy theme='outline' size='16' fill='currentColor' />
       </div>
@@ -406,13 +412,20 @@ const MessageText: React.FC<{
 
   const editButton = canEdit ? (
     <Tooltip content={t('conversation.editMessage.action', { defaultValue: 'Edit' })}>
-      <div
-        className='p-4px rd-4px cursor-pointer hover:bg-3 transition-colors opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+      <button
+        type='button'
+        className={classNames(
+          'p-4px rd-4px cursor-pointer hover:bg-3 transition-colors border-0 bg-transparent',
+          isMobile
+            ? 'opacity-100'
+            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+        )}
         onClick={handleEdit}
         style={{ lineHeight: 0 }}
+        aria-label={t('conversation.editMessage.action', { defaultValue: 'Edit' })}
       >
         <Edit theme='outline' size='16' fill={iconColors.secondary} />
-      </div>
+      </button>
     </Tooltip>
   ) : null;
 
@@ -488,11 +501,15 @@ const MessageText: React.FC<{
         )}
         {hasRenderableContent && (
           <div
-            className={classNames('min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px', {
-              'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
-              'bg-3 p-6px md:p-8px': isAgentMessage,
-              'w-full': !(isUserMessage || cronMeta || isAgentMessage),
-            })}
+            className={classNames(
+              'min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px',
+              {
+                'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
+                'bg-3 p-6px md:p-8px': isAgentMessage,
+                'w-full': !(isUserMessage || cronMeta || isAgentMessage),
+                'message-bubble-enter': !isUserMessage,
+              }
+            )}
             style={{
               ...(isUserMessage || cronMeta
                 ? { borderRadius: '8px 0 8px 8px', color: 'var(--text-primary)' }

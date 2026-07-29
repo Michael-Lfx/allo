@@ -1,4 +1,4 @@
-//! Session-end orchestration: POI ingest → resolution → work package upload.
+//! Session-end workflow: POI ingest → resolution → work package upload.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

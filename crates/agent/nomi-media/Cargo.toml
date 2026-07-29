@@ -1,6 +1,6 @@
 [package]
 name = "nomi-media"
-description = "Flowy-backed media generation and multi-step workflow orchestration"
+description = "Flowy-backed media generation and multi-step workflow coordination"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

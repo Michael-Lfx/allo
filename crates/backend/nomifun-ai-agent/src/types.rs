@@ -31,6 +31,12 @@ pub struct SendMessageData {
     pub content: String,
     /// Client-generated message ID for correlation.
     pub msg_id: String,
+    /// Durable root user-message identity shared by every automatic
+    /// continuation or provider retry for the same logical turn.
+    ///
+    /// Older/custom callers omit it and fall back to `msg_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
     /// File paths attached to the message.
     #[serde(default)]
     pub files: Vec<String>,
@@ -120,6 +126,8 @@ pub struct NomiCompatOverrides {
     pub api_path: Option<String>,
     /// None = 默认支持图片;Some(false) = registry 已标记不支持,发送时剔图。
     pub supports_image: Option<bool>,
+    /// Duplicate Bearer into this header (Flowy Cloud).
+    pub mirror_bearer_header: Option<String>,
     /// Some(true) = gateway requires assistant reasoning_content placeholders.
     pub require_reasoning_content: Option<bool>,
 }
@@ -262,7 +270,9 @@ impl std::fmt::Debug for BrowserSecretVault {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nomifun_api_types::{AcpBuildExtra, AcpModelInfo, NomiBuildExtra, OpenClawGatewayConfig, SlashCommandItem};
+    use nomifun_api_types::{
+        AcpBuildExtra, AcpModelInfo, NomiBuildExtra, OpenClawGatewayConfig, SlashCommandItem,
+    };
     use serde_json::json;
 
     #[test]
@@ -309,6 +319,7 @@ mod tests {
         let data = SendMessageData {
             content: "Hello".into(),
             msg_id: "msg-001".into(),
+            source_message_id: Some("root-001".into()),
             files: vec!["/tmp/a.txt".into()],
             inject_skills: vec!["review".into()],
             origin: None,
@@ -316,12 +327,14 @@ mod tests {
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json["content"], "Hello");
         assert_eq!(json["msg_id"], "msg-001");
+        assert_eq!(json["source_message_id"], "root-001");
         assert_eq!(json["files"], json!(["/tmp/a.txt"]));
         assert_eq!(json["inject_skills"], json!(["review"]));
 
         let parsed: SendMessageData = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.content, "Hello");
         assert_eq!(parsed.msg_id, "msg-001");
+        assert_eq!(parsed.source_message_id.as_deref(), Some("root-001"));
     }
 
     #[test]
@@ -331,6 +344,7 @@ mod tests {
         assert!(data.files.is_empty());
         assert!(data.inject_skills.is_empty());
         assert!(data.origin.is_none());
+        assert!(data.source_message_id.is_none());
     }
 
     #[test]
@@ -361,7 +375,10 @@ mod tests {
         assert_eq!(json["agent_type"], "acp");
         assert_eq!(json["user_id"], "0190f5fe-7c00-7a00-8000-000000000001");
         assert_eq!(json["workspace"], "/project");
-        assert_eq!(json["conversation_id"], "0190f5fe-7c00-7a00-8000-000000000001");
+        assert_eq!(
+            json["conversation_id"],
+            "0190f5fe-7c00-7a00-8000-000000000001"
+        );
         assert_eq!(json["delegation_policy"], "automatic");
     }
 

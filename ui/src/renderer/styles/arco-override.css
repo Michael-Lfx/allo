@@ -90,7 +90,7 @@ body[arco-theme='dark']
   background-color: var(--button-primary-disabled-bg, var(--color-fill-3)) !important;
 }
 
-/* Send button — Guid / OrchestratorComposer use `.send-button-custom` but do not
+/* Send button — Guid composer uses `.send-button-custom` but does not
  * import sendbox.css (only SendBox does). Without this, disabled falls through to
  * the generic primary-disabled wash above, which is too light for the
  * white ArrowUp icon and makes the affordance nearly invisible on new-chat surfaces. */

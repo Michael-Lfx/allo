@@ -180,7 +180,11 @@ mod tests {
                 .cloned())
         }
         async fn upsert(&self, params: &UpsertModelProfileParams<'_>) -> Result<ModelProfileRow, DbError> {
+            let mut rows = self.rows.lock().unwrap();
+            let key = (params.provider_id.to_string(), params.model.to_string());
+            let id = rows.get(&key).map(|row| row.id).unwrap_or(rows.len() as i64 + 1);
             let row = ModelProfileRow {
+                id,
                 provider_id: params.provider_id.to_string(),
                 model: params.model.to_string(),
                 tasks: params.tasks.to_string(),
@@ -189,11 +193,16 @@ mod tests {
                 source: params.source.to_string(),
                 updated_at: 1,
             };
-            self.rows
-                .lock()
-                .unwrap()
-                .insert((row.provider_id.clone(), row.model.clone()), row.clone());
+            rows.insert(key, row.clone());
             Ok(row)
+        }
+        async fn insert_if_absent(&self, params: &UpsertModelProfileParams<'_>) -> Result<bool, DbError> {
+            let key = (params.provider_id.to_string(), params.model.to_string());
+            if self.rows.lock().unwrap().contains_key(&key) {
+                return Ok(false);
+            }
+            self.upsert(params).await?;
+            Ok(true)
         }
         async fn delete(&self, provider_id: &str, model: &str) -> Result<bool, DbError> {
             Ok(self

@@ -983,6 +983,8 @@ pub struct AppServices {
     pub(crate) _managed_model_refresh_task: nomifun_system::ManagedModelRefreshTask,
     /// Authoritative per-model capability profiles (multimodal model hub).
     pub model_profile_repo: Arc<dyn IModelProfileRepository>,
+    /// models.dev catalog: status / lookup / search / profile reconcile.
+    pub models_catalog: Arc<nomifun_system::ModelsCatalogService>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -1067,6 +1069,18 @@ pub struct AppServices {
     /// the `/api/knowledge/*` routes and the `ConversationService`, which
     /// mounts bound bases into session workspaces at task start.
     pub knowledge_service: Arc<nomifun_knowledge::KnowledgeService>,
+    /// Domain-neutral courses, learner progress, mastery and review scheduling.
+    pub learning_service: Arc<nomifun_learning::LearningService>,
+    /// Local user interest (POI) topic store and settings.
+    pub poi_service: Arc<nomifun_poi::PoiService>,
+    /// De-identified insights contribution pipeline.
+    pub insights_service: Arc<nomifun_insights::InsightsService>,
+    /// Flowy media generation settings, credits, and workflow history.
+    pub media_service: Arc<nomifun_media::MediaApiService>,
+    /// ViMax video-generation sessions / plan / render.
+    pub vimax_service: Arc<nomifun_vimax::VimaxApiService>,
+    /// Flowy cloud account (email OTP login, whoami).
+    pub cloud_service: Arc<nomifun_cloud::CloudService>,
     /// The process-wide browser authority. Browser-capable hosts inject one
     /// Hub at the composition root; routes and every agent transport reuse it.
     /// `None` is an explicit unsupported/degraded state and never triggers a
@@ -1481,7 +1495,7 @@ impl AppServices {
             && authority
                 .protects_database(
                     &self.database,
-                    &self.data_dir.join("nomifun-backend.db"),
+                    &nomifun_common::storage_paths::resolve_database_path(&self.data_dir),
                 )
                 .await?)
     }
@@ -1689,12 +1703,12 @@ impl AppServices {
         startup_cleanup_authority: Arc<StartupCleanupAuthority>,
     ) -> anyhow::Result<Self> {
         // Brand computer-use permission-error guidance with the host app's name so
-        // failures say "grant NomiFun … then quit and reopen NomiFun" instead of a
+        // failures say "grant Flowy … then quit and reopen Flowy" instead of a
         // generic "this app" — which a model otherwise misreads as the terminal /
         // editor and sends the user to grant the wrong process. Set once, here, so
         // every later `observe` / screenshot / input failure carries the right name.
         #[cfg(feature = "computer-use")]
-        nomi_computer::set_host_app_label("NomiFun");
+        nomi_computer::set_host_app_label("Flowy");
 
         let data_dir = config.data_dir.clone();
         let work_dir = config.work_dir.clone();
@@ -2028,11 +2042,13 @@ impl AppServices {
         // (`LiveKnowledgeCompleter` resolves the first enabled provider/model
         // per call, so it tolerates providers configured after boot). NOTE:
         // `provider_repo` is moved into `build_agent_factory` below — clone.
-        knowledge_service.set_completer(Arc::new(nomifun_ai_agent::LiveKnowledgeCompleter {
-            provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
-            encryption_key,
-            workspace: data_dir.clone(),
-        }));
+        let knowledge_completer: Arc<dyn nomifun_knowledge::KnowledgeCompleter> =
+            Arc::new(nomifun_ai_agent::LiveKnowledgeCompleter {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                encryption_key,
+                workspace: data_dir.clone(),
+            });
+        knowledge_service.set_completer(knowledge_completer.clone());
         // Recover profiles left by an interrupted earlier browser runtime
         // before constructing any Host authority. If ownership/termination
         // cannot be proven, Browser functionality remains degraded for this
@@ -2155,6 +2171,13 @@ impl AppServices {
         // fetch never completed (the app exited mid-run — the source is
         // persisted unstamped before fetching). Spawned after the completer
         // wiring so the chained autogen works; never blocks startup.
+        let learning_service = Arc::new(nomifun_learning::LearningService::new(
+            database.pool().clone(),
+        ));
+        learning_service.set_generation_dependencies(
+            knowledge_service.clone(),
+            knowledge_completer,
+        );
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases
         // search/read and policy-gated write tools over a stdio bridge. It owns
@@ -2350,6 +2373,25 @@ impl AppServices {
                 )
             })?;
 
+        // Conversation boot reconciliation: settle ghost 'running' conversations
+        // left by a process killed mid-turn. At boot no runtime is live, so any
+        // persisted 'running' row is a crash remnant. This finalizes dangling
+        // 'thinking' messages, clears the resumable ACP session (so warmup opens
+        // a fresh session instead of replaying the interrupted turn), and flips
+        // the row to 'finished' — all before any router/warmup can observe it.
+        let reconciled_conversations =
+            nomifun_conversation::reconcile_running_conversations_on_boot(
+                &conversation_repo,
+                &acp_session_repo,
+            )
+            .await;
+        if reconciled_conversations > 0 {
+            tracing::info!(
+                reconciled = reconciled_conversations,
+                "conversation boot reconciliation: ghost 'running' sessions settled"
+            );
+        }
+
         // Headless seed: bind a Remote access token to the default companion so an
         // operator can configure the front door via env on a headless server.
         // (Desktop mints per-companion tokens via /api/webui/companions/{id}/access-token.)
@@ -2387,6 +2429,41 @@ impl AppServices {
         // Seed authoritative capability profiles for any provider models that
         // lack one (multimodal model hub). Best-effort: never blocks boot on error.
         reconcile_model_profiles(&provider_repo_for_services, &model_profile_repo).await;
+
+        // Single process-wide registry client (shared with ai-agent context lookup).
+        let models_catalog = Arc::new(nomifun_system::ModelsCatalogService::new(
+            nomifun_models_dev::shared_client(),
+            model_profile_repo.clone(),
+            provider_repo_for_services.clone(),
+        ));
+        // Background: warm models.dev + upgrade inferred→catalog. Never block boot.
+        let catalog = models_catalog.clone();
+        tokio::spawn(async move {
+            let _ = catalog.refresh(false).await;
+            let n = catalog.reconcile_all().await;
+            if n > 0 {
+                tracing::info!("models-dev catalog reconcile: upserted {n} profile(s)");
+            }
+        });
+        let catalog2 = models_catalog.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await; // skip immediate
+            loop {
+                interval.tick().await;
+                let _ = catalog2.refresh(false).await;
+                let _ = catalog2.reconcile_all().await;
+            }
+        });
+
+        let poi_service = Arc::new(
+            nomifun_poi::PoiService::new(data_dir.join("poi"))
+                .map_err(|e| anyhow::anyhow!("Failed to open POI service: {e}"))?,
+        );
+        let insights_service = Arc::new(
+            nomifun_insights::InsightsService::new(data_dir.join("insights"))
+                .map_err(|e| anyhow::anyhow!("Failed to open insights service: {e}"))?,
+        );
 
         #[cfg(feature = "browser-use")]
         let browser_lane_provider_slot =
@@ -2461,6 +2538,7 @@ impl AppServices {
             public_agent_provider: Some(
                 public_agent_service.clone() as Arc<dyn nomifun_ai_agent::PublicAgentProvider>
             ),
+            poi_service: Some(poi_service.clone()),
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -2473,6 +2551,33 @@ impl AppServices {
         let agent_runtime_registry: Arc<dyn AgentRuntimeRegistry> = runtime_registry_concrete.clone();
         let runtime_registry_delete_hook: Arc<dyn OnConversationDelete> = runtime_registry_concrete;
         let conversation_runtime_state = Arc::new(ConversationRuntimeStateService::default());
+
+        let media_service = Arc::new(
+            nomifun_media::MediaApiService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open media service: {e}"))?,
+        );
+        let vimax_service = Arc::new(
+            nomifun_vimax::VimaxApiService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open vimax service: {e}"))?,
+        );
+        let cloud_service = Arc::new(
+            nomifun_cloud::CloudService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
+        );
+
+        if cloud_service.is_authenticated().await {
+            let gateway = cloud_service.gateway_config_snapshot();
+            if let Err(e) = nomifun_cloud::sync_flowy_builtin_provider(
+                &provider_repo_for_services,
+                &encryption_key,
+                &gateway.server,
+                cloud_service.data_dir(),
+            )
+            .await
+            {
+                tracing::warn!("Failed to sync Flowy built-in provider on startup: {e}");
+            }
+        }
 
         let services = Self {
             database,
@@ -2488,6 +2593,7 @@ impl AppServices {
             _managed_model_server: managed_model_server,
             _managed_model_refresh_task: managed_model_refresh_task,
             model_profile_repo: model_profile_repo.clone(),
+            models_catalog,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
@@ -2520,6 +2626,12 @@ impl AppServices {
             workshop_service,
             creation_service,
             knowledge_service,
+            learning_service,
+            poi_service,
+            insights_service,
+            media_service,
+            vimax_service,
+            cloud_service,
             #[cfg(feature = "browser-use")]
             browser_session_hub: None,
             browser_platform_shutdown,

@@ -69,7 +69,7 @@ mod tests {
 
     fn mem(kind: &str, content: &str) -> CompanionMemory {
         CompanionMemory {
-            id: format!("mem-{kind}"),
+            memory_id: format!("mem-{kind}"),
             kind: kind.into(),
             content: content.into(),
             tags: Vec::new(),

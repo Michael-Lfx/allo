@@ -182,14 +182,12 @@ async fn patch_settings_type_error_rejected() {
 }
 
 #[tokio::test]
-async fn patch_settings_unknown_field_ignored() {
+async fn patch_settings_unknown_field_rejected() {
     let (app, _db) = setup().await;
     let req = json_request("PATCH", "/api/settings", serde_json::json!({"unknown_field": 123}));
     let resp = app.oneshot(req).await.unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["data"]["language"], "en-US");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

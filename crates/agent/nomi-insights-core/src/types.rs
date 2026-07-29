@@ -178,7 +178,7 @@ pub struct ResolutionPayload {
 pub struct SkillStructure {
     pub headings: Vec<String>,
     pub step_count: u32,
-    pub mentions_subagent: bool,
+    pub mentions_delegate: bool,
     pub mentions_cron: bool,
     pub mentions_mcp: bool,
 }

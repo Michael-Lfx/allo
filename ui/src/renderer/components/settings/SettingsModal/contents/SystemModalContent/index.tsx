@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { ipcBridge } from '@/common';
 import type { IGpuStatus, IStartOnBootStatus } from '@/common/adapter/ipcBridge';
@@ -20,6 +16,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 import { useSettingsViewMode } from '../../settingsViewContext';
+import DeveloperModeSetting from './DeveloperModeSetting';
 import DirInputItem from './DirInputItem';
 import FactoryResetModal from './FactoryResetModal';
 import PreferenceRow from './PreferenceRow';
@@ -428,6 +425,12 @@ const SystemModalContent: React.FC = () => {
                 />
               )}
             </Form>
+          </div>
+
+          {/* Advanced settings gate — unlocks developer-only nav items such as Cloud Account */}
+          <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
+            <div className='text-13px font-600 text-t-primary'>{t('settings.developerMode.sectionTitle')}</div>
+            <DeveloperModeSetting />
           </div>
 
           {/* Danger zone: factory reset (clears the database + derived data) */}

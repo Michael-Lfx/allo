@@ -1,7 +1,7 @@
 //! Explicit turn admission / cancel / finish authority (TurnLifecycle).
 //!
 //! Runtime fencing lives in [`crate::runtime_state`]. This module owns the
-//! ConversationService orchestration that used to sit only in `service.rs`.
+//! ConversationService coordination that used to sit only in `service.rs`.
 //! The phase × command matrix lives in [`crate::turn_gate`] and is enforced on
 //! the admit / finish paths in `runtime_state`.
 

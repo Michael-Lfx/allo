@@ -24,7 +24,7 @@ const CATEGORY_LABEL_KEYS: Record<ContextUsageCategory, string> = {
   rules: 'conversation.contextUsage.categories.rules',
   skills: 'conversation.contextUsage.categories.skills',
   mcp_and_dynamic_tools: 'conversation.contextUsage.categories.mcpDynamicTools',
-  subagent_definitions: 'conversation.contextUsage.categories.subagentDefinitions',
+  delegate_definitions: 'conversation.contextUsage.categories.delegateDefinitions',
   summarized_conversation: 'conversation.contextUsage.categories.summarizedConversation',
   conversation: 'conversation.contextUsage.categories.conversation',
 };
@@ -35,7 +35,7 @@ const CATEGORY_DEFAULTS: Record<ContextUsageCategory, string> = {
   rules: 'Rules',
   skills: 'Skills',
   mcp_and_dynamic_tools: 'MCP & dynamic tools',
-  subagent_definitions: 'Subagent definitions',
+  delegate_definitions: 'Delegate definitions',
   summarized_conversation: 'Summarized conversation',
   conversation: 'Conversation',
 };
@@ -62,7 +62,7 @@ function segmentLabel(
     case 'rules':
     case 'skills':
     case 'mcp_and_dynamic_tools':
-    case 'subagent_definitions':
+    case 'delegate_definitions':
     case 'summarized_conversation':
     case 'conversation':
       return t(CATEGORY_LABEL_KEYS[legacyKey], { defaultValue: CATEGORY_DEFAULTS[legacyKey] });

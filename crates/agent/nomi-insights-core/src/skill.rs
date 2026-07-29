@@ -425,7 +425,7 @@ fn extract_structure(body: &str) -> SkillStructure {
     SkillStructure {
         headings,
         step_count,
-        mentions_subagent: lower.contains("delegate_task") || lower.contains("sub-agent"),
+        mentions_delegate: lower.contains("delegate_task") || lower.contains("nomi_delegate"),
         mentions_cron: lower.contains("cron") || lower.contains("/cron"),
         mentions_mcp: lower.contains("mcp"),
     }

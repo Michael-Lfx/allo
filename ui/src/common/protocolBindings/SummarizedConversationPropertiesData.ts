@@ -4,4 +4,4 @@ import type { CompactTriggerData } from "./CompactTriggerData";
 /**
  * Optional metadata for the most recent conversation compaction.
  */
-export type SummarizedConversationPropertiesData = { trigger: CompactTriggerData | null, pre_compact_tokens: number | null, messages_summarized: number | null, };
+export type SummarizedConversationPropertiesData = { trigger: CompactTriggerData | null, pre_compact_tokens: number, messages_summarized: number, };

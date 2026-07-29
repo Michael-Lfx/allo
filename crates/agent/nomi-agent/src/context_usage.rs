@@ -31,7 +31,7 @@ const SKILLS_SECTIONS: &[&str] = &["skills"];
 enum ToolCategory {
     Definitions,
     McpDynamic,
-    Subagent,
+    Delegate,
 }
 
 /// Inputs for one provider request's context breakdown.
@@ -60,7 +60,7 @@ pub fn estimate_context_usage(request: ContextUsageRequest<'_>) -> ContextUsageB
         match classify_tool(tool) {
             ToolCategory::Definitions => breakdown.tool_definitions += tokens,
             ToolCategory::McpDynamic => breakdown.mcp_and_dynamic_tools += tokens,
-            ToolCategory::Subagent => breakdown.subagent_definitions += tokens,
+            ToolCategory::Delegate => breakdown.delegate_definitions += tokens,
         }
     }
 
@@ -101,8 +101,8 @@ fn estimate_named_sections(
 }
 
 fn classify_tool(tool: &ToolDef) -> ToolCategory {
-    if is_subagent_tool(&tool.name) {
-        return ToolCategory::Subagent;
+    if is_delegate_tool(&tool.name) {
+        return ToolCategory::Delegate;
     }
     if tool.name.starts_with("mcp__") || tool.deferred {
         return ToolCategory::McpDynamic;
@@ -110,7 +110,7 @@ fn classify_tool(tool: &ToolDef) -> ToolCategory {
     ToolCategory::Definitions
 }
 
-fn is_subagent_tool(name: &str) -> bool {
+fn is_delegate_tool(name: &str) -> bool {
     name == "nomi_delegate" || name.starts_with("agent__")
 }
 
@@ -173,14 +173,14 @@ mod tests {
         assert_eq!(breakdown.skills, 30);
         assert!(breakdown.tool_definitions > 0);
         assert!(breakdown.mcp_and_dynamic_tools > 0);
-        assert!(breakdown.subagent_definitions > 0);
+        assert!(breakdown.delegate_definitions > 0);
         assert_eq!(breakdown.conversation, 100);
         assert_eq!(breakdown.summarized_conversation, 0);
     }
 
     #[test]
-    fn subagent_wins_over_deferred_classification() {
-        assert_eq!(classify_tool(&tool("nomi_delegate", true)), ToolCategory::Subagent);
+    fn delegate_wins_over_deferred_classification() {
+        assert_eq!(classify_tool(&tool("nomi_delegate", true)), ToolCategory::Delegate);
         assert_eq!(
             classify_tool(&tool("mcp__x__y", false)),
             ToolCategory::McpDynamic

@@ -490,6 +490,7 @@ mod tests {
             created_by: "user".into(),
             created_at: 0,
             updated_at: 0,
+            lease_expires_at: None,
             attachments: vec![],
         };
         let wire = serde_json::to_value(&requirement).expect("requirement must serialize");

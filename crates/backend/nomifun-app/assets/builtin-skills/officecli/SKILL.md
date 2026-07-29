@@ -9,7 +9,10 @@ AI-friendly CLI for .docx, .xlsx, .pptx. Single binary, no dependencies, no Offi
 
 ## Install
 
-If `officecli` is not installed:
+If `officecli` is not installed and you only need body text / a summary from an
+existing `.docx` / `.xlsx` / `.pptx`, prefer the `Read` tool for `.docx` plain
+text first. Install officecli only when creating, editing, or doing structural
+inspection:
 
 ```bash
 # macOS / Linux

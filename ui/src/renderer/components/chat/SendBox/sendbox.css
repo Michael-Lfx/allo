@@ -65,7 +65,7 @@
 /* Send button disabled state - override Arco Design default disabled styles.
  * Also target `.arco-btn-disabled` — Arco adds the class alongside the native
  * disabled attribute; the global rule lives in arco-override.css for surfaces
- * that do not import this file (Guid / OrchestratorComposer). */
+ * that do not import this file (Guid composer). */
 .send-button-custom:disabled,
 .send-button-custom.arco-btn:disabled,
 .send-button-custom.arco-btn-primary:disabled,

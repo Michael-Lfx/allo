@@ -1,4 +1,4 @@
-# 桌面伙伴 Skill 配置设计
+﻿# 桌面伙伴 Skill 配置设计
 
 ## 目标
 
@@ -143,4 +143,3 @@ manifest 保存 Skill 名称、源路径和创建形态。清理旧项之前必�
 - auto-inject 和 opt-in 开关写入正确字段。
 - 缺失 Skill 可见且可关闭。
 - TypeScript、i18n key 和生产构建通过。
-

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
@@ -28,24 +24,24 @@ import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerE
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import { AgentPillBarSkeleton } from './components/GuidSkeleton';
 import GuidActionRow from './components/GuidActionRow';
-import GuidCompanionPosterPreview from './components/GuidCompanionPosterPreview';
 import GuidInputCard from './components/GuidInputCard';
+import PoiStarterChips from './components/PoiStarterChips';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
 import GuidModelSelector from './components/GuidModelSelector';
+import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
 import type { LocalizableSkill } from '@/renderer/pages/settings/skill/skillDisplay';
-import SpeechInputButton from '@/renderer/components/chat/SpeechInputButton';
-import FeedbackReportModal from '@/renderer/components/settings/SettingsModal/contents/FeedbackReportModal';
 import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
+import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
-import { autoWorkStartDisabled, isAutoWorkEntry } from './hooks/autoWorkEntry';
+import { isAutoWorkEntry } from './hooks/autoWorkEntry';
 import { useGuidInput } from './hooks/useGuidInput';
 import { useGuidMention } from './hooks/useGuidMention';
 import { useGuidModelSelection } from './hooks/useGuidModelSelection';
@@ -54,9 +50,15 @@ import { useExecutionModelPool } from '@/renderer/pages/conversation/execution/u
 import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/conversation/execution/executionModelRefs';
 import CollaborationPolicyControl from '@/renderer/components/collaboration/CollaborationPolicyControl';
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
-import { useTypewriterPlaceholder } from './hooks/useTypewriterPlaceholder';
+import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
+import { addRecentWorkspace } from '@/renderer/components/workspace';
+import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import {
+  resolveGuidReadiness,
+  type GuidTaskIntentId,
+} from './readiness/guidReadiness';
 import { ConfigProvider, Message } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -71,23 +73,29 @@ const GuidPage: React.FC = () => {
   const navigate = useNavigate();
   const pendingConversation = usePendingConversation();
 
-  // Warm the conversation page's lazy chunk while the user is composing, so the
-  // first navigation into a conversation doesn't stall on a cold code-split
-  // load (Suspense AppLoader). Idempotent — React.lazy caches the import.
+  // Warm high-probability commercial path chunks while composing.
   useEffect(() => {
-    void import('@renderer/pages/conversation');
+    preloadCommercialPathChunks();
   }, []);
+
+  useEffect(() => {
+    if (!hasFunnelEvent('home_interactive')) {
+      trackFunnelEvent('home_interactive', { source: 'guid' });
+    }
+  }, []);
+
   const location = useLocation();
   const guidContainerRef = useRef<HTMLDivElement>(null);
   const openPresetDetailsRef = useRef<(() => void) | null>(null);
+  const addProviderRef = useRef<GuidAddProviderHandle>(null);
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
 
   const localeKey = resolveLocaleKey(i18n.language);
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [delegationPolicy, setDelegationPolicy] = useState<TDelegationPolicy>('automatic');
   const [decisionPolicy, setDecisionPolicy] = useState<TDecisionPolicy>('automatic');
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
@@ -95,6 +103,10 @@ const GuidPage: React.FC = () => {
   );
   const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
     useState<AppliedCollaborationTemplate | null>(null);
+  const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
+  const pendingAutoSendRef = useRef(false);
+  const sendRef = useRef<(() => void) | null>(null);
+  const inputSnapshotRef = useRef('');
 
   // --- Skills state ---
   // All available skills (builtin auto-injected + user-imported custom) merged
@@ -241,6 +253,19 @@ const GuidPage: React.FC = () => {
   // collected up front and applied right after the conversation is created.
   const advancedConfig = useGuidAdvancedConfig();
 
+  // Knowledge activation hand-off from QuickCapture / empty-state sample seed.
+  // When auto_send is set, arm the same pendingAutoSend path used by model/workspace gates
+  // so create → applyBinding → initial message runs without a second click.
+  useEffect(() => {
+    const activation = consumeKnowledgeActivation();
+    if (!activation) return;
+    advancedConfig.setKnowledge(activation.binding);
+    guidInput.setInput(activation.suggest_prompt);
+    if (activation.auto_send) {
+      pendingAutoSendRef.current = true;
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one-shot on mount
+
   const mention = useGuidMention({
     availableAgents: agentSelection.availableAgents,
     customAgentAvatarMap: agentSelection.customAgentAvatarMap,
@@ -249,6 +274,49 @@ const GuidPage: React.FC = () => {
     setInput: guidInput.setInput,
     selectedAgentInfo: agentSelection.selectedAgentInfo,
   });
+
+  const needsModelForAgent = useMemo(() => {
+    const effectiveType = agentSelection.is_presetAgent
+      ? agentSelection.currentEffectiveAgentInfo.agent_type
+      : agentSelection.selectedAgent;
+    return effectiveType === 'nomi';
+  }, [
+    agentSelection.currentEffectiveAgentInfo.agent_type,
+    agentSelection.is_presetAgent,
+    agentSelection.selectedAgent,
+  ]);
+
+  const readiness = useMemo(
+    () =>
+      resolveGuidReadiness({
+        intentId: activeIntentId,
+        hasModel: Boolean(modelSelection.current_model),
+        workspaceDir: guidInput.dir,
+        needsModelForAgent,
+      }),
+    [activeIntentId, guidInput.dir, modelSelection.current_model, needsModelForAgent]
+  );
+
+  const handleLinkWorkspace = useCallback(() => {
+    ipcBridge.dialog.showOpen
+      .invoke({ properties: ['openDirectory', 'createDirectory'] })
+      .then((dirs) => {
+        const next = dirs?.[0];
+        if (!next) return;
+        addRecentWorkspace(next);
+        guidInput.setDir(next);
+        trackFunnelEvent('prerequisite_resolved', { kind: 'workspace' });
+        if (pendingAutoSendRef.current && inputSnapshotRef.current.trim()) {
+          pendingAutoSendRef.current = false;
+          window.setTimeout(() => {
+            sendRef.current?.();
+          }, 0);
+        }
+      })
+      .catch((error) => {
+        console.error('[GuidPage] Failed to open workspace dialog:', error);
+      });
+  }, [guidInput.setDir]);
 
   const send = useGuidSend({
     // Input state
@@ -265,6 +333,8 @@ const GuidPage: React.FC = () => {
     selectedAgent: agentSelection.selectedAgent,
     selectedAgentKey: agentSelection.selectedAgentKey,
     selectedAgentInfo: agentSelection.selectedAgentInfo,
+    is_presetAgent: agentSelection.is_presetAgent,
+    is_presetAgentPending: agentSelection.is_presetAgentPending,
     selectedMode: agentSelection.selectedMode,
     selectedAcpModel: agentSelection.selectedAcpModel,
     currentAcpCachedModelInfo: agentSelection.currentAcpCachedModelInfo,
@@ -295,11 +365,36 @@ const GuidPage: React.FC = () => {
     // Navigation
     navigate,
     t,
+    onNeedModel: () => {
+      pendingAutoSendRef.current = true;
+      addProviderRef.current?.open();
+    },
+    onNeedWorkspace: handleLinkWorkspace,
+    readinessReady: readiness.ready,
+    readinessBlocker: readiness.blocker,
 
     // Instant "creating conversation" loading overlay (ConversationShell-level)
     beginPending: pendingConversation.begin,
+    advancePending: pendingConversation.advance,
     endPending: pendingConversation.end,
   });
+
+  sendRef.current = send.sendMessageHandler;
+  inputSnapshotRef.current = guidInput.input;
+
+  // Fire knowledge-activation auto-send once the suggest prompt is in the composer.
+  // If model/workspace is missing, sendMessageHandler re-arms pendingAutoSendRef via
+  // onNeedModel / onNeedWorkspace and the existing recovery paths finish the send.
+  useEffect(() => {
+    if (!pendingAutoSendRef.current) return;
+    if (!guidInput.input.trim()) return;
+    const timer = window.setTimeout(() => {
+      if (!pendingAutoSendRef.current) return;
+      pendingAutoSendRef.current = false;
+      sendRef.current?.();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [guidInput.input]);
 
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleInputChange = useCallback(
@@ -430,8 +525,6 @@ const GuidPage: React.FC = () => {
     ],
   );
 
-  // Typewriter placeholder
-  const typewriterPlaceholder = useTypewriterPlaceholder(t('conversation.welcome.placeholder'));
   const selectedPresetRecord = useMemo(() => {
     if (!agentSelection.is_presetAgent || !agentSelection.selectedAgentInfo?.preset_id) return undefined;
     return agentSelection.presets.find(
@@ -490,6 +583,7 @@ const GuidPage: React.FC = () => {
       guidInput.setDir('');
     }
     advancedConfig.reset();
+    setAdvancedOpen(false);
   }, [
     guidInput.setDir,
     guidInput.setFiles,
@@ -625,6 +719,7 @@ const GuidPage: React.FC = () => {
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
+      onAddModel={() => addProviderRef.current?.open()}
     />
   );
   const collaboratorSelectorNode = (
@@ -697,13 +792,16 @@ const GuidPage: React.FC = () => {
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
   const isAutoWorkMode = isAutoWorkEntry(advancedConfig.autoWork);
+  const hasDraft = guidInput.input.trim().length > 0;
   const actionRowNode = (
     <GuidActionRow
       files={guidInput.files}
       onFilesUploaded={guidInput.handleFilesUploaded}
-      modelSelectorNode={modelSelectorNode}
+      modelSelectorNode={advancedOpen ? modelSelectorNode : undefined}
       collaboratorSelectorNode={
-        effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled' ? collaboratorSelectorNode : undefined
+        advancedOpen && effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled'
+          ? collaboratorSelectorNode
+          : undefined
       }
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
@@ -726,19 +824,13 @@ const GuidPage: React.FC = () => {
       onToggleMcpServer={handleToggleMcpServer}
       hidePresetTag
       loading={guidInput.loading}
-      speechInputNode={
-        <SpeechInputButton
-          disabled={guidInput.loading}
-          locale={i18n.language}
-          onTranscript={(transcript) => {
-            guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
-          }}
-        />
-      }
       autoWorkMode={isAutoWorkMode}
-      isButtonDisabled={
-        isAutoWorkMode ? autoWorkStartDisabled(guidInput.loading, advancedConfig.autoWork) : send.isButtonDisabled
-      }
+      autoWorkDraft={advancedConfig.autoWork}
+      hasDraft={hasDraft}
+      speechLocale={i18n.language}
+      onSpeechTranscript={(transcript) => {
+        guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
+      }}
       onSend={send.sendMessageHandler}
     />
   );
@@ -767,23 +859,78 @@ const GuidPage: React.FC = () => {
             the content area's top-right corner — mirroring the active-session
             ChatLayout header placement, and freeing the input box's bottom row.
             Desktop only (hidden on mobile via CSS), matching the session header. */}
-        <div className={styles.guidAdvancedControls}>{advancedControlsNode}</div>
+        <div className={styles.guidAdvancedControls}>
+          <button
+            type='button'
+            className={styles.guidRunSettingsToggle}
+            aria-expanded={advancedOpen}
+            data-testid='guid-run-settings-toggle'
+            onClick={() => setAdvancedOpen((open) => !open)}
+          >
+            {advancedOpen
+              ? t('guid.advanced.runSettingsHide', { defaultValue: 'Hide settings' })
+              : t('guid.advanced.runSettings', { defaultValue: 'Run settings' })}
+          </button>
+          {advancedOpen ? advancedControlsNode : null}
+        </div>
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
-              <p className='text-2xl font-semibold mb-0 text-0 text-center'>{t('conversation.welcome.title')}</p>
+              <p className='text-2xl font-semibold mb-0 text-0 text-center'>
+                {t('conversation.welcome.title', { defaultValue: '告诉 Flowy 你要的结果' })}
+              </p>
+              <p className={styles.heroDescription}>
+                {t('conversation.welcome.description', {
+                  defaultValue: '描述成果即可。Flowy 会自行组织执行过程，只在需要时询问你。',
+                })}
+              </p>
             </div>
 
-            {agentSelection.availableAgents === undefined ? (
-              <AgentPillBarSkeleton />
-            ) : agentSelection.availableAgents.length > 0 ? (
-              <AgentPillBar
-                availableAgents={agentSelection.availableAgents}
-                selectedAgentKey={agentSelection.selectedAgentKey}
-                getAgentKey={agentSelection.getAgentKey}
-                onSelectAgent={handleSelectAgentFromPillBar}
-                suppressSelectionAnimation={resetPresetRequested}
-              />
+            <GuidResourceCards
+              onStartLocalAgent={guidInput.handleTextareaFocus}
+              hasWorkspace={Boolean(guidInput.dir.trim())}
+              activeIntentId={activeIntentId}
+              onSelectIntent={(intentId) => {
+                setActiveIntentId(intentId);
+                trackFunnelEvent('task_drafted', { intent: intentId });
+                const nextReadiness = resolveGuidReadiness({
+                  intentId,
+                  hasModel: Boolean(modelSelection.current_model),
+                  workspaceDir: guidInput.dir,
+                  needsModelForAgent,
+                });
+                if (nextReadiness.blocker === 'workspace') {
+                  pendingAutoSendRef.current = true;
+                  handleLinkWorkspace();
+                } else if (nextReadiness.blocker === 'model') {
+                  pendingAutoSendRef.current = true;
+                  addProviderRef.current?.open();
+                }
+              }}
+              onSetInput={(text) => {
+                inputSnapshotRef.current = text;
+                guidInput.setInput(text);
+              }}
+            />
+
+            {advancedOpen ? (
+              <div className={styles.guidRunSettingsPanel} data-testid='guid-run-settings-panel'>
+                {agentSelection.availableAgents === undefined ? (
+                  <AgentPillBarSkeleton />
+                ) : agentSelection.availableAgents.length > 0 ? (
+                  <AgentPillBar
+                    availableAgents={agentSelection.availableAgents}
+                    selectedAgentKey={agentSelection.selectedAgentKey}
+                    getAgentKey={agentSelection.getAgentKey}
+                    onSelectAgent={handleSelectAgentFromPillBar}
+                    suppressSelectionAnimation={resetPresetRequested}
+                  />
+                ) : null}
+                <PoiStarterChips
+                  onSetInput={guidInput.setInput}
+                  onFocusInput={guidInput.handleTextareaFocus}
+                />
+              </div>
             ) : null}
 
             <GuidInputCard
@@ -793,7 +940,7 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={`${mention.selectedAgentLabel}, ${typewriterPlaceholder || t('conversation.welcome.placeholder')}`}
+              placeholder={t('conversation.welcome.placeholder')}
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
@@ -819,27 +966,27 @@ const GuidPage: React.FC = () => {
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
-                <ComposerEntryStrip
-                  isPresetAgent={agentSelection.is_presetAgent}
-                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                  presetAvatar={selectedPresetAvatar ?? undefined}
-                  onChoosePreset={() => {
-                    setDrawerMode('preset');
-                    setDrawerOpen(true);
-                  }}
-                  onAdjustSkills={handleOpenSkillsDrawer}
-                  onFree={() => {
-                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                  }}
-                  localeKey={localeKey}
-                  activeSkillCount={activeSkillCount}
-                  activeSkills={activeSkills}
-                  collaborationPolicyNode={collaborationPolicyNode}
-                />
+                advancedOpen ? (
+                  <ComposerEntryStrip
+                    isPresetAgent={agentSelection.is_presetAgent}
+                    presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                    presetAvatar={selectedPresetAvatar ?? undefined}
+                    onChoosePreset={() => {
+                      setDrawerMode('preset');
+                      setDrawerOpen(true);
+                    }}
+                    onAdjustSkills={handleOpenSkillsDrawer}
+                    onFree={() => {
+                      agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+                    }}
+                    localeKey={localeKey}
+                    activeSkillCount={activeSkillCount}
+                    activeSkills={activeSkills}
+                    collaborationPolicyNode={collaborationPolicyNode}
+                  />
+                ) : undefined
               }
             />
-
-            <GuidResourceCards />
 
             {/* Editor host (modals + example prompts + fallback notice) */}
             <GuidPresetEditorHost
@@ -853,10 +1000,6 @@ const GuidPage: React.FC = () => {
               onRegisterOpenDetails={handleRegisterOpenDetails}
             />
           </div>
-        </div>
-
-        <div className={styles.guidDiscoveryArea}>
-          <GuidCompanionPosterPreview />
         </div>
 
         {/* PresetPickerDrawer (right-side) */}
@@ -881,12 +1024,21 @@ const GuidPage: React.FC = () => {
           onToggleSkill={handleToggleSkill}
         />
 
-        <QuickActionButtons
-          onOpenBugReport={() => setShowFeedbackModal(true)}
-          inactiveBorderColor={inactiveBorderColor}
-          activeShadow={activeShadow}
+        <QuickActionButtons inactiveBorderColor={inactiveBorderColor} activeShadow={activeShadow} />
+        <GuidAddProviderModal
+          ref={addProviderRef}
+          onConfigured={(model) => {
+            void modelSelection.setCurrentModel(model).then(() => {
+              trackFunnelEvent('prerequisite_resolved', { kind: 'model' });
+              if (pendingAutoSendRef.current) {
+                pendingAutoSendRef.current = false;
+                window.setTimeout(() => {
+                  send.sendMessageHandler();
+                }, 0);
+              }
+            });
+          }}
         />
-        <FeedbackReportModal visible={showFeedbackModal} onCancel={() => setShowFeedbackModal(false)} />
       </div>
     </ConfigProvider>
   );

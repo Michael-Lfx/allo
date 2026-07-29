@@ -90,7 +90,7 @@ impl Default for VideoGenSettings {
     }
 }
 
-/// Workflow orchestration settings.
+/// Workflow coordination settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaWorkflowSettings {
     #[serde(default = "default_true")]
