@@ -277,6 +277,9 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/tools' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
           <Route path='/settings/webui' element={<Navigate to='/open-capabilities' replace />} />
+          <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
+          <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
+          <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />
           <Route path='/settings/agent-runtime' element={<Navigate to='/settings/execution-engines?tab=runtime' replace />} />

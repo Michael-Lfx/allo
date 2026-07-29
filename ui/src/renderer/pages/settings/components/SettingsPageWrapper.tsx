@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Send, System } from '@icon-park/react';
+import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, Send, System, Tool } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -103,6 +103,24 @@ export function getBuiltinSettingsNavItems(
       label: t('learning.title', { defaultValue: '学习' }),
       icon: <BookOpen theme='outline' size='16' />,
       path: 'learn',
+    },
+    presets: {
+      id: 'presets',
+      label: t('settings.presetsHub.railTitle', { defaultValue: '预设' }),
+      icon: <Robot theme='outline' size='16' />,
+      path: 'presets',
+    },
+    skills: {
+      id: 'skills',
+      label: t('settings.skillsHub.railTitle', { defaultValue: '技能' }),
+      icon: <Puzzle theme='outline' size='16' />,
+      path: 'skills',
+    },
+    mcp: {
+      id: 'mcp',
+      label: t('settings.mcpHub.railTitle', { defaultValue: 'MCP' }),
+      icon: <Tool theme='outline' size='16' />,
+      path: 'mcp',
     },
     'cloud-login': {
       id: 'cloud-login',

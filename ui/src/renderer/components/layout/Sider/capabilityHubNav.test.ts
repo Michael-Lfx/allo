@@ -29,7 +29,7 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('sider-conversation-entry')).toBe(false);
   });
 
-  test('keeps presets/skills/mcp routes and hosts Open Capabilities as a first-class page', () => {
+  test('keeps Open Capabilities routes compatible while hiding its settings entry', () => {
     const routerSource = readSource(new URL('../Router.tsx', import.meta.url));
     const settingsSiderSource = readSource(
       new URL('../../../pages/settings/components/SettingsSider.tsx', import.meta.url)
@@ -37,7 +37,7 @@ describe('capability hub navigation', () => {
 
     expect(routerSource.includes("path='/open-capabilities'")).toBe(true);
     expect(routerSource.includes("path='/settings/open-capabilities'")).toBe(true);
-    expect(settingsSiderSource.includes("'open-capabilities'")).toBe(true);
+    expect(settingsSiderSource.includes("'open-capabilities'")).toBe(false);
     expect(routerSource.includes("path='/settings/webui' element={<Navigate to='/open-capabilities'")).toBe(true);
     expect(routerSource.includes("path='/settings/tools' element={<Navigate to='/open-capabilities'")).toBe(true);
     expect(routerSource.includes('getHashRouteRedirectUrl')).toBe(true);

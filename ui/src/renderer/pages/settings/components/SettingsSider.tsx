@@ -18,7 +18,9 @@ import {
   ChartPie,
   CloudStorage,
   Puzzle,
+  Robot,
   System,
+  Tool,
 } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useMemo } from 'react';
@@ -38,6 +40,9 @@ export const BUILTIN_TAB_IDS = [
   'media',
   'public-companions',
   'learn',
+  'presets',
+  'skills',
+  'mcp',
   'cloud-login',
   'about',
 ] as const;
@@ -61,6 +66,7 @@ export const LEGACY_ANCHOR_REMAP: Record<string, string> = {
  */
 const GROUP_HEADER_BEFORE: Record<string, string> = {
   system: 'settings.groupApp',
+  presets: 'settings.groupCapabilities',
   about: 'settings.groupAbout',
 };
 
@@ -137,6 +143,24 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('learning.title', { defaultValue: '学习' }),
         icon: <BookOpen />,
         path: 'learn',
+      },
+      presets: {
+        id: 'presets',
+        label: t('settings.presetsHub.railTitle', { defaultValue: '预设' }),
+        icon: <Robot />,
+        path: 'presets',
+      },
+      skills: {
+        id: 'skills',
+        label: t('settings.skillsHub.railTitle', { defaultValue: '技能' }),
+        icon: <Puzzle />,
+        path: 'skills',
+      },
+      mcp: {
+        id: 'mcp',
+        label: t('settings.mcpHub.railTitle', { defaultValue: 'MCP' }),
+        icon: <Tool />,
+        path: 'mcp',
       },
       'cloud-login': {
         id: 'cloud-login',
