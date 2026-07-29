@@ -12,6 +12,14 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Keep action buttons on the same 6px corner system without affecting
+   semantic controls such as switches, tabs, or radio buttons. */
+button:not([role]),
+.arco-btn,
+[role='button'] {
+  border-radius: 6px !important;
+}
+
 /* Override Arco Design component backgrounds to white in light mode */
 /* 覆盖 Arco Design 组件背景色为白色（浅色模式） */
 /* .arco-input,

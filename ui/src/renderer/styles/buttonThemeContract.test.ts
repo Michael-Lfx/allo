@@ -11,6 +11,11 @@ import { PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets'
 const arcoOverrides = readFileSync(new URL('./arco-override.css', import.meta.url), 'utf8');
 
 describe('button theme contract', () => {
+  test('all button primitives use the global 6px corner radius', () => {
+    expect(arcoOverrides).toContain("button:not([role]),\n.arco-btn,\n[role='button'] {");
+    expect(arcoOverrides).toContain('border-radius: 6px !important;');
+  });
+
   test('primary disabled buttons use dedicated readable tokens instead of a brand fill', () => {
     expect(arcoOverrides.includes('.arco-btn-primary.arco-btn-disabled')).toBe(true);
     expect(arcoOverrides.includes('background-color: var(--button-primary-disabled-bg')).toBe(true);
