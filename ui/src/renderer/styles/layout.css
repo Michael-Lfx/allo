@@ -67,6 +67,12 @@
   flex-shrink: 0 !important;
 }
 
+.sidebar-app-version {
+  color: var(--flowy-text-3, var(--color-text-3));
+  font-size: var(--flowy-text-micro, 11px);
+  line-height: 14px;
+}
+
 /* Persistent update affordance beside the Flowy wordmark. It is rendered
    only after an authoritative updater check reports a newer version. */
 .sidebar-update-button {

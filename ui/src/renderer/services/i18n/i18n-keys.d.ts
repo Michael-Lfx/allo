@@ -2020,6 +2020,8 @@ export type I18nKey =
   | 'learning.continue'
   | 'learning.correct'
   | 'learning.courses'
+  | 'learning.dev.navTooltip'
+  | 'learning.dev.tag'
   | 'learning.diagnosticComplete'
   | 'learning.diagnosticTitle'
   | 'learning.domain'

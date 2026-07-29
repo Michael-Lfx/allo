@@ -1,5 +1,9 @@
 {
   "title": "学习",
+  "dev": {
+    "tag": "dev",
+    "navTooltip": "学习（dev）"
+  },
   "subtitle": "基于知识库的课程、练习、掌握度与间隔复习",
   "generate": "从知识库生成",
   "generateTitle": "自动生成课程",

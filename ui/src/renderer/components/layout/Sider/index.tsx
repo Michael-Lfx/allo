@@ -206,6 +206,13 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onClick={handleKnowledgeClick}
               dot={pendingInboxCount > 0}
             />
+            <SiderLearningEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/learn')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleLearningClick}
+            />
             {/* 自动化 — automation platforms */}
             <SiderScheduledEntry
               isMobile={isMobile}

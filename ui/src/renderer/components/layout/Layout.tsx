@@ -1,6 +1,7 @@
 
 
 import { ipcBridge } from '@/common';
+import { httpGet } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
 import type { ICssTheme } from '@/common/config/storage';
 import { parseConversationId } from '@/common/types/ids';
@@ -41,6 +42,8 @@ import { isDesktopShell, isElectronDesktop } from '@renderer/utils/platform';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import '@renderer/styles/layout.css';
+
+const healthGet = httpGet<{ version?: string }>('/health');
 
 const SidebarIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({ size = 18, strokeWidth = 4 }) => (
   <svg
@@ -154,6 +157,7 @@ const Layout: React.FC<{
   );
   const [customCss, setCustomCss] = useState<string>('');
   const [shouldMountUpdateModal, setShouldMountUpdateModal] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
   const updateAvailability = useUpdateAvailability();
   const { onClick } = useDebug();
   const { contextHolder: directorySelectionContextHolder } = useDirectorySelection();
@@ -166,6 +170,21 @@ const Layout: React.FC<{
   const updateButtonLabel = updateAvailability.version
     ? `${t('update.availableTitle')}: ${updateAvailability.version}`
     : t('update.availableTitle');
+
+  useEffect(() => {
+    let alive = true;
+    healthGet
+      .invoke()
+      .then((health) => {
+        if (alive && health?.version) setAppVersion(health.version);
+      })
+      .catch(() => {
+        // The WebUI may be running without a backend during frontend-only development.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
   // The titlebar workspace toggle drives the right rail on the conversation and
   // terminal session pages (both render a workspace rail via the shared
   // useWorkspaceCollapse + WORKSPACE_TOGGLE_EVENT protocol).
@@ -656,8 +675,9 @@ const Layout: React.FC<{
                 >
                   <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
                 </div>
-                <div className='min-w-0 flex-1 truncate text-16px text-t-primary collapsed-hidden font-semibold'>
-                  Flowy
+                <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
+                  <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
+                  {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
                 </div>
                 {updateAvailability.available && !collapsed && (
                   <InstantHoverTooltip content={updateButtonLabel} position='right' className='ml-auto'>

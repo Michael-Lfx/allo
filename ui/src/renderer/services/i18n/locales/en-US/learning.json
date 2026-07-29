@@ -1,5 +1,9 @@
 {
   "title": "Learning",
+  "dev": {
+    "tag": "dev",
+    "navTooltip": "Learning (dev)"
+  },
   "subtitle": "Knowledge-backed courses, practice, mastery, and spaced review",
   "generate": "Generate from knowledge",
   "generateTitle": "Generate a course",

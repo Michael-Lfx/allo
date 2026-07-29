@@ -12,6 +12,13 @@ const modalSource = readFileSync(new URL('../settings/UpdateModal.tsx', import.m
 const layoutCss = readFileSync(new URL('../../styles/layout.css', import.meta.url), 'utf8');
 
 describe('global update availability entry', () => {
+  test('shows the running app version below the Flowy wordmark', () => {
+    expect(layoutSource.includes("const healthGet = httpGet<{ version?: string }>('/health');")).toBe(true);
+    expect(layoutSource.includes("className='sidebar-app-version'>v{appVersion}</span>")).toBe(true);
+    expect(layoutCss.includes('.sidebar-app-version {')).toBe(true);
+    expect(layoutCss.includes('font-size: var(--flowy-text-micro, 11px)')).toBe(true);
+  });
+
   test('shows the Logo update button only when a new version is available', () => {
     expect(layoutSource.includes('updateAvailability.available && !collapsed')).toBe(true);
     expect(layoutSource.includes("className='sidebar-update-button'")).toBe(true);

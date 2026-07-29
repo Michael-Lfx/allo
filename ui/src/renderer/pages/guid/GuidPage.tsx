@@ -31,7 +31,6 @@ import type { AppliedCollaborationTemplate } from '@/renderer/components/collabo
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
-import GuidReadinessStrip from './components/GuidReadinessStrip';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
@@ -57,7 +56,6 @@ import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { addRecentWorkspace } from '@/renderer/components/workspace';
 import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import {
-  buildGuidTaskReceipt,
   resolveGuidReadiness,
   type GuidTaskIntentId,
 } from './readiness/guidReadiness';
@@ -297,11 +295,6 @@ const GuidPage: React.FC = () => {
         needsModelForAgent,
       }),
     [activeIntentId, guidInput.dir, modelSelection.current_model, needsModelForAgent]
-  );
-
-  const taskReceipt = useMemo(
-    () => buildGuidTaskReceipt(activeIntentId, guidInput.input, guidInput.dir),
-    [activeIntentId, guidInput.dir, guidInput.input]
   );
 
   const handleLinkWorkspace = useCallback(() => {
@@ -993,24 +986,6 @@ const GuidPage: React.FC = () => {
                   />
                 ) : undefined
               }
-            />
-
-            <GuidReadinessStrip
-              agentLabel={mention.selectedAgentLabel}
-              model={modelSelection.current_model}
-              workspaceDir={guidInput.dir}
-              readiness={readiness}
-              receipt={taskReceipt}
-              hasDraft={hasDraft}
-              onOpenSettings={() => setAdvancedOpen(true)}
-              onAddModel={() => {
-                pendingAutoSendRef.current = Boolean(guidInput.input.trim());
-                addProviderRef.current?.open();
-              }}
-              onLinkWorkspace={() => {
-                pendingAutoSendRef.current = Boolean(guidInput.input.trim());
-                handleLinkWorkspace();
-              }}
             />
 
             {/* Editor host (modals + example prompts + fallback notice) */}

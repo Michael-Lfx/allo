@@ -20,7 +20,7 @@ describe('Guid homepage single-screen layout', () => {
     expect(intentIndex).toBeLessThan(inputIndex);
     expect(editorHostIndex).toBeGreaterThan(inputIndex);
     expect(source.includes('GuidResourceCards')).toBe(true);
-    expect(source.includes('GuidReadinessStrip')).toBe(true);
+    expect(source.includes('GuidReadinessStrip')).toBe(false);
     expect(source.includes("data-testid='guid-run-settings-panel'")).toBe(true);
     expect(source.includes('guidDiscoveryArea')).toBe(false);
     expect(source.includes('GuidCompanionPosterPreview')).toBe(false);

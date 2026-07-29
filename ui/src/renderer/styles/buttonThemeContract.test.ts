@@ -12,8 +12,13 @@ const arcoOverrides = readFileSync(new URL('./arco-override.css', import.meta.ur
 
 describe('button theme contract', () => {
   test('all button primitives use the global 6px corner radius', () => {
-    expect(arcoOverrides).toContain("button:not([role]),\n.arco-btn,\n[role='button'] {");
+    expect(arcoOverrides).toContain("button:not([role]):not([data-button-shape='pill']),\n.arco-btn,\n[role='button'] {");
     expect(arcoOverrides).toContain('border-radius: 6px !important;');
+  });
+
+  test('explicitly circular Arco icon buttons retain their round shape', () => {
+    expect(arcoOverrides).toContain('.arco-btn.arco-btn-shape-circle {');
+    expect(arcoOverrides).toContain('border-radius: 50% !important;');
   });
 
   test('primary disabled buttons use dedicated readable tokens instead of a brand fill', () => {

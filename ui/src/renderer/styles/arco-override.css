@@ -14,10 +14,15 @@ body {
 
 /* Keep action buttons on the same 6px corner system without affecting
    semantic controls such as switches, tabs, or radio buttons. */
-button:not([role]),
+button:not([role]):not([data-button-shape='pill']),
 .arco-btn,
 [role='button'] {
   border-radius: 6px !important;
+}
+
+/* Icon-only actions explicitly declared as circular keep their round shape. */
+.arco-btn.arco-btn-shape-circle {
+  border-radius: 50% !important;
 }
 
 /* Override Arco Design component backgrounds to white in light mode */

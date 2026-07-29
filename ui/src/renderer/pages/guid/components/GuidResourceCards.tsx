@@ -38,6 +38,7 @@ const GuidResourceCards: React.FC<GuidResourceCardsProps> = ({
             type='button'
             className={`${styles.guidResourceIntentChip}${activeIntentId === intent.id ? ` ${styles.guidResourceIntentChipActive}` : ''}`}
             data-testid={`guid-intent-${intent.id}`}
+            data-button-shape='pill'
             aria-pressed={activeIntentId === intent.id}
             onClick={() => {
               const text = t(intent.textKey, { defaultValue: intent.defaultText });
