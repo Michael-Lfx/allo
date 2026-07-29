@@ -311,6 +311,8 @@
       "editable": "Editable",
       "preparing": "Preparing storyboard visuals",
       "preparingHint": "Shots will appear here in story order when planning is complete.",
+      "firstFramePending": "First frame pending",
+      "firstFramePendingHint": "First-frame images are created and shown during video generation",
       "shotAlt": "Shot {{number}}",
       "shotNumber": "Shot {{number}}",
       "visualDirection": "Visual direction",
