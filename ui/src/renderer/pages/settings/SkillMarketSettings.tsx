@@ -195,28 +195,28 @@ const SkillMarketSettings: React.FC = () => {
       {messageContext}
       <div className='space-y-16px'>
         <div className='py-2'>
-          <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
-          <div className='flex flex-col gap-16px mb-20px'>
+          <div className={`bg-fill-2 rounded-12px ${isMobile ? 'p-16px' : 'p-20px'}`}>
+          <div className='mb-18px flex flex-col gap-16px'>
             <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
               <div className='min-w-0'>
-                <h2 className='m-0 text-28px font-700 leading-[1.1] text-t-primary'>
+                <h2 className='m-0 text-24px font-700 leading-30px text-t-primary'>
                   {t('settings.skillsMarket.title', { defaultValue: '技能市场' })}
                 </h2>
-                <p className='mt-8px mb-0 max-w-[680px] text-14px text-t-secondary leading-relaxed'>
+                <p className='mt-6px mb-0 max-w-[640px] text-13px leading-20px text-t-secondary'>
                   {t('settings.skillsMarket.description', {
                     defaultValue: '同步 ClawHub 与 SkillHub 最新榜单，选择技能后交给 Flowy 生成安装确认草稿。',
                   })}
                 </p>
               </div>
               <div className={`flex items-center gap-10px ${isMobile ? 'w-full flex-wrap' : 'flex-shrink-0'}`}>
-                <div className='inline-flex items-center gap-4px rounded-12px bg-[var(--color-bg-2)] p-3px border border-solid border-[var(--color-border-2)]'>
+                <div className='inline-flex items-center gap-4px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-3px'>
                   {SKILL_MARKET_SOURCES.map((source) => (
                     <Button
                       key={source}
                       size='small'
                       type={activeSource === source ? 'primary' : 'text'}
                       data-testid={`btn-skill-market-source-${source}`}
-                      className='!rounded-9px !h-28px !px-12px !text-12px'
+                      className='!rounded-6px !h-28px !px-12px !text-12px'
                       onClick={() => setActiveSource(source)}
                     >
                       {sourceLabel(source)}
@@ -228,7 +228,7 @@ const SkillMarketSettings: React.FC = () => {
                   type='text'
                   size='small'
                   data-testid='btn-sync-skill-market'
-                  className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+                  className='!rounded-6px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!translate-y-px'
                   icon={<Refresh size={16} fill='currentColor' className={loading ? 'animate-spin' : ''} />}
                   onClick={() => void syncMarket()}
                   title={t('common.refresh', { defaultValue: '刷新' })}
@@ -237,7 +237,7 @@ const SkillMarketSettings: React.FC = () => {
                   type={isSearchVisible ? 'secondary' : 'text'}
                   size='small'
                   data-testid='btn-search-skill-market'
-                  className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+                  className='!rounded-6px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!translate-y-px'
                   icon={
                     isSearchVisible ? <CloseSmall size={16} fill='currentColor' /> : <Search size={16} fill='currentColor' />
                   }
