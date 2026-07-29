@@ -309,7 +309,61 @@ pub struct ClawModelEntry {
     pub category: i32,
 }
 
+/// Capability payload inside `ClawModelEntry.extra` (JSON string from model_dev).
+///
+/// Example: `{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"credit_rate":1}`
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct ClawModelExtra {
+    #[serde(default)]
+    pub input: Vec<String>,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub tools: bool,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub credit_rate: Option<f64>,
+}
+
+impl ClawModelExtra {
+    /// Parse the list-API `extra` JSON string. Empty / invalid → defaults.
+    pub fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Self::default();
+        }
+        serde_json::from_str(trimmed).unwrap_or_default()
+    }
+
+    pub fn supports_vision(&self) -> bool {
+        self.input.iter().any(|m| m.eq_ignore_ascii_case("image"))
+    }
+
+    pub fn supports_file(&self) -> bool {
+        self.input.iter().any(|m| m.eq_ignore_ascii_case("file"))
+    }
+
+    pub fn supports_audio(&self) -> bool {
+        self.input.iter().any(|m| m.eq_ignore_ascii_case("audio"))
+    }
+
+    pub fn supports_video(&self) -> bool {
+        self.input.iter().any(|m| m.eq_ignore_ascii_case("video"))
+    }
+
+    /// Positive context window when present; `0` / missing → `None`.
+    pub fn context_window_tokens(&self) -> Option<u64> {
+        self.context_window.filter(|v| *v > 0)
+    }
+}
+
 impl ClawModelEntry {
+    /// Parsed model_dev capability blob from `extra`.
+    pub fn model_extra(&self) -> ClawModelExtra {
+        ClawModelExtra::parse(&self.extra)
+    }
+
     /// List API `id` — pass verbatim as image/video request `model`.
     pub fn api_model_id(&self) -> String {
         self.id.clone()
@@ -375,7 +429,7 @@ pub struct ChatSessionReportResponse {
 
 #[cfg(test)]
 mod plan_label_tests {
-    use super::{format_plan_tier, strip_plan_suffix, UserCurrentPlan};
+    use super::{format_plan_tier, strip_plan_suffix, ClawModelExtra, UserCurrentPlan};
 
     #[test]
     fn strip_plan_suffix_removes_english_plan() {
@@ -405,5 +459,29 @@ mod plan_label_tests {
             ..Default::default()
         };
         assert_eq!(plan.display_label().as_deref(), Some("Free"));
+    }
+
+    #[test]
+    fn claw_model_extra_parses_model_dev_fields() {
+        let extra = ClawModelExtra::parse(
+            r#"{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"credit_rate":1}"#,
+        );
+        assert_eq!(extra.input, vec!["text", "image"]);
+        assert!(!extra.reasoning);
+        assert!(extra.tools);
+        assert_eq!(extra.context_window_tokens(), Some(128_000));
+        assert_eq!(extra.credit_rate, Some(1.0));
+        assert!(extra.supports_vision());
+        assert!(!extra.supports_audio());
+    }
+
+    #[test]
+    fn claw_model_extra_treats_zero_or_empty_as_unset() {
+        assert_eq!(ClawModelExtra::parse("").context_window_tokens(), None);
+        assert_eq!(
+            ClawModelExtra::parse(r#"{"context_window":0}"#).context_window_tokens(),
+            None
+        );
+        assert_eq!(ClawModelExtra::parse("not-json").context_window_tokens(), None);
     }
 }
