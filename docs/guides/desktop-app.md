@@ -18,7 +18,7 @@ server.
 
 The desktop app requires:
 
-- A platform Tauri supports (Windows 10+, macOS 11+, mainstream Linux distros).
+- A supported platform: **Windows 10 version 1803 (build 17134) or newer**, macOS 11+, mainstream Linux distros. Windows 7 / 8 / 8.1 are **not supported** — see [Troubleshooting](../reference/troubleshooting.md#the-installer-fails-with-无法定位程序输入点-getpackagesbypackagefamily).
 - A WebView runtime: **WebView2** on Windows (preinstalled on Win 11; on Win 10 install the [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/)), **WKWebView** on macOS (built-in), **WebKitGTK** on Linux (`libwebkit2gtk-4.1-0`).
 - For development: Rust toolchain, [Bun](https://bun.sh) ≥ 1.3.13, and the platform Tauri build deps (see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
 

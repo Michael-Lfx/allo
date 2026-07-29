@@ -16,7 +16,7 @@
 
 桌面应用需要：
 
-- Tauri 支持的平台 (Windows 10+、macOS 11+、主流 Linux 发行版)。
+- 受支持的平台：**Windows 10 版本 1803（build 17134）及以上**、macOS 11+、主流 Linux 发行版。Windows 7 / 8 / 8.1 **不受支持**——参见[疑难排查](../reference/troubleshooting.zh.md#安装时报无法定位程序输入点-getpackagesbypackagefamily)。
 - WebView 运行时：Windows 上的 **WebView2** (Win 11 预装；Win 10 上请安装 [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/))，macOS 上的 **WKWebView** (内置)，Linux 上的 **WebKitGTK** (`libwebkit2gtk-4.1-0`)。
 - 用于开发：Rust 工具链、[Bun](https://bun.sh) ≥ 1.3.13，以及对应平台的 Tauri 构建依赖 (参见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/))。
 

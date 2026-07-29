@@ -26,6 +26,14 @@ use the `Flowy_` / `Flowy.app` prefix. GitHub one-click release scripts are in
 [`RELEASING.md`](../../RELEASING.md). Source build and packaging details:
 [`../contributing/building-and-packaging.md`](../contributing/building-and-packaging.md).
 
+## Supported operating systems
+
+| OS | Minimum | Notes |
+| --- | --- | --- |
+| Windows | **10 version 1803 (build 17134)**, x64 | Windows 7 / 8 / 8.1 are not supported, and cannot be made to work by installing WebView2 manually. Rust raised the baseline for `x86_64-pc-windows-msvc` to Windows 10 in [1.78](https://blog.rust-lang.org/2024/02/26/Windows-7/), and the Microsoft WebView2 bootstrapper the installer runs no longer starts on Windows 7. |
+| macOS | 11 (Big Sur) | Universal build; WKWebView is built in. |
+| Linux | glibc-based distro with WebKitGTK 4.1 | e.g. Ubuntu 22.04+. Requires `libwebkit2gtk-4.1-0`. |
+
 ## Prerequisites
 
 You need a working build toolchain regardless of which mode you target. The

@@ -4,6 +4,23 @@
 问题不在本表里，源码就是最快的参考——本页描述的每一个行为都对应
 `crates/backend/` 下的某个具体文件。
 
+## 桌面安装包（Windows）
+
+### 安装时报无法定位程序输入点 GetPackagesByPackageFamily
+
+这台机器是 Windows 7 或 8.x，Flowy 不支持。NSIS 安装器使用
+`webviewInstallMode: downloadBootstrapper`（见
+`apps/desktop/tauri.conf.json`），会下载并静默运行微软的
+`MicrosoftEdgeWebview2Setup.exe`。该 bootstrapper 解包出的
+`MicrosoftEdgeUpdate.exe` 导入了 `GetPackagesByPackageFamily`——这个
+`KERNEL32` 导出只在 Windows 8 及以后存在，所以 Windows 7 直接弹出
+入口点缺失对话框。
+
+手动安装 WebView2 也没用。Flowy 用当前的 Rust 工具链构建，而
+`x86_64-pc-windows-msvc` [自 Rust 1.78 起](https://blog.rust-lang.org/2024/02/26/Windows-7/)
+最低要求 Windows 10；锁文件里的 `windows`、`tao`、`wry` 也都按
+Windows 10 的 API 面开发。最低系统要求是 Windows 10 版本 1803。
+
 ## 后端端口 / 连接问题
 
 ### `nomifun-web: invalid --host '<value>'`

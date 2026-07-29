@@ -24,6 +24,14 @@ Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
 [`RELEASING.zh-CN.md`](../../RELEASING.zh-CN.md)。从源码构建与打包细节见
 [`../contributing/building-and-packaging.zh.md`](../contributing/building-and-packaging.zh.md)。
 
+## 受支持的操作系统
+
+| 系统 | 最低版本 | 说明 |
+| --- | --- | --- |
+| Windows | **10 版本 1803（build 17134）**，x64 | Windows 7 / 8 / 8.1 不受支持，手动安装 WebView2 也无法解决。Rust 自 [1.78](https://blog.rust-lang.org/2024/02/26/Windows-7/) 起把 `x86_64-pc-windows-msvc` 的最低系统提到 Windows 10；且安装器调用的微软 WebView2 bootstrapper 已无法在 Windows 7 上启动。 |
+| macOS | 11（Big Sur） | 通用构建；WKWebView 系统自带。 |
+| Linux | 基于 glibc 且带 WebKitGTK 4.1 的发行版 | 例如 Ubuntu 22.04+，需要 `libwebkit2gtk-4.1-0`。 |
+
 ## 前置条件
 
 无论你选择哪种模式，都需要一套可工作的构建工具链。具体要求如下：

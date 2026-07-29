@@ -2,6 +2,14 @@
 
 Symptoms you might hit running Flowy, and the actual mechanism behind each one. If you find a problem that is not on this list, the source is the fastest reference — every behaviour described below is grounded in a specific file in `crates/backend/`.
 
+## Desktop installer (Windows)
+
+### The installer fails with 无法定位程序输入点 GetPackagesByPackageFamily
+
+The machine is running Windows 7 or 8.x, which Flowy does not support. The NSIS installer uses `webviewInstallMode: downloadBootstrapper` (`apps/desktop/tauri.conf.json`), so it downloads and silently runs Microsoft's `MicrosoftEdgeWebview2Setup.exe`. That bootstrapper unpacks `MicrosoftEdgeUpdate.exe`, which imports `GetPackagesByPackageFamily` — a `KERNEL32` export that only exists on Windows 8 and later. Windows 7 therefore aborts with the missing-entry-point dialog.
+
+Installing WebView2 by hand does not help. Flowy is built with a current Rust toolchain, and `x86_64-pc-windows-msvc` has required Windows 10 [since Rust 1.78](https://blog.rust-lang.org/2024/02/26/Windows-7/); the `windows`, `tao` and `wry` crates in the lockfile also target the Windows 10 API surface. The minimum is Windows 10 version 1803.
+
 ## Backend port / connection problems
 
 ### `nomifun-web: invalid --host '<value>'`
