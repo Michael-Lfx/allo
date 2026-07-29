@@ -105,7 +105,6 @@ const AgentCard: React.FC<AgentCardProps> = (props) => {
   if (props.type === 'installable') {
     const { agent, onOneClickInstall, onManualInstall, installing } = props;
     const logo = resolveAgentLogo({ backend: agent.backend });
-    const hasOneClickInstall = Boolean(onOneClickInstall);
 
     return (
       <div className='flex min-h-[154px] flex-col rounded-12px border border-dashed border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px transition-colors hover:border-[var(--color-border-3)]'>
@@ -128,7 +127,7 @@ const AgentCard: React.FC<AgentCardProps> = (props) => {
           {onOneClickInstall && (
             <Button
               size='small'
-              type='primary'
+              type='text'
               loading={installing}
               onClick={onOneClickInstall}
               className='!w-full !justify-center !rounded-10px !text-12px'
@@ -139,7 +138,7 @@ const AgentCard: React.FC<AgentCardProps> = (props) => {
           {onManualInstall && (
             <Button
               size='small'
-              type={hasOneClickInstall ? 'text' : 'primary'}
+              type='primary'
               onClick={onManualInstall}
               className='!w-full !justify-center !rounded-10px !text-12px'
             >

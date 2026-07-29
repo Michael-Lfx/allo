@@ -211,7 +211,7 @@ const LocalAgents: React.FC = () => {
             <Button
               type='primary'
               size='small'
-              icon={<Plus size='14' />}
+              icon={<Plus size='14' className='!text-white' />}
               className={classNames('!rounded-10px shrink-0', bannerWide && '!min-w-144px')}
               onClick={() => setHubModalVisible(true)}
             >
