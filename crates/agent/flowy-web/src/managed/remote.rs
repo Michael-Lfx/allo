@@ -110,10 +110,6 @@ impl RemoteSearchAdapter {
         result.map_err(map_compatibility_error)
     }
 
-    async fn has_cached_compatibility(&self) -> bool {
-        matches!(*self.discovery.lock().await, Some(Ok(())))
-    }
-
     async fn clear_compatibility(&self) {
         *self.discovery.lock().await = None;
         self.peer.invalidate_tools_cache().await;
@@ -150,14 +146,14 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         query: &SearchQuery,
         deadline: Instant,
     ) -> Result<SearchResult, SearchAttemptError> {
-        let mut retried = false;
+        let mut session_retried = false;
+        let mut tool_rediscovered = false;
         loop {
-            let was_cached = self.has_cached_compatibility().await;
             match self.ensure_compatible(deadline).await {
                 Ok(()) => {}
-                Err(SearchAttemptError::SessionExpired) if !retried => {
+                Err(SearchAttemptError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
-                    retried = true;
+                    session_retried = true;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -170,18 +166,18 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
             {
                 Ok(result) => {
                     if result.is_error && is_explicit_unknown_tool(&result) {
-                        if was_cached && !retried {
+                        if !tool_rediscovered {
                             self.clear_compatibility().await;
-                            retried = true;
+                            tool_rediscovered = true;
                             continue;
                         }
                         return Err(SearchAttemptError::ToolMissing);
                     }
                     return self.decode_result(&result, query.count as usize);
                 }
-                Err(McpPeerError::SessionExpired) if !retried => {
+                Err(McpPeerError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
-                    retried = true;
+                    session_retried = true;
                 }
                 Err(error) => return Err(map_peer_error(error)),
             }
