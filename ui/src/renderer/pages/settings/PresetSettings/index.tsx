@@ -128,7 +128,6 @@ const PresetSettings: React.FC = () => {
       subtitle={t('settings.presetsHub.subtitle', {
         defaultValue: 'Save reusable agent, model, skill and knowledge configurations for one-click startup.',
       })}
-      hideHeader
       maxWidthClass='md:max-w-1200px'
     >
       {messageContext}

@@ -23,9 +23,10 @@ describe('PresetSettings page shell', () => {
     expect(source.includes('flex-1 min-h-0')).toBe(true);
   });
 
-  test('suppresses the duplicate page-level header', () => {
+  test('uses the shared page-level header', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(source.includes('hideHeader')).toBe(true);
+    expect(source.includes('hideHeader')).toBe(false);
+    expect(source.includes("title={t('settings.presetsHub.title'")).toBe(true);
   });
 });

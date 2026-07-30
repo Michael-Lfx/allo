@@ -121,104 +121,90 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
   const isSearchVisible = searchExpanded || search_query.length > 0;
 
   return (
-    <div className='py-2'>
-      <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
-        <div className='flex flex-col gap-16px mb-20px'>
-          <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
-            <div className='min-w-0'>
-              <h2 className='m-0 text-28px font-700 leading-[1.1] text-t-primary'>
-                {t('settings.presets', { defaultValue: 'Presets' })}
-              </h2>
-              <p className='mt-8px mb-0 max-w-[680px] text-14px text-t-secondary leading-relaxed'>
-                {t('settings.presetsListDescription', {
-                  defaultValue:
-                    'Save Agent instructions, preferences, Skills and knowledge scope as reusable one-click configurations.',
-                })}
-              </p>
-            </div>
-            <div className={`flex items-center gap-10px ${isMobile ? 'w-full' : 'flex-shrink-0'}`}>
-              <Button
-                type={isSearchVisible ? 'secondary' : 'text'}
-                size='small'
-                data-testid='btn-search-toggle'
-                className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
-                icon={
-                  isSearchVisible ? (
-                    <CloseSmall size={16} fill='currentColor' />
-                  ) : (
-                    <Search size={16} fill='currentColor' />
-                  )
-                }
-                onClick={() => {
-                  if (isSearchVisible) {
-                    setSearchExpanded(false);
-                    setSearchQuery('');
-                    return;
-                  }
-                  setSearchExpanded(true);
-                }}
-              />
-              <Button
-                type='primary'
-                size='small'
-                className={`!rounded-[100px] ${isMobile ? '!flex-1 !h-36px' : '!px-16px !h-34px'}`}
-                icon={<Plus size={14} fill='currentColor' />}
-                onClick={onCreate}
-                data-testid='btn-create-preset'
-              >
-                {t('settings.createPreset', { defaultValue: 'Create Preset' })}
-              </Button>
-            </div>
-          </div>
+    <div className='flex flex-col gap-16px pb-16px'>
+      <div className={`flex items-center justify-end gap-8px ${isMobile ? 'w-full' : ''}`}>
+        <Button
+          type={isSearchVisible ? 'secondary' : 'text'}
+          size='small'
+          aria-label={t('settings.searchPresets', { defaultValue: 'Search presets' })}
+          data-testid='btn-search-toggle'
+          className='!rounded-6px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+          icon={
+            isSearchVisible ? (
+              <CloseSmall size={16} fill='currentColor' />
+            ) : (
+              <Search size={16} fill='currentColor' />
+            )
+          }
+          onClick={() => {
+            if (isSearchVisible) {
+              setSearchExpanded(false);
+              setSearchQuery('');
+              return;
+            }
+            setSearchExpanded(true);
+          }}
+        />
+        <Button
+          type='primary'
+          size='small'
+          className={isMobile ? '!flex-1 !h-36px' : '!px-16px !h-34px'}
+          icon={<Plus size={14} fill='currentColor' />}
+          onClick={onCreate}
+          data-testid='btn-create-preset'
+        >
+          {t('settings.createPreset', { defaultValue: 'Create Preset' })}
+        </Button>
+      </div>
 
-          {isSearchVisible && (
-            <Input
-              allowClear
-              autoFocus
-              value={search_query}
-              onChange={setSearchQuery}
-              data-testid='input-search-preset'
-              className='!bg-[var(--color-bg-2)]'
-              placeholder={t('settings.searchPresets', {
-                defaultValue: 'Search presets by name or description',
-              })}
-              prefix={<Search size={14} fill='currentColor' />}
+      {isSearchVisible && (
+        <Input
+          allowClear
+          autoFocus
+          value={search_query}
+          onChange={setSearchQuery}
+          data-testid='input-search-preset'
+          className='!bg-[var(--color-bg-2)]'
+          placeholder={t('settings.searchPresets', {
+            defaultValue: 'Search presets by name or description',
+          })}
+          prefix={<Search size={14} fill='currentColor' />}
+        />
+      )}
+
+      <PresetTagFilterBar
+        audienceTags={audienceTags}
+        scenarioTags={scenarioTags}
+        value={tagFilter}
+        onChange={setTagFilter}
+        localeKey={localeKey}
+        onManageTags={onManageTags}
+      />
+
+      {filteredPresets.length > 0 ? (
+        <div className='grid gap-12px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
+          {filteredPresets.map((preset) => (
+            <PresetCard
+              key={preset.preset_id}
+              preset={preset}
+              localeKey={localeKey}
+              avatarImageMap={avatarImageMap}
+              tagById={tagById}
+              isExtensionPreset={isExtensionPreset}
+              onEdit={(a) => {
+                setActivePresetId(a.preset_id);
+                onEdit(a);
+              }}
+              onDuplicate={onDuplicate}
+              onToggleEnabled={onToggleEnabled}
+              highlighted={highlightedId === preset.preset_id}
+              cardRef={cardRefSetter(preset.preset_id)}
             />
-          )}
-
-          <PresetTagFilterBar
-            audienceTags={audienceTags}
-            scenarioTags={scenarioTags}
-            value={tagFilter}
-            onChange={setTagFilter}
-            localeKey={localeKey}
-            onManageTags={onManageTags}
-          />
+          ))}
         </div>
-
-        {filteredPresets.length > 0 ? (
-          <div className='grid gap-12px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
-            {filteredPresets.map((preset) => (
-              <PresetCard
-                key={preset.preset_id}
-                preset={preset}
-                localeKey={localeKey}
-                avatarImageMap={avatarImageMap}
-                tagById={tagById}
-                isExtensionPreset={isExtensionPreset}
-                onEdit={(a) => {
-                  setActivePresetId(a.preset_id);
-                  onEdit(a);
-                }}
-                onDuplicate={onDuplicate}
-                onToggleEnabled={onToggleEnabled}
-                highlighted={highlightedId === preset.preset_id}
-                cardRef={cardRefSetter(preset.preset_id)}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className='text-center text-t-secondary py-32px'>
+      ) : (
+        <div className='flex min-h-220px flex-col items-center justify-center gap-12px rd-8px border border-dashed border-border-2 bg-2 px-20px py-32px text-center'>
+          <div className='max-w-440px text-13px leading-20px text-t-secondary'>
             {presets.length === 0
               ? t('settings.presetsEmpty', {
                   defaultValue: 'No presets yet. Create one to save a reusable launch configuration.',
@@ -227,8 +213,13 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
                   defaultValue: 'No presets match the current filters.',
                 })}
           </div>
-        )}
-      </div>
+          {presets.length === 0 && (
+            <Button type='primary' size='small' icon={<Plus size={14} fill='currentColor' />} onClick={onCreate}>
+              {t('settings.createPreset', { defaultValue: 'Create Preset' })}
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 };
