@@ -494,6 +494,8 @@ impl DesktopKeepAlive {
     pub async fn shutdown_after_startup_failure(&self) -> anyhow::Result<()> {
         match &self.inner.cleanup {
             DesktopStartupCleanupAuthority::Services(services) => {
+                #[cfg(feature = "managed-search")]
+                services.shutdown_managed_search().await;
                 services.shutdown_browser_platform().await?;
                 services.database.close().await;
                 Ok(())
@@ -950,6 +952,25 @@ impl DesktopServer {
             Err(_) => errors.push(
                 "terminal cleanup timed out after 5 seconds".to_owned(),
             ),
+        }
+
+        #[cfg(feature = "managed-search")]
+        if let Some(managed_search) = self
+            ._keep_alive
+            .services()
+            .and_then(|services| services.managed_search.clone())
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                managed_search.shutdown(),
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(_) => errors.push(
+                    "managed search shutdown timed out after 3 seconds".to_owned(),
+                ),
+            }
         }
 
         let browser_result: anyhow::Result<()> =

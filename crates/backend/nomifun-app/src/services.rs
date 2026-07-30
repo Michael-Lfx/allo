@@ -1587,6 +1587,16 @@ impl AppServices {
         self.browser_platform_shutdown.shutdown().await
     }
 
+    /// Gracefully stop the process-wide Managed Search handle when present.
+    /// Conversation runtime teardown must not call this; only Host shutdown
+    /// owns the process-level Search lifecycle.
+    #[cfg(feature = "managed-search")]
+    pub(crate) async fn shutdown_managed_search(&self) {
+        if let Some(managed_search) = self.managed_search.as_ref() {
+            managed_search.shutdown().await;
+        }
+    }
+
     /// Close browser resources and the database after a startup-stage failure,
     /// preserving the original failure as the primary error.
     pub async fn cleanup_after_startup_failure(&self, error: anyhow::Error) -> anyhow::Error {
