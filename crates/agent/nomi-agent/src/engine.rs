@@ -508,6 +508,18 @@ const MAX_PROVIDER_REQUEST_IMAGES: usize = 20;
 const MAX_SINGLE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES: usize = MAX_SINGLE_IMAGE_BYTES.div_ceil(3) * 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceTool {
+    Search,
+    Extract,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceCallMeta {
+    tool: EvidenceTool,
+    requested_url_count: usize,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ToolEfficiencyStats {
     model_turn_attempts: usize,
@@ -518,6 +530,17 @@ struct ToolEfficiencyStats {
     batch_read_files_requested: usize,
     error_results: usize,
     skipped_after_prior_error: usize,
+    search_call_count: usize,
+    extract_call_count: usize,
+    search_result_chars: usize,
+    extract_result_chars: usize,
+    external_evidence_chars_total: usize,
+    extract_requested_url_count: usize,
+    invalid_web_tool_call_count: usize,
+    external_evidence_budget_high: bool,
+    evidence_calls: HashMap<String, EvidenceCallMeta>,
+    observed_evidence_result_ids: HashSet<String>,
+    observed_invalid_web_call_ids: HashSet<String>,
 }
 
 impl ToolEfficiencyStats {
@@ -551,6 +574,48 @@ impl ToolEfficiencyStats {
                 self.batch_read_files_requested = self
                     .batch_read_files_requested
                     .saturating_add(paths.len());
+            }
+        }
+
+        // Tool-use blocks can pass through several validation/dispatch paths
+        // in one turn. Keep the generic counters compatible, but register web
+        // evidence calls by their stable tool_use_id exactly once.
+        for block in blocks {
+            let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = block
+            else {
+                continue;
+            };
+            let tool = match name.as_str() {
+                "web_search" => EvidenceTool::Search,
+                "web_extract" => EvidenceTool::Extract,
+                _ => continue,
+            };
+            if self.evidence_calls.contains_key(id) {
+                continue;
+            }
+            let requested_url_count = input
+                .get("urls")
+                .and_then(Value::as_array)
+                .map_or(0, |urls| urls.len());
+            self.evidence_calls.insert(
+                id.clone(),
+                EvidenceCallMeta {
+                    tool,
+                    requested_url_count,
+                },
+            );
+            match tool {
+                EvidenceTool::Search => {
+                    self.search_call_count = self.search_call_count.saturating_add(1);
+                }
+                EvidenceTool::Extract => {
+                    self.extract_call_count = self.extract_call_count.saturating_add(1);
+                    self.extract_requested_url_count = self
+                        .extract_requested_url_count
+                        .saturating_add(requested_url_count);
+                }
             }
         }
     }
@@ -589,7 +654,10 @@ impl ToolEfficiencyStats {
     fn observe_results(&mut self, blocks: &[ContentBlock]) {
         for block in blocks {
             let ContentBlock::ToolResult {
-                content, is_error, ..
+                tool_use_id,
+                content,
+                is_error,
+                ..
             } = block
             else {
                 continue;
@@ -600,6 +668,43 @@ impl ToolEfficiencyStats {
             if *is_error && content == SKIPPED_AFTER_PRIOR_ERROR {
                 self.skipped_after_prior_error =
                     self.skipped_after_prior_error.saturating_add(1);
+            }
+            let Some(meta) = self.evidence_calls.get(tool_use_id).cloned() else {
+                continue;
+            };
+            if !self
+                .observed_evidence_result_ids
+                .insert(tool_use_id.clone())
+            {
+                continue;
+            }
+            let chars = content.chars().count();
+            match meta.tool {
+                EvidenceTool::Search => {
+                    self.search_result_chars = self.search_result_chars.saturating_add(chars);
+                }
+                EvidenceTool::Extract => {
+                    self.extract_result_chars = self.extract_result_chars.saturating_add(chars);
+                }
+            }
+            self.external_evidence_chars_total = self
+                .external_evidence_chars_total
+                .saturating_add(chars);
+            self.external_evidence_budget_high =
+                self.external_evidence_chars_total > 16_000;
+        }
+    }
+
+    fn observe_confirmed_invalid_web_calls(&mut self, call_ids: &HashSet<String>) {
+        for call_id in call_ids {
+            if self.evidence_calls.contains_key(call_id)
+                && self
+                    .observed_invalid_web_call_ids
+                    .insert(call_id.clone())
+            {
+                self.invalid_web_tool_call_count = self
+                    .invalid_web_tool_call_count
+                    .saturating_add(1);
             }
         }
     }
@@ -612,6 +717,10 @@ impl ToolEfficiencyStats {
     ) {
         let (terminal, stop_reason, error_kind, agent_turns) =
             self.terminal_dimensions(result);
+        let external_evidence_soft_warning = self.search_call_count > 2
+            || self.extract_call_count > 1
+            || self.external_evidence_chars_total > 16_000
+            || self.invalid_web_tool_call_count > 0;
         tracing::info!(
             target: "nomi_agent::tool_efficiency",
             session_id,
@@ -628,6 +737,15 @@ impl ToolEfficiencyStats {
             batch_read_files_requested = self.batch_read_files_requested,
             tool_error_results = self.error_results,
             skipped_after_prior_error = self.skipped_after_prior_error,
+            search_call_count = self.search_call_count,
+            extract_call_count = self.extract_call_count,
+            search_result_chars = self.search_result_chars,
+            extract_result_chars = self.extract_result_chars,
+            external_evidence_chars_total = self.external_evidence_chars_total,
+            extract_requested_url_count = self.extract_requested_url_count,
+            invalid_web_tool_call_count = self.invalid_web_tool_call_count,
+            external_evidence_budget_high = self.external_evidence_budget_high,
+            external_evidence_soft_warning,
             "agent tool efficiency summary"
         );
     }
@@ -2297,6 +2415,7 @@ impl AgentEngine {
                     &invalid_argument_call_ids,
                     &outcome.results,
                 );
+            efficiency.observe_confirmed_invalid_web_calls(&confirmed_invalid_argument_call_ids);
             // Deliver binary outputs before success accounting or the next
             // model turn. A provider/tool RPC succeeding is not enough: when
             // the user-facing sink cannot persist the media, convert the tool
@@ -6973,7 +7092,7 @@ mod tool_efficiency_tests {
     };
     use nomi_types::message::ContentBlock;
     use serde_json::json;
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     fn efficiency_registry() -> ToolRegistry {
         let cwd = std::env::current_dir().expect("current directory");
@@ -7072,5 +7191,56 @@ mod tool_efficiency_tests {
 
         assert_eq!(stats.error_results, 2);
         assert_eq!(stats.skipped_after_prior_error, 1);
+    }
+
+    #[test]
+    fn accounting_tracks_web_evidence_once_by_tool_use_id() {
+        let calls = vec![
+            ContentBlock::ToolUse {
+                id: "search-1".into(),
+                name: "web_search".into(),
+                input: json!({"query": "rust", "count": 5}),
+                extra: None,
+            },
+            ContentBlock::ToolUse {
+                id: "extract-1".into(),
+                name: "web_extract".into(),
+                input: json!({"urls": ["https://example.com/a", "https://example.com/b"]}),
+                extra: None,
+            },
+        ];
+        let mut stats = ToolEfficiencyStats::default();
+        let registry = efficiency_registry();
+        stats.observe_calls(&registry, &calls);
+        stats.observe_calls(&registry, &calls);
+        assert_eq!(stats.search_call_count, 1);
+        assert_eq!(stats.extract_call_count, 1);
+        assert_eq!(stats.extract_requested_url_count, 2);
+
+        let results = vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "search-1".into(),
+                content: "search result".into(),
+                is_error: false,
+                images: vec![],
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "extract-1".into(),
+                content: "extracted page".into(),
+                is_error: true,
+                images: vec![],
+            },
+        ];
+        stats.observe_results(&results);
+        stats.observe_results(&results);
+        assert_eq!(stats.search_result_chars, "search result".chars().count());
+        assert_eq!(stats.extract_result_chars, "extracted page".chars().count());
+        assert_eq!(
+            stats.external_evidence_chars_total,
+            "search resultextracted page".chars().count()
+        );
+        stats.observe_confirmed_invalid_web_calls(&HashSet::from(["extract-1".to_owned()]));
+        stats.observe_confirmed_invalid_web_calls(&HashSet::from(["extract-1".to_owned()]));
+        assert_eq!(stats.invalid_web_tool_call_count, 1);
     }
 }
