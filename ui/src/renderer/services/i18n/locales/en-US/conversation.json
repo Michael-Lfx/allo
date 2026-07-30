@@ -649,6 +649,9 @@
     "fix": "Find and fix the most likely bug {{hint}}",
     "plan": "Propose a next-step plan {{hint}}"
   },
+  "stop": {
+    "failed": "Failed to stop the current task. Please try again."
+  },
   "editMessage": {
     "action": "Edit",
     "banner": "Editing message — sending will re-run from here"

@@ -10,6 +10,7 @@ nomifun-cloud.workspace = true
 nomi-config.workspace = true
 nomifun-net.workspace = true
 nomifun-system.workspace = true
+nomifun-model-invoke.workspace = true
 nomi-process-runtime.workspace = true
 async-trait.workspace = true
 axum.workspace = true

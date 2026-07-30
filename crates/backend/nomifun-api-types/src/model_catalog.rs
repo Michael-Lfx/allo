@@ -114,6 +114,7 @@ mod tests {
             model_enabled: None,
             model_health: None,
             bedrock_config: None,
+            models_detail: vec![],
             is_full_url: false,
             sort_order: 0,
             created_at: 0,

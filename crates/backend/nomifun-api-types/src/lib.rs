@@ -32,6 +32,8 @@ mod models_dev;
 mod office;
 mod poi;
 mod provider;
+mod provider_connection;
+mod provider_model;
 mod preset;
 mod remote_agent;
 mod requirement;
@@ -225,6 +227,11 @@ pub use provider::{
     ProviderHealthCheckRequest, ProviderHealthCheckResponse, ProviderResponse, SuggestionType,
     UpdateProviderRequest,
 };
+pub use provider_connection::{ProviderConnectionResponse, UpsertProviderConnectionRequest};
+pub use provider_model::{
+    CreateProviderModelRequest, ProviderModelKeyRequest, ProviderModelResponse,
+    UpdateProviderModelRequest,
+};
 pub use remote_agent::{
     CreateRemoteAgentRequest, HandshakeResponse, RemoteAgentListItem, RemoteAgentResponse,
     TestRemoteAgentConnectionRequest, UpdateRemoteAgentRequest,
@@ -241,7 +248,7 @@ pub use shell::{
     CheckToolInstalledRequest, CheckToolInstalledResponse, DeepgramSpeechToTextConfig,
     OpenAISpeechToTextConfig, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest,
     ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult,
-    ToolType,
+    ToolType, TtsApiRequest,
 };
 pub use skill::{
     AddExternalPathRequest, BuiltinAutoSkillResponse, DeleteSkillRequest, ExportSkillRequest,

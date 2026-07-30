@@ -219,6 +219,7 @@ nomifun-system.workspace = true
 nomifun-file.workspace = true
 nomifun-office.workspace = true
 nomifun-shell.workspace = true
+nomifun-model-invoke.workspace = true
 nomifun-ai-agent.workspace = true
 nomifun-mcp.workspace = true
 nomifun-conversation.workspace = true
@@ -248,7 +249,6 @@ nomifun-terminal.workspace = true
 nomifun-preset.workspace = true
 nomifun-runtime.workspace = true
 nomifun-net.workspace = true
-nomifun-models-dev.workspace = true
 axum.workspace = true
 dirs.workspace = true
 # OS-level advisory lock for the exclusive per-data-dir server lock

@@ -11,7 +11,8 @@ import { useTranslation } from 'react-i18next';
 import MarkdownView from '@renderer/components/Markdown';
 import FeedbackButton from '@renderer/components/base/FeedbackButton';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
-import { emitter } from '@renderer/utils/emitter';
+import { emitter } from '@/renderer/utils/emitter';
+import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useMessageList } from '../hooks';
 import { parseMessageFileMarker } from './messageFileMarker';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
@@ -69,6 +70,33 @@ const useFormatContent = (content: string) => {
   }, [content]);
 };
 
+/**
+ * Retry entry for a failed turn: recalls the originating user request into
+ * the composer via the shared `sendbox.edit` channel (edit mode: submitting
+ * truncates and reruns). Only offered on the nomi surface, for errors that
+ * answer the latest user request, once the turn has settled.
+ */
+const useErrorRetry = (message: IMessageTips): (() => void) | null => {
+  const conversationContext = useConversationContextSafe();
+  const messageList = useMessageList();
+  return useMemo(() => {
+    if (message.content.type !== 'error') return null;
+    if (conversationContext?.type !== 'nomi') return null;
+    if (conversationContext.readOnly === true) return null;
+    if (conversationContext.isProcessing === true) return null;
+    const lastRight = messageList.findLast((entry) => entry.type === 'text' && entry.position === 'right');
+    if (!lastRight || lastRight.type !== 'text') return null;
+    const retryMessageId = lastRight.message_id ?? lastRight.msg_id;
+    const retryCreatedAt = lastRight.created_at;
+    if (!retryMessageId || retryCreatedAt == null) return null;
+    if ((message.created_at ?? 0) < retryCreatedAt) return null;
+    const rawContent = typeof lastRight.content?.content === 'string' ? lastRight.content.content : '';
+    const { text } = parseMessageFileMarker(rawContent, 'right');
+    if (!text.trim()) return null;
+    return () => emitter.emit('sendbox.edit', { msgId: retryMessageId, createdAt: retryCreatedAt, content: text });
+  }, [conversationContext, message.content.type, message.created_at, messageList]);
+};
+
 const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -77,6 +105,12 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const content = toDisplayText(message.content.content);
   const structuredError = type === 'error' ? message.content.error : undefined;
   const { json, data } = useFormatContent(content);
+  const retry = useErrorRetry(message);
+  const retryButton = retry ? (
+    <button type='button' className='message-error-note__retry' data-testid='message-error-retry' onClick={retry}>
+      {t('common.retry', { defaultValue: 'Retry' })}
+    </button>
+  ) : null;
 
   const displayContent = json ? '' : content;
   const shouldShowFeedback = type === 'error';
@@ -266,6 +300,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           {recoveryAction.label}
                         </Button>
                       )}
+                      {retryButton}
                       <FeedbackButton
                         module='conversation-session'
                         feedbackTags={feedbackTags}
@@ -329,6 +364,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                   {recoveryAction.label}
                 </Button>
               )}
+              {retryButton}
               <FeedbackButton module='conversation-session' />
             </div>
           )}
@@ -380,6 +416,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 {recoveryAction.label}
               </Button>
             )}
+            {retryButton}
             <FeedbackButton module='conversation-session' />
           </div>
         )}

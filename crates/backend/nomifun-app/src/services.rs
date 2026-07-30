@@ -20,10 +20,10 @@ use nomifun_conversation::{
 };
 use nomifun_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, ICompanionTokenRepository,
-    IConversationRepository, IMcpServerRepository, IModelProfileRepository, IProviderRepository,
+    IConversationRepository, IMcpServerRepository, IProviderModelRepository, IProviderRepository,
     IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
-    SqliteModelProfileRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
+    SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
     SqliteTerminalRepository, SqliteUserRepository,
 };
 #[cfg(feature = "browser-use")]
@@ -797,6 +797,12 @@ enum BrowserOrphanRecoveryOutcome {
 impl BrowserOrphanRecoveryOutcome {
     fn from_report(report: &nomi_browser_engine::profile::ProfileRecoveryReport) -> Self {
         let summary = report.safety_summary();
+        // Resolved markers are never failures: profiles preserved for a live
+        // verified owner, terminated orphan trees, removed ephemeral profiles,
+        // and cleared stable markers all leave failures/profiles_preserved at
+        // zero on every platform. Only genuinely unresolved state (scan or
+        // identity-verification or termination or cleanup failures, each of
+        // which also preserves the affected profile) degrades fail closed.
         if report.failures == 0 && report.profiles_preserved == 0 {
             Self::Safe { summary }
         } else {
@@ -981,10 +987,9 @@ pub struct AppServices {
     pub(crate) _managed_model_server: nomifun_system::ManagedModelServer,
     /// Keeps the immediate + periodic managed catalog refresh loop alive.
     pub(crate) _managed_model_refresh_task: nomifun_system::ManagedModelRefreshTask,
-    /// Authoritative per-model capability profiles (multimodal model hub).
-    pub model_profile_repo: Arc<dyn IModelProfileRepository>,
-    /// models.dev catalog: status / lookup / search / profile reconcile.
-    pub models_catalog: Arc<nomifun_system::ModelsCatalogService>,
+    /// Authoritative per-model catalog rows (capability profiles + health;
+    /// the multimodal model hub reads/writes these).
+    pub provider_model_repo: Arc<dyn IProviderModelRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -1065,6 +1070,10 @@ pub struct AppServices {
     /// Singleton 生成引擎 (creation) service — the media generation task queue
     /// behind the workshop canvas. Shared by the `/api/creation/*` routes.
     pub creation_service: Arc<nomifun_creation::CreationService>,
+    /// Singleton unified multimodal invoke layer (P1 redesign): catalog
+    /// resolution + protocol adapters over the shared proxy-aware HTTP client.
+    /// Shared by `/api/tts` today; later tasks (media/probe rewiring) reuse it.
+    pub model_invoke_service: Arc<nomifun_model_invoke::ModelInvokeService>,
     /// Singleton knowledge service (knowledge base platform). Shared between
     /// the `/api/knowledge/*` routes and the `ConversationService`, which
     /// mounts bound bases into session workspaces at task start.
@@ -1806,14 +1815,14 @@ impl AppServices {
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to provision NomiFun free model service: {e}"))?;
-        let model_profile_repo: Arc<dyn IModelProfileRepository> =
-            Arc::new(SqliteModelProfileRepository::new(database.pool().clone()));
+        let provider_model_repo: Arc<dyn IProviderModelRepository> =
+            Arc::new(SqliteProviderModelRepository::new(database.pool().clone()));
         // Refresh immediately, then about every six hours with jitter. Failed
         // attempts retain the current catalog and use capped exponential
         // backoff. Successful refreshes atomically seed profiles for any newly
         // discovered models without overwriting concurrent user edits.
         let managed_model_refresh_task = {
-            let profile_repo = model_profile_repo.clone();
+            let profile_repo = provider_model_repo.clone();
             nomifun_system::ManagedModelRefreshTask::start_with_success_hook(
                 managed_model_service.clone(),
                 move |status| {
@@ -2329,29 +2338,37 @@ impl AppServices {
                  to replace it: {error}"
             );
         }
-        // The generation engine resolves provider rows (endpoint + decrypted key,
-        // same machine-bound AES key the provider column uses), runs the media
-        // adapters over a proxy-aware HTTP client, and reads/writes canvas assets
-        // through the workshop bridge (AssetSource/AssetSink — no crate cycle).
-        // `reconcile_on_boot` (running-with-remote resume / else fail-interrupted)
-        // is driven from `build_creation_state` at router assembly.
+        // The generation engine delegates model execution to the unified
+        // invoke layer (provider/model/protocol resolution + adapters live
+        // there), runs over a proxy-aware HTTP client, and reads/writes canvas
+        // assets through the workshop bridge (AssetSource/AssetSink — no crate
+        // cycle). `reconcile_on_boot` (running-with-remote resume / else
+        // fail-interrupted) is driven from `build_creation_state` at router
+        // assembly.
         let creation_http = nomifun_net::http_client();
+        // Unified multimodal invoke layer (P1): one process-wide singleton over
+        // the catalog repos + the same proxy-aware HTTP client. The creation
+        // engine and `/api/tts` consume it; later tasks (health probes) reuse
+        // this exact instance.
+        let model_invoke_service = Arc::new(nomifun_model_invoke::ModelInvokeService::new(
+            Arc::new(nomifun_db::SqliteProviderRepository::new(database.pool().clone())),
+            Arc::new(nomifun_db::SqliteProviderModelRepository::new(database.pool().clone())),
+            Arc::new(nomifun_db::SqliteProviderConnectionRepository::new(database.pool().clone())),
+            encryption_key,
+            creation_http.clone(),
+            nomifun_model_invoke::AdapterRegistry::new(nomifun_model_invoke::default_adapters()),
+        ));
         let creation_asset_bridge = Arc::new(crate::workshop_bridge::WorkshopAssetBridge::new(
             data_dir.clone(),
             Arc::new(nomifun_db::SqliteWorkshopRepository::new(database.pool().clone())),
         ));
-        let creation_adapters = nomifun_creation::default_adapters(creation_http.clone());
         let creation_service = nomifun_creation::CreationService::builder(Arc::new(
             nomifun_db::SqliteCreationTaskRepository::new(database.pool().clone()),
         ))
         .with_http(creation_http.clone())
-        .with_provider_repo(
-            Arc::new(nomifun_db::SqliteProviderRepository::new(database.pool().clone())),
-            encryption_key,
-        )
+        .with_invoke(model_invoke_service.clone())
         .with_asset_source(creation_asset_bridge.clone())
         .with_asset_sink(creation_asset_bridge)
-        .with_providers(creation_adapters)
         .build();
         // Complete task/asset reconciliation before AppServices is published.
         // Running this synchronously closes the race where a newly-created task
@@ -2428,33 +2445,7 @@ impl AppServices {
 
         // Seed authoritative capability profiles for any provider models that
         // lack one (multimodal model hub). Best-effort: never blocks boot on error.
-        reconcile_model_profiles(&provider_repo_for_services, &model_profile_repo).await;
-
-        // Single process-wide registry client (shared with ai-agent context lookup).
-        let models_catalog = Arc::new(nomifun_system::ModelsCatalogService::new(
-            nomifun_models_dev::shared_client(),
-            model_profile_repo.clone(),
-            provider_repo_for_services.clone(),
-        ));
-        // Background: warm models.dev + upgrade inferred→catalog. Never block boot.
-        let catalog = models_catalog.clone();
-        tokio::spawn(async move {
-            let _ = catalog.refresh(false).await;
-            let n = catalog.reconcile_all().await;
-            if n > 0 {
-                tracing::info!("models-dev catalog reconcile: upserted {n} profile(s)");
-            }
-        });
-        let catalog2 = models_catalog.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
-            interval.tick().await; // skip immediate
-            loop {
-                interval.tick().await;
-                let _ = catalog2.refresh(false).await;
-                let _ = catalog2.reconcile_all().await;
-            }
-        });
+        reconcile_model_profiles(&provider_repo_for_services, &provider_model_repo).await;
 
         let poi_service = Arc::new(
             nomifun_poi::PoiService::new(data_dir.join("poi"))
@@ -2592,8 +2583,7 @@ impl AppServices {
             managed_model_service,
             _managed_model_server: managed_model_server,
             _managed_model_refresh_task: managed_model_refresh_task,
-            model_profile_repo: model_profile_repo.clone(),
-            models_catalog,
+            provider_model_repo: provider_model_repo.clone(),
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
@@ -2625,6 +2615,7 @@ impl AppServices {
             public_agent_service,
             workshop_service,
             creation_service,
+            model_invoke_service,
             knowledge_service,
             learning_service,
             poi_service,
@@ -2697,6 +2688,11 @@ impl AppServices {
                     nomi_browser_engine::shared_storage_state_path(&services.data_dir),
                     services.encryption_key,
                 )
+                // F6 (裁决⑤): the same vault also feeds the HOST egress
+                // allowlist, so managed lanes enforce the allow_etld1 the
+                // standalone path enforces (and secret injection stays gated
+                // on that enforced list).
+                .with_secret_source(secret_source.clone())
                 .with_lane_policy(Arc::new(move |tool| {
                     tool.secret_source(secret_source.clone())
                 }));
@@ -2771,14 +2767,15 @@ where
     Ok(())
 }
 
-/// Ensure every provider model has an authoritative [`nomifun_db::ModelProfileRow`].
-/// Models without a stored profile are seeded from the name/platform heuristic
-/// (`source = "inferred"`); existing profiles (incl. user overrides) are left
-/// untouched. Best-effort — logs and returns on any error so boot never fails
-/// on profile reconciliation.
+/// Ensure every provider catalog model has an authoritative capability
+/// profile on its [`nomifun_db::ProviderModelRow`]. Missing rows are seeded
+/// and unprofiled dual-write rows (`tasks == "[]"`, `source == "inferred"`)
+/// are backfilled from the name/platform heuristic; existing profiles (incl.
+/// user overrides) are left untouched. Best-effort — logs and returns on any
+/// error so boot never fails on profile reconciliation.
 async fn reconcile_model_profiles(
     provider_repo: &Arc<dyn IProviderRepository>,
-    model_profile_repo: &Arc<dyn IModelProfileRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
 ) {
     let providers = match provider_repo.list().await {
         Ok(p) => p,
@@ -2791,7 +2788,7 @@ async fn reconcile_model_profiles(
     for provider in &providers {
         let models: Vec<String> = serde_json::from_str(&provider.models).unwrap_or_default();
         match nomifun_system::seed_missing_inferred_profiles(
-            model_profile_repo.as_ref(),
+            provider_model_repo.as_ref(),
             &provider.provider_id,
             &provider.platform,
             &models,
@@ -3959,6 +3956,23 @@ mod tests {
     fn unsafe_orphan_recovery_degrades_browser_functionality() {
         let safe = nomi_browser_engine::profile::ProfileRecoveryReport::default();
         assert!(BrowserOrphanRecoveryOutcome::from_report(&safe).is_safe());
+
+        // Resolved markers are not failures: startup recovery that verified a
+        // live owner, terminated an orphan tree, removed ephemeral profiles,
+        // or cleared stable markers must keep the browser feature enabled.
+        let resolved = nomi_browser_engine::profile::ProfileRecoveryReport {
+            markers_scanned: 4,
+            process_trees_terminated: 1,
+            ephemeral_profiles_removed: 2,
+            stable_markers_cleared: 1,
+            live_owners_preserved: 1,
+            ..Default::default()
+        };
+        assert!(
+            BrowserOrphanRecoveryOutcome::from_report(&resolved)
+                .permits_host_composition(),
+            "resolved markers must not degrade browser startup"
+        );
 
         let with_failure = nomi_browser_engine::profile::ProfileRecoveryReport {
             failures: 1,

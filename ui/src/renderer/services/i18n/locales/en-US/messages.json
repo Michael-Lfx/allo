@@ -61,12 +61,15 @@
     "status": "{{target}}"
   },
   "turnProcessed": "Processed {{duration}}",
-  "turnProcessing": "Processing {{duration}}",
   "turnWaiting": "Waiting for confirmation {{duration}}",
-  "turnCanceled": "Canceled {{duration}}",
+  "turnCanceled": "You stopped after {{duration}}",
   "turnProcess": {
     "expandAllThinkingProcess": "Expand all thinking process",
     "collapseAllThinkingProcess": "Collapse all thinking process"
+  },
+  "turnLiveStep": {
+    "analyzing": "Analyzing the request",
+    "composing": "Composing the reply"
   },
   "knowledgeWriteback": {
     "started": "Preparing knowledge write-back",

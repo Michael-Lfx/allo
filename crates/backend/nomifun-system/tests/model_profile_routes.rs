@@ -10,7 +10,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use nomifun_db::{
-    SqliteClientPreferenceRepository, SqliteModelProfileRepository, SqliteProviderRepository,
+    SqliteClientPreferenceRepository, SqliteProviderModelRepository, SqliteProviderRepository,
     SqliteSettingsRepository, init_database_memory,
 };
 use nomifun_system::{
@@ -20,38 +20,28 @@ use nomifun_system::{
 
 const TEST_KEY: [u8; 32] = [0x42; 32];
 
-fn test_models_catalog(db: &nomifun_db::Database) -> Arc<nomifun_system::ModelsCatalogService> {
-    let profile_repo: Arc<dyn nomifun_db::IModelProfileRepository> =
-        Arc::new(nomifun_db::SqliteModelProfileRepository::new(db.pool().clone()));
-    let provider_repo: Arc<dyn nomifun_db::IProviderRepository> =
-        Arc::new(nomifun_db::SqliteProviderRepository::new(db.pool().clone()));
-    let cache = std::env::temp_dir().join(format!(
-        "models-dev-test-{}-{}.json",
-        std::process::id(),
-        nomifun_common::now_ms()
-    ));
-    let client = Arc::new(nomifun_models_dev::ModelsDevClient::new(
-        "http://invalid.invalid/",
-        cache,
-        None,
-    ));
-    Arc::new(nomifun_system::ModelsCatalogService::new(
-        client,
-        profile_repo,
-        provider_repo,
-    ))
-}
-
 fn build_state(db: &nomifun_db::Database) -> SystemRouterState {
     let provider_repo = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
     let http_client = reqwest::Client::new();
     SystemRouterState {
         settings_service: SettingsService::new(Arc::new(SqliteSettingsRepository::new(db.pool().clone()))),
         client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()))),
-        provider_service: ProviderService::new(provider_repo.clone(), TEST_KEY),
-        model_fetch_service: ModelFetchService::new(provider_repo, TEST_KEY, http_client.clone()),
-        model_profile_service: ModelProfileService::new(Arc::new(SqliteModelProfileRepository::new(db.pool().clone()))),
-        models_catalog_service: test_models_catalog(db),
+        provider_service: ProviderService::new(
+            provider_repo.clone(),
+            Arc::new(nomifun_db::SqliteProviderModelRepository::new(db.pool().clone())),
+            TEST_KEY,
+        ),
+        provider_connection_service: nomifun_system::ProviderConnectionService::new(
+            std::sync::Arc::new(nomifun_db::SqliteProviderConnectionRepository::new(db.pool().clone())),
+            provider_repo.clone(),
+            TEST_KEY,
+        ),
+        model_fetch_service: ModelFetchService::new(provider_repo.clone(), TEST_KEY, http_client.clone()),
+        model_profile_service: ModelProfileService::new(Arc::new(SqliteProviderModelRepository::new(db.pool().clone()))),
+        provider_model_service: nomifun_system::ProviderModelService::new(
+            Arc::new(SqliteProviderModelRepository::new(db.pool().clone())),
+            provider_repo.clone(),
+        ),
         managed_model_service: None,
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
         version_check_service: VersionCheckService::new(http_client, "0.1.0".to_owned()),
@@ -98,6 +88,7 @@ async fn create_stepfun_plan_provider(db: &nomifun_db::Database) -> String {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let v = body_json(resp).await;
+    // v3 response shape: the business id is `provider_id`, not `id`.
     v["data"]["provider_id"].as_str().unwrap().to_string()
 }
 

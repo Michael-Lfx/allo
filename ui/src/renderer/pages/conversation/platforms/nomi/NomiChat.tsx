@@ -95,6 +95,7 @@ const NomiChat: React.FC<{
         !turnActivity.presentation.streamFinished && resolvedIsProcessing,
       activeTurnId: turnActivity.activeTurnId,
       activeRequestMessageId: turnActivity.activeRequestMessageId,
+      stopNotice: turnActivity.stopNotice,
       loadedSkills,
       loadedMcpStatuses,
     };
@@ -110,6 +111,7 @@ const NomiChat: React.FC<{
     turnActivity.activeTurnId,
     turnActivity.activeRequestMessageId,
     resolvedIsProcessing,
+    turnActivity.stopNotice,
     loadedSkills,
     loadedMcpStatuses,
   ]);

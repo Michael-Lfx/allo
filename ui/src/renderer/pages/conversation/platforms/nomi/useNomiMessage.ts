@@ -129,6 +129,9 @@ export const useNomiMessage = (
   const [tokenUsage, setTokenUsage] = useState<TokenUsageData | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<MessageId | undefined>();
   const [activeRequestMessageId, setActiveRequestMessageId] = useState<MessageId | undefined>();
+  // Set when the user stops the active turn; MessageList pins the tail
+  // disclosure to this moment ("you stopped after {duration}"). Session-local.
+  const [stopNotice, setStopNotice] = useState<{ stoppedAt: number } | null>(null);
   // Current active message ID to filter out events from old requests (prevents aborted request events from interfering with new ones)
   const activeMsgIdRef = useRef<string | null>(null);
   const rootTurnIdRef = useRef<MessageId | null>(null);
@@ -753,6 +756,7 @@ export const useNomiMessage = (
         turnClosedRef.current = false;
         rejectUnannouncedStartRef.current = false;
         verifyUnannouncedStartRuntimeRef.current = false;
+        setStopNotice(null);
         dispatchTurn({ type: 'activity' });
         const timingKey = timingRequestKeyRef.current ?? event.turn_id ?? activeMsgIdRef.current;
         if (timingKey) markTurnFirstStatus(timingKey, event.phase ?? event.state);
@@ -859,6 +863,7 @@ export const useNomiMessage = (
     turnLifecycleGenerationRef.current += 1;
     const hydrationGeneration = turnLifecycleGenerationRef.current;
     setThought({ subject: '', description: '' });
+    setStopNotice(null);
     setTokenUsage(null);
     setHasHydratedRunningState(false);
     setActiveTurnId(undefined);
@@ -943,6 +948,7 @@ export const useNomiMessage = (
     turnClosedRef.current = true;
     rejectUnannouncedStartRef.current = true;
     verifyUnannouncedStartRuntimeRef.current = rootTurnId === null;
+    setStopNotice({ stoppedAt: Date.now() });
     dispatchTurn({ type: 'reset' });
     const timingKey = resolveTimingKey();
     if (timingKey) {
@@ -969,6 +975,7 @@ export const useNomiMessage = (
       turnClosedRef.current = false;
       rejectUnannouncedStartRef.current = false;
       verifyUnannouncedStartRuntimeRef.current = true;
+      setStopNotice(null);
     } else {
       rootTurnIdRef.current = null;
       setActiveTurnId(undefined);
@@ -982,6 +989,7 @@ export const useNomiMessage = (
 
   const restoreRunningAfterStopFailure = useCallback(() => {
     turnLifecycleGenerationRef.current += 1;
+    setStopNotice(null);
     const rootTurnId = rootTurnIdRef.current;
     if (rootTurnId) cancelledTurnIdsRef.current.delete(rootTurnId);
     awaitingBackendTurnRef.current = false;
@@ -1023,6 +1031,7 @@ export const useNomiMessage = (
     setThought,
     running,
     hasHydratedRunningState,
+    stopNotice,
     tokenUsage,
     presentation,
     activeTurnId,

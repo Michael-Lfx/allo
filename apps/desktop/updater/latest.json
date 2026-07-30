@@ -6,6 +6,18 @@
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSQnpwS09Uem54NEV0Q2E1WTgvT1JaSkNmcjhFMlYzWlBTNnhFb0Znck4wckZrdW5ManBlSlJUQyttdEFzT1dDdUdhNjZORGNVWGJJd1lPZzVyMU5SeVJEQm0yc3QwS3dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MzQ2NTI0CWZpbGU6Rmxvd3lfMC4zLjNfeDY0LXNldHVwLmV4ZQpjdVVnQVZ3d2JIeUZ0cUZIVmdUMG9VNE9aVEJLNndvb2hWSXRPQUdiRVduN1ltdFZpUjI2cmpmMmhsZkZBQ0kwSEsycFVxQkYzV3dUNkU2aFRMZDdCUT09Cg==",
       "url": "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/v0.3.3/Flowy_0.3.3_x64-setup.exe"
+    },
+    "darwin-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxOCtOVWEvQnk2L2hLSUVXdVhid1d6cnpBQzhzcVVYSGtQV2VUdWVaeGUrVWpNQXRDeUZKRndEaG44UnNWdlpBUCtidlpyVnNXNUgxVnlRRlBkeG1GUXdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MzQ0Njg3CWZpbGU6Tm9taUZ1bi5hcHAudGFyLmd6CjlHOVQ5cWN1aXFGS1dOZXRublRETkp0RzYwaDNsaG9LcWZwNEpGVG1FK3BMT3RPM3huOFFnTmxNYjVXeTFTR1JkbDFLbVc1MHRITllTVGc1a1FURUFnPT0K",
+      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.3.3/NomiFun.app.tar.gz"
+    },
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxOCtOVWEvQnk2L2hLSUVXdVhid1d6cnpBQzhzcVVYSGtQV2VUdWVaeGUrVWpNQXRDeUZKRndEaG44UnNWdlpBUCtidlpyVnNXNUgxVnlRRlBkeG1GUXdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MzQ0Njg3CWZpbGU6Tm9taUZ1bi5hcHAudGFyLmd6CjlHOVQ5cWN1aXFGS1dOZXRublRETkp0RzYwaDNsaG9LcWZwNEpGVG1FK3BMT3RPM3huOFFnTmxNYjVXeTFTR1JkbDFLbVc1MHRITllTVGc1a1FURUFnPT0K",
+      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.3.3/NomiFun.app.tar.gz"
+    },
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxODF1L3JqK0x4L0VoUEY1R1RaaTVpT3h0V29PUlowRi91VVdkTG5UT0F3VDJSK252azVMSzgwUjRWZHRsWXJtNnpOVjJiYThMTzQ2L3Q4MGtCdkFPV0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MzQzOTA1CWZpbGU6Tm9taUZ1bl8wLjMuM19hbWQ2NC5BcHBJbWFnZQphblovR2ZHZ2lGdnVyUkQ4R0R5WENkVnZBM0IzTTVOdEJ1QkMzbElHbEhnQkRMTkRUZ01OQjlDMC9GODIvQ3YvWThzeXhyU092NUNkVk9OcXJGeFJDUT09Cg==",
+      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.3.3/NomiFun_0.3.3_amd64.AppImage"
     }
   }
 }
