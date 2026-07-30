@@ -417,6 +417,10 @@ impl OpenAIProvider {
         }
         body[max_tokens_field] = json!(request.max_tokens);
 
+        if let Some(t) = request.temperature {
+            body["temperature"] = json!(t);
+        }
+
         if !request.tools.is_empty() {
             body["tools"] = json!(Self::build_tools(
                 &request.tools,
@@ -2899,6 +2903,7 @@ mod tests {
             max_tokens: 16,
             thinking: None,
             reasoning_effort: None,
+            temperature: None,
         }
     }
 
@@ -3072,6 +3077,7 @@ mod tests {
             max_tokens: 1024,
             thinking: None,
             reasoning_effort: None,
+            temperature: None,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
         assert_eq!(body["max_tokens"], 1024);
@@ -3093,10 +3099,30 @@ mod tests {
             max_tokens: 2048,
             thinking: None,
             reasoning_effort: None,
+            temperature: None,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
         assert_eq!(body["max_completion_tokens"], 2048);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    // --- temperature ---
+
+    #[test]
+    fn test_temperature_some_is_serialized() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut req = simple_request();
+        req.temperature = Some(0.5);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn test_temperature_none_is_omitted() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = simple_request();
+        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        assert!(with_none.get("temperature").is_none());
     }
 
     // --- merge_assistant_messages ---

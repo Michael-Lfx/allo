@@ -43,6 +43,16 @@ import {
   presetIdFromSelectionKey,
 } from './presetConversationContract';
 
+const GOAL_OBJECTIVE_TOAST_MAX_CHARS = 60;
+
+/** Mirrors useGoalCommand's toast summarization for the goal-mode entry. */
+function summarizeGoalObjective(objective: string): string {
+  const normalized = objective.replace(/\s+/g, ' ').trim();
+  return normalized.length <= GOAL_OBJECTIVE_TOAST_MAX_CHARS
+    ? normalized
+    : `${normalized.slice(0, GOAL_OBJECTIVE_TOAST_MAX_CHARS)}…`;
+}
+
 export type GuidSendDeps = {
   // Input state
   input: string;
@@ -86,6 +96,10 @@ export type GuidSendDeps = {
    * sending a first message would race the AutoWork turn and surface
    * "conversation N is already running". */
   autoWork: AutoWorkDraftValue;
+
+  /** Goal 模式：开启后首条输入会被设为会话目标（语义等同 `/goal <objective>`），
+   * 仅 nomi 运行时生效——后端 goal 端点只支持 nomi。 */
+  goalMode?: boolean;
 
   delegationPolicy: TDelegationPolicy;
   executionModelPool?: TExecutionModelPool;
@@ -160,6 +174,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     isGoogleAuth,
     applyAdvancedConfig,
     autoWork,
+    goalMode,
     delegationPolicy,
     executionModelPool,
     decisionPolicy,
@@ -404,6 +419,25 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
 
+        // Goal 模式：在首条消息发出前把输入设为会话目标（等价 /goal <text>）。
+        // 无运行时的会话后端会直接写持久化快照，agent 首次构建时 restore 注入。
+        // 设定失败不阻断发送——降级为普通首条消息，仅提示用户。
+        if (goalMode && entryPlan.sendInitialMessage && input.trim()) {
+          try {
+            await ipcBridge.conversation.goalAction.invoke({
+              conversation_id: conversation.id,
+              action: 'set',
+              objective: input.trim(),
+            });
+            Message.success(
+              t('conversation.goal.toast.setStarted', { objective: summarizeGoalObjective(input) })
+            );
+          } catch (error) {
+            console.error('[useGuidSend] Failed to set goal for goal mode:', error);
+            Message.warning(t('guid.goalMode.applyFailed'));
+          }
+        }
+
         emitter.emit('chat.history.refresh');
 
         const initialMessage = {
@@ -541,6 +575,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedMcpServerIds,
     applyAdvancedConfig,
     autoWork,
+    goalMode,
     delegationPolicy,
     executionModelPool,
     decisionPolicy,

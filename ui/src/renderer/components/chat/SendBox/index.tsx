@@ -7,6 +7,8 @@ import BtwOverlay from '@/renderer/components/chat/BtwOverlay';
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
 import { useBtwCommand } from '@/renderer/components/chat/BtwOverlay/useBtwCommand';
+import { parseGoalSlashCommand } from '@/common/chat/slash/goalCommand';
+import { useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
 import { useSlashCommandController } from '@/renderer/hooks/chat/useSlashCommandController';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -478,6 +480,12 @@ const SendBox: React.FC<{
   });
   const btwCommand = useBtwCommand(conversationContext?.conversation_id, enableBtw);
   const btwQuestion = useMemo(() => extractBtwQuestion(input), [input]);
+  // /goal 与 /subgoal 家族命令为 host-resolved：提交时拦截并映射为 goal API 调用，
+  // 不作为普通消息发给 agent。仅 nomi 会话启用——后端 goal 端点只支持 nomi runtime。
+  const goalCommand = useGoalCommand(
+    conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
+    conversationContext?.type === 'nomi'
+  );
   const activeAtFileQuery = useMemo(() => {
     if (!conversationContext?.workspace) {
       return null;
@@ -1362,6 +1370,40 @@ const SendBox: React.FC<{
       setInput('');
       void btwCommand.ask(normalizedQuestion);
       return;
+    }
+
+    // 拦截 /goal 与 /subgoal 家族命令（在忙碌门控之前：暂停/恢复/清除在 turn 运行中也应可用）
+    if (goalCommand.enabled) {
+      const goalInvocation = parseGoalSlashCommand(input);
+      if (goalInvocation) {
+        historyDraftRef.current = null;
+        setHistoryNavigationIndex(null);
+        setInput('');
+        // `/goal <text>`（set）需立即启动首轮：设定成功后把 objective 原文
+        // 作为普通用户消息走既有发送管线。set 分支遵守忙碌门控——turn
+        // 进行中只设定目标（当前回合结束后由 judge 接管续作），不强行插消息；
+        // set 失败（API 报错）则不发送。
+        if (goalInvocation.action === 'set') {
+          const busy = !allowSendWhileLoading && (isLoading || loading);
+          const objective = goalInvocation.objective;
+          void goalCommand.run(goalInvocation, { setToast: busy ? 'deferred' : 'started' }).then((ok) => {
+            if (!ok || busy) {
+              return;
+            }
+            setIsLoading(true);
+            onSend(objective)
+              .catch(() => {
+                setInput(objective);
+              })
+              .finally(() => {
+                setIsLoading(false);
+              });
+          });
+          return;
+        }
+        void goalCommand.run(goalInvocation);
+        return;
+      }
     }
 
     if (!allowSendWhileLoading && (isLoading || loading)) {

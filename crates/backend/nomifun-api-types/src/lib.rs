@@ -17,6 +17,7 @@ mod custom_agent;
 mod exposure;
 mod extension;
 mod file;
+mod goal;
 mod idmm;
 mod insights;
 mod knowledge;
@@ -54,9 +55,9 @@ pub use acp::{
     WorkspaceEntry,
 };
 pub use agent_build_extra::{
-    AcpBuildExtra, AcpModelInfo, NomiBuildExtra, NomiGoalSpec, OpenClawBuildExtra,
-    OpenClawGatewayConfig, RemoteBuildExtra, SessionMcpServer, SessionMcpTransport,
-    SlashCommandItem,
+    AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
+    OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra, SessionMcpServer,
+    SessionMcpTransport, SlashCommandItem,
 };
 pub use agent_discovery::{
     AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy,
@@ -155,6 +156,7 @@ pub use file::{
     SnapshotStageRequest, SnapshotWorkspaceRequest, WorkspaceFlatFileResponse,
     WorkspaceOfficeWatchRequest, WriteFileRequest, ZipFileEntry, ZipRequest,
 };
+pub use goal::{GoalActionRequest, GoalContractDto, GoalStatusResponse};
 pub use idmm::{
     BlockedBehavior, BudgetConfig, BypassModelRef, CategoryMode, CategoryRules, DecisionStrategy,
     DecisionWatchConfig, FaultWatchConfig, IdmmBinding, IdmmConfig, IdmmRunState, IdmmSettings, IdmmState,

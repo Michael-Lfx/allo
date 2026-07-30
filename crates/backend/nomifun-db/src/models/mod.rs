@@ -11,6 +11,7 @@ mod conversation;
 mod conversation_artifact;
 mod cron_job;
 mod cron_job_run;
+mod goal;
 mod idmm_intervention;
 mod knowledge;
 mod mcp_server;
@@ -47,6 +48,7 @@ pub use conversation::{ConversationDeliveryReceiptRow, ConversationRow};
 pub use conversation_artifact::ConversationArtifactRow;
 pub use cron_job::CronJobRow;
 pub use cron_job_run::{CronJobRunRow, CronRunReservationRow};
+pub use goal::GoalRow;
 pub use idmm_intervention::{
     IdmmActionReservationRow, IdmmInterventionRow, NewIdmmInterventionRow,
 };

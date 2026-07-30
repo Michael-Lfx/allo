@@ -40,6 +40,10 @@ pub(crate) struct ResolvedProviderFields {
     pub compat_overrides: NomiCompatOverrides,
     pub bedrock_config: Option<nomi_config::config::BedrockConfig>,
     pub context_limit: Option<i64>,
+    /// Raw provider row platform name (the models.dev catalog key — NOT the
+    /// mapped nomi provider name). Carried so callers can do further catalog
+    /// lookups (e.g. MoA slot pricing) without reloading the row.
+    pub platform: String,
 }
 
 /// Load a provider row from the DB, decrypt its API key, map platform to nomi
@@ -100,6 +104,7 @@ pub(crate) async fn resolve_provider_fields(
                 catalog_context,
             )
         },
+        platform: row.platform.clone(),
     })
 }
 
@@ -307,6 +312,7 @@ pub async fn streaming_completion(
         max_tokens,
         thinking: None,
         reasoning_effort: None,
+        temperature: None,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -334,6 +340,7 @@ pub async fn streaming_completion_no_thinking(
         max_tokens,
         thinking: Some(ThinkingConfig::Disabled),
         reasoning_effort: None,
+        temperature: None,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -367,6 +374,7 @@ pub async fn streaming_completion_kinded(
         max_tokens,
         thinking: None,
         reasoning_effort: None,
+        temperature: None,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -398,6 +406,7 @@ pub async fn streaming_completion_text_or_reasoning(
         max_tokens,
         thinking: None,
         reasoning_effort: None,
+        temperature: None,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;

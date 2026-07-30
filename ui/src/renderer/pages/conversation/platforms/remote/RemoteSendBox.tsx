@@ -514,7 +514,7 @@ const RemoteSendBox: React.FC<{ conversation_id: ConversationId }> = ({ conversa
     },
     [setUploadFile]
   );
-  const { openFileSelector } = useOpenFileSelector({
+  const { openFileSelector, onSlashBuiltinCommand } = useOpenFileSelector({
     onFilesSelected: appendSelectedFiles,
   });
 
@@ -625,6 +625,8 @@ const RemoteSendBox: React.FC<{ conversation_id: ConversationId }> = ({ conversa
           ) : undefined
         }
         onSend={onSendHandler}
+        slash_commands={[]}
+        onSlashBuiltinCommand={onSlashBuiltinCommand}
         allowSendWhileLoading
       />
     </div>

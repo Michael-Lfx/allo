@@ -702,6 +702,44 @@ export const conversation = {
   getSlashCommands: httpGet<Array<{ command: string; description: string }>, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/slash-commands`
   ),
+  /** Live goal snapshot; `active: false` when the conversation has no goal
+   *  (never errors just because no goal exists). */
+  getGoalStatus: httpGet<GoalStatusResponse, { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/goal`
+  ),
+  /** Host-resolved `/goal` + `/subgoal` slash-command families → one POST per
+   *  action. `set` requires a non-empty objective; `max_turns` defaults to 8
+   *  and is clamped to 1..100 server-side. `add_subgoal` requires a non-empty
+   *  `subgoal`; `remove_subgoal` requires `index_1based` (1-based, matching
+   *  `/subgoal list` numbering). `draft` takes an optional objective (falls
+   *  back to the active goal's); `set_contract` requires `contract`; `wait`
+   *  requires `pid`. Every action answers the fresh snapshot. */
+  goalAction: httpPost<
+    GoalStatusResponse,
+    {
+      conversation_id: ConversationId;
+      action: GoalAction;
+      objective?: string;
+      max_turns?: number;
+      reason?: string;
+      subgoal?: string;
+      index_1based?: number;
+      pid?: number;
+      contract?: GoalContractDto;
+    }
+  >(
+    (p) => `/api/conversations/${p.conversation_id}/goal`,
+    (p) => ({
+      action: p.action,
+      objective: p.objective,
+      max_turns: p.max_turns,
+      reason: p.reason,
+      subgoal: p.subgoal,
+      index_1based: p.index_1based,
+      pid: p.pid,
+      contract: p.contract,
+    })
+  ),
   askSideQuestion: httpPost<ConversationSideQuestionResult, { conversation_id: ConversationId; question: string }>(
     (p) => `/api/conversations/${p.conversation_id}/side-question`,
     (p) => ({ question: p.question })
@@ -2894,6 +2932,75 @@ export type ConversationSideQuestionResult =
   | { status: 'unsupported' }
   | { status: 'invalid'; reason: 'emptyQuestion' }
   | { status: 'toolsRequired' };
+
+/** Goal action verbs accepted by POST /api/conversations/{id}/goal.
+ *  `list_subgoals` and `show` are server-side aliases of `status` (the
+ *  response already carries the full `subgoals` list and the `contract`). */
+export type GoalAction =
+  | 'set'
+  | 'pause'
+  | 'resume'
+  | 'clear'
+  | 'status'
+  | 'add_subgoal'
+  | 'remove_subgoal'
+  | 'clear_subgoals'
+  | 'list_subgoals'
+  | 'draft'
+  | 'set_contract'
+  | 'show'
+  | 'wait'
+  | 'unwait';
+
+/**
+ * Five-field completion contract (backend `GoalContractDto`, snake_case).
+ * All fields default to empty strings; an all-empty contract clears the
+ * current one when sent via `set_contract`.
+ */
+export interface GoalContractDto {
+  /** The single end state that must be true when done. */
+  outcome: string;
+  /** The specific test / command / artifact that proves the outcome. */
+  verification: string;
+  /** What must not be broken / violated along the way. */
+  constraints: string;
+  /** What is in scope (and implicitly, what is not). */
+  boundaries: string;
+  /** The condition under which the agent should stop and ask the user. */
+  stop_when: string;
+}
+
+/**
+ * Wire DTO of GET/POST /api/conversations/{id}/goal (backend
+ * `nomifun_api_types::GoalStatusResponse`). `active` means "a goal snapshot
+ * exists for this conversation"; all snapshot fields are absent/empty when
+ * `active === false`. Timestamps are epoch milliseconds.
+ */
+export interface GoalStatusResponse {
+  active: boolean;
+  objective?: string;
+  status?: 'active' | 'complete' | 'blocked' | 'paused' | 'waiting' | 'cleared';
+  turns_used?: number;
+  max_turns?: number;
+  /** Absent before the first judge verdict. */
+  last_verdict?: 'done' | 'continue' | 'wait' | 'skipped';
+  last_reason?: string;
+  paused_reason?: string;
+  subgoals: string[];
+  created_at?: number;
+  last_turn_at?: number;
+  /** Timed wait-barrier deadline (epoch ms); present only while `status` is
+   *  `'waiting'` on a timed barrier — used for the countdown rendering. */
+  waiting_until?: number;
+  /** Human-readable reason for the wait barrier. */
+  waiting_reason?: string;
+  /** Process id the goal is parked on (pid wait barrier). */
+  waiting_on_pid?: number;
+  /** Background-process session id the goal is parked on. */
+  waiting_on_session?: string;
+  /** The goal's completion contract, when one was drafted or set. */
+  contract?: GoalContractDto;
+}
 
 interface IBridgeResponse<D = {}> {
   success: boolean;

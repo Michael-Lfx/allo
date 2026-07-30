@@ -8,6 +8,7 @@ import FlexFullContainer from '@renderer/components/layout/FlexFullContainer';
 import MessageList from '@renderer/pages/conversation/Messages/MessageList';
 import ConversationEmptyPrompt from '@renderer/pages/conversation/Messages/components/ConversationEmptyPrompt';
 import TurnStatusRail from '@renderer/pages/conversation/Messages/components/TurnStatusRail';
+import GoalStatusNotice from '@/renderer/components/chat/GoalStatusNotice';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
 import {
   MessageListLoadingProvider,
@@ -129,6 +130,7 @@ const NomiChat: React.FC<{
           </FlexFullContainer>
           {!readOnly && !hideSendBox && (
             <>
+              <GoalStatusNotice conversation_id={conversation_id} />
               <TurnStatusRail
                 presentation={turnActivity.presentation}
                 completionSummary={{

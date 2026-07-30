@@ -20,6 +20,9 @@ const fallback = '—';
 
 const formatFullNumber = (value?: number): string => (typeof value === 'number' ? value.toLocaleString() : fallback);
 const formatCompactToken = (value?: number): string => (typeof value === 'number' ? formatTokenCount(value) : fallback);
+// Catalog cost in USD, 4 significant digits ($0.0033); unknown price → “—”.
+const formatMoaCost = (value: number | null): string =>
+  typeof value === 'number' ? `$${Number(value.toPrecision(4))}` : fallback;
 
 const getPersistedUsage = (conversation: TChatConversation): TokenUsageData | null =>
   ((conversation.extra as { last_token_usage?: TokenUsageData } | undefined)?.last_token_usage ?? null);
@@ -292,6 +295,36 @@ const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = (
           </div>
         </div>
       </section>
+
+      {/* MoA reference fan-out details — rendered only when the last turn
+        * actually consulted reference models (usage.moa is null otherwise). */}
+      {usage.moa && usage.moa.slots.length > 0 && (
+        <section className='mt-12px rounded-8px border border-solid border-[var(--color-border-2)] bg-fill-1 p-10px'>
+          <div className='mb-7px text-12px font-600 leading-18px'>{t('conversation.sessionMetrics.moaTitle')}</div>
+          <div className='space-y-4px'>
+            {usage.moa.slots.map((slot, index) => (
+              <div
+                key={`${slot.label}-${index}`}
+                className='flex items-center justify-between gap-8px text-11px leading-16px'
+              >
+                <span className='truncate min-w-0 text-t-secondary'>{slot.label}</span>
+                <span className='tabular-nums text-t-tertiary shrink-0'>
+                  {formatCompactToken(slot.input_tokens)}/{formatCompactToken(slot.output_tokens)} ·{' '}
+                  {formatMoaCost(slot.cost_usd)}
+                </span>
+              </div>
+            ))}
+            <div className='flex items-center justify-between gap-8px text-11px leading-16px pt-4px border-t border-solid border-[var(--color-border-2)]'>
+              <span className='truncate min-w-0 font-600 text-t-primary'>
+                {t('conversation.sessionMetrics.moaTotal')}
+              </span>
+              <span className='tabular-nums font-600 text-t-primary shrink-0'>
+                {formatMoaCost(usage.moa.total_cost_usd)}
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   );
 };

@@ -15,9 +15,10 @@ use tokio::sync::broadcast;
 
 use crate::artifact_store::{ArtifactKind, ArtifactStore, PersistedArtifact};
 use crate::protocol::events::{
-    AgentStatusEventData, AgentStreamEvent, ErrorEventData, FinishEventData, PlanEventData,
-    StartEventData, TextEventData, ThinkingEventData, TipType, TipsEventData, ToolCallEventData,
-    ToolCallRetryData, ToolCallStatus,
+    AgentStatusEventData, AgentStreamEvent, ErrorEventData, FinishEventData,
+    MoaProgressEventData, MoaReferenceEventData, PlanEventData, StartEventData, TextEventData,
+    ThinkingEventData, TipType, TipsEventData, ToolCallEventData, ToolCallRetryData,
+    ToolCallStatus,
 };
 
 pub struct BackendOutputSink {
@@ -46,6 +47,9 @@ pub struct BackendOutputSink {
     /// automatic continuations share this state; only the manager's accepted
     /// turn boundary begins/seals it.
     artifact_delivery_turn: Mutex<ArtifactDeliveryTurn>,
+    /// Append target for per-message MoA trace records (JSONL). `None` (the
+    /// default) = tracing off for this session, `emit_moa_trace` is a no-op.
+    moa_trace_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,6 +593,7 @@ impl BackendOutputSink {
             active_tool_calls: Mutex::new(HashMap::new()),
             tool_result_contexts: Mutex::new(HashMap::new()),
             artifact_delivery_turn: Mutex::new(ArtifactDeliveryTurn::default()),
+            moa_trace_path: None,
         }
     }
 
@@ -596,6 +601,13 @@ impl BackendOutputSink {
     /// (the default) disables reflow for this session.
     pub fn with_distill_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.distill_dir = dir;
+        self
+    }
+
+    /// Set the MoA trace append target (JSONL, one record per message).
+    /// `None` (the default) keeps trace persistence off for this session.
+    pub fn with_moa_trace_path(mut self, path: Option<PathBuf>) -> Self {
+        self.moa_trace_path = path;
         self
     }
 
@@ -1822,6 +1834,77 @@ impl OutputSink for BackendOutputSink {
             tip_type: TipType::Warning,
         }));
     }
+
+    fn emit_moa_reference(&self, msg_id: &str, label: &str, text: &str, index: u32, total: u32) {
+        let _ = self
+            .event_tx
+            .send(AgentStreamEvent::MoaReference(MoaReferenceEventData {
+                msg_id: msg_id.to_owned(),
+                label: label.to_owned(),
+                text: text.to_owned(),
+                index,
+                total,
+            }));
+    }
+
+    fn emit_moa_progress(&self, msg_id: &str, done: u32, total: u32) {
+        let _ = self
+            .event_tx
+            .send(AgentStreamEvent::MoaProgress(MoaProgressEventData {
+                msg_id: msg_id.to_owned(),
+                done,
+                total,
+            }));
+    }
+
+    fn emit_moa_trace(&self, msg_id: &str, trace_json: &str) {
+        // Persist one JSONL record per message — disk only, deliberately NOT
+        // broadcast on event_tx. Best-effort: every failure is just a warning.
+        let Some(path) = self.moa_trace_path.clone() else {
+            return;
+        };
+        let msg_id = msg_id.to_owned();
+        let line = trace_json.to_owned();
+        match tokio::runtime::Handle::try_current() {
+            // On a runtime: never block the engine's event path on file IO.
+            Ok(handle) => {
+                handle.spawn_blocking(move || append_moa_trace_line(&path, &msg_id, &line));
+            }
+            // No runtime (sync callers / unit tests): write inline.
+            Err(_) => append_moa_trace_line(&path, &msg_id, &line),
+        }
+    }
+}
+
+/// Append one MoA trace record as a JSONL line (record + `\n`), creating the
+/// parent directory on first use. All failures degrade to `tracing::warn!` —
+/// trace persistence must never panic or interrupt a turn.
+fn append_moa_trace_line(path: &Path, msg_id: &str, line: &str) {
+    use std::io::Write;
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(
+            msg_id,
+            path = %path.display(),
+            %error,
+            "Failed to create MoA trace directory"
+        );
+        return;
+    }
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| writeln!(file, "{line}"));
+    if let Err(error) = result {
+        tracing::warn!(
+            msg_id,
+            path = %path.display(),
+            %error,
+            "Failed to append MoA trace record"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1853,6 +1936,76 @@ mod tests {
             AgentStreamEvent::Thinking(data) => assert_eq!(data.content, "analyzing..."),
             other => panic!("Expected Thinking, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn emit_moa_reference_sends_moa_reference_event() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_moa_reference("msg-1", "provider-a/model-x", "advice", 1, 2);
+        let event = rx.try_recv().unwrap();
+        match event {
+            AgentStreamEvent::MoaReference(data) => {
+                assert_eq!(data.msg_id, "msg-1");
+                assert_eq!(data.label, "provider-a/model-x");
+                assert_eq!(data.text, "advice");
+                assert_eq!(data.index, 1);
+                assert_eq!(data.total, 2);
+            }
+            other => panic!("Expected MoaReference, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn emit_moa_progress_sends_moa_progress_event() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_moa_progress("msg-1", 2, 3);
+        let event = rx.try_recv().unwrap();
+        match event {
+            AgentStreamEvent::MoaProgress(data) => {
+                assert_eq!(data.msg_id, "msg-1");
+                assert_eq!(data.done, 2);
+                assert_eq!(data.total, 3);
+            }
+            other => panic!("Expected MoaProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn emit_moa_trace_appends_jsonl_lines_and_creates_directory() {
+        // The moa-trace directory does not exist yet — first write creates it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("moa-trace").join("conv-1.jsonl");
+        let (tx, mut rx) = broadcast::channel(16);
+        let sink = BackendOutputSink::new(tx).with_moa_trace_path(Some(path.clone()));
+
+        // Two records append as two `\n`-terminated JSONL lines.
+        sink.emit_moa_trace("msg-1", r#"{"msg_id":"msg-1"}"#);
+        sink.emit_moa_trace("msg-2", r#"{"msg_id":"msg-2"}"#);
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, "{\"msg_id\":\"msg-1\"}\n{\"msg_id\":\"msg-2\"}\n");
+        // Disk only — nothing is broadcast on the event channel.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn emit_moa_trace_without_path_has_zero_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sink, mut rx) = make_sink();
+        sink.emit_moa_trace("msg-1", r#"{"msg_id":"msg-1"}"#);
+        // No file, no directory, no event.
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn append_moa_trace_line_failure_never_panics() {
+        // Target path's parent is an existing FILE, so both create_dir_all and
+        // the open fail — the helper must only warn, never panic.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        append_moa_trace_line(&blocker.join("trace.jsonl"), "msg-1", "{}");
     }
 
     #[test]

@@ -1057,6 +1057,12 @@ pub struct ConversationService {
     /// —— fail-safe,所以不跑故障转移的上下文(测试、纯 webui)无需任何改动。
     failover_provider_repo: Arc<RwLock<Option<Arc<dyn nomifun_db::IProviderRepository>>>>,
     failover_client_prefs: Arc<RwLock<Option<Arc<dyn nomifun_db::IClientPreferenceRepository>>>>,
+    /// Goal persistence repository (wired post-construction via
+    /// [`Self::with_goal_repo`], same slot pattern as the failover deps).
+    /// Serves the `/goal` route's **no-runtime fallback**: status reads and
+    /// pause/resume/clear on conversations whose agent is not built. `None` =
+    /// goal persistence off (fail-safe) — the route degrades gracefully.
+    goal_repo: Arc<RwLock<Option<Arc<dyn nomifun_db::IGoalRepository>>>>,
     /// LLM completer for conversation auto-titling (wired post-construction).
     title_completer: Arc<RwLock<Option<Arc<dyn ConversationTitleCompleter>>>>,
     llm_title_fired: Arc<DashMap<String, ()>>,
@@ -2153,6 +2159,7 @@ impl ConversationService {
             supervision_hook: Arc::new(RwLock::new(None)),
             failover_provider_repo: Arc::new(RwLock::new(None)),
             failover_client_prefs: Arc::new(RwLock::new(None)),
+            goal_repo: Arc::new(RwLock::new(None)),
             title_completer: Arc::new(RwLock::new(None)),
             llm_title_fired: Arc::new(DashMap::new()),
             session_lifecycle: Arc::new(RwLock::new(None)),
@@ -2219,6 +2226,16 @@ impl ConversationService {
         }
         if let Ok(mut guard) = self.failover_client_prefs.write() {
             *guard = Some(client_prefs);
+        }
+    }
+
+    /// Wire the goal persistence repository (post-construction slot, same
+    /// pattern as [`Self::with_failover_deps`]). Unwired = goal persistence
+    /// off: `/goal` still works on running Nomi sessions, but nothing is
+    /// saved and the no-runtime DB fallback reports "no goal".
+    pub fn with_goal_repo(&self, goal_repo: Arc<dyn nomifun_db::IGoalRepository>) {
+        if let Ok(mut guard) = self.goal_repo.write() {
+            *guard = Some(goal_repo);
         }
     }
 
@@ -2371,6 +2388,12 @@ impl ConversationService {
         let provider_repo = self.failover_provider_repo.read().ok()?.clone()?;
         let client_prefs = self.failover_client_prefs.read().ok()?.clone()?;
         Some((provider_repo, client_prefs))
+    }
+
+    /// Snapshot of the registered goal persistence repository (`None` until
+    /// [`Self::with_goal_repo`] is called — goal persistence off, fail-safe).
+    pub(crate) fn goal_repo_slot(&self) -> Option<Arc<dyn nomifun_db::IGoalRepository>> {
+        self.goal_repo.read().ok()?.clone()
     }
 
     /// Resolve the model for one knowledge write-back. A valid explicit

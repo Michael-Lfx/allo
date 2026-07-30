@@ -1025,6 +1025,7 @@ mod phase7_tests {
             mcp: Default::default(),
             logging: Default::default(),
             memory: Default::default(),
+            moa: Default::default(),
         }
     }
 

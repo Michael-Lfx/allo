@@ -4,8 +4,9 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::routing::{get, post};
 use nomifun_api_types::{
-    AgentModeResponse, ApiResponse, GetModelInfoResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
-    SideQuestionResponse, SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
+    AgentModeResponse, ApiResponse, GetModelInfoResponse, GoalActionRequest, GoalStatusResponse,
+    SetModeRequest, SetModelRequest, SideQuestionRequest, SideQuestionResponse, SlashCommandItem,
+    WorkspaceBrowseQuery, WorkspaceEntry,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::{AppError, ConversationId};
@@ -34,6 +35,10 @@ pub fn conversation_ops_routes(state: ConversationRouterState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/openclaw/runtime",
             get(get_openclaw_runtime),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/goal",
+            get(get_goal_status).post(goal_action),
         )
         .route(
             "/api/conversations/{conversation_id}/workspace",
@@ -180,6 +185,37 @@ async fn get_openclaw_runtime(
         state
             .service
             .get_openclaw_runtime(&user.id, conversation_id.as_str())
+            .await?,
+    )))
+}
+
+/// POST `/goal` — apply a goal action (set / pause / resume / clear /
+/// status). Every action responds with the resulting goal snapshot.
+async fn goal_action(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+    body: Result<Json<GoalActionRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<GoalStatusResponse>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .goal_action(&user.id, conversation_id.as_str(), req)
+            .await?,
+    )))
+}
+
+/// GET `/goal` — read the goal snapshot (`active: false` when none).
+async fn get_goal_status(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+) -> Result<Json<ApiResponse<GoalStatusResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .get_goal_status(&user.id, conversation_id.as_str())
             .await?,
     )))
 }

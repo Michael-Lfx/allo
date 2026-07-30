@@ -3291,6 +3291,8 @@ impl StreamRelay {
             AgentStreamEvent::SlashCommandsUpdated(_) => "SlashCommandsUpdated",
             AgentStreamEvent::AvailableCommands(_) => "AvailableCommands",
             AgentStreamEvent::TurnCompleted(_) => "TurnCompleted",
+            AgentStreamEvent::MoaReference(_) => "MoaReference",
+            AgentStreamEvent::MoaProgress(_) => "MoaProgress",
             AgentStreamEvent::Finish(_) => "Finish",
             AgentStreamEvent::Error(_) => "Error",
             AgentStreamEvent::System(_) => "System",

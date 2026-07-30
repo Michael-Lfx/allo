@@ -2539,6 +2539,9 @@ impl AppServices {
                 public_agent_service.clone() as Arc<dyn nomifun_ai_agent::PublicAgentProvider>
             ),
             poi_service: Some(poi_service.clone()),
+            // Goal persistence: running Nomi sessions snapshot their goal here
+            // and restore-inject it at the next session build.
+            goal_repo: Some(Arc::new(nomifun_db::SqliteGoalRepository::new(database.pool().clone()))),
         });
 
         // Agent factory is now wired. Future extension/custom agents

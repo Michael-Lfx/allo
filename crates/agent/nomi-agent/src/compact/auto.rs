@@ -501,6 +501,7 @@ async fn summarize_with_retry(
             max_tokens: COMPACT_MAX_OUTPUT_TOKENS,
             thinking: Some(ThinkingConfig::Disabled),
             reasoning_effort: None,
+            temperature: None,
         };
 
         // Wrap the stream + collection in a timeout so a stalled stream
