@@ -8,9 +8,11 @@ use futures::FutureExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::{ensure_cover_from_final_video, COVER_FILENAME};
 use crate::backends::FlowyVimaxServices;
 use crate::domain::WorkflowKind;
 use crate::error::{VimaxError, VimaxResult};
+use crate::media_local;
 use crate::pipelines::{
     Idea2VideoPipeline, Novel2VideoPipeline, PipelineBackends, Script2VideoPipeline,
 };
@@ -93,6 +95,12 @@ impl VimaxService {
         if let Some(s) = map.get(id) {
             let mut out = s.clone();
             out.working_dir_abs = working_abs.or(out.working_dir_abs);
+            if out.cover.is_none() {
+                out.cover = record.cover.clone();
+            }
+            if out.final_video.is_none() {
+                out.final_video = record.final_video.clone();
+            }
             return Ok(out);
         }
         Ok(RenderStatus {
@@ -102,6 +110,7 @@ impl VimaxService {
             progress: 0.0,
             error: None,
             final_video: record.final_video,
+            cover: record.cover,
             working_dir_abs: working_abs,
             updated_at: record.updated_at,
             events: vec![],
@@ -690,7 +699,23 @@ impl VimaxService {
             st.progress = 100.0;
             st.emit("planned", "规划完成，可以开始渲染", None);
         }
-        let _ = self.index.update_stage(id, "planned", "规划完成，可以开始渲染");
+        let cover_rel = self.sync_cover_from_disk(id);
+        let _ = self.index.update_fields(id, |r| {
+            r.stage = "planned".into();
+            r.summary = "规划完成，可以开始渲染".into();
+            if let Some(c) = &cover_rel {
+                r.cover = Some(c.clone());
+            }
+        });
+        if let Some(c) = cover_rel {
+            let mut map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(st) = map.get_mut(id) {
+                st.cover = Some(c);
+            }
+        }
         Ok(())
     }
 
@@ -761,6 +786,15 @@ impl VimaxService {
             .unwrap_or(&final_video)
             .to_string_lossy()
             .replace('\\', "/");
+
+        // Display-only poster: AI cover from planning, else still from the finished film.
+        let artifact_dir = final_video
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| work_root.join(record.workflow.artifact_root()));
+        let _ = ensure_cover_from_final_video(&artifact_dir, &final_video).await;
+        let cover_rel = self.sync_cover_from_disk(id);
+
         {
             let mut map = self
                 .statuses
@@ -768,6 +802,9 @@ impl VimaxService {
                 .unwrap_or_else(|e| e.into_inner());
             let st = map.entry(id.to_string()).or_default();
             st.final_video = Some(rel.clone());
+            if let Some(c) = &cover_rel {
+                st.cover = Some(c.clone());
+            }
             st.progress = 100.0;
             st.status = RunStatus::Succeeded;
             st.message = "render complete".into();
@@ -775,11 +812,32 @@ impl VimaxService {
         }
         let _ = self.index.update_fields(id, |r| {
             r.final_video = Some(rel);
+            if let Some(c) = &cover_rel {
+                r.cover = Some(c.clone());
+            }
             r.status = RunStatus::Succeeded;
             r.stage = "render_done".into();
             r.summary = "render complete".into();
         });
         Ok(())
+    }
+
+    /// If `{artifact_root}/cover.png` exists on disk, return its session-relative path.
+    fn sync_cover_from_disk(&self, id: &str) -> Option<String> {
+        let record = self.index.get(id).ok()?;
+        let work_root = self.index.working_dir(id).ok()?;
+        let artifact = work_root.join(record.workflow.artifact_root());
+        let cover = artifact.join(COVER_FILENAME);
+        if !media_local::is_usable_image_file(&cover) {
+            return None;
+        }
+        Some(
+            cover
+                .strip_prefix(&work_root)
+                .unwrap_or(&cover)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        )
     }
 }
 

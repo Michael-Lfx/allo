@@ -31,6 +31,8 @@ const KNOWN_STAGES = new Set([
   'character_portrait_start',
   'world_assets_start',
   'world_assets_done',
+  'film_cover_start',
+  'film_cover_done',
   'render_start',
   'render_scene',
   'render_scene_skip',

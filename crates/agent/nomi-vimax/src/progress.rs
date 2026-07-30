@@ -48,6 +48,9 @@ pub struct RenderStatus {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_video: Option<String>,
+    /// Relative path to film poster image (not part of the muxed video).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
     /// Absolute session working directory (for UI / debugging).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir_abs: Option<String>,

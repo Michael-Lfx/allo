@@ -300,6 +300,19 @@ pub fn import_session_from_path(
             session.final_video = None;
         }
     }
+    if let Some(rel) = session.cover.as_deref() {
+        let cleaned = rel.replace('\\', "/");
+        if cleaned.is_empty() || cleaned.contains("..") || cleaned.starts_with('/') {
+            return Err(VimaxError::InvalidParams(format!(
+                "invalid cover path in archive: {cleaned}"
+            )));
+        }
+        if staging_dir.join(&cleaned).is_file() {
+            session.cover = Some(cleaned);
+        } else {
+            session.cover = None;
+        }
+    }
 
     // Normalize runtime fields; caller rewrites id / working_dir.
     session.status = RunStatus::Idle;
@@ -416,6 +429,7 @@ mod tests {
             status: RunStatus::Succeeded,
             stale: BTreeMap::new(),
             final_video: Some("script2video/final_video.mp4".into()),
+            cover: None,
             created_at: "2026-01-01T00:00:00+08:00".into(),
             updated_at: "2026-01-01T00:00:00+08:00".into(),
         }

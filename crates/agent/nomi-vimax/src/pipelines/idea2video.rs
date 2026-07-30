@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, WorldAssetsPlanner,
-    has_usable_portrait,
+    ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
 use crate::media_local;
@@ -308,6 +308,18 @@ impl Idea2VideoPipeline {
         while let Some(joined) = set.join_next().await {
             joined.map_err(|e| crate::error::VimaxError::msg(e.to_string()))??;
         }
+
+        let synopsis = format!("{idea}\n{story}\n{user_requirement}");
+        let _ = ensure_film_cover(
+            &self.working_dir,
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+            &style,
+            &synopsis,
+            &progress,
+        )
+        .await;
+
         Ok(())
     }
 

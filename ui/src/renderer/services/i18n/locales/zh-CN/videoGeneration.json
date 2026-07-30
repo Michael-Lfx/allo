@@ -114,6 +114,8 @@
     "character_portrait_start": "生成角色定妆图",
     "world_assets_start": "生成环境与道具参考图",
     "world_assets_done": "环境与道具参考图已就绪",
+    "film_cover_start": "生成影片封面",
+    "film_cover_done": "影片封面已就绪",
     "render_start": "开始渲染",
     "render_scene": "渲染场景",
     "render_scene_skip": "跳过已完成场景",
