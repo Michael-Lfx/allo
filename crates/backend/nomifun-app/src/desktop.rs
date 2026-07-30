@@ -40,7 +40,7 @@ use tokio::sync::{Mutex, OnceCell, watch};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::cli::Cli;
-use crate::{AppServices, bootstrap, create_router};
+use crate::{AppHostCapabilities, AppServices, bootstrap, create_router};
 use nomifun_auth::AuthPolicy;
 use nomifun_db::IUserRepository;
 
@@ -630,7 +630,13 @@ impl DesktopServer {
         let database = bootstrap::init_data_layer(&config)
             .await
             .map_err(DesktopStartError::verified)?;
-        let services = match AppServices::try_from_config(database, &config).await {
+        let services = match AppServices::try_from_config_with_capabilities(
+            database,
+            &config,
+            AppHostCapabilities::desktop(),
+        )
+        .await
+        {
             Ok(services) => services,
             Err(failure) => {
                 let (error, cleanup_error, authority) = failure.into_parts();

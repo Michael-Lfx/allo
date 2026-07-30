@@ -713,6 +713,13 @@ impl NomiAgentManager {
                 config_extra.install_embedded_agent_execution,
             )
             .approval_manager(approval_manager.clone());
+        bootstrap = match search_provider {
+            nomi_agent::SearchProviderBinding::Provided(provider) => {
+                bootstrap.search_provider(provider)
+            }
+            nomi_agent::SearchProviderBinding::Disabled => bootstrap.disable_web_search(),
+            nomi_agent::SearchProviderBinding::DefaultDdg => bootstrap,
+        };
         // Thread the application-shared browser secret vault (path +
         // machine-bound key) to the Hub-backed Browser tool policy. It resolves
         // registered `secret:NAME` values under origin checks and derives the
