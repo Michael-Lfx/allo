@@ -115,6 +115,7 @@ const WorkspacePage: React.FC = () => {
   const [preview, setPreview] = useState<ArtifactContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [finalBlobUrl, setFinalBlobUrl] = useState<string | null>(null);
+  const [coverBlobUrl, setCoverBlobUrl] = useState<string | null>(null);
 
   const [reviseTarget, setReviseTarget] = useState('');
   const [reviseInstruction, setReviseInstruction] = useState('');
@@ -196,10 +197,16 @@ const WorkspacePage: React.FC = () => {
     try {
       const st = await getSessionStatus(sessionId);
       setRunStatus(st);
-      if (st.status === 'succeeded' || st.final_video) {
+      if (st.status === 'succeeded' || st.final_video || st.cover) {
         setSession((prev) =>
           prev
-            ? { ...prev, status: st.status, stage: st.stage, final_video: st.final_video ?? prev.final_video }
+            ? {
+                ...prev,
+                status: st.status,
+                stage: st.stage,
+                final_video: st.final_video ?? prev.final_video,
+                cover: st.cover ?? prev.cover,
+              }
             : prev
         );
       } else {
@@ -306,6 +313,36 @@ const WorkspacePage: React.FC = () => {
       cancelled = true;
     };
   }, [sessionId, runStatus?.final_video, session?.final_video]);
+
+  // Film poster (display-only) via authenticated blob URL.
+  useEffect(() => {
+    const rel = runStatus?.cover || session?.cover;
+    if (!sessionId || !rel) {
+      setCoverBlobUrl((prev) => {
+        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return;
+    }
+    let cancelled = false;
+    void loadArtifactMediaUrl(sessionId, rel)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setCoverBlobUrl((prev) => {
+          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return url;
+        });
+      })
+      .catch((e) => {
+        console.warn('[videoGeneration] cover load failed', e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, runStatus?.cover, session?.cover]);
 
   useEffect(() => {
     if (selectedPath) setReviseTarget(selectedPath);
@@ -805,6 +842,7 @@ const WorkspacePage: React.FC = () => {
             <video
               key={finalBlobUrl}
               src={finalBlobUrl}
+              poster={coverBlobUrl ?? undefined}
               controls
               playsInline
               onPlay={() =>

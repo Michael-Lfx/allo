@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    EventExtractor, GlobalInformationPlanner, NovelCompressor, SceneExtractor,
+    EventExtractor, GlobalInformationPlanner, NovelCompressor, SceneExtractor, ensure_film_cover,
 };
 use crate::domain::{CharacterInNovel, Event, Scene};
 use crate::error::VimaxResult;
@@ -273,6 +273,19 @@ impl Novel2VideoPipeline {
                     .await?;
             }
         }
+
+        let style_resolved = crate::planning::resolve_visual_style(style);
+        let synopsis = format!("{novel_text}\n{user_requirement}");
+        let _ = ensure_film_cover(
+            &self.working_dir,
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+            &style_resolved,
+            &synopsis,
+            &progress,
+        )
+        .await;
+
         emit_pct(&progress, "planned", "规划完成，可以开始渲染", 100.0);
         Ok(())
     }

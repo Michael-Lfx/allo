@@ -23,6 +23,10 @@ export interface SessionSummary {
   /** RFC3339 string or epoch ms — client normalizes. */
   created_at?: string | number | null;
   updated_at?: string | number | null;
+  /** Relative path of finished video when available. */
+  final_video?: string | null;
+  /** Relative path of film poster (display-only, not muxed into the video). */
+  cover?: string | null;
 }
 
 /** Full session payload from `GET /api/vimax/sessions/:id`. */
@@ -42,6 +46,8 @@ export interface VimaxSession extends SessionSummary {
   target_duration_secs?: number | null;
   /** Relative or absolute URL of the finished video when available. */
   final_video?: string | null;
+  /** Relative path of film poster image (display-only). */
+  cover?: string | null;
   /** Relative working dir under data_dir/vimax (e.g. `.working_dir/<id>`). */
   working_dir?: string | null;
 }
@@ -108,6 +114,8 @@ export interface SessionStatus {
   status: VimaxRunStatus;
   error?: string | null;
   final_video?: string | null;
+  /** Relative path of film poster image (display-only). */
+  cover?: string | null;
   /** Absolute path of the session working directory on disk. */
   working_dir_abs?: string | null;
   /** RFC3339 timestamp of last progress update. */

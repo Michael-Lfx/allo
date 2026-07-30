@@ -114,6 +114,8 @@
     "character_portrait_start": "Generating character portrait",
     "world_assets_start": "Generating environment & prop plates",
     "world_assets_done": "Environment & prop plates ready",
+    "film_cover_start": "Generating film cover",
+    "film_cover_done": "Film cover ready",
     "render_start": "Starting render",
     "render_scene": "Rendering scene",
     "render_scene_skip": "Skipping completed scene",

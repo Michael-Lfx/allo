@@ -27,6 +27,7 @@ const STALE_KEYS: &[&str] = &[
     "frames",
     "clips",
     "final_video",
+    "cover",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +70,9 @@ pub struct SessionRecord {
     pub stale: BTreeMap<String, bool>,
     #[serde(default)]
     pub final_video: Option<String>,
+    /// Relative path to film poster (`…/cover.png`). Display-only; not muxed into the film.
+    #[serde(default)]
+    pub cover: Option<String>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -193,6 +197,7 @@ impl SessionIndex {
             status: RunStatus::Idle,
             stale: STALE_KEYS.iter().map(|k| ((*k).to_string(), false)).collect(),
             final_video: None,
+            cover: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -592,6 +597,9 @@ pub fn apply_status_to_record(record: &mut SessionRecord, status: &RenderStatus)
     }
     if let Some(v) = &status.final_video {
         record.final_video = Some(v.clone());
+    }
+    if let Some(v) = &status.cover {
+        record.cover = Some(v.clone());
     }
 }
 
