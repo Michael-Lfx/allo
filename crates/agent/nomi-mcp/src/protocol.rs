@@ -82,6 +82,11 @@ pub struct McpToolDef {
     pub description: Option<String>,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
+    /// Optional output contract advertised by the server. Managed providers
+    /// use this only for self-consistency checks; local decoders remain the
+    /// authoritative contract for provider-specific payloads.
+    #[serde(rename = "outputSchema", default)]
+    pub output_schema: Option<Value>,
     /// Optional behaviour hints declared by the server (MCP `annotations`).
     /// Drives approval classification (see `McpToolProxy::category`). Absent on
     /// servers that predate the annotations field — `None` is then treated as
@@ -119,7 +124,13 @@ pub struct ToolAnnotations {
 /// MCP tool call result
 #[derive(Debug, Deserialize)]
 pub struct McpToolResult {
+    /// Older servers may omit content when returning only structured data.
+    #[serde(default)]
     pub content: Vec<McpContent>,
+    /// Optional structured result. Keep it alongside text content instead of
+    /// forcing callers to recover it from a provider-specific text copy.
+    #[serde(rename = "structuredContent", default)]
+    pub structured_content: Option<Value>,
     /// MCP tool-level failure marker. This is distinct from a JSON-RPC
     /// transport/protocol error: servers return a normal `result` object with
     /// `isError: true` when the tool ran but failed (for example argument
@@ -356,8 +367,72 @@ mod tests {
         assert_eq!(tool.name, "read_file");
         assert_eq!(tool.description.as_deref(), Some("Read a file from disk"));
         assert_eq!(tool.input_schema["type"], "object");
+        assert!(tool.output_schema.is_none());
         // No annotations field → None (old-server compatible).
         assert!(tool.annotations.is_none());
+    }
+
+    #[test]
+    fn test_mcp_tool_def_preserves_output_schema() {
+        let json_str = r#"{
+            "name": "search",
+            "inputSchema": {"type": "object"},
+            "outputSchema": {
+                "type": "object",
+                "properties": {"results": {"type": "array"}}
+            }
+        }"#;
+        let tool: McpToolDef = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(tool.output_schema.as_ref().unwrap()["type"], "object");
+        assert_eq!(
+            tool.output_schema.as_ref().unwrap()["properties"]["results"]["type"],
+            "array"
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_result_accepts_structured_content_and_text() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "human-readable copy"}],
+            "structuredContent": {"results": [{"title": "Fixture"}]}
+        }))
+        .unwrap();
+
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(result.structured_content.as_ref().unwrap()["results"][0]["title"], "Fixture");
+        assert!(!result.is_error);
+    }
+
+    #[test]
+    fn test_mcp_tool_result_defaults_omitted_content_to_empty() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "structuredContent": {"results": []}
+        }))
+        .unwrap();
+
+        assert!(result.content.is_empty());
+        assert_eq!(result.structured_content.as_ref().unwrap()["results"], json!([]));
+    }
+
+    #[test]
+    fn test_mcp_tool_result_preserves_is_error_with_legacy_content() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "invalid"}],
+            "isError": true
+        }))
+        .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.structured_content.is_none());
+    }
+
+    #[test]
+    fn test_mcp_tool_result_rejects_malformed_content() {
+        let result = serde_json::from_value::<McpToolResult>(json!({
+            "content": [{"type": "text"}]
+        }));
+        assert!(result.is_err());
     }
 
     #[test]
