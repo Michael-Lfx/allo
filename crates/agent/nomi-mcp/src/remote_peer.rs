@@ -96,6 +96,7 @@ impl SessionMode {
 enum PeerState {
     Uninitialized,
     Ready {
+        generation: u64,
         protocol_version: ProtocolVersion,
         session: SessionMode,
         tools: Option<Vec<McpToolDef>>,
@@ -110,6 +111,7 @@ impl Default for PeerState {
 
 #[derive(Debug, Clone)]
 struct ReadyTransport {
+    generation: u64,
     protocol_version: ProtocolVersion,
     session: SessionMode,
 }
@@ -161,6 +163,7 @@ pub struct RemoteMcpPeer {
     state: Mutex<PeerState>,
     connect_gate: Mutex<()>,
     next_request_id: AtomicU64,
+    next_generation: AtomicU64,
 }
 
 impl RemoteMcpPeer {
@@ -175,6 +178,7 @@ impl RemoteMcpPeer {
             state: Mutex::new(PeerState::default()),
             connect_gate: Mutex::new(()),
             next_request_id: AtomicU64::new(1),
+            next_generation: AtomicU64::new(1),
         })
     }
 
@@ -193,10 +197,12 @@ impl RemoteMcpPeer {
         let tools = response.tools;
         let mut state = self.state.lock().await;
         if let PeerState::Ready {
+            generation,
             protocol_version,
             session,
             tools: cached,
         } = &mut *state
+            && *generation == transport.generation
             && *protocol_version == transport.protocol_version
             && *session == transport.session
         {
@@ -234,10 +240,12 @@ impl RemoteMcpPeer {
             let mut state = self.state.lock().await;
             match std::mem::replace(&mut *state, PeerState::Uninitialized) {
                 PeerState::Ready {
+                    generation,
                     protocol_version,
                     session: SessionMode::Stateful(session),
                     ..
                 } => Some(ReadyTransport {
+                    generation,
                     protocol_version,
                     session: SessionMode::Stateful(session),
                 }),
@@ -245,6 +253,7 @@ impl RemoteMcpPeer {
             }
         };
         let Some(ReadyTransport {
+            generation: _,
             protocol_version,
             session: SessionMode::Stateful(session),
         }) = transport
@@ -298,7 +307,7 @@ impl RemoteMcpPeer {
             })),
         );
         let response = self
-            .send(initialize, CLIENT_PROTOCOL_VERSION, None, deadline)
+            .send(initialize, CLIENT_PROTOCOL_VERSION, None, None, deadline)
             .await?;
         let session = response
             .headers()
@@ -317,6 +326,7 @@ impl RemoteMcpPeer {
                 notification,
                 protocol_version,
                 session.session_id(),
+                None,
                 deadline,
             )
             .await?;
@@ -324,7 +334,9 @@ impl RemoteMcpPeer {
             return Err(http_error(&notification_response));
         }
 
+        let generation = self.next_generation()?;
         *self.state.lock().await = PeerState::Ready {
+            generation,
             protocol_version,
             session,
             tools: None,
@@ -345,6 +357,7 @@ impl RemoteMcpPeer {
                 JsonRpcRequest::new(request_id, method, params),
                 transport.protocol_version,
                 transport.session.session_id(),
+                Some(transport.generation),
                 deadline,
             )
             .await?;
@@ -356,6 +369,7 @@ impl RemoteMcpPeer {
         request: JsonRpcRequest,
         protocol_version: ProtocolVersion,
         session: Option<&SessionId>,
+        generation: Option<u64>,
         deadline: Instant,
     ) -> Result<Response, McpPeerError> {
         let mut headers = standard_headers(protocol_version);
@@ -378,8 +392,11 @@ impl RemoteMcpPeer {
         .map_err(|_| McpPeerError::Timeout)?
         .map_err(|error| McpPeerError::Network(error.to_string()))?;
         if !response.status().is_success() {
-            if response.status() == StatusCode::NOT_FOUND && session.is_some() {
-                self.reset_state().await;
+            if response.status() == StatusCode::NOT_FOUND
+                && session.is_some()
+                && let Some(generation) = generation
+            {
+                self.invalidate_if_generation(generation).await;
                 return Err(McpPeerError::SessionExpired);
             }
             return Err(http_error(&response));
@@ -390,10 +407,12 @@ impl RemoteMcpPeer {
     async fn ready_transport(&self) -> Result<ReadyTransport, McpPeerError> {
         match &*self.state.lock().await {
             PeerState::Ready {
+                generation,
                 protocol_version,
                 session,
                 ..
             } => Ok(ReadyTransport {
+                generation: *generation,
                 protocol_version: *protocol_version,
                 session: session.clone(),
             }),
@@ -417,8 +436,21 @@ impl RemoteMcpPeer {
         matches!(*self.state.lock().await, PeerState::Ready { .. })
     }
 
-    async fn reset_state(&self) {
-        *self.state.lock().await = PeerState::Uninitialized;
+    async fn invalidate_if_generation(&self, generation: u64) -> bool {
+        let mut state = self.state.lock().await;
+        if matches!(
+            &*state,
+            PeerState::Ready {
+                generation: current,
+                session: SessionMode::Stateful(_),
+                ..
+            } if *current == generation
+        ) {
+            *state = PeerState::Uninitialized;
+            true
+        } else {
+            false
+        }
     }
 
     fn next_request_id(&self) -> Result<u64, McpPeerError> {
@@ -427,6 +459,14 @@ impl RemoteMcpPeer {
                 current.checked_add(1)
             })
             .map_err(|_| McpPeerError::Protocol("JSON-RPC request ID exhausted".to_owned()))
+    }
+
+    fn next_generation(&self) -> Result<u64, McpPeerError> {
+        self.next_generation
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| McpPeerError::Protocol("MCP peer generation exhausted".to_owned()))
     }
 }
 
@@ -494,6 +534,7 @@ async fn decode_rpc_inner<T: DeserializeOwned>(
     };
     let rpc: JsonRpcResponse = serde_json::from_slice(&payload)
         .map_err(|error| McpPeerError::Protocol(format!("invalid JSON-RPC response: {error}")))?;
+    validate_rpc_envelope(&rpc)?;
     if rpc.id != Some(expected_id) {
         return Err(McpPeerError::ResponseIdMismatch {
             expected: expected_id,
@@ -512,6 +553,20 @@ async fn decode_rpc_inner<T: DeserializeOwned>(
         .ok_or_else(|| McpPeerError::Protocol("JSON-RPC response omitted result".to_owned()))?;
     serde_json::from_value(result)
         .map_err(|error| McpPeerError::Protocol(format!("invalid MCP result: {error}")))
+}
+
+fn validate_rpc_envelope(rpc: &JsonRpcResponse) -> Result<(), McpPeerError> {
+    if rpc.jsonrpc != "2.0" {
+        return Err(McpPeerError::Protocol(
+            "JSON-RPC response was not version 2.0".to_owned(),
+        ));
+    }
+    if rpc.result.is_some() == rpc.error.is_some() {
+        return Err(McpPeerError::Protocol(
+            "JSON-RPC response must contain exactly one of result or error".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 async fn read_limited(response: Response) -> Result<Vec<u8>, McpPeerError> {
@@ -552,6 +607,11 @@ fn decode_sse(body: &[u8], expected_id: u64) -> Result<Vec<u8>, McpPeerError> {
         }
         let message: Value = serde_json::from_str(&data)
             .map_err(|error| McpPeerError::Protocol(format!("invalid SSE JSON: {error}")))?;
+        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return Err(McpPeerError::Protocol(
+                "SSE JSON-RPC message was not version 2.0".to_owned(),
+            ));
+        }
         if message.get("id").is_none() {
             if let Some(method) = message.get("method").and_then(Value::as_str) {
                 if method == "notifications/message" || method.starts_with("notifications/") {
@@ -636,6 +696,47 @@ mod tests {
         let oversized = format!("data: {}\n\n", "x".repeat(MAX_SSE_EVENT_BYTES));
         let result = decode_sse(oversized.as_bytes(), 7);
         assert!(matches!(result, Err(McpPeerError::BodyTooLarge)));
+    }
+
+    #[test]
+    fn rpc_envelope_requires_version_and_exactly_one_payload() {
+        let mut response = JsonRpcResponse {
+            jsonrpc: "1.0".to_owned(),
+            id: Some(1),
+            result: Some(json!({})),
+            error: None,
+        };
+        assert!(matches!(
+            validate_rpc_envelope(&response),
+            Err(McpPeerError::Protocol(message)) if message.contains("version 2.0")
+        ));
+
+        response.jsonrpc = "2.0".to_owned();
+        response.error = Some(crate::protocol::JsonRpcError {
+            code: -1,
+            message: "both".to_owned(),
+            data: None,
+        });
+        assert!(matches!(
+            validate_rpc_envelope(&response),
+            Err(McpPeerError::Protocol(message)) if message.contains("exactly one")
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_generation_does_not_invalidate_new_state() {
+        let peer = RemoteMcpPeer::new("http://127.0.0.1:1").expect("peer");
+        *peer.state.lock().await = PeerState::Ready {
+            generation: 2,
+            protocol_version: CLIENT_PROTOCOL_VERSION,
+            session: SessionMode::Stateful(SessionId("session-2".to_owned())),
+            tools: None,
+        };
+
+        assert!(!peer.invalidate_if_generation(1).await);
+        assert!(peer.is_ready().await);
+        assert!(peer.invalidate_if_generation(2).await);
+        assert!(!peer.is_ready().await);
     }
 
     #[test]
