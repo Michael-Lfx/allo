@@ -95,7 +95,7 @@ impl Tool for WebSearchTool {
 
 fn format_search_result(result: &SearchResult) -> String {
     if result.hits.is_empty() {
-        return format!("No results.\nprovider={}", result.provider);
+        return "No results.".to_owned();
     }
 
     let mut out = String::new();
@@ -105,8 +105,7 @@ fn format_search_result(result: &SearchResult) -> String {
             hit.rank, hit.title, hit.url, hit.snippet
         ));
     }
-    out.push_str(&format!("provider={}", result.provider));
-    out
+    out.trim_end().to_owned()
 }
 
 #[cfg(test)]
@@ -160,5 +159,20 @@ mod tests {
         assert!(!r.is_error);
         assert!(r.content.contains("https://example.com"));
         assert!(r.content.contains("R:beijing"));
+        assert!(!r.content.contains("provider="));
+    }
+
+    #[test]
+    fn web_search_schema_remains_query_plus_optional_count() {
+        let tool = WebSearchTool::new(Arc::new(MockSearch));
+        let schema = tool.input_schema();
+        let properties = schema["properties"]
+            .as_object()
+            .expect("properties must be an object");
+        assert_eq!(
+            properties.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
+            ["count".to_owned(), "query".to_owned()].into_iter().collect()
+        );
+        assert_eq!(schema["required"], json!(["query"]));
     }
 }

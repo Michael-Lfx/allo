@@ -995,6 +995,8 @@ pub struct AppServices {
     pub ws_manager: Arc<WebSocketManager>,
     pub event_bus: Arc<BroadcastEventBus>,
     pub agent_runtime_registry: Arc<dyn AgentRuntimeRegistry>,
+    #[cfg(feature = "managed-search")]
+    pub(crate) managed_search: Option<nomifun_ai_agent::ManagedSearchHandle>,
     pub conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     /// Same instance as `agent_runtime_registry`, exposed through the
     /// `OnConversationDelete` trait so `ConversationService::with_delete_hook`
@@ -2462,6 +2464,7 @@ impl AppServices {
 
         let factory = build_agent_factory(AgentFactoryDeps {
             authoritative_user_id: authoritative_user_id.clone(),
+            search_provider,
             skill_manager: AcpSkillManager::new(skill_paths.clone()),
             remote_agent_repo,
             provider_repo,
@@ -2592,6 +2595,8 @@ impl AppServices {
             ws_manager: Arc::new(WebSocketManager::new()),
             event_bus,
             agent_runtime_registry,
+            #[cfg(feature = "managed-search")]
+            managed_search,
             conversation_runtime_state,
             runtime_registry_delete_hook: Some(runtime_registry_delete_hook),
             agent_registry,
@@ -4040,6 +4045,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn managed_search_is_an_explicit_desktop_capability() {
+        assert!(!AppHostCapabilities::default().managed_search);
+        assert!(AppHostCapabilities::desktop().managed_search);
+    }
+
     fn test_config(data_dir: &Path) -> AppConfig {
         AppConfig {
             data_dir: data_dir.to_path_buf(),
@@ -4165,6 +4176,11 @@ mod tests {
         let config = test_config(tmp.path());
         let services = AppServices::from_config(db, &config).await.unwrap();
 
+        #[cfg(feature = "managed-search")]
+        assert!(
+            services.managed_search.is_none(),
+            "headless/default composition must remain DDG-only even when the feature is unified"
+        );
         assert!(!tmp.path().join("local-ai").exists());
         assert_eq!(
             services

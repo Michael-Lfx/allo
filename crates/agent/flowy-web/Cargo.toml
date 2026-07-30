@@ -10,6 +10,7 @@ repository.workspace = true
 nomi-types.workspace = true
 nomi-protocol.workspace = true
 nomi-tools.workspace = true
+nomi-mcp.workspace = true
 
 async-trait.workspace = true
 serde.workspace = true
@@ -21,6 +22,7 @@ reqwest = { workspace = true, features = ["json", "rustls-tls", "stream", "gzip"
 futures-util.workspace = true
 htmd.workspace = true
 url.workspace = true
+uuid.workspace = true
 dom_smoothie = "0.18"
 
 [dev-dependencies]

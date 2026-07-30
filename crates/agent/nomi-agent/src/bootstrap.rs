@@ -287,6 +287,7 @@ pub struct AgentBootstrap {
     workspace: String,
     output: Arc<dyn OutputSink>,
     provider: Option<Arc<dyn LlmProvider>>,
+    search_provider: Option<Arc<dyn flowy_web::provider::SearchProvider>>,
     resume_session: Option<Session>,
     extra_skill_dirs: Vec<PathBuf>,
     goal: Option<crate::goal::runtime::GoalSpec>,
@@ -336,6 +337,7 @@ impl AgentBootstrap {
             workspace: workspace.into(),
             output,
             provider: None,
+            search_provider: None,
             resume_session: None,
             extra_skill_dirs: Vec::new(),
             goal: None,
@@ -352,6 +354,16 @@ impl AgentBootstrap {
     /// Use a pre-created provider instead of creating one from config.
     pub fn provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
         self.provider = Some(provider);
+        self
+    }
+
+    /// Inject the host-owned web-search provider. This is composition state,
+    /// not user/model configuration; standalone callers retain DDG by default.
+    pub fn search_provider(
+        mut self,
+        provider: Arc<dyn flowy_web::provider::SearchProvider>,
+    ) -> Self {
+        self.search_provider = Some(provider);
         self
     }
 
@@ -537,7 +549,9 @@ impl AgentBootstrap {
         // Web search/extract (keyless DuckDuckGo HTML scrape + SSRF-guarded HTTP
         // fetch → markdown). Default on; gated by `tools.web.enabled`.
         if self.config.tools.web.enabled {
-            let search = Arc::new(flowy_web::provider::DuckDuckGoSearchProvider::new());
+            let search = self.search_provider.unwrap_or_else(|| {
+                Arc::new(flowy_web::provider::DuckDuckGoSearchProvider::new())
+            });
             let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
             registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
             registry.register(Box::new(flowy_web::tools::WebExtractTool::new(extract)));

@@ -74,6 +74,7 @@ fn make_factory(
     let skill_paths = Arc::new(nomifun_extension::resolve_skill_paths(tmp.path(), tmp.path()));
     build_agent_factory(AgentFactoryDeps {
         authoritative_user_id: Arc::from(TEST_OWNER_ID),
+        search_provider: None,
         cron_sink_factory: None,
         gateway_mcp_config: None,
         open_mcp_config: None,

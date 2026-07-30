@@ -44,6 +44,7 @@ tracing.workspace = true
 toml.workspace = true
 tempfile.workspace = true
 nomi-agent.workspace = true
+flowy-web = { workspace = true, optional = true }
 nomi-types.workspace = true
 nomi-protocol.workspace = true
 nomi-config.workspace = true
