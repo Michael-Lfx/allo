@@ -29,7 +29,15 @@ struct ModelPage {
     title: Option<String>,
     body: Option<String>,
     source_truncated: bool,
+    context_truncated: bool,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RenderDiagnostics {
+    source_truncated_count: usize,
+    context_truncated_count: usize,
+    omitted_page_count: usize,
 }
 
 struct IndexedExtractOutcome {
@@ -166,8 +174,8 @@ impl Tool for WebExtractTool {
             ));
         }
 
-        let (pages, success_count) = self.extract_pages(urls).await;
-        let content = render_pages(&pages);
+        let (mut pages, success_count) = self.extract_pages(urls).await;
+        let (content, _render_diagnostics) = render_pages(&mut pages);
         if success_count == 0 {
             ToolResult::error(content)
         } else {
@@ -204,6 +212,7 @@ async fn extract_one(
                 title: None,
                 body: None,
                 source_truncated: false,
+                context_truncated: false,
                 error: Some(format!("invalid argument: urls[{index}] must be a string")),
             },
         };
@@ -226,14 +235,16 @@ async fn extract_one(
             )),
             body: Some(page.markdown),
             source_truncated: page.truncated,
-                error: None,
+            context_truncated: false,
+            error: None,
         },
         Ok(Err(error)) => ModelPage {
             url: single_line_truncate_bytes(url, MAX_MODEL_URL_BYTES),
             title: None,
             body: None,
             source_truncated: false,
-                error: Some(single_line_truncate(&error.to_string(), MAX_MODEL_ERROR_CHARS)),
+            context_truncated: false,
+            error: Some(single_line_truncate(&error.to_string(), MAX_MODEL_ERROR_CHARS)),
         },
         Err(_) => timeout_page(index, url),
     };
@@ -246,6 +257,7 @@ fn timeout_page(index: usize, url: &str) -> ModelPage {
         title: None,
         body: None,
         source_truncated: false,
+        context_truncated: false,
         error: Some(format!(
             "urls[{index}] extract timed out after {} seconds",
             PER_URL_EXTRACT_TIMEOUT.as_secs()
@@ -253,52 +265,63 @@ fn timeout_page(index: usize, url: &str) -> ModelPage {
     }
 }
 
-fn render_pages(pages: &[ModelPage]) -> String {
+fn render_pages(pages: &mut [ModelPage]) -> (String, RenderDiagnostics) {
     let mut retained = (0..pages.len()).collect::<Vec<_>>();
     let mut omitted = 0usize;
     let mut body_limits = minimum_body_limits(pages, &retained);
 
-    while !fits_budget(pages, &retained, &body_limits, omitted) && !retained.is_empty() {
+    // Reserve all fixed metadata before allocating body characters. If the
+    // metadata plus the minimum evidence cannot fit, drop the lowest-ranked
+    // page first and expose the count in the final deterministic rendering.
+    while !fits_fixed_budget(pages, &retained, &body_limits, omitted)
+        && !retained.is_empty()
+    {
         retained.pop();
         omitted += 1;
         body_limits = minimum_body_limits(pages, &retained);
     }
 
-    // Add content in round-robin order. This keeps multi-page extracts fair,
-    // while allowing a short page's unused budget to flow to longer pages.
-    let mut cursor = 0usize;
-    loop {
-        let successes = retained
-            .iter()
-            .filter(|index| pages[**index].body.is_some())
-            .copied()
-            .collect::<Vec<_>>();
-        if successes.is_empty() {
-            break;
-        }
-        let mut progressed = false;
-        for index in successes.iter().cycle().take(successes.len()) {
-            let Some(body) = pages[*index].body.as_ref() else {
-                continue;
-            };
-            let max_len = body.chars().count().min(MAX_MODEL_PAGE_CHARS);
-            if body_limits[*index] >= max_len {
-                continue;
-            }
-            body_limits[*index] += 1;
-            if fits_budget(pages, &retained, &body_limits, omitted) {
-                progressed = true;
-            } else {
-                body_limits[*index] -= 1;
+    allocate_body_budget(pages, &retained, &mut body_limits, omitted);
+    let mut rendered = render_document(pages, &retained, &body_limits, omitted);
+    if rendered.chars().count() > MAX_EXTRACT_MODEL_CHARS {
+        // The `truncated: true/false` marker can change length when a short
+        // page receives its final characters. Apply one deterministic tail
+        // shrink as a safety belt, preserving every page's minimum evidence.
+        let mut overflow = rendered.chars().count() - MAX_EXTRACT_MODEL_CHARS;
+        for index in retained.iter().rev() {
+            let minimum = pages[*index]
+                .body
+                .as_ref()
+                .map(|body| body.chars().count().min(MIN_MODEL_BODY_CHARS))
+                .unwrap_or_default();
+            let reducible = body_limits[*index].saturating_sub(minimum);
+            let reduction = reducible.min(overflow);
+            body_limits[*index] -= reduction;
+            overflow -= reduction;
+            if overflow == 0 {
+                break;
             }
         }
-        cursor = cursor.wrapping_add(1);
-        if !progressed || cursor > MAX_MODEL_PAGE_CHARS * pages.len() {
-            break;
+        rendered = render_document(pages, &retained, &body_limits, omitted);
+    }
+    let mut diagnostics = RenderDiagnostics {
+        omitted_page_count: omitted,
+        ..RenderDiagnostics::default()
+    };
+    for index in retained {
+        let page = &mut pages[index];
+        if page.source_truncated {
+            diagnostics.source_truncated_count += 1;
+        }
+        page.context_truncated = page
+            .body
+            .as_ref()
+            .is_some_and(|body| body.chars().count() > body_limits[index]);
+        if page.context_truncated {
+            diagnostics.context_truncated_count += 1;
         }
     }
-
-    render_document(pages, &retained, &body_limits, omitted)
+    (rendered, diagnostics)
 }
 
 fn minimum_body_limits(pages: &[ModelPage], retained: &[usize]) -> Vec<usize> {
@@ -315,16 +338,96 @@ fn minimum_body_limits(pages: &[ModelPage], retained: &[usize]) -> Vec<usize> {
     limits
 }
 
-fn fits_budget(
+fn fits_fixed_budget(
     pages: &[ModelPage],
     retained: &[usize],
     body_limits: &[usize],
     omitted: usize,
 ) -> bool {
-    render_document(pages, retained, body_limits, omitted)
-        .chars()
-        .count()
+    fixed_document_chars(pages, retained, body_limits, omitted)
+        + body_limits.iter().sum::<usize>()
         <= MAX_EXTRACT_MODEL_CHARS
+}
+
+fn allocate_body_budget(
+    pages: &[ModelPage],
+    retained: &[usize],
+    body_limits: &mut [usize],
+    omitted: usize,
+) {
+    let fixed = fixed_document_chars(pages, retained, body_limits, omitted);
+    let minimum = body_limits.iter().sum::<usize>();
+    let mut remaining = MAX_EXTRACT_MODEL_CHARS.saturating_sub(fixed + minimum);
+
+    // Water-fill the remaining budget evenly. A page that reaches its natural
+    // length releases its unused share, which is then redistributed to the
+    // remaining long pages on the next pass.
+    while remaining > 0 {
+        let eligible = retained
+            .iter()
+            .copied()
+            .filter(|index| {
+                pages[*index].body.as_ref().is_some_and(|body| {
+                    body_limits[*index] < body.chars().count().min(MAX_MODEL_PAGE_CHARS)
+                })
+            })
+            .collect::<Vec<_>>();
+        if eligible.is_empty() {
+            break;
+        }
+
+        let share = (remaining / eligible.len()).max(1);
+        let mut allocated = 0usize;
+        for index in eligible {
+            let capacity = pages[index]
+                .body
+                .as_ref()
+                .map(|body| body.chars().count().min(MAX_MODEL_PAGE_CHARS))
+                .unwrap_or_default()
+                .saturating_sub(body_limits[index]);
+            let amount = capacity.min(share).min(remaining - allocated);
+            body_limits[index] += amount;
+            allocated += amount;
+            if allocated >= remaining {
+                break;
+            }
+        }
+        if allocated == 0 {
+            break;
+        }
+        remaining -= allocated;
+    }
+}
+
+fn fixed_document_chars(
+    pages: &[ModelPage],
+    retained: &[usize],
+    body_limits: &[usize],
+    omitted: usize,
+) -> usize {
+    let mut fixed = UNTRUSTED_PREAMBLE.chars().count();
+    if omitted > 0 {
+        fixed += format!("\n\nomitted: {omitted}").chars().count();
+    }
+    for index in retained {
+        let page = &pages[*index];
+        fixed += format!("\n\n[{}]\nurl: {}\n", index + 1, page.url).chars().count();
+        if let Some(title) = page.title.as_deref() {
+            fixed += format!("title: {title}\n").chars().count();
+            let body = page.body.as_deref().unwrap_or_default();
+            let limit = body_limits[*index].min(MAX_MODEL_PAGE_CHARS);
+            let truncated = page.source_truncated || body.chars().count() > limit;
+            fixed += format!(
+                "truncated: {}\n\ncontent:\n",
+                if truncated { "true" } else { "false" }
+            )
+            .chars()
+            .count();
+        } else if let Some(error) = page.error.as_deref() {
+            fixed += format!("error: {error}").chars().count();
+        }
+    }
+    fixed
 }
 
 fn render_document(
