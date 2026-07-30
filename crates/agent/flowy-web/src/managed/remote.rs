@@ -200,7 +200,14 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                     self.clear_compatibility().await;
                     session_retried = true;
                 }
-                Err(error) => return Err(map_peer_error(error)),
+                Err(error) => {
+                    if !tool_rediscovered && is_explicit_unknown_tool_rpc(&error) {
+                        self.clear_compatibility().await;
+                        tool_rediscovered = true;
+                        continue;
+                    }
+                    return Err(map_peer_error(error));
+                }
             }
         }
     }
@@ -257,14 +264,17 @@ fn validate_tool_schema(
 }
 
 fn validate_output_schema(tool: &McpToolDef) -> Result<(), AdapterCompatibilityError> {
+    // Absent outputSchema is allowed: local typed decoders remain the contract.
     let Some(schema) = tool.output_schema.as_ref() else {
         return Ok(());
     };
+    // Once present, the schema must be a usable object with the adapter's
+    // expected top-level result collection field.
     if schema.get("type").and_then(Value::as_str) != Some("object") {
-        return Ok(());
+        return Err(AdapterCompatibilityError::SchemaMismatch);
     }
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-        return Ok(());
+        return Err(AdapterCompatibilityError::SchemaMismatch);
     };
     if properties.contains_key("results") {
         Ok(())
@@ -299,7 +309,17 @@ fn map_peer_error(error: McpPeerError) -> SearchAttemptError {
         McpPeerError::Http { status, .. } if status.is_server_error() => {
             SearchAttemptError::Upstream
         }
-        McpPeerError::JsonRpc { code: -32602, .. } => SearchAttemptError::InvalidRequest,
+        McpPeerError::JsonRpc {
+            code: -32602,
+            message,
+            data,
+        } => {
+            if is_unknown_tool_message(&message, data.as_ref()) {
+                SearchAttemptError::ToolMissing
+            } else {
+                SearchAttemptError::InvalidRequest
+            }
+        }
         McpPeerError::JsonRpc { code: -32601, .. } => {
             SearchAttemptError::RpcMethodUnavailable
         }
@@ -325,9 +345,101 @@ fn is_explicit_unknown_tool(result: &nomi_mcp::protocol::McpToolResult) -> bool 
         let nomi_mcp::protocol::McpContent::Text { text } = content else {
             return false;
         };
-        let text = text.to_ascii_lowercase();
-        text.contains("unknown tool")
-            || text.contains("tool not found")
-            || text.contains("tool_missing")
+        is_unknown_tool_message(text, None)
     })
+}
+
+fn is_explicit_unknown_tool_rpc(error: &McpPeerError) -> bool {
+    match error {
+        McpPeerError::JsonRpc {
+            code: -32602,
+            message,
+            data,
+        } => is_unknown_tool_message(message, data.as_ref()),
+        _ => false,
+    }
+}
+
+fn is_unknown_tool_message(message: &str, data: Option<&Value>) -> bool {
+    let message = message.to_ascii_lowercase();
+    if message.contains("unknown tool")
+        || message.contains("tool not found")
+        || message.contains("tool_missing")
+    {
+        return true;
+    }
+    data.and_then(Value::as_str)
+        .is_some_and(|text| {
+            let text = text.to_ascii_lowercase();
+            text.contains("unknown tool")
+                || text.contains("tool not found")
+                || text.contains("tool_missing")
+        })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomi_mcp::protocol::McpToolDef;
+    use serde_json::json;
+
+    fn tool_with_output(schema: Option<Value>) -> McpToolDef {
+        McpToolDef {
+            name: "web_search".to_owned(),
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "objective": { "type": "string" },
+                    "search_queries": { "type": "array" }
+                },
+                "required": ["objective", "search_queries"]
+            }),
+            output_schema: schema,
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn absent_output_schema_is_allowed() {
+        assert!(validate_output_schema(&tool_with_output(None)).is_ok());
+    }
+
+    #[test]
+    fn present_output_schema_must_be_object_with_results() {
+        assert!(validate_output_schema(&tool_with_output(Some(json!({
+            "type": "array"
+        })))).is_err());
+        assert!(validate_output_schema(&tool_with_output(Some(json!({
+            "type": "object"
+        })))).is_err());
+        assert!(validate_output_schema(&tool_with_output(Some(json!({
+            "type": "object",
+            "properties": { "hits": { "type": "array" } }
+        })))).is_err());
+        assert!(validate_output_schema(&tool_with_output(Some(json!({
+            "type": "object",
+            "properties": { "results": { "type": "array" } }
+        })))).is_ok());
+    }
+
+    #[test]
+    fn rpc_unknown_tool_is_detected_for_rediscovery() {
+        assert!(is_explicit_unknown_tool_rpc(&McpPeerError::JsonRpc {
+            code: -32602,
+            message: "unknown tool: you-search".to_owned(),
+            data: None,
+        }));
+        assert!(!is_explicit_unknown_tool_rpc(&McpPeerError::JsonRpc {
+            code: -32602,
+            message: "invalid params".to_owned(),
+            data: None,
+        }));
+        assert!(!is_explicit_unknown_tool_rpc(&McpPeerError::JsonRpc {
+            code: -32601,
+            message: "unknown tool: you-search".to_owned(),
+            data: None,
+        }));
+    }
 }
