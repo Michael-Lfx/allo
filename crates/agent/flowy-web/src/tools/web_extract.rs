@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant as StdInstant};
 
 use async_trait::async_trait;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -161,6 +161,7 @@ impl Tool for WebExtractTool {
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
+        let started_at = StdInstant::now();
         let urls = match input.get("urls").and_then(|v| v.as_array()) {
             Some(arr) => arr,
             None => return ToolResult::error("Missing required 'urls' array"),
@@ -178,7 +179,20 @@ impl Tool for WebExtractTool {
         }
 
         let (mut pages, success_count) = self.extract_pages(urls).await;
-        let (content, _render_diagnostics) = render_pages(&mut pages);
+
+        let (content, render_diagnostics) = render_pages(&mut pages);
+        tracing::info!(
+            target: "flowy_web::web_extract",
+            requested_url_count = urls.len(),
+            success_url_count = success_count,
+            failed_url_count = urls.len().saturating_sub(success_count),
+            source_truncated_count = render_diagnostics.source_truncated_count,
+            context_truncated_count = render_diagnostics.context_truncated_count,
+            omitted_page_count = render_diagnostics.omitted_page_count,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            result_chars = content.chars().count(),
+            "web extract completed"
+        );
         if success_count == 0 {
             ToolResult::error(content)
         } else {
