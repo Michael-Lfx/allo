@@ -103,6 +103,7 @@ impl FlowyVideoGenBackend {
             seed: request.seed,
             watermark: false,
             generate_audio: request.generate_audio.or(request.audio),
+            return_last_frame: None,
             images,
             reference_video_url: if uses_frame_roles {
                 None

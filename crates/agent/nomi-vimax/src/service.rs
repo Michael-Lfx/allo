@@ -581,16 +581,23 @@ impl VimaxService {
             },
         );
         // Idea/Novel: film-level scene budget. Script2Video: whole target = one scene.
+        // Language lock uses the user's creative source so Chinese ideas stay Chinese in planning.
+        let lang_sources = [
+            record.idea.as_str(),
+            record.script.as_str(),
+            record.novel_text.as_str(),
+            record.user_requirement.as_str(),
+        ];
+        let req_base = crate::planning::with_language_lock(
+            &record.user_requirement,
+            &lang_sources,
+        );
         let req = match record.workflow {
-            WorkflowKind::Script2Video => crate::planning::enrich_requirement_for_planning(
-                &record.user_requirement,
-                Some(target_secs),
-            ),
+            WorkflowKind::Script2Video => {
+                crate::planning::enrich_requirement_for_planning(&req_base, Some(target_secs))
+            }
             WorkflowKind::Idea2Video | WorkflowKind::Novel2Video => {
-                crate::planning::enrich_requirement_for_film(
-                    &record.user_requirement,
-                    Some(target_secs),
-                )
+                crate::planning::enrich_requirement_for_film(&req_base, Some(target_secs))
             }
         };
         // Persist so render / child scene dirs can allocate clip lengths.

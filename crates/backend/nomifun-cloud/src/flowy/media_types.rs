@@ -53,6 +53,41 @@ impl VideoTaskRecord {
             .map(str::to_string)
     }
 
+    /// Last-frame still URL when the create request set `return_last_frame=true`.
+    /// Searches common Flowy / Ark response shapes.
+    pub fn last_frame_url(&self) -> Option<String> {
+        let result = self.result.as_ref()?;
+        for path in [
+            &["content", "last_frame_url"][..],
+            &["content", "last_frame", "url"][..],
+            &["last_frame_url"][..],
+            &["data", "last_frame_url"][..],
+            &["output", "last_frame_url"][..],
+        ] {
+            if let Some(url) = dig_str(result, path) {
+                return Some(url);
+            }
+        }
+        // Some gateways nest: result.content.last_frame.url / result.data[0].last_frame_url
+        if let Some(arr) = result
+            .get("data")
+            .and_then(|d| d.as_array())
+            .or_else(|| result.get("content").and_then(|c| c.get("data")).and_then(|d| d.as_array()))
+        {
+            for item in arr {
+                if let Some(url) = item
+                    .get("last_frame_url")
+                    .and_then(|u| u.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    return Some(url.to_string());
+                }
+            }
+        }
+        None
+    }
+
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.status,
@@ -110,6 +145,8 @@ pub struct VideoCreateParams {
     pub seed: Option<i64>,
     pub watermark: bool,
     pub generate_audio: Option<bool>,
+    /// When true, Seedance returns a still of the clip ending (`last_frame_url`).
+    pub return_last_frame: Option<bool>,
     pub images: Vec<VideoContentImage>,
     pub reference_video_url: Option<String>,
     pub reference_audio_url: Option<String>,
@@ -175,8 +212,22 @@ impl VideoCreateParams {
         if let Some(ga) = self.generate_audio {
             body.insert("generate_audio".into(), json!(ga));
         }
+        if let Some(rlf) = self.return_last_frame {
+            body.insert("return_last_frame".into(), json!(rlf));
+        }
         Value::Object(body)
     }
+}
+
+fn dig_str(value: &Value, path: &[&str]) -> Option<String> {
+    let mut cur = value;
+    for key in path {
+        cur = cur.get(*key)?;
+    }
+    cur.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone, Serialize)]

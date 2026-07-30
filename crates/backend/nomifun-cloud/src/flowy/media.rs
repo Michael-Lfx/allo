@@ -496,6 +496,7 @@ impl FlowyApiClient {
             seed,
             watermark,
             generate_audio: None,
+            return_last_frame: None,
             images: image_url
                 .filter(|u| !u.trim().is_empty())
                 .map(|url| VideoContentImage {
@@ -779,6 +780,7 @@ mod tests {
             seed: None,
             watermark: false,
             generate_audio: Some(true),
+            return_last_frame: Some(true),
             images: vec![
                 VideoContentImage {
                     url: "https://example.com/a.png".into(),
@@ -795,6 +797,32 @@ mod tests {
         let content = body["content"].as_array().expect("content");
         assert!(content.len() >= 4);
         assert_eq!(body["generate_audio"], true);
+        assert_eq!(body["return_last_frame"], true);
+    }
+
+    #[test]
+    fn video_task_record_parses_last_frame_url() {
+        let rec = VideoTaskRecord {
+            id: 1,
+            task_id: None,
+            status: 4,
+            result: Some(serde_json::json!({
+                "content": {
+                    "video_url": "https://cdn.example/v.mp4",
+                    "last_frame_url": "https://cdn.example/last.png"
+                }
+            })),
+            created_at: None,
+            updated_at: None,
+        };
+        assert_eq!(
+            rec.last_frame_url().as_deref(),
+            Some("https://cdn.example/last.png")
+        );
+        assert_eq!(
+            rec.video_url().as_deref(),
+            Some("https://cdn.example/v.mp4")
+        );
     }
 
     #[test]
