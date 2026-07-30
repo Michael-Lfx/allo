@@ -464,6 +464,42 @@ impl NomiAgentManager {
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         host_wiring: NomiHostWiring,
     ) -> Result<Self, AppError> {
+        Self::new_with_search_provider(
+            conversation_id,
+            workspace,
+            config_extra,
+            resume_session,
+            requirement_sink,
+            companion_sink,
+            knowledge_retrieval_sink,
+            knowledge_kb_ids,
+            knowledge_prelude,
+            knowledge_writeback_sink,
+            knowledge_write_bases,
+            knowledge_writeback_staged,
+            companion_skill_sink,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn new_with_search_provider(
+        conversation_id: String,
+        workspace: String,
+        config_extra: NomiResolvedConfig,
+        resume_session: Option<Session>,
+        requirement_sink: Option<Arc<dyn RequirementSink>>,
+        companion_sink: Option<Arc<dyn CompanionMemorySink>>,
+        knowledge_retrieval_sink: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeRetrievalSink>>,
+        knowledge_kb_ids: Vec<nomifun_common::KnowledgeBaseId>,
+        knowledge_prelude: Option<String>,
+        knowledge_writeback_sink: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>>,
+        knowledge_write_bases: Vec<(nomifun_common::KnowledgeBaseId, String)>,
+        knowledge_writeback_staged: bool,
+        companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
+        search_provider: Option<Arc<dyn nomi_agent::SearchProvider>>,
+    ) -> Result<Self, AppError> {
         let runtime = AgentRuntimeState::new(conversation_id.clone(), workspace.clone(), 128);
         let loopback_capability_leases = config_extra.loopback_capability_leases.clone();
         #[cfg(feature = "browser-use")]

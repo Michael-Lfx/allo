@@ -87,6 +87,11 @@ async fn bootstrap_registers_all_expected_tools() {
         .unwrap();
 
     let names = result.engine.tool_names();
+    assert_eq!(
+        names.iter().filter(|name| name.as_str() == "web_search").count(),
+        1,
+        "the model must see exactly one web_search tool"
+    );
 
     for expected in &[
         "Read",

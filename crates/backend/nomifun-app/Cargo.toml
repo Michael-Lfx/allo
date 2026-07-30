@@ -207,6 +207,7 @@ browser-use = [
     "dep:nomi-tools",
     "dep:nomi-types",
 ]
+managed-search = ["nomifun-ai-agent/managed-search"]
 
 [dependencies]
 nomifun-common.workspace = true

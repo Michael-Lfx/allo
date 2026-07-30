@@ -18,6 +18,8 @@ pub mod extraction_scanner;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
+#[cfg(feature = "managed-search")]
+pub mod managed_search;
 pub mod manager;
 pub mod nomi_session_persistence;
 pub(crate) mod persistence;
@@ -81,6 +83,8 @@ pub use knowledge_completer::LiveKnowledgeCompleter;
 pub use knowledge_completer::resolve_default_model;
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;
 pub use knowledge_writeback::LiveKnowledgeWritebackSink;
+#[cfg(feature = "managed-search")]
+pub use managed_search::ManagedSearchHandle;
 pub use conversation_title_completer::{ConversationTitleCompleter, LiveConversationTitleCompleter};
 pub use nomi_session_persistence::{NomiSessionPersistence, NomiSessionResetOutcome};
 pub use terminal_title_completer::LiveTerminalTitleCompleter;
