@@ -65,6 +65,18 @@ enum SearchAttemptError {
     Upstream,
 }
 
+struct SearchDecodeDiagnostics {
+    decode_source: &'static str,
+    structured_fallback: bool,
+    dropped_items: usize,
+    contract_degraded: bool,
+}
+
+struct SearchAttemptOutput {
+    result: SearchResult,
+    diagnostics: Option<SearchDecodeDiagnostics>,
+}
+
 #[async_trait]
 trait ManagedSearchProvider: Send + Sync {
     fn id(&self) -> SearchProviderId;
@@ -74,6 +86,19 @@ trait ManagedSearchProvider: Send + Sync {
         query: &SearchQuery,
         deadline: Instant,
     ) -> Result<SearchResult, SearchAttemptError>;
+
+    async fn search_attempt_with_diagnostics(
+        &self,
+        query: &SearchQuery,
+        deadline: Instant,
+    ) -> Result<SearchAttemptOutput, SearchAttemptError> {
+        self.search_attempt(query, deadline)
+            .await
+            .map(|result| SearchAttemptOutput {
+                result,
+                diagnostics: None,
+            })
+    }
 
     async fn shutdown(&self, _deadline: Instant) {}
 }
@@ -312,7 +337,8 @@ impl ManagedSearchService {
             let request_started = Instant::now();
             let result = match tokio::time::timeout_at(
                 provider_deadline,
-                slot.adapter.search_attempt(query, provider_deadline),
+                slot.adapter
+                    .search_attempt_with_diagnostics(query, provider_deadline),
             )
             .await
             {
@@ -322,7 +348,9 @@ impl ManagedSearchService {
             drop(permit);
 
             match result {
-                Ok(mut result) if !result.hits.is_empty() => {
+                Ok(output) if !output.result.hits.is_empty() => {
+                    let mut result = output.result;
+                    let diagnostics = output.diagnostics;
                     let truncated = normalize_result(&mut result, query.count);
                     let request_elapsed_ms = request_started.elapsed().as_millis();
                     slot.health
@@ -340,11 +368,24 @@ impl ManagedSearchService {
                         result_count = result.hits.len(),
                         fallback_count,
                         truncated,
+                        decode_source = diagnostics
+                            .as_ref()
+                            .map_or("native", |diagnostics| diagnostics.decode_source),
+                        structured_fallback = diagnostics
+                            .as_ref()
+                            .is_some_and(|diagnostics| diagnostics.structured_fallback),
+                        dropped_items = diagnostics
+                            .as_ref()
+                            .map_or(0, |diagnostics| diagnostics.dropped_items),
+                        contract_degraded = diagnostics
+                            .as_ref()
+                            .is_some_and(|diagnostics| diagnostics.contract_degraded),
                         "managed web search succeeded"
                     );
                     return Ok(result);
                 }
-                Ok(_) => {
+                Ok(output) => {
+                    let diagnostics = output.diagnostics;
                     let request_elapsed_ms = request_started.elapsed().as_millis();
                     slot.health
                         .lock()
@@ -359,6 +400,18 @@ impl ManagedSearchService {
                         elapsed_ms = attempt_started.elapsed().as_millis(),
                         queue_wait_ms,
                         request_elapsed_ms,
+                        decode_source = diagnostics
+                            .as_ref()
+                            .map_or("native", |diagnostics| diagnostics.decode_source),
+                        structured_fallback = diagnostics
+                            .as_ref()
+                            .is_some_and(|diagnostics| diagnostics.structured_fallback),
+                        dropped_items = diagnostics
+                            .as_ref()
+                            .map_or(0, |diagnostics| diagnostics.dropped_items),
+                        contract_degraded = diagnostics
+                            .as_ref()
+                            .is_some_and(|diagnostics| diagnostics.contract_degraded),
                         "managed web search returned no results"
                     );
                 }
@@ -710,9 +763,9 @@ mod tests {
         }))
         .unwrap();
         let hits = decoders::decode_parallel(&result, 5).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].snippet, "Body");
-        assert_eq!(hits[0].published_at.as_deref(), Some("2026-07-30"));
+        assert_eq!(hits.hits.len(), 1);
+        assert_eq!(hits.hits[0].snippet, "Body");
+        assert_eq!(hits.hits[0].published_at.as_deref(), Some("2026-07-30"));
     }
 
     #[test]
@@ -722,9 +775,9 @@ mod tests {
         }))
         .unwrap();
         let hits = decoders::decode_you(&result, 5).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "One result");
-        assert_eq!(hits[0].snippet, "Useful summary");
+        assert_eq!(hits.hits.len(), 1);
+        assert_eq!(hits.hits[0].title, "One result");
+        assert_eq!(hits.hits[0].snippet, "Useful summary");
     }
 
     #[test]

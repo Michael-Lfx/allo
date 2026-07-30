@@ -10,7 +10,10 @@ use tokio::time::Instant;
 
 use crate::types::{SearchQuery, SearchResult, WebError};
 
-use super::{ManagedSearchProvider, SearchAttemptError, SearchProviderId};
+use super::{
+    ManagedSearchProvider, SearchAttemptError, SearchAttemptOutput, SearchDecodeDiagnostics,
+    SearchProviderId,
+};
 use super::decoders::{DecodeError, decode_parallel, decode_you};
 
 pub(super) struct RemoteSearchAdapter {
@@ -119,18 +122,26 @@ impl RemoteSearchAdapter {
         &self,
         result: &nomi_mcp::protocol::McpToolResult,
         count: usize,
-    ) -> Result<SearchResult, SearchAttemptError> {
+    ) -> Result<SearchAttemptOutput, SearchAttemptError> {
         if result.is_error {
             return Err(SearchAttemptError::Upstream);
         }
-        let hits = match self.id {
+        let outcome = match self.id {
             SearchProviderId::Parallel => decode_parallel(result, count).map_err(map_decode_error)?,
             SearchProviderId::You => decode_you(result, count).map_err(map_decode_error)?,
             SearchProviderId::DuckDuckGo => unreachable!("DDG has a dedicated adapter"),
         };
-        Ok(SearchResult {
-            provider: self.id.as_str().to_owned(),
-            hits,
+        Ok(SearchAttemptOutput {
+            result: SearchResult {
+                provider: self.id.as_str().to_owned(),
+                hits: outcome.hits,
+            },
+            diagnostics: Some(SearchDecodeDiagnostics {
+                decode_source: outcome.source.as_str(),
+                structured_fallback: outcome.structured_fallback,
+                dropped_items: outcome.dropped_items,
+                contract_degraded: outcome.contract_degraded,
+            }),
         })
     }
 }
@@ -146,6 +157,16 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         query: &SearchQuery,
         deadline: Instant,
     ) -> Result<SearchResult, SearchAttemptError> {
+        self.search_attempt_with_diagnostics(query, deadline)
+            .await
+            .map(|output| output.result)
+    }
+
+    async fn search_attempt_with_diagnostics(
+        &self,
+        query: &SearchQuery,
+        deadline: Instant,
+    ) -> Result<SearchAttemptOutput, SearchAttemptError> {
         let mut session_retried = false;
         let mut tool_rediscovered = false;
         loop {

@@ -5,7 +5,7 @@ use super::super::MAX_SEARCH_COUNT;
 use super::shared::{
     build_hit, evidence_values, normalize_hits, parsed_text_value, string_field, text_blocks,
 };
-use super::{DecodeError, NormalizedSearchHit};
+use super::{DecodedItems, DecodeError, DecodeOutcome, DecodeSource, NormalizedSearchHit};
 
 #[derive(Clone, Copy)]
 enum Section {
@@ -16,18 +16,28 @@ enum Section {
 pub(crate) fn decode_you(
     result: &McpToolResult,
     count: usize,
-) -> Result<Vec<crate::types::SearchHit>, DecodeError> {
+) -> Result<DecodeOutcome, DecodeError> {
     let has_structured_content = result.structured_content.is_some();
     if let Some(value) = result.structured_content.as_ref()
-        && let Ok(hits) = decode_value(value)
+        && let Ok(decoded) = decode_value(value)
     {
-        return Ok(normalize_hits(hits, count.clamp(1, MAX_SEARCH_COUNT as usize)));
+        return outcome(
+            decoded,
+            count,
+            DecodeSource::Structured,
+            false,
+        );
     }
 
     if let Some(value) = parsed_text_value(result)
-        && let Ok(hits) = decode_value(&value)
+        && let Ok(decoded) = decode_value(&value)
     {
-        return Ok(normalize_hits(hits, count.clamp(1, MAX_SEARCH_COUNT as usize)));
+        return outcome(
+            decoded,
+            count,
+            DecodeSource::TextJsonFallback,
+            has_structured_content,
+        );
     }
 
     let text = text_blocks(result).join("\n");
@@ -35,14 +45,44 @@ pub(crate) fn decode_you(
         return if has_structured_content {
             Err(DecodeError::MalformedResponse)
         } else {
-            Ok(Vec::new())
+            Ok(DecodeOutcome {
+                hits: Vec::new(),
+                source: DecodeSource::TextJsonFallback,
+                dropped_items: 0,
+                contract_degraded: false,
+                structured_fallback: false,
+            })
         };
     }
-    let hits = decode_labelled_text(&text)?;
-    Ok(normalize_hits(hits, count.clamp(1, MAX_SEARCH_COUNT as usize)))
+    let decoded = decode_labelled_text(&text)?;
+    outcome(
+        decoded,
+        count,
+        DecodeSource::LabelledTextFallback,
+        has_structured_content,
+    )
 }
 
-fn decode_value(value: &Value) -> Result<Vec<NormalizedSearchHit>, DecodeError> {
+fn outcome(
+    decoded: DecodedItems,
+    count: usize,
+    source: DecodeSource,
+    structured_fallback: bool,
+) -> Result<DecodeOutcome, DecodeError> {
+    if decoded.hits.is_empty() && decoded.dropped_items > 0 {
+        return Err(DecodeError::MalformedResponse);
+    }
+    let dropped_items = decoded.dropped_items;
+    Ok(DecodeOutcome {
+        hits: normalize_hits(decoded.hits, count.clamp(1, MAX_SEARCH_COUNT as usize)),
+        source,
+        dropped_items,
+        contract_degraded: dropped_items > 0,
+        structured_fallback,
+    })
+}
+
+fn decode_value(value: &Value) -> Result<DecodedItems, DecodeError> {
     if let Some(items) = value.as_array() {
         return decode_items(items, 0);
     }
@@ -64,31 +104,51 @@ fn decode_value(value: &Value) -> Result<Vec<NormalizedSearchHit>, DecodeError> 
 fn decode_interleaved(
     web: Option<&Vec<Value>>,
     news: Option<&Vec<Value>>,
-) -> Result<Vec<NormalizedSearchHit>, DecodeError> {
+) -> Result<DecodedItems, DecodeError> {
     let web_len = web.map_or(0, Vec::len);
     let news_len = news.map_or(0, Vec::len);
     let mut hits = Vec::new();
+    let mut dropped_items = 0;
     for index in 0..web_len.max(news_len) {
         if let Some(item) = web.and_then(|items| items.get(index)) {
-            hits.push(decode_item(item, hits.len())?);
+            if let Some(hit) = decode_item(item, index * 2) {
+                hits.push(hit);
+            } else {
+                dropped_items += 1;
+            }
         }
         if let Some(item) = news.and_then(|items| items.get(index)) {
-            hits.push(decode_item(item, hits.len())?);
+            if let Some(hit) = decode_item(item, index * 2 + 1) {
+                hits.push(hit);
+            } else {
+                dropped_items += 1;
+            }
         }
     }
-    Ok(hits)
+    Ok(DecodedItems {
+        hits,
+        dropped_items,
+    })
 }
 
-fn decode_items(items: &[Value], rank_offset: usize) -> Result<Vec<NormalizedSearchHit>, DecodeError> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| decode_item(item, rank_offset + index))
-        .collect()
+fn decode_items(items: &[Value], rank_offset: usize) -> Result<DecodedItems, DecodeError> {
+    let mut hits = Vec::new();
+    let mut dropped_items = 0;
+    for (index, item) in items.iter().enumerate() {
+        if let Some(hit) = decode_item(item, rank_offset + index) {
+            hits.push(hit);
+        } else {
+            dropped_items += 1;
+        }
+    }
+    Ok(DecodedItems {
+        hits,
+        dropped_items,
+    })
 }
 
-fn decode_item(value: &Value, rank: usize) -> Result<NormalizedSearchHit, DecodeError> {
-    let object = value.as_object().ok_or(DecodeError::MalformedResponse)?;
+fn decode_item(value: &Value, rank: usize) -> Option<NormalizedSearchHit> {
+    let object = value.as_object()?;
     let title = string_field(object, &["title", "Title", "name", "Name"]);
     let url = string_field(object, &["url", "URL", "link", "Link"]);
     let evidence = evidence_values(
@@ -113,16 +173,16 @@ fn decode_item(value: &Value, rank: usize) -> Result<NormalizedSearchHit, Decode
         evidence,
         rank,
     )
-    .ok_or(DecodeError::MalformedResponse)
 }
 
-fn decode_labelled_text(text: &str) -> Result<Vec<NormalizedSearchHit>, DecodeError> {
+fn decode_labelled_text(text: &str) -> Result<DecodedItems, DecodeError> {
     let mut section = Section::Web;
     let mut current: Option<LabelledRecord> = None;
     let mut web = Vec::new();
     let mut news = Vec::new();
     let mut recognized = false;
     let mut collecting_snippets = false;
+    let mut dropped_items = 0;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -131,21 +191,21 @@ fn decode_labelled_text(text: &str) -> Result<Vec<NormalizedSearchHit>, DecodeEr
         }
         let uppercase = trimmed.to_ascii_uppercase();
         if uppercase.contains("WEB RESULTS") {
-            finish_record(&mut current, &mut web)?;
+            dropped_items += finish_record(&mut current, &mut web);
             section = Section::Web;
             collecting_snippets = false;
             recognized = true;
             continue;
         }
         if uppercase.contains("NEWS RESULTS") {
-            finish_record(&mut current, &mut news)?;
+            dropped_items += finish_record(&mut current, &mut news);
             section = Section::News;
             collecting_snippets = false;
             recognized = true;
             continue;
         }
         if let Some(value) = labelled_value(trimmed, "Title") {
-            finish_record_for_section(&mut current, section, &mut web, &mut news)?;
+            dropped_items += finish_record_for_section(&mut current, section, &mut web, &mut news);
             current = Some(LabelledRecord {
                 title: value.to_owned(),
                 ..LabelledRecord::default()
@@ -184,7 +244,7 @@ fn decode_labelled_text(text: &str) -> Result<Vec<NormalizedSearchHit>, DecodeEr
             }
         }
     }
-    finish_record_for_section(&mut current, section, &mut web, &mut news)?;
+    dropped_items += finish_record_for_section(&mut current, section, &mut web, &mut news);
     if !recognized || web.is_empty() && news.is_empty() {
         return Err(DecodeError::MalformedResponse);
     }
@@ -198,7 +258,10 @@ fn decode_labelled_text(text: &str) -> Result<Vec<NormalizedSearchHit>, DecodeEr
             interleaved.push(hit.clone());
         }
     }
-    Ok(interleaved)
+    Ok(DecodedItems {
+        hits: interleaved,
+        dropped_items,
+    })
 }
 
 #[derive(Default)]
@@ -212,10 +275,10 @@ struct LabelledRecord {
 fn finish_record(
     current: &mut Option<LabelledRecord>,
     target: &mut Vec<NormalizedSearchHit>,
-) -> Result<(), DecodeError> {
+) -> usize {
     if let Some(record) = current.take() {
         if record.title.trim().is_empty() && record.url.is_none() {
-            return Ok(());
+            return 0;
         }
         let hit = build_hit(
             Some(&record.title),
@@ -223,11 +286,16 @@ fn finish_record(
             record.published.as_deref(),
             record.evidence,
             target.len(),
-        )
-        .ok_or(DecodeError::MalformedResponse)?;
-        target.push(hit);
+        );
+        if let Some(hit) = hit {
+            target.push(hit);
+            0
+        } else {
+            1
+        }
+    } else {
+        0
     }
-    Ok(())
 }
 
 fn finish_record_for_section(
@@ -235,7 +303,7 @@ fn finish_record_for_section(
     section: Section,
     web: &mut Vec<NormalizedSearchHit>,
     news: &mut Vec<NormalizedSearchHit>,
-) -> Result<(), DecodeError> {
+) -> usize {
     match section {
         Section::Web => finish_record(current, web),
         Section::News => finish_record(current, news),
