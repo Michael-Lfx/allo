@@ -3,7 +3,7 @@
 This file records explicit, developer-run compatibility probes. It is not a
 claim of universal availability and is never refreshed by the application.
 
-## 2026-07-29 initial probe
+## 2026-07-29 initial probe (historical)
 
 Environment:
 
@@ -17,7 +17,7 @@ Environment:
 | Provider | Endpoint | Anonymous call | MCP era/version | Search tool | Result |
 | --- | --- | --- | --- | --- | --- |
 | Parallel | `https://search.parallel.ai/mcp` | Passed: 3 sequential + 2 concurrent calls | Legacy initialization; Modern probe returned HTTP 400 / JSON-RPC `-32600` | `web_search`; required `objective`, `search_queries` | Admitted |
-| Exa | `https://mcp.exa.ai/mcp?tools=web_search_exa` | Passed anonymously; a repeated two-way concurrency probe also produced one HTTP 429 | Legacy initialization; Modern probe returned HTTP 400 / JSON-RPC `-32000` | `web_search_exa`; required `query` | Admitted with per-provider concurrency and 429 cooldown, pending owner direct-network check |
+| Exa | `https://mcp.exa.ai/mcp?tools=web_search_exa` | Passed anonymously; a repeated two-way concurrency probe also produced one HTTP 429 | Historical MCP probe | `web_search_exa`; required `query` | Historical evidence only; removed from the production chain |
 | DuckDuckGo | Existing HTML endpoint | Existing behavior | Not MCP | Built-in adapter | Baseline fallback |
 
 Observed response profile:
@@ -33,11 +33,13 @@ Observed response profile:
   result format with one URL line for the one-result probe. The
   `tools=web_search_exa` endpoint returned exactly one tool and no unexpected
   tools.
-- Both providers accepted unauthenticated calls without an account, OAuth, an
-  API key, or provider-specific headers.
-- Both providers require the legacy initialization path at the time of this
-  probe. Managed Search therefore implements an isolated minimal legacy remote
-  peer. The existing user `McpManager` remains unchanged.
+- Parallel and Exa accepted unauthenticated calls without an account, OAuth, an
+  API key, or provider-specific headers in this historical probe. Exa's
+  repeated rate-limit observation is why it is not a production dependency.
+- The historical probe used the compatibility path available at that time.
+  The current managed peer is version-gated to negotiated `2025-11-25` and
+  supports both sessionless and stateful peers. The existing user `McpManager`
+  remains unchanged.
 - 401, 403, and 5xx responses were not deliberately induced against the public
   services. A repeated Exa concurrency probe naturally returned one HTTP 429;
   all runtime classifications are also covered by offline tests.
@@ -50,7 +52,31 @@ Admission rules:
 
 - Parallel is omitted if an unauthenticated real search call fails for a
   provider-contract reason.
-- Exa is omitted if it requires an account, OAuth, or an API key.
+- Exa is not admitted to the current production chain even though the
+  historical probe was keyless; it remains only as documented historical
+  evidence.
 - Network reachability is recorded separately from protocol/authentication
   compatibility; per-device runtime health handles later reachability changes.
-- Only protocol eras demonstrated by an admitted provider are implemented.
+- Only protocol version `2025-11-25` is accepted by the managed peer.
+
+## 2026-07-30 You.com replacement admission
+
+The current fixed free-profile endpoint is:
+
+```text
+https://api.you.com/mcp?profile=free
+```
+
+| Provider | Endpoint | Anonymous call | MCP version/session | Search tool | Production decision |
+| --- | --- | --- | --- | --- | --- |
+| You.com Free | `https://api.you.com/mcp?profile=free` | Keyless admission probe passed; direct-network owner acceptance remains separate | Negotiated `2025-11-25`; sessionless in the recorded probe | Exactly one `you-search`; only `query` and `count` are sent | Admitted between Parallel and DuckDuckGo |
+
+The observed structured result separates `results.web` and `results.news`;
+the adapter interleaves them `W0,N0,W1,N1...`. The decoder also accepts the
+verified JSON-in-text and labelled text compatibility forms. It retains only
+validated HTTP(S) URLs, dates, and bounded evidence fragments. MCP Fetch,
+Contents, livecrawl, and all other You.com tools remain outside the route.
+
+The application does not persist the probe query, response body, session ID,
+search UUID, or full URL list. Proxy-off mainland reachability remains an
+owner-operated product acceptance step.

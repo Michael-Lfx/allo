@@ -144,8 +144,8 @@ Provider for the process. Invalid requests do not poison health.
 4. `feat(mcp): preserve output schemas and structured tool content` — additive
    MCP result fields and offline deserialization tests.
 5. `refactor(web): add typed managed search decoders` — Parallel and You
-   decoders, normalization, fixtures, and bounded model formatting. Exa keeps
-   the old parser temporarily so the commit remains independently buildable.
+   decoders, normalization, fixtures, and bounded model formatting. Exa kept
+   its legacy parser only until the final replacement commit.
 6. `feat(web): replace Exa with You.com in managed search` — You route, health
    policy, one-shot cache recovery, Exa production removal, and final docs.
 

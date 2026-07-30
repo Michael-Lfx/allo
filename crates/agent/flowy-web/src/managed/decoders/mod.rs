@@ -14,7 +14,7 @@ pub(crate) enum DecodeError {
 }
 
 pub(crate) use parallel::decode_parallel;
-pub(crate) use shared::{NormalizedSearchHit, text_blocks};
+pub(crate) use shared::NormalizedSearchHit;
 pub(crate) use you::decode_you;
 
 #[cfg(test)]
