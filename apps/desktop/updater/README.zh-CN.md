@@ -1,4 +1,4 @@
-# Flowy 桌面端自动更新说明
+﻿# Flowy 桌面端自动更新说明
 
 应用内 OTA 的操作真源是根目录 [`BUILD_RELEASE.zh-CN.md`](../../../BUILD_RELEASE.zh-CN.md)
 （ModelScope 渠道）。本文只补充机制与本地命令；若与 `BUILD_RELEASE` 冲突，以
@@ -23,7 +23,7 @@
 https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
 ```
 
-公钥 keyID：`8600581EC8FDE447`（内嵌于 `tauri.conf.json`）。
+公钥 keyID：`E0F1394F8E92CE41`（内嵌于 `tauri.conf.json`）。
 
 ## 密钥区别
 

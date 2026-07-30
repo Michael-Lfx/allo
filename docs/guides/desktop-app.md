@@ -1,4 +1,4 @@
-# Running Flowy as a Desktop App
+﻿# Running Flowy as a Desktop App
 
 The desktop app (`nomifun-desktop`) is a [Tauri](https://tauri.app/) shell that links the Rust backend (`nomifun-app`) **into the same process**. There is no spawned backend binary, no Electron, no bundled `nomicore`. The shell starts the backend as an async task on a free `127.0.0.1` port, then loads the bundled SPA (`ui/dist`) into a WebView and points it at `http://127.0.0.1:<port>/api`.
 
@@ -126,7 +126,7 @@ The Tauri updater plugin (`tauri-plugin-updater`) is wired in; the renderer can
 `invoke('check_for_updates')` (new version string, or `null` if current).
 
 - **OTA source of truth**: `apps/desktop/tauri.conf.json` points at ModelScope
-  `allo/channels/alpha/latest.json` (pubkey keyID `8600581EC8FDE447`).
+  `allo/channels/alpha/latest.json` (pubkey keyID `E0F1394F8E92CE41`).
 - Release flow, `Flowy_` artifact naming, multi-platform merge, and upload:
   root [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md).
 - `bun run build:updater` / per-platform

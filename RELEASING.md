@@ -1,4 +1,4 @@
-# Releasing Flowy
+﻿# Releasing Flowy
 
 中文发版手册见 `RELEASING.zh-CN.md`.
 
@@ -50,7 +50,7 @@ reliable desktop installers — build each platform on its own machine.
 The updater private key (`apps/desktop/signing/nomifun-updater.key`) is gitignored
 and lives only in your key store. On a fresh build machine (e.g. a Windows box that
 never generated it) copy it there before building; it must match the `pubkey`
-embedded in `tauri.conf.json` (keyID `8600581EC8FDE447`), or installed clients
+embedded in `tauri.conf.json` (keyID `E0F1394F8E92CE41`), or installed clients
 silently reject the update. The `createUpdaterArtifacts` flag is supplied as a
 committed overlay file `apps/desktop/tauri.updater.conf.json` passed with
 `--config <path>` (not inline JSON — Windows PowerShell 5.1 mangles inline

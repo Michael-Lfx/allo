@@ -1,19 +1,11 @@
 {
   "version": "0.3.3",
-  "notes": "## NomiFun v0.3.3\n\n- 重构 v3 ID 与数据库启动路径，精简早期 v3 数据集升级与恢复逻辑。\n- 修复微信 inbound 配对流程，并完善微信通道配置状态处理。\n- 调整技能市场命令页脚显示细节。\n\n## Windows 包\n\n- 首发 Windows x64 安装包及 Tauri 自动更新签名资产。\n- 安装包未包含 Authenticode 签名，手动下载时可能出现 SmartScreen 或未知发布者提示；自动更新仍使用 Tauri 签名校验。",
-  "pub_date": "2026-07-28T11:23:28.640Z",
+  "notes": "## Flowy v0.3.3\n\n- 重构 v3 ID 与数据库启动路径，精简早期 v3 数据集升级与恢复逻辑。\n- 修复微信 inbound 配对流程，并完善微信通道配置状态处理。\n- 调整技能市场命令页脚显示细节。\n\n## Windows 包\n\n- 首发 Windows x64 安装包及 Tauri 自动更新签名资产。\n- 安装包未包含 Authenticode 签名，手动下载时可能出现 SmartScreen 或未知发布者提示；自动更新仍使用 Tauri 签名校验。",
+  "pub_date": "2026-07-29T17:36:54.718Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxOCs3cVpYd01rWGVMVGphN2hVN1Z4VjdBSWMrOE9KYlovSGZpL1ZQd2lrNGtwREVIVTIwbU9oKzVNUWdVT3kxU3hqSjJVWVQxeWl0alZUY2Jnd2ZvaFFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjM2Mjk1CWZpbGU6Tm9taUZ1bl8wLjMuM194NjQtc2V0dXAuZXhlClFqaGp0T2l5TjIyV0VJWkptcXIzU0hUMGpMNzQrdjZramg0NXN4QVNWbEl3ZEQ3Z3FoVGN4YXQxQVVVb3ZBVWw0bGE2ZVV5Nk9CbjRYMEUzbTJYbEJ3PT0K",
-      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.3.3/NomiFun_0.3.3_x64-setup.exe"
-    },
-    "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxODdob2kxeFBnU2xPSVZveWkvd3c5cUVsdXRjRElQKzcxdGNkSWhYNW1uSmN3QTN6dHJpejVEUFRlMmZCZ0o2Z2VVRGlPZUFxbnlpVHFsT2ZvZG8yNWc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjM3MTQxCWZpbGU6Tm9taUZ1bi5hcHAudGFyLmd6CnFBUXpWMkY2STczT3lTanZFZER1WHgrdGJGb1VUUWIxNEZGNmhYTjNBKzA1aXFMMXVzcUQ0aVY3clJ1ek1MUlFCdE5vSVgwVkFSRUFyMWFKWXh5UENRPT0K",
-      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.3.3/NomiFun.app.tar.gz"
-    },
-    "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSU2VhcGdMaWVxODdob2kxeFBnU2xPSVZveWkvd3c5cUVsdXRjRElQKzcxdGNkSWhYNW1uSmN3QTN6dHJpejVEUFRlMmZCZ0o2Z2VVRGlPZUFxbnlpVHFsT2ZvZG8yNWc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjM3MTQxCWZpbGU6Tm9taUZ1bi5hcHAudGFyLmd6CnFBUXpWMkY2STczT3lTanZFZER1WHgrdGJGb1VUUWIxNEZGNmhYTjNBKzA1aXFMMXVzcUQ0aVY3clJ1ek1MUlFCdE5vSVgwVkFSRUFyMWFKWXh5UENRPT0K",
-      "url": "https://github.com/nomifun/nomifun-tauri/releases/download/v0.3.3/NomiFun.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSQnpwS09Uem54NEV0Q2E1WTgvT1JaSkNmcjhFMlYzWlBTNnhFb0Znck4wckZrdW5ManBlSlJUQyttdEFzT1dDdUdhNjZORGNVWGJJd1lPZzVyMU5SeVJEQm0yc3QwS3dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MzQ2NTI0CWZpbGU6Rmxvd3lfMC4zLjNfeDY0LXNldHVwLmV4ZQpjdVVnQVZ3d2JIeUZ0cUZIVmdUMG9VNE9aVEJLNndvb2hWSXRPQUdiRVduN1ltdFZpUjI2cmpmMmhsZkZBQ0kwSEsycFVxQkYzV3dUNkU2aFRMZDdCUT09Cg==",
+      "url": "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/v0.3.3/Flowy_0.3.3_x64-setup.exe"
     }
   }
 }

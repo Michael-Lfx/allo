@@ -533,10 +533,10 @@
   "sessionMetrics": {
     "tab": "Metrics",
     "title": "Session metrics",
-    "subtitle": "Based on usage data reported by the Nomi engine",
+    "subtitle": "Based on usage data reported by the Flowy engine",
     "notice": "Due to limitations in data collection, these metrics are for reference only and should not be treated as conclusive.",
     "emptyTitle": "No metrics yet",
-    "emptyDesc": "Finish one Nomi response to show duration, tokens, context, and cache data.",
+    "emptyDesc": "Finish one Flowy response to show duration, tokens, context, and cache data.",
     "elapsed": "This response",
     "elapsedCaption": "Latest completed duration",
     "sessionSpan": "Session span",

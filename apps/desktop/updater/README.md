@@ -1,4 +1,4 @@
-# Flowy desktop auto-update
+﻿# Flowy desktop auto-update
 
 Operational source of truth for in-app OTA is root
 [`BUILD_RELEASE.zh-CN.md`](../../../BUILD_RELEASE.zh-CN.md) (ModelScope
@@ -24,7 +24,7 @@ Endpoint:
 https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
 ```
 
-Pubkey keyID: `8600581EC8FDE447`.
+Pubkey keyID: `E0F1394F8E92CE41`.
 
 ## Naming (enforced)
 

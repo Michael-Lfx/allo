@@ -1982,7 +1982,7 @@ fn main() -> std::process::ExitCode {
                             coordinator.mark_no_cleanup_needed();
                             coordinator.mark_backend_failed_verified();
                             let message = format!(
-                                "NomiFun could not resolve its embedded WebUI assets: {error:#}"
+                                "Flowy could not resolve its embedded WebUI assets: {error:#}"
                             );
                             tracing::error!(%error, "failed to resolve embedded desktop WebUI assets");
                             schedule_fatal_dialog(app_handle, coordinator, message);
@@ -2006,7 +2006,7 @@ fn main() -> std::process::ExitCode {
                         coordinator.mark_no_cleanup_needed();
                         coordinator.mark_backend_failed_verified();
                         let message =
-                            format!("NomiFun could not resolve its bundled WebUI assets: {error:#}");
+                            format!("Flowy could not resolve its bundled WebUI assets: {error:#}");
                         tracing::error!(%error, "failed to resolve desktop WebUI assets");
                         schedule_fatal_dialog(app_handle, coordinator, message);
                         return Ok(());
@@ -2128,7 +2128,7 @@ fn main() -> std::process::ExitCode {
                                             setup_server,
                                             setup_coordinator_for_failure,
                                             format!(
-                                                "NomiFun could not initialize its desktop window: {error:#}"
+                                                "Flowy could not initialize its desktop window: {error:#}"
                                             ),
                                         );
                                     }
@@ -2138,7 +2138,7 @@ fn main() -> std::process::ExitCode {
                                         server.clone(),
                                         supervisor_coordinator.clone(),
                                         format!(
-                                            "NomiFun could not dispatch desktop window setup: {error}"
+                                            "Flowy could not dispatch desktop window setup: {error}"
                                         ),
                                     );
                                 }
@@ -2254,7 +2254,7 @@ fn main() -> std::process::ExitCode {
                 schedule_fatal_dialog(
                     app_handle,
                     coordinator,
-                    format!("NomiFun could not start its embedded backend thread: {error}"),
+                    format!("Flowy could not start its embedded backend thread: {error}"),
                 );
             }
             Ok(())

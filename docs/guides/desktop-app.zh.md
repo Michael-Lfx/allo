@@ -1,4 +1,4 @@
-# 以桌面应用方式运行 Flowy
+﻿# 以桌面应用方式运行 Flowy
 
 桌面应用 (`nomifun-desktop`) 是一个 [Tauri](https://tauri.app/) 外壳，**在同一进程内**链接 Rust 后端 (`nomifun-app`)。这里没有派生的后端二进制，没有 Electron，也没有捆绑的 `nomicore`。外壳在一个空闲的 `127.0.0.1` 端口上将后端启动为异步任务，然后将打包好的 SPA (`ui/dist`) 加载进 WebView，并使其指向 `http://127.0.0.1:<port>/api`。
 
@@ -122,7 +122,7 @@ Tauri 更新器插件 (`tauri-plugin-updater`) 已接入；渲染进程可
 `invoke('check_for_updates')`（有新版本返回版本字符串，否则 `null`）。
 
 - **OTA 真源**：`apps/desktop/tauri.conf.json` 的 endpoint 指向 ModelScope
-  `allo/channels/alpha/latest.json`（pubkey keyID `8600581EC8FDE447`）。
+  `allo/channels/alpha/latest.json`（pubkey keyID `E0F1394F8E92CE41`）。
 - 发版、产物命名（`Flowy_` 前缀）、多平台合并与上传见根目录
   [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)。
 - `bun run build:updater` / 各平台 `build:* --config apps/desktop/tauri.updater.conf.json`

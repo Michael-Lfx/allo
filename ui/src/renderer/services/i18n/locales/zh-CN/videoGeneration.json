@@ -157,7 +157,7 @@
     "exportBusy": "规划或渲染进行中，请完成后再导出。",
     "exportOk": "工程已导出",
     "exportFailed": "导出失败",
-    "exportFilter": "Nomi 视频工程"
+    "exportFilter": "Flowy 视频工程"
   },
   "workspace": {
     "back": "返回列表",
@@ -194,7 +194,6 @@
       "ideaPlaceholder": "描述你的灵感或故事想法…",
       "scriptPlaceholder": "粘贴完整剧本…",
       "novelPlaceholder": "粘贴小说文本…",
-      "durationLabel": "目标成片时长（秒）",
       "durationHint": "每个镜头视频至少 5 秒；规划会据此控制镜头数量。",
       "requirementLabel": "额外要求（可选）",
       "requirementPlaceholder": "时长、节奏、受众等",

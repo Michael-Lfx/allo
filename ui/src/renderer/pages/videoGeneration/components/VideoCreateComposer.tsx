@@ -170,11 +170,11 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
   const placeholder =
     draft.workflow === 'script2video'
       ? t('videoGeneration.create.composer.scriptPlaceholder', {
-          defaultValue: '粘贴剧本，Nomi 会自动拆成可编辑镜头…',
+          defaultValue: '粘贴剧本，Flowy 会自动拆成可编辑镜头…',
         })
       : draft.workflow === 'novel2video'
         ? t('videoGeneration.create.composer.novelPlaceholder', {
-            defaultValue: '粘贴小说片段，Nomi 会提炼剧情并设计分镜…',
+            defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
           })
         : t('videoGeneration.create.composer.ideaPlaceholder', {
             defaultValue: '描述你想看到的故事、情绪或产品画面…',

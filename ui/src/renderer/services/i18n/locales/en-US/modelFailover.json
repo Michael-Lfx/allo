@@ -1,6 +1,6 @@
 {
   "title": "Model failover queue",
-  "desc": "When a provider faults (rate-limit, 5xx, network) before any reply is produced, the conversation automatically switches to the next usable candidate in this queue and keeps going. Applies to NOMI sessions only.",
+  "desc": "When a provider faults (rate-limit, 5xx, network) before any reply is produced, the conversation automatically switches to the next usable candidate in this queue and keeps going. Applies to Flowy sessions only.",
   "enable": "Enable failover queue",
   "queue": "Candidates (in order)",
   "queueHint": "Tried head-to-tail; the first enabled, healthy candidate that isn't the failed one is used.",

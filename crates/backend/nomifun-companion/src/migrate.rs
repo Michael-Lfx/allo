@@ -1,7 +1,7 @@
 //! One-shot migration from the legacy single-companion layout (`companion/nomi/`) to the
 //! multi-companion split: shared artifacts (db + events + shared config) move to
 //! `companion/shared/`, and the old identity/persona/window settings become the
-//! first companion profile — named "Nomi" — under `companion/companions/{id}/`.
+//! first companion profile — named "Flowy" — under `companion/companions/{id}/`.
 //!
 //! Runs at boot, before the store/registry open. Idempotency is keyed on two
 //! things only: no legacy dir, or a `.migrated` marker in the legacy dir. An
@@ -19,7 +19,7 @@
 //!   committed `shared` db and writes new data. The re-run therefore stages
 //!   per artifact preferring `shared` over the legacy originals (a committed
 //!   `shared` is always ⊇ legacy), and adopts the previously minted first
-//!   companion ("Nomi") instead of generating a fresh id (which would orphan its
+//!   companion ("Flowy") instead of generating a fresh id (which would orphan its
 //!   per-companion rows and leave a ghost duplicate companion).
 //! * **Window 2 — never delete the only live copy.** Commit moves a
 //!   half-built `shared` aside (`companion/.migrating-displaced-<ts>`) instead of
@@ -143,7 +143,7 @@ const DISPLACED_DIR_PREFIX: &str = ".migrating-displaced-";
 /// source dirs.
 const DB_FILES: [&str; 3] = ["memory.db", "memory.db-wal", "memory.db-shm"];
 
-/// One-shot legacy migration: companion/nomi -> companion/shared + first companion "Nomi".
+/// One-shot legacy migration: companion/nomi -> companion/shared + first companion "Flowy".
 /// Idempotent and crash-safe via staging:
 ///
 /// 1. Gate: only `legacy` missing or the `.migrated` marker skip the run.
@@ -242,7 +242,7 @@ pub fn migrate_legacy_layout(data_dir: &Path) -> std::io::Result<Option<String>>
         // companion. A freshly minted first companion stays None and is numbered by the
         // boot backfill right after the registry scan.
         seq: CompanionProfileConfig::load(&companions.join(&companion_id)).seq,
-        name: "Nomi".into(),
+        name: "Flowy".into(),
         character: old.appearance.character.clone(),
         persona: old.persona.clone(),
         model: old.model.clone(),
@@ -338,8 +338,8 @@ fn salvage_unique_staging_copies(staging_shared: &Path, shared: &Path, legacy: &
 }
 
 /// Window 1 id adoption: the first companion a previous (marker-less) run already
-/// committed under `companions/`. Recognized by its migration-given name "Nomi"
-/// with a profile that passes the registry's sanity rule (non-empty id
+/// committed under `companions/`. Recognized by its migration-given name "Flowy"
+/// (or legacy "Nomi") with a profile that passes the registry's sanity rule (non-empty id
 /// matching its directory). Oldest wins should several qualify.
 fn existing_first_companion_id(companions: &Path) -> Option<String> {
     let entries = std::fs::read_dir(companions).ok()?;
@@ -350,7 +350,8 @@ fn existing_first_companion_id(companions: &Path) -> Option<String> {
             continue;
         }
         let profile = CompanionProfileConfig::load(&path);
-        if profile.id.is_empty() || profile.id != entry.file_name().to_string_lossy() || profile.name != "Nomi" {
+        let is_default_brand = profile.name == "Flowy" || profile.name == "Nomi";
+        if profile.id.is_empty() || profile.id != entry.file_name().to_string_lossy() || !is_default_brand {
             continue;
         }
         if found.as_ref().is_none_or(|f| profile.created_at < f.created_at) {
@@ -477,13 +478,13 @@ mod tests {
         assert_eq!(shared_cfg.learn.model.model, "claude-fable-5");
         assert_eq!(shared_cfg.default_companion_id, companion_id);
 
-        // First companion profile: named Nomi, everything else from the old config.
+        // First companion profile: named Flowy, everything else from the old config.
         let profile = CompanionProfileConfig::load(&companions.join(&companion_id));
         assert_eq!(profile.id, companion_id);
         // A freshly minted first companion carries no number yet — the boot
         // backfill right after the registry scan assigns it.
         assert_eq!(profile.seq, None);
-        assert_eq!(profile.name, "Nomi");
+        assert_eq!(profile.name, "Flowy");
         assert_eq!(profile.character, "ink");
         assert_eq!(profile.persona.preset, "calm");
         assert_eq!(profile.persona.custom, "多用颜文字");
@@ -661,7 +662,7 @@ mod tests {
         assert_eq!(second_id, first_id);
         let companion_dirs: Vec<_> = std::fs::read_dir(&companions).unwrap().flatten().collect();
         assert_eq!(companion_dirs.len(), 1);
-        assert_eq!(CompanionProfileConfig::load(&companions.join(&first_id)).name, "Nomi");
+        assert_eq!(CompanionProfileConfig::load(&companions.join(&first_id)).name, "Flowy");
         // The adopted companion keeps its short number, and the registry's
         // watermark state file is carried into the rebuilt shared dir
         // instead of being reset.

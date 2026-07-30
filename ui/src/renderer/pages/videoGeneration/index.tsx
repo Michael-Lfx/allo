@@ -197,7 +197,7 @@ const VideoGenerationListPage: React.FC = () => {
       properties: ['openFile'],
       filters: [
         {
-          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Nomi 视频工程' }),
+          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Flowy 视频工程' }),
           extensions: ['nomivimax'],
         },
       ],
@@ -309,7 +309,7 @@ const VideoGenerationListPage: React.FC = () => {
               </div>
               <div className='mt-2px text-12px text-[var(--color-text-3)]'>
                 {t('videoGeneration.list.empty.desc', {
-                  defaultValue: '写下一个画面或故事，Nomi 会先给你一版可编辑分镜。',
+                  defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
                 })}
               </div>
             </div>

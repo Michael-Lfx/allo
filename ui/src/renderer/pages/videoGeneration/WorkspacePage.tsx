@@ -561,7 +561,7 @@ const WorkspacePage: React.FC = () => {
       defaultPath: `${safeTitle}.nomivimax`,
       filters: [
         {
-          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Nomi 视频工程' }),
+          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Flowy 视频工程' }),
           extensions: ['nomivimax'],
         },
       ],
@@ -824,7 +824,7 @@ const WorkspacePage: React.FC = () => {
             <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
               <div>
                 <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Nomi' })}
+                  {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Flowy' })}
                 </h2>
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.briefHint', {

@@ -22,7 +22,7 @@ notes at a high level rather than a complete historical log.
   routing, and notification synchronization across reconnects and retries.
 - Added a Skill Market tab to the independent Skills capability, with bounded
   ClawHub and SkillHub ranking sync, tag/search filtering, localized skill
-  descriptions, and a reviewed installation draft handoff to Nomi.
+  descriptions, and a reviewed installation draft handoff to Flowy.
 - Reduced bundled built-in skills and made OfficeCLI opt-in to keep default
   installations smaller and avoid injecting unused capabilities.
 - **Breaking upgrade:** upgrading from an earlier data contract does not migrate

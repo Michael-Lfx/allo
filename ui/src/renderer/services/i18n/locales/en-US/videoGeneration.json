@@ -157,7 +157,7 @@
     "exportBusy": "Finish planning or rendering before exporting.",
     "exportOk": "Project exported",
     "exportFailed": "Export failed",
-    "exportFilter": "Nomi video project"
+    "exportFilter": "Flowy video project"
   },
   "workspace": {
     "back": "Back to list",
@@ -186,7 +186,7 @@
     "progressIdle": "Not started yet. Progress appears after you submit a plan.",
     "artifactsEmpty": "Artifacts will appear here after planning.",
     "source": {
-      "durationLabel": "Target video duration (seconds)",
+      "durationLabel": "Target duration (seconds)",
       "title": "Source input",
       "ideaLabel": "Idea",
       "scriptLabel": "Script",
@@ -194,7 +194,6 @@
       "ideaPlaceholder": "Describe your idea or story…",
       "scriptPlaceholder": "Paste the full script…",
       "novelPlaceholder": "Paste novel text…",
-      "durationLabel": "Target duration (seconds)",
       "durationHint": "Each shot clip is at least 5 seconds; planning uses this to control shot count.",
       "requirementLabel": "Extra requirements (optional)",
       "requirementPlaceholder": "Duration, pacing, audience…",

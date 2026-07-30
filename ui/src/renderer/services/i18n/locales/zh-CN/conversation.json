@@ -123,7 +123,7 @@
     "presetPresets": "设定"
   },
   "noAgentsAvailable": "没有可用的 Agent",
-    "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
+  "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
   "createFailed": "创建会话失败",
   "pending": {
     "creating": "正在准备任务…",
@@ -533,10 +533,10 @@
   "sessionMetrics": {
     "tab": "指标",
     "title": "会话指标",
-    "subtitle": "基于 Nomi 引擎已上报的使用数据",
+    "subtitle": "基于 Flowy 引擎已上报的使用数据",
     "notice": "因数据采集手段问题，数据仅供参考，不可作为定论",
     "emptyTitle": "暂无指标",
-    "emptyDesc": "完成一次 Nomi 响应后会显示耗时、token、上下文和缓存数据。",
+    "emptyDesc": "完成一次 Flowy 响应后会显示耗时、token、上下文和缓存数据。",
     "elapsed": "本次响应",
     "elapsedCaption": "最近一次完成耗时",
     "sessionSpan": "会话跨度",

@@ -357,7 +357,7 @@ if (existsSync(out)) {
     console.warn(`  ! 既有 ${rel(out)} 解析失败，将重新生成。`);
   }
 }
-manifest.notes = notes || readChangelogNotes(version) || `NomiFun v${version}`;
+manifest.notes = notes || readChangelogNotes(version) || `Flowy v${version}`;
 for (const key of foundKeys) {
   manifest.platforms[key] = { signature: collected[key].signature, url: collected[key].url };
 }
