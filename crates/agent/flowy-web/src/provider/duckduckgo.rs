@@ -133,6 +133,7 @@ pub(crate) fn parse_ddg_html(html: &str, limit: u32) -> Vec<SearchHit> {
                 title,
                 url,
                 snippet,
+                published_at: None,
                 rank: (hits.len() as u32) + 1,
             });
         }

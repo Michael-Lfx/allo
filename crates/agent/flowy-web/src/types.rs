@@ -22,6 +22,8 @@ pub struct SearchHit {
     pub title: String,
     pub url: String,
     pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
     pub rank: u32,
 }
 

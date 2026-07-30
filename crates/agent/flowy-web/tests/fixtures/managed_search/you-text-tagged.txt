@@ -1,0 +1,15 @@
+WEB RESULTS
+Title: Tagged web fixture
+URL: https://example.com/tagged
+Description: A description evidence fragment.
+Published: 2026-07-27
+Snippets:
+- A first tagged excerpt.
+- A second tagged excerpt.
+
+NEWS RESULTS
+Title: Tagged news fixture
+URL: https://example.com/tagged-news
+Published: 2026-07-26T08:30:00Z
+Snippets:
+- A news excerpt.

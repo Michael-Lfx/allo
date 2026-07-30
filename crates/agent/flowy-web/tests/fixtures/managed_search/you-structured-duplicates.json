@@ -1,0 +1,9 @@
+{
+  "results": {
+    "web": [
+      {"title": "First title", "url": "https://example.com/item#one", "snippets": ["same evidence", "first-only"]},
+      {"title": "Duplicate title must not replace", "url": "https://EXAMPLE.com:443/item", "published": "2026-07-30", "snippets": ["same evidence", "second-only"]}
+    ],
+    "news": []
+  }
+}
