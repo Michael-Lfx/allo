@@ -228,17 +228,17 @@ impl ManagedSearchService {
             ));
         }
         adapters.push((
-            Arc::new(DuckDuckGoAdapter::new()) as Arc<dyn ManagedSearchProvider>,
+            Arc::new(DuckDuckGoAdapter::try_new()?) as Arc<dyn ManagedSearchProvider>,
             Duration::from_secs(4),
         ));
         Ok(Self::from_adapters(adapters))
     }
 
-    pub fn ddg_only() -> Self {
-        Self::from_adapters(vec![(
-            Arc::new(DuckDuckGoAdapter::new()) as Arc<dyn ManagedSearchProvider>,
+    pub fn ddg_only() -> Result<Self, WebError> {
+        Ok(Self::from_adapters(vec![(
+            Arc::new(DuckDuckGoAdapter::try_new()?) as Arc<dyn ManagedSearchProvider>,
             Duration::from_secs(4),
-        )])
+        )]))
     }
 
     fn from_adapters(
@@ -452,10 +452,10 @@ struct DuckDuckGoAdapter {
 }
 
 impl DuckDuckGoAdapter {
-    fn new() -> Self {
-        Self {
-            provider: DuckDuckGoSearchProvider::new(),
-        }
+    fn try_new() -> Result<Self, WebError> {
+        Ok(Self {
+            provider: DuckDuckGoSearchProvider::try_new()?,
+        })
     }
 }
 

@@ -119,9 +119,9 @@ pub struct AgentFactoryDeps {
     /// compares the persisted Conversation owner id against this immutable id
     /// before injecting host-wide MCP bridges or native singleton-domain tools.
     pub authoritative_user_id: Arc<str>,
-    /// Optional process-shared search provider supplied by the desktop host.
-    /// It is an in-process dependency only and never becomes user MCP config.
-    pub search_provider: Option<Arc<dyn nomi_agent::SearchProvider>>,
+    /// Explicit host-owned search composition. It is an in-process dependency
+    /// only and never becomes user MCP configuration.
+    pub search_provider: nomi_agent::SearchProviderBinding,
     pub skill_manager: Arc<AcpSkillManager>,
     pub remote_agent_repo: Arc<dyn IRemoteAgentRepository>,
     pub provider_repo: Arc<dyn IProviderRepository>,

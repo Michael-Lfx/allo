@@ -140,6 +140,18 @@ async fn bootstrap_web_tools_gated_off_when_disabled() {
 }
 
 #[tokio::test]
+async fn bootstrap_disabled_search_keeps_extract_tool_only() {
+    let result = AgentBootstrap::new(minimal_config(), "/tmp/test-workspace", null_output())
+        .disable_web_search()
+        .build()
+        .await
+        .unwrap();
+    let names = result.engine.tool_names();
+    assert!(!names.iter().any(|name| name == "web_search"));
+    assert!(names.iter().any(|name| name == "web_extract"));
+}
+
+#[tokio::test]
 async fn bootstrap_embedded_agent_execution_is_host_composed() {
     let enabled = AgentBootstrap::new(minimal_config(), "/tmp/test-workspace", null_output())
         .build()

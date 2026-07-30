@@ -18,6 +18,12 @@ impl ManagedSearchHandle {
         })
     }
 
+    pub fn ddg_only() -> Result<Self, WebError> {
+        Ok(Self {
+            service: Arc::new(ManagedSearchService::ddg_only()?),
+        })
+    }
+
     pub fn provider(&self) -> Arc<dyn SearchProvider> {
         self.service.clone()
     }
