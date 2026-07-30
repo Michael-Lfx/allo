@@ -10,6 +10,17 @@ use crate::engine::AgentEngine;
 use crate::output::OutputSink;
 use crate::session::Session;
 
+/// Host-owned search composition. The default keeps standalone and Web Host
+/// callers on their historical DDG-only behavior, while Desktop can explicitly
+/// provide Managed Search or disable only the search tool after construction
+/// failure.
+#[derive(Clone)]
+pub enum SearchProviderBinding {
+    DefaultDdg,
+    Provided(Arc<dyn flowy_web::provider::SearchProvider>),
+    Disabled,
+}
+
 /// **extract-llm: session-model adapter for `BrowserTool`'s extract seam.**
 ///
 /// Wraps the session's [`LlmProvider`] + model params so `act(Extract)` can do real
@@ -287,7 +298,7 @@ pub struct AgentBootstrap {
     workspace: String,
     output: Arc<dyn OutputSink>,
     provider: Option<Arc<dyn LlmProvider>>,
-    search_provider: Option<Arc<dyn flowy_web::provider::SearchProvider>>,
+    search_provider: SearchProviderBinding,
     resume_session: Option<Session>,
     extra_skill_dirs: Vec<PathBuf>,
     goal: Option<crate::goal::runtime::GoalSpec>,
@@ -337,7 +348,7 @@ impl AgentBootstrap {
             workspace: workspace.into(),
             output,
             provider: None,
-            search_provider: None,
+            search_provider: SearchProviderBinding::DefaultDdg,
             resume_session: None,
             extra_skill_dirs: Vec::new(),
             goal: None,
@@ -363,7 +374,14 @@ impl AgentBootstrap {
         mut self,
         provider: Arc<dyn flowy_web::provider::SearchProvider>,
     ) -> Self {
-        self.search_provider = Some(provider);
+        self.search_provider = SearchProviderBinding::Provided(provider);
+        self
+    }
+
+    /// Disable only the model-visible web search tool while retaining the
+    /// local `web_extract` tool when web tools are otherwise enabled.
+    pub fn disable_web_search(mut self) -> Self {
+        self.search_provider = SearchProviderBinding::Disabled;
         self
     }
 
@@ -549,11 +567,28 @@ impl AgentBootstrap {
         // Web search/extract (keyless DuckDuckGo HTML scrape + SSRF-guarded HTTP
         // fetch → markdown). Default on; gated by `tools.web.enabled`.
         if self.config.tools.web.enabled {
-            let search = self.search_provider.unwrap_or_else(|| {
-                Arc::new(flowy_web::provider::DuckDuckGoSearchProvider::new())
-            });
+            if let Some(search) = match self.search_provider {
+                SearchProviderBinding::Provided(provider) => Some(provider),
+                SearchProviderBinding::Disabled => None,
+                SearchProviderBinding::DefaultDdg => {
+                    match flowy_web::provider::DuckDuckGoSearchProvider::try_new() {
+                        Ok(provider) => Some(Arc::new(provider)
+                            as Arc<dyn flowy_web::provider::SearchProvider>),
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "nomi_agent",
+                                error_class = "search_provider_initialization",
+                                error = %error,
+                                "DuckDuckGo search initialization failed; web_search disabled"
+                            );
+                            None
+                        }
+                    }
+                }
+            } {
+                registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
+            }
             let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
-            registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
             registry.register(Box::new(flowy_web::tools::WebExtractTool::new(extract)));
         }
 

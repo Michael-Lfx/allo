@@ -959,6 +959,60 @@ async fn forward_browser_inventory_events(
     }
 }
 
+#[cfg(feature = "managed-search")]
+fn resolve_managed_search_binding<M, D>(
+    enabled: bool,
+    managed_factory: M,
+    ddg_factory: D,
+) -> (
+    Option<nomifun_ai_agent::ManagedSearchHandle>,
+    nomifun_ai_agent::SearchProviderBinding,
+)
+where
+    M: FnOnce() -> Result<nomifun_ai_agent::ManagedSearchHandle, String>,
+    D: FnOnce() -> Result<nomifun_ai_agent::ManagedSearchHandle, String>,
+{
+    if !enabled {
+        return (
+            None,
+            nomifun_ai_agent::SearchProviderBinding::DefaultDdg,
+        );
+    }
+
+    match managed_factory() {
+        Ok(handle) => {
+            let binding = nomifun_ai_agent::SearchProviderBinding::Provided(handle.provider());
+            (Some(handle), binding)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "managed_search",
+                error_class = "managed_initialization",
+                error = %error,
+                "managed search initialization failed; falling back to DuckDuckGo"
+            );
+            match ddg_factory() {
+                Ok(handle) => {
+                    let binding = nomifun_ai_agent::SearchProviderBinding::Provided(handle.provider());
+                    (Some(handle), binding)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "managed_search",
+                        error_class = "ddg_initialization",
+                        error = %error,
+                        "DuckDuckGo initialization failed; web_search disabled"
+                    );
+                    (
+                        None,
+                        nomifun_ai_agent::SearchProviderBinding::Disabled,
+                    )
+                }
+            }
+        }
+    }
+}
+
 pub struct AppServices {
     pub database: Database,
     /// Present only when the process owns the canonical OS server lock for the
@@ -4049,6 +4103,32 @@ mod tests {
     fn managed_search_is_an_explicit_desktop_capability() {
         assert!(!AppHostCapabilities::default().managed_search);
         assert!(AppHostCapabilities::desktop().managed_search);
+    }
+
+    #[cfg(feature = "managed-search")]
+    #[test]
+    fn managed_search_binding_degrades_managed_to_ddg_then_disabled() {
+        let (handle, binding) = resolve_managed_search_binding(
+            true,
+            || Err("managed unavailable".to_owned()),
+            || nomifun_ai_agent::ManagedSearchHandle::ddg_only().map_err(|error| error.to_string()),
+        );
+        assert!(handle.is_some());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::Provided(_)
+        ));
+
+        let (handle, binding) = resolve_managed_search_binding(
+            true,
+            || Err("managed unavailable".to_owned()),
+            || Err("ddg unavailable".to_owned()),
+        );
+        assert!(handle.is_none());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::Disabled
+        ));
     }
 
     fn test_config(data_dir: &Path) -> AppConfig {
