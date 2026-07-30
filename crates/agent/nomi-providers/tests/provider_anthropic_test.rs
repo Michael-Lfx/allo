@@ -31,6 +31,7 @@ fn minimal_request() -> LlmRequest {
         max_tokens: 1024,
         thinking: None,
         reasoning_effort: None,
+        temperature: None,
     }
 }
 

@@ -31,11 +31,17 @@ impl FlowyChat {
 impl VimaxChat for FlowyChat {
     async fn complete_text(&self, system: &str, user: &str) -> VimaxResult<String> {
         self.services.require_token().await?;
+        // Planning prompts are English-templated; re-assert language from the user payload
+        // so Chinese ideas don't get translated into English storyboards/scripts.
+        let system = format!(
+            "{system}\n\n{}",
+            crate::planning::language_lock_for_text(user)
+        );
         self.services
             .api
             .chat_completions_text(
                 &self.services.session,
-                system,
+                &system,
                 user,
                 8192,
                 0.7,
@@ -59,6 +65,10 @@ impl VimaxChat for FlowyChat {
         image_paths: &[&Path],
     ) -> VimaxResult<String> {
         self.services.require_token().await?;
+        let system = format!(
+            "{system}\n\n{}",
+            crate::planning::language_lock_for_text(user_text)
+        );
 
         let mut user_parts = vec![json!({"type": "text", "text": user_text})];
         for path in image_paths {
@@ -75,7 +85,7 @@ impl VimaxChat for FlowyChat {
             .api
             .chat_completions_multimodal(
                 &self.services.session,
-                system,
+                &system,
                 json!(user_parts),
                 4096,
                 0.3,

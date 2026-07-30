@@ -124,6 +124,7 @@ fn make_nomi_config() -> NomiResolvedConfig {
         browser_unrestricted_approval: false,
         browser_visual_fallback: false,
         goal: None,
+        goal_resume_state: None,
         browser_secret_vault: None,
         owner_token: None,
         install_embedded_agent_execution: true,

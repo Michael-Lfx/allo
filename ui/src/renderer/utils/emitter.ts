@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import type { FileOrFolderItem } from '@/renderer/utils/file/fileTypes';
 import type { PreviewContentType } from '@/common/types/office/preview';
 import type { TokenUsageData } from '@/common/config/storage';
+import type { GoalStatusResponse } from '@/common/adapter/ipcBridge';
 
 export type ReplyQuote = {
   /** Durable message identity used only as quote metadata. */
@@ -61,6 +62,10 @@ interface EventTypes {
   'sendbox.retry': [{ content: string; msgId?: MessageId; createdAt?: number }]; // retry last user turn from an error tip
   'staroffice.install.request': [{ conversation_id: ConversationId; text: string; detectedUrl?: string | null }];
   'staroffice.install.finished': [{ conversation_id: ConversationId }];
+  // goal 状态刷新事件：/goal 操作后由 useGoalCommand 发出（携带新快照），GoalStatusNotice 消费
+  // Goal status refresh: emitted by useGoalCommand after a /goal action (with the
+  // fresh snapshot when available); consumed by GoalStatusNotice.
+  'goal.status.refresh': [{ conversation_id: ConversationId; status?: GoalStatusResponse }];
 }
 
 export const emitter = new EventEmitter<EventTypes>();

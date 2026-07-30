@@ -208,6 +208,8 @@ fn event_type_name(event: &AgentStreamEvent) -> &'static str {
         AgentStreamEvent::AcpSessionInfo(_) => "AcpSessionInfo",
         AgentStreamEvent::AcpContextUsage(_) => "AcpContextUsage",
         AgentStreamEvent::TurnCompleted(_) => "TurnCompleted",
+        AgentStreamEvent::MoaReference(_) => "MoaReference",
+        AgentStreamEvent::MoaProgress(_) => "MoaProgress",
         AgentStreamEvent::Finish(_) => "Finish",
         AgentStreamEvent::Error(_) => "Error",
         AgentStreamEvent::System(_) => "System",

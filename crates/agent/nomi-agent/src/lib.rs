@@ -16,6 +16,7 @@ pub mod engine;
 pub mod goal;
 pub mod knowledge_tools;
 pub mod loop_guard;
+pub mod moa;
 pub mod tool_execution;
 pub mod output;
 pub mod plan;

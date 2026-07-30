@@ -38,6 +38,7 @@ import MessageCronTrigger from './components/MessageCronTrigger';
 import MessageSkillSuggest from './components/MessageSkillSuggest';
 import MessageText from './components/MessageText';
 import MessageThinking from './components/MessageThinking';
+import MessageMoaReference from './components/MessageMoaReference';
 import MessageListSkeleton from './components/MessageListSkeleton';
 import FirstWinOutcomeCard from './components/FirstWinOutcomeCard';
 import {
@@ -806,6 +807,8 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
         return null;
       case 'thinking':
         return <MessageThinking message={message}></MessageThinking>;
+      case 'moa_reference':
+        return <MessageMoaReference message={message}></MessageMoaReference>;
       case 'available_commands':
         return null;
       default:

@@ -30,6 +30,12 @@ pub trait VimaxImage: Send + Sync {
 
 #[async_trait]
 pub trait VimaxVideo: Send + Sync {
+    /// Generate a video clip.
+    ///
+    /// - `first_frame` / `last_frame`: Seedance frame roles (mutually exclusive with refs).
+    /// - `ref_images`: `reference_image` roles (multi-ref R2V). Prefer this for Seedance 2.0.
+    /// - `last_frame_out`: when set, request `return_last_frame` and save the still here
+    ///   (caller may still ffmpeg-extract as fallback).
     async fn generate(
         &self,
         prompt: &str,
@@ -38,5 +44,6 @@ pub trait VimaxVideo: Send + Sync {
         ref_images: &[&Path],
         duration_secs: u32,
         out_path: &Path,
+        last_frame_out: Option<&Path>,
     ) -> VimaxResult<()>;
 }

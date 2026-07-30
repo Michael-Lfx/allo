@@ -253,6 +253,55 @@ pub struct NomiGoalSpec {
     /// Cap on automatic continuations (anti-runaway). Defaults to 8 when unset.
     #[serde(default)]
     pub max_auto_continuations: Option<usize>,
+    /// Optional full `GoalState` snapshot (engine snake_case JSON contract)
+    /// used to restore a persisted goal instead of starting a fresh one.
+    /// When set, the factory injects it via `engine.set_goal_state` and
+    /// `objective` / `max_auto_continuations` above are informational only.
+    /// `None` (the default) keeps the original fresh-goal behavior.
+    #[serde(default)]
+    pub resume_state: Option<serde_json::Value>,
+}
+
+/// Opt-in Mixture-of-Agents settings for a session. When present and
+/// `enabled`, the engine fans user prompts out to the configured reference
+/// models and aggregates their answers. Absent (the default) = single-model
+/// behavior. Pure DTO — carries no engine types.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MoaSettings {
+    pub enabled: bool,
+    /// Reference model slots consulted on fan-out. Empty = no references.
+    #[serde(default)]
+    pub references: Vec<MoaSlotSetting>,
+    /// Fan-out cadence: `"user_turn"` | `"per_iteration"` | `"every_n:<N>"`.
+    #[serde(default)]
+    pub fanout: Option<String>,
+    /// Per-reference call timeout in seconds. Falls back to the engine
+    /// default when unset.
+    #[serde(default)]
+    pub reference_timeout_secs: Option<u64>,
+    /// Per-reference completion token cap. Falls back to the engine default
+    /// when unset.
+    #[serde(default)]
+    pub reference_max_tokens: Option<u32>,
+    /// Privacy filter mode applied to prompts before fan-out:
+    /// `""` (off) | `"basic"`. Falls back to the engine default when unset.
+    #[serde(default)]
+    pub privacy_filter: Option<String>,
+    /// Whether to persist a per-message MoA trace record. Falls back to the
+    /// engine default (off) when unset.
+    #[serde(default)]
+    pub trace_enabled: Option<bool>,
+}
+
+/// One reference model slot in a Mixture-of-Agents configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MoaSlotSetting {
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
 }
 
 /// Nomi-specific fields extracted from `extra` in build runtime options.
@@ -269,6 +318,10 @@ pub struct NomiBuildExtra {
     /// Opt-in goal-driven continuation (see [`NomiGoalSpec`]).
     #[serde(default)]
     pub goal: Option<NomiGoalSpec>,
+    /// Opt-in Mixture-of-Agents settings (see [`MoaSettings`]). `None` (the
+    /// default) = single-model behavior, zero regression for old JSON.
+    #[serde(default)]
+    pub moa: Option<MoaSettings>,
     #[serde(default)]
     pub session_mode: Option<String>,
     #[serde(default)]
@@ -445,6 +498,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(extra.delegation_policy, DelegationPolicy::PreferParallel);
+    }
+
+    /// Old conversation JSON without a `moa` field deserializes safely to
+    /// `None` (single-model behavior, zero regression).
+    #[test]
+    fn nomi_build_extra_moa_defaults_none() {
+        let extra: NomiBuildExtra = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(extra.moa.is_none());
+        assert!(NomiBuildExtra::default().moa.is_none());
     }
 
     #[test]

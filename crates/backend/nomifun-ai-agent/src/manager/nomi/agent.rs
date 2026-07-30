@@ -20,7 +20,7 @@ use nomi_protocol::commands::SessionMode;
 use nomi_protocol::events::ToolCategory;
 use nomi_protocol::{ToolApprovalManager, ToolApprovalResult};
 use nomi_types::message::ContentBlock;
-use nomifun_api_types::{AgentModeResponse, SlashCommandItem};
+use nomifun_api_types::{AgentModeResponse, GoalActionRequest, GoalStatusResponse, SlashCommandItem};
 use nomifun_common::{
     AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, ErrorChain, TimestampMs, now_ms,
 };
@@ -34,7 +34,9 @@ use crate::capability::backend_output_sink::BackendOutputSink;
 use crate::capability::backend_protocol_sink::BackendProtocolSink;
 use crate::capability::session_lifecycle::{PostTurnReviewHook, TurnContext};
 use crate::capability::turn_review::LightweightTurnReviewer;
-use crate::protocol::events::{AgentStreamEvent, TurnCompletedEventData, TurnStopReason};
+use crate::protocol::events::{
+    AgentStreamEvent, MoaSlotStatsData, MoaTurnStatsData, TurnCompletedEventData, TurnStopReason,
+};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::{NomiResolvedConfig, SendMessageData};
 
@@ -174,6 +176,24 @@ pub struct NomiAgentManager {
     /// asynchronously after a human-origin turn completes — fire-and-forget,
     /// never blocks the conversation loop.
     post_turn_review: std::sync::RwLock<Vec<Arc<dyn PostTurnReviewHook>>>,
+    /// Catalog price snapshot for the MoA reference slots (empty when MoA is
+    /// off). Joined by label with the engine's per-turn usage to price each
+    /// turn's fan-out in `TurnCompleted.moa`.
+    moa_slot_prices: Vec<crate::types::MoaSlotPrice>,
+    /// Real-time goal handle — a clone of the engine's `GoalRuntime` sharing
+    /// the same `Arc<Mutex<GoalState>>` as the registered `update_goal` tool.
+    /// pause/resume/clear/status act through it WITHOUT the engine mutex, so
+    /// they take effect while `execute_turn` holds the engine (the next
+    /// natural-termination point observes the change). Slot is refreshed by
+    /// `goal_action("set")` when it registers a fresh runtime.
+    goal_runtime: std::sync::RwLock<Option<nomi_agent::goal::runtime::GoalRuntime>>,
+    /// Goal persistence repository (post-construction registration by the
+    /// factory, same slot pattern as `register_cron_sink`). `None` = goal
+    /// persistence off; goals still run, nothing is saved or restored.
+    goal_repo: std::sync::RwLock<Option<Arc<dyn nomifun_db::IGoalRepository>>>,
+    /// Gateway data dir hosting the agent process registry — source for the
+    /// goal wait probe and the per-turn background-process snapshot.
+    goal_registry_data_dir: PathBuf,
 }
 
 impl Drop for NomiAgentManager {
@@ -213,6 +233,48 @@ pub(crate) fn should_register_knowledge_write(
 /// companion/channel sessions have no confirmation UI), mirroring the companion
 /// memory tools.
 pub(crate) const KNOWLEDGE_WRITE_TOOL_NAME: &str = "knowledge_write";
+
+/// The host-resolved `/goal` command set advertised to the UI picker. These
+/// are NOT engine slash commands: the frontend maps them onto
+/// `POST /api/conversations/{id}/goal` actions (set/status/pause/resume/clear
+/// plus the subgoal family: add_subgoal/list_subgoals/remove_subgoal/
+/// clear_subgoals, and the contract/barrier family: draft/set_contract/show/
+/// wait/unwait).
+pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
+    [
+        (
+            "goal",
+            "Set a session goal: /goal <objective> — the agent auto-continues until the goal is judged complete",
+        ),
+        ("goal status", "Show the current goal, its status and continuation budget"),
+        ("goal pause", "Pause goal auto-continuation (resume later with /goal resume)"),
+        ("goal resume", "Resume a paused goal with a fresh continuation budget"),
+        ("goal clear", "Clear the goal and stop auto-continuation"),
+        (
+            "subgoal",
+            "Add a completion criterion to the goal: /subgoal <text> — the judge requires every criterion",
+        ),
+        ("subgoal list", "List the goal's criteria with their numbers"),
+        ("subgoal remove", "Remove one criterion by number: /subgoal remove <n>"),
+        ("subgoal clear", "Remove all criteria (the goal itself stays active)"),
+        (
+            "goal draft",
+            "Draft a completion contract from the goal objective with the LLM and apply it",
+        ),
+        ("goal show", "Show the goal with its contract, criteria and wait barriers"),
+        (
+            "goal wait",
+            "Park the goal on a process: /goal wait <pid> — judging resumes when it exits",
+        ),
+        ("goal unwait", "Drop the wait barrier and resume goal judging"),
+    ]
+    .into_iter()
+    .map(|(command, description)| SlashCommandItem {
+        command: command.to_owned(),
+        description: description.to_owned(),
+    })
+    .collect()
+}
 
 /// Cap on race-tail re-runs within a single turn-claim. The race window is
 /// sub-millisecond, so a tiny bound guarantees termination even if a steerer
@@ -430,7 +492,9 @@ impl NomiAgentManager {
         let backend_output_sink = Arc::new(
             BackendOutputSink::new(runtime.event_sender())
                 .with_distill_dir(distill_dir.clone())
-                .with_artifact_workspace(&workspace),
+                .with_artifact_workspace(&workspace)
+                // MoA trace sink target (factory-resolved; None = tracing off).
+                .with_moa_trace_path(config_extra.moa.as_ref().and_then(|moa| moa.trace_path.clone())),
         );
         let sink: Arc<dyn OutputSink> = backend_output_sink.clone();
 
@@ -661,6 +725,40 @@ impl NomiAgentManager {
             .map_err(|e| AppError::Internal(format!("Agent bootstrap failed: {e}")))?;
 
         let mut engine = result.engine;
+        // MoA bridge: inject the factory-resolved reference slots. Not calling
+        // `set_moa_state` keeps the engine byte-identical to a no-MoA build.
+        if let Some(moa) = config_extra.moa.clone() {
+            debug!(
+                conversation_id = %conversation_id,
+                reference_slots = moa.slots.len(),
+                "Enabling MoA reference fan-out on nomi engine"
+            );
+            engine.set_moa_state(nomi_agent::moa::MoaState::new(moa.config, moa.slots));
+        }
+        // Goal wait-barrier probe: answers pid/session liveness from the agent
+        // process registry, so judge- or user-issued wait barriers release once
+        // the awaited process is unregistered. Installed before any goal state
+        // exists — the engine re-injects it into every future goal runtime
+        // (`set_goal` / `set_goal_state`). Fail-open by design: a probe that
+        // cannot answer reports "not alive" and the barrier lifts.
+        engine.set_goal_wait_probe(Arc::new(crate::goal_probe::RegistryGoalWaitProbe::new(
+            gateway_data_dir.clone(),
+        )));
+        // Goal restore injection: re-hydrate a persisted active/paused goal
+        // (or an explicit resume_state carried in the build extra) as-is —
+        // status, turns_used, breaker counters and created_at are NOT reset.
+        // Runs right after bootstrap: it either swaps the spec-built
+        // runtime's state in place or registers a fresh runtime + the
+        // update_goal tool (see `AgentEngine::set_goal_state`).
+        if let Some(state) = config_extra.goal_resume_state.clone() {
+            info!(
+                conversation_id = %conversation_id,
+                goal_status = crate::goal_bridge::goal_status_str(state.status),
+                goal_turns_used = state.turns_used,
+                "Restoring persisted goal state into nomi engine"
+            );
+            engine.set_goal_state(state);
+        }
         if let Some(sink) = requirement_sink {
             engine
                 .registry_mut()
@@ -780,14 +878,29 @@ impl NomiAgentManager {
         let protocol_sink = BackendProtocolSink::new(runtime.event_sender(), confirmations.clone());
         engine.set_approval_manager(approval_manager.clone());
         engine.set_protocol_writer(Arc::new(protocol_sink));
-        let slash_commands = engine
+        let mut slash_commands: Vec<SlashCommandItem> = engine
             .slash_command_list()
             .into_iter()
             .map(|(command, description)| SlashCommandItem { command, description })
             .collect();
+        // Host-level /goal command set: resolved by the backend goal route
+        // (`POST /api/conversations/{id}/goal`), not by an engine-registered
+        // SlashCommand — appended here so the UI picker advertises them.
+        slash_commands.extend(goal_slash_commands());
 
         runtime.transition_to(ConversationStatus::Pending);
         let process_supervisor = engine.process_supervisor_handle();
+        // Shared goal handle (None when this is not a goal session). Taken
+        // while the engine is still ours, before it goes behind the mutex.
+        let goal_runtime = engine.goal_runtime_handle();
+
+        // MoA catalog price snapshot (empty when MoA is off) — joined with the
+        // engine's per-turn usage to price each turn's fan-out.
+        let moa_slot_prices = config_extra
+            .moa
+            .as_ref()
+            .map(|moa| moa.slot_prices.clone())
+            .unwrap_or_default();
 
         Ok(Self {
             runtime,
@@ -817,6 +930,10 @@ impl NomiAgentManager {
             knowledge_prelude: std::sync::Mutex::new(knowledge_prelude),
             knowledge_auto_rag,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
+            moa_slot_prices,
+            goal_runtime: std::sync::RwLock::new(goal_runtime),
+            goal_repo: std::sync::RwLock::new(None),
+            goal_registry_data_dir: gateway_data_dir,
         })
     }
 
@@ -1000,6 +1117,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             *self.active_turn.lock().unwrap_or_else(|e| e.into_inner()) = Some(runtime_turn);
             (token, runtime_turn)
         };
+
+        // Refresh the goal judge's background-process context for this turn
+        // (goal sessions only) — a cheap registry read through the shared
+        // handle, never the engine mutex.
+        self.refresh_goal_background_processes();
 
         // Backstop: guarantee a terminal event even if this turn unwinds
         // abnormally (engine panic / early-return). Disarmed on the normal path
@@ -1270,6 +1392,15 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 let context_breakdown = engine
                     .context_breakdown()
                     .map(crate::protocol::events::ContextBreakdownData::from);
+                // MoA per-turn usage is read here — after the turn finished,
+                // before the next turn resets it (and before `drop(engine)`).
+                // Empty (no fan-out this turn) → `moa: None`, wire-identical
+                // to a single-model turn.
+                let moa = build_moa_turn_stats(engine.moa_turn_usage(), &self.moa_slot_prices);
+                // Goal snapshot is read here too — after the turn finished,
+                // before `drop(engine)` — and persisted fire-and-forget once
+                // the lock is released (turn-end 落库 point).
+                let goal_snapshot = engine.goal_state();
                 self.runtime.emit(AgentStreamEvent::TurnCompleted(TurnCompletedEventData {
                     elapsed_ms,
                     input_tokens: agent_result.usage.input_tokens,
@@ -1280,6 +1411,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     context_window,
                     stop_reason: Some(stop_reason),
                     context_breakdown,
+                    moa,
                 }));
 
                 // —— Post-session memory distillation (exact turn child) ——
@@ -1317,6 +1449,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     None
                 };
                 drop(engine); // never hold the engine mutex across the provider call
+
+                if let Some(state) = goal_snapshot {
+                    self.spawn_goal_persist(state);
+                }
 
                 let distill_completed = match distill_job {
                     Some((cfg, dir, transcript)) => {
@@ -2022,6 +2158,290 @@ impl NomiAgentManager {
         Ok(self.slash_commands.clone())
     }
 
+    /// Register the goal persistence repository. Called by the factory right
+    /// after construction (same slot pattern as `register_cron_sink`); absent
+    /// registration leaves goal persistence off (fail-safe).
+    pub fn register_goal_persistence(&self, repo: Arc<dyn nomifun_db::IGoalRepository>) {
+        if let Ok(mut slot) = self.goal_repo.write() {
+            *slot = Some(repo);
+        }
+    }
+
+    fn goal_repo_handle(&self) -> Option<Arc<dyn nomifun_db::IGoalRepository>> {
+        self.goal_repo
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    fn goal_runtime_handle(&self) -> Option<nomi_agent::goal::runtime::GoalRuntime> {
+        self.goal_runtime
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Snapshot the process registry into the goal judge's background-process
+    /// context. No-op for non-goal sessions; acts through the shared goal
+    /// handle, so it never waits on the engine mutex.
+    fn refresh_goal_background_processes(&self) {
+        let Some(rt) = self.goal_runtime_handle() else {
+            return;
+        };
+        rt.set_background_processes(crate::goal_probe::conversation_background_processes(
+            &self.goal_registry_data_dir,
+            self.runtime.conversation_id(),
+        ));
+    }
+
+    /// Best-effort goal snapshot persistence — spawned so it never blocks or
+    /// fails the caller (turn completion / user goal actions). No-op when no
+    /// repository was registered.
+    fn spawn_goal_persist(&self, state: nomi_agent::goal::state::GoalState) {
+        let Some(repo) = self.goal_repo_handle() else {
+            return;
+        };
+        let session_id = self.runtime.conversation_id().to_string();
+        tokio::spawn(async move {
+            let params = crate::goal_bridge::goal_state_to_upsert(&session_id, &state);
+            if let Err(e) = repo.upsert(&params).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to persist goal snapshot"
+                );
+            }
+        });
+    }
+
+    /// Execute a user `/goal` action (set / pause / resume / clear / status /
+    /// the subgoal family / draft / set_contract / wait / unwait).
+    ///
+    /// pause/resume/clear act through the shared goal handle — NOT the engine
+    /// mutex — so they take effect in real time while `execute_turn` holds the
+    /// engine (the goal loop's next natural-termination point observes the
+    /// change). Only "set" on a session without a goal must wait for the
+    /// engine lock, because registering the `update_goal` tool needs `&mut`.
+    /// Every state change is mirrored to the DB (best-effort, fail-safe).
+    pub async fn goal_action(&self, req: GoalActionRequest) -> Result<GoalStatusResponse, AppError> {
+        match req.action.as_str() {
+            "set" => {
+                let objective = req
+                    .objective
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::BadRequest("objective must not be empty".into()))?;
+                let max_turns = req.max_turns.unwrap_or(8).clamp(1, 100) as usize;
+                let state =
+                    nomi_agent::goal::state::GoalState::new(objective.to_owned(), max_turns);
+                match self.goal_runtime_handle() {
+                    // Already a goal session: swap the state in place through
+                    // the shared handle (works mid-turn; the update_goal tool
+                    // keeps observing the same slot).
+                    Some(rt) => rt.restore(state.clone()),
+                    // First goal for this session: register runtime + tool on
+                    // the engine, then cache the shared handle.
+                    None => {
+                        let mut engine = self.engine.lock().await;
+                        engine.set_goal_state(state.clone());
+                        let handle = engine.goal_runtime_handle();
+                        drop(engine);
+                        if let Ok(mut slot) = self.goal_runtime.write() {
+                            *slot = handle;
+                        }
+                    }
+                }
+                info!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    max_turns,
+                    "Goal set"
+                );
+                self.spawn_goal_persist(state.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&state))
+            }
+            "pause" => {
+                let rt = self.require_goal_runtime()?;
+                rt.pause(req.reason.as_deref().unwrap_or("user-paused"));
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "resume" => {
+                let rt = self.require_goal_runtime()?;
+                rt.resume();
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "clear" => {
+                let rt = self.goal_runtime_handle();
+                if let Some(rt) = rt.as_ref() {
+                    rt.clear();
+                }
+                // The DB row is deleted (not marked cleared): a cleared goal
+                // must never be restore-injected into a future session build.
+                if let Some(repo) = self.goal_repo_handle() {
+                    let session_id = self.runtime.conversation_id().to_string();
+                    tokio::spawn(async move {
+                        if let Err(e) = repo.clear(&session_id).await {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %e,
+                                "Failed to clear persisted goal"
+                            );
+                        }
+                    });
+                }
+                Ok(match rt {
+                    Some(rt) => crate::goal_bridge::goal_state_to_response(&rt.snapshot()),
+                    None => GoalStatusResponse::default(),
+                })
+            }
+            "status" | "list_subgoals" | "show" => Ok(self.goal_status()),
+            "add_subgoal" => {
+                let text = req
+                    .subgoal
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::BadRequest("subgoal must not be empty".into()))?;
+                let rt = self.require_goal_runtime()?;
+                rt.add_subgoal(text);
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "remove_subgoal" => {
+                let index = req
+                    .index_1based
+                    .ok_or_else(|| AppError::BadRequest("index_1based is required".into()))?
+                    as usize;
+                let rt = self.require_goal_runtime()?;
+                if !rt.remove_subgoal(index) {
+                    return Err(AppError::BadRequest(format!(
+                        "Subgoal index {index} is out of range"
+                    )));
+                }
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "clear_subgoals" => {
+                // The runtime exposes no bulk clear — repeated engine-guarded
+                // removal keeps the goal itself untouched (same approach as
+                // the DB fallback's `clear_subgoals_row`).
+                let rt = self.require_goal_runtime()?;
+                while rt.remove_subgoal(1) {}
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "draft" => {
+                let rt = self.require_goal_runtime()?;
+                // Explicit request objective wins; else draft from the goal's
+                // own objective.
+                let objective = req
+                    .objective
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| rt.snapshot().objective);
+                // Same resolved provider/model the engine runs on, WITHOUT
+                // the engine mutex (`execute_turn` may hold it for the whole
+                // turn). Reuses the distillation config snapshot.
+                let provider = nomi_providers::create_provider(&self.distill_cfg);
+                let client = nomi_agent::goal::judge::ProviderJudgeClient::new(
+                    provider,
+                    self.distill_cfg.model.clone(),
+                );
+                let contract = nomi_agent::goal::judge::draft_contract(&objective, &client)
+                    .await
+                    .map_err(|e| {
+                        use nomi_agent::goal::judge::ContractDraftError;
+                        // Full detail (may embed raw LLM output / provider
+                        // error text) goes to the log only — the user-facing
+                        // message stays fixed and sanitized.
+                        tracing::warn!(
+                            conversation_id = %self.runtime.conversation_id(),
+                            error = %e,
+                            "Goal contract draft failed"
+                        );
+                        match e {
+                            ContractDraftError::EmptyObjective => {
+                                AppError::BadRequest("objective must not be empty".into())
+                            }
+                            ContractDraftError::Transport(_) => AppError::BadGateway(
+                                "Contract draft failed due to a model transport error".into(),
+                            ),
+                            ContractDraftError::Unparsable(_) | ContractDraftError::EmptyContract => {
+                                AppError::BadGateway(
+                                    "Contract draft failed: model reply was unusable".into(),
+                                )
+                            }
+                        }
+                    })?;
+                rt.set_contract(contract);
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "set_contract" => {
+                let contract = req
+                    .contract
+                    .clone()
+                    .ok_or_else(|| AppError::BadRequest("contract is required".into()))?;
+                let rt = self.require_goal_runtime()?;
+                // An all-empty contract clears it (the runtime normalizes to
+                // None) — same convention as the DB fallback.
+                rt.set_contract(crate::goal_bridge::dto_to_engine_contract(contract));
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "wait" => {
+                let pid = req
+                    .pid
+                    .ok_or_else(|| AppError::BadRequest("pid is required".into()))?;
+                let rt = self.require_goal_runtime()?;
+                if !rt.wait_on_pid(pid) {
+                    return Err(AppError::BadRequest(format!(
+                        "Cannot wait on pid {pid}: pid must be non-zero and the goal must be active or waiting"
+                    )));
+                }
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            "unwait" => {
+                let rt = self.require_goal_runtime()?;
+                if !rt.unwait() {
+                    return Err(AppError::BadRequest("The goal is not waiting".into()));
+                }
+                let snapshot = rt.snapshot();
+                self.spawn_goal_persist(snapshot.clone());
+                Ok(crate::goal_bridge::goal_state_to_response(&snapshot))
+            }
+            other => Err(AppError::BadRequest(format!("Unknown goal action '{other}'"))),
+        }
+    }
+
+    /// Live goal snapshot for `/goal status` — read through the shared handle
+    /// (never waits on the engine mutex). `active: false` when this session
+    /// has no goal.
+    pub fn goal_status(&self) -> GoalStatusResponse {
+        match self.goal_runtime_handle() {
+            Some(rt) => crate::goal_bridge::goal_state_to_response(&rt.snapshot()),
+            None => GoalStatusResponse::default(),
+        }
+    }
+
+    fn require_goal_runtime(&self) -> Result<nomi_agent::goal::runtime::GoalRuntime, AppError> {
+        self.goal_runtime_handle()
+            .ok_or_else(|| AppError::BadRequest("No goal is set for this conversation".into()))
+    }
+
     /// Clear the conversation context ("release model context"): stop any
     /// in-flight turn, then empty the engine's message history + compaction
     /// state and persist the now-empty session. The agent stays alive; the
@@ -2109,6 +2529,63 @@ fn nomi_engine_error_to_send_error(error_msg: String) -> AgentSendError {
         return AgentSendError::from_app_error(AppError::BadGateway(error_msg));
     }
     AgentSendError::from_app_error(AppError::Internal(error_msg))
+}
+
+/// Assemble the per-turn MoA stats block from the engine's turn usage and the
+/// factory's catalog price snapshot (joined by slot label). Empty usage (no
+/// fan-out ran this turn) → `None` so the `TurnCompleted` wire shape stays
+/// byte-identical to a single-model turn. Usage rows sharing a label (multiple
+/// fan-outs in one turn) are first aggregated into one row per label — keeping
+/// first-seen order — and cost is computed on the aggregated tokens. A slot
+/// missing either side's price reports tokens without a cost; `total_cost_usd`
+/// sums only the known costs and is `None` when no slot is priced (never a
+/// misleading zero).
+fn build_moa_turn_stats(
+    usage: &[nomi_agent::moa::MoaSlotTurnUsage],
+    prices: &[crate::types::MoaSlotPrice],
+) -> Option<MoaTurnStatsData> {
+    if usage.is_empty() {
+        return None;
+    }
+    // Per-label aggregation with stable first-seen order; a Vec lookup keeps
+    // the order deterministic (no HashMap iteration order) at trivial N.
+    let mut aggregated: Vec<(&str, (u64, u64))> = Vec::new();
+    for slot in usage {
+        match aggregated.iter_mut().find(|(label, _)| *label == slot.label) {
+            Some((_, (input, output))) => {
+                *input = input.saturating_add(slot.input_tokens);
+                *output = output.saturating_add(slot.output_tokens);
+            }
+            None => aggregated.push((&slot.label, (slot.input_tokens, slot.output_tokens))),
+        }
+    }
+    let slots: Vec<MoaSlotStatsData> = aggregated
+        .into_iter()
+        .map(|(label, (input_tokens, output_tokens))| {
+            let cost_usd = prices
+                .iter()
+                .find(|price| price.label == label)
+                .and_then(|price| match (price.cost_input, price.cost_output) {
+                    // Catalog prices are USD per million tokens.
+                    (Some(cost_in), Some(cost_out)) => Some(
+                        input_tokens as f64 * cost_in / 1e6
+                            + output_tokens as f64 * cost_out / 1e6,
+                    ),
+                    _ => None,
+                });
+            MoaSlotStatsData {
+                label: label.to_owned(),
+                input_tokens,
+                output_tokens,
+                cost_usd,
+            }
+        })
+        .collect();
+    let total_cost_usd = slots
+        .iter()
+        .filter_map(|slot| slot.cost_usd)
+        .fold(None, |total: Option<f64>, cost| Some(total.unwrap_or(0.0) + cost));
+    Some(MoaTurnStatsData { slots, total_cost_usd })
 }
 
 #[cfg(test)]
@@ -2695,6 +3172,8 @@ mod tests {
             browser_unrestricted_approval: false,
             browser_visual_fallback: false,
             goal: None,
+            goal_resume_state: None,
+            moa: None,
             browser_secret_vault: None,
             owner_token: None,
             install_embedded_agent_execution: true,
@@ -3014,6 +3493,10 @@ mod tests {
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
+            moa_slot_prices: Vec::new(),
+            goal_runtime: std::sync::RwLock::new(None),
+            goal_repo: std::sync::RwLock::new(None),
+            goal_registry_data_dir: std::env::temp_dir(),
         }
     }
 
@@ -3210,6 +3693,10 @@ mod tests {
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
             post_turn_review: std::sync::RwLock::new(Vec::new()),
+            moa_slot_prices: Vec::new(),
+            goal_runtime: std::sync::RwLock::new(None),
+            goal_repo: std::sync::RwLock::new(None),
+            goal_registry_data_dir: std::env::temp_dir(),
         };
         let attachment_dir = tempfile::tempdir().unwrap();
         let missing_image = attachment_dir
@@ -4602,5 +5089,106 @@ mod turn_completed_mapping_tests {
         assert_eq!(map_engine_stop_reason(StopReason::MaxTokens), TurnStopReason::MaxTokens);
         // Per-turn request cap — likewise a truncated turn.
         assert_eq!(map_engine_stop_reason(StopReason::MaxTurns), TurnStopReason::MaxTurnRequests);
+    }
+}
+
+#[cfg(test)]
+mod moa_turn_stats_tests {
+    use super::build_moa_turn_stats;
+    use crate::types::MoaSlotPrice;
+    use nomi_agent::moa::MoaSlotTurnUsage;
+
+    fn usage(label: &str, input: u64, output: u64) -> MoaSlotTurnUsage {
+        MoaSlotTurnUsage {
+            label: label.into(),
+            input_tokens: input,
+            output_tokens: output,
+        }
+    }
+
+    fn price(label: &str, cost_in: Option<f64>, cost_out: Option<f64>) -> MoaSlotPrice {
+        MoaSlotPrice {
+            label: label.into(),
+            cost_input: cost_in,
+            cost_output: cost_out,
+        }
+    }
+
+    #[test]
+    fn empty_usage_means_no_stats_block() {
+        // No fan-out this turn → the TurnCompleted wire shape must stay
+        // byte-identical to a single-model turn.
+        assert!(build_moa_turn_stats(&[], &[price("p/m", Some(1.0), Some(2.0))]).is_none());
+    }
+
+    #[test]
+    fn prices_join_by_label_and_scale_per_million() {
+        // 1_000_000 in × $3/M + 500_000 out × $15/M = $10.50.
+        let stats = build_moa_turn_stats(
+            &[usage("p1/m1", 1_000_000, 500_000)],
+            &[price("p1/m1", Some(3.0), Some(15.0))],
+        )
+        .unwrap();
+        assert_eq!(stats.slots.len(), 1);
+        assert_eq!(stats.slots[0].input_tokens, 1_000_000);
+        assert!((stats.slots[0].cost_usd.unwrap() - 10.5).abs() < 1e-9);
+        assert!((stats.total_cost_usd.unwrap() - 10.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn missing_either_price_side_drops_the_slot_cost() {
+        // Unpriced output side, unknown label, and a fully priced slot: only
+        // the priced slot contributes cost; the others still report tokens.
+        let stats = build_moa_turn_stats(
+            &[
+                usage("p1/half", 100, 100),
+                usage("p2/unknown", 200, 0),
+                usage("p3/priced", 1_000_000, 0),
+            ],
+            &[
+                price("p1/half", Some(1.0), None),
+                price("p3/priced", Some(2.0), Some(4.0)),
+            ],
+        )
+        .unwrap();
+        assert!(stats.slots[0].cost_usd.is_none());
+        assert!(stats.slots[1].cost_usd.is_none());
+        assert!((stats.slots[2].cost_usd.unwrap() - 2.0).abs() < 1e-9);
+        // Total = the one known cost (partial totals are still totals of Some).
+        assert!((stats.total_cost_usd.unwrap() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn all_unpriced_slots_leave_total_none() {
+        // A failed slot reports zero tokens; with no catalog price anywhere
+        // the total stays None (never a misleading $0).
+        let stats = build_moa_turn_stats(&[usage("p1/m1", 0, 0)], &[]).unwrap();
+        assert!(stats.slots[0].cost_usd.is_none());
+        assert!(stats.total_cost_usd.is_none());
+    }
+
+    #[test]
+    fn same_label_rows_aggregate_into_one_line() {
+        // Two fan-outs by the same slot in one turn: tokens add up into a
+        // single row (first-seen order kept) and cost is computed on the
+        // aggregated totals. 300k in × $2/M + 60k out × $10/M = $1.20.
+        let stats = build_moa_turn_stats(
+            &[
+                usage("p1/m1", 100_000, 20_000),
+                usage("p2/m2", 50, 5),
+                usage("p1/m1", 200_000, 40_000),
+            ],
+            &[price("p1/m1", Some(2.0), Some(10.0))],
+        )
+        .unwrap();
+        assert_eq!(stats.slots.len(), 2);
+        assert_eq!(stats.slots[0].label, "p1/m1");
+        assert_eq!(stats.slots[0].input_tokens, 300_000);
+        assert_eq!(stats.slots[0].output_tokens, 60_000);
+        assert!((stats.slots[0].cost_usd.unwrap() - 1.2).abs() < 1e-9);
+        assert_eq!(stats.slots[1].label, "p2/m2");
+        assert_eq!(stats.slots[1].input_tokens, 50);
+        assert!(stats.slots[1].cost_usd.is_none());
+        assert!((stats.total_cost_usd.unwrap() - 1.2).abs() < 1e-9);
     }
 }

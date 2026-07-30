@@ -104,6 +104,65 @@ impl Default for MemoryConfig {
     }
 }
 
+/// Mixture of Agents (MoA) settings.
+///
+/// Opt-in, disabled by default. When enabled, the agent loop consults one or
+/// more advisory "reference" models before each aggregator (session model)
+/// call and folds their advice into the turn tail. References never execute
+/// tools — they only advise. Fully backward-compatible: an old TOML with no
+/// `[moa]` section deserializes to `enabled = false` and an empty slot list.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct MoaConfig {
+    /// Master switch. `false` (default) → the fan-out never runs; behaviour is
+    /// byte-for-byte identical to a build without MoA.
+    pub enabled: bool,
+    /// Advisory reference slots consulted before each aggregator call.
+    pub references: Vec<MoaSlot>,
+    /// Fan-out cadence: `"user_turn"` (default, cheapest — advise once per user
+    /// turn), `"per_iteration"` (re-advise every tool iteration), or
+    /// `"every_n:<N>"` (advise on iteration 1 then every Nth iteration).
+    pub fanout: String,
+    /// Per-reference wall-clock timeout in seconds.
+    pub reference_timeout_secs: u64,
+    /// Default output token ceiling for each reference call (a slot may override).
+    pub reference_max_tokens: u32,
+    /// Privacy filter level for advisory text leaving the agent core:
+    /// `""`/`"off"` (default) → no redaction; `"display"` → redact only what is
+    /// shown to the user; `"full"` → also redact what is injected into the
+    /// aggregator prompt. Unknown values are treated as off.
+    pub privacy_filter: String,
+    /// When `true`, each real fan-out emits a single-line JSON trace record
+    /// (full unredacted advisory inputs/outputs + usage) via the output sink
+    /// for local audit. Default `false`.
+    pub trace_enabled: bool,
+}
+
+impl Default for MoaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            references: Vec::new(),
+            fanout: "user_turn".to_string(),
+            reference_timeout_secs: 120,
+            reference_max_tokens: 4096,
+            privacy_filter: String::new(),
+            trace_enabled: false,
+        }
+    }
+}
+
+/// A single advisory reference slot (provider + model, with optional overrides).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct MoaSlot {
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+}
+
 const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
 
 /// File-layer representation for Codex-compatible project instruction keys.
@@ -206,6 +265,9 @@ pub struct ConfigFile {
 
     #[serde(default)]
     pub memory: MemoryConfig,
+
+    #[serde(default)]
+    pub moa: MoaConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -572,6 +634,7 @@ pub struct Config {
     pub mcp: McpConfig,
     pub logging: LoggingConfig,
     pub memory: MemoryConfig,
+    pub moa: MoaConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,6 +782,7 @@ impl Config {
             mcp: merged.mcp,
             logging: merged.logging,
             memory: merged.memory,
+            moa: merged.moa,
         })
     }
 }
@@ -1337,6 +1401,43 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
         },
     };
 
+    // MoA: enabling in either scope enables (opt-in OR semantics, like browser
+    // switches); non-empty project references win, else global; scalar fields
+    // follow the "project non-default wins" pattern used by MemoryConfig.
+    let moa = MoaConfig {
+        enabled: global.moa.enabled || project.moa.enabled,
+        references: if !project.moa.references.is_empty() {
+            project.moa.references
+        } else {
+            global.moa.references
+        },
+        fanout: if project.moa.fanout != MoaConfig::default().fanout {
+            project.moa.fanout
+        } else {
+            global.moa.fanout
+        },
+        reference_timeout_secs: if project.moa.reference_timeout_secs
+            != MoaConfig::default().reference_timeout_secs
+        {
+            project.moa.reference_timeout_secs
+        } else {
+            global.moa.reference_timeout_secs
+        },
+        reference_max_tokens: if project.moa.reference_max_tokens
+            != MoaConfig::default().reference_max_tokens
+        {
+            project.moa.reference_max_tokens
+        } else {
+            global.moa.reference_max_tokens
+        },
+        privacy_filter: if !project.moa.privacy_filter.is_empty() {
+            project.moa.privacy_filter
+        } else {
+            global.moa.privacy_filter
+        },
+        trace_enabled: global.moa.trace_enabled || project.moa.trace_enabled,
+    };
+
     ConfigFile {
         project_instructions,
         default,
@@ -1354,6 +1455,7 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
         mcp,
         logging,
         memory,
+        moa,
     }
 }
 
@@ -2113,6 +2215,136 @@ allow = ["commit", "review-pr", "db:*"]
         assert!(config.default.model.is_none());
         assert!(config.providers.is_empty());
         assert!(config.profiles.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // MoaConfig tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn moa_absent_section_deserializes_to_defaults() {
+        // A legacy TOML with no [moa] section must load with MoA disabled and
+        // an empty slot list — zero behaviour change for existing configs.
+        let config: ConfigFile = toml::from_str("").unwrap();
+        assert!(!config.moa.enabled);
+        assert!(config.moa.references.is_empty());
+        assert_eq!(config.moa.fanout, "user_turn");
+        assert_eq!(config.moa.reference_timeout_secs, 120);
+        assert_eq!(config.moa.reference_max_tokens, 4096);
+        assert_eq!(config.moa.privacy_filter, "");
+        assert!(!config.moa.trace_enabled);
+        assert_eq!(config.moa, MoaConfig::default());
+    }
+
+    #[test]
+    fn moa_section_parses_slots_and_overrides() {
+        let toml_str = r#"
+[moa]
+enabled = true
+fanout = "every_n:3"
+reference_timeout_secs = 30
+reference_max_tokens = 2048
+privacy_filter = "display"
+trace_enabled = true
+
+[[moa.references]]
+provider_id = "openai"
+model = "gpt-4o"
+max_tokens = 1024
+temperature = 0.4
+
+[[moa.references]]
+provider_id = "anthropic"
+model = "claude-3-5-sonnet"
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(config.moa.enabled);
+        assert_eq!(config.moa.fanout, "every_n:3");
+        assert_eq!(config.moa.reference_timeout_secs, 30);
+        assert_eq!(config.moa.reference_max_tokens, 2048);
+        assert_eq!(config.moa.privacy_filter, "display");
+        assert!(config.moa.trace_enabled);
+        assert_eq!(config.moa.references.len(), 2);
+        assert_eq!(config.moa.references[0].provider_id, "openai");
+        assert_eq!(config.moa.references[0].model, "gpt-4o");
+        assert_eq!(config.moa.references[0].max_tokens, Some(1024));
+        assert_eq!(config.moa.references[0].temperature, Some(0.4));
+        assert_eq!(config.moa.references[1].provider_id, "anthropic");
+        assert_eq!(config.moa.references[1].max_tokens, None);
+        assert_eq!(config.moa.references[1].temperature, None);
+    }
+
+    #[test]
+    fn moa_merge_enables_in_either_scope_and_project_refs_win() {
+        let global = ConfigFile {
+            moa: MoaConfig {
+                enabled: true,
+                references: vec![MoaSlot {
+                    provider_id: "global".into(),
+                    model: "g".into(),
+                    max_tokens: None,
+                    temperature: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let project = ConfigFile {
+            moa: MoaConfig {
+                enabled: false,
+                references: vec![MoaSlot {
+                    provider_id: "project".into(),
+                    model: "p".into(),
+                    max_tokens: None,
+                    temperature: None,
+                }],
+                fanout: "per_iteration".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = merge_config_files(global, project);
+        // OR semantics: enabled in either scope enables.
+        assert!(merged.moa.enabled);
+        // Non-empty project references win over global.
+        assert_eq!(merged.moa.references.len(), 1);
+        assert_eq!(merged.moa.references[0].provider_id, "project");
+        // Non-default project scalar wins.
+        assert_eq!(merged.moa.fanout, "per_iteration");
+    }
+
+    #[test]
+    fn moa_merge_privacy_filter_and_trace_follow_scope_rules() {
+        let global = ConfigFile {
+            moa: MoaConfig {
+                privacy_filter: "full".into(),
+                trace_enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let project = ConfigFile {
+            moa: MoaConfig {
+                privacy_filter: "display".into(),
+                trace_enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = merge_config_files(global, project);
+        // Non-empty project privacy_filter wins over global.
+        assert_eq!(merged.moa.privacy_filter, "display");
+        // OR semantics: tracing enabled in either scope enables.
+        assert!(merged.moa.trace_enabled);
+
+        // Empty project privacy_filter falls back to global.
+        let global = ConfigFile {
+            moa: MoaConfig { privacy_filter: "full".into(), ..Default::default() },
+            ..Default::default()
+        };
+        let merged = merge_config_files(global, ConfigFile::default());
+        assert_eq!(merged.moa.privacy_filter, "full");
+        assert!(!merged.moa.trace_enabled);
     }
 
     #[test]

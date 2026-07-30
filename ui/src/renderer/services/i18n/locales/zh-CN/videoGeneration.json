@@ -312,6 +312,8 @@
       "preparingHint": "规划完成后，镜头会按故事顺序出现在这里。",
       "firstFramePending": "首帧待生成",
       "firstFramePendingHint": "首帧图片将在生成视频阶段生成并展示",
+      "videoPending": "视频待生成",
+      "videoPendingHint": "生成成片后，镜头视频会显示在这里",
       "shotAlt": "镜头 {{number}}",
       "shotNumber": "镜头 {{number}}",
       "visualDirection": "画面描述",

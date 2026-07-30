@@ -33,6 +33,34 @@ impl CharacterPortraitsGenerator {
         crate::planning::portrait_medium_lock_line(style)
     }
 
+    fn face_guidance(character: &CharacterInScene, style: &str) -> String {
+        crate::planning::portrait_face_clause_for_character(
+            &character.identifier_in_scene,
+            &Self::features_line(character),
+            style,
+        )
+    }
+
+    fn age_lock(character: &CharacterInScene, style: &str) -> String {
+        crate::planning::child_style_lock_if_needed_for_style(
+            &character.identifier_in_scene,
+            &Self::features_line(character),
+            style,
+        )
+    }
+
+    fn build_three_view_prompt(character: &CharacterInScene, style: &str) -> String {
+        include_str!(
+            "../../prompts/character_portraits_generator__prompt_template_three_view.txt"
+        )
+        .replace("{identifier}", &character.identifier_in_scene)
+        .replace("{features}", &Self::features_line(character))
+        .replace("{style}", &Self::style_line(style))
+        .replace("{medium_lock}", &Self::medium_lock(style))
+        .replace("{face_guidance}", &Self::face_guidance(character, style))
+        .replace("{age_lock}", &Self::age_lock(character, style))
+    }
+
     async fn cleanup_legacy_files(character_dir: &Path) {
         for name in ["front.png", "side.png", "back.png"] {
             let p = character_dir.join(name);
@@ -64,26 +92,12 @@ impl CharacterPortraitsGenerator {
         }
 
         if !sheet.exists() {
-            let features = Self::features_line(character);
-            let prompt = include_str!(
-                "../../prompts/character_portraits_generator__prompt_template_three_view.txt"
-            )
-            .replace("{identifier}", &character.identifier_in_scene)
-            .replace("{features}", &features)
-            .replace("{style}", &Self::style_line(style))
-            .replace("{medium_lock}", &Self::medium_lock(style));
+            let prompt = Self::build_three_view_prompt(character, style);
             self.image.generate(&prompt, &[], &sheet).await?;
         } else if !crate::media_local::is_usable_image_file(&sheet) {
             // e.g. JPEG bytes saved as .png without decode support — regenerate.
             let _ = tokio::fs::remove_file(&sheet).await;
-            let features = Self::features_line(character);
-            let prompt = include_str!(
-                "../../prompts/character_portraits_generator__prompt_template_three_view.txt"
-            )
-            .replace("{identifier}", &character.identifier_in_scene)
-            .replace("{features}", &features)
-            .replace("{style}", &Self::style_line(style))
-            .replace("{medium_lock}", &Self::medium_lock(style));
+            let prompt = Self::build_three_view_prompt(character, style);
             self.image.generate(&prompt, &[], &sheet).await?;
         }
 
@@ -202,7 +216,9 @@ mod tests {
             "(static) red hanfu, black long hair; (dynamic) jade pendant",
         )
         .replace("{style}", "cinematic film look")
-        .replace("{medium_lock}", "live-action cinematic");
+        .replace("{medium_lock}", "live-action cinematic")
+        .replace("{face_guidance}", "Clean healthy skin")
+        .replace("{age_lock}", "");
         let feat_pos = prompt.find("Features").expect("Features");
         let style_pos = prompt.find("Style:").expect("Style");
         assert!(feat_pos < style_pos);
@@ -210,6 +226,22 @@ mod tests {
         assert!(lower.contains("same person") || lower.contains("one character"));
         assert!(lower.contains("three-panel") || lower.contains("three-view") || lower.contains("panels"));
         assert!(prompt.contains("red hanfu"));
+        assert!(lower.contains("no dirt") || lower.contains("clean"));
         assert!(!lower.contains("theme lock"));
+    }
+
+    #[test]
+    fn child_three_view_prompt_includes_child_face_lock() {
+        let ch = CharacterInScene {
+            idx: 0,
+            identifier_in_scene: "小明".into(),
+            is_visible: true,
+            static_features: "8岁男孩，黑短发，白T恤".into(),
+            dynamic_features: None,
+        };
+        let prompt = CharacterPortraitsGenerator::build_three_view_prompt(&ch, "cinematic film look");
+        let lower = prompt.to_ascii_lowercase();
+        assert!(lower.contains("child") || prompt.contains("儿童") || lower.contains("young"));
+        assert!(lower.contains("makeup") || lower.contains("dirt") || prompt.contains("妆"));
     }
 }

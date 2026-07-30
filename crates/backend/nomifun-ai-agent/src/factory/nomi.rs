@@ -46,6 +46,7 @@ fn apply_model_only_ceiling(overrides: &mut NomiBuildExtra) {
     overrides.session_mode = Some("default".to_owned());
     overrides.max_turns = Some(1);
     overrides.goal = None;
+    overrides.moa = None;
     overrides.delegation_policy = DelegationPolicy::Disabled;
 }
 
@@ -571,6 +572,77 @@ pub(super) async fn build(
         None
     };
 
+    // MoA global fallback: a session that carries no explicit `extra.moa`
+    // inherits the System-Settings-wide `moa_settings` preference. Session
+    // extra always wins; a non-owner runtime was already ceilinged to
+    // `moa = None` above and must NOT be re-widened from global settings;
+    // companion sessions never enable MoA (the bridge gate below also holds).
+    if is_instance_owner && overrides.moa.is_none() && !overrides.companion {
+        let global_raw = read_raw_pref(&deps, PREF_MOA_SETTINGS).await;
+        apply_global_moa_fallback(&mut overrides, global_raw.as_deref());
+    }
+
+    // MoA bridge: convert the opt-in `extra.moa` DTO and resolve each reference
+    // slot's provider row into a ready Config. Companion sessions and sessions
+    // with no usable slot stay single-model (`None` → the manager never calls
+    // `set_moa_state`, byte-identical to a build without MoA).
+    let moa = super::moa::resolve_moa_bridge(
+        &overrides,
+        &deps.provider_repo,
+        &deps.encryption_key,
+        std::path::Path::new(&ctx.workspace),
+        &deps.data_dir,
+        &ctx.conversation_id,
+    )
+    .await;
+    if let Some(ref bridge) = moa {
+        info!(
+            conversation_id = %ctx.conversation_id,
+            reference_slots = bridge.slots.len(),
+            fanout = %bridge.config.fanout,
+            "MoA reference fan-out enabled for nomi session"
+        );
+    }
+
+    // Goal restore source, first match wins: an explicit `resume_state`
+    // carried in the build extra, else the persisted active/paused/waiting
+    // row for this conversation (goal persistence on). Terminal rows
+    // (complete/blocked/cleared) stay in the DB for audit but never restart
+    // continuation; a corrupt payload fails soft to "no restore".
+    let goal_resume_state: Option<nomi_agent::goal::state::GoalState> =
+        match overrides.goal.as_ref().and_then(|g| g.resume_state.clone()) {
+            Some(raw) => match serde_json::from_value(raw) {
+                Ok(state) => Some(state),
+                Err(e) => {
+                    warn!(
+                        conversation_id = %ctx.conversation_id,
+                        error = %e,
+                        "Ignoring malformed goal resume_state in build extra"
+                    );
+                    None
+                }
+            },
+            None => match deps.goal_repo.as_ref() {
+                Some(repo) => match repo.load_by_session(&ctx.conversation_id).await {
+                    Ok(Some(row))
+                        if crate::goal_bridge::goal_status_is_restorable(&row.status) =>
+                    {
+                        Some(crate::goal_bridge::goal_row_to_state(&row))
+                    }
+                    Ok(_) => None,
+                    Err(e) => {
+                        warn!(
+                            conversation_id = %ctx.conversation_id,
+                            error = %e,
+                            "Failed to load persisted goal; session starts without restore"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            },
+        };
+
     let config = NomiResolvedConfig {
         provider: fields.provider,
         api_key: fields.api_key,
@@ -625,6 +697,9 @@ pub(super) async fn build(
                 g.max_auto_continuations.unwrap_or(8),
             )
         }),
+        goal_resume_state,
+        // MoA bridge payload (resolved above; None = single-model, zero change).
+        moa,
         // Shared browser secret-vault descriptor (built above; None when
         // browser-use is off). It carries policy credentials, not Host/profile
         // ownership.
@@ -741,6 +816,12 @@ pub(super) async fn build(
         host_wiring,
     )
     .await?;
+    // Goal persistence: wire the repository so the manager mirrors every goal
+    // state change (turn end / user actions) into the `goals` table. Absent
+    // (`None`) = persistence off, goals stay in-memory only (fail-safe).
+    if let Some(goal_repo) = deps.goal_repo.clone() {
+        agent.register_goal_persistence(goal_repo);
+    }
     // Native cron tools persist background work and can recursively create
     // model traffic. They are host-control capabilities, not part of the
     // secondary principal's model-only ceiling. Register them only for the
@@ -793,6 +874,11 @@ const PREF_BROWSER_VISUAL_FALLBACK: &str = "agent.browserUse.visualFallback";
 const PREF_BROWSER_SOURCE: &str = "agent.browserUse.source";
 /// Browser Host 来源默认值（无设置行/无 client_prefs 时）：系统安装的 Chrome / Edge。
 const BROWSER_SOURCE_DEFAULT: &str = "system";
+/// Global (System Settings) MoA configuration, stored in `client_preferences`
+/// as a `MoaSettings` JSON string. Written by the frontend through the generic
+/// `GET/PUT /api/settings/client` key-value endpoints; read here per session as
+/// the fallback when the conversation carries no explicit `extra.moa`.
+const PREF_MOA_SETTINGS: &str = "moa_settings";
 
 /// Read a boolean `client_preferences` toggle live, falling back to
 /// `host_default` when there is no setting row (fresh install) or no
@@ -851,6 +937,48 @@ async fn read_string_pref(deps: &AgentFactoryDeps, key: &str, host_default: &str
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| host_default.to_owned()),
         Err(_) => host_default.to_owned(),
+    }
+}
+
+/// Read a raw `client_preferences` value live, verbatim (no quote stripping —
+/// the stored value may be a JSON document, e.g. [`PREF_MOA_SETTINGS`]).
+/// `None` when there is no row, the row is blank, no repo is wired, or the
+/// read fails — callers treat all of those as "no global value".
+async fn read_raw_pref(deps: &AgentFactoryDeps, key: &str) -> Option<String> {
+    let repo = deps.client_prefs.as_ref()?;
+    match repo.get_by_keys(&[key]).await {
+        Ok(rows) => rows
+            .into_iter()
+            .find(|r| r.key == key)
+            .map(|r| r.value)
+            .filter(|v| !v.trim().is_empty()),
+        Err(_) => None,
+    }
+}
+
+/// Apply the global `moa_settings` fallback onto the session overrides.
+/// Precedence: an explicit session `extra.moa` always wins; companion
+/// sessions never inherit MoA; a malformed global JSON degrades to "no
+/// fallback" with a warning (never a build error). Pure so the precedence
+/// matrix is unit-testable without a repo.
+fn apply_global_moa_fallback(overrides: &mut NomiBuildExtra, global_raw: Option<&str>) {
+    if overrides.moa.is_some() || overrides.companion {
+        return;
+    }
+    let Some(raw) = global_raw else {
+        return;
+    };
+    // The frontend persists the settings as a JSON *string* value, and the
+    // client-prefs service re-serializes every value — so the stored row is a
+    // double-encoded string literal (`"{\"enabled\":...}"`). Unwrap that layer
+    // first; a bare object (written by non-UI clients) still parses directly.
+    let unwrapped = serde_json::from_str::<String>(raw);
+    let effective = unwrapped.as_deref().unwrap_or(raw);
+    match serde_json::from_str::<nomifun_api_types::MoaSettings>(effective) {
+        Ok(settings) => overrides.moa = Some(settings),
+        Err(error) => {
+            warn!(error = %error, "Ignoring malformed global moa_settings preference");
+        }
     }
 }
 
@@ -2656,5 +2784,70 @@ mod tests {
         let staged =
             resolve_write_policy(WriteSurface::ExternalChannel, &reconstruct(&on), "conv-c");
         assert!(matches!(staged.mode, WriteMode::Staged { .. }));
+    }
+
+    #[test]
+    fn global_moa_fallback_fills_absent_extra() {
+        let mut overrides = NomiBuildExtra::default();
+        let global = r#"{"enabled":true,"references":[{"provider_id":"p1","model":"m1"}]}"#;
+        apply_global_moa_fallback(&mut overrides, Some(global));
+        let moa = overrides.moa.expect("global settings must be inherited");
+        assert!(moa.enabled);
+        assert_eq!(moa.references.len(), 1);
+        assert_eq!(moa.references[0].model, "m1");
+    }
+
+    #[test]
+    fn global_moa_fallback_unwraps_double_encoded_string_row() {
+        // The real `client_preferences` row: the frontend writes the settings
+        // as a JSON string value and the prefs service serializes that value
+        // again, so the stored row is a JSON *string literal* containing the
+        // MoaSettings document.
+        let mut overrides = NomiBuildExtra::default();
+        let inner = r#"{"enabled":true,"references":[{"provider_id":"p1","model":"m1"}]}"#;
+        let stored = serde_json::to_string(inner).expect("encode string row");
+        apply_global_moa_fallback(&mut overrides, Some(&stored));
+        let moa = overrides.moa.expect("double-encoded settings must be inherited");
+        assert!(moa.enabled);
+        assert_eq!(moa.references.len(), 1);
+        assert_eq!(moa.references[0].model, "m1");
+    }
+
+    #[test]
+    fn global_moa_fallback_never_overrides_session_extra() {
+        let mut overrides = NomiBuildExtra {
+            moa: Some(nomifun_api_types::MoaSettings {
+                enabled: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let global = r#"{"enabled":true,"references":[{"provider_id":"p1","model":"m1"}]}"#;
+        apply_global_moa_fallback(&mut overrides, Some(global));
+        // The explicit (disabled) session value wins over the enabled global.
+        let moa = overrides.moa.expect("session extra must be preserved");
+        assert!(!moa.enabled);
+        assert!(moa.references.is_empty());
+    }
+
+    #[test]
+    fn global_moa_fallback_skips_companion_sessions() {
+        let mut overrides = NomiBuildExtra {
+            companion: true,
+            ..Default::default()
+        };
+        let global = r#"{"enabled":true,"references":[{"provider_id":"p1","model":"m1"}]}"#;
+        apply_global_moa_fallback(&mut overrides, Some(global));
+        assert!(overrides.moa.is_none(), "companions never inherit MoA");
+    }
+
+    #[test]
+    fn global_moa_fallback_degrades_on_malformed_json() {
+        let mut overrides = NomiBuildExtra::default();
+        apply_global_moa_fallback(&mut overrides, Some("{not json"));
+        assert!(overrides.moa.is_none(), "bad JSON must degrade to no fallback");
+
+        apply_global_moa_fallback(&mut overrides, None);
+        assert!(overrides.moa.is_none());
     }
 }

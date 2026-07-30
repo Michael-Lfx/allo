@@ -5,9 +5,14 @@
 //! audit) until the model proves completion via `update_goal`, hits the
 //! auto-continuation cap, or runs into `max_turns`.
 
+pub mod judge;
 pub mod runtime;
 pub mod state;
 pub mod tool;
 
-pub use runtime::{GoalRuntime, GoalSpec};
-pub use state::{GoalState, GoalStatus};
+pub use judge::{
+    BackgroundProcessInfo, ContractDraftError, GoalJudgeClient, JudgeOutcome, ProviderJudgeClient,
+    WaitDirective, draft_contract,
+};
+pub use runtime::{GoalRuntime, GoalSpec, GoalWaitProbe};
+pub use state::{GoalContract, GoalState, GoalStatus, GoalVerdict};

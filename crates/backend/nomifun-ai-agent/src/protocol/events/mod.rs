@@ -60,6 +60,12 @@ pub enum AgentStreamEvent {
     /// show duration / token cost and telemetry can record per-turn stats.
     /// Purely additive: consumers that don't recognise it ignore it.
     TurnCompleted(TurnCompletedEventData),
+    /// One MoA reference model's advisory answer for the current message.
+    /// Purely additive: consumers that don't recognise it ignore it.
+    MoaReference(MoaReferenceEventData),
+    /// MoA fan-out progress (`done` of `total` reference calls finished).
+    /// Purely additive: consumers that don't recognise it ignore it.
+    MoaProgress(MoaProgressEventData),
     Finish(FinishEventData),
     Error(ErrorEventData),
     System(serde_json::Value),
@@ -230,6 +236,66 @@ pub struct TurnCompletedEventData {
     /// Cursor-style category breakdown for the last provider request.
     #[serde(default)]
     pub context_breakdown: Option<ContextBreakdownData>,
+    /// MoA reference fan-out stats for this turn (per-slot tokens + catalog
+    /// cost). `None` = no fan-out ran this turn (single-model, byte-identical
+    /// wire shape to before this field existed for old consumers).
+    #[serde(default)]
+    pub moa: Option<MoaTurnStatsData>,
+}
+
+/// Per-turn Mixture-of-Agents aggregate: one entry per reference slot that
+/// was consulted this turn, plus the summed catalog cost when every slot has
+/// a known price.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct MoaTurnStatsData {
+    pub slots: Vec<MoaSlotStatsData>,
+    /// Sum of all known per-slot costs (USD). `None` when no slot has a
+    /// catalog price (never a partial-looking zero).
+    #[serde(default)]
+    pub total_cost_usd: Option<f64>,
+}
+
+/// One MoA reference slot's usage for the turn. A failed slot reports zero
+/// tokens; `cost_usd` is `None` when the catalog price for either side is
+/// unknown (tokens are still shown).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct MoaSlotStatsData {
+    /// Slot label, typically `"provider_id/model"`.
+    pub label: String,
+    #[ts(type = "number")]
+    pub input_tokens: u64,
+    #[ts(type = "number")]
+    pub output_tokens: u64,
+    /// Catalog-priced cost for this slot (USD), `None` when unpriced.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+/// Data for the `MoaReference` event — one reference model's advisory answer
+/// delivered during a Mixture-of-Agents fan-out. `index` is 1-based within
+/// `total` configured reference slots.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct MoaReferenceEventData {
+    pub msg_id: String,
+    /// Human-readable slot label, typically `"provider_id/model"`.
+    pub label: String,
+    /// Advice text, or a `"[failed: …]"` sentinel when the slot errored out.
+    pub text: String,
+    pub index: u32,
+    pub total: u32,
+}
+
+/// Data for the `MoaProgress` event — Mixture-of-Agents fan-out progress
+/// (`done` of `total` reference calls finished).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "../../../../ui/src/common/protocolBindings/")]
+pub struct MoaProgressEventData {
+    pub msg_id: String,
+    pub done: u32,
+    pub total: u32,
 }
 
 /// Cross-backend normalized "why did the turn end" reason. Deliberately NOT the
@@ -279,6 +345,10 @@ mod tests {
         export_binding_if_changed::<FinishEventData>("FinishEventData.ts");
         export_binding_if_changed::<TurnCompletedEventData>("TurnCompletedEventData.ts");
         export_binding_if_changed::<TurnStopReason>("TurnStopReason.ts");
+        export_binding_if_changed::<MoaTurnStatsData>("MoaTurnStatsData.ts");
+        export_binding_if_changed::<MoaSlotStatsData>("MoaSlotStatsData.ts");
+        export_binding_if_changed::<MoaReferenceEventData>("MoaReferenceEventData.ts");
+        export_binding_if_changed::<MoaProgressEventData>("MoaProgressEventData.ts");
     }
     use agent_client_protocol::schema::{
         ContentBlock as SdkContentBlock, ContentChunk, Diff, ImageContent, PermissionOption,
@@ -305,6 +375,54 @@ mod tests {
             assert_eq!(data.content, "Hello world");
         } else {
             panic!("Expected Text event");
+        }
+    }
+
+    #[test]
+    fn moa_reference_event_roundtrip() {
+        let event = AgentStreamEvent::MoaReference(MoaReferenceEventData {
+            msg_id: "msg-1".into(),
+            label: "provider-a/model-x".into(),
+            text: "advice".into(),
+            index: 1,
+            total: 2,
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "moa_reference");
+        assert_eq!(json["data"]["msg_id"], "msg-1");
+        assert_eq!(json["data"]["label"], "provider-a/model-x");
+        assert_eq!(json["data"]["text"], "advice");
+        assert_eq!(json["data"]["index"], 1);
+        assert_eq!(json["data"]["total"], 2);
+
+        let parsed: AgentStreamEvent = serde_json::from_value(json).unwrap();
+        if let AgentStreamEvent::MoaReference(data) = parsed {
+            assert_eq!(data.label, "provider-a/model-x");
+            assert_eq!(data.index, 1);
+        } else {
+            panic!("Expected MoaReference event");
+        }
+    }
+
+    #[test]
+    fn moa_progress_event_roundtrip() {
+        let event = AgentStreamEvent::MoaProgress(MoaProgressEventData {
+            msg_id: "msg-1".into(),
+            done: 1,
+            total: 3,
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "moa_progress");
+        assert_eq!(json["data"]["msg_id"], "msg-1");
+        assert_eq!(json["data"]["done"], 1);
+        assert_eq!(json["data"]["total"], 3);
+
+        let parsed: AgentStreamEvent = serde_json::from_value(json).unwrap();
+        if let AgentStreamEvent::MoaProgress(data) = parsed {
+            assert_eq!(data.done, 1);
+            assert_eq!(data.total, 3);
+        } else {
+            panic!("Expected MoaProgress event");
         }
     }
 
@@ -2612,6 +2730,15 @@ mod tests {
                     messages_summarized: Some(18),
                 }),
             }),
+            moa: Some(MoaTurnStatsData {
+                slots: vec![MoaSlotStatsData {
+                    label: "p1/model-x".into(),
+                    input_tokens: 900,
+                    output_tokens: 120,
+                    cost_usd: Some(0.0033),
+                }],
+                total_cost_usd: Some(0.0033),
+            }),
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "turn_completed");
@@ -2625,6 +2752,9 @@ mod tests {
         assert_eq!(json["data"]["stop_reason"], "end_turn");
         assert_eq!(json["data"]["context_breakdown"]["conversation"], 7500);
         assert_eq!(json["data"]["context_breakdown"]["summarized"]["trigger"], "auto");
+        assert_eq!(json["data"]["moa"]["slots"][0]["label"], "p1/model-x");
+        assert_eq!(json["data"]["moa"]["slots"][0]["input_tokens"], 900);
+        assert_eq!(json["data"]["moa"]["total_cost_usd"], 0.0033);
 
         // Back-compat: an old payload with no stop_reason / context fields
         // deserializes to defaults (None / 0) via `#[serde(default)]`.
@@ -2640,7 +2770,42 @@ mod tests {
                     && d.context_tokens == 0
                     && d.context_window == 0
                     && d.context_breakdown.is_none()
+                    && d.moa.is_none()
         ));
+    }
+
+    #[test]
+    fn moa_turn_stats_roundtrip_preserves_optional_costs() {
+        // A mixed-pricing payload survives a serde roundtrip: unpriced slot
+        // keeps `cost_usd: None` (wire `null`), priced slot keeps its value.
+        let stats = MoaTurnStatsData {
+            slots: vec![
+                MoaSlotStatsData {
+                    label: "p1/priced".into(),
+                    input_tokens: 1000,
+                    output_tokens: 200,
+                    cost_usd: Some(0.0045),
+                },
+                MoaSlotStatsData {
+                    label: "p2/unpriced".into(),
+                    input_tokens: 500,
+                    output_tokens: 0,
+                    cost_usd: None,
+                },
+            ],
+            total_cost_usd: Some(0.0045),
+        };
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["slots"][1]["cost_usd"], serde_json::Value::Null);
+        let back: MoaTurnStatsData = serde_json::from_value(json).unwrap();
+        assert_eq!(back, stats);
+
+        // Absent optional costs deserialize to None via `#[serde(default)]`.
+        let sparse: MoaSlotStatsData = serde_json::from_value(serde_json::json!({
+            "label": "p/m", "input_tokens": 1, "output_tokens": 2
+        }))
+        .unwrap();
+        assert!(sparse.cost_usd.is_none());
     }
 
     #[test]

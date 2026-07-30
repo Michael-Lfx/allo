@@ -88,7 +88,9 @@ impl Tool for UpdateGoalTool {
             "status": match status {
                 GoalStatus::Complete => "complete",
                 GoalStatus::Blocked => "blocked",
-                GoalStatus::Active => "active",
+                // `status` is only ever one of the two arms above; other
+                // variants are unreachable here but keep the match total.
+                _ => "active",
             },
             "evidence": evidence,
         });

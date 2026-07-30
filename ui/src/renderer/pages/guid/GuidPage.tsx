@@ -104,6 +104,9 @@ const GuidPage: React.FC = () => {
   const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
     useState<AppliedCollaborationTemplate | null>(null);
   const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
+  // Goal 模式：开启后首条输入会被设为会话目标（等价 /goal <text>），
+  // 仅 nomi 入口展示开关；实际设定在 useGuidSend 的 nomi 分支里执行。
+  const [goalMode, setGoalMode] = useState(false);
   const pendingAutoSendRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   const inputSnapshotRef = useRef('');
@@ -351,6 +354,7 @@ const GuidPage: React.FC = () => {
     isGoogleAuth: modelSelection.isGoogleAuth,
     applyAdvancedConfig: advancedConfig.applyToConversation,
     autoWork: advancedConfig.autoWork,
+    goalMode,
     delegationPolicy,
     executionModelPool,
     decisionPolicy,
@@ -822,6 +826,9 @@ const GuidPage: React.FC = () => {
       mcpServers={availableMcpServers}
       selectedMcpServerIds={guidSelectedMcpServerIds ?? []}
       onToggleMcpServer={handleToggleMcpServer}
+      goalModeAvailable={effectiveAgentType === 'nomi'}
+      goalMode={goalMode}
+      onToggleGoalMode={() => setGoalMode((prev) => !prev)}
       hidePresetTag
       loading={guidInput.loading}
       autoWorkMode={isAutoWorkMode}

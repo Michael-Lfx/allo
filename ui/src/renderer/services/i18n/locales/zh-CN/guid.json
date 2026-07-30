@@ -52,6 +52,12 @@
     "runSettings": "执行方案",
     "runSettingsHide": "收起方案"
   },
+  "goalMode": {
+    "label": "Goal 模式",
+    "labelOn": "Goal 模式 · 开",
+    "tooltip": "开启后，首条输入将被设为会话目标（等价 /goal），回合结束后自动评估并续作",
+    "applyFailed": "目标设定失败，已作为普通消息发送"
+  },
   "modelProviderSaved": "模型已就绪，可以开始任务",
   "readiness": {
     "ready": "{{agent}} 已就绪 · 已选择 {{model}}",

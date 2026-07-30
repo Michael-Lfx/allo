@@ -85,14 +85,14 @@ const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact
         <div
           className={`font-600 text-white/72 ${compact ? 'text-10px leading-14px' : 'text-13px'}`}
         >
-          {t('videoGeneration.studio.storyboard.firstFramePending', {
-            defaultValue: 'First frame pending',
+          {t('videoGeneration.studio.storyboard.videoPending', {
+            defaultValue: 'Video pending',
           })}
         </div>
         {compact ? null : (
           <div className='max-w-320px text-12px leading-18px text-white/45'>
-            {t('videoGeneration.studio.storyboard.firstFramePendingHint', {
-              defaultValue: 'First-frame images are created and shown during video generation',
+            {t('videoGeneration.studio.storyboard.videoPendingHint', {
+              defaultValue: 'Shot videos appear here after film generation',
             })}
           </div>
         )}
@@ -110,6 +110,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact
         controls={!compact}
         muted={compact}
         playsInline
+        preload={compact ? 'metadata' : 'auto'}
         className='h-full w-full object-contain'
       />
     );
@@ -179,7 +180,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     );
   }
 
-  const mainPath = activeScene.videoPath ?? activeScene.imagePath;
+  const mainPath = activeScene.videoPath;
   const sceneNumber = activeScene.index + 1;
 
   return (
@@ -189,7 +190,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           <SceneMedia
             sessionId={sessionId}
             path={mainPath}
-            video={Boolean(activeScene.videoPath)}
+            video
             alt={t('videoGeneration.studio.storyboard.shotAlt', {
               number: sceneNumber,
               defaultValue: '镜头 {{number}}',
@@ -250,7 +251,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               <span className={styles.shotThumb}>
                 <SceneMedia
                   sessionId={sessionId}
-                  path={scene.imagePath}
+                  path={scene.videoPath}
+                  video
                   compact
                   alt={t('videoGeneration.studio.storyboard.shotAlt', {
                     number,

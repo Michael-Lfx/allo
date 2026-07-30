@@ -47,6 +47,7 @@ anyhow.workspace      = true
 thiserror.workspace   = true
 glob.workspace        = true
 chrono.workspace      = true
+regex.workspace       = true
 dirs.workspace        = true
 crossterm.workspace   = true
 is-terminal.workspace = true

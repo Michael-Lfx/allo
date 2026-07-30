@@ -40,6 +40,8 @@ pub use models::{
     NewProviderModel, ProviderConnectionRow, ProviderModelRow, ProviderModelUpdate,
     UpsertProviderConnectionParams,
 };
+pub use models::GoalRow;
+pub use repository::{IGoalRepository, SqliteGoalRepository, UpsertGoalParams};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
     ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,

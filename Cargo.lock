@@ -5350,6 +5350,7 @@ dependencies = [
  "nomi-tools",
  "nomi-types",
  "nomifun-common",
+ "regex",
  "rstest",
  "schemars 1.2.2",
  "serde",

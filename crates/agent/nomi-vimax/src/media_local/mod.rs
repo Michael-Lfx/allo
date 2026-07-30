@@ -170,7 +170,87 @@ fn require_ffmpeg() -> VimaxResult<PathBuf> {
     })
 }
 
-/// Concatenate ordered video clips with the ffmpeg concat demuxer → `out_path`.
+fn ffprobe_executable(ffmpeg: &Path) -> PathBuf {
+    ffmpeg
+        .parent()
+        .map(|dir| {
+            #[cfg(windows)]
+            {
+                dir.join("ffprobe.exe")
+            }
+            #[cfg(not(windows))]
+            {
+                dir.join("ffprobe")
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from("ffprobe"))
+}
+
+/// Probe container duration in seconds (ffprobe preferred; ffmpeg `-i` fallback).
+async fn probe_duration_secs(ffmpeg: &Path, input: &Path) -> Option<f64> {
+    let ffprobe = ffprobe_executable(ffmpeg);
+    if let Ok(output) = Command::new(&ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(input)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+    {
+        if output.status.success() {
+            if let Some(d) = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|d| *d > 0.0 && d.is_finite())
+            {
+                return Some(d);
+            }
+        }
+    }
+
+    // essentials installs sometimes only expose ffmpeg.exe on PATH — parse banner.
+    let output = Command::new(ffmpeg)
+        .args(["-hide_banner", "-i"])
+        .arg(input)
+        .args(["-f", "null", "-"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .ok()?;
+    let err = String::from_utf8_lossy(&output.stderr);
+    parse_ffmpeg_duration_banner(&err)
+}
+
+fn parse_ffmpeg_duration_banner(stderr: &str) -> Option<f64> {
+    // Duration: 00:00:12.48, start: 0.000000, bitrate: ...
+    let marker = "Duration: ";
+    let idx = stderr.find(marker)?;
+    let rest = &stderr[idx + marker.len()..];
+    let token = rest.split(',').next()?.trim();
+    let mut parts = token.split(':');
+    let h: f64 = parts.next()?.parse().ok()?;
+    let m: f64 = parts.next()?.parse().ok()?;
+    let s: f64 = parts.next()?.parse().ok()?;
+    let total = h * 3600.0 + m * 60.0 + s;
+    (total > 0.0 && total.is_finite()).then_some(total)
+}
+
+/// Concatenate ordered video clips → `out_path`.
+///
+/// Per-clip normalize forces identical CFR video + stereo AAC of **equal**
+/// duration (audio padded/trimmed to the video length). Final join uses the
+/// `concat` **filter** (not the concat demuxer): demuxer stitches A/V as
+/// independent streams, so short audio on early shots makes the last shot's
+/// picture play over silence even when that shot's own file has sound.
 pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult<()> {
     if clip_paths.is_empty() {
         return Err(VimaxError::Media("no clips to concatenate".into()));
@@ -180,78 +260,202 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let list_path = out_path.with_extension("concat.txt");
-    write_concat_list(&list_path, clip_paths).await?;
+    let norm_dir = out_path.with_extension("concat_norm");
+    let _ = tokio::fs::remove_dir_all(&norm_dir).await;
+    tokio::fs::create_dir_all(&norm_dir).await?;
 
-    let status = run_ffmpeg(
-        &ffmpeg,
-        &[
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            list_path.to_str().unwrap_or(""),
-            "-c",
-            "copy",
-            out_path.to_str().unwrap_or(""),
-        ],
-    )
-    .await?;
-
-    let _ = tokio::fs::remove_file(&list_path).await;
-
-    if status.success() {
-        return Ok(());
+    let mut normalized: Vec<PathBuf> = Vec::with_capacity(clip_paths.len());
+    for (i, clip) in clip_paths.iter().enumerate() {
+        let dest = norm_dir.join(format!("{i:03}.mp4"));
+        normalize_clip_for_concat(&ffmpeg, clip, &dest).await?;
+        normalized.push(dest);
     }
 
-    let list_path2 = out_path.with_extension("concat2.txt");
-    write_concat_list(&list_path2, clip_paths).await?;
-    let status2 = run_ffmpeg(
-        &ffmpeg,
-        &[
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            list_path2.to_str().unwrap_or(""),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-c:a",
-            "aac",
-            "-movflags",
-            "+faststart",
-            out_path.to_str().unwrap_or(""),
-        ],
-    )
-    .await?;
-    let _ = tokio::fs::remove_file(&list_path2).await;
-    if !status2.success() {
+    let out = out_path.to_str().unwrap_or("");
+    let n = normalized.len();
+
+    // filter_complex concat keeps each shot's A/V pair locked together.
+    let mut filter = String::new();
+    for i in 0..n {
+        filter.push_str(&format!("[{i}:v:0][{i}:a:0]"));
+    }
+    filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
+
+    let mut args: Vec<String> = vec!["-y".into()];
+    for p in &normalized {
+        args.push("-i".into());
+        args.push(p.to_string_lossy().into_owned());
+    }
+    args.extend([
+        "-filter_complex".into(),
+        filter,
+        "-map".into(),
+        "[v]".into(),
+        "-map".into(),
+        "[a]".into(),
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "medium".into(),
+        "-crf".into(),
+        "18".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        out.into(),
+    ]);
+
+    let status = run_ffmpeg_owned(&ffmpeg, &args).await?;
+    let _ = tokio::fs::remove_dir_all(&norm_dir).await;
+
+    if !status.success() {
         return Err(VimaxError::Media(format!(
-            "ffmpeg concat failed (exit {:?})",
+            "ffmpeg concat filter failed (exit {:?})",
+            status.code()
+        )));
+    }
+    Ok(())
+}
+
+/// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length.
+async fn normalize_clip_for_concat(
+    ffmpeg: &Path,
+    input: &Path,
+    output: &Path,
+) -> VimaxResult<()> {
+    let input_s = input.to_str().unwrap_or("");
+    let output_s = output.to_str().unwrap_or("");
+    let dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
+    let dur_arg = if dur > 0.05 {
+        format!("{dur:.3}")
+    } else {
+        String::new()
+    };
+    // whole_dur keeps AAC from ending early (dialogue often shorter than picture).
+    let af = if dur > 0.05 {
+        format!(
+            "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad=whole_dur={dur:.3}"
+        )
+    } else {
+        "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad"
+            .to_string()
+    };
+
+    // Path A: clip already has an audio stream.
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-i".into(),
+        input_s.into(),
+        "-map".into(),
+        "0:v:0".into(),
+        "-map".into(),
+        "0:a:0".into(),
+        "-vf".into(),
+        "fps=24,format=yuv420p,setpts=PTS-STARTPTS".into(),
+        "-af".into(),
+        af,
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-crf".into(),
+        "18".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+    ];
+    if !dur_arg.is_empty() {
+        args.push("-t".into());
+        args.push(dur_arg.clone());
+    } else {
+        args.push("-shortest".into());
+    }
+    args.push(output_s.into());
+
+    let status = run_ffmpeg_owned(ffmpeg, &args).await?;
+    if status.success() && is_usable_video_file(output) {
+        return Ok(());
+    }
+    let _ = tokio::fs::remove_file(output).await;
+
+    // Path B: missing/broken audio — synthesize stereo silence for the video duration.
+    tracing::warn!(
+        clip = %input.display(),
+        "normalize_clip: no usable audio; padding with silence"
+    );
+    let mut args2: Vec<String> = vec![
+        "-y".into(),
+        "-i".into(),
+        input_s.into(),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        "-vf".into(),
+        "fps=24,format=yuv420p,setpts=PTS-STARTPTS".into(),
+        "-map".into(),
+        "0:v:0".into(),
+        "-map".into(),
+        "1:a:0".into(),
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-crf".into(),
+        "18".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+    ];
+    if !dur_arg.is_empty() {
+        args2.push("-t".into());
+        args2.push(dur_arg);
+    } else {
+        args2.push("-shortest".into());
+    }
+    args2.push(output_s.into());
+
+    let status2 = run_ffmpeg_owned(ffmpeg, &args2).await?;
+    if !status2.success() || !is_usable_video_file(output) {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg normalize failed for {} (exit {:?})",
+            input.display(),
             status2.code()
         )));
     }
     Ok(())
 }
 
-async fn write_concat_list(list_path: &Path, clip_paths: &[&Path]) -> VimaxResult<()> {
-    let mut list = String::new();
-    for p in clip_paths {
-        let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        let s = abs.to_string_lossy().replace('\'', "'\\''");
-        list.push_str(&format!("file '{s}'\n"));
-    }
-    tokio::fs::write(list_path, list).await?;
-    Ok(())
+async fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> VimaxResult<std::process::ExitStatus> {
+    Command::new(ffmpeg)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .await
+        .map_err(|e| VimaxError::Media(format!("ffmpeg spawn: {e}")))
 }
 
-async fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> VimaxResult<std::process::ExitStatus> {
+async fn run_ffmpeg_owned(
+    ffmpeg: &Path,
+    args: &[String],
+) -> VimaxResult<std::process::ExitStatus> {
     Command::new(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
@@ -539,6 +743,125 @@ mod tests {
         std::fs::write(&path, b"<html>").unwrap();
         scrub_unusable_image(&path).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn parses_ffmpeg_duration_banner() {
+        let banner = "Input #0, mov, from 'x.mp4':\n  Duration: 00:00:12.48, start: 0.000000, bitrate: 1200 kb/s\n";
+        assert!((parse_ffmpeg_duration_banner(banner).unwrap() - 12.48).abs() < 0.01);
+    }
+
+    /// Early clips with audio shorter than video used to exhaust the audio
+    /// timeline under concat-demuxer, leaving the last shot silent. Reproduce
+    /// that shape of inputs and assert the final segment still has energy.
+    #[tokio::test]
+    async fn concat_keeps_audio_on_last_shot_when_early_audio_is_short() {
+        let Ok(ffmpeg) = require_ffmpeg() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+
+        // Clip 0: 3s video, only 1.2s of tone (audio shorter than picture).
+        // Do NOT use -shortest — that would truncate the whole file to 1.2s.
+        let c0 = dir.path().join("0.mp4");
+        let st0 = run_ffmpeg(
+            &ffmpeg,
+            &[
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=320x240:d=3:r=24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1.2",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                c0.to_str().unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(st0.success());
+
+        // Clip 1 (last): 3s video + full 3s tone — individually has sound.
+        let c1 = dir.path().join("1.mp4");
+        let st1 = run_ffmpeg(
+            &ffmpeg,
+            &[
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=320x240:d=3:r=24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=880:duration=3",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                c1.to_str().unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(st1.success());
+
+        let out = dir.path().join("final.mp4");
+        concat_videos(&[c0.as_path(), c1.as_path()], &out)
+            .await
+            .expect("concat");
+        assert!(is_usable_video_file(&out));
+
+        // Sample the last ~2s of the film; mean_volume must not be -inf.
+        let detect = Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-ss",
+                "4",
+                "-t",
+                "2",
+                "-i",
+            ])
+            .arg(&out)
+            .args(["-af", "volumedetect", "-f", "null", "-"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .unwrap();
+        let log = String::from_utf8_lossy(&detect.stderr);
+        assert!(
+            !log.contains("mean_volume: -inf"),
+            "last-shot audio silent after concat:\n{log}"
+        );
+        let mean = log
+            .lines()
+            .find(|l| l.contains("mean_volume:"))
+            .expect("volumedetect mean_volume");
+        // Tone should be well above digital silence.
+        assert!(
+            !mean.contains("-91.") && !mean.contains("-inf"),
+            "unexpected mean_volume line: {mean}"
+        );
     }
 }
 

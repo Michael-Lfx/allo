@@ -97,6 +97,10 @@ impl VertexProvider {
             });
         }
 
+        if let Some(t) = request.temperature {
+            body["temperature"] = json!(t);
+        }
+
         body
     }
 
@@ -412,5 +416,58 @@ pub fn auth_from_config(vc: &nomi_config::config::VertexConfig) -> GcpAuth {
         }
     } else {
         GcpAuth::ApplicationDefault
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomi_types::message::{ContentBlock, Message, Role};
+
+    fn minimal_request() -> LlmRequest {
+        LlmRequest {
+            model: "claude-test".into(),
+            system: "test".into(),
+            messages: vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "hi".into() }],
+            )],
+            tools: vec![],
+            max_tokens: 16,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+        }
+    }
+
+    fn test_provider() -> VertexProvider {
+        VertexProvider::new(
+            "test-project",
+            "us-central1",
+            GcpAuth::ApplicationDefault,
+            false,
+            ProviderCompat::anthropic_defaults(),
+        )
+    }
+
+    #[test]
+    fn vertex_temperature_some_is_serialized() {
+        let provider = test_provider();
+        let mut request = minimal_request();
+        request.temperature = Some(0.5);
+
+        let body = provider.build_request_body(&request);
+
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn vertex_temperature_none_is_omitted() {
+        let provider = test_provider();
+        let request = minimal_request();
+
+        let body = provider.build_request_body(&request);
+
+        assert!(body.get("temperature").is_none());
     }
 }

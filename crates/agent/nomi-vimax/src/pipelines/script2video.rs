@@ -193,17 +193,12 @@ impl Script2VideoPipeline {
             write_json_artifact(&shot_dir.join("shot_description.json"), shot).await?;
         }
 
-        emit(&progress, "frames_start", "正在按机位顺序生成关键帧");
-        self.generate_frames_sequential(
-            &plan.camera_tree,
-            &plan.shot_descriptions,
-            &plan.characters,
-            &registry,
-            &world_pairs,
-            &style,
-            &progress,
-        )
-        .await?;
+        emit(&progress, "frames_start", "跳过镜头首尾帧生成（Seedance 多参考图生视频）");
+        // Intentionally skip generate_frames_sequential: Seedance 2.0 rejects img2img
+        // photoreal frames as first/last_frame. Shot video uses multi reference_image
+        // (cast/env/prop + previous video_last_frame). Frame generators remain available
+        // for revise/manual workflows.
+        emit_pct(&progress, "frames_done", "镜头首尾帧已跳过，进入多参考图生视频", 55.0);
 
         emit(&progress, "video_clips_start", "正在串行生成镜头视频（一次一个）");
         self.generate_videos_sequential(
@@ -478,6 +473,10 @@ impl Script2VideoPipeline {
 
     /// Generate frames camera-by-camera in dependency order (parent before child).
     /// Avoids the parallel Notify race that could hang forever with no progress updates.
+    ///
+    /// Not used by the default Seedance 2.0 multi-ref R2V render path (kept for revise /
+    /// legacy first/last-frame workflows).
+    #[allow(dead_code)]
     async fn generate_frames_sequential(
         &self,
         cameras: &[Camera],
@@ -645,8 +644,8 @@ impl Script2VideoPipeline {
     /// Submit video-generation API calls one-by-one.
     /// On failure/cancel, stop immediately; already-saved clips remain for resume.
     ///
-    /// Within a scene, every timeline-adjacent shot reuses the previous clip's
-    /// extracted last frame as the next I2V first_frame (match-cut continuity).
+    /// Within a scene, every timeline-adjacent shot passes the previous clip's
+    /// `video_last_frame.png` as a `reference_image` (multi-ref R2V continuity).
     /// Cross-scene continuity is intentionally skipped (each scene has its own pipeline).
     async fn generate_videos_sequential(
         &self,
@@ -701,17 +700,16 @@ impl Script2VideoPipeline {
                 pct,
             );
 
-            // Timeline-adjacent continuity inside this scene (any camera):
-            // next I2V first_frame MUST be previous shot's video_last_frame.png.
+            // Timeline-adjacent continuity: previous shot's ending still as reference_image.
             let continuity_first = if i > 0 {
                 let prev = &shots[i - 1];
-                match ensure_shot_video_last_frame(&self.working_dir, prev.idx, true).await {
+                match ensure_shot_video_last_frame(&self.working_dir, prev.idx, false).await {
                     Ok(Some(path)) => {
                         emit(
                             progress,
                             "video_continuity",
                             &format!(
-                                "Shot {}: I2V first_frame ← shot {} video_last_frame.png (cam {}→{})",
+                                "Shot {}: reference_image ← shot {} video_last_frame.png (cam {}→{})",
                                 shot.idx, prev.idx, prev.cam_idx, shot.cam_idx
                             ),
                         );
@@ -719,7 +717,7 @@ impl Script2VideoPipeline {
                             shot = shot.idx,
                             prev = prev.idx,
                             continuity = %path.display(),
-                            "adjacent shot video continuity locked to previous video_last_frame"
+                            "adjacent shot multi-ref continuity locked to previous video_last_frame"
                         );
                         Some(path)
                     }
@@ -732,7 +730,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     }
                     Err(e) => {
                         return Err(VimaxError::Video(format!(
-                            "Shot {}: failed to extract previous shot {} video_last_frame.png: {e}",
+                            "Shot {}: failed to obtain previous shot {} video_last_frame.png: {e}",
                             shot.idx, prev.idx
                         )));
                     }
@@ -772,8 +770,8 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             {
                 Ok(()) => {
                     ok += 1;
-                    // Always refresh tail for the next adjacent shot.
-                    let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx, true).await;
+                    // Prefer API return_last_frame; ffmpeg-extract if still missing.
+                    let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx, false).await;
                     emit_pct(
                         progress,
                         "video_clip_done",
@@ -1209,6 +1207,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         let shot_dir = self.working_dir.join("shots").join(shot.idx.to_string());
         tokio::fs::create_dir_all(&shot_dir).await?;
         let video_path = shot_dir.join("video.mp4");
+        let video_last_frame_path = shot_dir.join("video_last_frame.png");
         media_local::scrub_unusable_video(&video_path).await?;
         if media_local::is_usable_video_file(&video_path) {
             emit(
@@ -1218,80 +1217,79 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             );
             return Ok(());
         }
-        let planned_ff = shot_dir.join("first_frame.png");
-        let lf = shot_dir.join("last_frame.png");
-        // Older privacy retries renamed multi-ref frames to *.privacy_bak.png and
-        // overwrote the canonical paths with text-only drawings — restore them.
-        restore_canonical_frame_from_privacy_bak(&planned_ff).await;
-        restore_canonical_frame_from_privacy_bak(&lf).await;
-        if !planned_ff.exists() {
-            return Err(VimaxError::msg(format!(
-                "first_frame missing for shot {}",
-                shot.idx
-            )));
-        }
-        // Prefer previous adjacent shot's video_last_frame.png for temporal continuity.
-        // Keep planned first_frame.png on disk unchanged (resume / revise / UI reference art).
+
         let continuity_source = continuity_first_frame
             .filter(|p| media_local::is_usable_image_file(p))
             .map(|p| p.to_path_buf());
         let using_video_continuity = continuity_source.is_some();
-        let ff: PathBuf = continuity_source
-            .clone()
-            .unwrap_or_else(|| planned_ff.clone());
-        // Audit copy: what Seedance actually received as first_frame for this shot video.
-        let i2v_ff_audit = shot_dir.join("i2v_first_frame.png");
-        if let Err(e) = tokio::fs::copy(&ff, &i2v_ff_audit).await {
-            tracing::warn!(
-                shot = shot.idx,
-                from = %ff.display(),
-                error = %e,
-                "failed to write i2v_first_frame.png audit copy"
-            );
+
+        let ref_pairs = shot_video_ref_pairs(
+            shot,
+            continuity_source.as_deref(),
+            characters,
+            registry,
+            world_pairs,
+        );
+        if ref_pairs.is_empty() {
+            return Err(VimaxError::Video(format!(
+                "Shot {}: no usable reference images (cast/env/prop{}) for multi-ref video",
+                shot.idx,
+                if using_video_continuity {
+                    ""
+                } else {
+                    "; first shot needs world/cast assets"
+                }
+            )));
         }
-        // Always pass last_frame when available so Seedance flf2v constrains the ending.
-        let use_last = lf.exists();
-        // Seedance forbids mixing first/last_frame with reference_image. Cast identity is
-        // locked by the frame(s) + text identity clause — do NOT attach three-views here.
+
+        let ref_paths: Vec<&Path> = ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
         let prompt = i2v_motion_prompt(
             shot,
             characters,
             style,
-            &[],
+            &ref_pairs,
             duration_secs,
             using_video_continuity,
         );
+        let ref_names: Vec<String> = ref_pairs
+            .iter()
+            .map(|(p, _)| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("ref.png")
+                    .to_string()
+            })
+            .collect();
         emit(
             progress,
             "video_clip_start",
             &format!(
-                "Generating shot {} video ({}s; I2V first←{}; continuity={}; last_frame={}; may queue / rate-limit)",
+                "Generating shot {} video ({}s; multi-ref ×{}; continuity={}; refs=[{}])",
                 shot.idx,
                 duration_secs,
-                ff.file_name().and_then(|s| s.to_str()).unwrap_or("?"),
+                ref_paths.len(),
                 using_video_continuity,
-                use_last
+                ref_names.join(", ")
             ),
         );
         tracing::info!(
             shot = shot.idx,
-            i2v_first = %ff.display(),
+            refs = ?ref_names,
             continuity = using_video_continuity,
-            last_frame = use_last,
-            "video I2V frame binding"
+            "video multi-ref R2V binding"
         );
 
-        let last_ref = if use_last { Some(lf.as_path()) } else { None };
         let first_err = match self
             .backends
             .video
             .generate(
                 &prompt,
-                Some(ff.as_path()),
-                last_ref,
-                &[],
+                None,
+                None,
+                &ref_paths,
                 duration_secs,
                 &video_path,
+                Some(&video_last_frame_path),
             )
             .await
         {
@@ -1301,80 +1299,103 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         };
 
         if let Some(err) = first_err {
-            emit(
-                progress,
-                "video_clip_start",
-                &format!(
-                    "Shot {}: possible real-person / privacy block on frame ({}). Drawing stylized I2V frames (canonical multi-ref frames kept; continuity source preserved)…",
-                    shot.idx,
-                    truncate_err(&err, 120)
-                ),
-            );
-            // Privacy retry MUST keep adjacent continuity: stylize the same continuity
-            // source (previous video_last_frame) — never fall back to this shot's planned_ff.
-            let stylized_ff = self
-                .ensure_stylized_i2v_frame(
-                    shot,
-                    if using_video_continuity {
-                        "continuity_first_frame"
-                    } else {
-                        "first_frame"
-                    },
-                    &ff,
-                    &shot.ff_desc,
-                    &shot.ff_vis_char_idxs,
-                    style,
-                    characters,
-                    registry,
-                    world_pairs,
-                )
-                .await?;
-            let _ = tokio::fs::copy(&stylized_ff, &i2v_ff_audit).await;
-            let stylized_lf = if lf.exists() {
-                Some(
-                    self.ensure_stylized_i2v_frame(
-                        shot,
-                        "last_frame",
-                        &lf,
-                        &shot.lf_desc,
-                        &shot.lf_vis_char_idxs,
-                        style,
-                        characters,
-                        registry,
-                        world_pairs,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-
-            let retry_i2v = self
-                .backends
-                .video
-                .generate(
-                    &prompt,
-                    Some(&stylized_ff),
-                    stylized_lf.as_deref(),
-                    &[],
-                    duration_secs,
-                    &video_path,
-                )
-                .await;
-
-            if let Err(retry_err) = retry_i2v {
-                if !should_retry_seedance_without_photoreal_frame(&retry_err)
-                    && !is_seedance_privacy_image_err(&retry_err)
-                {
-                    return Err(retry_err);
-                }
-                // Final fallback: text-to-video without any input image (bypasses image privacy).
+            // Drop continuity still (may still trip privacy on rare gateways) and retry
+            // with T2I cast/env/prop refs only; then pure T2V.
+            let asset_pairs: Vec<(PathBuf, String)> = ref_pairs
+                .iter()
+                .filter(|(p, _)| {
+                    continuity_source
+                        .as_ref()
+                        .map(|c| p != c)
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect();
+            if using_video_continuity && !asset_pairs.is_empty() {
                 emit(
                     progress,
                     "video_clip_start",
                     &format!(
-                        "Shot {}: stylized frame still blocked; falling back to text-to-video…",
-                        shot.idx
+                        "Shot {}: possible privacy block ({}). Retrying multi-ref without continuity still…",
+                        shot.idx,
+                        truncate_err(&err, 120)
+                    ),
+                );
+                let asset_paths: Vec<&Path> =
+                    asset_pairs.iter().map(|(p, _)| p.as_path()).collect();
+                let retry_prompt = i2v_motion_prompt(
+                    shot,
+                    characters,
+                    style,
+                    &asset_pairs,
+                    duration_secs,
+                    false,
+                );
+                match self
+                    .backends
+                    .video
+                    .generate(
+                        &retry_prompt,
+                        None,
+                        None,
+                        &asset_paths,
+                        duration_secs,
+                        &video_path,
+                        Some(&video_last_frame_path),
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        // success
+                    }
+                    Err(retry_err)
+                        if should_retry_seedance_without_photoreal_frame(&retry_err)
+                            || is_seedance_privacy_image_err(&retry_err) =>
+                    {
+                        emit(
+                            progress,
+                            "video_clip_start",
+                            &format!(
+                                "Shot {}: refs still blocked; falling back to text-to-video…",
+                                shot.idx
+                            ),
+                        );
+                        let t2v_prompt = format!(
+                            "{}\n{}\nOpening scene: {}",
+                            crate::planning::style_prompt_clause(style),
+                            retry_prompt,
+                            shot.ff_desc
+                        );
+                        self.backends
+                            .video
+                            .generate(
+                                &t2v_prompt,
+                                None,
+                                None,
+                                &[],
+                                duration_secs,
+                                &video_path,
+                                Some(&video_last_frame_path),
+                            )
+                            .await
+                            .map_err(|t2v_err| {
+                                VimaxError::Video(format!(
+                                    "Shot {} video failed (multi-ref → drop continuity → text-to-video). First: {}; Final: {t2v_err}",
+                                    shot.idx,
+                                    truncate_err(&err, 160)
+                                ))
+                            })?;
+                    }
+                    Err(retry_err) => return Err(retry_err),
+                }
+            } else {
+                emit(
+                    progress,
+                    "video_clip_start",
+                    &format!(
+                        "Shot {}: possible privacy block ({}). Falling back to text-to-video…",
+                        shot.idx,
+                        truncate_err(&err, 120)
                     ),
                 );
                 let t2v_prompt = format!(
@@ -1392,11 +1413,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &[],
                         duration_secs,
                         &video_path,
+                        Some(&video_last_frame_path),
                     )
                     .await
                     .map_err(|t2v_err| {
                         VimaxError::Video(format!(
-                            "Shot {} video failed (privacy → stylize → text-to-video). First: {}; Final: {t2v_err}",
+                            "Shot {} video failed (multi-ref → text-to-video). First: {}; Final: {t2v_err}",
                             shot.idx,
                             truncate_err(&err, 160)
                         ))
@@ -1420,6 +1442,8 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
 
     /// Privacy-safe I2V sidecar frame. Never overwrites the multi-ref canonical path.
     /// Still binds cast / env / prop plates so identity stays consistent.
+    /// Kept for revise / legacy first-last I2V workflows; render path no longer calls this.
+    #[allow(dead_code)]
     async fn ensure_stylized_i2v_frame(
         &self,
         shot: &ShotDescription,
@@ -1897,39 +1921,98 @@ fn i2v_motion_prompt(
     };
     let mut ref_bind = String::new();
     for (i, (path, text)) in ref_pairs.iter().enumerate() {
+        let n = i + 1;
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("ref.png");
-        let hint: String = text.chars().take(90).collect();
-        ref_bind.push_str(&format!("[{name}] (reference_image #{i}): {hint}. "));
+        let hint: String = text.chars().take(120).collect();
+        ref_bind.push_str(&format!("Image {n} ({name}): {hint}. "));
     }
     let ref_clause = if ref_bind.is_empty() {
         String::new()
     } else {
         format!(
-            "REFERENCE BINDINGS (match these named reference images): {ref_bind}\
-Use *_three_view.png for cast identity, *_environment_plate.png for location, *_prop.png for objects. "
+            "REFERENCE BINDINGS (each Image N is a reference_image input — follow these roles): {ref_bind}\
+Use *_three_view / cameo for cast identity, *_environment_plate for location, *_prop for objects, \
+video_last_frame for match-cut continuity from the previous shot. "
         )
     };
     let continuity_clause = if from_prev_video_tail {
-        "CONTINUITY: opening frame is the previous adjacent shot's ending in this scene — begin motion immediately; \
-do not hold or re-establish the same pose; seamless match-cut continuation into this beat \
-(camera/angle may already differ; keep identity and set). "
+        "CONTINUITY: Image 1 is the previous adjacent shot's ending frame — begin motion immediately from that pose/framing; \
+seamless match-cut continuation into this beat (camera/angle may already differ; keep identity and set). "
     } else {
         ""
     };
     let audio_block = seedance_audio_caption_block(shot.audio_desc.as_deref());
     format!(
         "{style_clause} {identity}{ref_clause}{continuity_clause}\
-DURATION LOCK: this clip is {duration_secs}s — complete the dialogue/action inside {duration_secs}s; \
-no unfinished lines; sustain clear motion for the FULL {duration_secs}s (do not freeze or loop the opening pose).\n\
+DURATION: target length is about {duration_secs}s. Speak at a natural conversational pace — \
+do NOT rush, speed-read, chipmunk, or time-compress dialogue to cram lines in. \
+Prefer clear finished lines over packing too many words; keep motion readable for the full clip.\n\
 PLOT LOCK: stay on this scene — {plot}.{end_plot} \
 Do not invent new characters, locations, outfits, or story beats.\n\
 Motion: {motion}\n\
 Throughout: {audio_block}\n\
 Keep it subtitle-free. Do not generate on-screen captions, logos, or watermarks."
     )
+}
+
+/// Multi-ref strip for Seedance R2V: optional previous video_last_frame + cast + env/prop.
+fn shot_video_ref_pairs(
+    shot: &ShotDescription,
+    continuity: Option<&Path>,
+    characters: &[CharacterInScene],
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    world_pairs: &[(PathBuf, String)],
+) -> Vec<(PathBuf, String)> {
+    let mut pairs: Vec<(PathBuf, String)> = Vec::new();
+    if let Some(path) = continuity.filter(|p| media_local::is_usable_image_file(p)) {
+        pairs.push((
+            path.to_path_buf(),
+            "Previous adjacent shot ending frame — match-cut continuity; start motion immediately from this pose, framing, wardrobe, and set."
+                .into(),
+        ));
+    }
+
+    let mut vis: Vec<i32> = shot.ff_vis_char_idxs.clone();
+    for &idx in &shot.lf_vis_char_idxs {
+        if !vis.contains(&idx) {
+            vis.push(idx);
+        }
+    }
+    pairs.extend(portrait_pairs(characters, &vis, registry));
+
+    let world_query = format!(
+        "{} {} {}",
+        shot.ff_desc.trim(),
+        shot.motion_desc.trim(),
+        shot.lf_desc.trim()
+    );
+    pairs.extend(rank_world_pairs_for_frame(&world_query, world_pairs, 4));
+
+    // Dedup by path while preserving order (continuity first).
+    let mut seen = std::collections::HashSet::new();
+    pairs.retain(|(p, _)| seen.insert(p.clone()));
+
+    let portrait_budget = vis.len().clamp(1, MAX_FRAME_PORTRAIT_REFS);
+    // Keep continuity (if any) pinned at index 0, then apply the usual strip budget.
+    if pairs
+        .first()
+        .map(|(p, _)| continuity.is_some_and(|c| p == c))
+        .unwrap_or(false)
+    {
+        let continuity_pair = pairs.remove(0);
+        let mut rest = pick_frame_ref_strip(pairs, portrait_budget);
+        rest.insert(0, continuity_pair);
+        // Cap total refs for Seedance latency/cost (continuity + assets).
+        rest.truncate(MAX_FRAME_REF_IMAGES.saturating_add(1));
+        rest
+    } else {
+        let mut out = pick_frame_ref_strip(pairs, portrait_budget);
+        out.truncate(MAX_FRAME_REF_IMAGES);
+        out
+    }
 }
 
 /// Seedance 2.0 audio captions use typed brackets:
@@ -2071,5 +2154,24 @@ mod continuity_tests {
             frame_i2v_stylized_path(&canonical),
             PathBuf::from("shots/0/first_frame.i2v_stylized.png")
         );
+    }
+
+    #[test]
+    fn multi_ref_prompt_labels_images_one_based() {
+        let s = shot(1, 0);
+        let refs = vec![
+            (
+                PathBuf::from("shots/0/video_last_frame.png"),
+                "Previous ending".into(),
+            ),
+            (
+                PathBuf::from("characters/alice_three_view.png"),
+                "Cast bible".into(),
+            ),
+        ];
+        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true);
+        assert!(prompt.contains("Image 1 (video_last_frame.png)"));
+        assert!(prompt.contains("Image 2 (alice_three_view.png)"));
+        assert!(prompt.contains("CONTINUITY: Image 1"));
     }
 }

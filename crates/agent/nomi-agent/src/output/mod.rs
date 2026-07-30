@@ -1116,6 +1116,21 @@ pub trait OutputSink: Send + Sync {
     fn emit_warning(&self, msg: &str) {
         self.emit_info(msg);
     }
+    /// Deliver one Mixture of Agents reference advice payload for the current
+    /// message. `index` is 1-based, `total` is the number of configured
+    /// reference slots. Default no-op keeps existing sinks source-compatible.
+    fn emit_moa_reference(&self, _msg_id: &str, _label: &str, _text: &str, _index: u32, _total: u32) {
+    }
+    /// Report Mixture of Agents fan-out progress (`done` of `total` references
+    /// finished). Default no-op keeps existing sinks source-compatible.
+    fn emit_moa_progress(&self, _msg_id: &str, _done: u32, _total: u32) {}
+    /// Deliver one single-line JSON Mixture of Agents trace record (see
+    /// `moa::trace::build_trace_json` for the shape). Emitted only when
+    /// `moa.trace_enabled` is on and a real fan-out ran. The payload carries
+    /// UNREDACTED advisory inputs/outputs — sinks that persist it own the
+    /// storage/retention policy. Default no-op keeps existing sinks
+    /// source-compatible.
+    fn emit_moa_trace(&self, _msg_id: &str, _trace_json: &str) {}
 }
 
 pub struct OutputFormatter {

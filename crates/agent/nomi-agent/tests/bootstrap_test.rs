@@ -35,6 +35,7 @@ fn minimal_config() -> Config {
         mcp: Default::default(),
         logging: Default::default(),
         memory: Default::default(),
+        moa: Default::default(),
     }
 }
 

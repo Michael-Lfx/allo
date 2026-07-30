@@ -7,17 +7,19 @@ pub const MIN_CLIP_DURATION_SECS: u32 = 5;
 pub const MAX_CLIP_DURATION_SECS: u32 = 15;
 
 /// Default target total length when the user does not specify one.
-pub const DEFAULT_TARGET_DURATION_SECS: u32 = 30;
+pub const DEFAULT_TARGET_DURATION_SECS: u32 = 45;
 
-/// Conservative spoken Chinese chars/sec (natural delivery + lip-sync headroom).
-const SPEECH_CJK_CHARS_PER_SEC: f32 = 3.0;
-/// Conservative spoken English words/sec.
-const SPEECH_EN_WORDS_PER_SEC: f32 = 2.2;
+/// Natural spoken Chinese chars/sec (clear delivery — avoid rushed Seedance speech).
+const SPEECH_CJK_CHARS_PER_SEC: f32 = 2.0;
+/// Natural spoken English words/sec.
+const SPEECH_EN_WORDS_PER_SEC: f32 = 1.6;
 /// Tail seconds after the last spoken syllable so audio is not cut mid-breath.
-const SPEECH_TAIL_SECS: u32 = 2;
+const SPEECH_TAIL_SECS: u32 = 3;
+/// Dialogue shots should not be shorter than this even when the line is brief.
+const MIN_DIALOGUE_CLIP_SECS: u32 = 8;
 
 /// Default look when the user leaves style empty.
-pub const DEFAULT_VISUAL_STYLE: &str = "cinematic film look, believable designed characters, natural wardrobe and lighting, gently softened facial skin with clear readable features";
+pub const DEFAULT_VISUAL_STYLE: &str = "cinematic film look, believable designed characters, natural wardrobe and lighting, clean healthy facial skin with clear readable features";
 
 /// Resolve user style text; empty → cinematic designed-character default.
 pub fn resolve_visual_style(user_style: &str) -> String {
@@ -157,25 +159,33 @@ pub fn style_prompt_clause(user_style: &str) -> String {
         )
     } else {
         format!(
-            "Visual style: {clipped}. Faces: gently softened skin, clear sharp features (no melt/blur)."
+            "Visual style: {clipped}. Faces: clean healthy skin, clear sharp features (no melt/blur, no dirt or weird makeup)."
         )
     }
 }
 
-/// Face finish for character bible sheets — soft skin, sharp features (avoid collapse).
+/// Face finish for character bible sheets — clean healthy skin, sharp features (avoid collapse).
 pub const PORTRAIT_FACE_GUIDANCE: &str = "\
-Face finish: gently soften facial skin and beauty lighting only. Keep eyes, brows, nose, mouth sharp and anatomically correct. \
+Face finish: clean, healthy, evenly lit skin with clear sharp eyes, brows, nose, and mouth. \
+Do NOT add dirt, blemishes, rashes, heavy pores, aging wrinkles, or strange makeup. \
 Do NOT melt, warp, or heavy-blur the face. Do NOT make a plastic doll or cheap cartoon unless Style asks for animation.";
 
 /// Face finish when the user requested animation / illustration.
 pub const PORTRAIT_FACE_GUIDANCE_STYLIZED: &str = "\
-Face finish: premium animated-film character design — clear VOLUME under soft light, sharp readable eyes/brows/nose/mouth, hair strand detail. \
+Face finish: premium animated-film character design — clean healthy skin tones, clear VOLUME under soft light, sharp readable eyes/brows/nose/mouth, hair strand detail. \
+Do NOT add dirt, blemishes, weird makeup, or distorted facial features. \
 Do NOT flatten into a paper cutout or blank sticker face. Do NOT render photoreal live-action skin or celebrity likeness.";
+
+/// Extra face lock for child / teen characters (models often age or over-make kids).
+pub const PORTRAIT_CHILD_FACE_GUIDANCE: &str = "\
+CHILD FACE LOCK: age-correct child/teen face — smooth healthy skin, soft natural cheeks, age-appropriate features. \
+No adult contour makeup, no heavy lipstick/eyeshadow, no aged wrinkles, no dirt/blemishes, no uncanny warped proportions. \
+Keep expression natural and clear; identity must stay cute/clean, not grotesque.";
 
 /// Not a real-person / celebrity likeness (Seedance privacy + originality).
 pub const PORTRAIT_NON_REAL_PERSON: &str = "\
-IDENTITY SAFETY: fictional designed character only — NOT a real-person portrait, NOT photoreal ID-photo, NOT a celebrity/star likeness, NOT a recognizable famous face. Original character design. \
-非真人肖像，无明星样貌，虚构角色造型，禁止做成可辨认的真人/明星脸。";
+IDENTITY SAFETY: fictional designed character only — NOT a real-person portrait, NOT photoreal ID-photo, NOT a celebrity/star likeness, NOT a recognizable famous face. Original character design with a clean natural face. \
+非真人肖像，无明星样貌，虚构角色造型，禁止做成可辨认的真人/明星脸；面部保持干净自然，不要刻意丑化或污化。";
 
 /// Force adults and children to share one rendering style (models often anime-ify kids otherwise).
 pub const CAST_STYLE_LOCK: &str = "\
@@ -189,13 +199,16 @@ Children/teens use age-correct proportions but the SAME drawn look as adults —
 
 /// Compact locks for portrait image prompts (survive 800-char truncate).
 pub const PORTRAIT_IDENTITY_SHORT: &str =
-    "非真人肖像，无明星样貌; fictional designed character, not celebrity likeness.";
+    "非真人肖像，无明星样貌; fictional designed character, clean natural face, not celebrity likeness.";
 
 pub const PORTRAIT_FACE_SHORT: &str =
-    "Soft skin, sharp eyes/brows/nose/mouth; no melt, no plastic doll.";
+    "Clean healthy skin, sharp eyes/brows/nose/mouth; no dirt, no weird makeup, no melt.";
 
 pub const PORTRAIT_FACE_SHORT_STYLIZED: &str =
-    "Premium animated-film faces with volume + hair detail; sharp features; no flat paper-doll/cutout; no photoreal.";
+    "Premium animated-film faces with volume + hair detail; clean skin, sharp features; no dirt/weird makeup; no flat paper-doll.";
+
+pub const PORTRAIT_CHILD_FACE_SHORT: &str =
+    "Child/teen: smooth healthy skin, natural soft features; no adult makeup, no aging, no dirt, no warped face.";
 
 pub const CAST_STYLE_SHORT: &str =
     "All ages share the SAME cinematic style (no anime-only kids).";
@@ -290,8 +303,8 @@ pub fn portrait_sheet_prompt_parts(user_style: &str) -> PortraitSheetPromptParts
 QUALITY (high-detail stylized — avoid cheap flat look):
 - Match the requested Style with clear VOLUME and form under soft light.
 - Rich surface detail: hair strands/layers, fabric folds and seams, material contrast, accessories.
-- Soft painted shading + gentle rim/fill light; sharp readable facial features.
-- FORBIDDEN: flat paper cutout, sticker/chibi low-detail, empty blank faces, muddy blur."
+- Soft painted shading + gentle rim/fill light; clean healthy skin; sharp readable facial features.
+- FORBIDDEN: flat paper cutout, sticker/chibi low-detail, empty blank faces, muddy blur, dirtied/blemished faces, weird makeup."
                 .into(),
             medium_lock: "\
 MEDIUM LOCK: keep the requested animation/illustration Style for ALL panels. \
@@ -310,9 +323,9 @@ Do NOT switch to photoreal live-action. Do NOT output a cheap flat cartoon stick
             quality_block: "\
 QUALITY (live-action cinematic — high detail):
 - Photoreal / cinematic film look with realistic human anatomy and proportions.
-- Detailed skin texture (gently softened, not plastic), individual hair strands, fabric weave, seams, wrinkles, accessories.
-- Natural photographic lighting and shallow depth cues; sharp eyes, brows, nose, mouth.
-- FORBIDDEN: anime, manga, cartoon, chibi, 2D model-sheet, cel shading, flat paper doll, illustration lineart, sticker look."
+- Clean healthy skin (not dirty, not heavily pore-mapped, not aged unless Features say so), individual hair strands, fabric weave, seams, accessories.
+- Natural photographic lighting and shallow depth cues; sharp eyes, brows, nose, mouth; no strange makeup unless Features ask for it.
+- FORBIDDEN: anime, manga, cartoon, chibi, 2D model-sheet, cel shading, flat paper doll, illustration lineart, sticker look, intentional face dirt/blemishes/ugliness."
                 .into(),
             medium_lock: "\
 MEDIUM LOCK: LIVE-ACTION cinematic continuity photography only. \
@@ -347,10 +360,33 @@ pub fn child_style_lock_if_needed_for_style(
     if !looks_like_child_character(identifier, features) {
         return String::new();
     }
+    let face = PORTRAIT_CHILD_FACE_GUIDANCE;
     if wants_stylized_non_photoreal(user_style) {
-        " Young character: keep child proportions, but render in the SAME animation/illustration Style as adult cast — never switch only kids to a different look.".into()
+        format!(
+            " Young character: keep child proportions, but render in the SAME animation/illustration Style as adult cast — never switch only kids to a different look. {face}"
+        )
     } else {
-        " Young character: keep child proportions, but render in the SAME Style as adult cast — cinematic character design, not anime/cartoon/chibi.".into()
+        format!(
+            " Young character: keep child proportions, but render in the SAME Style as adult cast — cinematic character design, not anime/cartoon/chibi. {face}"
+        )
+    }
+}
+
+/// Compact face + age guidance for three-view image prompts.
+pub fn portrait_face_clause_for_character(
+    identifier: &str,
+    features: &str,
+    user_style: &str,
+) -> String {
+    let base = if wants_stylized_non_photoreal(user_style) {
+        PORTRAIT_FACE_SHORT_STYLIZED
+    } else {
+        PORTRAIT_FACE_SHORT
+    };
+    if looks_like_child_character(identifier, features) {
+        format!("{base} {PORTRAIT_CHILD_FACE_SHORT}")
+    } else {
+        base.to_string()
     }
 }
 
@@ -394,14 +430,28 @@ pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
 }
 
 /// Suggested shot count for a **single scene budget** (not the whole film).
-/// Each shot burns ≥5s of finished video — keep counts very low so clips stay long
-/// enough for spoken dialogue (prefer ~10–12s/clip over many 5s cuts).
+///
+/// Seedance clips are 5–15s. Prefer ~12–13s clips so `ideal × ~13s ≈ budget`.
+/// `max_shots` is high enough to fill the budget at MAX length, but `ideal` is
+/// not forced up to that floor (forcing it caused 4×15s≈60s when target was 40s
+/// once dialogue floors refused to shrink).
 pub fn suggested_shot_count(budget_secs: u32) -> (u32, u32) {
     let budget = budget_secs.max(MIN_CLIP_DURATION_SECS);
-    // Aim ~11–12s of story per clip so dialogue + motion can finish inside Seedance bounds.
-    let ideal = ((budget + 11) / 12).clamp(1, 4);
-    let max_shots = (budget / MIN_CLIP_DURATION_SECS).clamp(1, 5);
-    (ideal.min(max_shots), max_shots)
+    let min_to_fill =
+        (budget + MAX_CLIP_DURATION_SECS - 1) / MAX_CLIP_DURATION_SECS;
+    // Aim ~13s/clip: 40→3, 60→5, 30→3. (`+6` rounds toward nearest).
+    let ideal = ((budget + 6) / 13).clamp(1, 6);
+    let max_shots = (budget / MIN_CLIP_DURATION_SECS)
+        .max(min_to_fill)
+        .clamp(1, 8);
+    // Only raise ideal toward min_to_fill when even max-length ideal clips
+    // cannot reach the budget (e.g. ideal=2 → 30s < 40s target).
+    let ideal = if ideal.saturating_mul(MAX_CLIP_DURATION_SECS) < budget {
+        min_to_fill.min(max_shots)
+    } else {
+        ideal.min(max_shots)
+    };
+    (ideal.max(1), max_shots)
 }
 
 /// Split a film-level target across N scenes (each ≥5s).
@@ -430,12 +480,94 @@ pub fn suggested_scene_count(total_secs: u32) -> (u32, u32) {
     (ideal.min(max_scenes), max_scenes)
 }
 
+/// Dominant natural language for planning narrative outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputLanguage {
+    Chinese,
+    English,
+    Unspecified,
+}
+
+/// Detect output language from user creative text (idea / script / novel / requirement).
+///
+/// Prefers Chinese when there is a meaningful amount of CJK, even if English style
+/// presets or schema text are mixed in.
+pub fn detect_output_language(samples: &[&str]) -> OutputLanguage {
+    let mut cjk = 0u32;
+    let mut latin = 0u32;
+    for sample in samples {
+        for ch in sample.chars() {
+            if is_cjk_speech_char(ch) {
+                cjk += 1;
+            } else if ch.is_ascii_alphabetic() {
+                latin += 1;
+            }
+        }
+    }
+    if cjk == 0 && latin == 0 {
+        return OutputLanguage::Unspecified;
+    }
+    // Strong Chinese signal, or CJK at least half as common as Latin letters.
+    if cjk >= 6 || (cjk > 0 && cjk.saturating_mul(2) >= latin) {
+        OutputLanguage::Chinese
+    } else {
+        OutputLanguage::English
+    }
+}
+
+/// Hard language lock for planning LLM system/user prompts.
+pub fn language_lock_clause(lang: OutputLanguage) -> String {
+    match lang {
+        OutputLanguage::Chinese => "\
+[OUTPUT_LANGUAGE — MUST FOLLOW]
+The user's creative input is predominantly Chinese (中文).
+Write ALL natural-language narrative content in 简体中文: story, script, scene headings, action lines, dialogue, character names when originally Chinese, visual_desc, audio_desc, motion_desc, environment/prop descriptions, and any other prose fields.
+JSON keys, enum tokens (large|medium|small), and cam_idx/idx numbers stay as the schema requires (English keys OK).
+Do NOT default to English prose just because this instruction is written in English."
+            .into(),
+        OutputLanguage::English => "\
+[OUTPUT_LANGUAGE — MUST FOLLOW]
+The user's creative input is predominantly English.
+Write ALL natural-language narrative content in English: story, script, dialogue, visual_desc, audio_desc, and other prose fields.
+JSON keys and enum tokens stay as the schema requires."
+            .into(),
+        OutputLanguage::Unspecified => "\
+[OUTPUT_LANGUAGE — MUST FOLLOW]
+Match the language of the user's creative input for ALL natural-language narrative fields (story, script, dialogue, descriptions).
+JSON keys and enum tokens stay as the schema requires. Do not translate the user's language into another language."
+            .into(),
+    }
+}
+
+/// Detect language from samples and return the lock block.
+pub fn language_lock_for_sources(samples: &[&str]) -> String {
+    language_lock_clause(detect_output_language(samples))
+}
+
+/// Detect language from a single planning user message (may include XML tags).
+pub fn language_lock_for_text(text: &str) -> String {
+    language_lock_for_sources(&[text])
+}
+
+/// Prepend a language lock derived from `sources` onto a requirement string.
+pub fn with_language_lock(base: &str, sources: &[&str]) -> String {
+    let lock = language_lock_for_sources(sources);
+    let base = base.trim();
+    if base.is_empty() {
+        lock
+    } else if base.contains("[OUTPUT_LANGUAGE") {
+        base.to_string()
+    } else {
+        format!("{lock}\n\n{base}")
+    }
+}
+
 /// Film-level constraints (develop story / write multi-scene script).
 pub fn enrich_requirement_for_film(user_requirement: &str, target_secs: Option<u32>) -> String {
     let target = normalize_target_duration_secs(target_secs);
     let (ideal_scenes, max_scenes) = suggested_scene_count(target);
     let per_scene = (target / ideal_scenes.max(1)).max(MIN_CLIP_DURATION_SECS);
-    let base = user_requirement.trim();
+    let base = with_language_lock(user_requirement, &[user_requirement]);
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - Target finished film length ≈ {target} seconds TOTAL (hard planning budget).\n\
@@ -446,11 +578,7 @@ pub fn enrich_requirement_for_film(user_requirement: &str, target_secs: Option<u
          - Speech pacing guide: ~{SPEECH_CJK_CHARS_PER_SEC} Chinese chars/sec or ~{SPEECH_EN_WORDS_PER_SEC} English words/sec; \
 leave ~{SPEECH_TAIL_SECS}s after the last word so audio is not cut off."
     );
-    if base.is_empty() {
-        block
-    } else {
-        format!("{base}\n\n{block}")
-    }
+    format!("{base}\n\n{block}")
 }
 
 /// Scene-level constraints for storyboard design (budget already allocated).
@@ -476,12 +604,15 @@ pub fn enrich_requirement_for_scene(
     let base = user_requirement.trim();
     // Strip a previous film-level block so we don't double-confuse the LLM with two totals.
     let base = strip_duration_constraint_blocks(base);
+    let base = with_language_lock(&base, &[&base, user_requirement]);
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count} of a film targeting ≈ {film_total_secs}s total.\n\
          - THIS SCENE budget ≈ {budget} seconds of finished video (NOT the whole film).\n\
          - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance). Typical render ≈ {per_shot}s.\n\
          - Prefer about {ideal} shots; HARD UPPER BOUND: {max_shots} shots for this scene.\n\
+         - Shot count × clip length should land near this scene's {budget}s budget \
+(Seedance max {MAX_CLIP_DURATION_SECS}s/clip — do NOT under-shoot with only 1–2 short clips when the budget is much larger).\n\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, or \"and then…\" requiring another clip.\n\
          - Speech budget per shot at ≈{per_shot}s: keep spoken Chinese ≲ {per_shot_cjk} chars \
@@ -497,11 +628,7 @@ Do NOT require continuity from the previous scene's final shot into this scene's
          - If you would create more than {max_shots} shots, merge beats instead.",
         scene_num = scene_idx + 1,
     );
-    if base.is_empty() {
-        block
-    } else {
-        format!("{base}\n\n{block}")
-    }
+    format!("{base}\n\n{block}")
 }
 
 /// Single-scene script2video (whole target = this scene).
@@ -515,7 +642,9 @@ fn strip_duration_constraint_blocks(s: &str) -> String {
     let mut skipping = false;
     for line in s.lines() {
         let t = line.trim();
-        if t.starts_with("[VIDEO_DURATION_CONSTRAINTS") {
+        if t.starts_with("[VIDEO_DURATION_CONSTRAINTS")
+            || t.starts_with("[OUTPUT_LANGUAGE")
+        {
             skipping = true;
             continue;
         }
@@ -620,17 +749,25 @@ fn is_cjk_speech_char(ch: char) -> bool {
 /// Content-aware lower bound for one shot (Seedance-clamped).
 ///
 /// Honors spoken audio first, then adds motion/variation headroom so dialogue
-/// is not cut off when the clip ends.
+/// is not cut off or time-compressed when the clip ends.
 pub fn estimate_shot_need_secs(
     audio_desc: Option<&str>,
     motion_desc: &str,
     variation_type: &str,
 ) -> u32 {
-    let speech = estimate_speech_secs(audio_desc.unwrap_or(""));
+    let audio = audio_desc.unwrap_or("").trim();
+    let mut speech = estimate_speech_secs(audio);
+    // Only mine motion text when it looks like it carries spoken lines
+    // (quotes / dialogue verbs) — never treat camera verbs like "hold/pan" as speech.
+    if speech == 0 && motion_looks_like_dialogue(motion_desc) {
+        speech = estimate_speech_secs(motion_desc);
+    }
     let speech_need = if speech == 0 {
         0
     } else {
-        speech.saturating_add(SPEECH_TAIL_SECS)
+        speech
+            .saturating_add(SPEECH_TAIL_SECS)
+            .max(MIN_DIALOGUE_CLIP_SECS)
     };
     let variation_boost: u32 = match variation_type.trim().to_ascii_lowercase().as_str() {
         "large" => 3,
@@ -653,12 +790,40 @@ pub fn estimate_shot_need_secs(
         .clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS)
 }
 
+fn motion_looks_like_dialogue(motion_desc: &str) -> bool {
+    let t = motion_desc.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    t.contains('「')
+        || t.contains('」')
+        || t.contains('"')
+        || t.contains('“')
+        || t.contains('”')
+        || t.contains('{')
+        || lower.contains("says")
+        || lower.contains("said")
+        || lower.contains("dialogue")
+        || lower.contains("speech")
+        || lower.contains("voice")
+        || lower.contains("whisper")
+        || lower.contains("shouts")
+        || lower.contains("台词")
+        || lower.contains("说道")
+        || lower.contains("喊道")
+        || lower.contains("怒吼")
+        || lower.contains("说话")
+        || lower.contains("轻声")
+}
+
 /// Allocate per-shot durations from content needs (audio + motion), then fit the
-/// scene budget when possible without starving dialogue-heavy shots.
+/// scene budget.
 ///
-/// Completeness of spoken audio is preferred over exact total runtime: if speech
-/// needs push the sum slightly over `target`, we keep the speech floors (still
-/// within Seedance `[5, 15]` per clip).
+/// Tries to honor dialogue floors first, but **will compress down to**
+/// [`MIN_CLIP_DURATION_SECS`] when needed so the sum stays near `target`
+/// (user-configured total duration). Unbounded speech floors previously let
+/// 40s targets render as ~60s (e.g. 4×15s).
 pub fn allocate_clip_durations_for_content(
     target_total: Option<u32>,
     needs: &[u32],
@@ -697,9 +862,7 @@ pub fn allocate_clip_durations_for_content(
             }
         }
     } else if sum > target {
-        // Shrink only surplus above each shot's content floor (speech/visual need).
-        // Never cut below floors — unfinished dialogue is worse than a slightly
-        // longer scene (floors are already Seedance-clamped to ≤15s).
+        // Phase 1: shrink surplus above each shot's content floor.
         let mut excess = sum - target;
         let mut order: Vec<usize> = (0..durs.len()).collect();
         order.sort_by_key(|&i| needs[i]); // smallest need first
@@ -720,6 +883,36 @@ pub fn allocate_clip_durations_for_content(
                 break;
             }
         }
+        // Phase 2: still over → honor target by compressing toward Seedance min.
+        // Prefer cutting longer (dialogue-heavy) shots last so short beats stay intact.
+        let sum2: u32 = durs.iter().sum();
+        if sum2 > target {
+            let mut excess = sum2 - target;
+            let mut order: Vec<usize> = (0..durs.len()).collect();
+            order.sort_by_key(|&i| std::cmp::Reverse(durs[i]));
+            while excess > 0 {
+                let mut progressed = false;
+                for &i in &order {
+                    if excess == 0 {
+                        break;
+                    }
+                    if durs[i] > MIN_CLIP_DURATION_SECS {
+                        durs[i] -= 1;
+                        excess -= 1;
+                        progressed = true;
+                    }
+                }
+                if !progressed {
+                    break;
+                }
+            }
+            tracing::info!(
+                target,
+                needs = ?needs,
+                durations = ?durs,
+                "compressed clip durations to fit target (dialogue may be tighter)"
+            );
+        }
     }
     durs
 }
@@ -739,11 +932,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn detect_output_language_prefers_chinese_input() {
+        assert_eq!(
+            detect_output_language(&["一个程序员发现自己的影子有了意识"]),
+            OutputLanguage::Chinese
+        );
+        assert_eq!(
+            detect_output_language(&["A programmer discovers his shadow is alive"]),
+            OutputLanguage::English
+        );
+        // Mixed: Chinese idea + English style preset → still Chinese.
+        assert_eq!(
+            detect_output_language(&[
+                "雨夜咖啡馆里的重逢",
+                "cinematic film look, believable designed characters"
+            ]),
+            OutputLanguage::Chinese
+        );
+        assert!(language_lock_for_sources(&["你好世界"]).contains("简体中文"));
+        assert!(language_lock_for_sources(&["hello world story"]).contains("English"));
+    }
+
+    #[test]
     fn resolve_visual_style_defaults_to_cinematic_soft_faces() {
         let s = resolve_visual_style("");
         let lower = s.to_ascii_lowercase();
         assert!(lower.contains("cinematic") || lower.contains("film"));
-        assert!(lower.contains("soften") || lower.contains("softened") || lower.contains("clear"));
+        assert!(lower.contains("clean") || lower.contains("clear") || lower.contains("healthy"));
         assert!(!lower.contains("anime"));
     }
 
@@ -792,11 +1007,11 @@ mod tests {
     }
 
     #[test]
-    fn portrait_style_asks_for_gentle_face_soften_not_melt() {
+    fn portrait_style_asks_for_clean_face_not_dirt() {
         let s = portrait_style_for_generation("cinematic");
         let lower = s.to_ascii_lowercase();
-        assert!(lower.contains("soften") || lower.contains("softened"));
-        assert!(lower.contains("sharp") || lower.contains("readable") || lower.contains("not melt"));
+        assert!(lower.contains("clean") || lower.contains("healthy"));
+        assert!(lower.contains("dirt") || lower.contains("blemish") || lower.contains("makeup"));
         assert!(lower.contains("cast style lock") || lower.contains("same style"));
         assert!(
             lower.contains("not a real-person")
@@ -874,6 +1089,24 @@ mod tests {
     }
 
     #[test]
+    fn sixty_second_budget_allows_enough_shots_to_fill() {
+        let (ideal, max) = suggested_shot_count(60);
+        // 60s / 15s max per clip → need ≥4 shots; ~13s aim → ideal≈5.
+        assert!(ideal >= 4, "ideal={ideal}");
+        assert!(max >= 4, "max={max}");
+        assert!(ideal as u32 * MAX_CLIP_DURATION_SECS >= 60);
+        assert!(max as u32 * MAX_CLIP_DURATION_SECS >= 60);
+    }
+
+    #[test]
+    fn forty_second_budget_prefers_three_shots_not_four() {
+        let (ideal, max) = suggested_shot_count(40);
+        assert_eq!(ideal, 3, "ideal={ideal}");
+        assert!(max >= 3);
+        assert!(ideal as u32 * MAX_CLIP_DURATION_SECS >= 40);
+    }
+
+    #[test]
     fn allocate_scene_budgets_sum_near_total() {
         let budgets = allocate_scene_budgets(30, 3);
         assert_eq!(budgets.len(), 3);
@@ -905,12 +1138,12 @@ mod tests {
 
     #[test]
     fn estimate_speech_secs_cjk_and_english() {
-        // ~30 CJK chars @ 3/s → 10s
+        // ~30 CJK chars @ 2.0/s → 15s
         let cjk: String = "他看着窗外轻声说道今天的风很温柔对吗".chars().cycle().take(30).collect();
-        assert_eq!(estimate_speech_secs(&cjk), 10);
-        // ~22 English words @ 2.2/wps → 10s
+        assert_eq!(estimate_speech_secs(&cjk), 15);
+        // ~16 English words @ 1.6/wps → 10s
         let en = "one two three four five six seven eight nine ten \
-eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo";
+eleven twelve thirteen fourteen fifteen sixteen";
         assert_eq!(estimate_speech_secs(en), 10);
         assert_eq!(estimate_speech_secs(""), 0);
         assert_eq!(estimate_speech_secs("   "), 0);
@@ -918,10 +1151,10 @@ eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twen
 
     #[test]
     fn estimate_shot_need_includes_speech_tail() {
-        // 15 CJK → 5s speech + 2s tail = 7s
+        // 13 CJK → ceil(13/2.0)=7s speech + 3s tail = 10s
         let line: String = "我今天真的很想和你聊聊心事".chars().take(15).collect();
         let need = estimate_shot_need_secs(Some(&line), "slow pan", "small");
-        assert_eq!(need, 7);
+        assert_eq!(need, 10);
         // No dialogue → visual floor (min + small boost)
         let silent = estimate_shot_need_secs(None, "hold", "small");
         assert_eq!(silent, MIN_CLIP_DURATION_SECS);
@@ -929,6 +1162,9 @@ eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twen
         let long: String = "中".chars().cycle().take(80).collect();
         let capped = estimate_shot_need_secs(Some(&long), "walk across room", "large");
         assert_eq!(capped, MAX_CLIP_DURATION_SECS);
+        // Brief dialogue still gets dialogue floor
+        let brief = estimate_shot_need_secs(Some("你好"), "nod", "small");
+        assert!(brief >= MIN_DIALOGUE_CLIP_SECS);
     }
 
     #[test]
@@ -945,12 +1181,19 @@ eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twen
     }
 
     #[test]
-    fn allocate_for_content_prefers_speech_over_exact_budget() {
-        // Two dialogue floors that already exceed a tight target — keep floors.
+    fn allocate_for_content_fits_target_when_floors_overshoot() {
+        // Dialogue floors that exceed target must still compress to the budget.
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(18), &needs);
-        assert!(durs[0] >= 12);
-        assert!(durs[1] >= 12);
-        assert!(durs.iter().sum::<u32>() >= 24);
+        assert_eq!(durs.iter().sum::<u32>(), 18);
+        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+    }
+
+    #[test]
+    fn allocate_for_content_caps_four_max_clips_to_forty() {
+        let needs = vec![15, 15, 15, 15];
+        let durs = allocate_clip_durations_for_content(Some(40), &needs);
+        assert_eq!(durs.iter().sum::<u32>(), 40);
+        assert!(durs.iter().all(|&d| d >= MIN_CLIP_DURATION_SECS));
     }
 }

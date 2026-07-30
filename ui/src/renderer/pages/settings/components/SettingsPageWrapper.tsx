@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { Computer, Cpu, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, Send, System, Tool } from '@icon-park/react';
+import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, Send, System, Tool, TreeDiagram } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -85,6 +85,12 @@ export function getBuiltinSettingsNavItems(
       label: t('settings.insightsNav'),
       icon: <ChartPie theme='outline' size='16' />,
       path: 'insights',
+    },
+    moa: {
+      id: 'moa',
+      label: t('settings.moaNav'),
+      icon: <TreeDiagram theme='outline' size='16' />,
+      path: 'moa',
     },
     media: {
       id: 'media',

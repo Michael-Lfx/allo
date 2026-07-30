@@ -54,6 +54,7 @@ type TMessageType =
   | 'acp_tool_call'
   | 'plan'
   | 'thinking'
+  | 'moa_reference'
   | 'available_commands';
 
 interface IMessage<T extends TMessageType, Content extends Record<string, any>> {
@@ -666,6 +667,17 @@ export type IMessageThinking = IMessage<
   }
 >;
 
+// A single MoA advisor suggestion, aggregated per msg_id + label in the stream.
+export type IMessageMoaReference = IMessage<
+  'moa_reference',
+  {
+    label: string;
+    text: string;
+    index: number;
+    total: number;
+  }
+>;
+
 // Available commands from ACP agents (Claude, etc.)
 export type AvailableCommand = {
   name: string;
@@ -692,6 +704,7 @@ export type TMessage =
   | IMessageAcpToolCall
   | IMessagePlan
   | IMessageThinking
+  | IMessageMoaReference
   | IMessageAvailableCommands;
 
 // 统一所有需要用户交互的用户类型
@@ -1453,6 +1466,24 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         },
       };
     }
+    case 'moa_reference': {
+      const data = isObject(message.data) ? message.data : {};
+      return {
+        id: uuid(),
+        type: 'moa_reference',
+        msg_id: message.msg_id,
+        ...turnIdentity,
+        position: 'left',
+        conversation_id: message.conversation_id,
+        created_at,
+        content: {
+          label: toDisplayText(data.label),
+          text: toDisplayText(data.text),
+          index: finiteNumber(data.index) ?? 0,
+          total: finiteNumber(data.total) ?? 0,
+        },
+      };
+    }
     // Disabled: available_commands messages are too noisy and distracting in the chat UI
     case 'available_commands':
       return undefined;
@@ -1466,6 +1497,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
     case 'acp_model_info': // Model info updates, handled by AcpModelSelector
     case 'codex_model_info': // Legacy Codex model info updates
     case 'acp_context_usage': // Context usage updates, handled by AcpSendBox
+    case 'moa_progress': // MoA fan-out progress, surfaced via the turn status rail only
     case 'request_trace': // Request trace events, logged to F12 console (not persisted)
       return undefined;
     default: {
@@ -1659,6 +1691,21 @@ export const composeMessage = (
     }
     return pushMessage(message);
     // If no existing plan found, add new one
+  }
+
+  // Handle MoA reference merging — one card per advisor (msg_id + label)
+  if (message.type === 'moa_reference') {
+    for (let i = 0, len = list.length; i < len; i++) {
+      const msg = list[i];
+      if (
+        msg.type === 'moa_reference' &&
+        msg.msg_id === message.msg_id &&
+        msg.content.label === message.content.label
+      ) {
+        return updateMessage(i, { ...msg, ...message, content: { ...msg.content, ...message.content } });
+      }
+    }
+    return pushMessage(message);
   }
 
   // Handle thinking message merging — only merge contiguous streaming chunks

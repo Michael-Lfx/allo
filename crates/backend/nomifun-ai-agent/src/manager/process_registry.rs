@@ -142,6 +142,16 @@ pub(crate) fn unregister_agent_process(data_dir: &Path, pid: u32) -> io::Result<
     })
 }
 
+/// Read-only snapshot of every currently registered agent process, for the
+/// goal wait probe and the judge's background-process context. Any read
+/// error degrades to an empty list (the goal barriers are fail-open by
+/// design — a stale barrier must never wedge the goal loop).
+pub(crate) fn list_registered_processes(data_dir: &Path) -> Vec<RegisteredAgentProcess> {
+    with_registry_lock(|| read_registry_file(&agent_process_registry_path(data_dir)))
+        .map(|registry| registry.processes)
+        .unwrap_or_default()
+}
+
 fn read_registry_file(path: &Path) -> io::Result<ProcessRegistry> {
     match fs::read_to_string(path) {
         Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
