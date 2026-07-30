@@ -91,6 +91,9 @@ test-support = []
 computer-use = ["nomi-agent/computer-use"]
 # Browser-automation tools for the nomi engine (desktop host only).
 browser-use = ["nomi-agent/browser-use", "dep:nomi-browser", "dep:nomifun-browser-platform"]
+# Desktop managed web search integration. The dependency remains optional so
+# Web/CLI builds keep the existing DDG-only path.
+managed-search = ["dep:flowy-web"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
