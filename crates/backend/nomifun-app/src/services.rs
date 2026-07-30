@@ -4170,6 +4170,31 @@ mod tests {
     #[test]
     fn managed_search_binding_degrades_managed_to_ddg_then_disabled() {
         let (handle, binding) = resolve_managed_search_binding(
+            false,
+            || panic!("disabled capability must not construct managed search"),
+            || panic!("disabled capability must not construct ddg fallback"),
+        );
+        assert!(handle.is_none());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::DefaultDdg
+        ));
+
+        let (handle, binding) = resolve_managed_search_binding(
+            true,
+            || {
+                nomifun_ai_agent::ManagedSearchHandle::keyless_default()
+                    .map_err(|error| error.to_string())
+            },
+            || panic!("successful managed factory must not call ddg fallback"),
+        );
+        assert!(handle.is_some());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::Provided(_)
+        ));
+
+        let (handle, binding) = resolve_managed_search_binding(
             true,
             || Err("managed unavailable".to_owned()),
             || nomifun_ai_agent::ManagedSearchHandle::ddg_only().map_err(|error| error.to_string()),
@@ -4190,6 +4215,27 @@ mod tests {
             binding,
             nomifun_ai_agent::SearchProviderBinding::Disabled
         ));
+    }
+
+    #[cfg(feature = "managed-search")]
+    #[tokio::test]
+    async fn desktop_capability_constructs_managed_search_handle() {
+        let db = nomifun_db::init_database_memory().await.unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let services = AppServices::from_config_with_capabilities(
+            db,
+            &test_config(tmp.path()),
+            AppHostCapabilities::desktop(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            services.managed_search.is_some(),
+            "desktop capability must construct a ManagedSearchHandle"
+        );
+        services.shutdown_managed_search().await;
+        services.database.close().await;
     }
 
     fn test_config(data_dir: &Path) -> AppConfig {
