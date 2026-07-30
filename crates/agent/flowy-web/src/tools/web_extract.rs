@@ -55,6 +55,8 @@ impl Tool for WebExtractTool {
                 "urls": {
                     "type": "array",
                     "items": { "type": "string" },
+                    "minItems": 1,
+                    "maxItems": 3,
                     "description": "URLs to extract (1–3)"
                 }
             },
@@ -77,7 +79,7 @@ impl Tool for WebExtractTool {
         }
         if urls.len() > MAX_EXTRACT_URLS {
             return ToolResult::error(format!(
-                "urls length {} exceeds max {}",
+                "urls length {} exceeds max {}; choose the 1–3 most relevant URLs",
                 urls.len(),
                 MAX_EXTRACT_URLS
             ));
@@ -386,6 +388,14 @@ mod tests {
         }));
         let r = tool.execute(json!({ "urls": [] })).await;
         assert!(r.is_error);
+    }
+
+    #[test]
+    fn web_extract_schema_declares_url_bounds() {
+        let tool = WebExtractTool::new(Arc::new(MockExtract::default()));
+        let schema = tool.input_schema();
+        assert_eq!(schema["properties"]["urls"]["minItems"], json!(1));
+        assert_eq!(schema["properties"]["urls"]["maxItems"], json!(3));
     }
 
     #[tokio::test]

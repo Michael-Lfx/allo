@@ -51,6 +51,9 @@ impl Tool for WebSearchTool {
                 },
                 "count": {
                     "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "default": 5,
                     "description": "Max results to return (default 5, max 10)"
                 }
             },
@@ -329,5 +332,8 @@ mod tests {
             ["count".to_owned(), "query".to_owned()].into_iter().collect()
         );
         assert_eq!(schema["required"], json!(["query"]));
+        assert_eq!(properties["count"]["minimum"], json!(1));
+        assert_eq!(properties["count"]["maximum"], json!(10));
+        assert_eq!(properties["count"]["default"], json!(5));
     }
 }
