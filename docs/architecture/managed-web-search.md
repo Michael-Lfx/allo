@@ -61,6 +61,20 @@ Cancelling one conversation drops only that call and its provider permit. It
 must not close a shared client, cancel another conversation, or reset shared
 health.
 
+The host-to-agent binding is explicit and three-state:
+
+```text
+DefaultDdg -> construct DDG lazily and register web_search when construction succeeds
+Provided(provider) -> register the injected process-wide provider
+Disabled -> skip web_search, but keep local web_extract available
+```
+
+Desktop construction degrades from Managed Search to a DDG-only managed
+handle, then to `Disabled` if both constructions fail. A construction failure
+is recorded only as a safe category and never prevents the desktop host from
+starting. `tools.web.enabled=false` takes precedence and registers neither
+web tool.
+
 ## Routing policy
 
 The router returns the first non-empty successful result. An empty successful
@@ -81,9 +95,20 @@ Routing and health policy must not enter the MCP implementation.
 The managed remote peer accepts only the negotiated MCP protocol version
 `2025-11-25`. It supports both sessionless and stateful peers under that
 version, validates response correlation, and keeps structured tool output.
+Each Ready peer transport carries a monotonic generation. A stateful 404 can
+invalidate only the generation that issued the failed request, so a late
+response cannot clear a newly established session. JSON-RPC envelopes must
+declare version `2.0` and contain exactly one result or error.
 Existing user `McpManager` behavior is left unchanged. A provider-specific
 decoder, rather than a generic recursive URL guesser, is the contract for
 Parallel and You.
+
+Provider queue saturation is a request-local `QueueBusy` outcome. Queue wait
+uses the same provider deadline as the network attempt, falls through without
+calling health `record_error`, and therefore does not cool down a healthy
+provider. Decoder diagnostics are private and contain only source, fallback,
+drop count, and a contract-degraded flag; queries, URLs, evidence, and raw
+remote payloads are never logged.
 
 ## Product behavior
 
@@ -93,8 +118,19 @@ endpoint. The existing `tools.web.enabled` switch remains authoritative.
 
 There is no background probing. Diagnostics may record a random request ID,
 provider, attempt order, elapsed time, result count, fallback count, error
-class, and truncation. They must not record the complete query, result body,
-conversation content, full URL list, or a stable query hash.
+class, queue wait, decoder source, dropped-item count, contract-degraded flag,
+and truncation. They must not record the complete query, result body,
+conversation content, full URL list, evidence, structured content, or a stable
+query hash.
+
+Local `web_extract` remains the only page-content path in this version. Its
+model-facing result begins with an untrusted-evidence instruction and removes
+provider/extractor provenance. The renderer preserves input order, keeps
+success-page bodies fair, marks source or renderer truncation, and caps the
+final rendered output at 8,000 characters. Existing SSRF, redirect, timeout,
+Readability, response-body, and 3,000-character-per-page limits are unchanged.
+MCP Fetch, remote page-content tools, and intermediate LLM rewriting remain
+out of scope.
 
 ## Rollback
 

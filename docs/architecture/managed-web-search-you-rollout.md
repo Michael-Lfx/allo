@@ -1,7 +1,8 @@
 # Managed Web Search: You.com Rollout
 
 Date: 2026-07-30
-Baseline: `d3a034d1` (`feat: add desktop managed web search`)
+Initial baseline: `d3a034d1` (`feat: add desktop managed web search`)
+Stability hardening baseline: `8f3f3d9` (`feat(web): replace Exa with You.com in managed search`)
 
 ## Decision
 
@@ -56,6 +57,7 @@ The public `RemoteMcpPeer` Interface remains `discover_tools`, `call_tool`, and
 enum PeerState {
     Uninitialized,
     Ready {
+        generation: u64,
         protocol_version: ProtocolVersion,
         session: SessionMode,
         tools: Option<Vec<McpToolDef>>,
@@ -72,6 +74,9 @@ The first version accepts only `2025-11-25`. The Ready state is committed only
 after initialize, version validation, and `notifications/initialized` succeed.
 The negotiated version is used on every later HTTP request. Request IDs are
 monotonic for the Peer lifetime and response IDs must match the request ID.
+Each ready transport carries a monotonic generation. A stateful 404 only
+invalidates the generation that sent the request; a late 404 from an older
+generation cannot clear a newly initialized session.
 
 Sessionless is valid: no Session header is sent and shutdown sends no DELETE.
 Only a request that carried a Stateful Session ID can turn HTTP 404 into a
@@ -119,6 +124,12 @@ Allo's final normalization:
 - renders all results as untrusted external evidence and exposes no provider,
   Session, usage, or raw control fields.
 
+Parallel and You decoders tolerate malformed individual items when the
+top-level contract is valid. They return the remaining valid hits and private
+diagnostics (`decode_source`, `structured_fallback`, `dropped_items`, and
+`contract_degraded`). A non-empty payload with no valid item remains a
+malformed response and falls back through the provider chain.
+
 ## You.com rate policy
 
 `Retry-After` supports both delay-seconds and HTTP-date. You clamps a hinted
@@ -164,3 +175,20 @@ owner-operated `bun run dev` test with proxy-on and proxy-off network checks.
 The rollback point is `d3a034d1`. If You admission or real acceptance fails,
 remove You from the route and use `Parallel -> DuckDuckGo`; do not add keys or
 change user MCP configuration.
+
+## Stability hardening follow-on
+
+The follow-on implementation adds request-local `QueueBusy` semantics,
+generation-guarded Stateful 404 invalidation, explicit `DefaultDdg` /
+`Provided` / `Disabled` host binding, one-shot stale-tool rediscovery,
+partial-success decoder diagnostics, and local Fetch context safety. Queue
+wait consumes the same deadline as the provider request and never cools down a
+provider. Decoder diagnostics contain only source, fallback, dropped-item
+count, and contract-degraded state.
+
+The local `web_extract` model result begins with an untrusted-evidence marker,
+does not expose provider or extractor names, preserves partial-failure
+semantics, and caps final rendered output at 8,000 characters. It keeps the
+existing SSRF, redirect, timeout, Readability, response-body, and 3,000
+character per-page limits. MCP Fetch, remote contents, and background probes
+remain excluded.
