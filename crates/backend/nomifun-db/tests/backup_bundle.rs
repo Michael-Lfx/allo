@@ -6,6 +6,7 @@ use nomifun_common::{
     },
     factory_reset::{DatasetPreparation, prepare_v3_dataset},
     generate_id,
+    storage_paths::DATABASE_FILE as ACTIVE_DATABASE_FILE,
 };
 use nomifun_db::backup_bundle::{
     BACKUP_FORMAT_VERSION, BACKUP_SCHEMA, BUNDLE_DATA_DIR, BUNDLE_WORK_DIR, BackupCoverageKind,
@@ -376,7 +377,7 @@ async fn complete_bundle_captures_every_included_root_and_records_all_exclusions
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().join("data");
     let work_dir = dir.path().join("custom-work");
-    let source = data_dir.join("nomifun-backend.db");
+    let source = data_dir.join(ACTIVE_DATABASE_FILE);
     let bundle = dir.path().join("backup.nomifun");
     std::fs::create_dir_all(&data_dir).unwrap();
     let database = init_database(&source).await.unwrap();
@@ -576,7 +577,7 @@ async fn data_and_work_root_overlap_captures_conversations_once_through_work_nam
         b"captured once",
     )
     .unwrap();
-    let database = init_database(&data_dir.join("nomifun-backend.db"))
+    let database = init_database(&data_dir.join(ACTIVE_DATABASE_FILE))
         .await
         .unwrap();
 
@@ -657,7 +658,7 @@ async fn data_and_work_root_overlap_captures_conversations_once_through_work_nam
 
     restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join(STORAGE_GENERATION_FILE),
     )
     .await
@@ -790,7 +791,7 @@ async fn pre_work_root_owner_v2_coverage_remains_verifiable_and_restorable() {
 
     let outcome = restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join(STORAGE_GENERATION_FILE),
     )
     .await
@@ -807,7 +808,7 @@ async fn pre_work_root_owner_v2_coverage_remains_verifiable_and_restorable() {
                     && entry.path != "agent-process-registry.json"
             })
     );
-    assert!(destination.join("nomifun-backend.db").is_file());
+    assert!(destination.join(ACTIVE_DATABASE_FILE).is_file());
     assert!(destination.join(DATASET_RECEIPT_FILE).is_file());
 
     manifest["coverage"]["excluded"][0]["exclusion_reason"] = json!("tampered");
@@ -849,7 +850,7 @@ async fn offline_restore_preserves_entity_ids_and_rotates_dataset_generation() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source.db");
     let bundle = dir.path().join("backup.nomifun");
-    let restored_database = dir.path().join("restored").join("nomifun-backend.db");
+    let restored_database = dir.path().join("restored").join(ACTIVE_DATABASE_FILE);
     let restored_generation = dir.path().join("restored").join("storage-generation");
     let database = init_database(&source).await.unwrap();
     let source_owner = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
@@ -1046,13 +1047,13 @@ async fn restore_rebuilds_technical_ids_and_preserves_registered_business_id_ref
 
     restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join(STORAGE_GENERATION_FILE),
     )
     .await
     .unwrap();
 
-    let restored = open_read_only_pool(&destination.join("nomifun-backend.db")).await;
+    let restored = open_read_only_pool(&destination.join(ACTIVE_DATABASE_FILE)).await;
     let restored_requirement_technical_id: i64 = sqlx::query_scalar(
         "SELECT id FROM requirements WHERE title = 'restored requirement'",
     )
@@ -1183,7 +1184,7 @@ async fn complete_restore_is_atomic_and_materializes_all_portable_domains() {
     let dir = tempfile::tempdir().unwrap();
     let source_root = dir.path().join("source");
     let work_root = dir.path().join("work");
-    let source_database = source_root.join("nomifun-backend.db");
+    let source_database = source_root.join(ACTIVE_DATABASE_FILE);
     let bundle = dir.path().join("backup.nomifun");
     let destination = dir.path().join("restored");
     std::fs::create_dir_all(&source_root).unwrap();
@@ -1239,7 +1240,7 @@ async fn complete_restore_is_atomic_and_materializes_all_portable_domains() {
 
     let outcome = restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join("storage-generation"),
     )
     .await
@@ -1311,7 +1312,7 @@ async fn complete_restore_is_atomic_and_materializes_all_portable_domains() {
     assert!(
         restore_backup_bundle(
             &corrupt_bundle,
-            &untouched.join("nomifun-backend.db"),
+            &untouched.join(ACTIVE_DATABASE_FILE),
             &untouched.join("storage-generation"),
         )
         .await
@@ -1356,7 +1357,7 @@ async fn restore_rejects_valid_sqlite_with_wrong_schema_after_checksum_rewrite()
     let destination = dir.path().join("must-stay-absent");
     let error = restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join("storage-generation"),
     )
     .await
@@ -1401,7 +1402,7 @@ async fn restore_rejects_missing_installation_identity_after_checksum_rewrite() 
     let destination = dir.path().join("must-stay-absent");
     let error = restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join("storage-generation"),
     )
     .await
@@ -1465,7 +1466,7 @@ async fn restore_rejects_noncanonical_row_ids_after_checksum_rewrite() {
     let destination = dir.path().join("must-stay-absent");
     let error = restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join("storage-generation"),
     )
     .await
@@ -1528,7 +1529,7 @@ async fn restore_rejects_noncanonical_external_owner_ids_after_checksum_rewrite(
     let destination = dir.path().join("must-stay-absent");
     let error = restore_backup_bundle(
         &bundle,
-        &destination.join("nomifun-backend.db"),
+        &destination.join(ACTIVE_DATABASE_FILE),
         &destination.join("storage-generation"),
     )
     .await
@@ -1589,7 +1590,7 @@ async fn symlink_sources_and_broken_link_destinations_fail_closed_without_stagin
     let bundle = dir.path().join("backup.nomifun");
     std::fs::create_dir_all(data_dir.join(COMPANION_DIR)).unwrap();
     std::fs::create_dir_all(&work_dir).unwrap();
-    let database = init_database(&data_dir.join("nomifun-backend.db"))
+    let database = init_database(&data_dir.join(ACTIVE_DATABASE_FILE))
         .await
         .unwrap();
     let external = dir.path().join("external-secret");
@@ -1637,7 +1638,7 @@ async fn symlink_sources_and_broken_link_destinations_fail_closed_without_stagin
     assert!(
         restore_backup_bundle(
             &bundle,
-            &destination.join("nomifun-backend.db"),
+            &destination.join(ACTIVE_DATABASE_FILE),
             &destination.join("storage-generation"),
         )
         .await

@@ -1,4 +1,4 @@
-﻿//! Public DTOs for IDMM (Intelligent Decision-Making Mode) — a per-session,
+//! Public DTOs for IDMM (Intelligent Decision-Making Mode) — a per-session,
 //! opt-in supervision capability that keeps agent/terminal sessions alive
 //! through provider faults and decision stalls. Pure serde — no axum.
 //!

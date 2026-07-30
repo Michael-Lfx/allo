@@ -1,4 +1,4 @@
-﻿#[tokio::main]
+#[tokio::main]
 async fn main() {
     let marker = std::env::temp_dir().join("nomi_shell_sidechannel.txt");
     let _ = std::fs::remove_file(&marker);

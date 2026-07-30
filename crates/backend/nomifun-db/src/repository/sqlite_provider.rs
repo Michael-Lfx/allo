@@ -298,7 +298,7 @@ async fn sync_provider_model_membership_tx(
     Ok(())
 }
 
-/// Dual-write orchestrator shared by `create` and `update`: keeps
+/// Dual-write coordinator shared by `create` and `update`: keeps
 /// `provider_models` rows in sync with the legacy `models` array and the five
 /// per-model JSON map columns, inside the caller's providers transaction.
 /// Direction is legacy → new only.

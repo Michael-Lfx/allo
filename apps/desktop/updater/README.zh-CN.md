@@ -1,4 +1,4 @@
-﻿# Flowy 桌面端自动更新说明
+# Flowy 桌面端自动更新说明
 
 应用内 OTA 的操作真源是根目录 [`BUILD_RELEASE.zh-CN.md`](../../../BUILD_RELEASE.zh-CN.md)
 （ModelScope 渠道）。本文只补充机制与本地命令；若与 `BUILD_RELEASE` 冲突，以

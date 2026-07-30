@@ -1,4 +1,4 @@
-﻿# Flowy desktop auto-update
+# Flowy desktop auto-update
 
 Operational source of truth for in-app OTA is root
 [`BUILD_RELEASE.zh-CN.md`](../../../BUILD_RELEASE.zh-CN.md) (ModelScope

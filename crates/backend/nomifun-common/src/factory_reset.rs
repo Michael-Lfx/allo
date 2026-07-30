@@ -4743,9 +4743,39 @@ fn quarantine_stray_database_family(
 ) -> Result<(), AppError> {
     let retired_root = data_dir.join(&plan.retired_dir);
     ensure_real_directory(&retired_root, "retired dataset generation directory")?;
-    for relative_path in DB_FAMILY {
+    let has_collision = DB_FAMILY.iter().try_fold(false, |collision, relative_path| {
         let source = data_dir.join(relative_path);
         let destination = retired_root.join(relative_path);
+        match fs::symlink_metadata(&source) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(AppError::Internal(format!(
+                        "refusing to quarantine non-file database family member {}",
+                        source.display()
+                    )));
+                }
+                Ok(collision || destination.exists())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(collision),
+            Err(error) => Err(AppError::Internal(format!(
+                "inspect stray database family member {}: {error}",
+                source.display()
+            ))),
+        }
+    })?;
+    let destination_root = if has_collision {
+        let path = retired_root.join(format!(
+            "rejected-database-family-{}",
+            Uuid::now_v7()
+        ));
+        ensure_real_directory(&path, "rejected database family directory")?;
+        path
+    } else {
+        retired_root.clone()
+    };
+    for relative_path in DB_FAMILY {
+        let source = data_dir.join(relative_path);
+        let destination = destination_root.join(relative_path);
         match fs::symlink_metadata(&source) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -4760,7 +4790,7 @@ fn quarantine_stray_database_family(
                         destination.display()
                     )));
                 }
-                ensure_safe_destination_parent(&destination, &retired_root)?;
+                ensure_safe_destination_parent(&destination, &destination_root)?;
                 rename_with_retry(&source, &destination).map_err(|error| {
                     AppError::Internal(format!(
                         "quarantine stray database family member {} -> {}: {error}",
@@ -8180,6 +8210,61 @@ mod tests {
                 .join(plan.retired_dir)
                 .join(DB_FILE)
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn repeated_probe_retirement_preserves_both_database_families() {
+        let data = tempfile::tempdir().unwrap();
+        fs::write(data.path().join(DATABASE_FILE), b"retired-db").unwrap();
+        fs::write(data.path().join(DATABASE_WAL_FILE), b"retired-wal").unwrap();
+
+        let plan = arm_v3_dataset_reset(
+            data.path(),
+            data.path(),
+            DatasetResetReason::NonV3Dataset,
+        )
+        .unwrap();
+        apply_pending_v3_dataset_reset(data.path(), data.path()).unwrap();
+
+        fs::write(data.path().join(DATABASE_FILE), b"rejected-db").unwrap();
+        fs::write(data.path().join(DATABASE_WAL_FILE), b"rejected-wal").unwrap();
+
+        assert_eq!(
+            retire_non_v3_dataset_after_probe(data.path(), data.path()).unwrap(),
+            DatasetPreparation::ResetApplied
+        );
+        assert!(!data.path().join(DATABASE_FILE).exists());
+        assert!(!data.path().join(DATABASE_WAL_FILE).exists());
+
+        let retired_root = data.path().join(&plan.retired_dir);
+        assert_eq!(
+            fs::read(retired_root.join(DATABASE_FILE)).unwrap(),
+            b"retired-db"
+        );
+        assert_eq!(
+            fs::read(retired_root.join(DATABASE_WAL_FILE)).unwrap(),
+            b"retired-wal"
+        );
+
+        let rejected_root = fs::read_dir(&retired_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("rejected-database-family-")
+                    })
+            })
+            .expect("rejected database family must be preserved separately");
+        assert_eq!(
+            fs::read(rejected_root.join(DATABASE_FILE)).unwrap(),
+            b"rejected-db"
+        );
+        assert_eq!(
+            fs::read(rejected_root.join(DATABASE_WAL_FILE)).unwrap(),
+            b"rejected-wal"
         );
     }
 

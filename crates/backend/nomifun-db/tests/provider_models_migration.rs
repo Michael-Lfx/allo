@@ -5,12 +5,17 @@ static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 const PROVIDER: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 
+/// Last migration before `provider_models` is introduced.
+const BEFORE_PROVIDER_MODELS: i64 = 15;
+const PROVIDER_MODELS: i64 = 16;
+const DROP_MODEL_PROFILES: i64 = 17;
+
 /// Apply migrations up to (and including) `max_version`, skipping versions
 /// already recorded in `_sqlx_migrations` so repeated calls are incremental.
 async fn migrate_to(pool: &sqlx::SqlitePool, max_version: i64) {
     let mut conn = pool.acquire().await.unwrap();
     conn.ensure_migrations_table().await.unwrap();
-    let applied: std::collections::BTreeSet<i64> = conn
+    let mut applied: std::collections::BTreeSet<i64> = conn
         .list_applied_migrations()
         .await
         .unwrap()
@@ -18,8 +23,25 @@ async fn migrate_to(pool: &sqlx::SqlitePool, max_version: i64) {
         .map(|m| m.version)
         .collect();
     for m in MIGRATOR.iter() {
-        if m.version <= max_version && !applied.contains(&m.version) {
+        if m.version <= max_version && applied.insert(m.version) {
             conn.apply(m).await.unwrap();
+        }
+    }
+}
+
+/// sqlx keys `_sqlx_migrations` by version, so a duplicate version makes every
+/// fresh bootstrap fail with a UNIQUE conflict and then a checksum mismatch on
+/// the already-published migration. Two branches numbering their migrations
+/// independently is exactly how that happens, so assert uniqueness directly.
+#[test]
+fn embedded_migration_versions_are_unique() {
+    let mut seen = std::collections::BTreeMap::new();
+    for m in MIGRATOR.iter() {
+        if let Some(previous) = seen.insert(m.version, m.description.clone()) {
+            panic!(
+                "migration version {} is used by both {previous:?} and {:?}",
+                m.version, m.description
+            );
         }
     }
 }
@@ -31,7 +53,7 @@ async fn backfill_merges_maps_and_profiles_and_drops_orphans() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_to(&pool, 13).await;
+    migrate_to(&pool, BEFORE_PROVIDER_MODELS).await;
 
     // Legacy-shaped provider row: 2 catalog models + per-model maps.
     sqlx::query(
@@ -60,7 +82,7 @@ async fn backfill_merges_maps_and_profiles_and_drops_orphans() {
     .await
     .unwrap();
 
-    migrate_to(&pool, 14).await;
+    migrate_to(&pool, PROVIDER_MODELS).await;
 
     let rows: Vec<(String, i64, i64, String, String, Option<String>, String, Option<i64>, Option<String>, String, Option<String>, i64)> = sqlx::query_as(
         "SELECT model, enabled, sort_order, tasks, traits, protocol, params, context_limit, description, source, health, updated_at \
@@ -97,7 +119,7 @@ async fn backfill_dedupes_duplicate_models_and_tolerates_corrupt_health() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_to(&pool, 13).await;
+    migrate_to(&pool, BEFORE_PROVIDER_MODELS).await;
 
     // Legacy catalog with a duplicated name (the legacy API never deduplicated
     // providers.models) plus a corrupt model_health value: json_each unwraps
@@ -113,7 +135,7 @@ async fn backfill_dedupes_duplicate_models_and_tolerates_corrupt_health() {
     .await
     .unwrap();
 
-    migrate_to(&pool, 14).await;
+    migrate_to(&pool, PROVIDER_MODELS).await;
 
     let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
         "SELECT model, sort_order, health FROM provider_models WHERE provider_id = ? ORDER BY sort_order",
@@ -131,14 +153,14 @@ async fn backfill_dedupes_duplicate_models_and_tolerates_corrupt_health() {
 }
 
 #[tokio::test]
-async fn migration_15_drops_model_profiles() {
+async fn migration_17_drops_model_profiles() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_to(&pool, 14).await;
-    // At the 014 point the superseded table must still exist (the backfill
+    migrate_to(&pool, PROVIDER_MODELS).await;
+    // At the 016 point the superseded table must still exist (the backfill
     // above reads from it).
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'model_profiles'",
@@ -146,16 +168,16 @@ async fn migration_15_drops_model_profiles() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(count, 1, "model_profiles must still exist at migration 14");
+    assert_eq!(count, 1, "model_profiles must still exist at migration 16");
 
-    migrate_to(&pool, 15).await;
+    migrate_to(&pool, DROP_MODEL_PROFILES).await;
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_schema WHERE name IN ('model_profiles', 'idx_model_profiles_provider_id')",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(count, 0, "migration 15 must drop model_profiles and its index");
+    assert_eq!(count, 0, "migration 17 must drop model_profiles and its index");
 }
 
 #[tokio::test]
