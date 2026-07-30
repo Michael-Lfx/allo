@@ -537,7 +537,7 @@ struct ToolEfficiencyStats {
     external_evidence_chars_total: usize,
     extract_requested_url_count: usize,
     invalid_web_tool_call_count: usize,
-    external_evidence_budget_high: bool,
+    external_evidence_chars_high: bool,
     evidence_calls: HashMap<String, EvidenceCallMeta>,
     observed_evidence_result_ids: HashSet<String>,
     observed_invalid_web_call_ids: HashSet<String>,
@@ -690,7 +690,7 @@ impl ToolEfficiencyStats {
             self.external_evidence_chars_total = self
                 .external_evidence_chars_total
                 .saturating_add(chars);
-            self.external_evidence_budget_high =
+            self.external_evidence_chars_high =
                 self.external_evidence_chars_total > 16_000;
         }
     }
@@ -744,7 +744,7 @@ impl ToolEfficiencyStats {
             external_evidence_chars_total = self.external_evidence_chars_total,
             extract_requested_url_count = self.extract_requested_url_count,
             invalid_web_tool_call_count = self.invalid_web_tool_call_count,
-            external_evidence_budget_high = self.external_evidence_budget_high,
+            external_evidence_chars_high = self.external_evidence_chars_high,
             external_evidence_soft_warning,
             "agent tool efficiency summary"
         );

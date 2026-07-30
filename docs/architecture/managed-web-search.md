@@ -166,7 +166,7 @@ conflict.
 The agent's existing Turn-level `ToolEfficiencyStats` also records web evidence
 cost: search/extract call counts, requested extract URL count, result character
 counts, total external-evidence characters, confirmed schema-invalid web calls,
-and a soft high-budget flag. Tool-use and Tool-result IDs are observed once so
+and a soft high-character-count flag. Tool-use and Tool-result IDs are observed once so
 validation and execution paths cannot double-count. A single extract diagnostic
 summary contains only counts, truncation categories, omitted pages, result
 characters, and elapsed time; it never contains a query, URL, body, structured
