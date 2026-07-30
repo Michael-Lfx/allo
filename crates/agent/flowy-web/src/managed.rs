@@ -52,6 +52,7 @@ impl SearchProviderId {
 enum SearchAttemptError {
     Network,
     Timeout,
+    QueueBusy,
     RateLimited(Option<Duration>),
     Unauthorized,
     Forbidden,
@@ -154,6 +155,7 @@ impl SearchProviderHealth {
             }
             SearchAttemptError::Network
             | SearchAttemptError::Timeout
+            | SearchAttemptError::QueueBusy
             | SearchAttemptError::SessionExpired
             | SearchAttemptError::Upstream
             | SearchAttemptError::MalformedResponse => {
@@ -274,7 +276,7 @@ impl ManagedSearchService {
                 continue;
             }
             let provider_deadline = std::cmp::min(overall_deadline, now + slot.timeout);
-            let started = Instant::now();
+            let attempt_started = Instant::now();
             let permit = match tokio::time::timeout_at(
                 provider_deadline,
                 slot.semaphore.acquire(),
@@ -283,24 +285,31 @@ impl ManagedSearchService {
             {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => {
-                    last_class = Some("semaphore_closed");
+                    let error = SearchAttemptError::QueueBusy;
+                    last_class = Some(error_class(&error));
                     fallback_count += 1;
                     continue;
                 }
                 Err(_) => {
-                    slot.health
-                        .lock()
-                        .await
-                        .record_error(
-                            slot.adapter.id(),
-                            &SearchAttemptError::Timeout,
-                            Instant::now(),
-                        );
-                    last_class = Some("timeout");
+                    let error = SearchAttemptError::QueueBusy;
+                    last_class = Some(error_class(&error));
                     fallback_count += 1;
+                    tracing::warn!(
+                        target: "managed_search",
+                        request_id = %request_id,
+                        provider = slot.adapter.id().as_str(),
+                        attempt,
+                        queue_wait_ms = attempt_started.elapsed().as_millis(),
+                        request_elapsed_ms = 0u128,
+                        error_class = "queue_busy",
+                        fallback_count,
+                        "managed web search provider queue is busy"
+                    );
                     continue;
                 }
             };
+            let queue_wait_ms = attempt_started.elapsed().as_millis();
+            let request_started = Instant::now();
             let result = match tokio::time::timeout_at(
                 provider_deadline,
                 slot.adapter.search_attempt(query, provider_deadline),
@@ -315,6 +324,7 @@ impl ManagedSearchService {
             match result {
                 Ok(mut result) if !result.hits.is_empty() => {
                     let truncated = normalize_result(&mut result, query.count);
+                    let request_elapsed_ms = request_started.elapsed().as_millis();
                     slot.health
                         .lock()
                         .await
@@ -324,7 +334,9 @@ impl ManagedSearchService {
                         request_id = %request_id,
                         provider = slot.adapter.id().as_str(),
                         attempt,
-                        elapsed_ms = started.elapsed().as_millis(),
+                        elapsed_ms = attempt_started.elapsed().as_millis(),
+                        queue_wait_ms,
+                        request_elapsed_ms,
                         result_count = result.hits.len(),
                         fallback_count,
                         truncated,
@@ -333,6 +345,7 @@ impl ManagedSearchService {
                     return Ok(result);
                 }
                 Ok(_) => {
+                    let request_elapsed_ms = request_started.elapsed().as_millis();
                     slot.health
                         .lock()
                         .await
@@ -343,11 +356,14 @@ impl ManagedSearchService {
                         request_id = %request_id,
                         provider = slot.adapter.id().as_str(),
                         attempt,
-                        elapsed_ms = started.elapsed().as_millis(),
+                        elapsed_ms = attempt_started.elapsed().as_millis(),
+                        queue_wait_ms,
+                        request_elapsed_ms,
                         "managed web search returned no results"
                     );
                 }
                 Err(error) => {
+                    let request_elapsed_ms = request_started.elapsed().as_millis();
                     let class = error_class(&error);
                     last_class = Some(class);
                     slot.health.lock().await.record_error(
@@ -361,7 +377,9 @@ impl ManagedSearchService {
                         request_id = %request_id,
                         provider = slot.adapter.id().as_str(),
                         attempt,
-                        elapsed_ms = started.elapsed().as_millis(),
+                        elapsed_ms = attempt_started.elapsed().as_millis(),
+                        queue_wait_ms,
+                        request_elapsed_ms,
                         error_class = class,
                         fallback_count,
                         "managed web search provider failed"
@@ -473,6 +491,7 @@ fn error_class(error: &SearchAttemptError) -> &'static str {
     match error {
         SearchAttemptError::Network => "network",
         SearchAttemptError::Timeout => "timeout",
+        SearchAttemptError::QueueBusy => "queue_busy",
         SearchAttemptError::RateLimited(_) => "rate_limited",
         SearchAttemptError::Unauthorized => "unauthorized",
         SearchAttemptError::Forbidden => "forbidden",
@@ -920,6 +939,41 @@ mod tests {
             search.await.expect("join").expect("search");
         }
         assert_eq!(adapter.max_active.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queue_pressure_does_not_cool_down_provider() {
+        let service = ManagedSearchService::from_adapters(vec![(
+            fake(SearchProviderId::Parallel, Ok(successful("parallel"))),
+            Duration::from_millis(5),
+        )]);
+        let permit_one = service.slots[0]
+            .semaphore
+            .try_acquire()
+            .expect("first permit");
+        let permit_two = service.slots[0]
+            .semaphore
+            .try_acquire()
+            .expect("second permit");
+
+        let result = service
+            .search(SearchQuery {
+                query: "queue-pressure".to_owned(),
+                count: 5,
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(service.slots[0].health.lock().await.cooldown_until.is_none());
+
+        drop(permit_one);
+        drop(permit_two);
+        assert!(service
+            .search(SearchQuery {
+                query: "after-queue-pressure".to_owned(),
+                count: 5,
+            })
+            .await
+            .is_ok());
     }
 
     struct CancellationAdapter {
