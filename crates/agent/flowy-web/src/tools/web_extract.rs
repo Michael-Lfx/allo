@@ -45,6 +45,24 @@ struct IndexedExtractOutcome {
     page: ModelPage,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtractTimeoutKind {
+    PerUrlDeadline,
+    ToolDeadlineBeforeStart,
+    ToolDeadlineWhileRunning,
+}
+
+impl ExtractTimeoutKind {
+    fn model_message(self) -> &'static str {
+        match self {
+            Self::PerUrlDeadline => "Page extraction timed out.",
+            Self::ToolDeadlineBeforeStart | Self::ToolDeadlineWhileRunning => {
+                "Page extraction did not complete before the tool deadline."
+            }
+        }
+    }
+}
+
 pub struct WebExtractTool {
     provider: Arc<dyn ExtractProvider>,
 }
@@ -55,6 +73,7 @@ impl WebExtractTool {
     }
 
     async fn extract_pages(&self, urls: &[Value]) -> (Vec<ModelPage>, usize) {
+        let tool_started_at = StdInstant::now();
         let tool_deadline = Instant::now() + TOTAL_EXTRACT_TIMEOUT;
         let labels = urls
             .iter()
@@ -67,10 +86,12 @@ impl WebExtractTool {
             })
             .collect::<Vec<_>>();
         let mut pages: Vec<Option<ModelPage>> = (0..urls.len()).map(|_| None).collect();
+        let mut started = vec![false; urls.len()];
         let mut in_flight = FuturesUnordered::new();
         let mut next_index = 0usize;
 
         while next_index < urls.len() && in_flight.len() < MAX_EXTRACT_CONCURRENCY {
+            started[next_index] = true;
             in_flight.push(extract_one(
                 Arc::clone(&self.provider),
                 next_index,
@@ -91,6 +112,7 @@ impl WebExtractTool {
             pages[outcome.index] = Some(outcome.page);
 
             if next_index < urls.len() {
+                started[next_index] = true;
                 in_flight.push(extract_one(
                     Arc::clone(&self.provider),
                     next_index,
@@ -106,7 +128,19 @@ impl WebExtractTool {
         // leaving the model to infer which request disappeared.
         for (index, page) in pages.iter_mut().enumerate() {
             if page.is_none() {
-                *page = Some(timeout_page(index, &labels[index]));
+                let kind = if started[index] {
+                    ExtractTimeoutKind::ToolDeadlineWhileRunning
+                } else {
+                    ExtractTimeoutKind::ToolDeadlineBeforeStart
+                };
+                tracing::info!(
+                    target: "flowy_web::web_extract",
+                    timeout_kind = ?kind,
+                    url_index = index,
+                    elapsed_ms = tool_started_at.elapsed().as_millis(),
+                    "web extract url timed out"
+                );
+                *page = Some(timeout_page(index, &labels[index], kind));
             }
         }
 
@@ -238,7 +272,9 @@ async fn extract_one(
         };
     };
 
-    let url_deadline = std::cmp::min(Instant::now() + PER_URL_EXTRACT_TIMEOUT, tool_deadline);
+    let started_at = StdInstant::now();
+    let per_url_deadline = Instant::now() + PER_URL_EXTRACT_TIMEOUT;
+    let url_deadline = std::cmp::min(per_url_deadline, tool_deadline);
     let page = match timeout_at(
         url_deadline,
         provider.extract(ExtractRequest {
@@ -266,22 +302,34 @@ async fn extract_one(
             context_truncated: false,
             error: Some(single_line_truncate(&error.to_string(), MAX_MODEL_ERROR_CHARS)),
         },
-        Err(_) => timeout_page(index, url),
+        Err(_) => {
+            let kind = if url_deadline < per_url_deadline {
+                ExtractTimeoutKind::ToolDeadlineWhileRunning
+            } else {
+                ExtractTimeoutKind::PerUrlDeadline
+            };
+            tracing::info!(
+                target: "flowy_web::web_extract",
+                timeout_kind = ?kind,
+                url_index = index,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "web extract url timed out"
+            );
+            timeout_page(index, url, kind)
+        }
     };
     IndexedExtractOutcome { index, page }
 }
 
-fn timeout_page(index: usize, url: &str) -> ModelPage {
+fn timeout_page(index: usize, url: &str, kind: ExtractTimeoutKind) -> ModelPage {
+    let _ = index;
     ModelPage {
         url: single_line_truncate_bytes(url, MAX_MODEL_URL_BYTES),
         title: None,
         body: None,
         source_truncated: false,
         context_truncated: false,
-        error: Some(format!(
-            "urls[{index}] extract timed out after {} seconds",
-            PER_URL_EXTRACT_TIMEOUT.as_secs()
-        )),
+        error: Some(kind.model_message().to_owned()),
     }
 }
 
@@ -704,7 +752,13 @@ mod tests {
         let result = task.await.expect("deadline-bounded extract must finish");
         assert!(result.is_error, "all three requests timed out");
         assert_eq!(calls.load(Ordering::SeqCst), 3);
-        assert!(result.content.contains("extract timed out"));
+        assert!(
+            result.content.contains("Page extraction timed out.")
+                || result
+                    .content
+                    .contains("Page extraction did not complete before the tool deadline."),
+            "timeout copy must describe the deadline cause without claiming a fixed 8s wait"
+        );
     }
 
     #[test]
