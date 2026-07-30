@@ -5533,6 +5533,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "httpdate",
  "nomi-config",
  "nomi-process-runtime",
  "nomi-protocol",
