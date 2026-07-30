@@ -157,7 +157,10 @@ impl Tool for WebExtractTool {
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
-        true
+        // Single-call extraction already bounds itself to three URLs with
+        // internal concurrency 2. Parallel tool-call scheduling would only
+        // amplify DNS/connection pressure and Turn event density.
+        false
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
@@ -712,6 +715,15 @@ mod tests {
         assert_eq!(schema["properties"]["urls"]["maxItems"], json!(3));
         assert!(tool.description().contains("one URL for ordinary follow-up"));
         assert!(tool.description().contains("Do not mechanically extract every remaining URL"));
+    }
+
+    #[test]
+    fn web_extract_tool_calls_are_not_concurrency_safe() {
+        let tool = WebExtractTool::new(Arc::new(MockExtract::default()));
+        assert!(
+            !tool.is_concurrency_safe(&json!({ "urls": ["https://example.com/a"] })),
+            "cross-call extract parallelism must be serialized by the agent scheduler"
+        );
     }
 
     #[tokio::test]
