@@ -953,6 +953,21 @@ async fn forward_browser_inventory_events(
     }
 }
 
+/// Runtime Host capability is authoritative even when Cargo feature
+/// unification compiles managed-search into non-desktop hosts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppHostCapabilities {
+    pub managed_search: bool,
+}
+
+impl AppHostCapabilities {
+    pub const fn desktop() -> Self {
+        Self {
+            managed_search: true,
+        }
+    }
+}
+
 #[cfg(feature = "managed-search")]
 fn resolve_managed_search_binding<M, D>(
     enabled: bool,
@@ -1710,7 +1725,15 @@ impl AppServices {
     }
 
     pub async fn from_config(database: Database, config: &AppConfig) -> anyhow::Result<Self> {
-        match Self::try_from_config(database, config).await {
+        Self::from_config_with_capabilities(database, config, AppHostCapabilities::default()).await
+    }
+
+    pub async fn from_config_with_capabilities(
+        database: Database,
+        config: &AppConfig,
+        capabilities: AppHostCapabilities,
+    ) -> anyhow::Result<Self> {
+        match Self::try_from_config_with_capabilities(database, config, capabilities).await {
             Ok(services) => Ok(services),
             Err(failure) => {
                 let (error, cleanup_error, authority) = failure.into_parts();
@@ -1736,11 +1759,21 @@ impl AppServices {
         database: Database,
         config: &AppConfig,
     ) -> Result<Self, RetainedAppServicesConstructionError> {
+        Self::try_from_config_with_capabilities(database, config, AppHostCapabilities::default())
+            .await
+    }
+
+    pub(crate) async fn try_from_config_with_capabilities(
+        database: Database,
+        config: &AppConfig,
+        capabilities: AppHostCapabilities,
+    ) -> Result<Self, RetainedAppServicesConstructionError> {
         let startup_cleanup_authority =
             Arc::new(StartupCleanupAuthority::new(database.clone()));
         match Self::from_config_inner(
             database,
             config,
+            capabilities,
             Arc::clone(&startup_cleanup_authority),
         )
         .await
@@ -1756,8 +1789,11 @@ impl AppServices {
     async fn from_config_inner(
         database: Database,
         config: &AppConfig,
+        capabilities: AppHostCapabilities,
         startup_cleanup_authority: Arc<StartupCleanupAuthority>,
     ) -> anyhow::Result<Self> {
+        #[cfg(not(feature = "managed-search"))]
+        let _ = capabilities;
         // Brand computer-use permission-error guidance with the host app's name so
         // failures say "grant Flowy … then quit and reopen Flowy" instead of a
         // generic "this app" — which a model otherwise misreads as the terminal /
@@ -2524,6 +2560,21 @@ impl AppServices {
         #[cfg(feature = "browser-use")]
         let browser_lane_provider_slot =
             nomifun_ai_agent::BrowserLaneClientProviderSlot::new();
+
+        #[cfg(feature = "managed-search")]
+        let (managed_search, search_provider) = resolve_managed_search_binding(
+            capabilities.managed_search,
+            || {
+                nomifun_ai_agent::ManagedSearchHandle::keyless_default()
+                    .map_err(|error| error.to_string())
+            },
+            || {
+                nomifun_ai_agent::ManagedSearchHandle::ddg_only()
+                    .map_err(|error| error.to_string())
+            },
+        );
+        #[cfg(not(feature = "managed-search"))]
+        let search_provider = nomifun_ai_agent::SearchProviderBinding::DefaultDdg;
 
         let factory = build_agent_factory(AgentFactoryDeps {
             authoritative_user_id: authoritative_user_id.clone(),
