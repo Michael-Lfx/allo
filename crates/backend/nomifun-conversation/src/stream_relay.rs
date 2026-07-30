@@ -277,6 +277,28 @@ struct ThinkingSegmentState {
     completed_duration_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryMessageOwner {
+    Unclaimed,
+    RootTextPlaceholder,
+    Thinking,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextSegmentClaim {
+    id: String,
+    record_created: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnsureTurnRootOutcome {
+    CreatedTextPlaceholder,
+    ExistingTextPlaceholder,
+    ExistingText,
+    ExistingThinking,
+}
+
 /// Result returned after a relay turn has fully drained and finalized.
 #[derive(Debug, Clone, Default)]
 pub struct RelayOutcome {
@@ -1747,6 +1769,15 @@ pub struct StreamRelay {
     /// updates during one relay. Protocol call/session IDs are correlation keys,
     /// never database entity IDs.
     derived_message_ids: std::sync::Mutex<HashMap<String, String>>,
+    /// Coordinates ownership of the primary Turn message across stream event
+    /// types. Tool/status events may create a hidden Text placeholder before
+    /// the provider emits its first Thinking segment, so this state must be
+    /// shared by every persistence path in the relay.
+    primary_message_owner: StdMutex<PrimaryMessageOwner>,
+    /// A root identity/type mismatch is a fail-closed tracking error. The
+    /// event loop drains this marker before accepting another provider event
+    /// and surfaces it as `NomifunStateInconsistent`.
+    root_state_error: StdMutex<Option<String>>,
     /// Canonical session workspace used to re-verify every local receipt at
     /// the final database commit barrier. Runtime event payloads are untrusted:
     /// a marker proves an atomic DB transition, not that bytes exist.
@@ -1806,6 +1837,8 @@ impl StreamRelay {
             runtime_state: None,
             cancellation: None,
             derived_message_ids: std::sync::Mutex::new(HashMap::new()),
+            primary_message_owner: StdMutex::new(PrimaryMessageOwner::Unclaimed),
+            root_state_error: StdMutex::new(None),
             artifact_workspace: None,
         }
     }
@@ -1981,10 +2014,10 @@ impl StreamRelay {
         > = HashMap::new();
         let mut active_plan_ids: HashSet<String> = HashSet::new();
         let mut active_agent_status: Option<nomifun_ai_agent::protocol::events::AgentStatusEventData> = None;
-        let mut used_primary_segment_msg_id = false;
         let mut first_agent_event_logged = false;
         let mut first_visible_output_logged = false;
         let mut fatal_tracking_error: Option<String> = None;
+        let mut fatal_state_error: Option<String> = None;
         // Phase 3 (plan D4): tracks whether any externally-visible response has
         // been emitted this turn — assistant Text OR a forwarded/persisted tool
         // action. Surfaced on the RelayOutcome so the failover seam can restrict
@@ -1994,7 +2027,17 @@ impl StreamRelay {
         let mut send_error_done = send_error_rx.is_none();
 
         loop {
-            let recv_result = if let Some(message) = fatal_tracking_error.take() {
+            if fatal_state_error.is_none() {
+                fatal_state_error = self.take_root_state_error();
+            }
+            let recv_result = if let Some(message) = fatal_state_error.take() {
+                Ok(AgentStreamEvent::Error(
+                    nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
+                        message,
+                        Some(AgentErrorCode::NomifunStateInconsistent),
+                    ),
+                ))
+            } else if let Some(message) = fatal_tracking_error.take() {
                 Ok(AgentStreamEvent::Error(
                     nomifun_ai_agent::protocol::events::ErrorEventData::legacy(
                         message,
@@ -2142,11 +2185,13 @@ impl StreamRelay {
                                 );
                             }
 
+                            if active_thinking.is_none()
+                                && self.synchronize_existing_turn_root().await.is_err()
+                            {
+                                continue;
+                            }
                             let segment = active_thinking.get_or_insert_with(|| ThinkingSegmentState {
-                                // The turn's primary ID belongs to its final text row.  Thinking
-                                // can precede that text, so it must never claim the ID first:
-                                // another durable text projection may already own it.
-                                id: ConversationService::mint_msg_id(),
+                                id: self.mint_thinking_segment_id(),
                                 buffer: String::new(),
                                 started_at: now_ms(),
                                 completed_duration_ms: None,
@@ -2173,12 +2218,20 @@ impl StreamRelay {
                                 );
                             }
 
-                            let segment = active_text.get_or_insert_with(|| TextSegmentState {
-                                id: Self::mint_segment_msg_id(&mut used_primary_segment_msg_id, &self.msg_id),
-                                buffer: String::new(),
-                                created_at: now_ms(),
-                                record_created: false,
-                                flush_counter: 0,
+                            if active_text.is_none()
+                                && self.synchronize_existing_turn_root().await.is_err()
+                            {
+                                continue;
+                            }
+                            let segment = active_text.get_or_insert_with(|| {
+                                let claim = self.mint_text_segment_id();
+                                TextSegmentState {
+                                    id: claim.id,
+                                    buffer: String::new(),
+                                    created_at: now_ms(),
+                                    record_created: claim.record_created,
+                                    flush_counter: 0,
+                                }
                             });
                             self.forward_to_websocket_with_msg_id(&segment.id, &event);
                             segment.buffer.push_str(&data.content);
@@ -2278,7 +2331,12 @@ impl StreamRelay {
                                         text_status,
                                     )
                                     .await;
-                            if (!thinking_persistence_complete || !text_persistence_complete)
+                            let primary_root_persistence_complete = self
+                                .finalize_primary_text_placeholder(&event)
+                                .await;
+                            if (!thinking_persistence_complete
+                                || !text_persistence_complete
+                                || !primary_root_persistence_complete)
                                 && matches!(event, AgentStreamEvent::Finish(_))
                             {
                                 event = Self::assistant_segment_persistence_error_event();
@@ -3189,6 +3247,9 @@ impl StreamRelay {
                             "error",
                         )
                         .await;
+                        let primary_root_persistence_complete = self
+                            .finalize_primary_text_placeholder(&terminal_event)
+                            .await;
                         self.fail_active_tool_calls(&mut active_tool_calls, incomplete_reason).await;
                         self.fail_active_acp_tool_calls(&mut active_acp_tool_calls, incomplete_reason)
                             .await;
@@ -3211,7 +3272,9 @@ impl StreamRelay {
                                 "error",
                             )
                             .await;
-                        if (!thinking_persistence_complete || !text_persistence_complete)
+                        if (!thinking_persistence_complete
+                            || !text_persistence_complete
+                            || !primary_root_persistence_complete)
                             && matches!(terminal_event, AgentStreamEvent::Finish(_))
                         {
                             terminal_event = Self::assistant_segment_persistence_error_event();
@@ -3353,12 +3416,46 @@ impl StreamRelay {
         true
     }
 
-    fn mint_segment_msg_id(used_primary: &mut bool, primary_msg_id: &str) -> String {
-        if !*used_primary {
-            *used_primary = true;
-            primary_msg_id.to_owned()
-        } else {
-            ConversationService::mint_msg_id()
+    fn mint_thinking_segment_id(&self) -> String {
+        let mut owner = self
+            .primary_message_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match *owner {
+            PrimaryMessageOwner::Unclaimed => {
+                *owner = PrimaryMessageOwner::Thinking;
+                self.msg_id.clone()
+            }
+            PrimaryMessageOwner::RootTextPlaceholder
+            | PrimaryMessageOwner::Thinking
+            | PrimaryMessageOwner::Text => ConversationService::mint_msg_id(),
+        }
+    }
+
+    fn mint_text_segment_id(&self) -> TextSegmentClaim {
+        let mut owner = self
+            .primary_message_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match *owner {
+            PrimaryMessageOwner::Unclaimed => {
+                *owner = PrimaryMessageOwner::Text;
+                TextSegmentClaim {
+                    id: self.msg_id.clone(),
+                    record_created: false,
+                }
+            }
+            PrimaryMessageOwner::RootTextPlaceholder => {
+                *owner = PrimaryMessageOwner::Text;
+                TextSegmentClaim {
+                    id: self.msg_id.clone(),
+                    record_created: true,
+                }
+            }
+            PrimaryMessageOwner::Thinking | PrimaryMessageOwner::Text => TextSegmentClaim {
+                id: ConversationService::mint_msg_id(),
+                record_created: false,
+            },
         }
     }
 
@@ -3853,7 +3950,7 @@ impl StreamRelay {
             hidden: false,
             created_at: now_ms(),
         };
-        if !self.ensure_turn_root_message().await {
+        if self.ensure_turn_root_message().await.is_err() {
             error!(
                 status = %data.status,
                 turn_id = %self.root_turn_id,
@@ -4102,13 +4199,119 @@ impl StreamRelay {
     /// Ensure the durable turn root row exists before inserting children that
     /// parent to `root_turn_id`. Tool/status events can arrive before any text
     /// segment, and `insert_message` now requires the parent message to exist.
-    async fn ensure_turn_root_message(&self) -> bool {
+    async fn ensure_turn_root_message(&self) -> Result<EnsureTurnRootOutcome, String> {
+        let result = self.ensure_turn_root_message_inner().await;
+        if let Err(error) = &result {
+            self.record_root_state_error(error.clone());
+        }
+        result
+    }
+
+    /// Synchronize an already-persisted root without creating one. Thinking
+    /// may legitimately be the first visible segment, so an absent root must
+    /// remain absent until that Thinking row is written. If a previous event
+    /// already created a Text/Thinking root, however, its durable type must
+    /// decide whether the next Thinking segment may use the primary ID.
+    async fn synchronize_existing_turn_root(&self) -> Result<(), String> {
+        match self.repo.get_message(self.conv_id(), &self.root_turn_id).await {
+            Ok(Some(_)) => self.ensure_turn_root_message().await.map(|_| ()),
+            Ok(None) => Ok(()),
+            Err(error) => {
+                let message = format!("failed to load turn root: {error}");
+                self.record_root_state_error(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    fn record_root_state_error(&self, error: String) {
+        let mut slot = self
+            .root_state_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    fn take_root_state_error(&self) -> Option<String> {
+        self.root_state_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    async fn ensure_turn_root_message_inner(&self) -> Result<EnsureTurnRootOutcome, String> {
         if self.root_turn_id.is_empty() {
-            return false;
+            return Err("empty turn root id".to_owned());
         }
         match self.repo.get_message(self.conv_id(), &self.root_turn_id).await {
-            Ok(Some(_)) => true,
+            Ok(Some(existing)) => {
+                if existing.msg_id.as_deref() != Some(self.root_turn_id.as_str()) {
+                    return Err(format!(
+                        "turn root '{}' has incompatible msg_id {:?}",
+                        self.root_turn_id, existing.msg_id
+                    ));
+                }
+                let outcome = match existing.r#type.as_str() {
+                    "text" if existing.hidden && existing.status.as_deref() == Some("work") => {
+                        EnsureTurnRootOutcome::ExistingTextPlaceholder
+                    }
+                    "text" => EnsureTurnRootOutcome::ExistingText,
+                    "thinking" => EnsureTurnRootOutcome::ExistingThinking,
+                    other => {
+                        return Err(format!(
+                            "turn root '{}' has incompatible type '{other}'",
+                            self.root_turn_id
+                        ));
+                    }
+                };
+                let mut owner = self
+                    .primary_message_owner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let compatible = match (owner.to_owned(), outcome) {
+                    (PrimaryMessageOwner::Unclaimed, _) => true,
+                    (
+                        PrimaryMessageOwner::RootTextPlaceholder,
+                        EnsureTurnRootOutcome::ExistingTextPlaceholder,
+                    )
+                    | (PrimaryMessageOwner::Thinking, EnsureTurnRootOutcome::ExistingThinking)
+                    | (PrimaryMessageOwner::Text, EnsureTurnRootOutcome::ExistingText)
+                    => true,
+                    _ => false,
+                };
+                if !compatible {
+                    return Err(format!(
+                        "turn root '{}' owner {:?} conflicts with {:?}",
+                        self.root_turn_id, *owner, outcome
+                    ));
+                }
+                *owner = match outcome {
+                    EnsureTurnRootOutcome::ExistingTextPlaceholder => {
+                        PrimaryMessageOwner::RootTextPlaceholder
+                    }
+                    EnsureTurnRootOutcome::ExistingText => PrimaryMessageOwner::Text,
+                    EnsureTurnRootOutcome::ExistingThinking => PrimaryMessageOwner::Thinking,
+                    EnsureTurnRootOutcome::CreatedTextPlaceholder => {
+                        PrimaryMessageOwner::RootTextPlaceholder
+                    }
+                };
+                Ok(outcome)
+            }
             Ok(None) => {
+                {
+                    let owner = self
+                        .primary_message_owner
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if *owner != PrimaryMessageOwner::Unclaimed {
+                        return Err(format!(
+                            "turn root '{}' is missing while owner is {:?}",
+                            self.root_turn_id, *owner
+                        ));
+                    }
+                }
                 let row = MessageRow {
                     id: 0,
                     message_id: self.root_turn_id.clone(),
@@ -4127,14 +4330,58 @@ impl StreamRelay {
                     hidden: true,
                     created_at: now_ms(),
                 };
-                self.insert_stream_message_with_reconciliation(&row, "ensure_turn_root")
+                if self
+                    .insert_stream_message_with_reconciliation(&row, "ensure_turn_root")
                     .await
+                {
+                    let mut owner = self
+                        .primary_message_owner
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *owner = PrimaryMessageOwner::RootTextPlaceholder;
+                    Ok(EnsureTurnRootOutcome::CreatedTextPlaceholder)
+                } else {
+                    Err("failed to create turn root placeholder".to_owned())
+                }
             }
             Err(error) => {
                 error!(
                     turn_id = %self.root_turn_id,
                     error = %ErrorChain(&error),
                     "Failed to load turn root message before child persistence"
+                );
+                Err(format!("failed to load turn root: {error}"))
+            }
+        }
+    }
+
+    async fn finalize_primary_text_placeholder(&self, event: &AgentStreamEvent) -> bool {
+        let is_error = matches!(event, AgentStreamEvent::Error(_))
+            || Self::is_cancelled_finish(event);
+        let status = if is_error { "error" } else { "finish" };
+        let should_finalize = {
+            let owner = self
+                .primary_message_owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *owner == PrimaryMessageOwner::RootTextPlaceholder
+        };
+        if !should_finalize {
+            return true;
+        }
+        let update = MessageRowUpdate {
+            content: None,
+            status: Some(Some(status.to_owned())),
+            hidden: Some(true),
+        };
+        match self.repo.update_message(&self.root_turn_id, &update).await {
+            Ok(()) => true,
+            Err(error) => {
+                error!(
+                    turn_id = %self.root_turn_id,
+                    status,
+                    error = %ErrorChain(&error),
+                    "Failed to finalize hidden turn root placeholder"
                 );
                 false
             }
@@ -4276,7 +4523,7 @@ impl StreamRelay {
                 );
             }
         } else {
-            if !self.ensure_turn_root_message().await {
+            if self.ensure_turn_root_message().await.is_err() {
                 error!(
                     call_id = %data.call_id,
                     tool = %data.name,
@@ -4885,7 +5132,7 @@ impl StreamRelay {
             hidden: false,
             created_at: now_ms(),
         };
-        if !self.ensure_turn_root_message().await {
+        if self.ensure_turn_root_message().await.is_err() {
             error!(
                 tool_call_id,
                 turn_id = %self.root_turn_id,
@@ -5004,7 +5251,7 @@ impl StreamRelay {
                 error!(error = %ErrorChain(&e), "Failed to update tool_group message");
             }
         } else {
-            if !self.ensure_turn_root_message().await {
+            if self.ensure_turn_root_message().await.is_err() {
                 error!(
                     group_id,
                     turn_id = %self.root_turn_id,
@@ -8948,7 +9195,7 @@ mod tests {
         let inserts = repo.take_inserts();
         let thinking_msgs: Vec<_> = inserts.iter().filter(|msg| msg.r#type == "thinking").collect();
         assert_eq!(thinking_msgs.len(), 2, "thinking should split across tool boundaries");
-        assert_ne!(thinking_msgs[0].msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
+        assert_eq!(thinking_msgs[0].msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
         assert_ne!(thinking_msgs[0].msg_id, thinking_msgs[1].msg_id);
 
         let mut done_msg_ids = Vec::new();
@@ -8958,7 +9205,7 @@ mod tests {
             }
         }
         assert_eq!(done_msg_ids.len(), 2);
-        assert_ne!(done_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(done_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(done_msg_ids[0], done_msg_ids[1]);
     }
 
@@ -9001,8 +9248,8 @@ mod tests {
 
         assert_eq!(thinking_msgs.len(), 1);
         assert_eq!(text_msgs.len(), 1);
-        assert_ne!(thinking_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
-        assert_eq!(text_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(thinking_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
+        assert_ne!(text_msgs[0].message_id, TEST_ASSISTANT_MESSAGE_ID);
         assert_ne!(thinking_msgs[0].message_id, text_msgs[0].message_id);
 
         let mut text_msg_ids = Vec::new();
@@ -9020,9 +9267,9 @@ mod tests {
         }
 
         assert_eq!(thinking_done_ids.len(), 1);
-        assert_ne!(thinking_done_ids[0], TEST_ASSISTANT_MESSAGE_ID);
+        assert_eq!(thinking_done_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(text_msg_ids.len(), 1);
-        assert_eq!(text_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
+        assert_ne!(text_msg_ids[0], TEST_ASSISTANT_MESSAGE_ID);
         assert_eq!(
             outcome.final_text_msg_id.as_deref(),
             Some(text_msg_ids[0].as_str()),
@@ -9031,7 +9278,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thinking_does_not_claim_the_primary_text_message_id() {
+    async fn thinking_after_existing_text_uses_a_distinct_segment_id() {
         use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
 
         let repo = Arc::new(RecordingRepo::new());
@@ -9091,6 +9338,84 @@ mod tests {
             .find(|row| row.r#type == "thinking")
             .expect("thinking must persist alongside the primary text row");
         assert_ne!(thinking.message_id, TEST_ASSISTANT_MESSAGE_ID);
+    }
+
+    #[tokio::test]
+    async fn tool_first_uses_hidden_text_placeholder_until_final_text() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.reject_duplicate_message_inserts();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-tool-first".into(),
+            name: "read_file".into(),
+            args: json!({"path": "a.ts"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+            artifacts: Vec::new(),
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
+            content: "Inspecting the file".into(),
+            subject: None,
+            duration: None,
+            status: Some("thinking".into()),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "Done".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+        assert_eq!(outcome.final_text_msg_id.as_deref(), Some(TEST_ASSISTANT_MESSAGE_ID));
+
+        let inserts = repo.take_inserts();
+        assert_eq!(
+            inserts.iter().filter(|row| row.message_id == TEST_ASSISTANT_MESSAGE_ID).count(),
+            1,
+            "the primary placeholder must be inserted once and then updated"
+        );
+        let placeholder = inserts
+            .iter()
+            .find(|row| row.message_id == TEST_ASSISTANT_MESSAGE_ID)
+            .expect("tool-first must create the primary text placeholder");
+        assert_eq!(placeholder.r#type, "text");
+        assert!(placeholder.hidden);
+        assert_eq!(placeholder.status.as_deref(), Some("work"));
+        let thinking = inserts
+            .iter()
+            .find(|row| row.r#type == "thinking")
+            .expect("thinking must still be persisted");
+        assert_ne!(thinking.message_id, TEST_ASSISTANT_MESSAGE_ID);
+
+        let updates = repo.take_updates();
+        let primary_updates: Vec<_> = updates
+            .iter()
+            .filter(|(id, _)| id == TEST_ASSISTANT_MESSAGE_ID)
+            .collect();
+        assert!(!primary_updates.is_empty(), "final text must update the placeholder");
+        assert!(primary_updates.iter().any(|(_, update)| {
+            update.status.as_ref().and_then(|status| status.as_deref()) == Some("finish")
+                && update.hidden == Some(false)
+        }));
     }
 
     #[tokio::test]
