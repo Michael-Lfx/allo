@@ -1,0 +1,19 @@
+{
+  "results": [
+    {
+      "title": "Parallel fixture one",
+      "url": "HTTPS://EXAMPLE.COM/one#fragment",
+      "publish_date": "2026-07-30",
+      "excerpts": ["First evidence sentence.", "A second supporting paragraph."]
+    },
+    {
+      "title": "Parallel fixture two",
+      "url": "https://example.com/two",
+      "publish_date": null,
+      "excerpts": ["Another bounded evidence fragment."]
+    }
+  ],
+  "warnings": null,
+  "usage": [],
+  "session_id": "fixture-control-field"
+}
