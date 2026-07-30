@@ -5420,6 +5420,8 @@ export type I18nKey =
   | 'videoGeneration.studio.storyboard.shotAlt'
   | 'videoGeneration.studio.storyboard.shotNumber'
   | 'videoGeneration.studio.storyboard.title'
+  | 'videoGeneration.studio.storyboard.videoPending'
+  | 'videoGeneration.studio.storyboard.videoPendingHint'
   | 'videoGeneration.studio.storyboard.visualDirection'
   | 'videoGeneration.studio.storyboard.visualPending'
   | 'videoGeneration.studio.technicalDetails'

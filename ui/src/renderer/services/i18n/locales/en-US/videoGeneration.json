@@ -312,6 +312,8 @@
       "preparingHint": "Shots will appear here in story order when planning is complete.",
       "firstFramePending": "First frame pending",
       "firstFramePendingHint": "First-frame images are created and shown during video generation",
+      "videoPending": "Video pending",
+      "videoPendingHint": "Shot videos appear here after film generation",
       "shotAlt": "Shot {{number}}",
       "shotNumber": "Shot {{number}}",
       "visualDirection": "Visual direction",

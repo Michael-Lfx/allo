@@ -13,7 +13,7 @@ use nomifun_cloud::{
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
-use crate::media_local::{is_usable_video_file, write_video_bytes_atomic};
+use crate::media_local::{is_usable_video_file, write_image_bytes_atomic, write_video_bytes_atomic};
 
 /// Cap concurrent Flowy video create+poll calls process-wide to **one**.
 const GLOBAL_VIDEO_CONCURRENCY: usize = 1;
@@ -93,6 +93,7 @@ impl VimaxVideo for FlowyVideo {
         ref_images: &[&Path],
         duration_secs: u32,
         out_path: &Path,
+        last_frame_out: Option<&Path>,
     ) -> VimaxResult<()> {
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
@@ -170,6 +171,7 @@ impl VimaxVideo for FlowyVideo {
         // Seedance 2.0 / 2.0-fast I2V rejects duration outside [4, 15]; we use ≥5s clips.
         let max_d = self.services.media.video.default_duration.clamp(5, 15);
         let duration = duration_secs.clamp(5, max_d);
+        let want_last_frame = last_frame_out.is_some();
 
         let params = VideoCreateParams {
             model: model.clone(),
@@ -182,6 +184,7 @@ impl VimaxVideo for FlowyVideo {
             watermark: false,
             // Seedance 2.0 requires non-empty audio captions in the prompt when true.
             generate_audio: Some(true),
+            return_last_frame: Some(want_last_frame),
             images,
             reference_video_url: None,
             reference_audio_url: None,
@@ -285,7 +288,29 @@ impl VimaxVideo for FlowyVideo {
             .video_url()
             .ok_or_else(|| VimaxError::Video("video task succeeded but no video_url".into()))?;
 
-        download_video(&url, out_path).await
+        download_video(&url, out_path).await?;
+
+        if let Some(lf_out) = last_frame_out {
+            if let Some(lf_url) = record.last_frame_url() {
+                match download_image_still(&lf_url, lf_out).await {
+                    Ok(()) => tracing::info!(
+                        out = %lf_out.display(),
+                        "saved Seedance return_last_frame still"
+                    ),
+                    Err(e) => tracing::warn!(
+                        out = %lf_out.display(),
+                        error = %e,
+                        "failed to download return_last_frame; caller may ffmpeg-extract"
+                    ),
+                }
+            } else if want_last_frame {
+                tracing::info!(
+                    "return_last_frame requested but no last_frame_url in response; caller may ffmpeg-extract"
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -316,6 +341,7 @@ fn log_video_create_params(
         resolution = ?params.resolution,
         watermark = params.watermark,
         generate_audio = ?params.generate_audio,
+        return_last_frame = ?params.return_last_frame,
         prompt_chars = params.prompt.chars().count(),
         prompt_preview = %prompt_preview,
         image_count = params.images.len(),
@@ -362,5 +388,25 @@ async fn download_video(url: &str, out_path: &Path) -> VimaxResult<()> {
         .await
         .map_err(|e| VimaxError::Video(e.to_string()))?;
     write_video_bytes_atomic(out_path, &bytes).await?;
+    Ok(())
+}
+
+async fn download_image_still(url: &str, out_path: &Path) -> VimaxResult<()> {
+    let resp = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| VimaxError::Video(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(VimaxError::Video(format!(
+            "last_frame download failed: HTTP {}",
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| VimaxError::Video(e.to_string()))?;
+    write_image_bytes_atomic(&bytes, out_path)?;
     Ok(())
 }
