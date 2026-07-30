@@ -36,9 +36,10 @@ impl Tool for WebSearchTool {
 
     fn description(&self) -> &str {
         "Search the open web for current facts, news, traffic limits, weather, and other public \
-         information. Prefer this before Browser. If search snippets already answer the question, \
-         do not call web_extract. Only use web_extract when you need the page body beyond \
-         snippets."
+         information. Start with one focused query (the default count is 5); do not run \
+         equivalent searches in parallel. Consume the current results before deciding whether \
+         another search is needed. If snippets answer the question, do not call web_extract; \
+         only extract when the page body is required."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -335,5 +336,7 @@ mod tests {
         assert_eq!(properties["count"]["minimum"], json!(1));
         assert_eq!(properties["count"]["maximum"], json!(10));
         assert_eq!(properties["count"]["default"], json!(5));
+        assert!(tool.description().contains("one focused query"));
+        assert!(tool.description().contains("do not run equivalent searches in parallel"));
     }
 }

@@ -134,7 +134,10 @@ impl Tool for WebExtractTool {
     fn description(&self) -> &str {
         "Fetch public URLs and return readable markdown of the main article body (boilerplate \
          stripped when possible, truncated for context). Use when you already have URLs and \
-         snippets from web_search are not enough. Do not use Browser just to read public pages."
+         snippets from web_search are not enough. Extract one URL for ordinary follow-up, two \
+         for a comparison, and at most three for explicit multi-source research. Do not \
+         mechanically extract every remaining URL; consume the current evidence first. Do not \
+         use Browser just to read public pages."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -693,6 +696,8 @@ mod tests {
         let schema = tool.input_schema();
         assert_eq!(schema["properties"]["urls"]["minItems"], json!(1));
         assert_eq!(schema["properties"]["urls"]["maxItems"], json!(3));
+        assert!(tool.description().contains("one URL for ordinary follow-up"));
+        assert!(tool.description().contains("Do not mechanically extract every remaining URL"));
     }
 
     #[tokio::test]
