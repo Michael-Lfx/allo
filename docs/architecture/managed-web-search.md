@@ -13,11 +13,13 @@ implementation tries fixed, application-owned providers in first-success
 order:
 
 ```text
-Parallel -> Exa -> DuckDuckGo
+Parallel -> You.com Free -> DuckDuckGo
 ```
 
-Exa is included only when an unauthenticated real tool call succeeds. A
-provider that needs an account, OAuth, or an API key is outside this version.
+The You.com free profile is included only when its unauthenticated
+`you-search` admission contract is available. A provider that needs an
+account, OAuth, or an API key is outside this version. Exa is not part of the
+production chain.
 
 `ManagedSearchService` and its provider adapters are application-managed
 capabilities, not user MCP servers. They must not enter the user MCP
@@ -76,11 +78,12 @@ MCP transport and protocol behavior belongs to `nomi-mcp`. Provider-specific
 tool names, arguments, result parsing, and endpoints belong to `flowy-web`.
 Routing and health policy must not enter the MCP implementation.
 
-The managed remote peer implements only the protocol era proven necessary by
-the explicit provider probe. The probe tries Modern first; both admitted
-providers required Legacy, so production uses that recorded compatibility
-profile and does not repeat a known-incompatible Modern request on user
-devices. Existing user `McpManager` behavior is left unchanged.
+The managed remote peer accepts only the negotiated MCP protocol version
+`2025-11-25`. It supports both sessionless and stateful peers under that
+version, validates response correlation, and keeps structured tool output.
+Existing user `McpManager` behavior is left unchanged. A provider-specific
+decoder, rather than a generic recursive URL guesser, is the contract for
+Parallel and You.
 
 ## Product behavior
 
@@ -96,5 +99,6 @@ conversation content, full URL list, or a stable query hash.
 ## Rollback
 
 Disabling the desktop host capability restores the existing DuckDuckGo-only
-bootstrap path. A provider that fails compatibility or anonymous-call
-acceptance is omitted without changing the public `web_search` interface.
+bootstrap path. If You.com fails compatibility, quota, or anonymous-call
+acceptance, the router falls back to DuckDuckGo without changing the public
+`web_search` interface. Exa remains historical probe evidence only.

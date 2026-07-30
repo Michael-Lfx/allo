@@ -218,6 +218,15 @@ impl RemoteMcpPeer {
             .await
     }
 
+    /// Drop only the cached tools/list result while keeping a healthy MCP
+    /// session. Managed adapters use this for an explicit unknown-tool
+    /// recovery; it never performs network I/O itself.
+    pub async fn invalidate_tools_cache(&self) {
+        if let PeerState::Ready { tools, .. } = &mut *self.state.lock().await {
+            *tools = None;
+        }
+    }
+
     /// Best-effort session shutdown. The desktop host awaits this explicitly;
     /// dropping the peer itself never starts asynchronous work.
     pub async fn shutdown(&self, deadline: Instant) -> Result<(), McpPeerError> {

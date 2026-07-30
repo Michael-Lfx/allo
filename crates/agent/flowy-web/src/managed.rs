@@ -34,7 +34,6 @@ const DEV_DISABLED_PROVIDERS_ENV: &str = "NOMI_MANAGED_SEARCH_DISABLE_PROVIDERS"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchProviderId {
     Parallel,
-    Exa,
     You,
     DuckDuckGo,
 }
@@ -43,7 +42,6 @@ impl SearchProviderId {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Parallel => "parallel",
-            Self::Exa => "exa",
             Self::You => "you",
             Self::DuckDuckGo => "duckduckgo",
         }
@@ -59,6 +57,8 @@ enum SearchAttemptError {
     Forbidden,
     ToolMissing,
     SchemaMismatch,
+    RpcMethodUnavailable,
+    SessionExpired,
     InvalidRequest,
     MalformedResponse,
     Upstream,
@@ -77,39 +77,84 @@ trait ManagedSearchProvider: Send + Sync {
     async fn shutdown(&self, _deadline: Instant) {}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisableReason {
+    Unauthorized,
+    RpcMethodUnavailable,
+    ToolMissing,
+    SchemaMismatch,
+    RateLimitUntilRestart,
+}
+
 #[derive(Default)]
 struct SearchProviderHealth {
     consecutive_failures: u32,
     cooldown_until: Option<Instant>,
-    disabled: bool,
+    disable_reason: Option<DisableReason>,
+    you_unhinted_rate_limits: u8,
 }
 
 impl SearchProviderHealth {
     fn is_available(&self, now: Instant) -> bool {
-        !self.disabled && self.cooldown_until.is_none_or(|until| until <= now)
+        self.disable_reason.is_none() && self.cooldown_until.is_none_or(|until| until <= now)
     }
 
-    fn record_success(&mut self) {
+    fn record_success(&mut self, provider: SearchProviderId) {
         self.consecutive_failures = 0;
         self.cooldown_until = None;
+        if provider == SearchProviderId::You {
+            self.you_unhinted_rate_limits = 0;
+        }
     }
 
-    fn record_error(&mut self, error: &SearchAttemptError, now: Instant) {
+    fn record_error(
+        &mut self,
+        provider: SearchProviderId,
+        error: &SearchAttemptError,
+        now: Instant,
+    ) {
         match error {
-            SearchAttemptError::Unauthorized
-            | SearchAttemptError::ToolMissing
-            | SearchAttemptError::SchemaMismatch => self.disabled = true,
+            SearchAttemptError::Unauthorized => {
+                self.disable_reason = Some(DisableReason::Unauthorized);
+            }
+            SearchAttemptError::RpcMethodUnavailable => {
+                self.disable_reason = Some(DisableReason::RpcMethodUnavailable);
+            }
+            SearchAttemptError::ToolMissing => {
+                self.disable_reason = Some(DisableReason::ToolMissing);
+            }
+            SearchAttemptError::SchemaMismatch => {
+                self.disable_reason = Some(DisableReason::SchemaMismatch);
+            }
             SearchAttemptError::Forbidden => {
                 self.cooldown_until = Some(now + Duration::from_secs(10 * 60));
             }
             SearchAttemptError::RateLimited(retry_after) => {
-                let delay = retry_after
-                    .unwrap_or(Duration::from_secs(30))
-                    .clamp(Duration::from_secs(30), Duration::from_secs(15 * 60));
+                let delay = if provider == SearchProviderId::You {
+                    match retry_after {
+                        Some(retry_after) => (*retry_after)
+                            .clamp(Duration::from_secs(30), Duration::from_secs(24 * 60 * 60)),
+                        None if self.you_unhinted_rate_limits == 0 => {
+                            self.you_unhinted_rate_limits = 1;
+                            Duration::from_secs(30 * 60)
+                        }
+                        None => {
+                            self.disable_reason = Some(DisableReason::RateLimitUntilRestart);
+                            return;
+                        }
+                    }
+                } else {
+                    retry_after
+                        .as_ref()
+                        .copied()
+                        .unwrap_or(Duration::from_secs(30))
+                        .clamp(Duration::from_secs(30), Duration::from_secs(15 * 60))
+                };
                 self.cooldown_until = Some(now + delay);
             }
             SearchAttemptError::Network
             | SearchAttemptError::Timeout
+            | SearchAttemptError::SessionExpired
             | SearchAttemptError::Upstream
             | SearchAttemptError::MalformedResponse => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
@@ -174,9 +219,9 @@ impl ManagedSearchService {
                 Duration::from_secs(3),
             ));
         }
-        if !disabled.contains(&SearchProviderId::Exa) {
+        if !disabled.contains(&SearchProviderId::You) {
             adapters.push((
-                Arc::new(RemoteSearchAdapter::exa()?) as Arc<dyn ManagedSearchProvider>,
+                Arc::new(RemoteSearchAdapter::you()?) as Arc<dyn ManagedSearchProvider>,
                 Duration::from_secs(3),
             ));
         }
@@ -246,7 +291,11 @@ impl ManagedSearchService {
                     slot.health
                         .lock()
                         .await
-                        .record_error(&SearchAttemptError::Timeout, Instant::now());
+                        .record_error(
+                            slot.adapter.id(),
+                            &SearchAttemptError::Timeout,
+                            Instant::now(),
+                        );
                     last_class = Some("timeout");
                     fallback_count += 1;
                     continue;
@@ -266,7 +315,10 @@ impl ManagedSearchService {
             match result {
                 Ok(mut result) if !result.hits.is_empty() => {
                     let truncated = normalize_result(&mut result, query.count);
-                    slot.health.lock().await.record_success();
+                    slot.health
+                        .lock()
+                        .await
+                        .record_success(slot.adapter.id());
                     tracing::info!(
                         target: "managed_search",
                         request_id = %request_id,
@@ -281,6 +333,10 @@ impl ManagedSearchService {
                     return Ok(result);
                 }
                 Ok(_) => {
+                    slot.health
+                        .lock()
+                        .await
+                        .record_success(slot.adapter.id());
                     fallback_count += 1;
                     tracing::debug!(
                         target: "managed_search",
@@ -294,7 +350,11 @@ impl ManagedSearchService {
                 Err(error) => {
                     let class = error_class(&error);
                     last_class = Some(class);
-                    slot.health.lock().await.record_error(&error, Instant::now());
+                    slot.health.lock().await.record_error(
+                        slot.adapter.id(),
+                        &error,
+                        Instant::now(),
+                    );
                     fallback_count += 1;
                     tracing::warn!(
                         target: "managed_search",
@@ -342,7 +402,7 @@ fn parse_disabled_providers(value: &str) -> Vec<SearchProviderId> {
         .split(',')
         .filter_map(|name| match name.trim().to_ascii_lowercase().as_str() {
             "parallel" => Some(SearchProviderId::Parallel),
-            "exa" => Some(SearchProviderId::Exa),
+            "you" => Some(SearchProviderId::You),
             _ => None,
         })
         .fold(Vec::new(), |mut providers, provider| {
@@ -418,6 +478,8 @@ fn error_class(error: &SearchAttemptError) -> &'static str {
         SearchAttemptError::Forbidden => "forbidden",
         SearchAttemptError::ToolMissing => "tool_missing",
         SearchAttemptError::SchemaMismatch => "schema_mismatch",
+        SearchAttemptError::RpcMethodUnavailable => "rpc_method_unavailable",
+        SearchAttemptError::SessionExpired => "session_expired",
         SearchAttemptError::InvalidRequest => "invalid_request",
         SearchAttemptError::MalformedResponse => "malformed_response",
         SearchAttemptError::Upstream => "upstream",
@@ -526,8 +588,8 @@ mod tests {
     #[test]
     fn development_provider_override_is_explicit_and_deduplicated() {
         assert_eq!(
-            parse_disabled_providers(" Parallel,exa,parallel,unknown "),
-            vec![SearchProviderId::Parallel, SearchProviderId::Exa]
+            parse_disabled_providers(" Parallel,you,parallel,legacy,unknown "),
+            vec![SearchProviderId::Parallel, SearchProviderId::You]
         );
     }
 
@@ -554,6 +616,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parallel_empty_result_falls_through_to_you_before_ddg() {
+        let service = ManagedSearchService::from_adapters(vec![
+            (
+                fake(
+                    SearchProviderId::Parallel,
+                    Ok(SearchResult {
+                        provider: "parallel".to_owned(),
+                        hits: Vec::new(),
+                    }),
+                ),
+                Duration::from_secs(1),
+            ),
+            (
+                fake(SearchProviderId::You, Ok(successful("you"))),
+                Duration::from_secs(1),
+            ),
+            (
+                fake(SearchProviderId::DuckDuckGo, Ok(successful("duckduckgo"))),
+                Duration::from_secs(1),
+            ),
+        ]);
+        let result = service
+            .search(SearchQuery {
+                query: "test".to_owned(),
+                count: 5,
+            })
+            .await
+            .expect("You fallback succeeds");
+        assert_eq!(result.provider, "you");
+    }
+
+    #[tokio::test]
     async fn empty_and_failure_fall_back() {
         let service = ManagedSearchService::from_adapters(vec![
             (
@@ -567,7 +661,7 @@ mod tests {
                 Duration::from_secs(1),
             ),
             (
-                fake(SearchProviderId::Exa, Err(SearchAttemptError::Timeout)),
+                fake(SearchProviderId::You, Err(SearchAttemptError::Timeout)),
                 Duration::from_secs(1),
             ),
             (
@@ -618,12 +712,12 @@ mod tests {
     fn health_policy_distinguishes_permanent_and_temporary_failures() {
         let now = Instant::now();
         let mut health = SearchProviderHealth::default();
-        health.record_error(&SearchAttemptError::Unauthorized, now);
-        assert!(health.disabled);
+        health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Unauthorized, now);
+        assert_eq!(health.disable_reason, Some(DisableReason::Unauthorized));
 
         let mut health = SearchProviderHealth::default();
-        health.record_error(&SearchAttemptError::Forbidden, now);
-        assert!(!health.disabled);
+        health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Forbidden, now);
+        assert!(health.disable_reason.is_none());
         assert!(health.cooldown_until > Some(now));
     }
 
@@ -632,6 +726,7 @@ mod tests {
         let now = Instant::now();
         let mut health = SearchProviderHealth::default();
         health.record_error(
+            SearchProviderId::Parallel,
             &SearchAttemptError::RateLimited(Some(Duration::from_secs(1))),
             now,
         );
@@ -641,16 +736,48 @@ mod tests {
         );
 
         let mut health = SearchProviderHealth::default();
-        health.record_error(&SearchAttemptError::Network, now);
+        health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Network, now);
         assert_eq!(
             health.cooldown_until,
             Some(now + Duration::from_secs(15))
         );
-        health.record_error(&SearchAttemptError::Network, now);
+        health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Network, now);
         assert_eq!(
             health.cooldown_until,
             Some(now + Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn you_unhinted_rate_limit_disables_only_on_the_second_consecutive_event() {
+        let now = Instant::now();
+        let mut health = SearchProviderHealth::default();
+        health.record_error(SearchProviderId::You, &SearchAttemptError::RateLimited(None), now);
+        assert_eq!(health.you_unhinted_rate_limits, 1);
+        assert_eq!(health.disable_reason, None);
+        assert_eq!(health.cooldown_until, Some(now + Duration::from_secs(30 * 60)));
+
+        health.record_error(SearchProviderId::You, &SearchAttemptError::RateLimited(None), now);
+        assert_eq!(
+            health.disable_reason,
+            Some(DisableReason::RateLimitUntilRestart)
+        );
+        assert!(!health.is_available(now + Duration::from_secs(24 * 60 * 60)));
+    }
+
+    #[test]
+    fn you_hinted_rate_limit_is_bounded_without_incrementing_unhinted_counter() {
+        let now = Instant::now();
+        let mut health = SearchProviderHealth::default();
+        health.record_error(
+            SearchProviderId::You,
+            &SearchAttemptError::RateLimited(Some(Duration::from_secs(1))),
+            now,
+        );
+        assert_eq!(health.you_unhinted_rate_limits, 0);
+        assert_eq!(health.cooldown_until, Some(now + Duration::from_secs(30)));
+        health.record_success(SearchProviderId::You);
+        assert!(health.cooldown_until.is_none());
     }
 
     struct SequentialAdapter {
