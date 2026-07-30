@@ -59,7 +59,7 @@ const CapabilitiesSettings: React.FC = () => {
         className='flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
       >
         <Tabs.TabPane key='skills' title={t('settings.capabilitiesTab.skills', { defaultValue: 'Skills' })}>
-          <SkillsHubSettings withWrapper={false} />
+          <SkillsHubSettings withWrapper={false} showEmbeddedHeader />
         </Tabs.TabPane>
         <Tabs.TabPane key='tools' title={t('settings.capabilitiesTab.tools', { defaultValue: 'MCP' })}>
           <ToolsModalContent />

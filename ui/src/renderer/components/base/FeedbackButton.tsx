@@ -1,6 +1,7 @@
 
 
 import { useFeedback } from '@/renderer/hooks/context/FeedbackContext';
+import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 import { Comment } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback } from 'react';
@@ -13,6 +14,8 @@ type FeedbackButtonProps = {
   feedbackTags?: Record<string, string>;
   /** Extra structured context attached to the feedback event. */
   feedbackExtra?: Record<string, unknown>;
+  /** Sends this conversation error and recent logs through support IM after confirmation. */
+  conversationErrorReport?: ConversationErrorReportContext;
   /** Additional classes appended to the default pill styling. */
   className?: string;
 };
@@ -23,18 +26,30 @@ type FeedbackButtonProps = {
  * auto-captures the current window and opens the feedback modal with the
  * relevant module preselected; the user only needs to describe the issue.
  */
-const FeedbackButton: React.FC<FeedbackButtonProps> = ({ module, feedbackTags, feedbackExtra, className }) => {
+const FeedbackButton: React.FC<FeedbackButtonProps> = ({
+  module,
+  feedbackTags,
+  feedbackExtra,
+  conversationErrorReport,
+  className,
+}) => {
   const { t } = useTranslation();
   const { openFeedback } = useFeedback();
 
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       event.stopPropagation();
-      openFeedback({ module, autoScreenshot: true, tags: feedbackTags, extra: feedbackExtra }).catch((err) => {
+      openFeedback({
+        module,
+        autoScreenshot: !conversationErrorReport,
+        tags: feedbackTags,
+        extra: feedbackExtra,
+        conversationErrorReport,
+      }).catch((err) => {
         console.error('[FeedbackButton] Failed to open feedback:', err);
       });
     },
-    [feedbackExtra, feedbackTags, module, openFeedback]
+    [conversationErrorReport, feedbackExtra, feedbackTags, module, openFeedback]
   );
 
   return (
