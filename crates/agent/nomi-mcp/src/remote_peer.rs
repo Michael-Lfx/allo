@@ -623,6 +623,13 @@ mod tests {
     }
 
     #[test]
+    fn sse_rejects_oversized_event() {
+        let oversized = format!("data: {}\n\n", "x".repeat(MAX_SSE_EVENT_BYTES));
+        let result = decode_sse(oversized.as_bytes(), 7);
+        assert!(matches!(result, Err(McpPeerError::BodyTooLarge)));
+    }
+
+    #[test]
     fn retry_after_supports_seconds_and_http_date() {
         let mut headers = HeaderMap::new();
         headers.insert("Retry-After", HeaderValue::from_static("120"));

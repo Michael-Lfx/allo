@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use nomi_tools::ToolExecutionContext;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::config::{McpServerConfig, TransportType};
 use super::protocol::{
@@ -29,6 +29,8 @@ pub struct McpCallOutput {
     pub artifacts: Vec<McpArtifactOut>,
     /// Protocol-level MCP `CallToolResult.isError` marker.
     pub is_error: bool,
+    /// Optional structured result preserved from MCP `structuredContent`.
+    pub structured_content: Option<Value>,
 }
 
 /// A single inline artifact returned by an MCP tool call.
@@ -383,6 +385,7 @@ impl McpManager {
 
         let mut out = McpCallOutput::default();
         out.is_error = tool_result.is_error;
+        out.structured_content = tool_result.structured_content;
         let mut text_parts: Vec<String> = Vec::new();
         for content in &tool_result.content {
             match content {
@@ -1108,6 +1111,41 @@ mod tests {
         let out = mgr.call_tool("srv", "update_base", json!({})).await.unwrap();
         assert!(out.is_error);
         assert!(out.text.contains("missing kb_id"));
+    }
+
+    #[tokio::test]
+    async fn call_tool_preserves_structured_content() {
+        let resp = json!({
+            "content": [{"type":"text","text":"search results"}],
+            "structuredContent": {"results": [{"title": "Fixture"}]}
+        });
+        let mgr = make_manager_with_servers(vec![(
+            "srv",
+            false,
+            Box::new(MockTransport::new(vec![resp])),
+        )]);
+
+        let out = mgr.call_tool("srv", "search", json!({})).await.unwrap();
+        assert_eq!(out.text, "search results");
+        assert_eq!(
+            out.structured_content.as_ref().unwrap()["results"][0]["title"],
+            "Fixture"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_accepts_structured_only_result() {
+        let resp = json!({"structuredContent": {"results": []}});
+        let mgr = make_manager_with_servers(vec![(
+            "srv",
+            false,
+            Box::new(MockTransport::new(vec![resp])),
+        )]);
+
+        let out = mgr.call_tool("srv", "search", json!({})).await.unwrap();
+        assert!(out.text.is_empty());
+        assert!(out.artifacts.is_empty());
+        assert_eq!(out.structured_content.unwrap()["results"], json!([]));
     }
 
     #[tokio::test]
