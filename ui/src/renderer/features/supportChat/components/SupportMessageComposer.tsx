@@ -364,6 +364,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
             >
               <button
                 type='button'
+                data-button-shape='circle'
                 className='size-28px shrink-0 flex items-center justify-center rd-full border-none bg-fill-2 text-t-secondary cursor-pointer transition-colors hover:bg-fill-3 disabled:opacity-50 disabled:cursor-not-allowed'
                 disabled={disabled || sending || preparingLogs}
                 aria-label={t('common.supportChat.addAttachment', { defaultValue: '添加附件' })}
@@ -382,6 +383,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
 
           <button
             type='button'
+            data-button-shape='circle'
             className='size-28px shrink-0 flex items-center justify-center rd-full border-none bg-[var(--text-primary)] text-white cursor-pointer transition-opacity hover:opacity-90 active:opacity-80 disabled:bg-fill-3 disabled:text-t-tertiary disabled:cursor-not-allowed'
             disabled={!canSend}
             onClick={() => void handleSend()}
