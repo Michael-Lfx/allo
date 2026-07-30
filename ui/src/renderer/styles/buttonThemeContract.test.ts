@@ -17,7 +17,7 @@ describe('button theme contract', () => {
   });
 
   test('explicitly circular Arco icon buttons retain their round shape', () => {
-    expect(arcoOverrides).toContain('.arco-btn.arco-btn-shape-circle {');
+    expect(arcoOverrides).toContain('button.arco-btn.arco-btn-shape-circle,\n.arco-btn.arco-btn-shape-circle {');
     expect(arcoOverrides).toContain('border-radius: 50% !important;');
   });
 

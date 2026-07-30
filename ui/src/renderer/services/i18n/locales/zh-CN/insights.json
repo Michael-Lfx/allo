@@ -21,10 +21,14 @@
     "autoExtractIdleSecs": "空闲超时（秒）",
     "autoExtractIdleSecsHint": "会话无新消息后，超过该时间也会尝试入队（例如 300 = 5 分钟）。",
     "minWorkTurnsHint": "轮次阈值沿用配置 min_work_turns（当前 {{count}} 轮）。",
+    "skillMiningEnabled": "技能挖矿",
+    "skillMiningHint": "开启后，普通对话中的工具调用模式将被自动提取为技能建议。",
     "redactedBody": "包含脱敏技能正文",
     "saved": "洞察设置已保存"
   },
   "actions": {
+    "outboxTitle": "发件箱管理",
+    "outboxDescription": "查看本地工作包队列，并在需要时立即处理或清理记录。",
     "flush": "刷新发件箱",
     "flushSuccess": "已上传 {{uploaded}}，重复 {{duplicates}}，拒绝 {{rejected}}",
     "resetFailed": "重置失败项",

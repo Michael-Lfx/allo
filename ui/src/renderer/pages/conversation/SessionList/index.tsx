@@ -854,7 +854,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
             onClick={() => setExpanded((value) => !value)}
             className='group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left opacity-75 transition-opacity hover:opacity-100 relative'
           >
-            <span className='text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
+            <span className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
               {t('sessionList.workspaces')}
             </span>
             {/* Arrow icon - shown on hover of the title button, rotates based on expanded state */}

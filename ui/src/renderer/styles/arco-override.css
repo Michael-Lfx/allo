@@ -21,6 +21,7 @@ button:not([role]):not([data-button-shape='pill']),
 }
 
 /* Icon-only actions explicitly declared as circular keep their round shape. */
+button.arco-btn.arco-btn-shape-circle,
 .arco-btn.arco-btn-shape-circle {
   border-radius: 50% !important;
 }

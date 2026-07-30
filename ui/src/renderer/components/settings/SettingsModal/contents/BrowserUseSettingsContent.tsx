@@ -22,6 +22,7 @@ import {
 import { ipcBridge } from '@/common';
 import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import { Alert, Button, Collapse, InputNumber, Message, Modal, Radio, Switch } from '@arco-design/web-react';
+import { Down, Right } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -535,6 +536,7 @@ const BrowserUseSettingsContent: React.FC = () => {
   const [resourcePolicyStatus, setResourcePolicyStatus] = useState<ResourcePolicyStatus>('loading');
   const [resourcePolicySaving, setResourcePolicySaving] = useState(false);
   const [resourcePolicyError, setResourcePolicyError] = useState<BrowserSettingsError | null>(null);
+  const [advancedLimitsExpanded, setAdvancedLimitsExpanded] = useState(false);
   const [securitySettingsSaving, setSecuritySettingsSaving] = useState(false);
   const securitySettingsSavingRef = useRef(false);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -1218,115 +1220,125 @@ const BrowserUseSettingsContent: React.FC = () => {
               )}
 
               <Collapse
+                activeKey={advancedLimitsExpanded ? ['advanced'] : []}
+                onChange={(_, activeKeys) => setAdvancedLimitsExpanded(activeKeys.includes('advanced'))}
                 bordered={false}
-                className='[&_.arco-collapse-item]:!border-none [&_.arco-collapse-item-header]:!px-0 [&_.arco-collapse-item-content-box]:!px-0 [&_.arco-collapse-item-content-box]:!pb-0'
+                className='[&_.arco-collapse-item]:!border-none [&_.arco-collapse-item-header]:!min-h-52px [&_.arco-collapse-item-header]:!px-0 [&_.arco-collapse-item-header]:!py-8px [&_.arco-collapse-item-header-title]:!block [&_.arco-collapse-item-header-title]:!min-w-0 [&_.arco-collapse-item-header-title]:!flex-1 [&_.arco-collapse-item-content]:!bg-transparent [&_.arco-collapse-item-content-box]:!p-0'
               >
                 <Collapse.Item
                   name='advanced'
+                  showExpandIcon={false}
                   header={
                     <div>
-                      <div className='text-14px text-2'>{t('settings.browserResourcePolicyAdvanced')}</div>
+                      <div className='flex items-center gap-6px text-14px text-2'>
+                        <span>{t('settings.browserResourcePolicyAdvanced')}</span>
+                        {advancedLimitsExpanded ? (
+                          <Down className='shrink-0 text-t-secondary' size='13' />
+                        ) : (
+                          <Right className='shrink-0 text-t-secondary' size='13' />
+                        )}
+                      </div>
                       <div className='text-12px text-t-tertiary mt-4px'>
                         {t('settings.browserResourcePolicyAdvancedDesc')}
                       </div>
                     </div>
                   }
                 >
-                  <div className='w-full flex flex-col divide-y divide-border-2'>
-                  <PreferenceRow
-                    label={t('settings.browserResourceMaxMemoryRatio')}
-                    description={t('settings.browserResourceMaxMemoryRatioDesc')}
-                  >
-                    <InputNumber
-                      value={resourcePolicy.advanced?.max_memory_ratio}
-                      disabled={resourcePolicyDisabled}
-                      min={BROWSER_RESOURCE_POLICY_LIMITS.max_memory_ratio.min}
-                      max={BROWSER_RESOURCE_POLICY_LIMITS.max_memory_ratio.max}
-                      step={0.05}
-                      precision={2}
-                      placeholder={resourcePolicyPlaceholder}
-                      style={{ width: 180 }}
-                      onChange={(value) => handleResourcePolicyAdvancedChange('max_memory_ratio', value)}
-                    />
-                  </PreferenceRow>
-                  <PreferenceRow
-                    label={t('settings.browserResourceReservedMemoryBytes')}
-                    description={t('settings.browserResourceReservedMemoryBytesDesc')}
-                  >
-                    <InputNumber
-                      value={resourcePolicy.advanced?.reserved_memory_bytes}
-                      disabled={resourcePolicyDisabled}
-                      min={BROWSER_RESOURCE_POLICY_LIMITS.reserved_memory_bytes.min}
-                      max={BROWSER_RESOURCE_POLICY_LIMITS.reserved_memory_bytes.max}
-                      step={268435456}
-                      suffix='B'
-                      placeholder={resourcePolicyPlaceholder}
-                      style={{ width: 180 }}
-                      onChange={(value) => handleResourcePolicyAdvancedChange('reserved_memory_bytes', value)}
-                    />
-                  </PreferenceRow>
-                  <PreferenceRow
-                    label={t('settings.browserResourceMaxActiveOperations')}
-                    description={t('settings.browserResourceMaxActiveOperationsDesc')}
-                  >
-                    <InputNumber
-                      value={resourcePolicy.advanced?.max_active_operations}
-                      disabled={resourcePolicyDisabled}
-                      min={BROWSER_RESOURCE_POLICY_LIMITS.max_active_operations.min}
-                      max={BROWSER_RESOURCE_POLICY_LIMITS.max_active_operations.max}
-                      precision={0}
-                      placeholder={resourcePolicyPlaceholder}
-                      style={{ width: 180 }}
-                      onChange={(value) => handleResourcePolicyAdvancedChange('max_active_operations', value)}
-                    />
-                  </PreferenceRow>
-                  <PreferenceRow
-                    label={t('settings.browserResourceMaxOpenLanes')}
-                    description={t('settings.browserResourceMaxOpenLanesDesc')}
-                  >
-                    <InputNumber
-                      value={resourcePolicy.advanced?.max_open_lanes}
-                      disabled={resourcePolicyDisabled}
-                      min={BROWSER_RESOURCE_POLICY_LIMITS.max_open_lanes.min}
-                      max={BROWSER_RESOURCE_POLICY_LIMITS.max_open_lanes.max}
-                      precision={0}
-                      placeholder={resourcePolicyPlaceholder}
-                      style={{ width: 180 }}
-                      onChange={(value) => handleResourcePolicyAdvancedChange('max_open_lanes', value)}
-                    />
-                  </PreferenceRow>
-                  <PreferenceRow
-                    label={t('settings.browserResourceMaxQueuedRequests')}
-                    description={t('settings.browserResourceMaxQueuedRequestsDesc')}
-                  >
-                    <InputNumber
-                      value={resourcePolicy.advanced?.max_queued_requests}
-                      disabled={resourcePolicyDisabled}
-                      min={BROWSER_RESOURCE_POLICY_LIMITS.max_queued_requests.min}
-                      max={BROWSER_RESOURCE_POLICY_LIMITS.max_queued_requests.max}
-                      precision={0}
-                      placeholder={resourcePolicyPlaceholder}
-                      style={{ width: 180 }}
-                      onChange={(value) => handleResourcePolicyAdvancedChange('max_queued_requests', value)}
-                    />
-                  </PreferenceRow>
-                  <PreferenceRow
-                    label={t('settings.browserResourceMaxOwnerQueuedRequests')}
-                    description={t('settings.browserResourceMaxOwnerQueuedRequestsDesc')}
-                  >
-                    <InputNumber
-                      value={resourcePolicy.advanced?.max_owner_queued_requests}
-                      disabled={resourcePolicyDisabled}
-                      min={BROWSER_RESOURCE_POLICY_LIMITS.max_owner_queued_requests.min}
-                      max={BROWSER_RESOURCE_POLICY_LIMITS.max_owner_queued_requests.max}
-                      precision={0}
-                      placeholder={resourcePolicyPlaceholder}
-                      style={{ width: 180 }}
-                      onChange={(value) => handleResourcePolicyAdvancedChange('max_owner_queued_requests', value)}
-                    />
-                  </PreferenceRow>
+                  <div className='mt-4px ml-12px pl-12px md:ml-20px md:pl-20px'>
+                    <PreferenceRow
+                      label={t('settings.browserResourceMaxMemoryRatio')}
+                      description={t('settings.browserResourceMaxMemoryRatioDesc')}
+                    >
+                      <InputNumber
+                        className='w-full sm:w-180px'
+                        value={resourcePolicy.advanced?.max_memory_ratio}
+                        disabled={resourcePolicyDisabled}
+                        min={BROWSER_RESOURCE_POLICY_LIMITS.max_memory_ratio.min}
+                        max={BROWSER_RESOURCE_POLICY_LIMITS.max_memory_ratio.max}
+                        step={0.05}
+                        precision={2}
+                        placeholder={resourcePolicyPlaceholder}
+                        onChange={(value) => handleResourcePolicyAdvancedChange('max_memory_ratio', value)}
+                      />
+                    </PreferenceRow>
+                    <PreferenceRow
+                      label={t('settings.browserResourceReservedMemoryBytes')}
+                      description={t('settings.browserResourceReservedMemoryBytesDesc')}
+                    >
+                      <InputNumber
+                        className='w-full sm:w-180px'
+                        value={resourcePolicy.advanced?.reserved_memory_bytes}
+                        disabled={resourcePolicyDisabled}
+                        min={BROWSER_RESOURCE_POLICY_LIMITS.reserved_memory_bytes.min}
+                        max={BROWSER_RESOURCE_POLICY_LIMITS.reserved_memory_bytes.max}
+                        step={268435456}
+                        suffix='B'
+                        placeholder={resourcePolicyPlaceholder}
+                        onChange={(value) => handleResourcePolicyAdvancedChange('reserved_memory_bytes', value)}
+                      />
+                    </PreferenceRow>
+                    <PreferenceRow
+                      label={t('settings.browserResourceMaxActiveOperations')}
+                      description={t('settings.browserResourceMaxActiveOperationsDesc')}
+                    >
+                      <InputNumber
+                        className='w-full sm:w-180px'
+                        value={resourcePolicy.advanced?.max_active_operations}
+                        disabled={resourcePolicyDisabled}
+                        min={BROWSER_RESOURCE_POLICY_LIMITS.max_active_operations.min}
+                        max={BROWSER_RESOURCE_POLICY_LIMITS.max_active_operations.max}
+                        precision={0}
+                        placeholder={resourcePolicyPlaceholder}
+                        onChange={(value) => handleResourcePolicyAdvancedChange('max_active_operations', value)}
+                      />
+                    </PreferenceRow>
+                    <PreferenceRow
+                      label={t('settings.browserResourceMaxOpenLanes')}
+                      description={t('settings.browserResourceMaxOpenLanesDesc')}
+                    >
+                      <InputNumber
+                        className='w-full sm:w-180px'
+                        value={resourcePolicy.advanced?.max_open_lanes}
+                        disabled={resourcePolicyDisabled}
+                        min={BROWSER_RESOURCE_POLICY_LIMITS.max_open_lanes.min}
+                        max={BROWSER_RESOURCE_POLICY_LIMITS.max_open_lanes.max}
+                        precision={0}
+                        placeholder={resourcePolicyPlaceholder}
+                        onChange={(value) => handleResourcePolicyAdvancedChange('max_open_lanes', value)}
+                      />
+                    </PreferenceRow>
+                    <PreferenceRow
+                      label={t('settings.browserResourceMaxQueuedRequests')}
+                      description={t('settings.browserResourceMaxQueuedRequestsDesc')}
+                    >
+                      <InputNumber
+                        className='w-full sm:w-180px'
+                        value={resourcePolicy.advanced?.max_queued_requests}
+                        disabled={resourcePolicyDisabled}
+                        min={BROWSER_RESOURCE_POLICY_LIMITS.max_queued_requests.min}
+                        max={BROWSER_RESOURCE_POLICY_LIMITS.max_queued_requests.max}
+                        precision={0}
+                        placeholder={resourcePolicyPlaceholder}
+                        onChange={(value) => handleResourcePolicyAdvancedChange('max_queued_requests', value)}
+                      />
+                    </PreferenceRow>
+                    <PreferenceRow
+                      label={t('settings.browserResourceMaxOwnerQueuedRequests')}
+                      description={t('settings.browserResourceMaxOwnerQueuedRequestsDesc')}
+                    >
+                      <InputNumber
+                        className='w-full sm:w-180px'
+                        value={resourcePolicy.advanced?.max_owner_queued_requests}
+                        disabled={resourcePolicyDisabled}
+                        min={BROWSER_RESOURCE_POLICY_LIMITS.max_owner_queued_requests.min}
+                        max={BROWSER_RESOURCE_POLICY_LIMITS.max_owner_queued_requests.max}
+                        precision={0}
+                        placeholder={resourcePolicyPlaceholder}
+                        onChange={(value) => handleResourcePolicyAdvancedChange('max_owner_queued_requests', value)}
+                      />
+                    </PreferenceRow>
                   </div>
-                  <div className='flex justify-end pt-12px'>
+                  <div className='flex justify-end pt-8px'>
                     <Button
                       type='primary'
                       size='small'

@@ -4,20 +4,27 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
-  Divider,
   InputNumber,
   Message,
   Modal,
   Select,
+  Spin,
   Switch,
   Table,
   Tag,
-  Typography,
 } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/config/constants';
 import type { IPoiSettings, IPoiStatusResponse, IPoiTopic } from '@/common/adapter/ipcBridge';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
+import {
+  SettingsGroup,
+  SettingsNestedRows,
+  SettingsPageHeader,
+  SettingsPanel,
+  SettingsPanelFooter,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
+import PreferenceRow from '@/renderer/components/settings/SettingsModal/contents/SystemModalContent/PreferenceRow';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 /** Must match `POI_LLM_MODEL_FOLLOW_SESSION` in the Rust auxiliary provider. */
@@ -175,232 +182,220 @@ const PoiSettings: React.FC = () => {
 
   return (
     <SettingsPageWrapper>
-      <div className='flex flex-col gap-20px max-w-960px'>
-        <div>
-          <Typography.Title heading={5} className='!m-0'>
-            {t('poi.title')}
-          </Typography.Title>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-13px'>
-            {t('poi.description')}
-          </Typography.Paragraph>
-        </div>
-
-        {status && (
-          <div className='flex flex-wrap gap-12px text-13px text-t-secondary'>
-            <Tag color={status.enabled ? 'green' : 'gray'}>
-              {status.enabled ? t('poi.status.enabled') : t('poi.status.disabled')}
-            </Tag>
-            <span>
-              {t('poi.status.topicCount', { count: status.topicCount })}
-            </span>
-            <span>{t('poi.status.extractMode', { mode: status.extractMode })}</span>
-          </div>
-        )}
-
-        {settings && (
-          <div className='flex flex-col gap-14px max-w-640px'>
-            <div className='flex items-center justify-between'>
-              <span className='text-t-primary text-14px font-500'>{t('poi.settings.enabled')}</span>
-              <Switch checked={settings.enabled} onChange={(v) => setSettings({ ...settings, enabled: v })} />
-            </div>
-
-            <div className='flex flex-col gap-6px'>
-              <span className='text-t-secondary text-13px'>{t('poi.settings.extractMode')}</span>
-              <Select
-                value={settings.extractMode}
-                onChange={(v) => setSettings({ ...settings, extractMode: v })}
-                options={[
-                  { label: t('poi.settings.extractModeKeywords'), value: 'keywords' },
-                  { label: t('poi.settings.extractModeLlm'), value: 'llm' },
-                  { label: t('poi.settings.extractModeHybrid'), value: 'hybrid' },
-                ]}
-              />
-            </div>
-
-            <div className='grid grid-cols-1 md:grid-cols-2 gap-12px'>
-              <div className='flex flex-col gap-6px'>
-                <span className='text-t-secondary text-13px'>{t('poi.settings.maxTopics')}</span>
-                <InputNumber
-                  min={1}
-                  value={settings.maxTopics}
-                  onChange={(v) => setSettings({ ...settings, maxTopics: Number(v) })}
-                />
+      <div className='space-y-24px'>
+        <SettingsPageHeader
+          title={t('poi.title')}
+          description={t('poi.description')}
+          meta={
+            status && (
+              <div className='flex flex-wrap gap-x-16px gap-y-6px text-12px text-t-secondary'>
+                <span>{t('poi.status.topicCount', { count: status.topicCount })}</span>
+                <span>{t('poi.status.extractMode', { mode: status.extractMode })}</span>
               </div>
-              <div className='flex flex-col gap-6px'>
-                <span className='text-t-secondary text-13px'>{t('poi.settings.minTurnChars')}</span>
-                <InputNumber
-                  min={0}
-                  value={settings.minTurnChars}
-                  onChange={(v) => setSettings({ ...settings, minTurnChars: Number(v) })}
-                />
-              </div>
-            </div>
-
-            <div className='flex items-center justify-between'>
-              <span className='text-t-primary text-14px'>{t('poi.settings.llmOnSessionEnd')}</span>
-              <Switch
-                checked={settings.llmOnSessionEnd}
-                onChange={(v) => setSettings({ ...settings, llmOnSessionEnd: v })}
-              />
-            </div>
-
-            {usesLlmExtract && (
-              <div className='flex flex-col gap-6px'>
-                <span className='text-t-secondary text-13px'>{t('poi.settings.llmModel')}</span>
-                <Select
-                  value={llmSelectValue}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      llmModel: v,
-                    })
-                  }
-                  options={llmModelOptions}
-                />
-                <span className='text-12px text-t-tertiary'>{t('poi.settings.llmModelHint')}</span>
-              </div>
-            )}
-
-            <div className='flex items-center justify-between'>
-              <span className='text-t-primary text-14px'>{t('poi.settings.perTurnBuffer')}</span>
-              <Switch
-                checked={settings.perTurnBuffer}
-                onChange={(v) => setSettings({ ...settings, perTurnBuffer: v })}
-              />
-            </div>
-            <div className='flex items-center justify-between'>
-              <span className='text-t-primary text-14px'>{t('poi.settings.perTurnPersist')}</span>
-              <Switch
-                checked={settings.perTurnPersist}
-                onChange={(v) => setSettings({ ...settings, perTurnPersist: v })}
-              />
-            </div>
-
-            <Divider className='!my-4px' />
-
-            <Typography.Text className='text-t-primary text-14px font-500'>
-              {t('poi.settings.autoExtractSection')}
-            </Typography.Text>
-            <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
-              {t('poi.settings.autoExtractHint')}
-            </Typography.Paragraph>
-
-            <div className='flex items-center justify-between'>
-              <span className='text-t-primary text-14px'>{t('poi.settings.autoExtractEnabled')}</span>
-              <Switch
-                checked={settings.autoExtractEnabled}
-                onChange={(v) => setSettings({ ...settings, autoExtractEnabled: v })}
-              />
-            </div>
-
-            {settings.autoExtractEnabled && (
-              <div className='grid grid-cols-1 md:grid-cols-2 gap-12px'>
-                <div className='flex flex-col gap-6px'>
-                  <span className='text-t-secondary text-13px'>{t('poi.settings.autoExtractMinTurns')}</span>
-                  <InputNumber
-                    min={1}
-                    value={settings.autoExtractMinTurns}
-                    onChange={(v) => setSettings({ ...settings, autoExtractMinTurns: Number(v) })}
-                  />
-                </div>
-                <div className='flex flex-col gap-6px'>
-                  <span className='text-t-secondary text-13px'>{t('poi.settings.autoExtractMinUserChars')}</span>
-                  <InputNumber
-                    min={1}
-                    value={settings.autoExtractMinUserChars}
-                    onChange={(v) => setSettings({ ...settings, autoExtractMinUserChars: Number(v) })}
-                  />
-                </div>
-                <div className='flex flex-col gap-6px md:col-span-2'>
-                  <span className='text-t-secondary text-13px'>{t('poi.settings.autoExtractIdleSecs')}</span>
-                  <InputNumber
-                    min={30}
-                    value={settings.autoExtractIdleSecs}
-                    onChange={(v) => setSettings({ ...settings, autoExtractIdleSecs: Number(v) })}
-                  />
-                  <span className='text-12px text-t-tertiary'>{t('poi.settings.autoExtractIdleSecsHint')}</span>
-                </div>
-              </div>
-            )}
-
-            <div>
-              <Button type='primary' loading={saving} onClick={saveSettings}>
-                {t('common.save', { defaultValue: 'Save' })}
-              </Button>
-            </div>
-          </div>
-        )}
-
-        <Divider />
-
-        <div className='flex items-center justify-between'>
-          <Typography.Title heading={6} className='!m-0'>
-            {t('poi.topics.title')}
-          </Typography.Title>
-          <Button status='danger' size='small' disabled={topics.length === 0} onClick={handleClearTopics}>
-            {t('poi.topics.clearAll')}
-          </Button>
-        </div>
-
-        <Table
-          loading={loading}
-          data={topics}
-          rowKey='id'
-          pagination={{ pageSize: 10 }}
-          columns={[
-            {
-              title: t('poi.topics.label'),
-              dataIndex: 'label',
-              render: (_, row) => (
-                <div>
-                  <div className='font-500'>{row.label}</div>
-                  {row.summary && <div className='text-12px text-t-tertiary truncate max-w-280px'>{row.summary}</div>}
-                </div>
-              ),
-            },
-            {
-              title: t('poi.topics.status'),
-              dataIndex: 'status',
-              width: 140,
-              render: (_, row) => (
-                <Select
-                  size='small'
-                  value={row.status}
-                  onChange={(v) => handleStatusChange(row, v)}
-                  options={TOPIC_STATUSES.map((s) => ({
-                    label: t(`poi.topics.statuses.${s}`),
-                    value: s,
-                  }))}
-                />
-              ),
-            },
-            {
-              title: t('poi.topics.weight'),
-              dataIndex: 'weight',
-              width: 80,
-              render: (v) => Number(v).toFixed(2),
-            },
-            {
-              title: t('poi.topics.pinned'),
-              dataIndex: 'pinned',
-              width: 90,
-              render: (_, row) => (
-                <Switch size='small' checked={row.pinned} onChange={() => handlePin(row)} />
-              ),
-            },
-            {
-              title: t('poi.topics.actions'),
-              dataIndex: 'id',
-              width: 90,
-              render: (_, row) => (
-                <Button size='mini' status='danger' type='text' onClick={() => handleDeleteTopic(row)}>
-                  {t('poi.topics.delete')}
-                </Button>
-              ),
-            },
-          ]}
-          noDataElement={t('poi.topics.empty')}
+            )
+          }
+          action={
+            status && (
+              <Tag color={status.enabled ? 'green' : 'gray'}>
+                {status.enabled ? t('poi.status.enabled') : t('poi.status.disabled')}
+              </Tag>
+            )
+          }
         />
+
+        <SettingsPanel>
+          {settings ? (
+            <>
+              <div className='w-full flex flex-col divide-y divide-border-2'>
+                <PreferenceRow label={t('poi.settings.enabled')}>
+                  <Switch checked={settings.enabled} onChange={(v) => setSettings({ ...settings, enabled: v })} />
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.extractMode')}>
+                  <Select
+                    className='w-full sm:w-280px'
+                    value={settings.extractMode}
+                    onChange={(v) => setSettings({ ...settings, extractMode: v })}
+                    options={[
+                      { label: t('poi.settings.extractModeKeywords'), value: 'keywords' },
+                      { label: t('poi.settings.extractModeLlm'), value: 'llm' },
+                      { label: t('poi.settings.extractModeHybrid'), value: 'hybrid' },
+                    ]}
+                  />
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.maxTopics')}>
+                  <InputNumber
+                    className='w-full sm:w-180px'
+                    min={1}
+                    value={settings.maxTopics}
+                    onChange={(v) => setSettings({ ...settings, maxTopics: Number(v) })}
+                  />
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.minTurnChars')}>
+                  <InputNumber
+                    className='w-full sm:w-180px'
+                    min={0}
+                    value={settings.minTurnChars}
+                    onChange={(v) => setSettings({ ...settings, minTurnChars: Number(v) })}
+                  />
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.llmOnSessionEnd')}>
+                  <Switch
+                    checked={settings.llmOnSessionEnd}
+                    onChange={(v) => setSettings({ ...settings, llmOnSessionEnd: v })}
+                  />
+                </PreferenceRow>
+                {usesLlmExtract && (
+                  <PreferenceRow label={t('poi.settings.llmModel')} description={t('poi.settings.llmModelHint')}>
+                    <Select
+                      className='w-full sm:w-280px'
+                      value={llmSelectValue}
+                      onChange={(v) => setSettings({ ...settings, llmModel: v })}
+                      options={llmModelOptions}
+                    />
+                  </PreferenceRow>
+                )}
+                <PreferenceRow label={t('poi.settings.perTurnBuffer')}>
+                  <Switch
+                    checked={settings.perTurnBuffer}
+                    onChange={(v) => setSettings({ ...settings, perTurnBuffer: v })}
+                  />
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.perTurnPersist')}>
+                  <Switch
+                    checked={settings.perTurnPersist}
+                    onChange={(v) => setSettings({ ...settings, perTurnPersist: v })}
+                  />
+                </PreferenceRow>
+                <div>
+                  <PreferenceRow
+                    label={t('poi.settings.autoExtractSection')}
+                    description={t('poi.settings.autoExtractHint')}
+                  >
+                    <Switch
+                      checked={settings.autoExtractEnabled}
+                      onChange={(v) => setSettings({ ...settings, autoExtractEnabled: v })}
+                    />
+                  </PreferenceRow>
+                  {settings.autoExtractEnabled && (
+                    <SettingsNestedRows>
+                      <div className='flex flex-col divide-y divide-border-2'>
+                        <PreferenceRow label={t('poi.settings.autoExtractMinTurns')}>
+                          <InputNumber
+                            className='w-full sm:w-180px'
+                            min={1}
+                            value={settings.autoExtractMinTurns}
+                            onChange={(v) => setSettings({ ...settings, autoExtractMinTurns: Number(v) })}
+                          />
+                        </PreferenceRow>
+                        <PreferenceRow label={t('poi.settings.autoExtractMinUserChars')}>
+                          <InputNumber
+                            className='w-full sm:w-180px'
+                            min={1}
+                            value={settings.autoExtractMinUserChars}
+                            onChange={(v) => setSettings({ ...settings, autoExtractMinUserChars: Number(v) })}
+                          />
+                        </PreferenceRow>
+                        <PreferenceRow
+                          label={t('poi.settings.autoExtractIdleSecs')}
+                          description={t('poi.settings.autoExtractIdleSecsHint')}
+                        >
+                          <InputNumber
+                            className='w-full sm:w-180px'
+                            min={30}
+                            value={settings.autoExtractIdleSecs}
+                            onChange={(v) => setSettings({ ...settings, autoExtractIdleSecs: Number(v) })}
+                          />
+                        </PreferenceRow>
+                      </div>
+                    </SettingsNestedRows>
+                  )}
+                </div>
+              </div>
+              <SettingsPanelFooter className='justify-end'>
+                <Button type='primary' loading={saving} onClick={saveSettings}>
+                  {t('common.save', { defaultValue: 'Save' })}
+                </Button>
+              </SettingsPanelFooter>
+            </>
+          ) : (
+            <div className='flex justify-center py-32px'>
+              <Spin />
+            </div>
+          )}
+        </SettingsPanel>
+
+        <SettingsGroup
+          title={t('poi.topics.title')}
+          action={
+            <Button status='danger' size='small' disabled={topics.length === 0} onClick={handleClearTopics}>
+              {t('poi.topics.clearAll')}
+            </Button>
+          }
+        >
+          <SettingsPanel>
+            <div className='overflow-x-auto'>
+              <Table
+                loading={loading}
+                data={topics}
+                rowKey='id'
+                pagination={{ pageSize: 10 }}
+                columns={[
+                  {
+                    title: t('poi.topics.label'),
+                    dataIndex: 'label',
+                    render: (_, row) => (
+                      <div className='min-w-0'>
+                        <div className='font-500'>{row.label}</div>
+                        {row.summary && <div className='max-w-280px truncate text-12px text-t-tertiary'>{row.summary}</div>}
+                      </div>
+                    ),
+                  },
+                  {
+                    title: t('poi.topics.status'),
+                    dataIndex: 'status',
+                    width: 140,
+                    render: (_, row) => (
+                      <Select
+                        size='small'
+                        value={row.status}
+                        onChange={(v) => handleStatusChange(row, v)}
+                        options={TOPIC_STATUSES.map((s) => ({
+                          label: t(`poi.topics.statuses.${s}`),
+                          value: s,
+                        }))}
+                      />
+                    ),
+                  },
+                  {
+                    title: t('poi.topics.weight'),
+                    dataIndex: 'weight',
+                    width: 80,
+                    render: (v) => Number(v).toFixed(2),
+                  },
+                  {
+                    title: t('poi.topics.pinned'),
+                    dataIndex: 'pinned',
+                    width: 90,
+                    render: (_, row) => (
+                      <Switch size='small' checked={row.pinned} onChange={() => handlePin(row)} />
+                    ),
+                  },
+                  {
+                    title: t('poi.topics.actions'),
+                    dataIndex: 'id',
+                    width: 90,
+                    render: (_, row) => (
+                      <Button size='mini' status='danger' type='text' onClick={() => handleDeleteTopic(row)}>
+                        {t('poi.topics.delete')}
+                      </Button>
+                    ),
+                  },
+                ]}
+                noDataElement={t('poi.topics.empty')}
+              />
+            </div>
+          </SettingsPanel>
+        </SettingsGroup>
       </div>
     </SettingsPageWrapper>
   );
