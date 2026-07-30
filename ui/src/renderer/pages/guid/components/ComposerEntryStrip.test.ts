@@ -25,10 +25,20 @@ describe('Guid composer entry strip polish', () => {
 
   test('adds spacing between entry controls and the textarea', () => {
     const css = readSource(new URL('../index.module.css', import.meta.url));
+    const entryButton = classBlock(css, 'entryButton');
 
     expect(css.includes('.entryStrip')).toBe(true);
     expect(css.includes('margin-bottom: 8px')).toBe(true);
     expect(css.includes('.entryCountBadge')).toBe(true);
+    expect(entryButton.includes('border-radius: 999px')).toBe(true);
+  });
+
+  test('marks text controls as pills and keeps composer configuration hovers fully rounded', () => {
+    const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
+    const css = readSource(new URL('../index.module.css', import.meta.url));
+
+    expect(source.match(/data-button-shape='pill'/g)?.length).toBe(2);
+    expect(css.includes('border-radius: 999px !important')).toBe(true);
   });
 
   test('keeps the Skills count badge readable when a theme uses a light primary', () => {

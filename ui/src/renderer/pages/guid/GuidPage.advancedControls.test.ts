@@ -6,11 +6,11 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('GuidPage advanced controls', () => {
-  test('keeps the supported per-conversation draft controls', () => {
+  test('hides AutoWork and intelligent decision controls while keeping knowledge', () => {
     const source = readSource(new URL('./GuidPage.tsx', import.meta.url));
 
-    expect(source.includes('<AutoWorkControl')).toBe(true);
-    expect(source.includes('<IdmmControl')).toBe(true);
+    expect(source.includes('<AutoWorkControl')).toBe(false);
+    expect(source.includes('<IdmmControl')).toBe(false);
     expect(source.includes('<KnowledgeControl')).toBe(true);
   });
 

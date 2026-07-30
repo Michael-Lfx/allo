@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { BookOpen, Computer, Cpu, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, Send, System, Tool, TreeDiagram } from '@icon-park/react';
+import { Computer, Earth, Headset, Info, Lightning, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, Send, System, Tool, TreeDiagram } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -29,12 +29,6 @@ export function getBuiltinSettingsNavItems(
   options?: { developerModeEnabled?: boolean }
 ): NavItem[] {
   const builtinMap: Record<string, NavItem> = {
-    'execution-engines': {
-      id: 'execution-engines',
-      label: t('settings.executionEngineHub.railTitle'),
-      icon: <Cpu theme='outline' size='16' />,
-      path: 'execution-engines',
-    },
     capabilities: {
       id: 'capabilities',
       label: t('settings.capabilities', { defaultValue: 'Capabilities' }),

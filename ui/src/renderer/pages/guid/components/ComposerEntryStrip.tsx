@@ -140,6 +140,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   const skillsButton = (
     <button
       type='button'
+      data-button-shape='pill'
       className={`${styles.entryButton} ${styles.entryButtonInteractive}`}
       onClick={onAdjustSkills}
       aria-label={
@@ -234,6 +235,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       {/* Choose preset */}
       <button
         type='button'
+        data-button-shape='pill'
         className={`${styles.entryButton} ${styles.entryButtonInteractive}`}
         onClick={onChoosePreset}
       >

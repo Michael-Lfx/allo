@@ -170,13 +170,16 @@
     transform 150ms ease;
 }
 
+.trigger[data-compact='false'] {
+  height: 34px !important;
+  min-height: 34px;
+  border-radius: 999px !important;
+  padding: 0 11px !important;
+}
+
 .trigger[aria-pressed='true'] {
   background: color-mix(in srgb, var(--policy-accent) 9%, var(--color-fill-1)) !important;
   color: var(--policy-accent) !important;
-}
-
-.trigger:hover {
-  transform: translateY(-1px);
 }
 
 .trigger:focus-visible {
@@ -202,8 +205,7 @@
     transition: none;
   }
 
-  .segmentedOption:active,
-  .trigger:hover {
+  .segmentedOption:active {
     transform: none;
   }
 }

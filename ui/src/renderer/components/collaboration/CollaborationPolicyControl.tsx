@@ -112,6 +112,7 @@ const CollaborationPolicyControl: React.FC<CollaborationPolicyControlProps> = ({
           defaultValue: '协作策略',
         })}
         aria-pressed={active}
+        data-compact={compact ? 'true' : 'false'}
         data-testid='collaboration-policy-control'
       >
         <span className='inline-flex items-center gap-5px'>

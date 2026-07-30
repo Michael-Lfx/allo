@@ -19,10 +19,8 @@ import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
-import AgentPillBar from './components/AgentPillBar';
 import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerEntryStrip';
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
-import { AgentPillBarSkeleton } from './components/GuidSkeleton';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
 import PoiStarterChips from './components/PoiStarterChips';
@@ -35,8 +33,6 @@ import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropd
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
 import type { LocalizableSkill } from '@/renderer/pages/settings/skill/skillDisplay';
-import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
-import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
@@ -495,23 +491,6 @@ const GuidPage: React.FC = () => {
     [mention, guidInput.input, send.sendMessageHandler, sendKey],
   );
 
-  const handleSelectAgentFromPillBar = useCallback(
-    (key: string) => {
-      agentSelection.setSelectedAgentKey(key);
-      mention.setMentionOpen(false);
-      mention.setMentionQuery(null);
-      mention.setMentionSelectorOpen(false);
-      mention.setMentionActiveIndex(0);
-    },
-    [
-      agentSelection.setSelectedAgentKey,
-      mention.setMentionOpen,
-      mention.setMentionQuery,
-      mention.setMentionSelectorOpen,
-      mention.setMentionActiveIndex,
-    ],
-  );
-
   const handleSelectPresetKey = useCallback(
     (selectedAgentKey: string) => {
       agentSelection.setSelectedAgentKey(selectedAgentKey);
@@ -616,8 +595,7 @@ const GuidPage: React.FC = () => {
 
   const currentPresetAgentId =
     selectedPresetRecord?.preferred_agent_id || selectedPresetRecord?.agent_preferences[0]?.agent_id;
-  // Mirrors PresetEditDrawer's Main Agent options — detected execution
-  // engines from AgentPillBar's data source, so avatars resolve the same way.
+  // Mirrors PresetEditDrawer's Main Agent options so avatars resolve the same way.
   const agentSwitcherItems = useMemo(() => {
     if (!agentSelection.availableAgents || !selectedPresetRecord) return [];
     return agentSelection.availableAgents
@@ -760,26 +738,14 @@ const GuidPage: React.FC = () => {
     />
   );
 
-  // Advanced drafts — the same controls as the conversation header, in draft
-  // mode (collected locally, applied right after the conversation is created).
+  // Homepage advanced controls are collected locally and applied right after
+  // the conversation is created. AutoWork remains available in its dedicated
+  // session and terminal surfaces, rather than the homepage toolbar.
   // Keyed by location.key so same-route navigations (which reset the drafts in
   // the layout effect above) also remount the controls and re-run their
   // mount-time seeding (e.g. IDMM's global default steering prompt).
   const advancedControlsNode = (
     <>
-      <AutoWorkControl
-        key={`autowork-${location.key}`}
-        draft={{
-          value: advancedConfig.autoWork,
-          onChange: advancedConfig.setAutoWork,
-        }}
-        applyNote={t('guid.advanced.applyNote')}
-      />
-      <IdmmControl
-        key={`idmm-${location.key}`}
-        draft={{ value: advancedConfig.idmm, onChange: advancedConfig.setIdmm }}
-        applyNote={t('guid.advanced.applyNote')}
-      />
       <KnowledgeControl
         key={`knowledge-${location.key}`}
         draft={{
@@ -862,13 +828,14 @@ const GuidPage: React.FC = () => {
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
       <div ref={guidContainerRef} className={styles.guidContainer}>
-        {/* Advanced controls (AutoWork / IDMM / Knowledge / MultiAgent) hang in
+        {/* Advanced controls (Knowledge / MultiAgent) hang in
             the content area's top-right corner — mirroring the active-session
             ChatLayout header placement, and freeing the input box's bottom row.
             Desktop only (hidden on mobile via CSS), matching the session header. */}
         <div className={styles.guidAdvancedControls}>
           <button
             type='button'
+            data-button-shape='pill'
             className={styles.guidRunSettingsToggle}
             aria-expanded={advancedOpen}
             data-testid='guid-run-settings-toggle'
@@ -922,17 +889,6 @@ const GuidPage: React.FC = () => {
 
             {advancedOpen ? (
               <div className={styles.guidRunSettingsPanel} data-testid='guid-run-settings-panel'>
-                {agentSelection.availableAgents === undefined ? (
-                  <AgentPillBarSkeleton />
-                ) : agentSelection.availableAgents.length > 0 ? (
-                  <AgentPillBar
-                    availableAgents={agentSelection.availableAgents}
-                    selectedAgentKey={agentSelection.selectedAgentKey}
-                    getAgentKey={agentSelection.getAgentKey}
-                    onSelectAgent={handleSelectAgentFromPillBar}
-                    suppressSelectionAnimation={resetPresetRequested}
-                  />
-                ) : null}
                 <PoiStarterChips
                   onSetInput={guidInput.setInput}
                   onFocusInput={guidInput.handleTextareaFocus}

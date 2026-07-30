@@ -14,9 +14,9 @@ body {
 
 /* Keep action buttons on the same 6px corner system without affecting
    semantic controls such as switches, tabs, or radio buttons. */
-button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']),
-.arco-btn,
-[role='button'] {
+button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']):not(.arco-btn-shape-circle):not(.arco-btn-shape-round):not([class~='rd-full']),
+.arco-btn:not(.arco-btn-shape-circle):not(.arco-btn-shape-round),
+[role='button']:not([data-button-shape='pill']):not([data-button-shape='circle']):not([class~='rd-full']) {
   border-radius: 6px !important;
 }
 

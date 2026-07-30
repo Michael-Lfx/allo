@@ -13,7 +13,7 @@ const arcoOverrides = readFileSync(new URL('./arco-override.css', import.meta.ur
 describe('button theme contract', () => {
   test('all button primitives use the global 6px corner radius', () => {
     expect(arcoOverrides).toContain(
-      "button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']),\n.arco-btn,\n[role='button'] {"
+      "button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']):not(.arco-btn-shape-circle):not(.arco-btn-shape-round):not([class~='rd-full']),\n.arco-btn:not(.arco-btn-shape-circle):not(.arco-btn-shape-round),\n[role='button']:not([data-button-shape='pill']):not([data-button-shape='circle']):not([class~='rd-full']) {"
     );
     expect(arcoOverrides).toContain('border-radius: 6px !important;');
   });
@@ -22,6 +22,8 @@ describe('button theme contract', () => {
     expect(arcoOverrides).toContain(
       "button[data-button-shape='circle'],\nbutton.arco-btn.arco-btn-shape-circle,\n.arco-btn.arco-btn-shape-circle {"
     );
+    expect(arcoOverrides).toContain(':not(.arco-btn-shape-circle)');
+    expect(arcoOverrides).toContain(":not([class~='rd-full'])");
     expect(arcoOverrides).toContain('border-radius: 50% !important;');
   });
 
