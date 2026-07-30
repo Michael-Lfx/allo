@@ -479,6 +479,7 @@ impl NomiAgentManager {
             knowledge_writeback_staged,
             companion_skill_sink,
             nomi_agent::SearchProviderBinding::DefaultDdg,
+            host_wiring,
         )
         .await
     }
@@ -499,6 +500,7 @@ impl NomiAgentManager {
         knowledge_writeback_staged: bool,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         search_provider: nomi_agent::SearchProviderBinding,
+        host_wiring: NomiHostWiring,
     ) -> Result<Self, AppError> {
         let runtime = AgentRuntimeState::new(conversation_id.clone(), workspace.clone(), 128);
         let loopback_capability_leases = config_extra.loopback_capability_leases.clone();
