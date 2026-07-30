@@ -27,6 +27,12 @@ configuration, MCP management UI, skill loading, ToolSearch, or model tool
 registry. Provider endpoints and allowed tool names are fixed in their
 adapters.
 
+The public schemas state the same hard bounds enforced at runtime:
+`web_search.count` is an integer from 1 through 10 with default 5, and
+`web_extract.urls` contains 1 through 3 strings. Search keeps its historical
+direct-call clamping compatibility; Extract rejects more than three URLs and
+asks the model to choose the most relevant subset.
+
 ## Host ownership
 
 The desktop host enables managed search through both a Cargo feature and an
@@ -78,9 +84,13 @@ web tool.
 ## Routing policy
 
 The router returns the first non-empty successful result. An empty successful
-result falls through without affecting provider health. Typed provider errors
-drive provider-local cooldown or disablement; callers receive one safe
-top-level search error only after all eligible providers fail.
+result falls through without affecting provider health; when every eligible
+provider returns a legitimate empty result, the public result is an empty
+`SearchResult` and the model receives `No results.`. Only a route with no
+successful provider result returns the safe temporarily-unavailable error.
+Queue saturation is request-local and never increments provider failure health.
+Typed provider errors drive provider-local cooldown or disablement; callers
+receive one safe top-level search error only after all eligible providers fail.
 
 This version does not aggregate providers, hedge requests, rerank with an LLM,
 or cache search results. DuckDuckGo is a best-effort final fallback, not an
@@ -127,10 +137,42 @@ Local `web_extract` remains the only page-content path in this version. Its
 model-facing result begins with an untrusted-evidence instruction and removes
 provider/extractor provenance. The renderer preserves input order, keeps
 success-page bodies fair, marks source or renderer truncation, and caps the
-final rendered output at 8,000 characters. Existing SSRF, redirect, timeout,
-Readability, response-body, and 3,000-character-per-page limits are unchanged.
+final rendered output at 8,000 characters. At most two URLs are active at once;
+each URL has an eight-second deadline and the tool has a twelve-second absolute
+deadline. Completed results are retained, pending items become safe timeout
+items, and no detached extraction task survives cancellation. Fixed metadata is
+reserved once, then the remaining body budget is water-filled fairly across
+pages (minimum 256 characters, maximum 3,000 per page); the full document is
+rendered once, with at most one final deterministic tail shrink. Internal
+diagnostics distinguish source truncation from context-budget truncation and
+record omitted pages. Existing SSRF, redirect, timeout, Readability,
+response-body, and 3,000-character-per-page limits are unchanged.
 MCP Fetch, remote page-content tools, and intermediate LLM rewriting remain
 out of scope.
+
+## Stream identity and evidence diagnostics
+
+`StreamRelay` coordinates the primary message with a private owner state:
+`Unclaimed`, `RootTextPlaceholder`, `Thinking`, or `Text`. Thinking-first keeps
+the primary ID on the first Thinking row and gives final Text a fresh ID.
+Tool-first materializes a hidden Text placeholder under the primary ID,
+allocates Thinking a fresh ID, and lets the final Text update and reveal the
+placeholder without a duplicate INSERT. A placeholder with no final Text is
+terminalized hidden as `finish` or `error` for Finish, Error, cancellation, and
+channel closure. Root type/identity conflicts fail closed as
+`NomifunStateInconsistent`; child persistence does not continue after the
+conflict.
+
+The agent's existing Turn-level `ToolEfficiencyStats` also records web evidence
+cost: search/extract call counts, requested extract URL count, result character
+counts, total external-evidence characters, confirmed schema-invalid web calls,
+and a soft high-budget flag. Tool-use and Tool-result IDs are observed once so
+validation and execution paths cannot double-count. A single extract diagnostic
+summary contains only counts, truncation categories, omitted pages, result
+characters, and elapsed time; it never contains a query, URL, body, structured
+payload, or stable hash. Soft thresholds (more than two searches, more than one
+extract, more than 16,000 evidence characters, or any confirmed invalid web
+call) are observational and never block the agent.
 
 ## Rollback
 
