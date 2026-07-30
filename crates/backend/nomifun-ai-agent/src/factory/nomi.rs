@@ -947,7 +947,13 @@ fn apply_global_moa_fallback(overrides: &mut NomiBuildExtra, global_raw: Option<
     let Some(raw) = global_raw else {
         return;
     };
-    match serde_json::from_str::<nomifun_api_types::MoaSettings>(raw) {
+    // The frontend persists the settings as a JSON *string* value, and the
+    // client-prefs service re-serializes every value — so the stored row is a
+    // double-encoded string literal (`"{\"enabled\":...}"`). Unwrap that layer
+    // first; a bare object (written by non-UI clients) still parses directly.
+    let unwrapped = serde_json::from_str::<String>(raw);
+    let effective = unwrapped.as_deref().unwrap_or(raw);
+    match serde_json::from_str::<nomifun_api_types::MoaSettings>(effective) {
         Ok(settings) => overrides.moa = Some(settings),
         Err(error) => {
             warn!(error = %error, "Ignoring malformed global moa_settings preference");
@@ -2744,6 +2750,22 @@ mod tests {
         let global = r#"{"enabled":true,"references":[{"provider_id":"p1","model":"m1"}]}"#;
         apply_global_moa_fallback(&mut overrides, Some(global));
         let moa = overrides.moa.expect("global settings must be inherited");
+        assert!(moa.enabled);
+        assert_eq!(moa.references.len(), 1);
+        assert_eq!(moa.references[0].model, "m1");
+    }
+
+    #[test]
+    fn global_moa_fallback_unwraps_double_encoded_string_row() {
+        // The real `client_preferences` row: the frontend writes the settings
+        // as a JSON string value and the prefs service serializes that value
+        // again, so the stored row is a JSON *string literal* containing the
+        // MoaSettings document.
+        let mut overrides = NomiBuildExtra::default();
+        let inner = r#"{"enabled":true,"references":[{"provider_id":"p1","model":"m1"}]}"#;
+        let stored = serde_json::to_string(inner).expect("encode string row");
+        apply_global_moa_fallback(&mut overrides, Some(&stored));
+        let moa = overrides.moa.expect("double-encoded settings must be inherited");
         assert!(moa.enabled);
         assert_eq!(moa.references.len(), 1);
         assert_eq!(moa.references[0].model, "m1");

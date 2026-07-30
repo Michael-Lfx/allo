@@ -1,5 +1,5 @@
 import type { SlashCommandItem } from '@/common/chat/slash/types';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 // Match slash followed by command name (alphanumeric, underscore, hyphen only)
@@ -29,14 +29,23 @@ export function useSlashCommandController(options: UseSlashCommandControllerOpti
   const { input, commands, onExecuteBuiltin, onSelectTemplate } = options;
   const query = useMemo(() => matchSlashQuery(input), [input]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [dismissed, setDismissed] = useState(false);
+  // Track which query was last dismissed. When query differs from the
+  // last-dismissed query, the menu is eligible to open (subject to
+  // filteredCommands being non-empty). This replaces the previous
+  // boolean + useEffect pattern and avoids a double-render on every
+  // query change.
+  const [dismissedQuery, setDismissedQuery] = useState<string | null>(null);
 
-  // Reset state only when query changes, not when commands array updates.
-  // This prevents dropdown from reopening when ACP dynamically adds commands
-  // while the user is typing.
+  // Track previous query to reset activeIndex on query change.
+  // We track this as a ref to avoid re-renders, and use a layout
+  // effect to reset when it changes.
+  const prevQueryRef = useRef(query);
+
   useEffect(() => {
-    setActiveIndex(0);
-    setDismissed(false);
+    if (prevQueryRef.current !== query) {
+      prevQueryRef.current = query;
+      setActiveIndex(0);
+    }
   }, [query]);
 
   const filteredCommands = useMemo(() => {
@@ -50,7 +59,15 @@ export function useSlashCommandController(options: UseSlashCommandControllerOpti
     return commands.filter((command) => command.name.toLowerCase().startsWith(keyword));
   }, [commands, query]);
 
-  const isOpen = query !== null && !dismissed && filteredCommands.length > 0;
+  // Menu is open when:
+  // 1. There is an active slash query
+  // 2. The current query hasn't been explicitly dismissed
+  // 3. There are matching commands to show
+  const isOpen = query !== null && dismissedQuery !== query && filteredCommands.length > 0;
+
+  const dismiss = useCallback(() => {
+    setDismissedQuery(query);
+  }, [query]);
 
   const executeCommand = useCallback(
     (index: number) => {
@@ -65,10 +82,10 @@ export function useSlashCommandController(options: UseSlashCommandControllerOpti
       } else {
         onSelectTemplate?.(command.name);
       }
-      setDismissed(true);
+      setDismissedQuery(query);
       return true;
     },
-    [filteredCommands, onExecuteBuiltin, onSelectTemplate]
+    [filteredCommands, onExecuteBuiltin, onSelectTemplate, query]
   );
 
   const onKeyDown = useCallback(
@@ -79,7 +96,7 @@ export function useSlashCommandController(options: UseSlashCommandControllerOpti
 
       if (event.key === 'Escape') {
         event.preventDefault();
-        setDismissed(true);
+        setDismissedQuery(query);
         return true;
       }
 
@@ -102,7 +119,7 @@ export function useSlashCommandController(options: UseSlashCommandControllerOpti
 
       return false;
     },
-    [activeIndex, executeCommand, filteredCommands.length, isOpen]
+    [activeIndex, executeCommand, filteredCommands.length, isOpen, query]
   );
 
   return {
@@ -111,7 +128,7 @@ export function useSlashCommandController(options: UseSlashCommandControllerOpti
     filteredCommands,
     onKeyDown,
     onSelectByIndex: executeCommand,
-    setDismissed,
+    dismiss,
     setActiveIndex,
   };
 }

@@ -52,6 +52,12 @@
     "runSettings": "Execution plan",
     "runSettingsHide": "Hide plan"
   },
+  "goalMode": {
+    "label": "Goal mode",
+    "labelOn": "Goal mode · On",
+    "tooltip": "When on, your first input becomes the conversation goal (same as /goal) — progress is judged and continued automatically after each turn",
+    "applyFailed": "Failed to set the goal — sent as a normal message instead"
+  },
   "modelProviderSaved": "Model ready — you can start the task",
   "readiness": {
     "ready": "{{agent}} is ready · {{model}} selected",
