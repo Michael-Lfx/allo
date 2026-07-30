@@ -8,9 +8,43 @@ mod parallel;
 mod shared;
 mod you;
 
+use crate::types::SearchHit;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DecodeError {
     MalformedResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecodeSource {
+    Structured,
+    TextJsonFallback,
+    LabelledTextFallback,
+}
+
+impl DecodeSource {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Structured => "structured",
+            Self::TextJsonFallback => "text_json_fallback",
+            Self::LabelledTextFallback => "labelled_text_fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodeOutcome {
+    pub(crate) hits: Vec<SearchHit>,
+    pub(crate) source: DecodeSource,
+    pub(crate) dropped_items: usize,
+    pub(crate) contract_degraded: bool,
+    pub(crate) structured_fallback: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedItems {
+    pub(crate) hits: Vec<NormalizedSearchHit>,
+    pub(crate) dropped_items: usize,
 }
 
 pub(crate) use parallel::decode_parallel;
@@ -35,7 +69,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/managed_search/parallel-structured.json"
         )));
-        let hits = decode_parallel(&result, 5).expect("parallel fixture");
+        let hits = decode_parallel(&result, 5).expect("parallel fixture").hits;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://example.com/one");
         assert_eq!(hits[0].published_at.as_deref(), Some("2026-07-30"));
@@ -48,7 +82,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/managed_search/you-structured-mixed.json"
         )));
-        let hits = decode_you(&result, 5).expect("you fixture");
+        let hits = decode_you(&result, 5).expect("you fixture").hits;
         assert_eq!(
             hits.iter().map(|hit| hit.title.as_str()).collect::<Vec<_>>(),
             ["Web fixture", "News fixture"]
@@ -62,7 +96,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/managed_search/you-structured-duplicates.json"
         )));
-        let hits = decode_you(&result, 5).expect("you duplicate fixture");
+        let hits = decode_you(&result, 5).expect("you duplicate fixture").hits;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "First title");
         assert_eq!(hits[0].published_at.as_deref(), Some("2026-07-30"));
@@ -80,7 +114,10 @@ mod tests {
             "content": [{"type": "text", "text": json_value.to_string()}]
         }))
         .unwrap();
-        assert_eq!(decode_you(&json_result, 5).unwrap()[0].title, "Text JSON fixture");
+        assert_eq!(
+            decode_you(&json_result, 5).unwrap().hits[0].title,
+            "Text JSON fixture"
+        );
 
         let labelled_result: McpToolResult = serde_json::from_value(json!({
             "content": [{"type": "text", "text": include_str!(concat!(
@@ -89,7 +126,7 @@ mod tests {
             ))}]
         }))
         .unwrap();
-        let hits = decode_you(&labelled_result, 5).unwrap();
+        let hits = decode_you(&labelled_result, 5).unwrap().hits;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "Tagged web fixture");
         assert_eq!(hits[1].title, "Tagged news fixture");
@@ -101,7 +138,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/managed_search/you-empty.json"
         )));
-        assert!(decode_you(&empty, 5).unwrap().is_empty());
+        assert!(decode_you(&empty, 5).unwrap().hits.is_empty());
 
         let malformed = structured_fixture(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -123,5 +160,58 @@ mod tests {
                 .as_str(),
             "https://example.com/path"
         );
+    }
+
+    #[test]
+    fn decoders_keep_valid_items_when_one_item_is_malformed() {
+        let parallel: McpToolResult = serde_json::from_value(json!({
+            "structuredContent": {
+                "results": [
+                    {"title": "bad", "url": "file:///not-allowed", "excerpts": ["ignored"]},
+                    {"title": "good", "url": "https://example.com/good", "excerpts": ["kept"]}
+                ]
+            }
+        }))
+        .unwrap();
+        let parallel = decode_parallel(&parallel, 5).expect("valid item remains");
+        assert_eq!(parallel.hits.len(), 1);
+        assert_eq!(parallel.dropped_items, 1);
+        assert!(parallel.contract_degraded);
+
+        let you: McpToolResult = serde_json::from_value(json!({
+            "structuredContent": {
+                "results": {
+                    "web": [
+                        {"title": "bad", "url": "not a url"},
+                        {"title": "good", "url": "https://example.com/good", "description": "kept"}
+                    ],
+                    "news": []
+                }
+            }
+        }))
+        .unwrap();
+        let you = decode_you(&you, 5).expect("valid item remains");
+        assert_eq!(you.hits.len(), 1);
+        assert_eq!(you.dropped_items, 1);
+        assert!(you.contract_degraded);
+    }
+
+    #[test]
+    fn decoder_fallback_reports_source_without_content() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "not json"}]
+        }))
+        .unwrap();
+        let outcome = decode_you(&result, 5).expect_err("unlabelled text is malformed");
+        assert_eq!(outcome, DecodeError::MalformedResponse);
+
+        let structured: McpToolResult = serde_json::from_value(json!({
+            "structuredContent": {"results": {"web": [], "news": []}},
+            "content": [{"type": "text", "text": "{\"results\": {\"web\": [], \"news\": []}}"}]
+        }))
+        .unwrap();
+        let outcome = decode_you(&structured, 5).expect("structured empty result");
+        assert_eq!(outcome.source, DecodeSource::Structured);
+        assert!(!outcome.structured_fallback);
     }
 }
