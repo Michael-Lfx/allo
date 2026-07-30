@@ -112,6 +112,13 @@ enum DisableReason {
     RateLimitUntilRestart,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderAvailability {
+    Ready,
+    Cooldown,
+    Disabled(DisableReason),
+}
+
 #[derive(Default)]
 struct SearchProviderHealth {
     consecutive_failures: u32,
@@ -121,8 +128,18 @@ struct SearchProviderHealth {
 }
 
 impl SearchProviderHealth {
+    fn availability(&self, now: Instant) -> ProviderAvailability {
+        if let Some(reason) = self.disable_reason {
+            ProviderAvailability::Disabled(reason)
+        } else if self.cooldown_until.is_some_and(|until| until > now) {
+            ProviderAvailability::Cooldown
+        } else {
+            ProviderAvailability::Ready
+        }
+    }
+
     fn is_available(&self, now: Instant) -> bool {
-        self.disable_reason.is_none() && self.cooldown_until.is_none_or(|until| until <= now)
+        self.availability(now) == ProviderAvailability::Ready
     }
 
     fn record_success(&mut self, provider: SearchProviderId) {
@@ -180,7 +197,6 @@ impl SearchProviderHealth {
             }
             SearchAttemptError::Network
             | SearchAttemptError::Timeout
-            | SearchAttemptError::QueueBusy
             | SearchAttemptError::SessionExpired
             | SearchAttemptError::Upstream
             | SearchAttemptError::MalformedResponse => {
@@ -190,6 +206,7 @@ impl SearchProviderHealth {
                 self.cooldown_until = Some(now + Duration::from_secs(seconds));
             }
             SearchAttemptError::InvalidRequest => {}
+            SearchAttemptError::QueueBusy => {}
         }
     }
 }
@@ -289,6 +306,8 @@ impl ManagedSearchService {
         let overall_deadline = Instant::now() + TOTAL_BUDGET;
         let mut fallback_count = 0usize;
         let mut last_class = None;
+        let mut saw_successful_empty = false;
+        let mut attempted_provider = false;
 
         for (attempt, slot) in self.slots.iter().enumerate() {
             let now = Instant::now();
@@ -296,10 +315,21 @@ impl ManagedSearchService {
                 last_class = Some("timeout");
                 break;
             }
-            if !slot.health.lock().await.is_available(now) {
+            let availability = slot.health.lock().await.availability(now);
+            if availability != ProviderAvailability::Ready {
                 fallback_count += 1;
+                tracing::debug!(
+                    target: "managed_search",
+                    request_id = %request_id,
+                    provider = slot.adapter.id().as_str(),
+                    attempt,
+                    availability = ?availability,
+                    fallback_count,
+                    "managed web search provider skipped"
+                );
                 continue;
             }
+            attempted_provider = true;
             let provider_deadline = std::cmp::min(overall_deadline, now + slot.timeout);
             let attempt_started = Instant::now();
             let permit = match tokio::time::timeout_at(
@@ -385,6 +415,7 @@ impl ManagedSearchService {
                     return Ok(result);
                 }
                 Ok(output) => {
+                    saw_successful_empty = true;
                     let diagnostics = output.diagnostics;
                     let request_elapsed_ms = request_started.elapsed().as_millis();
                     slot.health
@@ -445,11 +476,20 @@ impl ManagedSearchService {
             target: "managed_search",
             request_id = %request_id,
             fallback_count,
+            attempted_provider,
+            saw_successful_empty,
             error_class = last_class.unwrap_or("unavailable"),
             "all managed web search providers failed"
         );
+        if saw_successful_empty {
+            return Ok(SearchResult {
+                provider: "managed".to_owned(),
+                hits: Vec::new(),
+            });
+        }
         Err(WebError::Provider(
-            "web search is temporarily unavailable".to_owned(),
+            "web search is temporarily unavailable; do not repeat the same search this turn"
+                .to_owned(),
         ))
     }
 }
@@ -751,6 +791,50 @@ mod tests {
         assert_eq!(result.provider, "duckduckgo");
     }
 
+    #[tokio::test]
+    async fn all_successful_empty_results_are_a_valid_empty_search() {
+        let service = ManagedSearchService::from_adapters(vec![
+            (
+                fake(
+                    SearchProviderId::Parallel,
+                    Ok(SearchResult {
+                        provider: "parallel".to_owned(),
+                        hits: Vec::new(),
+                    }),
+                ),
+                Duration::from_secs(1),
+            ),
+            (
+                fake(
+                    SearchProviderId::You,
+                    Ok(SearchResult {
+                        provider: "you".to_owned(),
+                        hits: Vec::new(),
+                    }),
+                ),
+                Duration::from_secs(1),
+            ),
+            (
+                fake(
+                    SearchProviderId::DuckDuckGo,
+                    Ok(SearchResult {
+                        provider: "duckduckgo".to_owned(),
+                        hits: Vec::new(),
+                    }),
+                ),
+                Duration::from_secs(1),
+            ),
+        ]);
+        let result = service
+            .search(SearchQuery {
+                query: "no-match".to_owned(),
+                count: 5,
+            })
+            .await
+            .expect("legitimate empty search must not be unavailable");
+        assert!(result.hits.is_empty());
+    }
+
     #[test]
     fn parses_nested_json_results() {
         let result: McpToolResult = serde_json::from_value(json!({
@@ -791,6 +875,16 @@ mod tests {
         health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Forbidden, now);
         assert!(health.disable_reason.is_none());
         assert!(health.cooldown_until > Some(now));
+    }
+
+    #[test]
+    fn queue_busy_does_not_pollute_provider_health() {
+        let now = Instant::now();
+        let mut health = SearchProviderHealth::default();
+        health.record_error(SearchProviderId::Parallel, &SearchAttemptError::QueueBusy, now);
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.cooldown_until, None);
+        assert_eq!(health.availability(now), ProviderAvailability::Ready);
     }
 
     #[test]
@@ -900,7 +994,7 @@ mod tests {
             .expect_err("all-provider failure is safe");
         assert_eq!(
             first_error.to_string(),
-            "provider error: web search is temporarily unavailable"
+            "provider error: web search is temporarily unavailable; do not repeat the same search this turn"
         );
         assert!(
             service
