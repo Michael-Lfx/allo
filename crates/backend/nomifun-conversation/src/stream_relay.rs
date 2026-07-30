@@ -1706,15 +1706,17 @@ impl RelayTerminal {
 /// background tokio task until the agent finishes or errors out.
 pub struct StreamRelay {
     conversation_id: String,
-    /// Stable identity of the user-visible logical turn. This remains fixed
-    /// across model failover and system continuations.
-    root_turn_id: String,
-    /// Identity of the current provider wire segment within `root_turn_id`.
+    /// Canonical turn root / primary durable segment id (`primary_segment_id`).
     ///
-    /// This is only a transport/stream identity. Durable child messages and
-    /// artifact commits belong to `root_turn_id`, otherwise a continuation is
-    /// grouped under a different turn after history hydration than it was on
-    /// the live WebSocket stream.
+    /// Tool/Status children, the Tool-first Text placeholder, and the first
+    /// Thinking/Text segment that claims the turn all persist under this id.
+    /// It remains fixed across model failover and cron/system continuations.
+    root_turn_id: String,
+    /// Provider/stream wire identity for the current attempt (`wire_message_id`).
+    ///
+    /// Used for provider-call correlation and some turn-writeback attempt keys.
+    /// It may differ from `root_turn_id` (for example cron stable turns). It is
+    /// never the parent id for Tool/Status children.
     msg_id: String,
     user_id: String,
     repo: Arc<dyn IConversationRepository>,
@@ -1849,6 +1851,9 @@ impl StreamRelay {
         self
     }
 
+    /// Override the canonical turn root when it differs from the wire `msg_id`
+    /// (cron continuations / stable-turn retries). Primary Thinking/Text segment
+    /// allocation and Tool/Status parenting follow this id, not `msg_id`.
     pub fn with_root_turn_id(mut self, turn_id: impl Into<String>) -> Self {
         self.root_turn_id = turn_id.into();
         self
@@ -3424,7 +3429,9 @@ impl StreamRelay {
         match *owner {
             PrimaryMessageOwner::Unclaimed => {
                 *owner = PrimaryMessageOwner::Thinking;
-                self.msg_id.clone()
+                // Primary durable segment uses the canonical turn root so
+                // cron/stable-turn paths stay aligned when wire msg_id differs.
+                self.root_turn_id.clone()
             }
             PrimaryMessageOwner::RootTextPlaceholder
             | PrimaryMessageOwner::Thinking
@@ -3441,14 +3448,15 @@ impl StreamRelay {
             PrimaryMessageOwner::Unclaimed => {
                 *owner = PrimaryMessageOwner::Text;
                 TextSegmentClaim {
-                    id: self.msg_id.clone(),
+                    id: self.root_turn_id.clone(),
                     record_created: false,
                 }
             }
             PrimaryMessageOwner::RootTextPlaceholder => {
                 *owner = PrimaryMessageOwner::Text;
                 TextSegmentClaim {
-                    id: self.msg_id.clone(),
+                    // Placeholder rows are always created under root_turn_id.
+                    id: self.root_turn_id.clone(),
                     record_created: true,
                 }
             }
@@ -9411,6 +9419,99 @@ mod tests {
             update.status.as_ref().and_then(|status| status.as_deref()) == Some("finish")
                 && update.hidden == Some(false)
         }));
+    }
+
+    #[tokio::test]
+    async fn tool_first_keeps_root_identity_when_wire_msg_id_differs() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        const WIRE_MSG_ID: &str = "0190f5fe-7c00-7a00-8abc-0123456789aa";
+        const STABLE_ROOT_ID: &str = "0190f5fe-7c00-7a00-8abc-0123456789bb";
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.reject_duplicate_message_inserts();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            WIRE_MSG_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_root_turn_id(STABLE_ROOT_ID);
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-stable-root".into(),
+            name: "read_file".into(),
+            args: json!({"path": "a.ts"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+            artifacts: Vec::new(),
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
+            content: "Inspecting under a stable turn root".into(),
+            subject: None,
+            duration: None,
+            status: Some("thinking".into()),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "Done".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+        assert_eq!(outcome.final_text_msg_id.as_deref(), Some(STABLE_ROOT_ID));
+
+        let inserts = repo.take_inserts();
+        let tool = inserts
+            .iter()
+            .find(|row| row.r#type == "tool_call")
+            .expect("tool child must persist");
+        assert_eq!(
+            tool.msg_id.as_deref(),
+            Some(STABLE_ROOT_ID),
+            "tool children parent to the canonical root, not the wire msg_id"
+        );
+        assert_eq!(
+            inserts
+                .iter()
+                .filter(|row| row.message_id == STABLE_ROOT_ID)
+                .count(),
+            1,
+            "placeholder must be created under the stable root exactly once"
+        );
+        let thinking = inserts
+            .iter()
+            .find(|row| row.r#type == "thinking")
+            .expect("thinking must persist");
+        assert_ne!(thinking.message_id, STABLE_ROOT_ID);
+        assert_ne!(thinking.message_id, WIRE_MSG_ID);
+
+        let updates = repo.take_updates();
+        assert!(
+            updates.iter().any(|(id, update)| {
+                id == STABLE_ROOT_ID
+                    && update.status.as_ref().and_then(|status| status.as_deref())
+                        == Some("finish")
+                    && update.hidden == Some(false)
+            }),
+            "final text must update the stable-root placeholder"
+        );
+        assert!(
+            !updates.iter().any(|(id, _)| id == WIRE_MSG_ID),
+            "wire msg_id must not receive the placeholder takeover update"
+        );
     }
 
     #[tokio::test]
