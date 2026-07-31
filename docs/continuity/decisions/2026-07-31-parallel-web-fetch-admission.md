@@ -7,7 +7,7 @@ Desktop `managed_extract` remains disabled until the full acceptance gate
 passes.
 
 Full evolution record and lessons:
-[managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+[managed-web-search-fetch-evolution.md](../../architecture/web/managed-web-search-fetch-evolution.md).
 
 ## Probe Scope
 

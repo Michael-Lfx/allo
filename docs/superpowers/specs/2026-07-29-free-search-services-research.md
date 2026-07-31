@@ -5,7 +5,7 @@
 
 > 历史状态：这是更早期的调研结论，不作为当前实现状态。当前 Search/Fetch
 > 架构和决策见
-> `docs/architecture/managed-web-search-fetch-evolution.md`。
+> `docs/architecture/web/managed-web-search-fetch-evolution.md`。
 
 **前置设计：** `2026-07-09-flowy-web-search-extract-design.md`、`2026-07-10-flowy-web-article-extract-design.md`
 **范围：** 免费或有免费额度的通用网页、新闻、百科和学术检索；IP/反爬限制；中国大陆与境外访问；Codex、Hermes Agent、OpenCode、OpenClaw、腾讯 WorkBuddy 的搜索链路。

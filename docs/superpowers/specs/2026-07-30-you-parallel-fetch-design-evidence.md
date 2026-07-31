@@ -3,9 +3,9 @@
 Date: 2026-07-30
 
 > Status: historical evidence and planning. Current Search architecture:
-> [managed-web-search.md](managed-web-search.md). Current Fetch policy:
-> [managed-web-fetch-policy.md](managed-web-fetch-policy.md). Full evolution
-> record: [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+> [managed-web-search.md](../../architecture/web/managed-web-search.md). Current Fetch policy:
+> [managed-web-fetch-policy.md](../../architecture/web/managed-web-fetch-policy.md). Full evolution
+> record: [managed-web-search-fetch-evolution.md](../../architecture/web/managed-web-search-fetch-evolution.md).
 
 This is implementation-planning evidence, not a provider-admission result. No
 runtime code was changed.

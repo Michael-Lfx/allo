@@ -1,7 +1,7 @@
 # Managed Web Search Provider Matrix
 
 > Full evolution record and lessons:
-> [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+> [managed-web-search-fetch-evolution.md](../architecture/web/managed-web-search-fetch-evolution.md).
 
 This file records explicit, developer-run compatibility probes. It is not a
 claim of universal availability and is never refreshed by the application.

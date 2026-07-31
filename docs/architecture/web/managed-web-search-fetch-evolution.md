@@ -62,13 +62,13 @@ Parallel -> You.com Free -> DuckDuckGo
 ```
 
 - 当前 Search 架构记录：
-  - `docs/architecture/managed-web-search.md`
-  - `docs/architecture/managed-web-search-provider-matrix.md`
-  - `docs/architecture/managed-web-search-you-rollout.md`
+  - `docs/architecture/web/managed-web-search.md`
+  - `docs/reference/web-search-provider-matrix.md`
+  - `docs/superpowers/plans/2026-07-30-managed-web-search-you-rollout.md`
 
 ### 2026-07-30：MCP Fetch 证据
 
-- 文档：`docs/architecture/managed-web-search-you-parallel-fetch-design-evidence.md`
+- 文档：`docs/superpowers/specs/2026-07-30-you-parallel-fetch-design-evidence.md`
 - 确认 Parallel `web_fetch` 是独立能力，不能作为模型可见工具暴露。
 - 确定方向：普通 HTML 继续本地 `HttpExtractProvider`，只有 PDF、JS 空壳、
   不支持文档、本地空正文或符合条件的网络失败才考虑远程 fallback。
@@ -77,9 +77,9 @@ Parallel -> You.com Free -> DuckDuckGo
 
 - Probe：
   - `crates/agent/flowy-web/examples/parallel_web_fetch_probe.rs`
-  - 文档：`docs/architecture/managed-web-fetch-admission-2026-07-31.md`
+  - 文档：`docs/continuity/decisions/2026-07-31-parallel-web-fetch-admission.md`
 - 生产策略：
-  - `docs/architecture/managed-web-fetch-policy.md`
+  - `docs/architecture/web/managed-web-fetch-policy.md`
 - 实现路径：
   1. 保留本地响应元数据
   2. 本地结果分类与远程准入
@@ -250,11 +250,11 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 
 | 文档 | 内容 |
 | --- | --- |
-| `docs/architecture/managed-web-search.md` | 当前 Search 架构、Host ownership、路由、协议、健康策略 |
-| `docs/architecture/managed-web-search-provider-matrix.md` | Provider Probe 历史与准入记录 |
-| `docs/architecture/managed-web-search-you-rollout.md` | You.com 替换 Exa 的 rollout 与 MCP Peer 不变量 |
-| `docs/architecture/managed-web-fetch-admission-2026-07-31.md` | Parallel `web_fetch` 真实 Probe 结论 |
-| `docs/architecture/managed-web-fetch-policy.md` | Local-first Managed Extract 生产策略 |
+| `docs/architecture/web/managed-web-search.md` | 当前 Search 架构、Host ownership、路由、协议、健康策略 |
+| `docs/reference/web-search-provider-matrix.md` | Provider Probe 历史与准入记录 |
+| `docs/superpowers/plans/2026-07-30-managed-web-search-you-rollout.md` | You.com 替换 Exa 的 rollout 与 MCP Peer 不变量 |
+| `docs/continuity/decisions/2026-07-31-parallel-web-fetch-admission.md` | Parallel `web_fetch` 真实 Probe 结论 |
+| `docs/architecture/web/managed-web-fetch-policy.md` | Local-first Managed Extract 生产策略 |
 | 本文档 | 演变时间线、实现现状、避坑清单、文档入口 |
 
 ### 历史研究 / 规划文档
@@ -264,9 +264,9 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 | 文档 | 状态 |
 | --- | --- |
 | `docs/superpowers/specs/2026-07-29-free-search-services-research.md` | 历史调研：免费搜索服务、大陆访问、Agent 搜索架构 |
-| `docs/architecture/managed-web-search-alternatives-2026-07-30.md` | 历史调研：Search Provider 候选与排除项 |
-| `docs/architecture/managed-web-search-next-goal.md` | 历史规划：typed decoder + You.com admission + Exa removal |
-| `docs/architecture/managed-web-search-you-parallel-fetch-design-evidence.md` | 历史证据：You.com 替换与 MCP Fetch 方向 |
+| `docs/superpowers/specs/2026-07-30-managed-web-search-alternatives.md` | 历史调研：Search Provider 候选与排除项 |
+| `docs/superpowers/plans/2026-07-30-managed-web-search-next-goal.md` | 历史规划：typed decoder + You.com admission + Exa removal |
+| `docs/superpowers/specs/2026-07-30-you-parallel-fetch-design-evidence.md` | 历史证据：You.com 替换与 MCP Fetch 方向 |
 
 ## 后续待完成
 

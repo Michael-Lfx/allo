@@ -4,6 +4,11 @@ Date: 2026-07-30
 Initial baseline: `d3a034d1` (`feat: add desktop managed web search`)
 Stability hardening baseline: `8f3f3d9` (`feat(web): replace Exa with You.com in managed search`)
 
+> Status: historical rollout plan. Current Search architecture:
+> [managed-web-search.md](../../architecture/web/managed-web-search.md). Full
+> evolution record:
+> [managed-web-search-fetch-evolution.md](../../architecture/web/managed-web-search-fetch-evolution.md).
+
 ## Decision
 
 The Desktop managed search route is:

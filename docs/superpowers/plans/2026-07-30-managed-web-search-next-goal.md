@@ -3,8 +3,8 @@
 Date: 2026-07-30
 
 > Status: historical implementation-planning note. Current Search architecture:
-> [managed-web-search.md](managed-web-search.md). Full evolution record:
-> [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+> [managed-web-search.md](../../architecture/web/managed-web-search.md). Full evolution record:
+> [managed-web-search-fetch-evolution.md](../../architecture/web/managed-web-search-fetch-evolution.md).
 
 ## Baseline
 

@@ -1,7 +1,7 @@
 # Managed Web Search Alternatives (2026-07-30)
 
 > Status: historical provider research. Current architecture and decisions:
-> [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+> [managed-web-search-fetch-evolution.md](../../architecture/web/managed-web-search-fetch-evolution.md).
 
 ## Scope and evidence boundary
 
