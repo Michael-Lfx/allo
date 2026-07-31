@@ -6,6 +6,7 @@ import type { TFunction } from 'i18next';
 import { ipcBridge } from '@/common';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { FileService } from '@/renderer/services/FileService';
+import { getBaseName, isPhysicalPointOverAnyDropzone } from '@renderer/utils/tauriDragDrop';
 import type { MessageApi } from '../types';
 import type { ConversationId } from '@/common/types/ids';
 
@@ -22,11 +23,6 @@ interface DroppedItem {
   name: string;
   kind: 'file' | 'directory';
 }
-
-const getBaseName = (targetPath: string): string => {
-  const parts = targetPath.replace(/[\\/]+$/, '').split(/[\\/]/);
-  return parts.pop() || targetPath;
-};
 
 const dedupeItems = (items: DroppedItem[]): DroppedItem[] => {
   const map = new Map<string, DroppedItem>();
@@ -218,11 +214,22 @@ export function useWorkspaceDragImport({
       try {
         const { getCurrentWebview } = await import('@tauri-apps/api/webview');
         const fn = await getCurrentWebview().onDragDropEvent((event) => {
-          const payload = event.payload as { type: string; paths?: string[] };
-          if (payload?.type === 'drop' && Array.isArray(payload.paths) && payload.paths.length > 0) {
+          const payload = event.payload as { type: string; paths?: string[]; position?: { x: number; y: number } };
+          if (payload?.type !== 'drop' || !Array.isArray(payload.paths) || payload.paths.length === 0) return;
+
+          // 让步：drop 落在任意已挂载的输入拖放区（SendBox 等）时交给各自的监听处理
+          // （作为消息附件），不导入工作区。通过共享注册表判定，覆盖浮动子元素（如
+          // PinnedPlan——它是 .sendbox-panel 的兄弟而非子节点），且对类名重命名/新增
+          // 拖放区稳健，不再硬编码 `.sendbox-panel` 选择器。
+          // Yield: when the drop lands on any registered input dropzone (SendBox, …),
+          // defer to that zone's own listener instead of importing into the workspace.
+          if (payload.position && isPhysicalPointOverAnyDropzone(payload.position.x, payload.position.y)) {
             resetDragState();
-            void handleAbsolutePaths(payload.paths);
+            return;
           }
+
+          resetDragState();
+          void handleAbsolutePaths(payload.paths);
         });
         if (cancelled) {
           fn();
