@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Consumed by the extract coordinator phases.
-
 use std::net::IpAddr;
 
 use url::{Host, Url};
@@ -8,20 +6,20 @@ use crate::provider::http_extract::FetchedResource;
 use crate::types::{ExtractedPage, WebError};
 
 #[derive(Debug)]
-pub(crate) struct LocalExtractOutcome {
-    pub(crate) requested_url: String,
-    pub(crate) result: Result<ExtractedPage, LocalExtractFailure>,
-    pub(crate) diagnostics: LocalExtractDiagnostics,
+pub struct LocalExtractOutcome {
+    pub requested_url: String,
+    pub result: Result<ExtractedPage, LocalExtractFailure>,
+    pub diagnostics: LocalExtractDiagnostics,
 }
 
-#[derive(Debug)]
-pub(crate) struct LocalExtractFailure {
-    pub(crate) kind: LocalExtractFailureKind,
-    pub(crate) error: WebError,
+#[derive(Debug, Clone)]
+pub struct LocalExtractFailure {
+    pub kind: LocalExtractFailureKind,
+    pub error: WebError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LocalExtractFailureKind {
+pub enum LocalExtractFailureKind {
     Pdf,
     UnsupportedDocument,
     JavascriptShell,
@@ -37,14 +35,14 @@ pub(crate) enum LocalExtractFailureKind {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct LocalExtractDiagnostics {
-    pub(crate) content_type: Option<String>,
-    pub(crate) http_status: Option<u16>,
-    pub(crate) body_truncated: bool,
+pub struct LocalExtractDiagnostics {
+    pub content_type: Option<String>,
+    pub http_status: Option<u16>,
+    pub body_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RemoteFallbackDecision {
+pub enum RemoteFallbackDecision {
     NotNeeded,
     Eligible {
         reason: RemoteFallbackReason,
@@ -58,7 +56,7 @@ pub(crate) enum RemoteFallbackDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RemoteFallbackReason {
+pub enum RemoteFallbackReason {
     Pdf,
     UnsupportedDocument,
     JavascriptShell,
@@ -68,7 +66,7 @@ pub(crate) enum RemoteFallbackReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RemoteForbiddenReason {
+pub enum RemoteForbiddenReason {
     Unauthorized,
     Forbidden,
     NotFound,
@@ -81,7 +79,7 @@ pub(crate) enum RemoteForbiddenReason {
     UnsupportedScheme,
 }
 
-pub(crate) fn successful_outcome(
+pub fn successful_outcome(
     requested_url: String,
     resource: &FetchedResource,
     page: ExtractedPage,
@@ -109,7 +107,7 @@ pub(crate) fn successful_outcome(
     }
 }
 
-pub(crate) fn failed_outcome(
+pub fn failed_outcome(
     requested_url: String,
     error: WebError,
     diagnostics: LocalExtractDiagnostics,
@@ -122,7 +120,7 @@ pub(crate) fn failed_outcome(
     }
 }
 
-pub(crate) fn decide_remote_fallback(
+pub fn decide_remote_fallback(
     outcome: &LocalExtractOutcome,
 ) -> RemoteFallbackDecision {
     if outcome.result.is_ok() {
@@ -208,7 +206,7 @@ fn classify_success(
     None
 }
 
-fn classify_web_error(error: &WebError) -> LocalExtractFailureKind {
+pub fn classify_web_error(error: &WebError) -> LocalExtractFailureKind {
     match error {
         WebError::InvalidArgument(_) => LocalExtractFailureKind::InvalidUrl,
         WebError::BlockedUrl(_) => LocalExtractFailureKind::BlockedAddress,

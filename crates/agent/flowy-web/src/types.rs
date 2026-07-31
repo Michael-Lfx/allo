@@ -50,7 +50,7 @@ pub struct ExtractedPage {
     pub extractor: String,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum WebError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

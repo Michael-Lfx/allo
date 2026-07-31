@@ -2,23 +2,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant as StdInstant};
 
 use async_trait::async_trait;
-use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{Value, json};
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 use nomi_protocol::events::ToolCategory;
 use nomi_tools::Tool;
 use nomi_types::tool::{JsonSchema, ToolResult};
 
+use crate::coordinator::{
+    ExtractBudget, ExtractCoordinator, ExtractItemOutcome, LocalExtractCoordinator,
+};
 use crate::provider::ExtractProvider;
-use crate::types::{ExtractRequest, MAX_EXTRACT_URLS, MAX_EXTRACT_MODEL_CHARS};
+use crate::types::{ExtractRequest, MAX_EXTRACT_MODEL_CHARS, MAX_EXTRACT_URLS};
 
 const MAX_MODEL_TITLE_CHARS: usize = 300;
 const MAX_MODEL_URL_BYTES: usize = 2_048;
 const MAX_MODEL_ERROR_CHARS: usize = 500;
 const MAX_MODEL_PAGE_CHARS: usize = 3_000;
 const MIN_MODEL_BODY_CHARS: usize = 256;
-const MAX_EXTRACT_CONCURRENCY: usize = 2;
 const PER_URL_EXTRACT_TIMEOUT: Duration = Duration::from_secs(8);
 const TOTAL_EXTRACT_TIMEOUT: Duration = Duration::from_secs(12);
 const UNTRUSTED_PREAMBLE: &str =
@@ -40,121 +41,43 @@ struct RenderDiagnostics {
     omitted_page_count: usize,
 }
 
-struct IndexedExtractOutcome {
-    index: usize,
-    page: ModelPage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExtractTimeoutKind {
-    PerUrlDeadline,
-    ToolDeadlineBeforeStart,
-    ToolDeadlineWhileRunning,
-}
-
-impl ExtractTimeoutKind {
-    fn model_message(self) -> &'static str {
-        match self {
-            Self::PerUrlDeadline => "Page extraction timed out.",
-            Self::ToolDeadlineBeforeStart | Self::ToolDeadlineWhileRunning => {
-                "Page extraction did not complete before the tool deadline."
-            }
-        }
-    }
-}
-
 pub struct WebExtractTool {
-    provider: Arc<dyn ExtractProvider>,
+    coordinator: Arc<dyn ExtractCoordinator>,
 }
 
 impl WebExtractTool {
     pub fn new(provider: Arc<dyn ExtractProvider>) -> Self {
-        Self { provider }
+        Self::with_coordinator(Arc::new(LocalExtractCoordinator::new(provider)))
+    }
+
+    pub fn with_coordinator(coordinator: Arc<dyn ExtractCoordinator>) -> Self {
+        Self { coordinator }
     }
 
     async fn extract_pages(&self, urls: &[Value]) -> (Vec<ModelPage>, usize) {
-        let tool_started_at = StdInstant::now();
-        let tool_deadline = Instant::now() + TOTAL_EXTRACT_TIMEOUT;
-        let labels = urls
+        let requests = urls
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                value
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| format!("(invalid urls[{index}])"))
+                ExtractRequest {
+                    url: value
+                        .as_str()
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| format!("(invalid urls[{index}])")),
+                }
             })
             .collect::<Vec<_>>();
-        let mut pages: Vec<Option<ModelPage>> = (0..urls.len()).map(|_| None).collect();
-        let mut started = vec![false; urls.len()];
-        let mut in_flight = FuturesUnordered::new();
-        let mut next_index = 0usize;
-
-        while next_index < urls.len() && in_flight.len() < MAX_EXTRACT_CONCURRENCY {
-            started[next_index] = true;
-            in_flight.push(extract_one(
-                Arc::clone(&self.provider),
-                next_index,
-                urls[next_index].clone(),
-                tool_deadline,
-            ));
-            next_index += 1;
-        }
-
-        while !in_flight.is_empty() {
-            let completed = timeout_at(tool_deadline, in_flight.next()).await;
-            let Some(outcome) = (match completed {
-                Ok(outcome) => outcome,
-                Err(_) => break,
-            }) else {
-                break;
-            };
-            pages[outcome.index] = Some(outcome.page);
-
-            if next_index < urls.len() {
-                started[next_index] = true;
-                in_flight.push(extract_one(
-                    Arc::clone(&self.provider),
-                    next_index,
-                    urls[next_index].clone(),
-                    tool_deadline,
-                ));
-                next_index += 1;
-            }
-        }
-
-        // A total deadline drops both in-flight and not-yet-started futures.
-        // Preserve a deterministic result item for every input URL instead of
-        // leaving the model to infer which request disappeared.
-        for (index, page) in pages.iter_mut().enumerate() {
-            if page.is_none() {
-                let kind = if started[index] {
-                    ExtractTimeoutKind::ToolDeadlineWhileRunning
-                } else {
-                    ExtractTimeoutKind::ToolDeadlineBeforeStart
-                };
-                tracing::info!(
-                    target: "flowy_web::web_extract",
-                    timeout_kind = ?kind,
-                    url_index = index,
-                    elapsed_ms = tool_started_at.elapsed().as_millis(),
-                    "web extract url timed out"
-                );
-                *page = Some(timeout_page(index, &labels[index], kind));
-            }
-        }
-
-        let mut success_count = 0usize;
-        let pages = pages
+        let budget = ExtractBudget {
+            absolute_deadline: Instant::now() + TOTAL_EXTRACT_TIMEOUT,
+            local_per_url_timeout: PER_URL_EXTRACT_TIMEOUT,
+        };
+        let batch = self.coordinator.extract_many(requests, budget).await;
+        let pages = batch
+            .items
             .into_iter()
-            .map(|page| {
-                let page = page.expect("every extract input has a result item");
-                if page.body.is_some() {
-                    success_count += 1;
-                }
-                page
-            })
-            .collect();
+            .map(model_from_outcome)
+            .collect::<Vec<_>>();
+        let success_count = batch.diagnostics.success_count;
         (pages, success_count)
     }
 }
@@ -252,38 +175,9 @@ impl Tool for WebExtractTool {
     }
 }
 
-async fn extract_one(
-    provider: Arc<dyn ExtractProvider>,
-    index: usize,
-    url_value: Value,
-    tool_deadline: Instant,
-) -> IndexedExtractOutcome {
-    let Some(url) = url_value.as_str() else {
-        return IndexedExtractOutcome {
-            index,
-            page: ModelPage {
-                url: format!("(invalid urls[{index}])"),
-                title: None,
-                body: None,
-                source_truncated: false,
-                context_truncated: false,
-                error: Some(format!("invalid argument: urls[{index}] must be a string")),
-            },
-        };
-    };
-
-    let started_at = StdInstant::now();
-    let per_url_deadline = Instant::now() + PER_URL_EXTRACT_TIMEOUT;
-    let url_deadline = std::cmp::min(per_url_deadline, tool_deadline);
-    let page = match timeout_at(
-        url_deadline,
-        provider.extract(ExtractRequest {
-            url: url.to_owned(),
-        }),
-    )
-    .await
-    {
-        Ok(Ok(page)) => ModelPage {
+fn model_from_outcome(outcome: ExtractItemOutcome) -> ModelPage {
+    if let Some(page) = outcome.page {
+        return ModelPage {
             url: single_line_truncate_bytes(&page.url, MAX_MODEL_URL_BYTES),
             title: Some(single_line_truncate(
                 page.title.as_deref().unwrap_or("(no title)"),
@@ -293,43 +187,24 @@ async fn extract_one(
             source_truncated: page.truncated,
             context_truncated: false,
             error: None,
-        },
-        Ok(Err(error)) => ModelPage {
-            url: single_line_truncate_bytes(url, MAX_MODEL_URL_BYTES),
-            title: None,
-            body: None,
-            source_truncated: false,
-            context_truncated: false,
-            error: Some(single_line_truncate(&error.to_string(), MAX_MODEL_ERROR_CHARS)),
-        },
-        Err(_) => {
-            let kind = if url_deadline < per_url_deadline {
-                ExtractTimeoutKind::ToolDeadlineWhileRunning
-            } else {
-                ExtractTimeoutKind::PerUrlDeadline
-            };
-            tracing::info!(
-                target: "flowy_web::web_extract",
-                timeout_kind = ?kind,
-                url_index = index,
-                elapsed_ms = started_at.elapsed().as_millis(),
-                "web extract url timed out"
-            );
-            timeout_page(index, url, kind)
-        }
-    };
-    IndexedExtractOutcome { index, page }
-}
-
-fn timeout_page(index: usize, url: &str, kind: ExtractTimeoutKind) -> ModelPage {
-    let _ = index;
+        };
+    }
     ModelPage {
-        url: single_line_truncate_bytes(url, MAX_MODEL_URL_BYTES),
+        url: single_line_truncate_bytes(
+            &outcome.requested_url,
+            MAX_MODEL_URL_BYTES,
+        ),
         title: None,
         body: None,
         source_truncated: false,
         context_truncated: false,
-        error: Some(kind.model_message().to_owned()),
+        error: Some(single_line_truncate(
+            &outcome
+                .final_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "unknown extraction failure".to_owned()),
+            MAX_MODEL_ERROR_CHARS,
+        )),
     }
 }
 

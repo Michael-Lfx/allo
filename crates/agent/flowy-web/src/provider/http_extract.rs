@@ -26,14 +26,13 @@ const MAX_REDIRECTS: usize = 5;
 const USER_AGENT: &str = "FlowyWeb/0.1 (+https://github.com/flowy)";
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Consumed by the local-result classifier in Phase 3.
-pub(crate) struct FetchedResource {
-    pub(crate) requested_url: Url,
-    pub(crate) final_url: Url,
-    pub(crate) status: reqwest::StatusCode,
-    pub(crate) content_type: Option<String>,
-    pub(crate) body: Vec<u8>,
-    pub(crate) body_truncated: bool,
+pub struct FetchedResource {
+    pub requested_url: Url,
+    pub final_url: Url,
+    pub status: reqwest::StatusCode,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+    pub body_truncated: bool,
 }
 
 pub struct HttpExtractProvider {
@@ -162,11 +161,7 @@ impl HttpExtractProvider {
         Ok((resource, page))
     }
 
-    #[allow(dead_code)] // Consumed by the extract coordinator phases.
-    pub(crate) async fn extract_with_metadata(
-        &self,
-        req: ExtractRequest,
-    ) -> LocalExtractOutcome {
+    pub async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
         let requested_url = req.url.clone();
         match self.extract_resource(req).await {
             Ok((resource, page)) => successful_outcome(requested_url, &resource, page),
