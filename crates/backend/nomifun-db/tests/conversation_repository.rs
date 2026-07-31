@@ -3,7 +3,7 @@ use nomifun_db::{
     IRequirementRepository, ITerminalRepository, MessageRowUpdate,
     RequirementConversationTurnAuthority, SortOrder, SqliteConversationRepository,
     SqliteRequirementRepository, SqliteTerminalRepository, TurnArtifactMessageCommit,
-    TurnLifecycleTransition, TurnReceiptCompletion, models::{ConversationRow, ConversationSkillLoadRow, MessageRow},
+    TurnLifecycleTransition, TurnReceiptCompletion, models::{ConversationRow, MessageRow, NewConversationSkillLoad},
 };
 use nomifun_common::{ConversationId, MessageId, RequirementId, TerminalId, UserId};
 use sha2::{Digest, Sha256};
@@ -202,8 +202,7 @@ fn make_skill_load_commit(conversation_id: &str, catalog_key: &str) -> Conversat
             hidden: false,
             created_at,
         },
-        snapshot: ConversationSkillLoadRow {
-            id: 0,
+        snapshot: NewConversationSkillLoad {
             conversation_id: conversation_id.to_owned(),
             message_id,
             catalog_key: catalog_key.to_owned(),

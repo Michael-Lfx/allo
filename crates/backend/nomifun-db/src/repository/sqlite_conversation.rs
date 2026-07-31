@@ -11,7 +11,7 @@ use nomifun_common::{
 use crate::error::DbError;
 use crate::models::{
     ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
-    ConversationSkillLoadRow, MessageRow,
+    ConversationSkillLoad, MessageRow,
 };
 use crate::repository::bind::{BindValue, bind_value, bind_value_as};
 use crate::repository::conversation::{
@@ -4712,9 +4712,11 @@ impl IConversationRepository for SqliteConversationRepository {
     async fn get_skill_loads(
         &self,
         conversation_id: &str,
-    ) -> Result<Vec<ConversationSkillLoadRow>, DbError> {
-        Ok(sqlx::query_as::<_, ConversationSkillLoadRow>(
-            "SELECT * FROM conversation_skill_loads \
+    ) -> Result<Vec<ConversationSkillLoad>, DbError> {
+        Ok(sqlx::query_as::<_, ConversationSkillLoad>(
+            "SELECT conversation_id, message_id, catalog_key, skill_name, source, \
+                    version_hash, content, created_at \
+             FROM conversation_skill_loads \
              WHERE conversation_id = ? \
              ORDER BY created_at ASC, id ASC",
         )

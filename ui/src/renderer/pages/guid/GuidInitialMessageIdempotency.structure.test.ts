@@ -10,13 +10,13 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL): string => readFileSync(url, 'utf8');
 
 describe('Guid initial-message idempotency', () => {
-  test('persists one UUIDv7 key in every initial-message payload before navigation', () => {
+  test('uses the shared Skill-aware writer for Nomi and ACP initial handoffs before navigation', () => {
     const source = readSource(new URL('./hooks/useGuidSend.ts', import.meta.url));
 
     expect(source.includes("import { uuidv7 } from '@/common/utils';")).toBe(true);
-    expect(source.match(/idempotency_key: uuidv7\(\),/g)).toHaveLength(4);
-    expect(source.match(/conversation_id: conversation\.id,/g)).toHaveLength(4);
-    expect(source.match(/initial_admission_epoch: 0,/g)).toHaveLength(4);
+    expect(source.includes("import { persistGuidInitialMessageHandoff }")).toBe(true);
+    expect(source.match(/persistGuidInitialMessageHandoff\(\{/g)).toHaveLength(2);
+    expect(source.match(/idempotencyKey: uuidv7\(\),/g)).toHaveLength(2);
 
     const storageWrites = [
       "'initial-message-openclaw'",
@@ -28,9 +28,8 @@ describe('Guid initial-message idempotency', () => {
       expect(source.includes(marker)).toBe(true);
     }
 
-    const writesBeforeNavigation =
-      source.lastIndexOf('sessionStorage.setItem') < source.lastIndexOf('await navigate(');
-    expect(writesBeforeNavigation).toBe(true);
+    const handoffWriter = source.lastIndexOf('persistGuidInitialMessageHandoff({');
+    expect(handoffWriter).toBeLessThan(source.lastIndexOf('await navigate('));
   });
 
   test('Nomi QuickStart persists the auto-send key before navigation', () => {

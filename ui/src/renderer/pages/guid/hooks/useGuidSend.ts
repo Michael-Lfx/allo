@@ -31,6 +31,7 @@ import type {
 } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { hasGuidInitialPayload, planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
+import { persistGuidInitialMessageHandoff } from './guidInitialMessageHandoff';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import type { AvailableAgent, EffectiveAgentInfo } from '../types';
 import type {
@@ -431,19 +432,16 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
         emitter.emit('chat.history.refresh');
 
-        const initialMessage = {
-          conversation_id: conversation.id,
-          initial_admission_epoch: 0,
-          input,
-          files: files.length > 0 ? files : undefined,
-          inject_skills: initialSkillIds.length > 0 ? initialSkillIds : undefined,
-          idempotency_key: uuidv7(),
-        };
         if (entryPlan.sendInitialMessage) {
-          sessionStorage.setItem(
-            sessionStorageKey('initial-message-nomi', conversationTarget(conversation.id)),
-            JSON.stringify(initialMessage)
-          );
+          persistGuidInitialMessageHandoff({
+            storage: sessionStorage,
+            feature: 'initial-message-nomi',
+            conversationId: conversation.id,
+            input,
+            files,
+            initialSkillIds,
+            idempotencyKey: uuidv7(),
+          });
         }
 
         seedConversationCache(conversation);
@@ -525,21 +523,17 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
         emitter.emit('chat.history.refresh');
 
-        const initialMessage = {
-          conversation_id: conversation.id,
-          initial_admission_epoch: 0,
-          input,
-          files: files.length > 0 ? files : undefined,
-          inject_skills: initialSkillIds.length > 0 ? initialSkillIds : undefined,
-          idempotency_key: uuidv7(),
-        };
         if (entryPlan.sendInitialMessage) {
-          const target = conversationTarget(conversation.id);
-          const initialMessageKey = sessionStorageKey(
-            agentConversationParams.type === 'remote' ? 'initial-message-remote' : 'initial-message-acp',
-            target
-          );
-          sessionStorage.setItem(initialMessageKey, JSON.stringify(initialMessage));
+          persistGuidInitialMessageHandoff({
+            storage: sessionStorage,
+            feature:
+              agentConversationParams.type === 'remote' ? 'initial-message-remote' : 'initial-message-acp',
+            conversationId: conversation.id,
+            input,
+            files,
+            initialSkillIds,
+            idempotencyKey: uuidv7(),
+          });
         }
 
         seedConversationCache(conversation);

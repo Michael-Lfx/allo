@@ -45,7 +45,7 @@ use nomifun_common::{
     generate_id, now_ms, validate_uuidv7, workspace_path_has_edge_whitespace_segment,
 };
 use nomifun_db::models::{
-    AgentMetadataRow, ConversationRow, ConversationSkillLoadRow, MessageRow,
+    AgentMetadataRow, ConversationRow, MessageRow, NewConversationSkillLoad,
 };
 use nomifun_db::{
     AgentExecutionTurnAuthority, ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
@@ -1301,8 +1301,7 @@ impl ConversationService {
                         hidden: false,
                         created_at,
                     },
-                    snapshot: ConversationSkillLoadRow {
-                        id: 0,
+                    snapshot: NewConversationSkillLoad {
                         conversation_id: conversation_id.to_owned(),
                         message_id,
                         catalog_key: snapshot.skill_id.clone(),

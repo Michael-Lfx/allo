@@ -25,8 +25,10 @@ describe('Guid Skill launcher integration', () => {
     const sendSource = readSource(new URL('../hooks/useGuidSend.ts', import.meta.url));
 
     const acpStart = sendSource.indexOf('// Remaining agent path (ACP/remote/custom');
-    const acpInitialMessage = sendSource.slice(acpStart);
+    const acpHandoff = sendSource.slice(acpStart);
     expect(acpStart).toBeGreaterThan(-1);
-    expect(acpInitialMessage.includes('inject_skills: initialSkillIds.length > 0 ? initialSkillIds : undefined')).toBe(true);
+    expect(acpHandoff.includes('persistGuidInitialMessageHandoff({')).toBe(true);
+    expect(acpHandoff.includes('initialSkillIds,')).toBe(true);
+    expect(acpHandoff.includes("'initial-message-remote' : 'initial-message-acp'")).toBe(true);
   });
 });

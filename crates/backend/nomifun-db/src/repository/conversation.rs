@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DbError;
 use crate::models::{
     ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
-    ConversationSkillLoadRow, MessageRow,
+    ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
 };
 
 /// Remove only runtime/session instance state that can resume work after an
@@ -61,7 +61,7 @@ pub struct ConversationMessageProjection {
 #[derive(Debug, Clone)]
 pub struct ConversationSkillLoadCommit {
     pub load_message: MessageRow,
-    pub snapshot: ConversationSkillLoadRow,
+    pub snapshot: NewConversationSkillLoad,
 }
 
 /// Outcome of a compare-and-set transition in the durable Conversation turn
@@ -934,11 +934,11 @@ pub trait IConversationRepository: Send + Sync {
     }
 
     /// Returns immutable explicit Skill snapshots ordered by their original
-    /// event time and local ledger identity.
+    /// event time and SQLite-local tie-breaker.
     async fn get_skill_loads(
         &self,
         _conversation_id: &str,
-    ) -> Result<Vec<ConversationSkillLoadRow>, DbError> {
+    ) -> Result<Vec<ConversationSkillLoad>, DbError> {
         Ok(Vec::new())
     }
 

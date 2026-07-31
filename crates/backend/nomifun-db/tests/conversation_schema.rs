@@ -2,7 +2,7 @@ use nomifun_common::{ConversationId, MessageId};
 use nomifun_db::{
     IConversationRepository, SqliteConversationRepository, init_database_memory,
     installation_owner_id,
-    models::{ConversationRow, ConversationSkillLoadRow, MessageRow},
+    models::{ConversationRow, ConversationSkillLoad, MessageRow},
 };
 use sqlx::Row;
 
@@ -244,17 +244,22 @@ async fn skill_load_ledger_schema_preserves_immutable_snapshot_fields() {
     .await
     .unwrap();
 
-    let row: ConversationSkillLoadRow = sqlx::query_as(
-        "SELECT * FROM conversation_skill_loads WHERE message_id = ?",
+    let row: ConversationSkillLoad = sqlx::query_as(
+        "SELECT conversation_id, message_id, catalog_key, skill_name, source, \
+                version_hash, content, created_at \
+         FROM conversation_skill_loads WHERE message_id = ?",
     )
     .bind(&message_id)
     .fetch_one(db.pool())
     .await
     .unwrap();
-    assert!(row.id > 0);
     assert_eq!(row.conversation_id, conversation_id);
     assert_eq!(row.catalog_key, "user:pdf");
     assert_eq!(row.content, "# PDF");
+    assert!(
+        serde_json::to_value(&row).unwrap().get("id").is_none(),
+        "SQLite's technical row id must not cross the serializable ledger contract"
+    );
 
     let duplicate = sqlx::query(
         "INSERT INTO conversation_skill_loads \

@@ -28,7 +28,7 @@ pub use models::{
     UpdateKnowledgeTagParams,
     UpsertAgentMetadataParams, UpsertSkillTagParams, WebhookRow,
     WorkshopAssetRow, WorkshopCanvasRow, ConversationExecutionLinkRow,
-    ConversationSkillLoadRow,
+    ConversationSkillLoad, NewConversationSkillLoad,
 };
 pub use models::{
     CreatePresetTagParams, PresetAgentPreferenceRow, PresetExampleRow,
