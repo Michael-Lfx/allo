@@ -76,7 +76,7 @@ const useFormatContent = (content: string) => {
  * truncates and reruns). Only offered on the nomi surface, for errors that
  * answer the latest user request, once the turn has settled.
  */
-const useErrorRetry = (message: IMessageTips): (() => void) | null => {
+const useErrorEdit = (message: IMessageTips): (() => void) | null => {
   const conversationContext = useConversationContextSafe();
   const messageList = useMessageList();
   return useMemo(() => {
@@ -105,10 +105,10 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   const content = toDisplayText(message.content.content);
   const structuredError = type === 'error' ? message.content.error : undefined;
   const { json, data } = useFormatContent(content);
-  const retry = useErrorRetry(message);
-  const retryButton = retry ? (
-    <button type='button' className='message-error-note__retry' data-testid='message-error-retry' onClick={retry}>
-      {t('common.retry', { defaultValue: 'Retry' })}
+  const edit = useErrorEdit(message);
+  const editButton = edit ? (
+    <button type='button' className='message-error-note__retry' data-testid='message-error-edit' onClick={edit}>
+      {t('common.edit', { defaultValue: 'Edit' })}
     </button>
   ) : null;
 
@@ -275,7 +275,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           {recoveryAction.label}
                         </Button>
                       )}
-                      {retryButton}
+                      {editButton}
                       <FeedbackButton className='message-error-note__feedback' />
                     </div>
                   )}
@@ -334,7 +334,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                   {recoveryAction.label}
                 </Button>
               )}
-              {retryButton}
+              {editButton}
               <FeedbackButton />
             </div>
           )}
@@ -386,7 +386,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 {recoveryAction.label}
               </Button>
             )}
-            {retryButton}
+            {editButton}
             <FeedbackButton />
           </div>
         )}
