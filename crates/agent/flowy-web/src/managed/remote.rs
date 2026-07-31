@@ -1,11 +1,13 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nomi_mcp::{
-    protocol::McpToolDef,
+    protocol::{McpToolDef, McpToolResult},
     remote_peer::{McpPeerError, RemoteMcpPeer},
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::Instant;
 
 use crate::types::{SearchQuery, SearchResult, WebError};
@@ -18,7 +20,8 @@ use super::decoders::{DecodeError, decode_parallel, decode_you};
 
 pub(super) struct RemoteSearchAdapter {
     id: SearchProviderId,
-    peer: RemoteMcpPeer,
+    peer: Arc<RemoteMcpPeer>,
+    shared_client: Option<Arc<ParallelMcpClient>>,
     tool_name: &'static str,
     required_properties: &'static [&'static str],
     optional_properties: &'static [&'static str],
@@ -32,11 +35,80 @@ enum AdapterCompatibilityError {
     SchemaMismatch,
 }
 
+#[derive(Default)]
+#[allow(dead_code)] // Consumed by fetch endpoint health in later phases.
+struct EndpointHealth {
+    consecutive_failures: u32,
+    cooldown_until: Option<Instant>,
+}
+
+#[allow(dead_code)] // Consumed by fetch tool catalog compatibility in later phases.
+struct ToolCatalogSnapshot {
+    generation: u64,
+    tools: Option<Vec<McpToolDef>>,
+}
+
+pub(super) struct ParallelMcpClient {
+    peer: Arc<RemoteMcpPeer>,
+    #[allow(dead_code)] // Endpoint health is consumed by the fetch adapter phase.
+    endpoint_health: Mutex<EndpointHealth>,
+    #[allow(dead_code)] // Tool catalog generation is consumed by fetch adapter phase.
+    tool_catalog: RwLock<ToolCatalogSnapshot>,
+    remote_fetch_semaphore: Semaphore,
+}
+
+impl ParallelMcpClient {
+    pub(super) fn new() -> Result<Self, WebError> {
+        Ok(Self {
+            peer: Arc::new(
+                RemoteMcpPeer::new("https://search.parallel.ai/mcp").map_err(|_| {
+                    WebError::Provider("could not initialize managed Parallel MCP".to_owned())
+                })?,
+            ),
+            endpoint_health: Mutex::new(EndpointHealth::default()),
+            tool_catalog: RwLock::new(ToolCatalogSnapshot {
+                generation: 0,
+                tools: None,
+            }),
+            // Limits Parallel web_fetch concurrency across conversations.
+            remote_fetch_semaphore: Semaphore::new(1),
+        })
+    }
+
+    pub(super) fn peer(&self) -> Arc<RemoteMcpPeer> {
+        Arc::clone(&self.peer)
+    }
+
+    #[allow(dead_code)] // Used by the fetch adapter phase and admission tests.
+    pub(super) fn fetch_semaphore(&self) -> &Semaphore {
+        &self.remote_fetch_semaphore
+    }
+
+    pub(super) async fn shutdown(&self, deadline: Instant) {
+        let _ = self.peer.shutdown(deadline).await;
+    }
+
+    #[allow(dead_code)] // Used by endpoint health and fetch adapter phases.
+    pub(super) async fn invalidate_tools_cache(&self) {
+        self.peer.invalidate_tools_cache().await;
+    }
+
+    #[allow(dead_code)] // Used by endpoint health and fetch adapter phases.
+    pub(super) async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+        deadline: Instant,
+    ) -> Result<McpToolResult, McpPeerError> {
+        self.peer.call_tool(name, arguments, deadline).await
+    }
+}
+
 impl RemoteSearchAdapter {
-    pub(super) fn parallel() -> Result<Self, WebError> {
-        Self::new(
+    pub(super) fn parallel(client: Arc<ParallelMcpClient>) -> Self {
+        Self::new_shared(
             SearchProviderId::Parallel,
-            "https://search.parallel.ai/mcp",
+            client,
             "web_search",
             &["objective", "search_queries"],
             &[],
@@ -70,14 +142,37 @@ impl RemoteSearchAdapter {
     ) -> Result<Self, WebError> {
         Ok(Self {
             id,
-            peer: RemoteMcpPeer::new(endpoint)
-                .map_err(|_| WebError::Provider("could not initialize managed search".to_owned()))?,
+            peer: Arc::new(
+                RemoteMcpPeer::new(endpoint)
+                    .map_err(|_| WebError::Provider("could not initialize managed search".to_owned()))?,
+            ),
+            shared_client: None,
             tool_name,
             required_properties,
             optional_properties,
             argument_builder,
             discovery: Mutex::new(None),
         })
+    }
+
+    fn new_shared(
+        id: SearchProviderId,
+        client: Arc<ParallelMcpClient>,
+        tool_name: &'static str,
+        required_properties: &'static [&'static str],
+        optional_properties: &'static [&'static str],
+        argument_builder: fn(&SearchQuery) -> Value,
+    ) -> Self {
+        Self {
+            id,
+            peer: client.peer(),
+            shared_client: Some(client),
+            tool_name,
+            required_properties,
+            optional_properties,
+            argument_builder,
+            discovery: Mutex::new(None),
+        }
     }
 
     async fn ensure_compatible(&self, deadline: Instant) -> Result<(), SearchAttemptError> {
@@ -213,7 +308,9 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
     }
 
     async fn shutdown(&self, deadline: Instant) {
-        let _ = self.peer.shutdown(deadline).await;
+        if self.shared_client.is_none() {
+            let _ = self.peer.shutdown(deadline).await;
+        }
     }
 }
 
@@ -441,5 +538,26 @@ mod tests {
             message: "unknown tool: you-search".to_owned(),
             data: None,
         }));
+    }
+
+    #[test]
+    fn parallel_client_construction_is_offline() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let _ = client.peer();
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_semaphore_has_one_permit() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let permit = client
+            .fetch_semaphore()
+            .try_acquire()
+            .expect("first permit");
+        assert!(
+            client.fetch_semaphore().try_acquire().is_err(),
+            "fetch concurrency must be one"
+        );
+        drop(permit);
+        assert!(client.fetch_semaphore().try_acquire().is_ok());
     }
 }

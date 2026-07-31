@@ -25,7 +25,9 @@ use crate::protocol::{
 
 const CLIENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2025_11_25;
 const LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+// Search stays well below this. Fetch admission observed Chinese articles and
+// long RFC pages just over 1 MiB, so the shared peer needs 2 MiB headroom.
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SSE_EVENT_BYTES: usize = 512 * 1024;
 const MAX_SSE_EVENTS: usize = 64;
 const MAX_SESSION_ID_BYTES: usize = 4096;

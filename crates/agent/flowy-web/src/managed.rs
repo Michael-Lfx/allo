@@ -22,7 +22,7 @@ use crate::{
 mod decoders;
 mod remote;
 
-use remote::RemoteSearchAdapter;
+use remote::{ParallelMcpClient, RemoteSearchAdapter};
 
 const TOTAL_BUDGET: Duration = Duration::from_secs(10);
 const MAX_TITLE_CHARS: usize = 300;
@@ -236,6 +236,7 @@ impl SearchProviderSlot {
 /// future and are never cached.
 pub struct ManagedSearchService {
     slots: Vec<SearchProviderSlot>,
+    parallel_client: Option<Arc<ParallelMcpClient>>,
 }
 
 impl ManagedSearchService {
@@ -256,10 +257,19 @@ impl ManagedSearchService {
             );
         }
 
+        let parallel_client = if !disabled.contains(&SearchProviderId::Parallel) {
+            Some(Arc::new(ParallelMcpClient::new()?))
+        } else {
+            None
+        };
         let mut adapters = Vec::new();
         if !disabled.contains(&SearchProviderId::Parallel) {
             adapters.push((
-                Arc::new(RemoteSearchAdapter::parallel()?) as Arc<dyn ManagedSearchProvider>,
+                Arc::new(RemoteSearchAdapter::parallel(Arc::clone(
+                    parallel_client
+                        .as_ref()
+                        .expect("parallel client exists when Parallel is enabled"),
+                ))) as Arc<dyn ManagedSearchProvider>,
                 Duration::from_secs(3),
             ));
         }
@@ -273,7 +283,9 @@ impl ManagedSearchService {
             Arc::new(DuckDuckGoAdapter::try_new()?) as Arc<dyn ManagedSearchProvider>,
             Duration::from_secs(4),
         ));
-        Ok(Self::from_adapters(adapters))
+        let mut service = Self::from_adapters(adapters);
+        service.parallel_client = parallel_client;
+        Ok(service)
     }
 
     pub fn ddg_only() -> Result<Self, WebError> {
@@ -291,11 +303,15 @@ impl ManagedSearchService {
                 .into_iter()
                 .map(|(adapter, timeout)| SearchProviderSlot::new(adapter, timeout))
                 .collect(),
+            parallel_client: None,
         }
     }
 
     pub async fn shutdown(&self) {
         let deadline = Instant::now() + Duration::from_secs(2);
+        if let Some(client) = self.parallel_client.as_ref() {
+            client.shutdown(deadline).await;
+        }
         for slot in &self.slots {
             slot.adapter.shutdown(deadline).await;
         }
