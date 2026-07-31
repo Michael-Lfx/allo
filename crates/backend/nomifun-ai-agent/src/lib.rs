@@ -18,6 +18,10 @@ pub mod extraction_scanner;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
+#[cfg(feature = "managed-search")]
+pub mod managed_search;
+#[cfg(feature = "managed-search")]
+pub mod managed_web;
 pub mod manager;
 pub mod nomi_session_persistence;
 pub(crate) mod persistence;
@@ -39,6 +43,8 @@ pub use nomi_agent::companion_tools::CompanionMemorySink;
 pub use nomi_agent::companion_tools::{CompanionSkillSink, CreateCompanionSkillTool, SkillListing};
 pub use nomi_agent::cron_tools::{CronJobSummary, CronSink};
 pub use nomi_agent::requirement_tools::RequirementSink;
+pub use nomi_agent::SearchProviderBinding;
+pub use nomi_agent::ExtractCoordinatorBinding;
 pub use nomi_config;
 pub use nomi_types;
 
@@ -81,6 +87,10 @@ pub use knowledge_completer::LiveKnowledgeCompleter;
 pub use knowledge_completer::resolve_default_model;
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;
 pub use knowledge_writeback::LiveKnowledgeWritebackSink;
+#[cfg(feature = "managed-search")]
+pub use managed_search::ManagedSearchHandle;
+#[cfg(feature = "managed-search")]
+pub use managed_web::ManagedWebHandle;
 pub use conversation_title_completer::{ConversationTitleCompleter, LiveConversationTitleCompleter};
 pub use nomi_session_persistence::{NomiSessionPersistence, NomiSessionResetOutcome};
 pub use terminal_title_completer::LiveTerminalTitleCompleter;

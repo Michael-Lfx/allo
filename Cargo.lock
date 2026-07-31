@@ -3008,9 +3008,11 @@ name = "flowy-web"
 version = "0.3.3"
 dependencies = [
  "async-trait",
+ "chrono",
  "dom_smoothie",
  "futures-util",
  "htmd",
+ "nomi-mcp",
  "nomi-protocol",
  "nomi-tools",
  "nomi-types",
@@ -3021,6 +3023,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
  "wiremock",
 ]
 
@@ -5552,6 +5555,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "httpdate",
  "nomi-config",
  "nomi-process-runtime",
  "nomi-protocol",
@@ -5565,6 +5569,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -5830,6 +5835,7 @@ dependencies = [
  "dirs 6.0.0",
  "ed25519-dalek",
  "flate2",
+ "flowy-web",
  "futures-util",
  "getrandom 0.2.17",
  "hex",

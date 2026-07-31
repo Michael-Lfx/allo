@@ -30,6 +30,7 @@ nomifun-tauri/
 │   ├── getting-started/          install + first run
 │   ├── guides/                   task-focused how-tos for end users
 │   ├── architecture/             how Flowy is built (runtime, crates, frontend)
+│   │   └── web/                  web_search / web_extract / managed search & fetch architecture
 │   ├── reference/                configuration, API surface, troubleshooting
 │   ├── contributing/             contributor standards and this repo map
 │   ├── continuity/               historical decisions, handoff context, release audits
@@ -203,6 +204,7 @@ The frontend is a single Bun workspace, built with **plain Vite + UnoCSS**
 | Path | Contents |
 | --- | --- |
 | [`STATUS.md`](../../STATUS.md) | Current technical status snapshot. |
+| [`docs/architecture/web/README.md`](../architecture/web/README.md) | Web Search & Fetch architecture entry point. |
 | [`apps/desktop/updater/README.md`](../../apps/desktop/updater/README.md) | Auto-update scaffold and release-key notes. |
 | [`packaging/linux/README.md`](../../packaging/linux) | Headless Linux deployment: Docker (recommended), or native binary + systemd unit. |
 

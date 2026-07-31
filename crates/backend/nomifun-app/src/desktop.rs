@@ -40,7 +40,7 @@ use tokio::sync::{Mutex, OnceCell, watch};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::cli::Cli;
-use crate::{AppServices, bootstrap, create_router};
+use crate::{AppHostCapabilities, AppServices, bootstrap, create_router};
 use nomifun_auth::AuthPolicy;
 use nomifun_db::IUserRepository;
 
@@ -494,6 +494,8 @@ impl DesktopKeepAlive {
     pub async fn shutdown_after_startup_failure(&self) -> anyhow::Result<()> {
         match &self.inner.cleanup {
             DesktopStartupCleanupAuthority::Services(services) => {
+                #[cfg(feature = "managed-search")]
+                services.shutdown_managed_search().await;
                 services.shutdown_browser_platform().await?;
                 services.database.close().await;
                 Ok(())
@@ -630,7 +632,13 @@ impl DesktopServer {
         let database = bootstrap::init_data_layer(&config)
             .await
             .map_err(DesktopStartError::verified)?;
-        let services = match AppServices::try_from_config(database, &config).await {
+        let services = match AppServices::try_from_config_with_capabilities(
+            database,
+            &config,
+            AppHostCapabilities::desktop(),
+        )
+        .await
+        {
             Ok(services) => services,
             Err(failure) => {
                 let (error, cleanup_error, authority) = failure.into_parts();
@@ -954,6 +962,25 @@ impl DesktopServer {
             Err(_) => errors.push(
                 "terminal cleanup timed out after 5 seconds".to_owned(),
             ),
+        }
+
+        #[cfg(feature = "managed-search")]
+        if let Some(managed_web) = self
+            ._keep_alive
+            .services()
+            .and_then(|services| services.managed_web.clone())
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                managed_web.shutdown(),
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(_) => errors.push(
+                    "managed search shutdown timed out after 3 seconds".to_owned(),
+                ),
+            }
         }
 
         let browser_result: anyhow::Result<()> =

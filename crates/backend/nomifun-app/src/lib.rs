@@ -37,7 +37,7 @@ pub use router::{
     build_extension_states, build_module_states, build_ws_state, create_router, create_router_with_all_state,
     create_router_with_states,
 };
-pub use services::AppServices;
+pub use services::{AppHostCapabilities, AppServices};
 
 /// In-process server entry used by embedded hosts (Tauri desktop, `nomifun-web`)
 /// and by the `nomicore` bin's default path. Builds environment → data layer →

@@ -791,7 +791,7 @@ pub(super) async fn build(
         #[cfg(feature = "browser-use")]
         browser_lane_binding,
     };
-    let agent = NomiAgentManager::new_with_host_wiring(
+    let agent = NomiAgentManager::new_with_search_provider(
         ctx.conversation_id,
         ctx.workspace,
         config,
@@ -813,6 +813,8 @@ pub(super) async fn build(
         } else {
             None
         },
+        deps.search_provider.clone(),
+        deps.extract_coordinator.clone(),
         host_wiring,
     )
     .await?;

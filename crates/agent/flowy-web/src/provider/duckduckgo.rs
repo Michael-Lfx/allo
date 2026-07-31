@@ -9,14 +9,15 @@ pub struct DuckDuckGoSearchProvider {
 }
 
 impl DuckDuckGoSearchProvider {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .user_agent("FlowyWeb/0.1 (+https://github.com/flowy)")
-                .build()
-                .expect("reqwest client"),
+    pub fn try_new() -> Result<Self, WebError> {
+        let client = reqwest::Client::builder()
+            .user_agent("FlowyWeb/0.1 (+https://github.com/flowy)")
+            .build()
+            .map_err(|error| WebError::Network(format!("failed to build DuckDuckGo client: {error}")))?;
+        Ok(Self {
+            client,
             timeout: std::time::Duration::from_secs(15),
-        }
+        })
     }
 }
 
@@ -133,6 +134,7 @@ pub(crate) fn parse_ddg_html(html: &str, limit: u32) -> Vec<SearchHit> {
                 title,
                 url,
                 snippet,
+                published_at: None,
                 rank: (hits.len() as u32) + 1,
             });
         }
