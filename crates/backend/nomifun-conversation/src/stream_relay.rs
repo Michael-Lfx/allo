@@ -3830,29 +3830,17 @@ impl StreamRelay {
                     // the active segment and must not rewrite earlier narration.
                 }
             } else if !hidden {
-                let row = MessageRow {
-                    id: 0,
-                    message_id: self.msg_id.clone(),
-                    conversation_id: self.conversation_id.clone(),
-                    msg_id: Some(self.msg_id.clone()),
-                    r#type: "text".into(),
-                    content: json!({
-                        "content": final_text,
-                        "turn_id": &self.root_turn_id,
-                    })
-                    .to_string(),
-                    position: Some("left".into()),
-                    status: Some(status.to_owned()),
-                    hidden: false,
-                    created_at: now_ms(),
-                };
-                match self.repo.insert_message(&row).await {
-                    Ok(()) => outcome.final_text_msg_id = Some(row.message_id.clone()),
-                    Err(e) => {
-                        outcome.final_text = None;
-                        error!(error = %ErrorChain(&e), "Failed to create final fallback message");
-                    }
-                }
+                // Invariant break: persistence reported complete, text is
+                // non-empty, but no owned text segment exists. Never invent a
+                // wire-msg_id orphan outside PrimaryMessageOwner / claim /
+                // reconciliation — especially when root_turn_id != msg_id.
+                error!(
+                    conversation_id = %self.conversation_id,
+                    msg_id = %self.msg_id,
+                    root_turn_id = %self.root_turn_id,
+                    "Assistant text terminal persistence completed without a text segment; refusing wire-id fallback insert"
+                );
+                outcome.final_text = None;
             }
 
             self.send_system_responses(&processed.system_responses);
@@ -9511,6 +9499,54 @@ mod tests {
         assert!(
             !updates.iter().any(|(id, _)| id == WIRE_MSG_ID),
             "wire msg_id must not receive the placeholder takeover update"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_without_segments_refuses_wire_id_fallback_when_root_differs() {
+        const WIRE_MSG_ID: &str = "0190f5fe-7c00-7a00-8abc-0123456789cc";
+        const STABLE_ROOT_ID: &str = "0190f5fe-7c00-7a00-8abc-0123456789dd";
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            WIRE_MSG_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        )
+        .with_root_turn_id(STABLE_ROOT_ID);
+
+        let outcome = relay
+            .finalize(
+                "orphan text that must not land on the wire id",
+                &[],
+                true,
+                &AgentStreamEvent::Finish(FinishEventData::default()),
+                RelayTerminal::Finish,
+                true,
+                false,
+                "unused-terminal-error-id",
+            )
+            .await;
+
+        assert!(
+            outcome.final_text.is_none(),
+            "fail-closed path must not claim a final text writeback target"
+        );
+        assert!(outcome.final_text_msg_id.is_none());
+        let inserts = repo.take_inserts();
+        assert!(
+            !inserts
+                .iter()
+                .any(|row| row.message_id == WIRE_MSG_ID || row.msg_id.as_deref() == Some(WIRE_MSG_ID)),
+            "wire msg_id must not receive an orphan text insert"
+        );
+        assert!(
+            !inserts.iter().any(|row| row.r#type == "text"),
+            "fail-closed path must not insert any text row"
         );
     }
 
