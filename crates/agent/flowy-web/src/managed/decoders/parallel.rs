@@ -3,36 +3,71 @@ use serde_json::Value;
 
 use super::super::MAX_SEARCH_COUNT;
 use super::shared::{build_hit, normalize_hits, parsed_text_value, string_field};
-use super::{DecodeError, DecodeOutcome, DecodeSource, NormalizedSearchHit};
+use super::{DecodedItems, DecodeError, DecodeOutcome, DecodeSource, NormalizedSearchHit};
 
 pub(crate) fn decode_parallel(
     result: &McpToolResult,
     count: usize,
 ) -> Result<DecodeOutcome, DecodeError> {
-    let (value, source) = match result.structured_content.clone() {
-        Some(value) => (Some(value), DecodeSource::Structured),
-        None => (parsed_text_value(result), DecodeSource::TextJsonFallback),
-    };
-    let Some(value) = value else {
-        return Ok(DecodeOutcome {
-            hits: Vec::new(),
-            source,
-            dropped_items: 0,
-            contract_degraded: false,
-            structured_fallback: false,
-        });
-    };
+    let has_structured_content = result.structured_content.is_some();
+    if let Some(value) = result.structured_content.as_ref()
+        && let Ok(decoded) = decode_value(value)
+    {
+        return outcome(decoded, count, DecodeSource::Structured, false);
+    }
+
+    if let Some(value) = parsed_text_value(result)
+        && let Ok(decoded) = decode_value(&value)
+    {
+        return outcome(
+            decoded,
+            count,
+            DecodeSource::TextJsonFallback,
+            has_structured_content,
+        );
+    }
+
+    if has_structured_content {
+        return Err(DecodeError::MalformedResponse);
+    }
+
+    Ok(DecodeOutcome {
+        hits: Vec::new(),
+        source: DecodeSource::TextJsonFallback,
+        dropped_items: 0,
+        contract_degraded: false,
+        structured_fallback: false,
+    })
+}
+
+fn outcome(
+    decoded: DecodedItems,
+    count: usize,
+    source: DecodeSource,
+    structured_fallback: bool,
+) -> Result<DecodeOutcome, DecodeError> {
+    if decoded.hits.is_empty() && decoded.dropped_items > 0 {
+        return Err(DecodeError::MalformedResponse);
+    }
+    let dropped_items = decoded.dropped_items;
+    Ok(DecodeOutcome {
+        hits: normalize_hits(decoded.hits, count.clamp(1, MAX_SEARCH_COUNT as usize)),
+        source,
+        dropped_items,
+        contract_degraded: dropped_items > 0,
+        structured_fallback,
+    })
+}
+
+fn decode_value(value: &Value) -> Result<DecodedItems, DecodeError> {
     let results = value
         .get("results")
         .and_then(Value::as_array)
         .ok_or(DecodeError::MalformedResponse)?;
     if results.is_empty() {
-        return Ok(DecodeOutcome {
+        return Ok(DecodedItems {
             hits: Vec::new(),
-            source,
             dropped_items: 0,
-            contract_degraded: false,
-            structured_fallback: false,
         });
     }
 
@@ -73,11 +108,8 @@ pub(crate) fn decode_parallel(
     if hits.is_empty() {
         return Err(DecodeError::MalformedResponse);
     }
-    Ok(DecodeOutcome {
-        hits: normalize_hits(hits, count.clamp(1, MAX_SEARCH_COUNT as usize)),
-        source,
+    Ok(DecodedItems {
+        hits,
         dropped_items,
-        contract_degraded: dropped_items > 0,
-        structured_fallback: false,
     })
 }

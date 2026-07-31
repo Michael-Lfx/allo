@@ -77,6 +77,40 @@ mod tests {
     }
 
     #[test]
+    fn parallel_decoder_falls_back_from_malformed_structured_to_text_json() {
+        let text_json = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/managed_search/parallel-structured.json"
+        ));
+        let result: McpToolResult = serde_json::from_value(json!({
+            "structuredContent": {"not_results": true},
+            "content": [{"type": "text", "text": text_json}]
+        }))
+        .unwrap();
+        let outcome = decode_parallel(&result, 5).expect("text JSON fallback");
+        assert_eq!(outcome.source, DecodeSource::TextJsonFallback);
+        assert!(outcome.structured_fallback);
+        assert_eq!(outcome.hits.len(), 2);
+        assert_eq!(outcome.hits[0].url, "https://example.com/one");
+    }
+
+    #[test]
+    fn parallel_decoder_keeps_legitimate_empty_structured_without_text_fallback() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "structuredContent": {"results": []},
+            "content": [{"type": "text", "text": include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/managed_search/parallel-structured.json"
+            ))}]
+        }))
+        .unwrap();
+        let outcome = decode_parallel(&result, 5).expect("empty structured");
+        assert!(outcome.hits.is_empty());
+        assert_eq!(outcome.source, DecodeSource::Structured);
+        assert!(!outcome.structured_fallback);
+    }
+
+    #[test]
     fn you_decoder_interleaves_web_and_news() {
         let result = structured_fixture(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
