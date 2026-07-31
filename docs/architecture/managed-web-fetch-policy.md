@@ -7,6 +7,9 @@ existing `web_extract` tool. It is the production policy for the managed
 Desktop capability once real acceptance passes. Until then, Desktop keeps
 `managed_extract=false`.
 
+Full evolution record and lessons:
+[managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+
 ## Model Surface
 
 The model continues to see only:

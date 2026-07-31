@@ -6,6 +6,9 @@ Status: pass; continue with the managed local-first implementation phases.
 Desktop `managed_extract` remains disabled until the full acceptance gate
 passes.
 
+Full evolution record and lessons:
+[managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+
 ## Probe Scope
 
 The admission probe lives in

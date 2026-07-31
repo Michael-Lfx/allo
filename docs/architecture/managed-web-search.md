@@ -1,5 +1,8 @@
 # Managed Web Search
 
+> Full evolution record and lessons:
+> [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
+
 ## Status
 
 Accepted for the first desktop-only implementation.
