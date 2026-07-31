@@ -75,3 +75,27 @@ these remain unverified:
 Do not enable `managed_extract=true` on the formal branch yet. The real
 Parallel fetch path is reachable and the core remote cases passed, but full
 runtime acceptance is not complete.
+
+## Pending Acceptance Work
+
+- Re-run the pypdf PDF in the acceptance worktree and confirm
+  `remote_attempted=true`.
+- Before retrying, provisionally adjust `RemoteBudgetPolicy` in the acceptance
+  worktree only:
+  - warm fetch budget: 3 seconds
+  - cold fetch budget: 5 seconds
+  - safety margin: 1 second
+- Collect 5 cold PDF samples and 10 warm PDF samples before finalizing the
+  production budget constants.
+- Evaluate whether the desktop host should pre-warm the shared Parallel peer at
+  startup so common warm-path calls are not treated as cold.
+- Complete privacy zero-outbound verification, MCP session recovery, cancel,
+  shutdown, and performance samples.
+- Keep `managed_extract=false` on the formal branch until acceptance passes.
+
+## Merge Notes
+
+Merging `feat/managed-web-fetch` to main is acceptable only while
+`managed_extract=false`. The formal branch does not enable remote fetch in
+production. Do not merge `verify/managed-web-fetch-runtime` because it contains
+the temporary `managed_extract=true` acceptance commit.
