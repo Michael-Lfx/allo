@@ -1720,6 +1720,7 @@ const SendBox: React.FC<{
               <SlashCommandMenu
                 title={t('messages.slash.title', { defaultValue: 'Commands' })}
                 hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+                compact
                 items={slashMenuItems}
                 activeIndex={slashController.activeIndex}
                 loading={false}

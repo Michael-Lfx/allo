@@ -962,6 +962,7 @@ const GuidPage: React.FC = () => {
                 <SlashCommandMenu
                   title={t('messages.slash.title', { defaultValue: 'Commands' })}
                   hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+                  compact
                   items={homeSlashMenuItems}
                   activeIndex={homeSlashController.activeIndex}
                   onHoverItem={homeSlashController.setActiveIndex}
