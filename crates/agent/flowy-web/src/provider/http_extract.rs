@@ -22,6 +22,17 @@ const EXTRACT_MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const USER_AGENT: &str = "FlowyWeb/0.1 (+https://github.com/flowy)";
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Consumed by the local-result classifier in Phase 3.
+pub(crate) struct FetchedResource {
+    pub(crate) requested_url: Url,
+    pub(crate) final_url: Url,
+    pub(crate) status: reqwest::StatusCode,
+    pub(crate) content_type: Option<String>,
+    pub(crate) body: Vec<u8>,
+    pub(crate) body_truncated: bool,
+}
+
 pub struct HttpExtractProvider {
     timeout: Duration,
     max_bytes: usize,
@@ -57,8 +68,9 @@ impl HttpExtractProvider {
         self
     }
 
-    async fn fetch_html(&self, raw_url: &str) -> Result<(Url, String), WebError> {
+    async fn fetch_resource(&self, raw_url: &str) -> Result<FetchedResource, WebError> {
         let (mut url, mut addrs) = resolve_extract_url(raw_url, self.allow_private).await?;
+        let requested_url = url.clone();
         for _hop in 0..=MAX_REDIRECTS {
             let response = self.send(&url, &addrs).await?;
             let status = response.status();
@@ -84,13 +96,30 @@ impl HttpExtractProvider {
                 )));
             }
 
-            let (body, _body_truncated) = self.read_capped(response).await?;
-            let text = String::from_utf8_lossy(&body).into_owned();
-            return Ok((url, text));
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(normalize_content_type);
+            let (body, body_truncated) = self.read_capped(response).await?;
+            return Ok(FetchedResource {
+                requested_url,
+                final_url: url,
+                status,
+                content_type,
+                body,
+                body_truncated,
+            });
         }
         Err(WebError::Network(format!(
             "too many redirects fetching {raw_url}"
         )))
+    }
+
+    async fn fetch_html(&self, raw_url: &str) -> Result<(Url, String), WebError> {
+        let resource = self.fetch_resource(raw_url).await?;
+        let text = String::from_utf8_lossy(&resource.body).into_owned();
+        Ok((resource.final_url, text))
     }
 
     async fn send(&self, url: &Url, addrs: &[SocketAddr]) -> Result<reqwest::Response, WebError> {
@@ -140,6 +169,15 @@ impl HttpExtractProvider {
         }
         Ok((body, false))
     }
+}
+
+fn normalize_content_type(value: &str) -> String {
+    value
+        .split(';')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 #[async_trait]
@@ -295,5 +333,179 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, WebError::BlockedUrl(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_preserves_html_metadata() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .set_body_bytes("<html><body>Hello</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert_eq!(resource.status.as_u16(), 200);
+        assert_eq!(resource.content_type.as_deref(), Some("text/html"));
+        assert_eq!(resource.body, b"<html><body>Hello</body></html>");
+        assert!(!resource.body_truncated);
+        assert_eq!(resource.requested_url.as_str(), format!("{}/", server.uri()));
+        assert_eq!(resource.final_url.as_str(), format!("{}/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_allows_missing_content_type() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_bytes("<html><body>Hi</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert!(resource.content_type.is_none());
+        assert_eq!(resource.body, b"<html><body>Hi</body></html>");
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_keeps_pdf_bytes_and_content_type() {
+        let server = wiremock::MockServer::start().await;
+        let pdf = b"%PDF-1.4\n% test\n%%EOF";
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/pdf")
+                    .set_body_bytes(pdf),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert_eq!(resource.content_type.as_deref(), Some("application/pdf"));
+        assert_eq!(resource.body, pdf);
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_keeps_plain_text_metadata() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain; charset=utf-8")
+                    .set_body_bytes("plain text"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert_eq!(resource.content_type.as_deref(), Some("text/plain"));
+        assert_eq!(resource.body, b"plain text");
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_marks_unknown_binary() {
+        let server = wiremock::MockServer::start().await;
+        let bytes = vec![0x00, 0x01, 0x02, 0xff];
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .set_body_bytes(bytes.clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert_eq!(
+            resource.content_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(resource.body, bytes);
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_reports_body_truncation() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_bytes("abcdefghijklmnop"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider {
+            timeout: EXTRACT_TIMEOUT,
+            max_bytes: 8,
+            allow_private: true,
+            article: Arc::new(DomSmoothieExtractor::new()),
+        };
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert_eq!(resource.body, b"abcdefgh");
+        assert!(resource.body_truncated);
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_follows_redirect_and_keeps_requested_url() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/start"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("location", "/final")
+                    .set_body_bytes(""),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/final"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_bytes("<html>redirected</html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let requested = format!("{}/start", server.uri());
+        let resource = provider.fetch_resource(&requested).await.unwrap();
+        assert_eq!(resource.requested_url.as_str(), requested);
+        assert_eq!(resource.final_url.as_str(), format!("{}/final", server.uri()));
+        assert_eq!(resource.content_type.as_deref(), Some("text/html"));
+    }
+
+    #[tokio::test]
+    async fn fetch_resource_keeps_invalid_utf8_bytes() {
+        let server = wiremock::MockServer::start().await;
+        let bytes = vec![0xff, 0xfe, 0x00, 0x41];
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_bytes(bytes.clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let resource = provider.fetch_resource(&server.uri()).await.unwrap();
+        assert_eq!(resource.body, bytes);
+    }
+
+    #[test]
+    fn normalizes_content_type_without_parameters() {
+        assert_eq!(normalize_content_type("text/html; charset=utf-8"), "text/html");
+        assert_eq!(normalize_content_type("  APPLICATION/PDF "), "application/pdf");
     }
 }
