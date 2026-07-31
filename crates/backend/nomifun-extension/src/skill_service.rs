@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
+use nomifun_api_types::{SkillCatalogSource, SkillId};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -372,7 +373,24 @@ pub struct SkillCatalogItem {
     pub name: String,
     pub description: String,
     pub source: SkillSource,
+    /// Source-owner key, used by multi-owner sources such as extensions and
+    /// MCP servers. `None` means the source has a single catalog owner.
     pub source_key: Option<String>,
+    /// Stable key inside this source. It is intentionally separate from the
+    /// frontmatter display name because two directories may declare the same
+    /// name.
+    pub local_key: String,
+}
+
+/// Immutable source content resolved for one explicit `LoadSkill` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedCatalogSkill {
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub version_hash: String,
+    pub content: String,
 }
 
 /// List all available skills (built-in + user custom), deduplicated.
@@ -437,20 +455,28 @@ pub async fn list_catalog_skills(paths: &SkillPaths) -> Result<Vec<SkillCatalogI
         .await
         .into_iter()
         .filter(|item| !is_system_owned_builtin(item))
-        .map(|item| SkillCatalogItem {
-            name: item.name,
-            description: item.description,
-            source: item.source,
-            source_key: None,
+        .map(|item| {
+            let local_key = builtin_catalog_local_key(&item);
+            SkillCatalogItem {
+                name: item.name,
+                description: item.description,
+                source: item.source,
+                source_key: None,
+                local_key,
+            }
         })
         .collect();
 
     if let Ok(entries) = scan_skill_dirs(&paths.user_skills_dir).await {
-        catalog.extend(entries.into_iter().map(|item| SkillCatalogItem {
-            name: item.name,
-            description: item.description,
-            source: SkillSource::Custom,
-            source_key: None,
+        catalog.extend(entries.into_iter().map(|item| {
+            let local_key = user_catalog_local_key(&paths.user_skills_dir, &item.path, &item.name);
+            SkillCatalogItem {
+                name: item.name,
+                description: item.description,
+                source: SkillSource::Custom,
+                source_key: None,
+                local_key,
+            }
         }));
     }
 
@@ -458,9 +484,113 @@ pub async fn list_catalog_skills(paths: &SkillPaths) -> Result<Vec<SkillCatalogI
         catalog_source_sort_key(left.source)
             .cmp(catalog_source_sort_key(right.source))
             .then_with(|| left.source_key.cmp(&right.source_key))
-            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.local_key.cmp(&right.local_key))
     });
     Ok(catalog)
+}
+
+/// Resolve source-qualified catalog IDs into immutable `SKILL.md` snapshots.
+///
+/// This is deliberately all-or-nothing: callers may persist or inject the
+/// result only after every requested Skill has been resolved and read.
+pub async fn load_catalog_skills(
+    paths: &SkillPaths,
+    skill_ids: &[String],
+) -> Result<Vec<LoadedCatalogSkill>, ExtensionError> {
+    let candidates = catalog_skill_files(paths).await?;
+    let mut loaded = Vec::with_capacity(skill_ids.len());
+
+    for skill_id in skill_ids {
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.skill_id == *skill_id)
+            .ok_or_else(|| ExtensionError::SkillNotFound(skill_id.clone()))?;
+        let content = match &candidate.location {
+            CatalogSkillLocation::Builtin(relative_location) => read_builtin_skill(paths, relative_location).await?,
+            CatalogSkillLocation::File(path) => tokio::fs::read_to_string(path).await?,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        loaded.push(LoadedCatalogSkill {
+            skill_id: candidate.skill_id.clone(),
+            name: candidate.name.clone(),
+            description: candidate.description.clone(),
+            source: candidate.source.as_str().to_owned(),
+            version_hash: format!("{:x}", hasher.finalize()),
+            content,
+        });
+    }
+
+    Ok(loaded)
+}
+
+#[derive(Debug, Clone)]
+struct CatalogSkillFile {
+    skill_id: String,
+    name: String,
+    description: String,
+    source: SkillCatalogSource,
+    location: CatalogSkillLocation,
+}
+
+#[derive(Debug, Clone)]
+enum CatalogSkillLocation {
+    Builtin(String),
+    File(PathBuf),
+}
+
+async fn catalog_skill_files(paths: &SkillPaths) -> Result<Vec<CatalogSkillFile>, ExtensionError> {
+    let mut candidates = Vec::new();
+    for item in list_builtin_skills(paths).await {
+        if is_system_owned_builtin(&item) {
+            continue;
+        }
+        let Some(relative_location) = item.relative_location else {
+            continue;
+        };
+        let local_key = relative_location
+            .strip_suffix(&format!("/{SKILL_MANIFEST_FILE}"))
+            .unwrap_or(&item.name);
+        let source = SkillCatalogSource::Builtin;
+        candidates.push(CatalogSkillFile {
+            skill_id: SkillId::new(source, None, local_key).as_str().to_owned(),
+            name: item.name,
+            description: item.description,
+            source,
+            location: CatalogSkillLocation::Builtin(relative_location),
+        });
+    }
+
+    for item in scan_skill_dirs(&paths.user_skills_dir).await? {
+        let local_key = user_catalog_local_key(&paths.user_skills_dir, &item.path, &item.name);
+        let source = SkillCatalogSource::User;
+        candidates.push(CatalogSkillFile {
+            skill_id: SkillId::new(source, None, &local_key).as_str().to_owned(),
+            name: item.name,
+            description: item.description,
+            source,
+            location: CatalogSkillLocation::File(PathBuf::from(item.path).join(SKILL_MANIFEST_FILE)),
+        });
+    }
+    Ok(candidates)
+}
+
+fn builtin_catalog_local_key(item: &SkillListItem) -> String {
+    item.relative_location
+        .as_deref()
+        .and_then(|location| location.strip_suffix(&format!("/{SKILL_MANIFEST_FILE}")))
+        .filter(|key| !key.is_empty())
+        .unwrap_or(&item.name)
+        .to_owned()
+}
+
+fn user_catalog_local_key(user_root: &Path, location: &str, fallback: &str) -> String {
+    Path::new(location)
+        .strip_prefix(user_root)
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .filter(|key| !key.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 fn is_system_owned_builtin(item: &SkillListItem) -> bool {

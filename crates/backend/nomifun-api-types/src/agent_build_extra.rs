@@ -474,6 +474,26 @@ pub struct AcpModelInfo {
 pub struct SlashCommandItem {
     pub command: String,
     pub description: String,
+    /// Commands owned by the host are routed to deterministic application
+    /// behavior; agent commands remain prompt templates. The default preserves
+    /// the existing wire contract for ACP and older runtimes.
+    #[serde(default, skip_serializing_if = "SlashCommandOrigin::is_agent")]
+    pub origin: SlashCommandOrigin,
+}
+
+/// Ownership of a conversation slash command.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SlashCommandOrigin {
+    System,
+    #[default]
+    Agent,
+}
+
+impl SlashCommandOrigin {
+    const fn is_agent(origin: &Self) -> bool {
+        matches!(origin, Self::Agent)
+    }
 }
 
 #[cfg(test)]
@@ -574,6 +594,29 @@ mod tests {
             parsed.computer_mcp_config.as_ref().map(|c| c.binary_path.as_str()),
             Some("/usr/bin/nomicore"),
         );
+    }
+
+    #[test]
+    fn slash_command_origin_is_backward_compatible_and_marks_system_commands() {
+        let agent = SlashCommandItem {
+            command: "review".into(),
+            description: "Review code".into(),
+            origin: SlashCommandOrigin::Agent,
+        };
+        let system = SlashCommandItem {
+            command: "goal".into(),
+            description: "Set a goal".into(),
+            origin: SlashCommandOrigin::System,
+        };
+
+        assert!(serde_json::to_value(&agent).unwrap().get("origin").is_none());
+        assert_eq!(serde_json::to_value(&system).unwrap()["origin"], "system");
+        let legacy: SlashCommandItem = serde_json::from_value(serde_json::json!({
+            "command": "review",
+            "description": "Review code"
+        }))
+        .unwrap();
+        assert_eq!(legacy.origin, SlashCommandOrigin::Agent);
     }
 
     /// Default `AcpBuildExtra` (feature OFF / no injection) leaves

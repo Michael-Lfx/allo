@@ -8,6 +8,7 @@ export interface SlashCommandMenuItem {
   label: string;
   description?: string;
   badge?: string;
+  section?: string;
 }
 
 interface SlashCommandMenuProps {
@@ -74,55 +75,59 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
         )}
         {!loading &&
           items.map((item, index) => (
-            <button
-              key={item.key}
-              type='button'
-              role='option'
-              aria-selected={index === activeIndex}
-              ref={(node) => {
-                itemRefs.current[index] = node;
-              }}
-              className={classNames(
-                'w-full text-left px-10px py-6px rounded-8px transition-all border border-solid outline-none cursor-pointer mb-2px last:mb-0',
-                {
-                  'border-[var(--color-border-2)]': index === activeIndex,
-                  'border-transparent hover:bg-[var(--color-fill-1)]': index !== activeIndex,
-                }
+            <React.Fragment key={item.key}>
+              {item.section && (index === 0 || items[index - 1]?.section !== item.section) && (
+                <div className='px-10px pt-6px pb-4px text-11px text-t-tertiary'>{item.section}</div>
               )}
-              style={{
-                minHeight: '38px',
-                background: index === activeIndex ? 'color-mix(in srgb, var(--aou-2) 88%, transparent)' : 'transparent',
-                boxShadow: undefined,
-              }}
-              onMouseEnter={() => onHoverItem(index)}
-              onClick={() => onSelectItem(item)}
-            >
-              <div className='flex items-center justify-between gap-8px'>
-                <div className='min-w-0 flex items-baseline gap-10px'>
-                  <div
-                    className={classNames(
-                      'text-14px whitespace-nowrap',
-                      index === activeIndex ? 'text-t-primary font-semibold' : 'text-t-primary font-medium'
-                    )}
-                  >
-                    {item.label}
-                  </div>
-                  {item.description && <div className='text-12px text-t-secondary truncate'>{item.description}</div>}
-                </div>
-                {item.badge && (
-                  <span
-                    className={classNames(
-                      'text-10px rounded-999px px-6px py-1px shrink-0',
-                      index === activeIndex
-                        ? 'text-t-primary bg-[var(--color-bg-1)]'
-                        : 'text-t-secondary bg-[var(--color-bg-1)]'
-                    )}
-                  >
-                    {item.badge}
-                  </span>
+              <button
+                type='button'
+                role='option'
+                aria-selected={index === activeIndex}
+                ref={(node) => {
+                  itemRefs.current[index] = node;
+                }}
+                className={classNames(
+                  'w-full text-left px-10px py-6px rounded-8px transition-all border border-solid outline-none cursor-pointer mb-2px last:mb-0',
+                  {
+                    'border-[var(--color-border-2)]': index === activeIndex,
+                    'border-transparent hover:bg-[var(--color-fill-1)]': index !== activeIndex,
+                  }
                 )}
-              </div>
-            </button>
+                style={{
+                  minHeight: '38px',
+                  background: index === activeIndex ? 'color-mix(in srgb, var(--aou-2) 88%, transparent)' : 'transparent',
+                  boxShadow: undefined,
+                }}
+                onMouseEnter={() => onHoverItem(index)}
+                onClick={() => onSelectItem(item)}
+              >
+                <div className='flex items-center justify-between gap-8px'>
+                  <div className='min-w-0 flex items-baseline gap-10px'>
+                    <div
+                      className={classNames(
+                        'text-14px whitespace-nowrap',
+                        index === activeIndex ? 'text-t-primary font-semibold' : 'text-t-primary font-medium'
+                      )}
+                    >
+                      {item.label}
+                    </div>
+                    {item.description && <div className='text-12px text-t-secondary truncate'>{item.description}</div>}
+                  </div>
+                  {item.badge && (
+                    <span
+                      className={classNames(
+                        'text-10px rounded-999px px-6px py-1px shrink-0',
+                        index === activeIndex
+                          ? 'text-t-primary bg-[var(--color-bg-1)]'
+                          : 'text-t-secondary bg-[var(--color-bg-1)]'
+                      )}
+                    >
+                      {item.badge}
+                    </span>
+                  )}
+                </div>
+              </button>
+            </React.Fragment>
           ))}
       </div>
     </div>

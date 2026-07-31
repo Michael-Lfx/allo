@@ -1,6 +1,7 @@
 //! Contracts for reusable NomiFun presets and their execution snapshots.
 
 use std::collections::HashMap;
+use crate::skill::SkillId;
 use nomifun_common::KnowledgeBaseId;
 use serde::{Deserialize, Serialize};
 
@@ -69,10 +70,68 @@ impl<'de> Deserialize<'de> for ModelPreference {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A selected catalog Skill. New writes always carry an opaque,
+/// source-qualified `skill_id`; the custom deserializer accepts the retired
+/// `skill_name` field only to preserve existing exported preset payloads.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SkillBinding {
-    pub skill_name: String,
+    pub skill_id: String,
     #[serde(default)] pub required: bool,
+}
+
+impl SkillBinding {
+    /// Normalize a value read from an old database row. A historical bare name
+    /// cannot be assigned to builtin or user safely, so it remains explicit as
+    /// a `legacy:` identity until the user chooses a catalog Skill and saves.
+    pub fn from_persisted_skill_id(value: &str, required: bool) -> Self {
+        let skill_id = SkillId::parse(value)
+            .map(|id| id.as_str().to_owned())
+            .unwrap_or_else(|_| SkillId::legacy(value).as_str().to_owned());
+        Self { skill_id, required }
+    }
+
+    pub fn from_legacy_skill_name(value: &str, required: bool) -> Self {
+        Self {
+            skill_id: SkillId::legacy(value).as_str().to_owned(),
+            required,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillBinding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            #[serde(default)]
+            skill_id: Option<String>,
+            #[serde(default)]
+            skill_name: Option<String>,
+            #[serde(default)]
+            required: bool,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        match (wire.skill_id, wire.skill_name) {
+            (Some(skill_id), None) => SkillId::parse(&skill_id)
+                .map(|skill_id| Self {
+                    skill_id: skill_id.as_str().to_owned(),
+                    required: wire.required,
+                })
+                .map_err(serde::de::Error::custom),
+            (None, Some(skill_name)) => Ok(Self::from_legacy_skill_name(
+                &skill_name,
+                wire.required,
+            )),
+            (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                "skill binding must contain either skill_id or legacy skill_name, not both",
+            )),
+            (None, None) => Err(serde::de::Error::missing_field("skill_id")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -339,6 +398,7 @@ pub struct ResolvedPresetSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub resolved_agent_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub resolved_agent_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub resolved_model: Option<ModelPreference>,
+    /// Source-qualified Skill IDs frozen when this preset revision resolves.
     #[serde(default)] pub included_skills: Vec<String>,
     #[serde(default)] pub excluded_auto_skills: Vec<String>,
     #[serde(default)] pub knowledge_policy: PresetKnowledgePolicy,
@@ -497,6 +557,42 @@ mod tests {
         legacy["id"] = legacy["preset_id"].take();
         legacy.as_object_mut().unwrap().remove("preset_id");
         assert!(serde_json::from_value::<PresetResponse>(legacy).is_err());
+    }
+
+    #[test]
+    fn skill_binding_accepts_legacy_name_only_payloads_but_serializes_catalog_id() {
+        let binding = serde_json::from_value::<SkillBinding>(json!({
+            "skill_name": "review notes",
+            "required": true
+        }))
+        .unwrap();
+
+        assert_eq!(binding.skill_id, "legacy:review%20notes");
+        assert_eq!(
+            serde_json::to_value(binding).unwrap(),
+            json!({ "skill_id": "legacy:review%20notes", "required": true })
+        );
+    }
+
+    #[test]
+    fn skill_binding_preserves_same_name_catalog_sources() {
+        let request = serde_json::from_value::<CreatePresetRequest>(json!({
+            "name": "Writing",
+            "included_skills": [
+                { "skill_id": "builtin:writer" },
+                { "skill_id": "user:writer" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            request
+                .included_skills
+                .into_iter()
+                .map(|binding| binding.skill_id)
+                .collect::<Vec<_>>(),
+            vec!["builtin:writer", "user:writer"]
+        );
     }
 
     #[test]

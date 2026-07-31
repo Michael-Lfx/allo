@@ -60,7 +60,9 @@ use crate::service::{
     PublicTurnDeliveryState, QuiescentOrphanReconciliation,
 };
 use crate::RepositoryExecutionConversationBoundary;
-use crate::skill_resolver::{FixedSkillResolver, ResolvedAgentSkill, SkillResolver};
+use crate::skill_resolver::{
+    FixedSkillResolver, ResolvedAgentSkill, ResolvedSkillSnapshot, SkillResolver,
+};
 use nomifun_knowledge::{
     KnowledgeBinding, KnowledgeCompleter, KnowledgeEventEmitter, KnowledgeService,
 };
@@ -348,6 +350,56 @@ struct SkillLinkCall {
 struct RecordingSkillResolver {
     names: Vec<String>,
     links: Arc<Mutex<Vec<SkillLinkCall>>>,
+}
+
+struct CatalogSkillResolver {
+    snapshots: Vec<ResolvedSkillSnapshot>,
+}
+
+impl CatalogSkillResolver {
+    fn with_snapshot(snapshot: ResolvedSkillSnapshot) -> Self {
+        Self {
+            snapshots: vec![snapshot],
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SkillResolver for CatalogSkillResolver {
+    async fn auto_inject_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn resolve_skills(&self, _names: &[String]) -> Vec<ResolvedAgentSkill> {
+        Vec::new()
+    }
+
+    async fn link_workspace_skills(
+        &self,
+        _workspace: &Path,
+        _rel_dirs: &[&str],
+        _skills: &[ResolvedAgentSkill],
+    ) -> usize {
+        0
+    }
+
+    async fn load_catalog_skills(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        let selected = self
+            .snapshots
+            .iter()
+            .filter(|snapshot| skill_ids.iter().any(|id| id == &snapshot.skill_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.len() != skill_ids.len() {
+            return Err(AppError::BadRequest(
+                "unknown catalog Skill requested in test".to_owned(),
+            ));
+        }
+        Ok(selected)
+    }
 }
 
 impl RecordingSkillResolver {
@@ -10920,6 +10972,200 @@ async fn send_message_empty_content_returns_bad_request() {
 }
 
 #[tokio::test]
+async fn send_message_allows_load_only_catalog_skills_and_persists_the_snapshot_ledger() {
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = registry.clone();
+    let resolver: Arc<dyn SkillResolver> = Arc::new(CatalogSkillResolver::with_snapshot(
+        ResolvedSkillSnapshot {
+            skill_id: "user:pdf".to_owned(),
+            name: "pdf".to_owned(),
+            source: "user".to_owned(),
+            version_hash: "a".repeat(64),
+            content: "# PDF workflow\n\nUse the PDF tools.".to_owned(),
+        },
+    ));
+    let service = ConversationService::new(
+        Arc::<str>::from(SQLITE_TEST_OWNER),
+        std::env::temp_dir(),
+        broadcaster,
+        resolver,
+        runtime_registry.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(SQLITE_TEST_OWNER, make_create_req())
+        .await
+        .unwrap();
+    let request: SendMessageRequest = serde_json::from_value(json!({
+        "content": "",
+        "inject_skills": ["user:pdf"]
+    }))
+    .unwrap();
+
+    send_message_with_test_key(
+        &service,
+        SQLITE_TEST_OWNER,
+        &conversation.conversation_id,
+        "load-only-catalog-skill",
+        request,
+        &runtime_registry,
+    )
+    .await
+    .unwrap();
+    wait_for_turn_released(&service, &conversation.conversation_id).await;
+
+    let messages = repo
+        .get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc)
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(
+        messages.iter().filter(|message| message.r#type == "skill_load").count(),
+        1
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.r#type == "text" && message.position.as_deref() == Some("right")),
+        "a load-only request must not project a blank user bubble"
+    );
+    let snapshots = repo
+        .get_skill_loads(&conversation.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].catalog_key, "user:pdf");
+    assert_eq!(snapshots[0].content, "# PDF workflow\n\nUse the PDF tools.");
+}
+
+#[tokio::test]
+async fn first_turn_loads_source_qualified_preset_skills_without_filtering_the_launcher_request() {
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    let resolver: Arc<dyn SkillResolver> = Arc::new(CatalogSkillResolver::with_snapshot(
+        ResolvedSkillSnapshot {
+            skill_id: "builtin:pdf".to_owned(),
+            name: "pdf".to_owned(),
+            source: "builtin".to_owned(),
+            version_hash: "b".repeat(64),
+            content: "# PDF workflow\n\nUse the PDF tools.".to_owned(),
+        },
+    ));
+    let service = ConversationService::new(
+        Arc::<str>::from(SQLITE_TEST_OWNER),
+        std::env::temp_dir(),
+        Arc::new(MockBroadcaster::new()),
+        resolver,
+        runtime_registry.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let mut create_request = make_create_req();
+    create_request.extra["preset_enabled_skills"] = json!(["builtin:pdf"]);
+    let conversation = service
+        .create(SQLITE_TEST_OWNER, create_request)
+        .await
+        .unwrap();
+
+    send_message_with_test_key(
+        &service,
+        SQLITE_TEST_OWNER,
+        &conversation.conversation_id,
+        "preset-catalog-skill",
+        serde_json::from_value(json!({ "content": "Summarize this file" })).unwrap(),
+        &runtime_registry,
+    )
+    .await
+    .unwrap();
+    wait_for_turn_released(&service, &conversation.conversation_id).await;
+
+    let snapshots = repo
+        .get_skill_loads(&conversation.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].catalog_key, "builtin:pdf");
+}
+
+#[tokio::test]
+async fn invalid_explicit_skill_snapshot_blocks_send_before_durable_turn_admission() {
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    let resolver: Arc<dyn SkillResolver> = Arc::new(CatalogSkillResolver::with_snapshot(
+        ResolvedSkillSnapshot {
+            skill_id: "user:pdf".to_owned(),
+            name: "pdf".to_owned(),
+            source: "user".to_owned(),
+            version_hash: "a".repeat(64),
+            content: String::new(),
+        },
+    ));
+    let service = ConversationService::new(
+        Arc::<str>::from(SQLITE_TEST_OWNER),
+        std::env::temp_dir(),
+        Arc::new(MockBroadcaster::new()),
+        resolver,
+        runtime_registry.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(SQLITE_TEST_OWNER, make_create_req())
+        .await
+        .unwrap();
+    let request: SendMessageRequest = serde_json::from_value(json!({
+        "content": "Review the document",
+        "inject_skills": ["user:pdf"]
+    }))
+    .unwrap();
+
+    let error = send_message_with_test_key(
+        &service,
+        SQLITE_TEST_OWNER,
+        &conversation.conversation_id,
+        "invalid-explicit-skill-snapshot",
+        request,
+        &runtime_registry,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, AppError::BadRequest(_)));
+    assert_eq!(
+        repo.get(&conversation.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        repo.get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc)
+            .await
+            .unwrap()
+            .total,
+        0
+    );
+    assert!(repo
+        .get_skill_loads(&conversation.conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn send_message_whitespace_content_returns_bad_request() {
     let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
     let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
@@ -15412,6 +15658,52 @@ async fn create_writes_extra_skills_from_auto_inject_and_preset() {
     assert_eq!(stored_extra["skills"], json!(["cron", "pdf"]));
     assert!(stored_extra.get("preset_enabled_skills").is_none());
     assert!(stored_extra.get("exclude_auto_inject_skills").is_none());
+}
+
+#[tokio::test]
+async fn legacy_skill_binding_uses_name_based_runtime_and_links_without_rewriting_history() {
+    let resolver = Arc::new(RecordingSkillResolver::new(Vec::new()));
+    let links = resolver.links.clone();
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service_with_resolver(resolver);
+
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "nomi",
+        "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+        "extra": {
+            "preset_enabled_skills": [
+                "cron",
+                "legacy:review%20notes",
+                "builtin:review%20notes",
+                "user:review%20notes"
+            ]
+        }
+    }))
+    .unwrap();
+    let response = svc.create(TEST_USER_1, req).await.unwrap();
+
+    // The frozen conversation record retains source identity exactly as it was
+    // selected. Runtime-only compatibility must not rewrite history.
+    assert_eq!(
+        response.extra["skills"],
+        json!([
+            "builtin:review%20notes",
+            "cron",
+            "legacy:review%20notes",
+            "user:review%20notes"
+        ])
+    );
+
+    let calls = links.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].skill_names, vec!["cron", "review notes"]);
+    drop(calls);
+
+    let row = repo.get(&response.conversation_id).await.unwrap().unwrap();
+    let runtime_options = svc.build_runtime_options(&row).unwrap();
+    assert_eq!(runtime_options.extra["skills"], json!(["cron", "review notes"]));
+
+    let stored_extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(stored_extra["skills"], response.extra["skills"]);
 }
 
 #[tokio::test]

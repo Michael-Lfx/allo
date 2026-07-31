@@ -37,6 +37,13 @@ type GuidInputCardProps = {
   mentionSelectorBadge: React.ReactNode;
   mentionDropdown: React.ReactNode;
 
+  // Slash command menu
+  slashMenuOpen?: boolean;
+  slashMenu?: React.ReactNode;
+
+  // Explicit Skill selections for the first conversation turn.
+  skillChips?: React.ReactNode;
+
   // Files
   files: string[];
   onRemoveFile: (path: string) => void;
@@ -71,6 +78,9 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   mentionOpen,
   mentionSelectorBadge,
   mentionDropdown,
+  slashMenuOpen = false,
+  slashMenu,
+  skillChips,
   files,
   onRemoveFile,
   entryStrip,
@@ -98,7 +108,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`${styles.guidInputCardWrap} guid-input-card-shell relative rd-24px flex flex-col ${mentionOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all duration-200 ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
+      className={`${styles.guidInputCardWrap} guid-input-card-shell relative rd-24px flex flex-col ${mentionOpen || slashMenuOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all duration-200 ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
       style={{
         zIndex: 1,
         transition: 'box-shadow 0.25s ease',
@@ -117,6 +127,11 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
       }}
       {...dragHandlers}
     >
+      {slashMenuOpen && (
+        <div className='absolute left-12px right-12px bottom-[calc(100%+8px)] z-70'>
+          {slashMenu}
+        </div>
+      )}
       {/* inner white card — narrower than outer wrap */}
       <div
         className={`${styles.guidInputInner} p-12px flex flex-col bg-dialog-fill-0`}
@@ -128,6 +143,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
       >
         {entryStrip}
         {mentionSelectorBadge}
+        {skillChips}
         <Input.TextArea
           autoSize={textareaAutoSize}
           placeholder={placeholder}

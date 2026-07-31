@@ -21,4 +21,10 @@ describe('SendBox slash command localization', () => {
     expect(source.includes('conversation.slashCommands.compact.description')).toBe(true);
     expect(source.includes('description: getSlashCommandDescription(command, t)')).toBe(true);
   });
+
+  test('keeps backend-declared host commands in the system group without name guessing', () => {
+    expect(source.includes("command.source === 'builtin' ? ('system' as const) : ('agent' as const)")).toBe(true);
+    expect(source.includes("id: `${command.source === 'builtin' ? 'system' : 'agent'}:${command.source}:${command.name}`")).toBe(true);
+    expect(source.includes('const goalInvocation = parseGoalSlashCommand')).toBe(true);
+  });
 });

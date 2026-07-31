@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { TMessage } from '@/common/chat/chatLib';
+import type { IMessageSkillLoad, TMessage } from '@/common/chat/chatLib';
 import {
   parseConversationId,
   parseMessageId,
@@ -35,6 +35,7 @@ const STORED_MESSAGE_TYPES = new Set<TMessage['type']>([
   'acp_tool_call',
   'plan',
   'thinking',
+  'skill_load',
   'available_commands',
 ]);
 
@@ -86,6 +87,23 @@ const parseStoredMessageStatus = (value: unknown): TMessage['status'] => {
   return value as NonNullable<TMessage['status']>;
 };
 
+const parseStoredSkillLoadContent = (value: unknown): IMessageSkillLoad['content'] => {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid persisted skill_load content');
+  }
+  const { skill_id, name, source, version_hash, content } = value;
+  if (
+    typeof skill_id !== 'string' ||
+    typeof name !== 'string' ||
+    typeof source !== 'string' ||
+    typeof version_hash !== 'string' ||
+    typeof content !== 'string'
+  ) {
+    throw new TypeError('Invalid persisted skill_load content');
+  }
+  return { skill_id, name, source, version_hash, content };
+};
+
 const parseStoredMessageContent = (
   type: TMessage['type'],
   value: unknown
@@ -95,6 +113,9 @@ const parseStoredMessageContent = (
       throw new TypeError('Invalid persisted tool_group content');
     }
     return { content: value as TMessage['content'] };
+  }
+  if (type === 'skill_load') {
+    return { content: parseStoredSkillLoadContent(value) };
   }
   if (!isRecord(value)) {
     throw new TypeError('Invalid persisted message content');

@@ -207,6 +207,8 @@
   "presetNoMatch": "No presets match the current filters.",
   "presetCreated": "Preset created",
   "presetNameRequired": "Name is required",
+  "presetSkillImportFailed": "Failed to import skill \"{{name}}\"",
+  "presetImportedSkillUnavailable": "Imported skill is not available in the catalog: {{names}}",
   "presetNamePlaceholder": "Enter a name for this preset",
   "presetTargetRequired": "Select at least one application target",
   "presetApplyPlaceholder": "Choose a preset",

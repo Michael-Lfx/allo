@@ -117,6 +117,27 @@ describe('knowledge writeback attempt ordering', () => {
 });
 
 describe('transformMessage runtime field normalization', () => {
+  test('normalizes persisted-style Skill load stream events into a center history entry', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'skill_load',
+        data: {
+          skill_id: 'user:pdf',
+          name: 'pdf',
+          source: 'user',
+          version_hash: 'a'.repeat(64),
+          content: '# PDF\nRead documents safely.',
+        },
+      })
+    );
+
+    expect(message?.type).toBe('skill_load');
+    if (message?.type !== 'skill_load') throw new Error('expected Skill load message');
+    expect(message.position).toBe('center');
+    expect(message.content.skill_id).toBe('user:pdf');
+    expect(message.content.content).toContain('Read documents safely.');
+  });
+
   test('ACP partial updates preserve prior title, kind, and status instead of injecting defaults', () => {
     const initial = transformMessage(
       baseWire({

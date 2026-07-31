@@ -43,12 +43,42 @@ pub struct SendMessageData {
     /// Skills to inject into this message turn.
     #[serde(default)]
     pub inject_skills: Vec<String>,
+    /// Immutable `SKILL.md` snapshots resolved by the conversation boundary
+    /// for this turn. They are plain instruction text, never executable hooks.
+    #[serde(default)]
+    pub loaded_skill_snapshots: Vec<LoadedSkillSnapshot>,
     /// Turn origin marker (companion/cron/autowork/idmm). `None`/empty = a human
     /// owner is speaking. Same semantics as the collector's `payload_origin`
     /// red line: non-empty origins are NOT human intent and must not be
     /// distilled into file-based memory.
     #[serde(default)]
     pub origin: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoadedSkillSnapshot {
+    pub skill_id: String,
+    pub name: String,
+    pub source: String,
+    pub version_hash: String,
+    pub content: String,
+}
+
+pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapshot]) -> String {
+    if skills.is_empty() {
+        return content;
+    }
+    let sections = skills
+        .iter()
+        .map(|skill| {
+            format!(
+                "[Loaded Skill: {}]\nSource: {}\nVersion: {}\n\n{}\n[/Loaded Skill]",
+                skill.name, skill.source, skill.version_hash, skill.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("[Loaded Skills]\n{sections}\n[/Loaded Skills]\n\n[Current User Request]\n{content}")
 }
 
 /// Attach the immutable conversation preset to the first prompt understood by
@@ -334,6 +364,24 @@ mod tests {
     }
 
     #[test]
+    fn loaded_skill_snapshots_are_injected_as_instruction_context() {
+        let content = inject_loaded_skill_context(
+            "Summarize the document".to_owned(),
+            &[LoadedSkillSnapshot {
+                skill_id: "user:pdf".to_owned(),
+                name: "pdf".to_owned(),
+                source: "user".to_owned(),
+                version_hash: "abc123".to_owned(),
+                content: "Inspect the PDF before answering.".to_owned(),
+            }],
+        );
+
+        assert!(content.contains("[Loaded Skills]"));
+        assert!(content.contains("Inspect the PDF before answering."));
+        assert!(content.ends_with("Summarize the document"));
+    }
+
+    #[test]
     fn acp_build_extra_accepts_payload_without_skills() {
         let legacy = r#"{"backend":"claude"}"#;
         let parsed: AcpBuildExtra = serde_json::from_str(legacy).unwrap();
@@ -355,6 +403,7 @@ mod tests {
             source_message_id: Some("root-001".into()),
             files: vec!["/tmp/a.txt".into()],
             inject_skills: vec!["review".into()],
+            loaded_skill_snapshots: vec![],
             origin: None,
         };
         let json = serde_json::to_value(&data).unwrap();
@@ -376,6 +425,7 @@ mod tests {
         let data: SendMessageData = serde_json::from_value(json).unwrap();
         assert!(data.files.is_empty());
         assert!(data.inject_skills.is_empty());
+        assert!(data.loaded_skill_snapshots.is_empty());
         assert!(data.origin.is_none());
         assert!(data.source_message_id.is_none());
     }
@@ -432,6 +482,7 @@ mod tests {
         let cmd = SlashCommandItem {
             command: "/review".into(),
             description: "Code review".into(),
+            origin: nomifun_api_types::SlashCommandOrigin::Agent,
         };
         let json = serde_json::to_value(&cmd).unwrap();
         assert_eq!(json["command"], "/review");

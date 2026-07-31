@@ -19,20 +19,14 @@ describe('skill localization integration', () => {
     expect(source.includes("t('settings.pending'")).toBe(true);
   });
 
-  test('guid skill surfaces retain and render localized metadata', () => {
+  test('the home launcher labels catalog Skills by source without treating them as preset configuration', () => {
     const page = readSource(new URL('../../guid/GuidPage.tsx', import.meta.url));
     const drawer = readSource(new URL('../../guid/components/PresetPickerDrawer.tsx', import.meta.url));
-    const card = readSource(new URL('../../guid/components/DrawerSkillCard.tsx', import.meta.url));
-    const popover = readSource(new URL('../../guid/components/ComposerEntryStrip.tsx', import.meta.url));
 
-    expect(page.includes('name_i18n: s.name_i18n')).toBe(true);
-    expect(page.includes('description_i18n: s.description_i18n')).toBe(true);
-    expect(drawer.includes('filterSkillsByTags(skillInfos, query, tagFilter as SkillTagFilterState, localeKey)')).toBe(
-      true
-    );
+    expect(page.includes('conversation.skills.sources.${skill.source}')).toBe(true);
+    expect(page.includes('skillId: skill.skillId')).toBe(true);
+    expect(drawer.includes('filterSkillsByTags')).toBe(false);
+    expect(drawer.includes('DrawerSkillCard')).toBe(false);
     expect(drawer.includes('localeKey={localeKey}')).toBe(true);
-    expect(card.includes('resolveSkillDisplay(skill, localeKey)')).toBe(true);
-    expect(card.includes('tag.label_i18n?.[localeKey] || tag.label')).toBe(true);
-    expect(popover.includes('resolveSkillDisplay(skill, localeKey)')).toBe(true);
   });
 });

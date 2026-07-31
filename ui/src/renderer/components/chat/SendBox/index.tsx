@@ -9,7 +9,8 @@ import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/componen
 import { useBtwCommand } from '@/renderer/components/chat/BtwOverlay/useBtwCommand';
 import { parseGoalSlashCommand } from '@/common/chat/slash/goalCommand';
 import { useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
-import { useSlashCommandController } from '@/renderer/hooks/chat/useSlashCommandController';
+import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
+import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
@@ -26,6 +27,7 @@ import { Button, Input, Message, Tag } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { CloseSmall, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
+import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import type { TFunction } from 'i18next';
 import { theme } from '@/platform';
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -43,6 +45,8 @@ import { useAbortUploadsOnConversationChange } from '@renderer/hooks/file/useAbo
 import UploadProgressBar from '@renderer/components/media/UploadProgressBar';
 import { allSupportedExts } from '@renderer/services/FileService';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
+import ComposerSkillChips, { type ComposerSkillChip } from '@/renderer/components/chat/ComposerSkillChips';
+import { appendComposerSkillChip } from '@/renderer/hooks/chat/useComposerSkillChips';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory, isCaretOnFirstLine } from '@/renderer/utils/chat/messageHistory';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
@@ -163,10 +167,18 @@ function getSlashCommandDescription(command: SlashCommandItem, t: TFunction): st
   return command.description;
 }
 
+function getSkillSourceLabel(source: string, t: TFunction): string {
+  return t(`conversation.skills.sources.${source}`, { defaultValue: source });
+}
+
 const SendBox: React.FC<{
   value?: string;
   onChange?: (value: string) => void;
   onSend: (message: string) => Promise<void>;
+  /** Atomic Skill loading for runtimes that support the structured load plan. */
+  onSendWithSkills?: (message: string, skillIds: string[]) => Promise<void>;
+  skillChips?: ComposerSkillChip[];
+  onSkillChipsChange?: (skills: ComposerSkillChip[]) => void;
   onStop?: () => Promise<void>;
   /** When provided AND a turn is running AND there is a draft, a secondary
    *  "steer now" action is offered alongside the (enqueue) send button. */
@@ -212,6 +224,9 @@ const SendBox: React.FC<{
   onMobilePlusClick?: () => void;
 }> = ({
   onSend,
+  onSendWithSkills,
+  skillChips = [],
+  onSkillChipsChange,
   onStop,
   onSteer,
   steerAvailable,
@@ -575,24 +590,51 @@ const SendBox: React.FC<{
     return commands;
   }, [conversationContext?.conversation_id, enableBtw, onClearContext, onSlashBuiltinCommand, t]);
 
-  const mergedSlashCommands = useMemo(() => {
-    const map = new Map<string, SlashCommandItem>();
-    for (const command of builtinSlashCommands) {
-      map.set(command.name, command);
-    }
-    for (const command of slash_commands) {
-      if (!map.has(command.name)) {
-        map.set(command.name, command);
-      }
-    }
-    return Array.from(map.values());
-  }, [builtinSlashCommands, slash_commands]);
+  const { skills: catalogSkills } = useSkillCatalog(Boolean(onSendWithSkills && onSkillChipsChange));
+  const launcherItems = useMemo<SlashLauncherItem[]>(
+    () => [
+      ...builtinSlashCommands.map((command) => ({
+        id: `system:${command.name}`,
+        kind: 'system' as const,
+        name: command.name,
+        description: getSlashCommandDescription(command, t),
+      })),
+      ...slash_commands.map((command) => ({
+        id: `${command.source === 'builtin' ? 'system' : 'agent'}:${command.source}:${command.name}`,
+        kind: command.source === 'builtin' ? ('system' as const) : ('agent' as const),
+        name: command.name,
+        description: getSlashCommandDescription(command, t),
+      })),
+      ...catalogSkills.map((skill) => ({
+        id: skill.skillId,
+        kind: 'skill' as const,
+        name: skill.name,
+        description: skill.description,
+        source: getSkillSourceLabel(skill.source, t),
+      })),
+    ],
+    [builtinSlashCommands, catalogSkills, slash_commands, t],
+  );
 
-  const slashController = useSlashCommandController({
+  const slashController = useSlashLauncherController({
     input,
-    commands: mergedSlashCommands,
-    onExecuteBuiltin: (name) => {
-      if (name === 'copy') {
+    items: launcherItems,
+    onExecuteSystem: (item) => {
+      const goalInvocation = parseGoalSlashCommand(`/${item.name}`);
+      if (goalInvocation) {
+        if (!goalCommand.enabled) {
+          setInput(replaceActiveSlashToken(input, `/${item.name} `));
+          return;
+        }
+        setInput('');
+        void goalCommand.run(goalInvocation);
+        return;
+      }
+      if (item.name === 'btw') {
+        setInput(replaceActiveSlashToken(input, '/btw '));
+        return;
+      }
+      if (item.name === 'copy') {
         const lastAssistantText = getLastAssistantText(messageList, Boolean(loading));
         if (!lastAssistantText) {
           Message.warning(t('messages.copyLastOutput.empty'));
@@ -605,29 +647,49 @@ const SendBox: React.FC<{
               Message.error(t('messages.copyFailed'));
             });
         }
-      } else if (name === 'export') {
+      } else if (item.name === 'export') {
         void conversationExport.openExportFlow();
-      } else if (name === 'clear') {
+      } else if (item.name === 'clear') {
         void Promise.resolve(onClearContext?.());
       } else {
-        onSlashBuiltinCommand?.(name);
+        onSlashBuiltinCommand?.(item.name);
       }
       setInput('');
     },
-    onSelectTemplate: (name) => {
-      setInput(`/${name} `);
+    onSelectSkill: (item) => {
+      const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
+      if (!skill || !onSkillChipsChange) {
+        return;
+      }
+      onSkillChipsChange(
+        appendComposerSkillChip(skillChips, {
+          skillId: skill.skillId,
+          name: skill.name,
+          source: getSkillSourceLabel(skill.source, t),
+        }),
+      );
+      setInput(replaceActiveSlashToken(input));
+    },
+    onSelectAgent: (item) => {
+      setInput(replaceActiveSlashToken(input, `/${item.name} `));
     },
   });
 
   const slashMenuItems = useMemo<SlashCommandMenuItem[]>(
     () =>
-      slashController.filteredCommands.map((command) => ({
-        key: command.name,
-        label: `/${command.name}`,
-        description: getSlashCommandDescription(command, t),
-        badge: command.hint,
+      slashController.filteredItems.map((item) => ({
+        key: item.id,
+        label: item.kind === 'skill' ? item.name : `/${item.name}`,
+        description: item.description,
+        badge: item.source,
+        section:
+          item.kind === 'system'
+            ? t('conversation.slashLauncher.system', { defaultValue: 'System commands' })
+            : item.kind === 'skill'
+              ? t('conversation.slashLauncher.skills', { defaultValue: 'Skills' })
+              : t('conversation.slashLauncher.agent', { defaultValue: 'Agent commands' }),
       })),
-    [slashController.filteredCommands, t]
+    [slashController.filteredItems, t]
   );
 
   const isCommandMenuOpen = conversationExport.isOpen || slashController.isOpen;
@@ -1279,8 +1341,8 @@ const SendBox: React.FC<{
   // Builds the final message from the current draft and CLEARS the input.
   // Returns null when there's nothing to send. Mirrors the compose half of
   // sendMessageHandler so steer can reuse it.
-  const composeAndClear = (): string | null => {
-    if (!input.trim() && domSnippets.length === 0) return null;
+  const composeAndClear = (allowEmpty = false): string | null => {
+    if (!input.trim() && domSnippets.length === 0 && !allowEmpty) return null;
 
     historyDraftRef.current = null;
     setHistoryNavigationIndex(null);
@@ -1423,7 +1485,8 @@ const SendBox: React.FC<{
       message.warning(t('messages.conversationInProgress'));
       return;
     }
-    if (!input.trim() && domSnippets.length === 0) {
+    const hasSkillLoadPlan = Boolean(onSendWithSkills && skillChips.length > 0);
+    if (!input.trim() && domSnippets.length === 0 && !hasSkillLoadPlan) {
       return;
     }
     console.info('[sendbox]', {
@@ -1435,12 +1498,24 @@ const SendBox: React.FC<{
       domSnippetCount: domSnippets.length,
     });
     setIsLoading(true);
-    const finalMessage = composeAndClear();
+    const submittedSkills = skillChips;
+    const finalMessage = composeAndClear(hasSkillLoadPlan);
     if (finalMessage == null) return;
 
-    onSend(finalMessage)
+    const send = hasSkillLoadPlan && onSendWithSkills
+      ? onSendWithSkills(finalMessage, submittedSkills.map((skill) => skill.skillId))
+      : onSend(finalMessage);
+    send
+      .then(() => {
+        if (hasSkillLoadPlan) {
+          onSkillChipsChange?.([]);
+        }
+      })
       .catch(() => {
         setInput(finalMessage);
+        if (hasSkillLoadPlan) {
+          onSkillChipsChange?.(submittedSkills);
+        }
       })
       .finally(() => {
         setIsLoading(false);
@@ -1483,7 +1558,7 @@ const SendBox: React.FC<{
   );
   const speechLocale = i18n?.language || 'en-US';
 
-  const hasDraftToSend = input.trim().length > 0 || domSnippets.length > 0;
+  const hasDraftToSend = input.trim().length > 0 || domSnippets.length > 0 || skillChips.length > 0;
 
   const isProcessing = isLoading || loading;
   const showStopOnly =
@@ -1650,8 +1725,8 @@ const SendBox: React.FC<{
                 loading={false}
                 onHoverItem={slashController.setActiveIndex}
                 onSelectItem={(item) => {
-                  const targetIndex = slashController.filteredCommands.findIndex(
-                    (command) => command.name === item.key
+                  const targetIndex = slashController.filteredItems.findIndex(
+                    (launcherItem) => launcherItem.id === item.key
                   );
                   if (targetIndex >= 0) {
                     slashController.onSelectByIndex(targetIndex);
@@ -1708,6 +1783,13 @@ const SendBox: React.FC<{
               </div>
             </div>
           )}
+          <ComposerSkillChips
+            skills={skillChips}
+            disabled={Boolean(disabled || isLoading || loading)}
+            onRemove={(skillId) => {
+              onSkillChipsChange?.(skillChips.filter((skill) => skill.skillId !== skillId));
+            }}
+          />
           {/* DOM 片段标签 / DOM snippet tags */}
           {domSnippets.length > 0 && (
             <div className='flex flex-wrap gap-6px mb-8px'>

@@ -10,11 +10,13 @@ use nomifun_common::{
 
 use crate::error::DbError;
 use crate::models::{
-    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow, MessageRow,
+    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
+    ConversationSkillLoadRow, MessageRow,
 };
 use crate::repository::bind::{BindValue, bind_value, bind_value_as};
 use crate::repository::conversation::{
     ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,
+    ConversationSkillLoadCommit,
     ConversationRowUpdate, ConversationTurnAdmissionState, IConversationRepository, MessageRowUpdate, MessageSearchRow,
     MAX_UNSETTLED_TURN_ADMISSION_PAGE_SIZE,
     RequirementConversationTurnAuthority, SortOrder, TurnArtifactMessageCommit,
@@ -191,6 +193,111 @@ async fn lock_message_parent(
             "{label} '{message_id}' does not exist in Conversation '{conversation_id}'"
         )));
     }
+    Ok(())
+}
+
+fn skill_load_commit_conflict(message: impl Into<String>) -> DbError {
+    DbError::Conflict(format!(
+        "Skill-load ledger commit rejected: {}",
+        message.into()
+    ))
+}
+
+fn validate_skill_load_commit(
+    conversation_id: &str,
+    commit: &ConversationSkillLoadCommit,
+) -> Result<(), DbError> {
+    let message = &commit.load_message;
+    let snapshot = &commit.snapshot;
+    if message.conversation_id != conversation_id || snapshot.conversation_id != conversation_id {
+        return Err(skill_load_commit_conflict(
+            "event and snapshot must belong to the target Conversation",
+        ));
+    }
+    if message.message_id != snapshot.message_id {
+        return Err(skill_load_commit_conflict(
+            "event message identity does not match its snapshot ledger row",
+        ));
+    }
+    MessageId::parse(&message.message_id).map_err(|error| {
+        skill_load_commit_conflict(format!("invalid event message identity: {error}"))
+    })?;
+    if message.msg_id.is_some()
+        || message.r#type != "skill_load"
+        || message.position.as_deref() != Some("center")
+        || message.status.as_deref() != Some("finish")
+        || message.hidden
+    {
+        return Err(skill_load_commit_conflict(
+            "event projection must be a visible finished center skill_load message",
+        ));
+    }
+    if message.created_at != snapshot.created_at {
+        return Err(skill_load_commit_conflict(
+            "event and snapshot must preserve the same creation time",
+        ));
+    }
+
+    let content: serde_json::Value = serde_json::from_str(&message.content).map_err(|error| {
+        skill_load_commit_conflict(format!("event projection has invalid JSON: {error}"))
+    })?;
+    let expected = serde_json::json!({
+        "skill_id": &snapshot.catalog_key,
+        "name": &snapshot.skill_name,
+        "source": &snapshot.source,
+        "version_hash": &snapshot.version_hash,
+        "content": &snapshot.content,
+    });
+    if content != expected {
+        return Err(skill_load_commit_conflict(
+            "event projection does not exactly match the immutable snapshot",
+        ));
+    }
+    Ok(())
+}
+
+async fn insert_message_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    message: &MessageRow,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO messages \
+            (message_id, conversation_id, msg_id, type, content, position, \
+             status, hidden, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&message.message_id)
+    .bind(&message.conversation_id)
+    .bind(&message.msg_id)
+    .bind(&message.r#type)
+    .bind(&message.content)
+    .bind(&message.position)
+    .bind(&message.status)
+    .bind(message.hidden)
+    .bind(message.created_at)
+    .execute(&mut **tx)
+    .await?;
+
+    // A turn/steer receipt is claimed before its user-message projection is
+    // inserted. Attach the nullable aggregate link only after the message
+    // exists, in this same transaction. Completed/reset receipts are immutable
+    // replay evidence and must never be reattached.
+    sqlx::query(
+        "UPDATE conversation_delivery_receipts \
+         SET projected_conversation_id = ?, projected_message_id = ?, \
+             updated_at = MAX(updated_at, ?) \
+         WHERE conversation_id = ? AND message_id = ? \
+           AND status = 'accepted' \
+           AND projected_message_id IS NULL",
+    )
+    .bind(&message.conversation_id)
+    .bind(&message.message_id)
+    .bind(message.created_at)
+    .bind(&message.conversation_id)
+    .bind(&message.message_id)
+    .execute(&mut **tx)
+    .await?;
+
     Ok(())
 }
 
@@ -4109,6 +4216,10 @@ impl IConversationRepository for SqliteConversationRepository {
             .bind(conversation_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM conversation_skill_loads WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM conversation_mcp_servers WHERE conversation_id = ?")
             .bind(conversation_id)
             .execute(&mut *tx)
@@ -4500,46 +4611,116 @@ impl IConversationRepository for SqliteConversationRepository {
             )
             .await?;
         }
-        sqlx::query(
-            "INSERT INTO messages \
-                (message_id, conversation_id, msg_id, type, content, position, \
-                 status, hidden, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        insert_message_row(&mut tx, message).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn persist_skill_loads_and_user_message(
+        &self,
+        conversation_id: &str,
+        user_message: Option<&MessageRow>,
+        skill_loads: &[ConversationSkillLoadCommit],
+    ) -> Result<(), DbError> {
+        if user_message.is_none() && skill_loads.is_empty() {
+            return Err(skill_load_commit_conflict(
+                "a batch must contain a user message or at least one Skill load",
+            ));
+        }
+        if let Some(message) = user_message
+            && message.conversation_id != conversation_id
+        {
+            return Err(skill_load_commit_conflict(
+                "user message must belong to the target Conversation",
+            ));
+        }
+
+        let mut message_ids = HashSet::with_capacity(skill_loads.len() + usize::from(user_message.is_some()));
+        let mut catalog_keys = HashSet::with_capacity(skill_loads.len());
+        if let Some(message) = user_message
+            && !message_ids.insert(message.message_id.clone())
+        {
+            return Err(skill_load_commit_conflict(
+                "user message identity appears more than once in the batch",
+            ));
+        }
+        for skill_load in skill_loads {
+            validate_skill_load_commit(conversation_id, skill_load)?;
+            if !message_ids.insert(skill_load.load_message.message_id.clone()) {
+                return Err(skill_load_commit_conflict(
+                    "message identity appears more than once in the batch",
+                ));
+            }
+            if !catalog_keys.insert(skill_load.snapshot.catalog_key.clone()) {
+                return Err(skill_load_commit_conflict(
+                    "the same catalog Skill appears more than once in the batch",
+                ));
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+        lock_required_parent(
+            &mut tx,
+            "conversations",
+            "conversation_id",
+            "updated_at",
+            conversation_id,
+            "Conversation",
         )
-        .bind(&message.message_id)
-        .bind(&message.conversation_id)
-        .bind(&message.msg_id)
-        .bind(&message.r#type)
-        .bind(&message.content)
-        .bind(&message.position)
-        .bind(&message.status)
-        .bind(message.hidden)
-        .bind(message.created_at)
-        .execute(&mut *tx)
         .await?;
 
-        // A turn/steer receipt is claimed before its user-message projection
-        // is inserted. Attach the nullable aggregate link only after the
-        // message exists, in this same transaction. Completed/reset receipts
-        // are immutable replay evidence and must never be reattached.
-        sqlx::query(
-            "UPDATE conversation_delivery_receipts \
-             SET projected_conversation_id = ?, projected_message_id = ?, \
-                 updated_at = MAX(updated_at, ?) \
-             WHERE conversation_id = ? AND message_id = ? \
-               AND status = 'accepted' \
-               AND projected_message_id IS NULL",
-        )
-        .bind(&message.conversation_id)
-        .bind(&message.message_id)
-        .bind(message.created_at)
-        .bind(&message.conversation_id)
-        .bind(&message.message_id)
-        .execute(&mut *tx)
-        .await?;
+        if let Some(message) = user_message {
+            if let Some(msg_id) = message.msg_id.as_deref()
+                && msg_id != message.message_id
+            {
+                lock_message_parent(
+                    &mut tx,
+                    conversation_id,
+                    msg_id,
+                    "Message parent",
+                )
+                .await?;
+            }
+            insert_message_row(&mut tx, message).await?;
+        }
+
+        for skill_load in skill_loads {
+            insert_message_row(&mut tx, &skill_load.load_message).await?;
+            let snapshot = &skill_load.snapshot;
+            sqlx::query(
+                "INSERT INTO conversation_skill_loads \
+                    (conversation_id, message_id, catalog_key, skill_name, source, \
+                     version_hash, content, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&snapshot.conversation_id)
+            .bind(&snapshot.message_id)
+            .bind(&snapshot.catalog_key)
+            .bind(&snapshot.skill_name)
+            .bind(&snapshot.source)
+            .bind(&snapshot.version_hash)
+            .bind(&snapshot.content)
+            .bind(snapshot.created_at)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn get_skill_loads(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<ConversationSkillLoadRow>, DbError> {
+        Ok(sqlx::query_as::<_, ConversationSkillLoadRow>(
+            "SELECT * FROM conversation_skill_loads \
+             WHERE conversation_id = ? \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(conversation_id)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn commit_turn_artifact_messages(

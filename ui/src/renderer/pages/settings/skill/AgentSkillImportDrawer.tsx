@@ -22,6 +22,8 @@ export type ImportedAgentSkill = {
   source: string;
   sourceName: string;
   alreadyImported: boolean;
+  /** Canonical catalog identity returned when this row was imported. */
+  skillId?: string;
 };
 
 type AgentSkillImportDrawerProps = {
@@ -41,13 +43,18 @@ const sourceToneClass = (source: string) => {
   return 'bg-fill-2 text-t-secondary';
 };
 
-const toImportedSkill = (row: AgentSkillImportRow, name = row.name): ImportedAgentSkill => ({
+const toImportedSkill = (
+  row: AgentSkillImportRow,
+  name = row.name,
+  skillId?: string,
+): ImportedAgentSkill => ({
   name,
   description: row.description,
   path: row.path,
   source: row.source,
   sourceName: row.sourceName,
   alreadyImported: row.alreadyImported,
+  skillId,
 });
 
 const AgentSkillImportDrawer: React.FC<AgentSkillImportDrawerProps> = ({
@@ -128,8 +135,8 @@ const AgentSkillImportDrawer: React.FC<AgentSkillImportDrawerProps> = ({
           }
           const result = await ipcBridge.fs.importSkillWithSymlink.invoke({ skill_path: row.path });
           const names = result.skill_names?.length ? result.skill_names : result.skill_name ? [result.skill_name] : [row.name];
-          for (const name of names) {
-            imported.push(toImportedSkill(row, name));
+          for (const [index, name] of names.entries()) {
+            imported.push(toImportedSkill(row, name, result.skill_ids?.[index]));
           }
         }
       }

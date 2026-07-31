@@ -17,11 +17,27 @@ export type SkillInfo = {
   scenario_tags?: string[];
 };
 
+/**
+ * Lightweight catalog metadata used only by Preset binding. Unlike the legacy
+ * Skills Hub list, it deliberately retains builtin/user name collisions.
+ */
+export type PresetSkillCatalogSource = 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
+
+export type PresetSkillCatalogItem = {
+  skill_id: string;
+  name: string;
+  description: string;
+  source: PresetSkillCatalogSource;
+  source_key?: string;
+};
+
 // Pending skill to import
 export type PendingSkill = {
   path: string;
   name: string;
   description: string;
+  /** Canonical ID returned by the import endpoint, once available. */
+  skillId?: string;
 };
 
 // Builtin auto-injected skill info

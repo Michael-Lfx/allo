@@ -358,9 +358,22 @@ impl PresetService {
             selected
         };
 
-        let mut skills: Vec<String> = preset.included_skills.iter().map(|s| s.skill_name.clone()).collect();
-        skills.extend(overrides.include_skills);
-        let excluded: HashSet<_> = overrides.exclude_skills.into_iter().collect();
+        let mut skills: Vec<String> = preset
+            .included_skills
+            .iter()
+            .map(|skill| skill.skill_id.clone())
+            .collect();
+        skills.extend(
+            overrides
+                .include_skills
+                .iter()
+                .map(|skill_id| SkillBinding::from_persisted_skill_id(skill_id, false).skill_id),
+        );
+        let excluded: HashSet<_> = overrides
+            .exclude_skills
+            .iter()
+            .map(|skill_id| SkillBinding::from_persisted_skill_id(skill_id, false).skill_id)
+            .collect();
         skills.retain(|s| !excluded.contains(s));
         dedupe(&mut skills);
 
@@ -669,8 +682,8 @@ fn record_to_response(record: &PresetRecord) -> Result<PresetResponse, AppError>
         targets: record.targets.iter().filter_map(|v| parse_target(v)).collect(),
         agent_preferences: record.agent_preferences.iter().map(|v| AgentPreference { agent_id: v.agent_id.clone(), required: v.required }).collect(),
         model_preferences: record.model_preferences.iter().map(|v| ModelPreference { provider_id: v.provider_id.clone(), model: v.model.clone(), required: v.required }).collect(),
-        included_skills: record.skill_bindings.iter().filter(|v| v.binding == "include").map(|v| SkillBinding { skill_name: v.skill_name.clone(), required: v.required }).collect(),
-        excluded_auto_skills: record.skill_bindings.iter().filter(|v| v.binding == "exclude_auto").map(|v| v.skill_name.clone()).collect(),
+        included_skills: record.skill_bindings.iter().filter(|v| v.binding == "include").map(|v| SkillBinding::from_persisted_skill_id(&v.skill_id, v.required)).collect(),
+        excluded_auto_skills: record.skill_bindings.iter().filter(|v| v.binding == "exclude_auto").map(|v| v.skill_id.clone()).collect(),
         knowledge_policy: policy, knowledge_bases,
         mcp_server_ids,
         examples: record.examples.iter().filter(|v| v.locale.is_empty()).map(|v| v.prompt.clone()).collect(),
@@ -733,9 +746,24 @@ fn builtin_write_params(
         skill_bindings: item
             .enabled_skills
             .iter()
-            .chain(&item.custom_skill_names)
-            .cloned()
-            .map(|skill| (skill, "include".into(), false))
+            .map(|skill| {
+                (
+                    SkillId::new(SkillCatalogSource::Builtin, None, skill)
+                        .as_str()
+                        .to_owned(),
+                    "include".into(),
+                    false,
+                )
+            })
+            .chain(item.custom_skill_names.iter().map(|skill| {
+                (
+                    SkillId::new(SkillCatalogSource::User, None, skill)
+                        .as_str()
+                        .to_owned(),
+                    "include".into(),
+                    false,
+                )
+            }))
             .chain(
                 item.disabled_builtin_skills
                     .iter()
@@ -816,7 +844,7 @@ fn extension_write_params(item: &ResolvedPreset) -> Result<PresetWriteParams, Ap
             .enabled_skills
             .iter()
             .cloned()
-            .map(|skill| (skill, "include".into(), false))
+            .map(|skill| (SkillBinding::from_legacy_skill_name(&skill, false).skill_id, "include".into(), false))
             .collect(),
         knowledge_policy: (false, "inherit".into(), false, None, false),
         knowledge_bases: vec![],
@@ -836,7 +864,7 @@ fn write_from_create(preset_id: String, r: CreatePresetRequest) -> PresetWritePa
     let examples = flatten_examples(r.examples, r.examples_i18n);
     PresetWriteParams { preset_id: preset_id.clone(), source_kind: "user".into(), source_key: None, name: r.name.trim().into(), description: r.description, routing_description: r.routing_description, instructions: r.instructions, avatar: r.avatar, fallback_allowed: r.fallback_allowed,
         localizations, targets: target_strings(&r.targets), agent_preferences: r.agent_preferences.into_iter().map(|v| (v.agent_id, v.required)).collect(), model_preferences: r.model_preferences.into_iter().map(|v| (v.provider_id, v.model, v.required)).collect(),
-        skill_bindings: r.included_skills.into_iter().map(|v| (v.skill_name,"include".into(),v.required)).chain(r.excluded_auto_skills.into_iter().map(|v| (v,"exclude_auto".into(),false))).collect(),
+        skill_bindings: r.included_skills.into_iter().map(|v| { let binding = SkillBinding::from_persisted_skill_id(&v.skill_id, v.required); (binding.skill_id,"include".into(),binding.required) }).chain(r.excluded_auto_skills.into_iter().map(|v| (v,"exclude_auto".into(),false))).collect(),
         knowledge_policy: (r.knowledge_policy.enabled,r.knowledge_policy.mode,r.knowledge_policy.writeback,r.knowledge_policy.eagerness,r.knowledge_policy.grounded),
         knowledge_bases: r.knowledge_bases.into_iter().map(|v| (v.knowledge_base_id.to_string(),v.required)).collect(),
         mcp_servers: r.mcp_server_ids,
@@ -849,7 +877,7 @@ fn write_from_response(r: PresetResponse) -> PresetWriteParams {
     let examples = flatten_examples(r.examples, r.examples_i18n);
     PresetWriteParams { preset_id:r.preset_id.clone(),source_kind:"user".into(),source_key:None,name:r.name,description:r.description,routing_description:r.routing_description,instructions:r.instructions,avatar:r.avatar,fallback_allowed:r.fallback_allowed,
         localizations,targets:target_strings(&r.targets),agent_preferences:r.agent_preferences.into_iter().map(|v|(v.agent_id,v.required)).collect(),model_preferences:r.model_preferences.into_iter().map(|v|(v.provider_id,v.model,v.required)).collect(),
-        skill_bindings:r.included_skills.into_iter().map(|v|(v.skill_name,"include".into(),v.required)).chain(r.excluded_auto_skills.into_iter().map(|v|(v,"exclude_auto".into(),false))).collect(),
+        skill_bindings:r.included_skills.into_iter().map(|v| { let binding = SkillBinding::from_persisted_skill_id(&v.skill_id, v.required); (binding.skill_id,"include".into(),binding.required) }).chain(r.excluded_auto_skills.into_iter().map(|v|(v,"exclude_auto".into(),false))).collect(),
         knowledge_policy:(r.knowledge_policy.enabled,r.knowledge_policy.mode,r.knowledge_policy.writeback,r.knowledge_policy.eagerness,r.knowledge_policy.grounded),knowledge_bases:r.knowledge_bases.into_iter().map(|v|(v.knowledge_base_id.to_string(),v.required)).collect(),
         mcp_servers:r.mcp_server_ids,examples,
         tag_bindings:r.audience_tag_ids.into_iter().map(|v|(v,"audience".into())).chain(r.scenario_tag_ids.into_iter().map(|v|(v,"scenario".into()))).collect() }

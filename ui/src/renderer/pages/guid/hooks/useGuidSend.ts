@@ -30,7 +30,7 @@ import type {
   PendingConversationStage,
 } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
-import { planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
+import { hasGuidInitialPayload, planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import type { AvailableAgent, EffectiveAgentInfo } from '../types';
 import type {
@@ -80,8 +80,10 @@ export type GuidSendDeps = {
   getEffectiveAgentType: (
     agentInfo: { agent_type: string; backend?: string } | undefined,
   ) => EffectiveAgentInfo;
-  guidDisabledBuiltinSkills: string[] | undefined;
-  guidEnabledSkills: string[] | undefined;
+  /** Source-qualified Skills selected from the draft slash launcher. */
+  initialSkillIds: string[];
+  /** Clears the draft-owned Skill selections only after their first turn is accepted. */
+  onInitialSkillsSent?: () => void;
   availableMcpServers: IMcpServer[];
   selectedMcpServerIds: McpServerId[] | undefined;
   currentEffectiveAgentInfo: EffectiveAgentInfo;
@@ -164,8 +166,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     current_model,
     findAgentByKey,
     getEffectiveAgentType,
-    guidDisabledBuiltinSkills,
-    guidEnabledSkills,
+    initialSkillIds,
+    onInitialSkillsSent,
     availableMcpServers,
     selectedMcpServerIds,
     currentEffectiveAgentInfo,
@@ -216,10 +218,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
     const { agent_type: effectiveAgentType } = getEffectiveAgentType(agentInfo);
 
-    // Presets are resolved exclusively by the backend from `preset_id`.
-    // Guid-local skill controls remain valid only for bare Agent launches.
-    const enabled_skills_to_send = !is_preset && guidEnabledSkills?.length ? guidEnabledSkills : undefined;
-    const excludeBuiltinSkills = !is_preset ? guidDisabledBuiltinSkills : undefined;
+    // Preset bindings are resolved exclusively by the backend from `preset_id`.
+    // The draft launcher only carries explicit, source-qualified Skill loads.
     const selectedMcpServerIdSet = new Set(selectedMcpServerIds ?? []);
     const selectedUserMcpServerIds = availableMcpServers
       .filter((server) => selectedMcpServerIdSet.has(server.mcp_server_id) && server.builtin !== true)
@@ -259,8 +259,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             expected_model: current_model?.use_model,
             switched_at: Date.now(),
           },
-          preset_enabled_skills: enabled_skills_to_send,
-          exclude_auto_inject_skills: excludeBuiltinSkills,
         },
       });
 
@@ -320,8 +318,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         is_preset,
         extra: {
           default_files: files,
-          preset_enabled_skills: enabled_skills_to_send,
-          exclude_auto_inject_skills: excludeBuiltinSkills,
         },
       });
 
@@ -390,8 +386,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             default_files: files,
             workspace: finalWorkspace,
             custom_workspace: isCustomWorkspace,
-            preset_enabled_skills: enabled_skills_to_send,
-            exclude_auto_inject_skills: excludeBuiltinSkills,
             ...(presetUsesSnapshotMcp
               ? {}
               : {
@@ -442,6 +436,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           initial_admission_epoch: 0,
           input,
           files: files.length > 0 ? files : undefined,
+          inject_skills: initialSkillIds.length > 0 ? initialSkillIds : undefined,
           idempotency_key: uuidv7(),
         };
         if (entryPlan.sendInitialMessage) {
@@ -507,15 +502,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         current_model_id: selectedAcpModel || undefined,
         extra: {
           default_files: files,
-          exclude_auto_inject_skills: excludeBuiltinSkills,
           ...(presetUsesSnapshotMcp
             ? {}
             : {
                 selected_mcp_server_ids: selectedUserMcpServerIds,
                 selected_session_mcp_servers: selectedSessionMcpServers,
               }),
-          // Bare Agents may still carry a one-off skill selection.
-          ...(is_preset ? {} : guidEnabledSkills?.length ? { preset_enabled_skills: guidEnabledSkills } : {}),
         },
       });
 
@@ -538,6 +530,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           initial_admission_epoch: 0,
           input,
           files: files.length > 0 ? files : undefined,
+          inject_skills: initialSkillIds.length > 0 ? initialSkillIds : undefined,
           idempotency_key: uuidv7(),
         };
         if (entryPlan.sendInitialMessage) {
@@ -571,8 +564,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     current_model,
     findAgentByKey,
     getEffectiveAgentType,
-    guidDisabledBuiltinSkills,
-    guidEnabledSkills,
+    initialSkillIds,
     availableMcpServers,
     selectedMcpServerIds,
     applyAdvancedConfig,
@@ -606,6 +598,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
   const sendMessageHandler = useCallback(() => {
     if (loading || sendingRef.current) return;
+    if (!isAutoWorkEntry(autoWork) && !hasGuidInitialPayload(input, initialSkillIds)) return;
     if (readinessBlocker === 'model' || needsModelBeforeSend) {
       trackFunnelEvent('task_drafted', { blocker: 'model' });
       Message.warning(t('conversation.noModelConfigured'));
@@ -640,6 +633,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         setMentionActiveIndex(0);
         setFiles([]);
         setDir('');
+        if (initialSkillIds.length > 0) onInitialSkillsSent?.();
       })
       .catch((error) => {
         console.error('Failed to send message:', error);
@@ -663,6 +657,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     setDir,
     t,
     input,
+    initialSkillIds,
+    onInitialSkillsSent,
     files,
     autoWork,
     beginPending,
@@ -680,7 +676,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     [selectedAgentInfo, is_presetAgentPending, findAgentByKey, selectedAgentKey]
   );
   const isButtonDisabled =
-    loading || !input.trim() || (is_presetAgentPending && !resolvedPresetSelection);
+    loading ||
+    (!isAutoWorkEntry(autoWork) && !hasGuidInitialPayload(input, initialSkillIds)) ||
+    (is_presetAgentPending && !resolvedPresetSelection);
 
   return {
     handleSend,

@@ -90,9 +90,9 @@ export function useSlashCommands(conversation_id: ConversationId, options: UseSl
         const mapped: SlashCommandItem[] = result.map((item) => ({
           name: item.command,
           description: item.description,
-          kind: 'template' as const,
-          source: 'acp' as const,
-          selectionBehavior: 'insert' as const,
+          kind: item.origin === 'system' ? ('builtin' as const) : ('template' as const),
+          source: item.origin === 'system' ? ('builtin' as const) : ('acp' as const),
+          selectionBehavior: item.origin === 'system' ? ('execute' as const) : ('insert' as const),
         }));
         setCachedCommands(conversation_id, mapped);
         setCommands(mapped);

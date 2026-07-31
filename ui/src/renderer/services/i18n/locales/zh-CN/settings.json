@@ -207,6 +207,8 @@
   "presetNoMatch": "没有匹配当前筛选条件的设定。",
   "presetCreated": "设定已创建",
   "presetNameRequired": "名称不能为空",
+  "presetSkillImportFailed": "导入技能“{{name}}”失败",
+  "presetImportedSkillUnavailable": "导入的技能未出现在技能目录中：{{names}}",
   "presetNamePlaceholder": "输入设定名称",
   "presetTargetRequired": "请至少选择一个应用目标",
   "presetApplyPlaceholder": "选择设定",

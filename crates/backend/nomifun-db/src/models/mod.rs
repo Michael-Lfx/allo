@@ -7,6 +7,7 @@ mod channel;
 mod client_preference;
 mod companion_token;
 mod conversation;
+mod conversation_skill_load;
 mod conversation_artifact;
 mod cron_job;
 mod customer_service;
@@ -47,6 +48,7 @@ pub use channel::{
 pub use client_preference::ClientPreference;
 pub use companion_token::CompanionApiTokenRow;
 pub use conversation::{ConversationDeliveryNotifyRow, ConversationDeliveryReceiptRow, ConversationRow};
+pub use conversation_skill_load::ConversationSkillLoadRow;
 pub use conversation_artifact::ConversationArtifactRow;
 pub use cron_job::CronJobRow;
 pub use cron_job_run::{CronJobRunRow, CronRunReservationRow};

@@ -41,6 +41,13 @@ fn to_catalog_source(source: SkillSource) -> SkillCatalogSource {
     }
 }
 
+fn imported_user_skill_ids(names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .map(|name| SkillId::new(SkillCatalogSource::User, None, name).as_str().to_owned())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Router state
 // ---------------------------------------------------------------------------
@@ -185,7 +192,7 @@ async fn list_catalog_skills(
         .map(|item| {
             let source = to_catalog_source(item.source);
             SkillCatalogItemResponse {
-                skill_id: SkillId::new(source, item.source_key.as_deref(), &item.name),
+                skill_id: SkillId::new(source, item.source_key.as_deref(), &item.local_key),
                 name: item.name,
                 description: item.description,
                 source,
@@ -281,9 +288,11 @@ async fn import_skill(
 ) -> Result<Json<ApiResponse<ImportSkillResponse>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     let name = skill_service::import_skill(&state.skill_paths, Path::new(&req.skill_path)).await?;
+    let skill_names = vec![name.clone()];
     Ok(Json(ApiResponse::ok(ImportSkillResponse {
-        skill_name: name.clone(),
-        skill_names: vec![name],
+        skill_name: name,
+        skill_ids: imported_user_skill_ids(&skill_names),
+        skill_names,
     })))
 }
 
@@ -297,6 +306,7 @@ async fn import_skill_symlink(
     let first_name = names.first().cloned().unwrap_or_default();
     Ok(Json(ApiResponse::ok(ImportSkillResponse {
         skill_name: first_name,
+        skill_ids: imported_user_skill_ids(&names),
         skill_names: names,
     })))
 }
@@ -622,6 +632,14 @@ async fn install_skill_market_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_user_skill_ids_are_source_qualified_and_escaped() {
+        assert_eq!(
+            imported_user_skill_ids(&["review notes".to_owned(), "team/pdf".to_owned()]),
+            vec!["user:review%20notes", "user:team%2Fpdf"],
+        );
+    }
 
     #[derive(Default)]
     struct InMemorySkillTagRepo {

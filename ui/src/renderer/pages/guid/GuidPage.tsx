@@ -15,14 +15,19 @@ import { resolveLocaleKey } from '@/common/utils';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
+import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
+import { appendComposerSkillChip } from '@/renderer/hooks/chat/useComposerSkillChips';
+import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
-import ComposerEntryStrip, { type GuidActiveSkill } from './components/ComposerEntryStrip';
+import ComposerEntryStrip from './components/ComposerEntryStrip';
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
+import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
+import ComposerSkillChips, { type ComposerSkillChip } from '@/renderer/components/chat/ComposerSkillChips';
 import PoiStarterChips from './components/PoiStarterChips';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
@@ -32,13 +37,12 @@ import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
-import type { LocalizableSkill } from '@/renderer/pages/settings/skill/skillDisplay';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
 import { SummonDrawer, useCompanionRoster } from '@/renderer/pages/conversation/components/SummonPanel';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
-import { isAutoWorkEntry } from './hooks/autoWorkEntry';
+import { hasGuidInitialPayload, isAutoWorkEntry } from './hooks/autoWorkEntry';
 import { useGuidInput } from './hooks/useGuidInput';
 import { useGuidMention } from './hooks/useGuidMention';
 import { useGuidModelSelection } from './hooks/useGuidModelSelection';
@@ -62,6 +66,7 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { mutate as swrMutate } from 'swr';
 import type { Preset } from '@/common/types/agent/presetTypes';
+import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import styles from './index.module.css';
 
@@ -94,7 +99,6 @@ const GuidPage: React.FC = () => {
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [delegationPolicy, setDelegationPolicy] = useState<TDelegationPolicy>('automatic');
   const [decisionPolicy, setDecisionPolicy] = useState<TDecisionPolicy>('automatic');
@@ -111,43 +115,11 @@ const GuidPage: React.FC = () => {
   const sendRef = useRef<(() => void) | null>(null);
   const inputSnapshotRef = useRef('');
 
-  // --- Skills state ---
-  // All available skills (builtin auto-injected + user-imported custom) merged
-  // into one catalog for the action-row menu. Auto-injected skills default to
-  // checked; the rest are opt-in per conversation (or pre-checked when the
-  // active preset declares them in `included_skills`).
-  const [allSkills, setAllSkills] = useState<Array<LocalizableSkill & { isAuto: boolean }>>([]);
-  const [guidDisabledBuiltinSkills, setGuidDisabledBuiltinSkills] = useState<string[] | undefined>(undefined);
-  const [guidEnabledSkills, setGuidEnabledSkills] = useState<string[] | undefined>(undefined);
+  // Explicit Skill selections are scoped to this draft. Preset bindings are
+  // resolved separately by the backend when the conversation is created.
+  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<IMcpServer[]>([]);
   const [guidSelectedMcpServerIds, setGuidSelectedMcpServerIds] = useState<McpServerId[] | undefined>(undefined);
-
-  useEffect(() => {
-    Promise.all([ipcBridge.fs.listBuiltinAutoSkills.invoke(), ipcBridge.fs.listAvailableSkills.invoke()])
-      .then(([autoSkills, availableSkills]) => {
-        const autoNames = new Set(autoSkills.map((s) => s.name));
-        const merged: Array<LocalizableSkill & { isAuto: boolean }> = [
-          ...autoSkills.map((s) => ({
-            name: s.name,
-            description: s.description,
-            name_i18n: s.name_i18n,
-            description_i18n: s.description_i18n,
-            isAuto: true,
-          })),
-          ...availableSkills
-            .filter((s) => !autoNames.has(s.name))
-            .map((s) => ({
-              name: s.name,
-              description: s.description,
-              name_i18n: s.name_i18n,
-              description_i18n: s.description_i18n,
-              isAuto: false,
-            })),
-        ];
-        setAllSkills(merged);
-      })
-      .catch(() => setAllSkills([]));
-  }, []);
 
   useEffect(() => {
     void ensureBackendMcpCatalog()
@@ -160,20 +132,6 @@ const GuidPage: React.FC = () => {
         setAvailableMcpServers([]);
         setGuidSelectedMcpServerIds((prev) => prev ?? []);
       });
-  }, []);
-
-  const handleToggleSkill = useCallback((skillName: string, isAuto: boolean) => {
-    if (isAuto) {
-      setGuidDisabledBuiltinSkills((prev) => {
-        const list = prev ?? [];
-        return list.includes(skillName) ? list.filter((s) => s !== skillName) : [...list, skillName];
-      });
-    } else {
-      setGuidEnabledSkills((prev) => {
-        const list = prev ?? [];
-        return list.includes(skillName) ? list.filter((s) => s !== skillName) : [...list, skillName];
-      });
-    }
   }, []);
 
   const handleToggleMcpServer = useCallback((serverId: McpServerId) => {
@@ -252,9 +210,84 @@ const GuidPage: React.FC = () => {
     containerRef: guidInputCardRef,
   });
 
-  // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM /
-  // summon) — collected up front and applied right after the conversation is
-  // created.
+  const supportsHomeSkillLoading = ['nomi', 'acp'].includes(
+    agentSelection.currentEffectiveAgentInfo.agent_type,
+  );
+  const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
+  const { skills: catalogSkills } = useSkillCatalog(supportsHomeSkillLoading);
+  const homeLauncherItems = useMemo<SlashLauncherItem[]>(
+    () =>
+      supportsHomeSkillLoading
+        ? [
+            ...(supportsHomeGoalCommand
+              ? [{
+                  id: 'system:goal',
+                  kind: 'system' as const,
+                  name: 'goal',
+                  description: t('guid.goalMode.tooltip'),
+              }]
+              : []),
+            ...catalogSkills.map((skill) => ({
+              id: skill.skillId,
+              kind: 'skill' as const,
+              name: skill.name,
+              description: skill.description,
+              source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+            })),
+          ]
+        : [],
+    [catalogSkills, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
+  );
+  const homeSlashController = useSlashLauncherController({
+    input: guidInput.input,
+    items: homeLauncherItems,
+    onExecuteSystem: (item) => {
+      if (item.name === 'goal') {
+        setGoalMode(true);
+        guidInput.setInput(replaceActiveSlashToken(guidInput.input));
+      }
+    },
+    onSelectSkill: (item) => {
+      const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
+      if (!skill) {
+        return;
+      }
+      setHomeSkillChips((current) =>
+        appendComposerSkillChip(current, {
+          skillId: skill.skillId,
+          name: skill.name,
+          source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+        }),
+      );
+      guidInput.setInput(replaceActiveSlashToken(guidInput.input));
+    },
+    onSelectAgent: (item) => {
+      guidInput.setInput(replaceActiveSlashToken(guidInput.input, `/${item.name} `));
+    },
+  });
+  const homeSlashMenuItems = useMemo<SlashCommandMenuItem[]>(
+    () =>
+      homeSlashController.filteredItems.map((item) => ({
+        key: item.id,
+        label: item.kind === 'skill' ? item.name : `/${item.name}`,
+        description: item.description,
+        badge: item.source,
+        section:
+          item.kind === 'system'
+            ? t('conversation.slashLauncher.system')
+            : item.kind === 'skill'
+              ? t('conversation.slashLauncher.skills')
+              : t('conversation.slashLauncher.agent'),
+      })),
+    [homeSlashController.filteredItems, t]
+  );
+  const homeInitialSkillIds = useMemo(
+    () => (supportsHomeSkillLoading ? homeSkillChips.map((skill) => skill.skillId) : []),
+    [homeSkillChips, supportsHomeSkillLoading],
+  );
+
+  // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM / summon) —
+  // collected up front and applied right after the conversation is created.
   const advancedConfig = useGuidAdvancedConfig();
 
   // Knowledge activation hand-off from QuickCapture / empty-state sample seed.
@@ -354,8 +387,8 @@ const GuidPage: React.FC = () => {
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
     getEffectiveAgentType: agentSelection.getEffectiveAgentType,
-    guidDisabledBuiltinSkills,
-    guidEnabledSkills,
+    initialSkillIds: homeInitialSkillIds,
+    onInitialSkillsSent: () => setHomeSkillChips([]),
     availableMcpServers,
     selectedMcpServerIds: guidSelectedMcpServerIds,
     currentEffectiveAgentInfo: agentSelection.currentEffectiveAgentInfo,
@@ -429,6 +462,9 @@ const GuidPage: React.FC = () => {
 
   const handleInputKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if (homeSlashController.onKeyDown(event)) {
+        return;
+      }
       if (
         (mention.mentionOpen || mention.mentionSelectorOpen) &&
         (event.key === 'ArrowDown' || event.key === 'ArrowUp')
@@ -495,11 +531,11 @@ const GuidPage: React.FC = () => {
       }
       if (isSubmitGesture(event, sendKey)) {
         event.preventDefault();
-        if (!guidInput.input.trim()) return;
+        if (!hasGuidInitialPayload(guidInput.input, homeInitialSkillIds)) return;
         send.sendMessageHandler();
       }
     },
-    [mention, guidInput.input, send.sendMessageHandler, sendKey],
+    [homeInitialSkillIds, homeSlashController, mention, guidInput.input, send.sendMessageHandler, sendKey],
   );
 
   const handleSelectPresetKey = useCallback(
@@ -525,17 +561,6 @@ const GuidPage: React.FC = () => {
       (item) => item.preset_id === agentSelection.selectedAgentInfo?.preset_id,
     );
   }, [agentSelection.presets, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id]);
-
-  // Sync disabledBuiltinSkills + enabledSkills from preset preset config
-  useEffect(() => {
-    if (agentSelection.is_presetAgent && selectedPresetRecord) {
-      setGuidDisabledBuiltinSkills(selectedPresetRecord.excluded_auto_skills);
-      setGuidEnabledSkills(selectedPresetRecord.included_skills.map((item) => item.skill_name));
-    } else {
-      setGuidDisabledBuiltinSkills(undefined);
-      setGuidEnabledSkills(undefined);
-    }
-  }, [agentSelection.is_presetAgent, selectedPresetRecord]);
 
   const heroTitle = useMemo(() => {
     if (!agentSelection.is_presetAgent) return t('conversation.welcome.title');
@@ -783,7 +808,7 @@ const GuidPage: React.FC = () => {
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
   const isAutoWorkMode = isAutoWorkEntry(advancedConfig.autoWork);
-  const hasDraft = guidInput.input.trim().length > 0;
+  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds);
   const actionRowNode = (
     <GuidActionRow
       files={guidInput.files}
@@ -828,19 +853,6 @@ const GuidPage: React.FC = () => {
       onSend={send.sendMessageHandler}
     />
   );
-
-  // --- Active skills (for ComposerEntryStrip badge + summary popover) ---
-  const activeSkills = useMemo<GuidActiveSkill[]>(() => {
-    const disabled = guidDisabledBuiltinSkills ?? [];
-    const enabled = guidEnabledSkills ?? [];
-    return allSkills.filter((s) => (s.isAuto ? !disabled.includes(s.name) : enabled.includes(s.name)));
-  }, [allSkills, guidDisabledBuiltinSkills, guidEnabledSkills]);
-  const activeSkillCount = activeSkills.length;
-
-  const handleOpenSkillsDrawer = useCallback(() => {
-    setDrawerMode('skills');
-    setDrawerOpen(true);
-  }, []);
 
   const handleRegisterOpenDetails = useCallback((openDetails: (() => void) | null) => {
     openPresetDetailsRef.current = openDetails;
@@ -944,6 +956,36 @@ const GuidPage: React.FC = () => {
                 />
               }
               mentionDropdown={mentionDropdownNode}
+              slashMenuOpen={homeSlashController.isOpen}
+              slashMenu={
+                <SlashCommandMenu
+                  title={t('messages.slash.title', { defaultValue: 'Commands' })}
+                  hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+                  items={homeSlashMenuItems}
+                  activeIndex={homeSlashController.activeIndex}
+                  onHoverItem={homeSlashController.setActiveIndex}
+                  onSelectItem={(item) => {
+                    const targetIndex = homeSlashController.filteredItems.findIndex(
+                      (launcherItem) => launcherItem.id === item.key
+                    );
+                    if (targetIndex >= 0) {
+                      homeSlashController.onSelectByIndex(targetIndex);
+                    }
+                  }}
+                  emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+                />
+              }
+              skillChips={
+                supportsHomeSkillLoading ? (
+                  <ComposerSkillChips
+                    skills={homeSkillChips}
+                    disabled={guidInput.loading}
+                    onRemove={(skillId) => {
+                      setHomeSkillChips((current) => current.filter((skill) => skill.skillId !== skillId));
+                    }}
+                  />
+                ) : undefined
+              }
               files={guidInput.files}
               onRemoveFile={guidInput.handleRemoveFile}
               actionRow={actionRowNode}
@@ -951,23 +993,24 @@ const GuidPage: React.FC = () => {
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
-                <ComposerEntryStrip
-                  isPresetAgent={agentSelection.is_presetAgent}
-                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                  presetAvatar={selectedPresetAvatar ?? undefined}
-                  onAdjustSkills={handleOpenSkillsDrawer}
-                  onFree={() => {
-                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                  }}
-                  localeKey={localeKey}
-                  activeSkillCount={activeSkillCount}
-                  activeSkills={activeSkills}
-                  collaborationPolicyNode={collaborationPolicyNode}
-                  onSummonCompanion={
-                    effectiveAgentType === 'nomi' ? () => setSummonDrawerOpen(true) : undefined
-                  }
-                  summonedCompanionName={summonedCompanionName}
-                />
+                advancedOpen ? (
+                  <ComposerEntryStrip
+                    isPresetAgent={agentSelection.is_presetAgent}
+                    presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                    presetAvatar={selectedPresetAvatar ?? undefined}
+                    onChoosePreset={() => {
+                      setDrawerOpen(true);
+                    }}
+                    onFree={() => {
+                      agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+                    }}
+                    collaborationPolicyNode={collaborationPolicyNode}
+                    onSummonCompanion={
+                      effectiveAgentType === 'nomi' ? () => setSummonDrawerOpen(true) : undefined
+                    }
+                    summonedCompanionName={summonedCompanionName}
+                  />
+                ) : undefined
               }
             />
 
@@ -1002,8 +1045,6 @@ const GuidPage: React.FC = () => {
         {/* PresetPickerDrawer (right-side) */}
         <PresetPickerDrawer
           visible={drawerOpen}
-          mode={drawerMode}
-          onModeChange={setDrawerMode}
           onClose={() => setDrawerOpen(false)}
           presets={agentSelection.presets}
           localeKey={localeKey}
@@ -1015,10 +1056,6 @@ const GuidPage: React.FC = () => {
             agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
             setDrawerOpen(false);
           }}
-          allSkills={allSkills}
-          enabledSkills={guidEnabledSkills ?? []}
-          disabledBuiltinSkills={guidDisabledBuiltinSkills ?? []}
-          onToggleSkill={handleToggleSkill}
         />
 
         <QuickActionButtons inactiveBorderColor={inactiveBorderColor} activeShadow={activeShadow} />

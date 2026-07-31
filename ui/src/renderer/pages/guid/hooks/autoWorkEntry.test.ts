@@ -1,7 +1,20 @@
 
 
 import { describe, expect, test } from 'bun:test';
-import { autoWorkStartDisabled, planGuidEntry } from './autoWorkEntry';
+import { autoWorkStartDisabled, hasGuidInitialPayload, planGuidEntry } from './autoWorkEntry';
+
+describe('hasGuidInitialPayload', () => {
+  test('allows a source-qualified Skill-only first turn', () => {
+    expect(hasGuidInitialPayload('', ['user:pdf'])).toBe(true);
+    expect(hasGuidInitialPayload('   ', ['builtin:review'])).toBe(true);
+  });
+
+  test('requires text or at least one nonblank explicit Skill ID', () => {
+    expect(hasGuidInitialPayload('', [])).toBe(false);
+    expect(hasGuidInitialPayload('   ', ['  '])).toBe(false);
+    expect(hasGuidInitialPayload('draft', [])).toBe(true);
+  });
+});
 
 describe('planGuidEntry', () => {
   test('normal send (AutoWork off): sends the typed input as the first message', () => {

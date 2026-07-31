@@ -158,6 +158,11 @@
     "referenceTitle": "Reference advice",
     "progress": "MoA {{done}}/{{total}}"
   },
+  "skillLoad": {
+    "loaded": "Loaded {{name}}",
+    "details": "View loaded instructions",
+    "version": "Version {{version}}"
+  },
   "responseSentSuccessfully": "Response sent successfully",
   "confirmation": {
     "applyChange": "Apply this change?",

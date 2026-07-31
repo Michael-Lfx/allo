@@ -83,6 +83,45 @@ describe('conversation send-message wire contract', () => {
     }
   });
 
+  test('preserves source-qualified Skill IDs in the strict send DTO', async () => {
+    let requestBody: unknown;
+    try {
+      globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: {
+                msg_id: '0190f5fe-7c00-7a00-8000-000000000212',
+                replayed: false,
+                completed: false,
+                result_ok: null,
+                result_text: null,
+                result_error: null,
+              },
+            }),
+            { status: 202, headers: { 'Content-Type': 'application/json' } }
+          )
+        );
+      }) as typeof fetch;
+
+      await conversation.sendMessage.invoke({
+        input: '',
+        conversation_id: parseConversationId('0190f5fe-7c00-7a00-8000-000000000213'),
+        idempotency_key: '0190f5fe-7c00-7a00-8000-000000000214',
+        inject_skills: ['user:pdf', 'project:workspace:review'],
+      });
+
+      expect(requestBody).toEqual({
+        content: '',
+        inject_skills: ['user:pdf', 'project:workspace:review'],
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test('preserves the same replay contract for steer and edit-resubmit', async () => {
     const conversationId = parseConversationId('0190f5fe-7c00-7a00-8000-000000000207');
     const targetMessageId = parseMessageId('0190f5fe-7c00-7a00-8000-000000000208');

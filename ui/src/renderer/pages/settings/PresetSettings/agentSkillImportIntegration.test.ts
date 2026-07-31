@@ -17,7 +17,8 @@ describe('Preset editor agent skill migration integration', () => {
 
     expect(editorHook.includes('handleImportAgentSkills')).toBe(true);
     expect(editorHook.includes('importSkillWithSymlink.invoke')).toBe(true);
-    expect(editorHook.includes('mergeImportedSkillNames')).toBe(true);
+    expect(editorHook.includes('result.skill_ids')).toBe(true);
+    expect(editorHook.includes('mergePresetSkillIds')).toBe(true);
 
     expect(host.includes('onImportAgentSkills={editor.handleImportAgentSkills}')).toBe(true);
   });

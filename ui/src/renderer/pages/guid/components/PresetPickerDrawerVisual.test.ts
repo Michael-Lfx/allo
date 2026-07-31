@@ -21,13 +21,12 @@ const sectionBetween = (css: string, startMarker: string, endMarker: string) => 
 };
 
 describe('Guid preset picker visual system', () => {
-  test('uses a scoped command-panel shell instead of old utility-class controls', () => {
+  test('uses a focused preset-panel shell instead of a mixed preset/Skill selector', () => {
     const source = readSource(new URL('./PresetPickerDrawer.tsx', import.meta.url));
     const css = readSource(new URL('../index.module.css', import.meta.url));
 
     expect(source.includes('styles.drawerSurface')).toBe(true);
     expect(source.includes('styles.drawerTopbar')).toBe(true);
-    expect(source.includes('styles.drawerSegmented')).toBe(true);
     expect(source.includes('styles.drawerCloseButton')).toBe(true);
     expect(source.includes('styles.drawerSearchInput')).toBe(true);
     expect(css.includes('.drawerSurface')).toBe(true);
@@ -36,18 +35,18 @@ describe('Guid preset picker visual system', () => {
     expect(source.includes('bg-color-fill-1 border border-color-border-2')).toBe(false);
   });
 
-  test('renders preset and skill results with the modern drawer card classes', () => {
+  test('renders preset results without embedding a second Skill selection system', () => {
     const preset = readSource(new URL('./DrawerPresetCard.tsx', import.meta.url));
-    const skill = readSource(new URL('./DrawerSkillCard.tsx', import.meta.url));
+    const drawer = readSource(new URL('./PresetPickerDrawer.tsx', import.meta.url));
     const css = readSource(new URL('../index.module.css', import.meta.url));
 
-    for (const source of [preset, skill]) {
-      expect(source.includes('styles.drawerCard')).toBe(true);
-      expect(source.includes('styles.drawerCardSelected')).toBe(true);
-      expect(source.includes('styles.drawerIconTile')).toBe(true);
-      expect(source.includes('styles.drawerTagChip')).toBe(true);
-      expect(source.includes('rounded-xl cursor-pointer border transition-all')).toBe(false);
-    }
+    expect(preset.includes('styles.drawerCard')).toBe(true);
+    expect(preset.includes('styles.drawerCardSelected')).toBe(true);
+    expect(preset.includes('styles.drawerIconTile')).toBe(true);
+    expect(preset.includes('styles.drawerTagChip')).toBe(true);
+    expect(preset.includes('rounded-xl cursor-pointer border transition-all')).toBe(false);
+    expect(drawer.includes('DrawerSkillCard')).toBe(false);
+    expect(drawer.includes('filterSkillsByTags')).toBe(false);
 
     expect(css.includes('.drawerCard')).toBe(true);
     expect(css.includes('.drawerCardSelected')).toBe(true);

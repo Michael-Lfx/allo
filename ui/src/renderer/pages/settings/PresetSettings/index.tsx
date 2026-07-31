@@ -214,9 +214,8 @@ const PresetSettings: React.FC = () => {
           selectedSkills={editor.selectedSkills}
           setSelectedSkills={editor.setSelectedSkills}
           pendingSkills={editor.pendingSkills}
-          customSkills={editor.customSkills}
           setDeletePendingSkillName={editor.setDeletePendingSkillName}
-          setDeleteCustomSkillName={editor.setDeleteCustomSkillName}
+          setDeleteCustomSkill={editor.setDeleteCustomSkill}
           builtinAutoSkills={editor.builtinAutoSkills}
           disabledBuiltinSkills={editor.disabledBuiltinSkills}
           setDisabledBuiltinSkills={editor.setDisabledBuiltinSkills}
@@ -256,10 +255,8 @@ const PresetSettings: React.FC = () => {
           setDeletePendingSkillName={editor.setDeletePendingSkillName}
           pendingSkills={editor.pendingSkills}
           setPendingSkills={editor.setPendingSkills}
-          deleteCustomSkillName={editor.deleteCustomSkillName}
-          setDeleteCustomSkillName={editor.setDeleteCustomSkillName}
-          customSkills={editor.customSkills}
-          setCustomSkills={editor.setCustomSkills}
+          deleteCustomSkill={editor.deleteCustomSkill}
+          setDeleteCustomSkill={editor.setDeleteCustomSkill}
           selectedSkills={editor.selectedSkills}
           setSelectedSkills={editor.setSelectedSkills}
           message={message}

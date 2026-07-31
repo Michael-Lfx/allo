@@ -55,6 +55,7 @@ type TMessageType =
   | 'plan'
   | 'thinking'
   | 'moa_reference'
+  | 'skill_load'
   | 'available_commands';
 
 interface IMessage<T extends TMessageType, Content extends Record<string, any>> {
@@ -679,6 +680,18 @@ export type IMessageMoaReference = IMessage<
   }
 >;
 
+/** Immutable SKILL.md snapshot loaded for one conversation turn. */
+export type IMessageSkillLoad = IMessage<
+  'skill_load',
+  {
+    skill_id: string;
+    name: string;
+    source: string;
+    version_hash: string;
+    content: string;
+  }
+>;
+
 // Available commands from ACP agents (Claude, etc.)
 export type AvailableCommand = {
   name: string;
@@ -706,6 +719,7 @@ export type TMessage =
   | IMessagePlan
   | IMessageThinking
   | IMessageMoaReference
+  | IMessageSkillLoad
   | IMessageAvailableCommands;
 
 // 统一所有需要用户交互的用户类型
@@ -1286,6 +1300,21 @@ const normalizeAgentStatusContent = (value: unknown): IMessageAgentStatus['conte
   };
 };
 
+const normalizeSkillLoadContent = (value: unknown): IMessageSkillLoad['content'] | undefined => {
+  if (!isObject(value)) return undefined;
+  const { skill_id, name, source, version_hash, content } = value;
+  if (
+    typeof skill_id !== 'string' ||
+    typeof name !== 'string' ||
+    typeof source !== 'string' ||
+    typeof version_hash !== 'string' ||
+    typeof content !== 'string'
+  ) {
+    return undefined;
+  }
+  return { skill_id, name, source, version_hash, content };
+};
+
 /**
  * @description 将后端返回的消息转换为前端消息
  * */
@@ -1486,6 +1515,20 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
           index: finiteNumber(data.index) ?? 0,
           total: finiteNumber(data.total) ?? 0,
         },
+      };
+    }
+    case 'skill_load': {
+      const content = normalizeSkillLoadContent(message.data);
+      if (!content) return undefined;
+      return {
+        id: uuid(),
+        type: 'skill_load',
+        msg_id: message.msg_id,
+        ...turnIdentity,
+        position: 'center',
+        conversation_id: message.conversation_id,
+        created_at,
+        content,
       };
     }
     // Disabled: available_commands messages are too noisy and distracting in the chat UI

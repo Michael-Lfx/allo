@@ -36,7 +36,7 @@ use nomifun_api_types::{
     ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest, KnowledgeMountInfo, ListConversationsQuery,
     ListMessagesQuery, McpServerId, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
-    ExecutionModelPool, ExecutionModelRef, ResolvedPresetSnapshot, SendMessageRequest, SessionMcpServer, SessionMcpTransport, UpdateConversationArtifactRequest,
+    ExecutionModelPool, ExecutionModelRef, ResolvedPresetSnapshot, SendMessageRequest, SessionMcpServer, SessionMcpTransport, SkillCatalogSource, SkillId, UpdateConversationArtifactRequest,
     UpdateConversationRequest, WebSocketMessage,
 };
 use nomifun_common::{
@@ -44,11 +44,13 @@ use nomifun_common::{
     ConversationStatus, CronJobId, DecisionPolicy, DelegationPolicy, ErrorChain, ExecutionAuthority, MessageId, MessageType, OnConversationDelete, PaginatedResult, ProviderId, ProviderWithModel,
     generate_id, now_ms, validate_uuidv7, workspace_path_has_edge_whitespace_segment,
 };
-use nomifun_db::models::{AgentMetadataRow, ConversationRow, MessageRow};
+use nomifun_db::models::{
+    AgentMetadataRow, ConversationRow, ConversationSkillLoadRow, MessageRow,
+};
 use nomifun_db::{
     AgentExecutionTurnAuthority, ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams,
-    ConversationTurnAdmissionState, RequirementConversationTurnAuthority, SortOrder,
+    ConversationSkillLoadCommit, ConversationTurnAdmissionState, RequirementConversationTurnAuthority, SortOrder,
     TurnLifecycleTransition, TurnReceiptCompletion,
 };
 use nomifun_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
@@ -70,7 +72,7 @@ use crate::convert::{
     row_to_artifact_response, row_to_message_response, row_to_message_response_compact,
     row_to_response, row_to_response_with_extra, search_row_to_item, string_to_enum,
 };
-use crate::skill_resolver::SkillResolver;
+use crate::skill_resolver::{ResolvedSkillSnapshot, SkillResolver};
 use crate::skill_snapshot::compute_initial_skills;
 use crate::stream_relay::{
     RelayTerminal, StreamRelay, TurnWritebackAttempt, await_turn_writeback_quiesced,
@@ -97,6 +99,82 @@ const KNOWLEDGE_AUTOGEN_MODEL_PREF_KEY: &str = "knowledge.autogenModel";
 const DELETE_CORE_GRACE: Duration = Duration::from_secs(5);
 const DELETE_CLEANUP_ITEM_GRACE: Duration = Duration::from_secs(5);
 const TURN_WRITEBACK_CANCEL_GRACE: Duration = Duration::from_secs(10);
+const MAX_EXPLICIT_SKILL_SNAPSHOT_BYTES: usize = 64 * 1024;
+
+fn dedupe_skill_ids(skill_ids: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    skill_ids
+        .iter()
+        .filter_map(|skill_id| {
+            let skill_id = skill_id.trim();
+            (!skill_id.is_empty() && seen.insert(skill_id.to_owned())).then(|| skill_id.to_owned())
+        })
+        .collect()
+}
+
+/// Select the entries that still use the historical name-based skill lookup.
+///
+/// Persisted bare names predate catalog identities, and `legacy:` is the
+/// migration marker that preserves exactly that behavior.  A canonical catalog
+/// ID must never be downgraded to its display name here: doing so could select
+/// a same-name Skill from another source. Canonical IDs use the immutable
+/// snapshot protocol instead.
+fn name_based_runtime_skill_names(skills: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    skills
+        .iter()
+        .filter_map(|skill| {
+            let skill = skill.trim();
+            if skill.is_empty() {
+                return None;
+            }
+            match SkillId::parse(skill) {
+                Ok(skill_id) if skill_id.source() == SkillCatalogSource::Legacy => skill_id.legacy_name(),
+                Ok(_) => None,
+                // Preserve old rows exactly as their legacy resolver saw
+                // them. It owns any validity and source-precedence decisions.
+                Err(_) => Some(skill.to_owned()),
+            }
+        })
+        .filter(|name| seen.insert(name.clone()))
+        .collect()
+}
+
+fn name_based_runtime_skill_names_from_extra(extra: &serde_json::Value) -> Vec<String> {
+    extra
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+        .map(|skills| {
+            name_based_runtime_skill_names(
+                &skills
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Source-qualified preset bindings are frozen into `extra.skills` when the
+/// Conversation is created. System-owned auto Skills remain bare names and
+/// legacy bindings deliberately stay on their old runtime path.
+fn catalog_skill_ids_from_conversation_extra(extra: &str) -> Vec<String> {
+    let Ok(extra) = serde_json::from_str::<serde_json::Value>(extra) else {
+        return Vec::new();
+    };
+    let Some(skills) = extra.get("skills").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+
+    skills
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(|value| SkillId::parse(value).ok())
+        .filter(|skill_id| skill_id.source() != SkillCatalogSource::Legacy)
+        .map(|skill_id| skill_id.as_str().to_owned())
+        .collect()
+}
 
 tokio::task_local! {
     static DELETED_CRON_JOB_IDS: Arc<[String]>;
@@ -1132,6 +1210,113 @@ pub struct ConversationService {
 // ── Construction & Dependency Injection ──────────────────────────────
 
 impl ConversationService {
+    async fn resolve_explicit_skill_snapshots(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        let snapshots = self.skill_resolver.load_catalog_skills(skill_ids).await?;
+        if snapshots.len() != skill_ids.len()
+            || snapshots
+                .iter()
+                .zip(skill_ids)
+                .any(|(snapshot, skill_id)| snapshot.skill_id != *skill_id)
+        {
+            return Err(AppError::BadRequest(
+                "Selected Skills changed while their instructions were loading".to_owned(),
+            ));
+        }
+        for snapshot in &snapshots {
+            if snapshot.name.trim().is_empty()
+                || snapshot.source.trim().is_empty()
+                || snapshot.content.trim().is_empty()
+                || snapshot.version_hash.len() != 64
+                || snapshot.version_hash != snapshot.version_hash.to_ascii_lowercase()
+                || !snapshot.version_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(AppError::BadRequest(
+                    "Selected Skill has invalid immutable instructions".to_owned(),
+                ));
+            }
+        }
+        let total_bytes = snapshots.iter().map(|skill| skill.content.len()).sum::<usize>();
+        if total_bytes > MAX_EXPLICIT_SKILL_SNAPSHOT_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "Selected Skill instructions exceed the {} byte per-turn budget",
+                MAX_EXPLICIT_SKILL_SNAPSHOT_BYTES
+            )));
+        }
+        Ok(snapshots)
+    }
+
+    async fn resolve_requested_skill_snapshots(
+        &self,
+        request: &SendMessageRequest,
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        // Legacy trusted callers still use bare names in `inject_skills`.
+        // `legacy:` bindings likewise retain their name-based compatibility
+        // path because they deliberately do not guess a source. Only canonical
+        // catalog identities participate in the explicit snapshot protocol.
+        let requested_skill_ids = dedupe_skill_ids(&request.inject_skills)
+            .into_iter()
+            .filter_map(|skill_id| SkillId::parse(&skill_id).ok())
+            .filter(|skill_id| skill_id.source() != SkillCatalogSource::Legacy)
+            .map(|skill_id| skill_id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let snapshots = self
+            .resolve_explicit_skill_snapshots(&requested_skill_ids)
+            .await?;
+        if request.content.trim().is_empty() && snapshots.is_empty() {
+            return Err(AppError::BadRequest("Message content must not be empty".into()));
+        }
+        Ok(snapshots)
+    }
+
+    fn build_skill_load_commits(
+        conversation_id: &str,
+        snapshots: &[ResolvedSkillSnapshot],
+    ) -> Vec<ConversationSkillLoadCommit> {
+        let created_at = now_ms();
+        snapshots
+            .iter()
+            .map(|snapshot| {
+                let message_id = MessageId::new().into_string();
+                let content = snapshot.content.clone();
+                ConversationSkillLoadCommit {
+                    load_message: MessageRow {
+                        id: 0,
+                        message_id: message_id.clone(),
+                        conversation_id: conversation_id.to_owned(),
+                        msg_id: None,
+                        r#type: "skill_load".to_owned(),
+                        content: serde_json::json!({
+                            "skill_id": &snapshot.skill_id,
+                            "name": &snapshot.name,
+                            "source": &snapshot.source,
+                            "version_hash": &snapshot.version_hash,
+                            "content": &content,
+                        })
+                        .to_string(),
+                        position: Some("center".to_owned()),
+                        status: Some("finish".to_owned()),
+                        hidden: false,
+                        created_at,
+                    },
+                    snapshot: ConversationSkillLoadRow {
+                        id: 0,
+                        conversation_id: conversation_id.to_owned(),
+                        message_id,
+                        catalog_key: snapshot.skill_id.clone(),
+                        skill_name: snapshot.name.clone(),
+                        source: snapshot.source.clone(),
+                        version_hash: snapshot.version_hash.clone(),
+                        content,
+                        created_at,
+                    },
+                }
+            })
+            .collect()
+    }
+
     /// Wait until every runtime-build generation captured by a lifecycle
     /// owner has actually released its lease.
     ///
@@ -4479,7 +4664,7 @@ impl ConversationService {
         // the row is created, when the tokenized workspace path is materialized.
         // Capture the inputs now (the `skills` snapshot below consumes
         // `initial_skills` into `extra`).
-        let skills_for_links = initial_skills.clone();
+        let skills_for_links = name_based_runtime_skill_names(&initial_skills);
 
         if let Some(obj) = extra.as_object_mut() {
             obj.insert(
@@ -6713,7 +6898,7 @@ impl ConversationService {
     /// Send a user message to the conversation.
     ///
     /// 1. Validates the conversation belongs to the user
-    /// 2. Stores the user message (position: "right", status: "finish")
+    /// 2. Stores the user message or the explicit Skill-load events
     /// 3. Acquires the conversation's turn handle in runtime state
     /// 4. Spawns background agent build/send and stream relay work
     /// 5. Returns immediately (202 Accepted semantics)
@@ -6738,6 +6923,7 @@ impl ConversationService {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -6759,6 +6945,7 @@ impl ConversationService {
             MessageSendAuthority::OwnerInteractive,
             None,
             Some(lease),
+            None,
             None,
             None,
             None,
@@ -6864,9 +7051,6 @@ impl ConversationService {
         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
     ) -> Result<IdempotentMessageDelivery, AppError> {
         validate_public_idempotency_key(idempotency_key)?;
-        if req.content.trim().is_empty() {
-            return Err(AppError::BadRequest("Message content must not be empty".into()));
-        }
 
         let conversation_key = parse_conv_id(conversation_id)?;
         let runtime_build_lease =
@@ -6927,9 +7111,6 @@ impl ConversationService {
         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
     ) -> Result<IdempotentMessageDelivery, AppError> {
         validate_public_idempotency_key(idempotency_key)?;
-        if req.content.trim().is_empty() {
-            return Err(AppError::BadRequest("Message content must not be empty".into()));
-        }
 
         let conversation_key = parse_conv_id(conversation_id)?;
         let runtime_build_lease =
@@ -6981,9 +7162,6 @@ impl ConversationService {
         req: &SendMessageRequest,
     ) -> Result<Option<IdempotentMessageDelivery>, AppError> {
         validate_public_idempotency_key(idempotency_key)?;
-        if req.content.trim().is_empty() {
-            return Err(AppError::BadRequest("Message content must not be empty".into()));
-        }
 
         let conversation_key = parse_conv_id(conversation_id)?;
         self.conversation_repo
@@ -7170,6 +7348,144 @@ impl ConversationService {
         }))
     }
 
+     /// Prove that a background turn never crossed receiver-side durable
+     /// admission. This is intentionally stricter than a replay lookup: any
+     /// accepted/completed receipt, retained execution, payload drift, or lookup
+     /// failure prevents the caller from releasing its Requirement claim back to
+     /// pending.
+     pub async fn prove_no_turn_admission_with_idempotency_key(
+         &self,
+         user_id: &str,
+         conversation_id: &str,
+         idempotency_key: &str,
+     ) -> Result<bool, AppError> {
+         validate_public_idempotency_key(idempotency_key)?;
+         let conversation_key = parse_conv_id(conversation_id)?;
+         self.conversation_repo
+             .get(conversation_key)
+             .await?
+             .filter(|row| row.user_id == user_id)
+             .ok_or_else(|| {
+                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
+             })?;
+         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
+             .await?;
+         self.ensure_no_ambiguous_edit_resubmit(user_id, conversation_key)
+             .await?;
+
+         let operation_id =
+             Self::public_turn_operation_id(user_id, conversation_key, idempotency_key);
+         let Some(receipt) = self
+             .conversation_repo
+             .get_delivery_receipt(user_id, conversation_key, &operation_id)
+             .await?
+         else {
+             return Ok(true);
+         };
+         if receipt.user_id != user_id
+             || receipt.conversation_id != conversation_key
+             || receipt.operation_id != operation_id
+             || receipt.kind != "turn"
+             || !matches!(receipt.status.as_str(), "accepted" | "completed")
+         {
+             return Err(AppError::Conflict(
+                 "durable turn admission receipt has unexpected scope or state".to_owned(),
+             ));
+         }
+         self.adopt_completed_turn_receipt_if_still_active(
+             user_id,
+             conversation_key,
+             &receipt,
+         )
+         .await?;
+         Ok(false)
+     }
+
+     /// Scope-first absence proof for releasing an AutoWork Requirement claim.
+     /// Any receipt for `(Requirement, generation)` is absorbing, even when a
+     /// caller presents a different capability-derived operation key.
+     pub async fn prove_no_autowork_turn_admission(
+         &self,
+         user_id: &str,
+         conversation_id: &str,
+         requirement_id: &str,
+         claim_generation: i64,
+     ) -> Result<bool, AppError> {
+         let conversation_key = parse_conv_id(conversation_id)?;
+         self.conversation_repo
+             .get(conversation_key)
+             .await?
+             .filter(|row| row.user_id == user_id)
+             .ok_or_else(|| {
+                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
+             })?;
+         Ok(self
+             .conversation_repo
+             .get_autowork_turn_delivery_receipt_by_scope(
+                 user_id,
+                 conversation_key,
+                 requirement_id,
+                 claim_generation,
+             )
+             .await?
+             .is_none())
+     }
+
+     /// Owner-authorized idempotent send for background initiators that already
+     /// hold the Conversation's exact runtime preparation lease.
+     ///
+     /// Cron and AutoWork prepare the runtime before sending so they can
+     /// subscribe to the exact Agent event stream. They must carry that same
+     /// lease through turn admission; acquiring a replacement lease here would
+     /// reopen a stop/reset race. The public-key validation, ownership check,
+     /// retained-attempt rejection and `OwnerInteractive` authority are
+     /// intentionally identical to [`Self::send_message_with_idempotency_key`].
+     #[allow(clippy::too_many_arguments)]
+     pub async fn send_message_with_runtime_build_lease_and_idempotency_key(
+         &self,
+         user_id: &str,
+         conversation_id: &str,
+         idempotency_key: &str,
+         req: SendMessageRequest,
+         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+         runtime_build_lease: RuntimeBuildLease,
+     ) -> Result<IdempotentMessageDelivery, AppError> {
+         validate_public_idempotency_key(idempotency_key)?;
+
+         let conversation_key = parse_conv_id(conversation_id)?;
+         runtime_build_lease.ensure_active()?;
+         self.conversation_repo
+             .get(conversation_key)
+             .await?
+             .filter(|row| row.user_id == user_id)
+             .ok_or_else(|| {
+                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
+             })?;
+         runtime_build_lease.ensure_active()?;
+         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
+             .await?;
+         runtime_build_lease.ensure_active()?;
+
+         let operation_id =
+             Self::public_turn_operation_id(user_id, conversation_key, idempotency_key);
+         self.send_message_idempotent_with_lease(
+             user_id,
+             conversation_id,
+             &operation_id,
+             req,
+             runtime_registry,
+             MessageSendAuthority::OwnerInteractive,
+             None,
+             None,
+             runtime_build_lease,
+             true,
+             false,
+             None,
+             None,
+         )
+         .await
+     }
+
     /// Background send whose runtime options and mutations are applied only
     /// after the durable keyed turn wins admission. The returned subscription
     /// is installed before the model prompt is sent.
@@ -7238,11 +7554,6 @@ impl ConversationService {
         autowork_authority: Option<RequirementConversationTurnAuthority>,
     ) -> Result<ObservedIdempotentMessageDelivery, AppError> {
         validate_public_idempotency_key(idempotency_key)?;
-        if req.content.trim().is_empty() {
-            return Err(AppError::BadRequest(
-                "Message content must not be empty".into(),
-            ));
-        }
         let conversation_key = parse_conv_id(conversation_id)?;
         runtime_build_lease.ensure_active()?;
         self.conversation_repo
@@ -7300,7 +7611,7 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         operation_id: &str,
-        req: SendMessageRequest,
+        mut req: SendMessageRequest,
         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
         send_authority: MessageSendAuthority,
         execution_authority: Option<AgentExecutionTurnAuthority>,
@@ -7437,6 +7748,25 @@ impl ConversationService {
         if row.status.as_deref() == Some("running") {
             return Err(self.unproven_running_generation_error(&row));
         }
+
+        // A Preset's selected catalog Skills are an initial conversation
+        // capability, independent from the `/` launcher. Merge them into the
+        // first real turn so both paths capture one immutable snapshot and the
+        // user-selected chips still retain precedence in the prompt order.
+        if row.status.as_deref() == Some("pending") {
+            let preset_skill_ids = catalog_skill_ids_from_conversation_extra(&row.extra);
+            if !preset_skill_ids.is_empty() {
+                let mut effective_skill_ids = preset_skill_ids;
+                effective_skill_ids.extend(req.inject_skills);
+                req.inject_skills = dedupe_skill_ids(&effective_skill_ids);
+            }
+        }
+
+        // A missing/oversized explicit Skill must fail before this request can
+        // claim a durable receipt or transition the Conversation to Running.
+        // Replays above remain resolvable even if a Skill was later removed
+        // from the live catalog because their historical outcome is immutable.
+        let explicit_skill_snapshots = self.resolve_requested_skill_snapshots(&req).await?;
         let _ = owned_row;
         runtime_build_lease.ensure_active()?;
 
@@ -7688,6 +8018,7 @@ impl ConversationService {
                 Some(preparation_guard),
                 runtime_preparation,
                 runtime_observer,
+                Some(explicit_skill_snapshots),
             )
             .await
         {
@@ -7926,7 +8257,7 @@ impl ConversationService {
         &self,
         user_id: &str,
         conversation_id: &str,
-        req: SendMessageRequest,
+        mut req: SendMessageRequest,
         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
         send_authority: MessageSendAuthority,
         durable_delivery: Option<DurableDeliveryLease>,
@@ -7936,6 +8267,7 @@ impl ConversationService {
         runtime_observer: Option<
             oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
         >,
+        preloaded_skill_snapshots: Option<Vec<ResolvedSkillSnapshot>>,
     ) -> Result<String, AppError> {
         let public_cancellable = send_authority.public_cancellable();
         // Snapshot before the first await. A stop racing this request advances
@@ -7957,9 +8289,6 @@ impl ConversationService {
         let durable_request_payload = durable_delivery
             .as_ref()
             .map(|delivery| delivery.request_payload.clone());
-        if req.content.trim().is_empty() {
-            return Err(AppError::BadRequest("Message content must not be empty".into()));
-        }
         let preparation_token = runtime_build_lease
             .as_ref()
             .map(RuntimeBuildLease::cancellation_token)
@@ -8002,6 +8331,18 @@ impl ConversationService {
                         .into(),
                 ));
             }
+        }
+
+        let loaded_skill_snapshots = match preloaded_skill_snapshots {
+            Some(snapshots) => snapshots,
+            None => self.resolve_requested_skill_snapshots(&req).await?,
+        };
+        let load_only = req.content.trim().is_empty();
+        if load_only {
+            // Preserve the ordinary input contract for substantive messages,
+            // but make whitespace-only explicit loads unambiguously load-only
+            // before the runtime sees the current-request envelope.
+            req.content.clear();
         }
 
         // Attempt transcripts are owned by their Agent Execution for their
@@ -8480,9 +8821,12 @@ impl ConversationService {
         let turn_cancellation = turn_handle.turn_cancellation();
         let turn_token = turn_handle.cancellation_token();
 
-        // Store the user message. SQLite allocates the technical `id`; the
-        // server-generated UUIDv7 `message_id` is the stable external key.
-        let user_msg = nomifun_db::models::MessageRow {
+        let skill_load_commits =
+            Self::build_skill_load_commits(conversation_id, &loaded_skill_snapshots);
+        // A load-only request owns a durable turn ID but deliberately has no
+        // blank user-message projection. The snapshot events still become
+        // immutable history in the same SQLite transaction.
+        let user_msg = (!load_only).then(|| MessageRow {
             id: 0,
             message_id: user_msg_id.clone(),
             conversation_id: conversation_id.to_owned(),
@@ -8493,10 +8837,18 @@ impl ConversationService {
             status: Some("finish".into()),
             hidden: req.hidden,
             created_at: now_ms(),
-        };
+        });
         if existing_user_message.is_none() {
-            if let Err(e) = self.conversation_repo.insert_message(&user_msg).await {
-                warn!(msg_id = %user_msg_id, error = %ErrorChain(&e), "Failed to insert user message");
+            if let Err(e) = self
+                .conversation_repo
+                .persist_skill_loads_and_user_message(
+                    conversation_id,
+                    user_msg.as_ref(),
+                    &skill_load_commits,
+                )
+                .await
+            {
+                warn!(msg_id = %user_msg_id, error = %ErrorChain(&e), "Failed to persist user message and Skill loads");
                 let receipt_error = format!("{}", ErrorChain(&e));
                 let receipt_completion = Self::turn_receipt_completion(
                     durable_operation_id,
@@ -8524,13 +8876,17 @@ impl ConversationService {
                 return Err(e.into());
             }
 
-            info!(msg_id = %user_msg_id, "User message persisted");
+            if user_msg.is_some() {
+                info!(msg_id = %user_msg_id, "User message persisted");
+            }
         }
 
-        self.on_user_message_lifecycle(conversation_id, &req.content, &row)
-            .await;
+        if !load_only {
+            self.on_user_message_lifecycle(conversation_id, &req.content, &row)
+                .await;
+        }
 
-        if existing_user_message.is_none() {
+        if existing_user_message.is_none() && let Some(user_msg) = user_msg.as_ref() {
             self.user_events.send_to_user(
                 user_id,
                 WebSocketMessage::new(
@@ -8595,7 +8951,7 @@ impl ConversationService {
         let durable_operation_id = durable_operation_id.map(str::to_owned);
         let durable_kind = durable_kind.map(str::to_owned);
         let autotitle_user_content = req.content.clone();
-        let autotitle_conversation_id = user_msg.conversation_id.clone();
+        let autotitle_conversation_id = conversation_id.to_owned();
         // Only an active attempt relation needs per-turn token accounting. The
         // relation repository is authoritative; Conversation extra carries no
         // execution identity. Ordinary chat/companion turns therefore create no
@@ -8860,6 +9216,16 @@ impl ConversationService {
                     source_message_id: Some(source_user_message_id.clone()),
                     files: req.files,
                     inject_skills: req.inject_skills,
+                    loaded_skill_snapshots: loaded_skill_snapshots
+                        .into_iter()
+                        .map(|skill| nomifun_ai_agent::types::LoadedSkillSnapshot {
+                            skill_id: skill.skill_id,
+                            name: skill.name,
+                            source: skill.source,
+                            version_hash: skill.version_hash,
+                            content: skill.content,
+                        })
+                        .collect(),
                     origin: origin.clone(),
                 },
                 first_turn_msg_id,
@@ -9301,6 +9667,7 @@ impl ConversationService {
                         source_message_id: Some(source_user_message_id.clone()),
                         files: vec![],
                         inject_skills: vec![],
+                        loaded_skill_snapshots: Vec::new(),
                         // A system-driven continuation is not the human owner
                         // speaking; mark it so it is never distilled. Falls
                         // back to the turn's own origin when one was set.
@@ -9310,7 +9677,7 @@ impl ConversationService {
                 ));
             }
 
-            {
+            if !load_only {
                 let title_service = service.clone();
                 tokio::spawn(async move {
                     title_service
@@ -10997,6 +11364,7 @@ impl ConversationService {
                 Some(preparation_guard),
                 None,
                 None,
+                None,
             )
             .await
         {
@@ -12271,6 +12639,18 @@ impl ConversationService {
 
         project_preset_runtime_context(row, &agent_type, &mut extra)?;
 
+        // The runtime's old skill discovery path accepts only names. Keep the
+        // persisted snapshot intact, but project legacy/bare entries into this
+        // transient adapter payload. Explicit catalog IDs arrive as immutable
+        // per-turn snapshots and must not be resolved by name.
+        let name_based_skill_names = name_based_runtime_skill_names_from_extra(&extra);
+        if let Some(object) = extra.as_object_mut() {
+            object.insert(
+                "skills".to_owned(),
+                serde_json::to_value(name_based_skill_names).expect("Vec<String> serializes"),
+            );
+        }
+
         if !self.execution_authority(&row.user_id).controls_host() {
             // Even a row written outside the service cannot smuggle a custom
             // workspace, prompt-side capability config or installation binding
@@ -12359,12 +12739,7 @@ impl ConversationService {
             workspace
         };
 
-        let skill_names = runtime_options
-            .extra
-            .get("skills")
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
-            .unwrap_or_default();
+        let skill_names = name_based_runtime_skill_names_from_extra(&runtime_options.extra);
         if skill_names.is_empty() {
             return Ok(());
         }
@@ -13736,6 +14111,29 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn catalog_skill_ids_from_extra_excludes_system_and_legacy_bindings() {
+        let extra = json!({
+            "skills": [
+                "cron",
+                "builtin:pdf",
+                "legacy:old-pdf",
+                "user:team%2Fpdf",
+                "not-a-catalog-id",
+                "extension:owner:review"
+            ]
+        });
+
+        assert_eq!(
+            catalog_skill_ids_from_conversation_extra(&extra.to_string()),
+            vec![
+                "builtin:pdf".to_owned(),
+                "user:team%2Fpdf".to_owned(),
+                "extension:owner:review".to_owned(),
+            ]
+        );
     }
 
     #[test]

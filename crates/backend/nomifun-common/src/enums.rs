@@ -111,6 +111,7 @@ pub enum MessageType {
     Thinking,
     AvailableCommands,
     SkillSuggest,
+    SkillLoad,
     CronTrigger,
 }
 

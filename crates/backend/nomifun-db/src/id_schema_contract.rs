@@ -38,6 +38,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "conversation_delivery_receipts",
     "conversation_execution_links",
     "conversation_mcp_servers",
+    "conversation_skill_loads",
     "conversations",
     "creation_tasks",
     "cron_job_runs",
@@ -231,6 +232,8 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_review_items", "review_item_id"),
     ("mcp_servers", "mcp_server_id"),
     ("messages", "message_id"),
+    // Source-qualified Skill catalog key, not a relational business ID.
+    ("preset_skill_bindings", "skill_id"),
     ("preset_tags", "preset_tag_id"),
     ("presets", "preset_id"),
     ("provider_connections", "connection_id"),
@@ -728,6 +731,11 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("conversation_delivery_receipts", "projected_message_id" => "messages", "message_id", true, "idx_delivery_receipts_message_id", SetNull),
     text_ref!("conversation_delivery_receipts", "projected_conversation_id" => "conversations", "conversation_id", true, "idx_delivery_receipts_conversation_id", SetNull),
     text_ref!("conversation_delivery_receipts", "user_id" => "users", "user_id", false, "idx_delivery_receipts_user_id", KeepHistory),
+    // `skill_load` display messages may be cleared with the transcript, but
+    // their immutable instruction snapshots remain in the append-only ledger.
+    text_ref!("conversation_skill_loads", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_skill_loads_conversation_id", Cascade),
+    text_ref!("conversation_skill_loads", "message_id" => "messages", "message_id", false, "idx_conversation_skill_loads_message_id", KeepHistory)
+        .with_aggregate_scope("parent.conversation_id = child.conversation_id"),
     text_ref!("conversation_mcp_servers", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_mcp_servers_conversation_id", Cascade),
     text_ref!("conversation_mcp_servers", "mcp_server_id" => "mcp_servers", "mcp_server_id", false, "idx_conversation_mcp_servers_mcp_server_id", Cascade)
         .with_parent_predicate("parent.deleted_at IS NULL"),

@@ -18,13 +18,14 @@ use tower::ServiceExt;
 
 struct Fixture {
     router: axum::Router,
+    paths: SkillPaths,
     _temp: TempDir,
 }
 
-fn write_skill(root: &std::path::Path, name: &str, description: &str) {
-    std::fs::create_dir_all(root.join(name)).unwrap();
+fn write_skill(root: &std::path::Path, directory_name: &str, name: &str, description: &str) {
+    std::fs::create_dir_all(root.join(directory_name)).unwrap();
     std::fs::write(
-        root.join(name).join("SKILL.md"),
+        root.join(directory_name).join("SKILL.md"),
         format!("---\nname: {name}\ndescription: {description}\n---\nBody."),
     )
     .unwrap();
@@ -36,9 +37,15 @@ async fn fixture() -> Fixture {
     let builtin_skills_dir = root.join("builtin-skills");
     let user_skills_dir = root.join("skills");
 
-    write_skill(&builtin_skills_dir, "pdf", "Built-in PDF workflow");
-    write_skill(&builtin_skills_dir.join("auto-inject"), "cron", "System scheduler");
-    write_skill(&user_skills_dir, "pdf", "User PDF workflow");
+    write_skill(&builtin_skills_dir, "core-pdf", "pdf", "Built-in PDF workflow");
+    write_skill(
+        &builtin_skills_dir.join("auto-inject"),
+        "cron",
+        "cron",
+        "System scheduler",
+    );
+    write_skill(&user_skills_dir, "local-pdf", "pdf", "User PDF workflow");
+    write_skill(&user_skills_dir, "team-pdf", "pdf", "Team PDF workflow");
 
     let paths = SkillPaths {
         data_dir: root.to_path_buf(),
@@ -51,7 +58,7 @@ async fn fixture() -> Fixture {
     };
     let db = nomifun_db::init_database_memory().await.unwrap();
     let state = SkillRouterState {
-        skill_paths: paths,
+        skill_paths: paths.clone(),
         external_paths_manager: Arc::new(ExternalPathsManager::with_file(root.join("paths.json")).await),
         preset_dispatcher: None,
         skill_tag_repo: Arc::new(nomifun_db::SqliteSkillTagRepository::new(db.pool().clone())),
@@ -60,6 +67,7 @@ async fn fixture() -> Fixture {
 
     Fixture {
         router: skill_routes(state),
+        paths,
         _temp: temp,
     }
 }
@@ -89,16 +97,46 @@ async fn catalog_keeps_same_named_skills_from_distinct_sources_and_hides_system_
 
     let skills = body["data"]["skills"].as_array().expect("catalog skills array");
     assert!(skills.iter().any(|skill| {
-        skill["skill_id"] == "builtin:pdf"
+        skill["skill_id"] == "builtin:core-pdf"
             && skill["name"] == "pdf"
             && skill["description"] == "Built-in PDF workflow"
             && skill["source"] == "builtin"
     }));
     assert!(skills.iter().any(|skill| {
-        skill["skill_id"] == "user:pdf"
+        skill["skill_id"] == "user:local-pdf"
             && skill["name"] == "pdf"
             && skill["description"] == "User PDF workflow"
             && skill["source"] == "user"
     }));
+    assert!(skills.iter().any(|skill| {
+        skill["skill_id"] == "user:team-pdf"
+            && skill["name"] == "pdf"
+            && skill["description"] == "Team PDF workflow"
+            && skill["source"] == "user"
+    }));
     assert!(skills.iter().all(|skill| skill["name"] != "cron"));
+}
+
+#[tokio::test]
+async fn catalog_loader_returns_the_selected_source_qualified_markdown_snapshot() {
+    let fixture = fixture().await;
+    let catalog = nomifun_extension::skill_service::list_catalog_skills(&fixture.paths)
+        .await
+        .expect("catalog lists skills");
+    assert!(catalog.iter().any(|skill| {
+        skill.source == nomifun_extension::skill_service::SkillSource::Custom
+            && skill.local_key == "local-pdf"
+    }));
+
+    let loaded = nomifun_extension::skill_service::load_catalog_skills(
+        &fixture.paths,
+        &["user:local-pdf".to_owned()],
+    )
+    .await
+    .expect("user catalog skill loads");
+
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].skill_id, "user:local-pdf");
+    assert!(loaded[0].content.contains("User PDF workflow"));
+    assert_eq!(loaded[0].source, "user");
 }

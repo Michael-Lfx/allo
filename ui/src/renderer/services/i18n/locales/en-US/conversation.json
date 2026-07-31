@@ -653,7 +653,20 @@
   "skills": {
     "loaded": "Loaded Skills",
     "selected": "Selected Skills",
-    "remove": "Remove {{name}}"
+    "remove": "Remove {{name}}",
+    "sources": {
+      "builtin": "Built-in",
+      "user": "User",
+      "project": "Project",
+      "extension": "Extension",
+      "mcp": "MCP",
+      "legacy": "Legacy"
+    }
+  },
+  "slashLauncher": {
+    "system": "System commands",
+    "skills": "Skills",
+    "agent": "Agent commands"
   },
   "mcp": {
     "loaded": "Loaded MCP",

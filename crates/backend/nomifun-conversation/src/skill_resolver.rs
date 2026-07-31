@@ -6,7 +6,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nomifun_common::AppError;
 pub use nomifun_extension::ResolvedAgentSkill;
+
+/// Immutable markdown snapshot resolved at the conversation boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSkillSnapshot {
+    pub skill_id: String,
+    pub name: String,
+    pub source: String,
+    pub version_hash: String,
+    pub content: String,
+}
 
 #[async_trait]
 pub trait SkillResolver: Send + Sync {
@@ -23,6 +34,21 @@ pub trait SkillResolver: Send + Sync {
     /// the list of relative paths (e.g. `.claude/skills`) to populate.
     /// Returns the number of symlinks successfully created.
     async fn link_workspace_skills(&self, workspace: &Path, rel_dirs: &[&str], skills: &[ResolvedAgentSkill]) -> usize;
+
+    /// Resolve explicit, source-qualified catalog IDs into immutable Markdown.
+    /// The default keeps test-only resolvers source-compatible while making an
+    /// unsupported explicit load fail rather than silently disappear.
+    async fn load_catalog_skills(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        if skill_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(AppError::BadRequest(
+            "This runtime cannot load the selected Skills".to_owned(),
+        ))
+    }
 }
 
 /// Production adapter backed by `nomifun_extension::skill_service`.
@@ -88,6 +114,27 @@ impl SkillResolver for ExtensionSkillResolver {
                 0
             }
         }
+    }
+
+    async fn load_catalog_skills(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        nomifun_extension::load_catalog_skills(&self.paths, skill_ids)
+            .await
+            .map(|skills| {
+                skills
+                    .into_iter()
+                    .map(|skill| ResolvedSkillSnapshot {
+                        skill_id: skill.skill_id,
+                        name: skill.name,
+                        source: skill.source,
+                        version_hash: skill.version_hash,
+                        content: skill.content,
+                    })
+                    .collect()
+            })
+            .map_err(Into::into)
     }
 }
 
