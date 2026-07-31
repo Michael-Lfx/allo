@@ -105,23 +105,13 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
     return presets.find((preset) => preset.preset_id === selectedAgentInfo.preset_id) ?? null;
   }, [presets, selectedAgentInfo?.preset_id]);
 
-  // ── Description + details link block ──
+  // ── Selected preset description ──
   const descriptionNode = useMemo(() => {
     if (!resolvedAgent) return null;
     const description = resolvedAgent.description_i18n?.[localeKey] || resolvedAgent.description;
     if (!description) return null;
-    return (
-      <div className='flex flex-col gap-6px'>
-        <p className='text-13px text-3 leading-relaxed mb-0'>{description}</p>
-        <span
-          className='text-12px text-primary-6 cursor-pointer hover:underline inline-block w-fit'
-          onClick={openPresetDetails}
-        >
-          {t('settings.editPreset', { defaultValue: '设定详情' })}
-        </span>
-      </div>
-    );
-  }, [resolvedAgent, localeKey, openPresetDetails, t]);
+    return <p className='text-13px text-3 leading-relaxed mb-0'>{description}</p>;
+  }, [resolvedAgent, localeKey]);
 
   // ── Example prompts rendering ──
   const promptsNode = useMemo(() => {

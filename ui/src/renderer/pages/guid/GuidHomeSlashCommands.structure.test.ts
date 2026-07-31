@@ -51,4 +51,12 @@ describe('Guid homepage slash launcher', () => {
     expect(cardSource.includes('mentionOpen || slashMenuOpen')).toBe(true);
     expect(cardSource.includes("bottom-[calc(100%+8px)] z-70")).toBe(true);
   });
+
+  test('hides the home preset chooser and inline preset-details link', () => {
+    const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
+    const editorHostSource = readSource(new URL('./components/GuidPresetEditorHost.tsx', import.meta.url));
+
+    expect(pageSource.includes('<ComposerEntryStrip')).toBe(false);
+    expect(editorHostSource.includes('onClick={openPresetDetails}')).toBe(false);
+  });
 });

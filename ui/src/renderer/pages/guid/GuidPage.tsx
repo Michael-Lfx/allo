@@ -592,6 +592,7 @@ const GuidPage: React.FC = () => {
     agentSelection.selectedAgentInfo?.avatar,
     agentSelection.selectedAgentInfo?.preset_id,
   ]);
+
   // Reset guid-local UI state before paint so same-route navigations do not
   // briefly show the previous draft or preset preset layout.
   useLayoutEffect(() => {
