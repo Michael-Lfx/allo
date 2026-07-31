@@ -965,14 +965,14 @@ impl DesktopServer {
         }
 
         #[cfg(feature = "managed-search")]
-        if let Some(managed_search) = self
+        if let Some(managed_web) = self
             ._keep_alive
             .services()
-            .and_then(|services| services.managed_search.clone())
+            .and_then(|services| services.managed_web.clone())
         {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(3),
-                managed_search.shutdown(),
+                managed_web.shutdown(),
             )
             .await
             {

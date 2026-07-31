@@ -122,6 +122,8 @@ pub struct AgentFactoryDeps {
     /// Explicit host-owned search composition. It is an in-process dependency
     /// only and never becomes user MCP configuration.
     pub search_provider: nomi_agent::SearchProviderBinding,
+    /// Explicit host-owned extract composition. Default is local-only.
+    pub extract_coordinator: nomi_agent::ExtractCoordinatorBinding,
     pub skill_manager: Arc<AcpSkillManager>,
     pub remote_agent_repo: Arc<dyn IRemoteAgentRepository>,
     pub provider_repo: Arc<dyn IProviderRepository>,

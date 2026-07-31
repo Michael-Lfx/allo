@@ -964,40 +964,49 @@ async fn forward_browser_inventory_events(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AppHostCapabilities {
     pub managed_search: bool,
+    pub managed_extract: bool,
 }
 
 impl AppHostCapabilities {
     pub const fn desktop() -> Self {
         Self {
             managed_search: true,
+            managed_extract: false,
         }
     }
 }
 
 #[cfg(feature = "managed-search")]
-fn resolve_managed_search_binding<M, D>(
+fn resolve_managed_web_binding<M, D>(
     enabled: bool,
+    managed_extract: bool,
     managed_factory: M,
     ddg_factory: D,
 ) -> (
-    Option<nomifun_ai_agent::ManagedSearchHandle>,
+    Option<nomifun_ai_agent::ManagedWebHandle>,
     nomifun_ai_agent::SearchProviderBinding,
+    nomifun_ai_agent::ExtractCoordinatorBinding,
 )
 where
-    M: FnOnce() -> Result<nomifun_ai_agent::ManagedSearchHandle, String>,
-    D: FnOnce() -> Result<nomifun_ai_agent::ManagedSearchHandle, String>,
+    M: FnOnce(bool) -> Result<nomifun_ai_agent::ManagedWebHandle, String>,
+    D: FnOnce() -> Result<nomifun_ai_agent::ManagedWebHandle, String>,
 {
     if !enabled {
         return (
             None,
             nomifun_ai_agent::SearchProviderBinding::DefaultDdg,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault,
         );
     }
 
-    match managed_factory() {
+    match managed_factory(managed_extract) {
         Ok(handle) => {
-            let binding = nomifun_ai_agent::SearchProviderBinding::Provided(handle.provider());
-            (Some(handle), binding)
+            let binding = nomifun_ai_agent::SearchProviderBinding::Provided(handle.search_provider());
+            let extract = handle
+                .extract_coordinator()
+                .map(nomifun_ai_agent::ExtractCoordinatorBinding::Provided)
+                .unwrap_or(nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault);
+            (Some(handle), binding, extract)
         }
         Err(error) => {
             tracing::warn!(
@@ -1008,8 +1017,12 @@ where
             );
             match ddg_factory() {
                 Ok(handle) => {
-                    let binding = nomifun_ai_agent::SearchProviderBinding::Provided(handle.provider());
-                    (Some(handle), binding)
+                    let binding = nomifun_ai_agent::SearchProviderBinding::Provided(handle.search_provider());
+                    (
+                        Some(handle),
+                        binding,
+                        nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault,
+                    )
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -1021,6 +1034,7 @@ where
                     (
                         None,
                         nomifun_ai_agent::SearchProviderBinding::Disabled,
+                        nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault,
                     )
                 }
             }
@@ -1065,7 +1079,7 @@ pub struct AppServices {
     pub event_bus: Arc<BroadcastEventBus>,
     pub agent_runtime_registry: Arc<dyn AgentRuntimeRegistry>,
     #[cfg(feature = "managed-search")]
-    pub(crate) managed_search: Option<nomifun_ai_agent::ManagedSearchHandle>,
+    pub(crate) managed_web: Option<nomifun_ai_agent::ManagedWebHandle>,
     pub conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     /// Same instance as `agent_runtime_registry`, exposed through the
     /// `OnConversationDelete` trait so `ConversationService::with_delete_hook`
@@ -1601,8 +1615,8 @@ impl AppServices {
     /// owns the process-level Search lifecycle.
     #[cfg(feature = "managed-search")]
     pub(crate) async fn shutdown_managed_search(&self) {
-        if let Some(managed_search) = self.managed_search.as_ref() {
-            managed_search.shutdown().await;
+        if let Some(managed_web) = self.managed_web.as_ref() {
+            managed_web.shutdown().await;
         }
     }
 
@@ -2563,23 +2577,28 @@ impl AppServices {
             nomifun_ai_agent::BrowserLaneClientProviderSlot::new();
 
         #[cfg(feature = "managed-search")]
-        let (managed_search, search_provider) = resolve_managed_search_binding(
+        let (managed_web, search_provider, extract_coordinator) = resolve_managed_web_binding(
             capabilities.managed_search,
-            || {
-                nomifun_ai_agent::ManagedSearchHandle::keyless_default()
+            capabilities.managed_extract,
+            |managed_extract| {
+                nomifun_ai_agent::ManagedWebHandle::keyless_default(managed_extract)
                     .map_err(|error| error.to_string())
             },
             || {
-                nomifun_ai_agent::ManagedSearchHandle::ddg_only()
+                nomifun_ai_agent::ManagedWebHandle::ddg_only()
                     .map_err(|error| error.to_string())
             },
         );
         #[cfg(not(feature = "managed-search"))]
-        let search_provider = nomifun_ai_agent::SearchProviderBinding::DefaultDdg;
+        let (search_provider, extract_coordinator) = (
+            nomifun_ai_agent::SearchProviderBinding::DefaultDdg,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault,
+        );
 
         let factory = build_agent_factory(AgentFactoryDeps {
             authoritative_user_id: authoritative_user_id.clone(),
             search_provider,
+            extract_coordinator,
             skill_manager: AcpSkillManager::new(skill_paths.clone()),
             remote_agent_repo,
             provider_repo,
@@ -2711,7 +2730,7 @@ impl AppServices {
             event_bus,
             agent_runtime_registry,
             #[cfg(feature = "managed-search")]
-            managed_search,
+            managed_web,
             conversation_runtime_state,
             runtime_registry_delete_hook: Some(runtime_registry_delete_hook),
             agent_registry,
@@ -4161,17 +4180,23 @@ mod tests {
     }
 
     #[test]
-    fn managed_search_is_an_explicit_desktop_capability() {
+    fn managed_web_is_an_explicit_desktop_capability() {
         assert!(!AppHostCapabilities::default().managed_search);
+        assert!(!AppHostCapabilities::default().managed_extract);
         assert!(AppHostCapabilities::desktop().managed_search);
+        assert!(
+            !AppHostCapabilities::desktop().managed_extract,
+            "remote extract must stay disabled until real acceptance"
+        );
     }
 
     #[cfg(feature = "managed-search")]
     #[test]
-    fn managed_search_binding_degrades_managed_to_ddg_then_disabled() {
-        let (handle, binding) = resolve_managed_search_binding(
+    fn managed_web_binding_degrades_managed_to_ddg_then_disabled() {
+        let (handle, binding, extract) = resolve_managed_web_binding(
             false,
-            || panic!("disabled capability must not construct managed search"),
+            false,
+            |_| panic!("disabled capability must not construct managed search"),
             || panic!("disabled capability must not construct ddg fallback"),
         );
         assert!(handle.is_none());
@@ -4179,11 +4204,16 @@ mod tests {
             binding,
             nomifun_ai_agent::SearchProviderBinding::DefaultDdg
         ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault
+        ));
 
-        let (handle, binding) = resolve_managed_search_binding(
+        let (handle, binding, extract) = resolve_managed_web_binding(
             true,
-            || {
-                nomifun_ai_agent::ManagedSearchHandle::keyless_default()
+            false,
+            |managed_extract| {
+                nomifun_ai_agent::ManagedWebHandle::keyless_default(managed_extract)
                     .map_err(|error| error.to_string())
             },
             || panic!("successful managed factory must not call ddg fallback"),
@@ -4193,21 +4223,50 @@ mod tests {
             binding,
             nomifun_ai_agent::SearchProviderBinding::Provided(_)
         ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault
+        ));
 
-        let (handle, binding) = resolve_managed_search_binding(
+        let (handle, binding, extract) = resolve_managed_web_binding(
             true,
-            || Err("managed unavailable".to_owned()),
-            || nomifun_ai_agent::ManagedSearchHandle::ddg_only().map_err(|error| error.to_string()),
+            true,
+            |managed_extract| {
+                nomifun_ai_agent::ManagedWebHandle::keyless_default(managed_extract)
+                    .map_err(|error| error.to_string())
+            },
+            || panic!("successful managed factory must not call ddg fallback"),
         );
         assert!(handle.is_some());
         assert!(matches!(
             binding,
             nomifun_ai_agent::SearchProviderBinding::Provided(_)
         ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::Provided(_)
+        ));
 
-        let (handle, binding) = resolve_managed_search_binding(
+        let (handle, binding, extract) = resolve_managed_web_binding(
             true,
-            || Err("managed unavailable".to_owned()),
+            false,
+            |_| Err("managed unavailable".to_owned()),
+            || nomifun_ai_agent::ManagedWebHandle::ddg_only().map_err(|error| error.to_string()),
+        );
+        assert!(handle.is_some());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::Provided(_)
+        ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault
+        ));
+
+        let (handle, binding, extract) = resolve_managed_web_binding(
+            true,
+            false,
+            |_| Err("managed unavailable".to_owned()),
             || Err("ddg unavailable".to_owned()),
         );
         assert!(handle.is_none());
@@ -4215,11 +4274,15 @@ mod tests {
             binding,
             nomifun_ai_agent::SearchProviderBinding::Disabled
         ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault
+        ));
     }
 
     #[cfg(feature = "managed-search")]
     #[tokio::test]
-    async fn desktop_capability_constructs_managed_search_handle() {
+    async fn desktop_capability_constructs_managed_web_handle() {
         let db = nomifun_db::init_database_memory().await.unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
         let services = AppServices::from_config_with_capabilities(
@@ -4231,8 +4294,8 @@ mod tests {
         .unwrap();
 
         assert!(
-            services.managed_search.is_some(),
-            "desktop capability must construct a ManagedSearchHandle"
+            services.managed_web.is_some(),
+            "desktop capability must construct a ManagedWebHandle"
         );
         services.shutdown_managed_search().await;
         services.database.close().await;
@@ -4365,7 +4428,7 @@ mod tests {
 
         #[cfg(feature = "managed-search")]
         assert!(
-            services.managed_search.is_none(),
+            services.managed_web.is_none(),
             "headless/default composition must remain DDG-only even when the feature is unified"
         );
         assert!(!tmp.path().join("local-ai").exists());

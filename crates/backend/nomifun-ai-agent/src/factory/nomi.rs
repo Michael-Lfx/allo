@@ -814,6 +814,7 @@ pub(super) async fn build(
             None
         },
         deps.search_provider.clone(),
+        deps.extract_coordinator.clone(),
         host_wiring,
     )
     .await?;

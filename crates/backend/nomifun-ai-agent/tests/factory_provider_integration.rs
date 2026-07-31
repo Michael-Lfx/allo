@@ -75,6 +75,7 @@ fn make_factory(
     build_agent_factory(AgentFactoryDeps {
         authoritative_user_id: Arc::from(TEST_OWNER_ID),
         search_provider: nomi_agent::SearchProviderBinding::DefaultDdg,
+        extract_coordinator: nomi_agent::ExtractCoordinatorBinding::LocalDefault,
         cron_sink_factory: None,
         gateway_mcp_config: None,
         open_mcp_config: None,

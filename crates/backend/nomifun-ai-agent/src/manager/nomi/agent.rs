@@ -479,6 +479,7 @@ impl NomiAgentManager {
             knowledge_writeback_staged,
             companion_skill_sink,
             nomi_agent::SearchProviderBinding::DefaultDdg,
+            nomi_agent::ExtractCoordinatorBinding::LocalDefault,
             host_wiring,
         )
         .await
@@ -500,6 +501,7 @@ impl NomiAgentManager {
         knowledge_writeback_staged: bool,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         search_provider: nomi_agent::SearchProviderBinding,
+        extract_coordinator: nomi_agent::ExtractCoordinatorBinding,
         host_wiring: NomiHostWiring,
     ) -> Result<Self, AppError> {
         let runtime = AgentRuntimeState::new(conversation_id.clone(), workspace.clone(), 128);
@@ -719,6 +721,12 @@ impl NomiAgentManager {
             }
             nomi_agent::SearchProviderBinding::Disabled => bootstrap.disable_web_search(),
             nomi_agent::SearchProviderBinding::DefaultDdg => bootstrap,
+        };
+        bootstrap = match extract_coordinator {
+            nomi_agent::ExtractCoordinatorBinding::Provided(coordinator) => {
+                bootstrap.extract_coordinator(coordinator)
+            }
+            nomi_agent::ExtractCoordinatorBinding::LocalDefault => bootstrap,
         };
         // Thread the application-shared browser secret vault (path +
         // machine-bound key) to the Hub-backed Browser tool policy. It resolves

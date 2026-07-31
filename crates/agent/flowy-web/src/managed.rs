@@ -15,7 +15,8 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::{
-    provider::{DuckDuckGoSearchProvider, SearchProvider},
+    coordinator::{ExtractCoordinator, ManagedExtractCoordinator},
+    provider::{DuckDuckGoSearchProvider, HttpExtractProvider, SearchProvider},
     types::{MAX_SEARCH_COUNT, SearchQuery, SearchResult, WebError},
 };
 
@@ -249,6 +250,24 @@ impl ManagedSearchService {
     /// Construction is offline; provider connections are lazy.
     pub fn keyless_default() -> Result<Self, WebError> {
         let disabled = development_disabled_providers();
+        let parallel_client = if !disabled.contains(&SearchProviderId::Parallel) {
+            Some(Arc::new(ParallelMcpClient::new()?))
+        } else {
+            None
+        };
+        Self::keyless_with_optional_client(parallel_client)
+    }
+
+    pub(crate) fn keyless_with_shared_client(
+        client: Arc<ParallelMcpClient>,
+    ) -> Result<Self, WebError> {
+        Self::keyless_with_optional_client(Some(client))
+    }
+
+    fn keyless_with_optional_client(
+        parallel_client: Option<Arc<ParallelMcpClient>>,
+    ) -> Result<Self, WebError> {
+        let disabled = development_disabled_providers();
         if !disabled.is_empty() {
             let providers = disabled
                 .iter()
@@ -262,13 +281,10 @@ impl ManagedSearchService {
             );
         }
 
-        let parallel_client = if !disabled.contains(&SearchProviderId::Parallel) {
-            Some(Arc::new(ParallelMcpClient::new()?))
-        } else {
-            None
-        };
         let mut adapters = Vec::new();
-        if !disabled.contains(&SearchProviderId::Parallel) {
+        let use_parallel =
+            !disabled.contains(&SearchProviderId::Parallel) && parallel_client.is_some();
+        if use_parallel {
             adapters.push((
                 Arc::new(RemoteSearchAdapter::parallel(Arc::clone(
                     parallel_client
@@ -321,7 +337,52 @@ impl ManagedSearchService {
             slot.adapter.shutdown(deadline).await;
         }
     }
+}
 
+pub struct ManagedWebService {
+    search: Arc<ManagedSearchService>,
+    extract: Option<Arc<dyn ExtractCoordinator>>,
+}
+
+impl ManagedWebService {
+    pub fn keyless_default(managed_extract: bool) -> Result<Self, WebError> {
+        let parallel_client = Arc::new(ParallelMcpClient::new()?);
+        let search = Arc::new(ManagedSearchService::keyless_with_shared_client(Arc::clone(
+            &parallel_client,
+        ))?);
+        let extract = if managed_extract {
+            let fetch = Arc::new(ParallelFetchAdapter::new(Arc::clone(&parallel_client)));
+            Some(Arc::new(ManagedExtractCoordinator::new(
+                Arc::new(HttpExtractProvider::new()),
+                fetch,
+            )) as Arc<dyn ExtractCoordinator>)
+        } else {
+            None
+        };
+        Ok(Self { search, extract })
+    }
+
+    pub fn ddg_only() -> Result<Self, WebError> {
+        Ok(Self {
+            search: Arc::new(ManagedSearchService::ddg_only()?),
+            extract: None,
+        })
+    }
+
+    pub fn search_provider(&self) -> Arc<dyn SearchProvider> {
+        self.search.clone()
+    }
+
+    pub fn extract_coordinator(&self) -> Option<Arc<dyn ExtractCoordinator>> {
+        self.extract.clone()
+    }
+
+    pub async fn shutdown(&self) {
+        self.search.shutdown().await;
+    }
+}
+
+impl ManagedSearchService {
     async fn route(&self, query: &SearchQuery) -> Result<SearchResult, WebError> {
         let request_id = Uuid::now_v7();
         let overall_deadline = Instant::now() + TOTAL_BUDGET;
@@ -1268,5 +1329,18 @@ mod tests {
         assert!(result.hits[0].title.chars().count() <= MAX_TITLE_CHARS);
         assert!(result.hits[0].url.len() <= MAX_URL_BYTES);
         assert!(result.hits[0].snippet.chars().count() <= MAX_SNIPPET_CHARS);
+    }
+
+    #[test]
+    fn managed_web_service_search_only_constructs_offline() {
+        let service = ManagedWebService::keyless_default(false).expect("offline construction");
+        assert!(service.extract_coordinator().is_none());
+        let _provider = service.search_provider();
+    }
+
+    #[test]
+    fn managed_web_service_composes_extract_capability() {
+        let service = ManagedWebService::keyless_default(true).expect("offline construction");
+        assert!(service.extract_coordinator().is_some());
     }
 }
