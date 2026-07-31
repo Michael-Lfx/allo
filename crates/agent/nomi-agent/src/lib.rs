@@ -32,6 +32,6 @@ pub mod vcr;
 // `nomi_agent::skills::` without changing their import paths.
 pub use nomi_skills as skills;
 pub use flowy_web::provider::SearchProvider;
-pub use bootstrap::SearchProviderBinding;
+pub use bootstrap::{ExtractCoordinatorBinding, SearchProviderBinding};
 
 pub use knowledge_tools::{KnowledgeHit, KnowledgeReadTool, KnowledgeRetrievalSink, KnowledgeSearchTool};

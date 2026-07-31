@@ -21,6 +21,15 @@ pub enum SearchProviderBinding {
     Disabled,
 }
 
+/// Host-owned extract composition. The default keeps standalone and Web Host
+/// callers on the historical `HttpExtractProvider` path, while Desktop can
+/// explicitly provide a Managed Extract Coordinator.
+#[derive(Clone)]
+pub enum ExtractCoordinatorBinding {
+    LocalDefault,
+    Provided(Arc<dyn flowy_web::ExtractCoordinator>),
+}
+
 /// **extract-llm: session-model adapter for `BrowserTool`'s extract seam.**
 ///
 /// Wraps the session's [`LlmProvider`] + model params so `act(Extract)` can do real
@@ -299,6 +308,7 @@ pub struct AgentBootstrap {
     output: Arc<dyn OutputSink>,
     provider: Option<Arc<dyn LlmProvider>>,
     search_provider: SearchProviderBinding,
+    extract_coordinator: ExtractCoordinatorBinding,
     resume_session: Option<Session>,
     extra_skill_dirs: Vec<PathBuf>,
     goal: Option<crate::goal::runtime::GoalSpec>,
@@ -349,6 +359,7 @@ impl AgentBootstrap {
             output,
             provider: None,
             search_provider: SearchProviderBinding::DefaultDdg,
+            extract_coordinator: ExtractCoordinatorBinding::LocalDefault,
             resume_session: None,
             extra_skill_dirs: Vec::new(),
             goal: None,
@@ -382,6 +393,15 @@ impl AgentBootstrap {
     /// local `web_extract` tool when web tools are otherwise enabled.
     pub fn disable_web_search(mut self) -> Self {
         self.search_provider = SearchProviderBinding::Disabled;
+        self
+    }
+
+    /// Inject the host-owned web-extract coordinator. Default remains local-only.
+    pub fn extract_coordinator(
+        mut self,
+        coordinator: Arc<dyn flowy_web::ExtractCoordinator>,
+    ) -> Self {
+        self.extract_coordinator = ExtractCoordinatorBinding::Provided(coordinator);
         self
     }
 
@@ -588,8 +608,16 @@ impl AgentBootstrap {
             } {
                 registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
             }
-            let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
-            registry.register(Box::new(flowy_web::tools::WebExtractTool::new(extract)));
+            let extract = match self.extract_coordinator {
+                ExtractCoordinatorBinding::Provided(coordinator) => {
+                    flowy_web::tools::WebExtractTool::with_coordinator(coordinator)
+                }
+                ExtractCoordinatorBinding::LocalDefault => {
+                    let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
+                    flowy_web::tools::WebExtractTool::new(extract)
+                }
+            };
+            registry.register(Box::new(extract));
         }
 
         // Numeric-session schemas share the same supervisor as Bash. The
