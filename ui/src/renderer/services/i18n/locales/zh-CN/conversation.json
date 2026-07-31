@@ -651,7 +651,9 @@
     "label": "思考中..."
   },
   "skills": {
-    "loaded": "已加载技能"
+    "loaded": "已加载技能",
+    "selected": "已选择的技能",
+    "remove": "移除 {{name}}"
   },
   "mcp": {
     "loaded": "已加载 MCP",

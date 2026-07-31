@@ -4,7 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 // Match slash followed by command name (alphanumeric, underscore, hyphen only)
 // 匹配斜杠后跟命令名（仅允许字母数字、下划线、连字符）
-const SLASH_QUERY_RE = /^\/([a-zA-Z0-9_-]*)$/;
+const SLASH_QUERY_RE = /(?:^|\s)\/([a-zA-Z0-9_-]*)$/;
 
 export function matchSlashQuery(input: string): string | null {
   const match = input.match(SLASH_QUERY_RE);

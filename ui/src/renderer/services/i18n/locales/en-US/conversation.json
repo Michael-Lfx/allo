@@ -651,7 +651,9 @@
     "label": "Thinking..."
   },
   "skills": {
-    "loaded": "Loaded Skills"
+    "loaded": "Loaded Skills",
+    "selected": "Selected Skills",
+    "remove": "Remove {{name}}"
   },
   "mcp": {
     "loaded": "Loaded MCP",
