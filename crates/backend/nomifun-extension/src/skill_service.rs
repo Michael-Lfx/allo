@@ -362,6 +362,19 @@ pub struct SkillListItem {
     pub source: SkillSource,
 }
 
+/// Lightweight item used by the user-facing Skill catalog.
+///
+/// Unlike [`SkillListItem`], this representation preserves two Skills with
+/// the same display name when they originate from different sources. The
+/// legacy list still follows its existing user-overrides-builtin behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillCatalogItem {
+    pub name: String,
+    pub description: String,
+    pub source: SkillSource,
+    pub source_key: Option<String>,
+}
+
 /// List all available skills (built-in + user custom), deduplicated.
 ///
 /// User custom skills override built-in skills with the same name.
@@ -411,6 +424,59 @@ pub async fn list_available_skills(
     let mut result = custom_skills;
     result.extend(builtin_items);
     Ok(result)
+}
+
+/// List Skills that a user or Agent may discover through the new catalog.
+///
+/// This is intentionally distinct from [`list_available_skills`]: source
+/// collisions are retained rather than resolved by the legacy execution
+/// precedence, and built-in auto-injected system Skills are not exposed as
+/// user-selectable entries.
+pub async fn list_catalog_skills(paths: &SkillPaths) -> Result<Vec<SkillCatalogItem>, ExtensionError> {
+    let mut catalog: Vec<SkillCatalogItem> = list_builtin_skills(paths)
+        .await
+        .into_iter()
+        .filter(|item| !is_system_owned_builtin(item))
+        .map(|item| SkillCatalogItem {
+            name: item.name,
+            description: item.description,
+            source: item.source,
+            source_key: None,
+        })
+        .collect();
+
+    if let Ok(entries) = scan_skill_dirs(&paths.user_skills_dir).await {
+        catalog.extend(entries.into_iter().map(|item| SkillCatalogItem {
+            name: item.name,
+            description: item.description,
+            source: SkillSource::Custom,
+            source_key: None,
+        }));
+    }
+
+    catalog.sort_by(|left, right| {
+        catalog_source_sort_key(left.source)
+            .cmp(catalog_source_sort_key(right.source))
+            .then_with(|| left.source_key.cmp(&right.source_key))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(catalog)
+}
+
+fn is_system_owned_builtin(item: &SkillListItem) -> bool {
+    item.source == SkillSource::Builtin
+        && item
+            .relative_location
+            .as_deref()
+            .is_some_and(|path| path.starts_with(&format!("{BUILTIN_AUTO_SKILLS_SUBDIR}/")))
+}
+
+fn catalog_source_sort_key(source: SkillSource) -> &'static str {
+    match source {
+        SkillSource::Builtin => "builtin",
+        SkillSource::Custom => "user",
+        SkillSource::Extension => "extension",
+    }
 }
 
 /// Emit a [`SkillListItem`] for every built-in skill (both auto-inject

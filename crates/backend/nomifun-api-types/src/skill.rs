@@ -3,8 +3,100 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// A. Skill list & info
+// A. Skill catalog, list & info
 // ---------------------------------------------------------------------------
+
+/// User-facing origin for a catalogued Skill.
+///
+/// This is deliberately separate from [`SkillSourceResponse`], whose
+/// `custom` spelling is retained for the legacy Skills Hub API. New catalog
+/// consumers use the product-facing scopes below and identify a Skill through
+/// [`SkillId`] rather than its display name.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCatalogSource {
+    Builtin,
+    User,
+    Project,
+    Extension,
+    Mcp,
+    Legacy,
+}
+
+impl SkillCatalogSource {
+    /// Stable namespace segment used by [`SkillId`].
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Extension => "extension",
+            Self::Mcp => "mcp",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+/// Opaque, source-qualified identifier for one discoverable Skill.
+///
+/// The canonical form is `<source>:<name>` when the source has no local
+/// owner, or `<source>:<source_key>:<name>` when it does. Source-key and name
+/// components use percent encoding, so a future extension or MCP server name
+/// cannot make an identifier ambiguous.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct SkillId(String);
+
+impl SkillId {
+    pub fn new(source: SkillCatalogSource, source_key: Option<&str>, name: &str) -> Self {
+        let mut value = source.as_str().to_owned();
+        if let Some(source_key) = source_key.filter(|key| !key.is_empty()) {
+            value.push(':');
+            value.push_str(&encode_skill_id_component(source_key));
+        }
+        value.push(':');
+        value.push_str(&encode_skill_id_component(name));
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn encode_skill_id_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            write!(encoded, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    encoded
+}
+
+/// One discoverable, user-facing Skill (`GET /api/skills/catalog`).
+///
+/// Catalog discovery contains only lightweight metadata. It intentionally
+/// omits filesystem locations and `SKILL.md` bodies; those are loaded through
+/// the later, policy-aware loading flow.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillCatalogItemResponse {
+    pub skill_id: SkillId,
+    pub name: String,
+    pub description: String,
+    pub source: SkillCatalogSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+}
+
+/// Response payload for the user-facing Skill catalog.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillCatalogResponse {
+    pub skills: Vec<SkillCatalogItemResponse>,
+}
 
 /// Origin of a listed skill — `builtin`, `custom`, or `extension`.
 ///
@@ -359,6 +451,18 @@ pub struct SkillMarketPackageInstallResponse {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn catalog_skill_id_qualifies_and_escapes_source_components() {
+        let id = SkillId::new(
+            SkillCatalogSource::Extension,
+            Some("office:plugin"),
+            "pdf/export",
+        );
+
+        assert_eq!(id.as_str(), "extension:office%3Aplugin:pdf%2Fexport");
+        assert_eq!(serde_json::to_value(id).unwrap(), json!("extension:office%3Aplugin:pdf%2Fexport"));
+    }
 
     // -- Skill list --
 

@@ -12,7 +12,8 @@ use nomifun_api_types::{
     ImportSkillRequest, ImportSkillResponse, MaterializeSkillsRequest, MaterializeSkillsResponse, MaterializedSkillRef,
     NamedPathResponse, ReadPresetRuleRequest, ReadBuiltinResourceRequest, ReadSkillInfoRequest,
     ReadSkillInfoResponse, RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse,
-    ScannedSkillResponse, SetSkillTagsRequest, SkillListItemResponse, SkillMarketMcpConfigRequest,
+    ScannedSkillResponse, SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse,
+    SkillCatalogSource, SkillId, SkillListItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallResponse, SkillMarketPackageRequest,
     SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
     WritePresetRuleRequest,
@@ -29,6 +30,14 @@ fn to_source_response(source: SkillSource) -> SkillSourceResponse {
         SkillSource::Builtin => SkillSourceResponse::Builtin,
         SkillSource::Custom => SkillSourceResponse::Custom,
         SkillSource::Extension => SkillSourceResponse::Extension,
+    }
+}
+
+fn to_catalog_source(source: SkillSource) -> SkillCatalogSource {
+    match source {
+        SkillSource::Builtin => SkillCatalogSource::Builtin,
+        SkillSource::Custom => SkillCatalogSource::User,
+        SkillSource::Extension => SkillCatalogSource::Extension,
     }
 }
 
@@ -64,6 +73,7 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
     Router::new()
         // Skill listing & info
         .route("/api/skills", get(list_skills))
+        .route("/api/skills/catalog", get(list_catalog_skills))
         .route("/api/skills/builtin-auto", get(list_builtin_auto_skills))
         .route("/api/skills/{name}/tags", put(set_skill_tags))
         .route("/api/skills/info", post(read_skill_info))
@@ -161,6 +171,29 @@ async fn list_skills(
         })
         .collect();
     Ok(Json(ApiResponse::ok(resp)))
+}
+
+/// `GET /api/skills/catalog` — list the source-qualified, user-facing Skill
+/// discovery metadata. This does not expose system-owned auto-injected
+/// Skills, filesystem locations, or full `SKILL.md` contents.
+async fn list_catalog_skills(
+    State(state): State<SkillRouterState>,
+) -> Result<Json<ApiResponse<SkillCatalogResponse>>, AppError> {
+    let skills = skill_service::list_catalog_skills(&state.skill_paths)
+        .await?
+        .into_iter()
+        .map(|item| {
+            let source = to_catalog_source(item.source);
+            SkillCatalogItemResponse {
+                skill_id: SkillId::new(source, item.source_key.as_deref(), &item.name),
+                name: item.name,
+                description: item.description,
+                source,
+                source_key: item.source_key,
+            }
+        })
+        .collect();
+    Ok(Json(ApiResponse::ok(SkillCatalogResponse { skills })))
 }
 
 /// Decode a JSON-array TEXT column into a `Vec<String>`. Fail-soft on purpose
