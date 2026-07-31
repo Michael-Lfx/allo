@@ -9,6 +9,9 @@ use futures_util::StreamExt;
 use url::Url;
 
 use crate::provider::article::{ArticleExtractor, DomSmoothieExtractor};
+use crate::provider::extract_policy::{
+    LocalExtractDiagnostics, LocalExtractOutcome, failed_outcome, successful_outcome,
+};
 use crate::provider::html_md::{html_to_markdown, truncate_chars};
 use crate::provider::ssrf::{check_scheme, resolve_extract_url, resolve_validated};
 use crate::provider::ExtractProvider;
@@ -116,10 +119,59 @@ impl HttpExtractProvider {
         )))
     }
 
-    async fn fetch_html(&self, raw_url: &str) -> Result<(Url, String), WebError> {
-        let resource = self.fetch_resource(raw_url).await?;
-        let text = String::from_utf8_lossy(&resource.body).into_owned();
-        Ok((resource.final_url, text))
+    async fn extract_resource(
+        &self,
+        req: ExtractRequest,
+    ) -> Result<(FetchedResource, ExtractedPage), WebError> {
+        let resource = self.fetch_resource(&req.url).await?;
+        let html = String::from_utf8_lossy(&resource.body).into_owned();
+        let final_url = resource.final_url.clone();
+        let url_str = final_url.as_str();
+
+        let article = self.article.extract_article(&html, Some(url_str));
+        let (raw_html, extractor, title_hint) = match article {
+            Some(a) => (a.html, EXTRACTOR_READABILITY, a.title),
+            None => (html.clone(), EXTRACTOR_FULLPAGE, None),
+        };
+        let (title, markdown) = html_to_markdown(&raw_html);
+        let title = title_hint.or(title);
+        let page = if extractor == EXTRACTOR_READABILITY
+            && markdown.chars().count() < MIN_ARTICLE_CHARS
+        {
+            let (title, markdown) = html_to_markdown(&html);
+            let (markdown, truncated) = truncate_chars(&markdown, EXTRACT_CHAR_LIMIT);
+            ExtractedPage {
+                url: final_url.to_string(),
+                title,
+                markdown,
+                truncated,
+                provider: self.name().to_owned(),
+                extractor: EXTRACTOR_FULLPAGE.to_owned(),
+            }
+        } else {
+            let (markdown, truncated) = truncate_chars(&markdown, EXTRACT_CHAR_LIMIT);
+            ExtractedPage {
+                url: final_url.to_string(),
+                title,
+                markdown,
+                truncated,
+                provider: self.name().to_owned(),
+                extractor: extractor.to_owned(),
+            }
+        };
+        Ok((resource, page))
+    }
+
+    #[allow(dead_code)] // Consumed by the extract coordinator phases.
+    pub(crate) async fn extract_with_metadata(
+        &self,
+        req: ExtractRequest,
+    ) -> LocalExtractOutcome {
+        let requested_url = req.url.clone();
+        match self.extract_resource(req).await {
+            Ok((resource, page)) => successful_outcome(requested_url, &resource, page),
+            Err(error) => failed_outcome(requested_url, error, LocalExtractDiagnostics::default()),
+        }
     }
 
     async fn send(&self, url: &Url, addrs: &[SocketAddr]) -> Result<reqwest::Response, WebError> {
@@ -187,37 +239,7 @@ impl ExtractProvider for HttpExtractProvider {
     }
 
     async fn extract(&self, req: ExtractRequest) -> Result<ExtractedPage, WebError> {
-        let (final_url, html) = self.fetch_html(&req.url).await?;
-        let url_str = final_url.as_str();
-
-        let article = self.article.extract_article(&html, Some(url_str));
-        let (raw_html, extractor, title_hint) = match article {
-            Some(a) => (a.html, EXTRACTOR_READABILITY, a.title),
-            None => (html.clone(), EXTRACTOR_FULLPAGE, None),
-        };
-        let (title, markdown) = html_to_markdown(&raw_html);
-        let title = title_hint.or(title);
-        if extractor == EXTRACTOR_READABILITY && markdown.chars().count() < MIN_ARTICLE_CHARS {
-            let (title, markdown) = html_to_markdown(&html);
-            let (markdown, truncated) = truncate_chars(&markdown, EXTRACT_CHAR_LIMIT);
-            return Ok(ExtractedPage {
-                url: final_url.to_string(),
-                title,
-                markdown,
-                truncated,
-                provider: self.name().to_owned(),
-                extractor: EXTRACTOR_FULLPAGE.to_owned(),
-            });
-        }
-        let (markdown, truncated) = truncate_chars(&markdown, EXTRACT_CHAR_LIMIT);
-        Ok(ExtractedPage {
-            url: final_url.to_string(),
-            title,
-            markdown,
-            truncated,
-            provider: self.name().to_owned(),
-            extractor: extractor.to_owned(),
-        })
+        self.extract_resource(req).await.map(|(_, page)| page)
     }
 }
 

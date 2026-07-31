@@ -1,6 +1,7 @@
 pub mod article;
 pub mod duckduckgo;
 pub mod extract;
+pub(crate) mod extract_policy;
 pub mod html_md;
 pub mod http_extract;
 pub mod search;
