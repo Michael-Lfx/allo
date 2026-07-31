@@ -91,6 +91,9 @@ Parallel -> You.com Free -> DuckDuckGo
   9. 唯一 shutdown owner
   10. Fetch 诊断与 endpoint health
   11. 策略文档
+  12. 启用前 Review 修复：URL 归属、fragment 出站、结构化失败分类、
+      access challenge、source completeness、Peer generation readiness、
+      共享 endpoint health / 独立 fetch tool health、timeout 与 local/final 指标
 - 当前分支已 rebase 到最新 `main`，开发分支为 `feat/managed-web-fetch`。
 
 ## 当前 Search 实现结果
@@ -147,11 +150,23 @@ Local-first
 - 远程只发送 `urls[]` 和 `full_content=false`。
 - 不发送 `objective`、`search_queries`、`session_id`、`model_name`。
 - 敏感 URL 本地允许，远程禁止。
-- 远程成功按 requested URL fan-out 到重复原始 index。
+- 出站 URL 剥离普通 fragment；敏感 fragment 远程禁止。
+- 远程结果只按 canonical requested URL 匹配，任何 index/position 兜底禁止；
+  一个结果可 fan-out 到重复原始 index。
 - 远程失败恢复原有本地错误，不向模型暴露 Parallel/MCP/provider 细节。
+- `WebError::Parse` 不进入远程；HTTP 状态优先来自结构化 diagnostics。
+- 200 CAPTCHA/WAF、登录页、付费墙不进入远程。
+- excerpts 标记 `source_truncated=true`，和 Allo 的 context 截断分开。
+- Fetch readiness 基于 `RemoteMcpPeer` generation，不再使用历史成功布尔。
+- Search/Fetch 共享 transport endpoint health；Fetch tool-level 错误独立冷却。
 - 全局 Fetch 并发通过共享 `Semaphore::new(1)` 限制。
 - 远程预算不足时不远程。
 - Shared Parallel Peer 只由进程级 `ManagedWebHandle` shutdown 一次。
+- `RemoteMcpPeer::discover_tools` 在并发下只发一次 `tools/list`；generation
+  变化、SessionExpired 和 Unknown Tool 都会触发兼容性重新验证。
+- 日志区分 timeout 分类、fallback/forbidden reason、source/context truncated。
+- 取消边界覆盖：等待 fetch semaphore 时取消不发出 `tools/call`，在途 MCP call
+  取消不残留 detached task；两个并发 adapter 共享同一个全局 Fetch permit。
 
 ### 当前不启用原因
 
@@ -182,10 +197,13 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 2. 第一版只允许本地失败后进入一次远程阶段。
 3. 只发送 URL，不发送用户 Query 或稳定会话标识。
 4. 远程结果先读 `structuredContent.results/errors`，失败再读 text JSON 副本。
-5. 远程结果按 requested URL 映射；`final_url` 只用于内部诊断。
+5. 远程结果只按 canonical requested URL 映射；禁止 index/position 兜底；
+   `final_url` 只用于内部诊断。
 6. 远程响应独立设置原始 body 上限；模型预算仍按 3,000/8,000 执行。
-7. 敏感 URL 只禁止远程发送，不禁止本地读取。
-8. Desktop 默认不启用，直到真实验收通过。
+7. 敏感 URL 只禁止远程发送，不禁止本地读取；fragment 中的敏感键同样禁止。
+8. Parse 和 200 access challenge 页面不进入远程。
+9. 远程内容若来自 excerpts，则标记 source_truncated。
+10. Desktop 默认不启用，直到真实验收通过。
 
 ## 避坑清单
 
@@ -219,10 +237,29 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 - **HTTP 失败诊断不能丢失 status / Content-Type。**
   `extract_with_metadata` 已改为保留 `http_status`、`content_type` 和
   `body_truncated`。
+- **HTTP 分类必须优先使用结构化 status。**
+  不要从错误文案反推 404/403；`WebError::Parse` 是解析失败，不是 network，
+  不得进入远程。
 - **敏感 URL 语义是“本地允许、远程禁止”。**
   不要把敏感 URL 误写成“本地也禁止”。
+- **不要把原始 requested_url 当出站 URL。**
+  Parallel 只接收剥离普通 fragment 后的 outbound_url；敏感 fragment 必须整体
+  禁止远程。
 - **远程批量结果不保证 index 顺序。**
-  按 requested URL 映射；重复 URL 去重后要 fan-out 回所有原始 index。
+  按 canonical requested URL 映射；禁止数量相等时按 index 配对；重复 URL 去重
+  后要 fan-out 回所有原始 index。
+- **200 页面也可能是访问挑战。**
+  CAPTCHA/WAF、登录表单、付费墙要结合 body 信号和“无有效正文”判断，不能只看
+  一个 `login` 或 `subscribe` 单词。
+- **excerpts 不是完整正文。**
+  `full_content=false` 时，远程结果默认应视为 source_truncated；不能把摘录标记
+  成完整内容。
+- **历史成功过不等于当前 Peer warm。**
+  readiness 必须读取 `RemoteMcpPeer` 的 generation/initialized/tools_cached；
+  Fetch compatibility 必须绑定 generation，SessionExpired 后重新验证。
+- **Fetch Tool 级错误不能关停 Parallel Search。**
+  `is_error` Upstream、decoder malformed、fetch call timeout 走 Fetch-specific
+  cooldown；只有 401/403/429/network/protocol 才写入共享 endpoint health。
 - **远程 `errors[]` 是部分失败的重要信号。**
   不要只统计 `results[]`，否则 403/404 会被误判为远程成功。
 - **远程 fallback 失败后必须展示原本地错误。**

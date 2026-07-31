@@ -35,7 +35,9 @@ Local-first
 
 Local successes never enter the remote stage. A remote stage is attempted at
 most once per batch. Local retries and remote retries after a remote stage are
-forbidden.
+forbidden. Remote results are mapped only by canonical requested URL; any
+index/position fallback is forbidden. One remote result for a canonical URL may
+fan out to every original request index.
 
 ## Remote Eligible
 
@@ -53,6 +55,8 @@ The first version may send these to Parallel only after local failure:
 The first version never sends:
 
 - HTTP 401, 403, 404, 410, or 429
+- Other 4xx and 5xx responses
+- Local parse errors
 - CAPTCHA, WAF challenge, paywall, or login pages
 - Private or local addresses
 - `localhost`
@@ -60,6 +64,7 @@ The first version never sends:
 - Non-HTTP(S) schemes
 - URLs containing username/password
 - URLs whose query looks like a token, signature, credential, or presigned URL
+- URLs whose fragment contains a token, credential, session, or auth key
 
 502, 503, and 504 remain disabled until separate probe and acceptance data
 justifies them.
@@ -76,6 +81,11 @@ Remote sending: forbidden
 A sensitive URL is still fetched locally. If local extraction succeeds, the
 content is returned normally. If local extraction fails, the original local
 error is returned and Parallel is never contacted.
+
+The model-visible `requested_url` keeps the original fragment for local error
+and output attribution. The actual Parallel outbound URL is derived separately:
+non-sensitive fragments are stripped before sending, while sensitive fragments
+are forbidden from remote entirely.
 
 ## Privacy
 
@@ -96,8 +106,36 @@ It never sends:
 - Local session or conversation IDs
 - Tool use IDs
 - Local error bodies
+- Sensitive fragments or raw requested URLs with fragments
 
 `objective`, `search_queries`, `session_id`, and `model_name` are omitted.
+
+## Content Completeness
+
+`source_truncated` is true when Parallel returns excerpts or an explicit
+truncated result. `context_truncated` remains the Allo-side 3,000/8,000
+character budget truncation. The model only receives the unified `truncated`
+flag.
+
+## Remote Readiness & Health
+
+Readiness is based on the live `RemoteMcpPeer` state, not a historical success
+boolean:
+
+```text
+ColdTransport -> peer not initialized
+WarmTransportToolUnknown -> peer initialized, fetch compatibility not verified
+Ready -> peer initialized and current-generation fetch schema verified
+```
+
+Fetch compatibility is bound to the peer generation. Session expiry or an
+explicit unknown tool invalidates both the peer tools cache and the adapter
+compatibility cache before at most one rediscovery.
+
+Search and Fetch share transport-level endpoint health for 401, 403, 429,
+network failure, and MCP protocol/transport malformed responses. Fetch
+tool-level upstream errors, decoder malformed responses, and tool timeouts use
+a separate Fetch-only cooldown and do not disable Parallel Search.
 
 ## Context Budget
 
@@ -135,14 +173,19 @@ If only the Fetch tool is incompatible:
 
 The shared Parallel peer is shutdown exactly once by the process-level
 `ManagedWebHandle`. Repeated shutdown is idempotent and bounded by an outer
-timeout so Browser and Database cleanup can still run.
+timeout so Browser and Database cleanup can still run. Concurrent tool
+discovery is serialized inside `RemoteMcpPeer`, so Search/Fetch initialization
+never emits duplicate `tools/list` requests for the same peer.
 
 ## Diagnostics
 
 Logs record counts and timing only:
 
-- requested, local success/failure, remote eligible/forbidden/budget-skipped
-- remote attempted/success/failure
+- requested, local success/failure, final success/failure
+- remote eligible/forbidden/budget-skipped
+- remote attempted/success/failure and fallback/forbidden reason counts
+- timeout category counts (per-url, tool deadline, remote queue/call)
+- source_truncated_count and context_truncated_count
 - remote queue/call time and total elapsed
 
 Logs never record URLs, query parameters, page titles, bodies, user questions,
