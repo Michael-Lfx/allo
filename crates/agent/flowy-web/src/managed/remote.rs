@@ -59,12 +59,14 @@ pub(super) struct ParallelMcpClient {
 
 impl ParallelMcpClient {
     pub(super) fn new() -> Result<Self, WebError> {
+        Self::new_at_endpoint("https://search.parallel.ai/mcp")
+    }
+
+    pub(super) fn new_at_endpoint(endpoint: impl Into<String>) -> Result<Self, WebError> {
         Ok(Self {
-            peer: Arc::new(
-                RemoteMcpPeer::new("https://search.parallel.ai/mcp").map_err(|_| {
-                    WebError::Provider("could not initialize managed Parallel MCP".to_owned())
-                })?,
-            ),
+            peer: Arc::new(RemoteMcpPeer::new(endpoint).map_err(|_| {
+                WebError::Provider("could not initialize managed Parallel MCP".to_owned())
+            })?),
             endpoint_health: Mutex::new(EndpointHealth::default()),
             tool_catalog: RwLock::new(ToolCatalogSnapshot {
                 generation: 0,
@@ -437,7 +439,7 @@ fn map_decode_error(error: DecodeError) -> SearchAttemptError {
     }
 }
 
-fn is_explicit_unknown_tool(result: &nomi_mcp::protocol::McpToolResult) -> bool {
+pub(super) fn is_explicit_unknown_tool(result: &nomi_mcp::protocol::McpToolResult) -> bool {
     result.content.iter().any(|content| {
         let nomi_mcp::protocol::McpContent::Text { text } = content else {
             return false;
@@ -446,7 +448,7 @@ fn is_explicit_unknown_tool(result: &nomi_mcp::protocol::McpToolResult) -> bool 
     })
 }
 
-fn is_explicit_unknown_tool_rpc(error: &McpPeerError) -> bool {
+pub(super) fn is_explicit_unknown_tool_rpc(error: &McpPeerError) -> bool {
     match error {
         McpPeerError::JsonRpc {
             code: -32602,
@@ -457,7 +459,7 @@ fn is_explicit_unknown_tool_rpc(error: &McpPeerError) -> bool {
     }
 }
 
-fn is_unknown_tool_message(message: &str, data: Option<&Value>) -> bool {
+pub(super) fn is_unknown_tool_message(message: &str, data: Option<&Value>) -> bool {
     let message = message.to_ascii_lowercase();
     if message.contains("unknown tool")
         || message.contains("tool not found")

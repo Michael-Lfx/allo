@@ -20,6 +20,7 @@ use crate::{
 };
 
 mod decoders;
+mod fetch;
 mod remote;
 
 use remote::{ParallelMcpClient, RemoteSearchAdapter};
