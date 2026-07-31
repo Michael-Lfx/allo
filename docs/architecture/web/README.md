@@ -19,11 +19,8 @@ host composition, privacy, budgets, or lifecycle.
 
 Historical research, planning, and decision evidence lives outside this folder:
 
-- `docs/superpowers/plans/2026-07-30-managed-web-search-next-goal.md`
 - `docs/superpowers/plans/2026-07-30-managed-web-search-you-rollout.md`
 - `docs/superpowers/specs/2026-07-29-free-search-services-research.md`
-- `docs/superpowers/specs/2026-07-30-managed-web-search-alternatives.md`
-- `docs/superpowers/specs/2026-07-30-you-parallel-fetch-design-evidence.md`
 - `docs/continuity/decisions/2026-07-31-parallel-web-fetch-admission.md`
 
 ## Model surface

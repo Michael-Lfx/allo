@@ -68,7 +68,6 @@ Parallel -> You.com Free -> DuckDuckGo
 
 ### 2026-07-30：MCP Fetch 证据
 
-- 文档：`docs/superpowers/specs/2026-07-30-you-parallel-fetch-design-evidence.md`
 - 确认 Parallel `web_fetch` 是独立能力，不能作为模型可见工具暴露。
 - 确定方向：普通 HTML 继续本地 `HttpExtractProvider`，只有 PDF、JS 空壳、
   不支持文档、本地空正文或符合条件的网络失败才考虑远程 fallback。
@@ -264,9 +263,7 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 | 文档 | 状态 |
 | --- | --- |
 | `docs/superpowers/specs/2026-07-29-free-search-services-research.md` | 历史调研：免费搜索服务、大陆访问、Agent 搜索架构 |
-| `docs/superpowers/specs/2026-07-30-managed-web-search-alternatives.md` | 历史调研：Search Provider 候选与排除项 |
-| `docs/superpowers/plans/2026-07-30-managed-web-search-next-goal.md` | 历史规划：typed decoder + You.com admission + Exa removal |
-| `docs/superpowers/specs/2026-07-30-you-parallel-fetch-design-evidence.md` | 历史证据：You.com 替换与 MCP Fetch 方向 |
+| `docs/superpowers/plans/2026-07-30-managed-web-search-you-rollout.md` | 历史 rollout：You.com 替换 Exa、MCP Peer 不变量、typed decoder |
 
 ## 后续待完成
 
