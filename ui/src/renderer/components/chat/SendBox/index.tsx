@@ -261,6 +261,13 @@ const SendBox: React.FC<{
   const isInputActive = isInputFocused;
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
   const containerRef = useRef<HTMLDivElement>(null);
+  // Outer wrapper ref (the `relative` shell around `.sendbox-panel`). Used as the
+  // Tauri native drag-drop hit-test scope so the catch includes floating children
+  // that live OUTSIDE the panel box — notably PinnedPlan, rendered as a sibling
+  // above `.sendbox-panel` — letting drops on it attach instead of being imported
+  // by the workspace catch-all. `containerRef` (the panel) stays anchored to
+  // BtwOverlay / textarea queries; this ref is drag-drop only.
+  const dropzoneRef = useRef<HTMLDivElement>(null);
   const singleLineWidthRef = useRef<number>(0);
   const measurementCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const mobileUserFocusIntentUntilRef = useRef(0);
@@ -460,6 +467,7 @@ const SendBox: React.FC<{
   const { isFileDragging, dragHandlers } = useDragUpload({
     supportedExts,
     onFilesAdded,
+    containerRef: dropzoneRef,
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
   });
@@ -1562,7 +1570,7 @@ const SendBox: React.FC<{
   }, [allAtFileQueries, input]);
 
   return (
-    <div className={`relative ${className ?? ''}`}>
+    <div ref={dropzoneRef} className={`relative ${className ?? ''}`}>
       {pinnedPlan && (
         <div
           className='absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2 z-30'
