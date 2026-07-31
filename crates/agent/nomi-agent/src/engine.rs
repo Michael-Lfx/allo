@@ -2352,7 +2352,16 @@ impl AgentEngine {
                 if let Some(cont) = continuation {
                     self.messages.push(cont);
                     self.save_session();
-                    turn += 1;
+                    // Each goal round gets a fresh internal-iteration budget:
+                    // the continuation opens a new logical turn (hermes runs
+                    // it as one). Carrying the previous round's tool-loop
+                    // count forward would let a thorough first round starve
+                    // every later round into the MaxTurns exit above — which
+                    // returns without ever consulting the judge. Total work
+                    // stays bounded: rounds are capped by the goal's
+                    // auto-continuation limit, iterations per round by
+                    // `limit`.
+                    turn = 0;
                     continue; // don't return — run another turn toward the goal
                 }
                 self.save_session();
