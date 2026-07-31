@@ -13,6 +13,7 @@ import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderLis
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 
 /**
  * A picked provider+model pair for the knowledge AI generators, or `null` to
@@ -92,7 +93,7 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
   const buttonLabel = choice
     ? choiceUnavailable
       ? `${choice.model} · ${t('knowledge.form.modelUnavailable')}`
-      : choice.model
+      : formatCloudModelLabel(choice.model)
     : defaultLabel;
 
   const droplist = (
@@ -140,7 +141,7 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
                         {healthStatus !== 'unknown' && (
                           <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
                         )}
-                        <span>{modelName}</span>
+                        <span>{formatCloudModelLabel(modelName, provider.model_descriptions)}</span>
                       </div>
                     </Menu.Item>
                   );

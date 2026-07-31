@@ -2,6 +2,7 @@
 
 import type { IProvider } from '@/common/config/storage';
 import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabilities';
+import { AUTO_MODEL_ID } from '@/renderer/utils/model/autoModel';
 
 /**
  * Cache for provider available models to avoid repeated computation.
@@ -42,8 +43,11 @@ export const getAvailableModels = (provider: IProvider): string[] => {
     }
   }
 
-  available_modelsCache.set(cacheKey, result);
-  return result;
+  // Prepend the 'auto' fallback (mirrors useModelProviderList.getAvailableModels)
+  // so it is always selectable and becomes the default first-available pick.
+  const withAuto = [AUTO_MODEL_ID, ...result];
+  available_modelsCache.set(cacheKey, withAuto);
+  return withAuto;
 };
 
 /**

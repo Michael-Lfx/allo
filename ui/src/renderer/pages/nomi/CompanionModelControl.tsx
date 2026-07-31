@@ -7,6 +7,7 @@ import { useModelProviderList, useProvidersQuery } from '@renderer/hooks/agent/u
 import type { ProviderId } from '@/common/types/ids';
 import type { useCompanion } from './useNomi';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 
 interface Props {
   /** 伙伴 profile + 乐观 patch 通道。 */
@@ -130,7 +131,7 @@ const CompanionModelControl: React.FC<Props> = ({ companion }) => {
           )}
           {availableModels.map((m) => (
             <Select.Option key={m} value={m}>
-              {m}
+              {formatCloudModelLabel(m, currentProvider?.model_descriptions)}
             </Select.Option>
           ))}
         </Select>

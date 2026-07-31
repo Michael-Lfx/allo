@@ -9,6 +9,7 @@ import type { IProvider } from '@/common/config/storage';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelProviderList, useProvidersQuery } from '@renderer/hooks/agent/useModelProviderList';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatCloudModelLabel } from '@renderer/utils/model/cloudModelLabel';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 /** One reference-model row on the wire (snake_case MoaSettings DTO). */
@@ -258,12 +259,12 @@ const MoaSettings: React.FC = () => {
                   >
                     {staleModel && (
                       <Select.Option key={row.model} value={row.model} disabled>
-                        {row.model}
+                        {formatCloudModelLabel(row.model)}
                       </Select.Option>
                     )}
                     {availableModels.map((m) => (
                       <Select.Option key={m} value={m}>
-                        {m}
+                        {formatCloudModelLabel(m, provider?.model_descriptions)}
                       </Select.Option>
                     ))}
                   </Select>
