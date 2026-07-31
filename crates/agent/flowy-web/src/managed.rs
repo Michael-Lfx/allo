@@ -329,7 +329,6 @@ impl ManagedSearchService {
                 );
                 continue;
             }
-            attempted_provider = true;
             let provider_deadline = std::cmp::min(overall_deadline, now + slot.timeout);
             let attempt_started = Instant::now();
             let permit = match tokio::time::timeout_at(
@@ -363,6 +362,9 @@ impl ManagedSearchService {
                     continue;
                 }
             };
+            // Only count a provider as attempted after a network-capable permit
+            // is held. QueueBusy must not claim an attempt occurred.
+            attempted_provider = true;
             let queue_wait_ms = attempt_started.elapsed().as_millis();
             let request_started = Instant::now();
             let result = match tokio::time::timeout_at(
@@ -472,21 +474,28 @@ impl ManagedSearchService {
             }
         }
 
-        tracing::warn!(
-            target: "managed_search",
-            request_id = %request_id,
-            fallback_count,
-            attempted_provider,
-            saw_successful_empty,
-            error_class = last_class.unwrap_or("unavailable"),
-            "all managed web search providers failed"
-        );
         if saw_successful_empty {
+            tracing::info!(
+                target: "managed_search",
+                request_id = %request_id,
+                fallback_count,
+                attempted_provider,
+                had_provider_errors = last_class.is_some(),
+                "managed web search completed with no results"
+            );
             return Ok(SearchResult {
                 provider: "managed".to_owned(),
                 hits: Vec::new(),
             });
         }
+        tracing::warn!(
+            target: "managed_search",
+            request_id = %request_id,
+            fallback_count,
+            attempted_provider,
+            error_class = last_class.unwrap_or("unavailable"),
+            "all managed web search providers were unavailable"
+        );
         Err(WebError::Provider(
             "web search is temporarily unavailable; do not repeat the same search this turn"
                 .to_owned(),
@@ -833,6 +842,47 @@ mod tests {
             .await
             .expect("legitimate empty search must not be unavailable");
         assert!(result.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn early_timeout_then_empty_providers_still_return_empty_search() {
+        // Parallel timeout must not turn a later legitimate empty chain into
+        // "temporarily unavailable".
+        let service = ManagedSearchService::from_adapters(vec![
+            (
+                fake(SearchProviderId::Parallel, Err(SearchAttemptError::Timeout)),
+                Duration::from_secs(1),
+            ),
+            (
+                fake(
+                    SearchProviderId::You,
+                    Ok(SearchResult {
+                        provider: "you".to_owned(),
+                        hits: Vec::new(),
+                    }),
+                ),
+                Duration::from_secs(1),
+            ),
+            (
+                fake(
+                    SearchProviderId::DuckDuckGo,
+                    Ok(SearchResult {
+                        provider: "duckduckgo".to_owned(),
+                        hits: Vec::new(),
+                    }),
+                ),
+                Duration::from_secs(1),
+            ),
+        ]);
+        let result = service
+            .search(SearchQuery {
+                query: "no-match".to_owned(),
+                count: 5,
+            })
+            .await
+            .expect("empty after timeout must remain a valid empty search");
+        assert!(result.hits.is_empty());
+        assert_eq!(result.provider, "managed");
     }
 
     #[test]
