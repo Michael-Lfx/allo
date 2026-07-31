@@ -18,8 +18,9 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
@@ -36,6 +37,15 @@ use crate::dto::{WorkshopAsset, WorkshopCanvasMeta};
 use crate::service::{AssetPatch, AssetQuery, NewAssetUpload, NewTextAsset};
 use crate::state::WorkshopRouterState;
 
+async fn require_workshop_boot(
+    State(state): State<WorkshopRouterState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    state.service.ensure_boot_ready().await?;
+    Ok(next.run(request).await)
+}
+
 pub fn workshop_routes(state: WorkshopRouterState) -> Router {
     // The asset upload + canvas import routes carry their own (larger) body
     // limit. Disable the app's global `DefaultBodyLimit` on them, then cap at
@@ -45,6 +55,10 @@ pub fn workshop_routes(state: WorkshopRouterState) -> Router {
         .route("/api/workshop/canvases/import", post(import_canvas))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(MAX_ASSET_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_workshop_boot,
+        ))
         .with_state(state.clone());
 
     Router::new()
@@ -70,6 +84,10 @@ pub fn workshop_routes(state: WorkshopRouterState) -> Router {
             axum::routing::patch(patch_asset).delete(delete_asset),
         )
         .route("/api/workshop/collections/rename", post(rename_collection))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_workshop_boot,
+        ))
         .with_state(state)
         .merge(upload_router)
 }
@@ -88,6 +106,10 @@ pub fn workshop_public_routes(state: WorkshopRouterState) -> Router {
     Router::new()
         .route("/api/workshop/files/{asset_id}", get(serve_file))
         .route("/api/workshop/canvas-thumbs/{canvas_id}", get(serve_canvas_thumb))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_workshop_boot,
+        ))
         .with_state(state)
 }
 

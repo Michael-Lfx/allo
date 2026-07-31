@@ -401,12 +401,27 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     );
 
     let scan_paths = resolve_scan_paths_for_data_dir(&services.data_dir);
-    if let Err(error) = ext_state.registry.initialize_with_scan_paths(scan_paths).await {
-        tracing::warn!(error = %error, "extension registry initialize failed");
+    {
+        let registry = ext_state.registry.clone();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            if let Err(error) = registry.initialize_with_scan_paths(scan_paths).await {
+                tracing::warn!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %error,
+                    "extension registry initialize failed"
+                );
+            } else {
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "startup: background extension registry initialized"
+                );
+            }
+        });
     }
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
-        "startup: extension registry initialized"
+        "startup: extension registry scan deferred"
     );
 
     let preset = build_preset_state(services, ext_state.registry.clone());

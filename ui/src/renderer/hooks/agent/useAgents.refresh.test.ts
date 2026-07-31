@@ -16,8 +16,9 @@ describe('useAgents detection refresh wiring', () => {
     expect(text.includes('AGENT_AUTO_REFRESH_MIN_INTERVAL_MS')).toBe(true);
     expect(text.includes('agentAutoRefreshPromise')).toBe(true);
     expect(text.includes('refreshDetectedAgentsIfStale')).toBe(true);
+    expect(text.includes('scheduleIdleAgentRefresh')).toBe(true);
     expect(text.includes('useEffect')).toBe(true);
-    expect(text.includes('void refreshDetectedAgentsIfStale()')).toBe(true);
+    expect(text.includes('scheduleIdleAgentRefresh()')).toBe(true);
   });
 
   test('refresh hits the backend refresh endpoint and then updates the shared SWR key', () => {

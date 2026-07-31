@@ -11,6 +11,8 @@
 //! invoke layer against the model catalog.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -386,7 +388,18 @@ pub struct CreationService {
     inflight: Mutex<HashMap<String, CancellationToken>>,
     poll_interval: Duration,
     task_timeout: Duration,
+    /// Audit + reconcile gate. Populated once so AppServices does not block
+    /// socket readiness on a full task/asset scan; routes await this first.
+    boot_ready: tokio::sync::OnceCell<Result<(), String>>,
+    /// Optional prerequisite (Workshop audit) that must succeed before Creation
+    /// boot runs. Wired by AppServices to keep crate boundaries intact.
+    boot_prerequisite: Option<BootPrerequisite>,
 }
+
+/// Async prerequisite invoked before Creation's own boot audit/reconcile.
+pub type BootPrerequisite = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send>> + Send + Sync,
+>;
 
 /// Builder for [`CreationService`] (the app wires the invoke layer + sink).
 pub struct CreationServiceBuilder {
@@ -399,6 +412,7 @@ pub struct CreationServiceBuilder {
     global_limit: usize,
     poll_interval: Duration,
     task_timeout: Duration,
+    boot_prerequisite: Option<BootPrerequisite>,
 }
 
 impl CreationServiceBuilder {
@@ -436,6 +450,13 @@ impl CreationServiceBuilder {
         self
     }
 
+    /// Run this async gate before Creation's own boot audit/reconcile (e.g. the
+    /// Workshop managed-data audit).
+    pub fn with_boot_prerequisite(mut self, prerequisite: BootPrerequisite) -> Self {
+        self.boot_prerequisite = Some(prerequisite);
+        self
+    }
+
     pub fn build(self) -> Arc<CreationService> {
         Arc::new(CreationService {
             repo: self.repo,
@@ -447,6 +468,8 @@ impl CreationServiceBuilder {
             per_provider_limit: self.per_provider_limit,
             provider_sems: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
+            boot_ready: tokio::sync::OnceCell::new(),
+            boot_prerequisite: self.boot_prerequisite,
             poll_interval: self.poll_interval,
             task_timeout: self.task_timeout,
         })
@@ -466,6 +489,7 @@ impl CreationService {
             global_limit: DEFAULT_GLOBAL_LIMIT,
             poll_interval: DEFAULT_POLL_INTERVAL,
             task_timeout: DEFAULT_TASK_TIMEOUT,
+            boot_prerequisite: None,
         }
     }
 
@@ -476,6 +500,41 @@ impl CreationService {
         Self::builder(repo).build()
     }
 
+    /// Run audit + reconcile once. Creation routes await this; AppServices
+    /// kickstarts it after Workshop's background audit so socket readiness is
+    /// not blocked on a full task/asset scan.
+    pub async fn ensure_boot_ready(self: &Arc<Self>) -> Result<(), AppError> {
+        if let Some(prerequisite) = &self.boot_prerequisite {
+            prerequisite().await?;
+        }
+        let this = self.clone();
+        let result = self
+            .boot_ready
+            .get_or_init(|| async move {
+                this.audit_managed_data_on_boot()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                this.reconcile_on_boot()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+        result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| AppError::Internal(error.clone()))
+    }
+
+    /// Mark boot permanently failed without running audit/reconcile (e.g. when
+    /// a prerequisite Workshop audit already failed).
+    pub async fn fail_boot_ready(&self, reason: String) {
+        let _ = self
+            .boot_ready
+            .get_or_init(|| async move { Err(reason) })
+            .await;
+    }
+
     // -----------------------------------------------------------------------
     // Public surface (routes)
     // -----------------------------------------------------------------------
@@ -484,6 +543,7 @@ impl CreationService {
     /// The worker resolves the provider, loads inputs, runs the adapter, and
     /// drives the state machine to a terminal state asynchronously.
     pub async fn create_task(self: &Arc<Self>, req: NewCreationTask) -> Result<CreationTask, AppError> {
+        self.ensure_boot_ready().await?;
         let capability = MediaCapability::parse(&req.capability).ok_or_else(|| {
             AppError::BadRequest(format!(
                 "unknown capability '{}' (expected t2i|i2i|inpaint|t2v|i2v|v2v|tts|text)",
@@ -564,7 +624,8 @@ impl CreationService {
         row.try_into()
     }
 
-    pub async fn get_task(&self, creation_task_id: &str) -> Result<CreationTask, AppError> {
+    pub async fn get_task(self: &Arc<Self>, creation_task_id: &str) -> Result<CreationTask, AppError> {
+        self.ensure_boot_ready().await?;
         validate_uuidv7(creation_task_id)
             .map_err(|error| AppError::BadRequest(format!("invalid creation_task_id: {error}")))?;
         let row = self
@@ -577,11 +638,12 @@ impl CreationService {
     }
 
     pub async fn list_tasks(
-        &self,
+        self: &Arc<Self>,
         canvas_id: Option<&str>,
         status: Option<&str>,
         limit: i64,
     ) -> Result<Vec<CreationTask>, AppError> {
+        self.ensure_boot_ready().await?;
         let canvas_id = canvas_id
             .map(WorkshopCanvasId::parse)
             .transpose()
@@ -607,7 +669,8 @@ impl CreationService {
 
     /// Cancel a task. Terminal tasks are returned unchanged (idempotent); a live
     /// task moves to `canceled` and its worker is signalled to abort in-flight.
-    pub async fn cancel_task(&self, creation_task_id: &str) -> Result<CreationTask, AppError> {
+    pub async fn cancel_task(self: &Arc<Self>, creation_task_id: &str) -> Result<CreationTask, AppError> {
+        self.ensure_boot_ready().await?;
         validate_uuidv7(creation_task_id)
             .map_err(|error| AppError::BadRequest(format!("invalid creation_task_id: {error}")))?;
         let row = self

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nomifun_ai_agent::{
     AcpSessionSyncService, AcpSkillManager, AgentFactoryDeps, AgentRegistry, AgentRuntimeRegistry,
@@ -1711,6 +1711,7 @@ impl AppServices {
         config: &AppConfig,
         startup_cleanup_authority: Arc<StartupCleanupAuthority>,
     ) -> anyhow::Result<Self> {
+        let boot = Instant::now();
         // Brand computer-use permission-error guidance with the host app's name so
         // failures say "grant Flowy … then quit and reopen Flowy" instead of a
         // generic "this app" — which a model otherwise misreads as the terminal /
@@ -1722,15 +1723,73 @@ impl AppServices {
         let data_dir = config.data_dir.clone();
         let work_dir = config.work_dir.clone();
         let work_dir_is_cli_override = config.work_dir_is_cli_override;
-        // The on-device model feature has been retired. Remove its managed
-        // models, runtimes, partial downloads, ASR jobs, and persisted state so
-        // upgrades do not leave multi-gigabyte orphaned data behind.
+        // The on-device model feature has been retired. Rename any leftover tree
+        // out of the hot path immediately, then delete in the background so a
+        // multi-gigabyte recursive remove cannot block socket readiness.
         let retired_model_dir = data_dir.join("local-ai");
-        if let Err(error) = std::fs::remove_dir_all(&retired_model_dir)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %retired_model_dir.display(), %error, "Could not remove retired on-device model data");
+        match std::fs::symlink_metadata(&retired_model_dir) {
+            Ok(meta) if meta.is_dir() => {
+                let trash = data_dir.join(format!(
+                    "local-ai.trash-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                ));
+                match std::fs::rename(&retired_model_dir, &trash) {
+                    Ok(()) => {
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(error) = std::fs::remove_dir_all(&trash) {
+                                tracing::warn!(
+                                    path = %trash.display(),
+                                    %error,
+                                    "Could not remove retired on-device model data"
+                                );
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %retired_model_dir.display(),
+                            %error,
+                            "Could not retire on-device model data off the startup path; falling back to blocking remove"
+                        );
+                        if let Err(error) = std::fs::remove_dir_all(&retired_model_dir)
+                            && error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(
+                                path = %retired_model_dir.display(),
+                                %error,
+                                "Could not remove retired on-device model data"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(_) => {
+                if let Err(error) = std::fs::remove_file(&retired_model_dir)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(
+                        path = %retired_model_dir.display(),
+                        %error,
+                        "Could not remove retired on-device model path"
+                    );
+                }
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    path = %retired_model_dir.display(),
+                    %error,
+                    "Could not inspect retired on-device model data"
+                );
+            }
+            Err(_) => {}
         }
+        tracing::info!(
+            elapsed_ms = boot.elapsed().as_millis(),
+            "startup: AppServices retired-model cleanup done"
+        );
         // Security hard-cut: older builds persisted live loopback root tokens in
         // this beacon. Scoped child capabilities make discovery without an
         // authoritative session impossible, so remove both the final and
@@ -1749,10 +1808,64 @@ impl AppServices {
         // directory on every boot so neither historical nor stale session
         // configuration survives a backend restart.
         let terminal_mcp_dir = data_dir.join("terminal-mcp");
-        if let Err(error) = std::fs::remove_dir_all(&terminal_mcp_dir)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %terminal_mcp_dir.display(), %error, "Could not reset ephemeral terminal MCP config directory");
+        match std::fs::symlink_metadata(&terminal_mcp_dir) {
+            Ok(meta) if meta.is_dir() => {
+                let trash = data_dir.join(format!(
+                    "terminal-mcp.trash-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                ));
+                match std::fs::rename(&terminal_mcp_dir, &trash) {
+                    Ok(()) => {
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(error) = std::fs::remove_dir_all(&trash) {
+                                tracing::warn!(
+                                    path = %trash.display(),
+                                    %error,
+                                    "Could not reset ephemeral terminal MCP config directory"
+                                );
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %terminal_mcp_dir.display(),
+                            %error,
+                            "Could not retire terminal MCP config off the startup path; falling back to blocking remove"
+                        );
+                        if let Err(error) = std::fs::remove_dir_all(&terminal_mcp_dir)
+                            && error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(
+                                path = %terminal_mcp_dir.display(),
+                                %error,
+                                "Could not reset ephemeral terminal MCP config directory"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(_) => {
+                if let Err(error) = std::fs::remove_file(&terminal_mcp_dir)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(
+                        path = %terminal_mcp_dir.display(),
+                        %error,
+                        "Could not reset ephemeral terminal MCP config path"
+                    );
+                }
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    path = %terminal_mcp_dir.display(),
+                    %error,
+                    "Could not inspect ephemeral terminal MCP config directory"
+                );
+            }
+            Err(_) => {}
         }
         let auth_policy = config.auth_policy;
         let local_trust_secret = config.local_trust_secret.clone();
@@ -2331,20 +2444,20 @@ impl AppServices {
             Arc::new(nomifun_db::SqliteWorkshopRepository::new(database.pool().clone())),
             provider_lifecycle.clone(),
         );
-        if let Err(error) = workshop_service.audit_managed_data_on_boot().await {
-            anyhow::bail!(
-                "managed Workshop data failed its startup integrity audit; \
-                 the existing dataset has been preserved; request an explicit factory reset \
-                 to replace it: {error}"
-            );
-        }
+        // Workshop/Creation managed-data audits are fail-closed for those
+        // features, but Guid/first paint does not need them. Kick them off in
+        // the background (Workshop first, then Creation) so socket readiness
+        // is not blocked on a full canvas/task scan. Routes await the same
+        // OnceCell gates before serving.
+        tracing::info!(
+            elapsed_ms = boot.elapsed().as_millis(),
+            "startup: AppServices workshop service constructed (audit deferred)"
+        );
         // The generation engine delegates model execution to the unified
         // invoke layer (provider/model/protocol resolution + adapters live
         // there), runs over a proxy-aware HTTP client, and reads/writes canvas
         // assets through the workshop bridge (AssetSource/AssetSink — no crate
-        // cycle). `reconcile_on_boot` (running-with-remote resume / else
-        // fail-interrupted) is driven from `build_creation_state` at router
-        // assembly.
+        // cycle). Boot reconcile runs in the background after Workshop audit.
         let creation_http = nomifun_net::http_client();
         // Unified multimodal invoke layer (P1): one process-wide singleton over
         // the catalog repos + the same proxy-aware HTTP client. The creation
@@ -2369,26 +2482,49 @@ impl AppServices {
         .with_invoke(model_invoke_service.clone())
         .with_asset_source(creation_asset_bridge.clone())
         .with_asset_sink(creation_asset_bridge)
+        .with_boot_prerequisite({
+            let workshop = workshop_service.clone();
+            Arc::new(move || {
+                let workshop = workshop.clone();
+                Box::pin(async move { workshop.ensure_boot_ready().await })
+            })
+        })
         .build();
-        // Complete task/asset reconciliation before AppServices is published.
-        // Running this synchronously closes the race where a newly-created task
-        // could persist an asset between the task snapshot and Workshop scan
-        // and be mistaken for an orphan by detached boot cleanup.
-        if let Err(error) = creation_service.audit_managed_data_on_boot().await {
-            anyhow::bail!(
-                "managed creation data failed its startup integrity audit; \
-                 the existing dataset has been preserved; request an explicit factory reset \
-                 to replace it: {error}"
-            );
+        {
+            let workshop = workshop_service.clone();
+            let creation = creation_service.clone();
+            tokio::spawn(async move {
+                let started = Instant::now();
+                if let Err(error) = workshop.ensure_boot_ready().await {
+                    tracing::error!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        %error,
+                        "startup: background Workshop boot audit failed; Workshop/Creation routes stay fail-closed"
+                    );
+                    creation
+                        .fail_boot_ready(format!(
+                            "creation boot blocked by Workshop audit failure: {error}"
+                        ))
+                        .await;
+                    return;
+                }
+                match creation.ensure_boot_ready().await {
+                    Ok(()) => tracing::info!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "startup: background Workshop+Creation boot completed"
+                    ),
+                    Err(error) => tracing::error!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        %error,
+                        "startup: background Creation boot failed; Creation routes stay fail-closed"
+                    ),
+                }
+            });
         }
-        creation_service
-            .reconcile_on_boot()
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "creation startup reconciliation failed without changing dataset lineage: {error}"
-                )
-            })?;
+        tracing::info!(
+            elapsed_ms = boot.elapsed().as_millis(),
+            "startup: AppServices creation service constructed (audit/reconcile deferred)"
+        );
 
         // Conversation boot reconciliation: settle ghost 'running' conversations
         // left by a process killed mid-turn. At boot no runtime is live, so any
@@ -2444,8 +2580,20 @@ impl AppServices {
             provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>;
 
         // Seed authoritative capability profiles for any provider models that
-        // lack one (multimodal model hub). Best-effort: never blocks boot on error.
-        reconcile_model_profiles(&provider_repo_for_services, &provider_model_repo).await;
+        // lack one (multimodal model hub). Best-effort: never blocks boot on
+        // error, and does not need to finish before the socket is ready.
+        {
+            let provider_repo = provider_repo_for_services.clone();
+            let provider_model_repo = provider_model_repo.clone();
+            tokio::spawn(async move {
+                let started = Instant::now();
+                reconcile_model_profiles(&provider_repo, &provider_model_repo).await;
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "startup: background model-profile reconcile completed"
+                );
+            });
+        }
 
         let poi_service = Arc::new(
             nomifun_poi::PoiService::new(data_dir.join("poi"))
@@ -2559,19 +2707,39 @@ impl AppServices {
                 .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
         );
 
+        // Persist the last-known catalog for the model selector; refresh the
+        // upstream Flowy catalog in the background so an authenticated boot
+        // does not wait on the network before the socket is ready.
         if cloud_service.is_authenticated().await {
             let gateway = cloud_service.gateway_config_snapshot();
-            if let Err(e) = nomifun_cloud::sync_flowy_builtin_provider(
-                &provider_repo_for_services,
-                &encryption_key,
-                &gateway.server,
-                cloud_service.data_dir(),
-            )
-            .await
-            {
-                tracing::warn!("Failed to sync Flowy built-in provider on startup: {e}");
-            }
+            let provider_repo = provider_repo_for_services.clone();
+            let data_dir = cloud_service.data_dir().to_path_buf();
+            let server = gateway.server.clone();
+            tokio::spawn(async move {
+                let started = Instant::now();
+                match nomifun_cloud::sync_flowy_builtin_provider(
+                    &provider_repo,
+                    &encryption_key,
+                    &server,
+                    &data_dir,
+                )
+                .await
+                {
+                    Ok(()) => tracing::info!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "startup: background Flowy catalog sync completed"
+                    ),
+                    Err(e) => tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "Failed to sync Flowy built-in provider on startup: {e}"
+                    ),
+                }
+            });
         }
+        tracing::info!(
+            elapsed_ms = boot.elapsed().as_millis(),
+            "startup: AppServices cloud service ready (catalog sync deferred)"
+        );
 
         let services = Self {
             database,
@@ -2636,6 +2804,11 @@ impl AppServices {
             #[cfg(feature = "browser-use")]
             _browser_platform_tasks: None,
         };
+
+        tracing::info!(
+            elapsed_ms = boot.elapsed().as_millis(),
+            "startup: AppServices constructed"
+        );
 
         #[cfg(feature = "browser-use")]
         {

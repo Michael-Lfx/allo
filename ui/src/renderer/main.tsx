@@ -104,7 +104,11 @@ const Main = () => {
     // request runs. In particular, `/api/system/info` returns 403 for an
     // expired session; starting it while unauthenticated would turn the normal
     // login transition into an application-level render failure.
-    if (!ready || !cloudReady || status !== 'authenticated') {
+    //
+    // Cloud whoami is intentionally not a config barrier: desktop cloud-login
+    // is enforced by ProtectedLayout, and waiting here serializes an extra
+    // round-trip before the first authenticated paint.
+    if (!ready || status !== 'authenticated') {
       setConfigReady(false);
       setConfigError(null);
       return;
@@ -113,10 +117,13 @@ const Main = () => {
     let active = true;
     setConfigReady(false);
     setConfigError(null);
-    // Prefetch `/api/agents` in parallel with configService.initialize() and
-    // seed the shared SWR cache so the Guid page's model/mode selectors can
-    // read `handshake.available_models` on the very first render — without
-    // waiting for a session to be created.
+    // Prefetch `/api/agents` in the background so Guid selectors warm the SWR
+    // cache without blocking the first paint on PATH scanning / agent list IO.
+    void fetchDetectedAgents()
+      .then((agents) => swrMutate(DETECTED_AGENTS_SWR_KEY, agents, false))
+      .catch((err) => {
+        console.error('Failed to prefetch agents:', err);
+      });
     void Promise.all([
       application.systemInfo
         .invoke()
@@ -128,11 +135,6 @@ const Main = () => {
       configService.initialize().catch((err) => {
         console.error('Failed to initialize config:', err);
       }),
-      fetchDetectedAgents()
-        .then((agents) => swrMutate(DETECTED_AGENTS_SWR_KEY, agents, false))
-        .catch((err) => {
-          console.error('Failed to prefetch agents:', err);
-        }),
     ])
       .then(() => {
         if (active) setConfigReady(true);
@@ -148,10 +150,13 @@ const Main = () => {
     return () => {
       active = false;
     };
-  }, [ready, cloudReady, status]);
+  }, [ready, status]);
 
   useEffect(() => {
-    if (!ready || !cloudReady || status !== 'authenticated') return;
+    if (!ready || status !== 'authenticated') return;
+    // Retention / cron repair can wait until cloud status is known on desktop,
+    // but must not block first paint.
+    if (!cloudReady) return;
     void repairAllCronJobTimeZonesOnce();
     maybeTrackRetention();
   }, [ready, cloudReady, status]);

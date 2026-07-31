@@ -23,9 +23,9 @@ pub use artifact::validate_artifact_payload;
 pub use dto::CreationTask;
 pub use routes::creation_routes;
 pub use service::{
-    AssetSink, AssetSource, CreationService, CreationServiceBuilder, LoadedAsset, NewCreationTask,
-    PersistAsset, TaskArtifactCleanupFailure, TaskArtifactIssue, TaskArtifactManifest,
-    TaskArtifactReconcileReport,
+    AssetSink, AssetSource, BootPrerequisite, CreationService, CreationServiceBuilder, LoadedAsset,
+    NewCreationTask, PersistAsset, TaskArtifactCleanupFailure, TaskArtifactIssue,
+    TaskArtifactManifest, TaskArtifactReconcileReport,
 };
 pub use state::CreationRouterState;
 pub use types::{CreationError, CreationInput, MediaCapability, TaskStatus};

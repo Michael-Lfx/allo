@@ -36,6 +36,17 @@ export async function refreshDetectedAgentsIfStale(): Promise<void> {
   return agentAutoRefreshPromise;
 }
 
+function scheduleIdleAgentRefresh(): void {
+  const run = () => {
+    void refreshDetectedAgentsIfStale();
+  };
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(() => run(), { timeout: 2_000 });
+    return;
+  }
+  setTimeout(run, 0);
+}
+
 export type UseAgentsResult = {
   agents: AgentMetadata[];
   isLoading: boolean;
@@ -59,7 +70,7 @@ export const useAgents = (): UseAgentsResult => {
   const refreshCustomAgents = useCallback(refreshDetectedAgentsCache, []);
 
   useEffect(() => {
-    void refreshDetectedAgentsIfStale();
+    scheduleIdleAgentRefresh();
   }, []);
 
   return {

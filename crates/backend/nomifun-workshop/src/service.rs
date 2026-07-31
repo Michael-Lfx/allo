@@ -131,6 +131,9 @@ pub struct WorkshopService {
     /// `0` to drive immediate reclamation deterministically.
     gc_grace_ms: i64,
     provider_lifecycle: Option<SharedProviderLifecycleBarrier>,
+    /// Fail-closed managed-data audit. Populated once on first ensure / background
+    /// kickoff so AppServices construction does not wait on a full canvas scan.
+    boot_audit: tokio::sync::OnceCell<Result<(), String>>,
 }
 
 impl WorkshopService {
@@ -172,7 +175,45 @@ impl WorkshopService {
             agent_ops: crate::agent_ops::AgentOpsQueue::new(),
             gc_grace_ms,
             provider_lifecycle,
+            boot_audit: tokio::sync::OnceCell::new(),
         })
+    }
+
+    /// Run the managed-data audit once and cache the result. Routes and gateway
+    /// paths call this before touching Workshop state; AppServices kickstarts it
+    /// in the background so socket readiness is not blocked.
+    pub async fn ensure_boot_ready(&self) -> Result<(), AppError> {
+        let result = self
+            .boot_audit
+            .get_or_init(|| async {
+                self.audit_managed_data_on_boot()
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+        result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| AppError::Internal(error.clone()))
+    }
+
+    /// Eagerly start [`Self::ensure_boot_ready`] without awaiting it.
+    pub fn begin_background_boot_audit(self: &Arc<Self>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            match this.ensure_boot_ready().await {
+                Ok(()) => tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "startup: background Workshop boot audit completed"
+                ),
+                Err(error) => tracing::error!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    %error,
+                    "startup: background Workshop boot audit failed; Workshop routes stay fail-closed"
+                ),
+            }
+        });
     }
 
     // ---- path helpers ----
@@ -214,6 +255,7 @@ impl WorkshopService {
     // ---- canvases ----
 
     pub async fn list_canvases(&self) -> Result<Vec<WorkshopCanvasMeta>, AppError> {
+        self.ensure_boot_ready().await?;
         Ok(self.repo.list_canvases().await?.into_iter().map(WorkshopCanvasMeta::from).collect())
     }
 
@@ -301,6 +343,7 @@ impl WorkshopService {
     }
 
     pub async fn create_canvas(&self, title: Option<String>) -> Result<WorkshopCanvasMeta, AppError> {
+        self.ensure_boot_ready().await?;
         let id = WorkshopCanvasId::new().into_string();
         let title = title
             .map(|t| t.trim().to_string())
@@ -549,6 +592,7 @@ impl WorkshopService {
         ops: Vec<crate::agent_ops::AgentOp>,
         source: &str,
     ) -> Result<Vec<crate::agent_ops::AppliedOp>, AppError> {
+        self.ensure_boot_ready().await?;
         use crate::agent_ops::{self, AgentOp, AppliedOp, OpDisposition, PendingOp};
         let _provider_guard = self.provider_read_guard().await;
 
@@ -725,6 +769,7 @@ impl WorkshopService {
         &self,
         provider_id: &str,
     ) -> Result<(), AppError> {
+        self.ensure_boot_ready().await?;
         let provider_id = ProviderId::parse(provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?
             .into_string();
