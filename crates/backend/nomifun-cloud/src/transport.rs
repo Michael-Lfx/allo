@@ -182,6 +182,14 @@ impl HttpTransport {
         self.request(Method::POST, path, session, Some(body)).await
     }
 
+    pub async fn delete(
+        &self,
+        path: &str,
+        session: Option<&ServerSession>,
+    ) -> Result<Response, ServerClientError> {
+        self.request(Method::DELETE, path, session, None).await
+    }
+
     pub async fn post_multipart(
         &self,
         path: &str,

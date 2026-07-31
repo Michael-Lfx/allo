@@ -8,6 +8,7 @@ mod media_types;
 mod model_resolve;
 mod oss;
 mod response;
+mod tv_show;
 mod types;
 
 pub use asr::extract_asr_text;
@@ -21,6 +22,7 @@ pub use media_types::{
     VideoContentImage, VideoCreateParams, VideoTaskRecord,
 };
 pub use model_resolve::resolve_model_in_catalog;
+pub use oss::OssUploadResult;
 pub use response::{FlowyEnvelope, handle_http_and_envelope};
 pub use types::*;
 

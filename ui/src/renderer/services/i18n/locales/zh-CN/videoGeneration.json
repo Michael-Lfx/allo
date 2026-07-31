@@ -25,6 +25,62 @@
     "card": {
       "updatedAt": "{{time}} 更新",
       "stage": "阶段：{{stage}}"
+    },
+    "tabs": {
+      "recent": "最近创作",
+      "tvShow": "TV Show"
+    }
+  },
+  "tvShow": {
+    "title": "TV Show",
+    "subtitle": "浏览社区已上架的作品，或查看你的发布审核状态。",
+    "searchPlaceholder": "搜索作品...",
+    "scope": {
+      "plaza": "广场",
+      "mine": "我的发布"
+    },
+    "status": {
+      "pending": "审核中",
+      "published": "已上架",
+      "offline": "已下架",
+      "deleted": "已删除"
+    },
+    "card": {
+      "publishedAt": "{{time}}"
+    },
+    "empty": {
+      "plazaTitle": "广场暂无作品",
+      "plazaDesc": "审核通过的作品会出现在这里。",
+      "mineTitle": "还没有发布作品",
+      "mineDesc": "在已完成的视频详情页点击「发布到 TV Show」。"
+    },
+    "authRequired": {
+      "title": "登录后观看 TV Show",
+      "desc": "TV Show 广场与发布需要云端账号。",
+      "login": "去登录",
+      "publish": "发布到 TV Show 需要先登录云端账号。"
+    },
+    "detail": {
+      "title": "作品详情",
+      "loadFailed": "加载详情失败"
+    },
+    "actions": {
+      "like": "点赞",
+      "likeFailed": "点赞失败",
+      "deleteConfirm": "确定删除该发布？",
+      "deleteOk": "已删除发布",
+      "deleteFailed": "删除失败",
+      "import": "导入到本地",
+      "importOk": "工程已导入到本地",
+      "importFailed": "导入失败"
+    },
+    "publish": {
+      "action": "发布到 TV Show",
+      "needSucceeded": "请先完成成片生成后再发布。",
+      "needCover": "缺少封面海报，请完成渲染后再发布。",
+      "busy": "规划或渲染进行中，请完成后再发布。",
+      "ok": "已提交审核，通过后会出现在 TV Show 广场。",
+      "failed": "发布失败"
     }
   },
   "create": {
