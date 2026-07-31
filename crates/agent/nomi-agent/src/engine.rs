@@ -1758,6 +1758,15 @@ impl AgentEngine {
             if self.plan_state.is_active {
                 turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
             }
+            // Standing-goal awareness: the model must know from its very
+            // first turn that an external judge audits each natural
+            // termination and auto-continues — otherwise it optimizes for a
+            // one-shot final answer and the goal dies after one round.
+            // Paused/terminal goals render nothing, keeping the request
+            // byte-identical to a goal-less session.
+            if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
+                turn_tail_extras.push(ctx);
+            }
             for contributor in &self.context_contributors {
                 if let Some(extra) = contributor.pre_turn_context().await {
                     turn_tail_extras.push(extra);
