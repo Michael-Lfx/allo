@@ -14,6 +14,13 @@ import { useTranslation } from 'react-i18next';
 // otherwise rely on the mount GET + post-action refresh events.
 const ACTIVE_POLL_INTERVAL_MS = 15_000;
 
+// 「目标已清除」是一次性的确认反馈而非持续状态：留足阅读时间后自动消失，
+// 避免已结束的目标永远占据会话上方的一行。
+// "Goal cleared" is one-shot feedback, not an ongoing state: keep it visible
+// long enough to read, then dismiss so a finished goal doesn't occupy a rail
+// line forever.
+const CLEARED_AUTO_DISMISS_MS = 5_000;
+
 /** h:mm:ss above one hour, m:ss otherwise. */
 function formatRemaining(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -80,6 +87,15 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
     }, ACTIVE_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [isRunning, refresh]);
+
+  // cleared 到达后倒计时隐藏；期间若新快照把状态换掉（例如重新 /goal set），
+  // isCleared 翻转会取消这只定时器。
+  const isCleared = goal?.status === 'cleared';
+  useEffect(() => {
+    if (!isCleared) return;
+    const timer = window.setTimeout(() => setGoal(null), CLEARED_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [isCleared]);
 
   // 等待屏障倒计时：仅 waiting 且带 waiting_until 时每秒走一格。到 0 后后端是
   // 懒恢复（下一回合才实际继续），因此归零显示"等待结束，将在下一回合恢复"。
