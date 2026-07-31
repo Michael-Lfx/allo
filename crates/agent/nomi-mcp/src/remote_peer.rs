@@ -105,6 +105,23 @@ enum PeerState {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerReadiness {
+    pub generation: Option<u64>,
+    pub initialized: bool,
+    pub tools_cached: bool,
+}
+
+impl Default for PeerReadiness {
+    fn default() -> Self {
+        Self {
+            generation: None,
+            initialized: false,
+            tools_cached: false,
+        }
+    }
+}
+
 impl Default for PeerState {
     fn default() -> Self {
         Self::Uninitialized
@@ -164,6 +181,7 @@ pub struct RemoteMcpPeer {
     client: Client,
     state: Mutex<PeerState>,
     connect_gate: Mutex<()>,
+    discovery_gate: Mutex<()>,
     next_request_id: AtomicU64,
     next_generation: AtomicU64,
 }
@@ -179,6 +197,7 @@ impl RemoteMcpPeer {
             client,
             state: Mutex::new(PeerState::default()),
             connect_gate: Mutex::new(()),
+            discovery_gate: Mutex::new(()),
             next_request_id: AtomicU64::new(1),
             next_generation: AtomicU64::new(1),
         })
@@ -191,7 +210,14 @@ impl RemoteMcpPeer {
         if let Some(tools) = self.cached_tools().await {
             return Ok(tools);
         }
+        let _gate = self.discovery_gate.lock().await;
+        if let Some(tools) = self.cached_tools().await {
+            return Ok(tools);
+        }
         self.ensure_initialized(deadline).await?;
+        if let Some(tools) = self.cached_tools().await {
+            return Ok(tools);
+        }
         let transport = self.ready_transport().await?;
         let response: ToolsListResult = self
             .request("tools/list", Some(json!({})), &transport, deadline)
@@ -232,6 +258,22 @@ impl RemoteMcpPeer {
     pub async fn invalidate_tools_cache(&self) {
         if let PeerState::Ready { tools, .. } = &mut *self.state.lock().await {
             *tools = None;
+        }
+    }
+
+    /// Read-only readiness snapshot. It never exposes the MCP session ID.
+    pub async fn readiness(&self) -> PeerReadiness {
+        match &*self.state.lock().await {
+            PeerState::Ready {
+                generation,
+                tools,
+                ..
+            } => PeerReadiness {
+                generation: Some(*generation),
+                initialized: true,
+                tools_cached: tools.is_some(),
+            },
+            PeerState::Uninitialized => PeerReadiness::default(),
         }
     }
 
@@ -656,6 +698,7 @@ fn decode_sse(body: &[u8], expected_id: u64) -> Result<Vec<u8>, McpPeerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -739,6 +782,77 @@ mod tests {
         assert!(peer.is_ready().await);
         assert!(peer.invalidate_if_generation(2).await);
         assert!(!peer.is_ready().await);
+    }
+
+    #[tokio::test]
+    async fn readiness_snapshots_generation_and_tools_cache() {
+        let peer = RemoteMcpPeer::new("http://127.0.0.1:1").expect("peer");
+        assert_eq!(peer.readiness().await, PeerReadiness::default());
+        *peer.state.lock().await = PeerState::Ready {
+            generation: 7,
+            protocol_version: CLIENT_PROTOCOL_VERSION,
+            session: SessionMode::Sessionless,
+            tools: Some(Vec::new()),
+        };
+        assert_eq!(
+            peer.readiness().await,
+            PeerReadiness {
+                generation: Some(7),
+                initialized: true,
+                tools_cached: true,
+            }
+        );
+        peer.invalidate_tools_cache().await;
+        assert!(!peer.readiness().await.tools_cached);
+    }
+
+    #[tokio::test]
+    async fn concurrent_discover_tools_issues_single_tools_list() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": CLIENT_PROTOCOL_VERSION.as_str(),
+                    "capabilities": {},
+                    "serverInfo": {"name": "mock", "version": "1"}
+                }
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"tools": [{"name": "web_search", "inputSchema": {}}]}
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let peer = Arc::new(RemoteMcpPeer::new(server.uri()).expect("peer"));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (left, right) = tokio::join!(
+            peer.discover_tools(deadline),
+            peer.discover_tools(deadline),
+        );
+        assert_eq!(left.expect("left discovery").len(), 1);
+        assert_eq!(right.expect("right discovery").len(), 1);
     }
 
     #[test]
@@ -871,6 +985,7 @@ mod tests {
             .await;
         assert!(matches!(result, Err(McpPeerError::SessionExpired)));
         assert!(!peer.is_ready().await);
+        assert_eq!(peer.readiness().await, PeerReadiness::default());
     }
 
     #[tokio::test]
