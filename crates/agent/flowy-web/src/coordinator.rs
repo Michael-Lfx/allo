@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant as StdInstant};
 
 use async_trait::async_trait;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -48,6 +48,14 @@ pub struct ExtractBatchDiagnostics {
     pub failure_count: usize,
     pub remote_eligible_count: usize,
     pub remote_stage_count: usize,
+    pub remote_attempted: bool,
+    pub remote_success_count: usize,
+    pub remote_failure_count: usize,
+    pub remote_forbidden_count: usize,
+    pub remote_budget_skipped_count: usize,
+    pub remote_queue_ms: Option<u128>,
+    pub remote_call_ms: Option<u128>,
+    pub total_elapsed_ms: u128,
 }
 
 #[async_trait]
@@ -172,6 +180,14 @@ impl ExtractCoordinator for LocalExtractCoordinator {
                 failure_count,
                 remote_eligible_count: 0,
                 remote_stage_count: 0,
+                remote_attempted: false,
+                remote_success_count: 0,
+                remote_failure_count: 0,
+                remote_forbidden_count: 0,
+                remote_budget_skipped_count: 0,
+                remote_queue_ms: None,
+                remote_call_ms: None,
+                total_elapsed_ms: 0,
             },
             items,
         }
@@ -251,6 +267,7 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         requests: Vec<ExtractRequest>,
         budget: ExtractBudget,
     ) -> ExtractBatchOutcome {
+        let started_at = StdInstant::now();
         let requested_count = requests.len();
         let local_count = requested_count.min(MAX_EXTRACT_URLS);
         let labels = requests
@@ -277,6 +294,8 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
             });
         }
         let mut eligible = Vec::new();
+        let mut remote_forbidden_count = 0usize;
+        let mut remote_budget_skipped_count = 0usize;
         let mut started = vec![false; local_count];
         let mut in_flight = FuturesUnordered::new();
         let mut next_index = 0usize;
@@ -351,7 +370,18 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                                 local_failure,
                             });
                         }
-                        _ => {
+                        RemoteFallbackDecision::Forbidden { .. } => {
+                            remote_forbidden_count += 1;
+                            item_outcomes[index] = Some(ExtractItemOutcome {
+                                index,
+                                requested_url: outcome.requested_url.clone(),
+                                page: None,
+                                local_failure: Some(local_failure.clone()),
+                                final_error: Some(local_failure.error),
+                            });
+                        }
+                        RemoteFallbackDecision::NotNeeded
+                        | RemoteFallbackDecision::BudgetInsufficient { .. } => {
                             item_outcomes[index] = Some(ExtractItemOutcome {
                                 index,
                                 requested_url: outcome.requested_url.clone(),
@@ -367,6 +397,11 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
 
         let remote_eligible_count = eligible.len();
         let mut remote_stage_count = 0usize;
+        let mut remote_attempted = false;
+        let mut remote_success_count = 0usize;
+        let mut remote_failure_count = 0usize;
+        let mut remote_queue_ms = None;
+        let mut remote_call_ms = None;
         if !eligible.is_empty() {
             let cold = !self.remote.is_remote_warm();
             let remaining = budget
@@ -375,11 +410,14 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 .unwrap_or_default();
             if self.budget_policy.allows(cold, remaining) {
                 remote_stage_count = 1;
+                remote_attempted = true;
                 let request = RemoteExtractRequest {
                     items: dedupe_eligible(&eligible),
                 };
                 match self.remote.extract_batch(request, budget.absolute_deadline).await {
                     Ok(remote_batch) => {
+                        remote_queue_ms = remote_batch.diagnostics.queue_ms;
+                        remote_call_ms = remote_batch.diagnostics.call_ms;
                         self.remote.mark_remote_success();
                         let remote_by_index = remote_batch
                             .items
@@ -404,6 +442,7 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                                     local_failure: Some(item.local_failure.clone()),
                                     final_error: Some(item.local_failure.error),
                                 });
+                                remote_failure_count += 1;
                                 continue;
                             };
                             let page = remote_page(&item, remote_item);
@@ -414,9 +453,11 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                                 local_failure: Some(item.local_failure),
                                 final_error: None,
                             });
+                            remote_success_count += 1;
                         }
                     }
                     Err(_) => {
+                        remote_failure_count = eligible.len();
                         for item in eligible {
                             item_outcomes[item.index] = Some(ExtractItemOutcome {
                                 index: item.index,
@@ -429,6 +470,7 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                     }
                 }
             } else {
+                remote_budget_skipped_count = eligible.len();
                 for item in eligible {
                     item_outcomes[item.index] = Some(ExtractItemOutcome {
                         index: item.index,
@@ -454,6 +496,22 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 failure_count += 1;
             }
         }
+        tracing::info!(
+            target: "flowy_web::managed_extract",
+            requested_count,
+            local_success_count = success_count,
+            local_failure_count = failure_count,
+            remote_eligible_count,
+            remote_forbidden_count,
+            remote_budget_skipped_count,
+            remote_attempted,
+            remote_success_count,
+            remote_failure_count,
+            remote_queue_ms = remote_queue_ms.unwrap_or(0),
+            remote_call_ms = remote_call_ms.unwrap_or(0),
+            total_elapsed_ms = started_at.elapsed().as_millis(),
+            "managed extract completed"
+        );
         ExtractBatchOutcome {
             diagnostics: ExtractBatchDiagnostics {
                 requested_count,
@@ -461,6 +519,14 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 failure_count,
                 remote_eligible_count,
                 remote_stage_count,
+                remote_attempted,
+                remote_success_count,
+                remote_failure_count,
+                remote_forbidden_count,
+                remote_budget_skipped_count,
+                remote_queue_ms,
+                remote_call_ms,
+                total_elapsed_ms: started_at.elapsed().as_millis(),
             },
             items,
         }
@@ -933,6 +999,7 @@ mod tests {
             .await;
         assert_eq!(outcome.diagnostics.success_count, 1);
         assert_eq!(outcome.diagnostics.remote_stage_count, 0);
+        assert!(!outcome.diagnostics.remote_attempted);
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -955,6 +1022,9 @@ mod tests {
         assert_eq!(outcome.diagnostics.success_count, 1);
         assert_eq!(outcome.diagnostics.remote_eligible_count, 1);
         assert_eq!(outcome.diagnostics.remote_stage_count, 1);
+        assert!(outcome.diagnostics.remote_attempted);
+        assert_eq!(outcome.diagnostics.remote_success_count, 1);
+        assert_eq!(outcome.diagnostics.remote_failure_count, 0);
         assert_eq!(remote.calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             outcome.items[0].page.as_ref().unwrap().markdown,
@@ -981,6 +1051,7 @@ mod tests {
         assert!(outcome.items[0].page.is_none());
         assert!(outcome.items[0].final_error.is_some());
         assert_eq!(outcome.diagnostics.remote_stage_count, 0);
+        assert_eq!(outcome.diagnostics.remote_forbidden_count, 1);
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -1003,6 +1074,7 @@ mod tests {
         assert!(outcome.items[0].page.is_none());
         assert!(outcome.items[0].final_error.is_some());
         assert_eq!(outcome.diagnostics.remote_stage_count, 1);
+        assert_eq!(outcome.diagnostics.remote_failure_count, 1);
     }
 
     #[tokio::test]
@@ -1032,6 +1104,7 @@ mod tests {
             outcome.items.iter().all(|item| item.page.is_some()),
             "one remote result must fan out to every original index"
         );
+        assert_eq!(outcome.diagnostics.remote_success_count, 2);
     }
 
     #[tokio::test]
@@ -1056,6 +1129,7 @@ mod tests {
             .await;
         assert!(outcome.items[0].page.is_none());
         assert_eq!(outcome.diagnostics.remote_stage_count, 0);
+        assert_eq!(outcome.diagnostics.remote_budget_skipped_count, 1);
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     }
 

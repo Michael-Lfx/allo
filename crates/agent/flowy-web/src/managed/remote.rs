@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use nomi_mcp::{
@@ -41,6 +42,64 @@ enum AdapterCompatibilityError {
 struct EndpointHealth {
     consecutive_failures: u32,
     cooldown_until: Option<Instant>,
+    disable_reason: Option<EndpointDisableReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EndpointFailureKind {
+    Unauthorized,
+    Forbidden,
+    RateLimited(Option<Duration>),
+    Network,
+    Timeout,
+    Upstream,
+    MalformedResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointDisableReason {
+    Unauthorized,
+}
+
+impl EndpointHealth {
+    fn is_available(&self, now: Instant) -> bool {
+        self.disable_reason.is_none()
+            && self
+                .cooldown_until
+                .is_none_or(|cooldown_until| cooldown_until <= now)
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.cooldown_until = None;
+        self.disable_reason = None;
+    }
+
+    fn record_error(&mut self, kind: EndpointFailureKind, now: Instant) {
+        match kind {
+            EndpointFailureKind::Unauthorized => {
+                self.disable_reason = Some(EndpointDisableReason::Unauthorized);
+            }
+            EndpointFailureKind::Forbidden => {
+                self.cooldown_until = Some(now + Duration::from_secs(10 * 60));
+            }
+            EndpointFailureKind::RateLimited(retry_after) => {
+                let delay = retry_after
+                    .unwrap_or(Duration::from_secs(30))
+                    .clamp(Duration::from_secs(30), Duration::from_secs(24 * 60 * 60));
+                self.cooldown_until = Some(now + delay);
+            }
+            EndpointFailureKind::Network
+            | EndpointFailureKind::Timeout
+            | EndpointFailureKind::Upstream
+            | EndpointFailureKind::MalformedResponse => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                let exponent = self.consecutive_failures.saturating_sub(1).min(5);
+                let seconds = 15u64.saturating_mul(1u64 << exponent).min(5 * 60);
+                self.cooldown_until = Some(now + Duration::from_secs(seconds));
+            }
+        }
+    }
 }
 
 #[allow(dead_code)] // Consumed by fetch tool catalog compatibility in later phases.
@@ -95,6 +154,22 @@ impl ParallelMcpClient {
 
     pub(crate) fn mark_remote_success(&self) {
         self.remote_success.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) async fn fetch_available(&self, now: Instant) -> bool {
+        self.endpoint_health.lock().await.is_available(now)
+    }
+
+    pub(crate) async fn record_fetch_success(&self) {
+        self.endpoint_health.lock().await.record_success();
+    }
+
+    pub(crate) async fn record_fetch_error(
+        &self,
+        kind: EndpointFailureKind,
+        now: Instant,
+    ) {
+        self.endpoint_health.lock().await.record_error(kind, now);
     }
 
     pub(super) async fn shutdown(&self, deadline: Instant) {
@@ -572,5 +647,32 @@ mod tests {
         );
         drop(permit);
         assert!(client.fetch_semaphore().try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn fetch_endpoint_health_disables_unauthorized_and_recovers_on_success() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let now = Instant::now();
+        assert!(client.fetch_available(now).await);
+        client
+            .record_fetch_error(EndpointFailureKind::Unauthorized, now)
+            .await;
+        assert!(!client.fetch_available(now).await);
+        client.record_fetch_success().await;
+        assert!(client.fetch_available(now).await);
+    }
+
+    #[tokio::test]
+    async fn fetch_endpoint_health_bounds_rate_limit_cooldown() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let now = Instant::now();
+        client
+            .record_fetch_error(
+                EndpointFailureKind::RateLimited(Some(Duration::from_secs(5))),
+                now,
+            )
+            .await;
+        assert!(!client.fetch_available(now).await);
+        assert!(client.fetch_available(now + Duration::from_secs(30)).await);
     }
 }

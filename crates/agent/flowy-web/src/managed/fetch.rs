@@ -15,8 +15,8 @@ use tokio::sync::Mutex;
 use tokio::time::{Instant, timeout_at};
 
 use super::remote::{
-    ParallelMcpClient, is_explicit_unknown_tool, is_explicit_unknown_tool_rpc,
-    is_unknown_tool_message,
+    EndpointFailureKind, ParallelMcpClient, is_explicit_unknown_tool,
+    is_explicit_unknown_tool_rpc, is_unknown_tool_message,
 };
 
 const FETCH_TOOL: &str = "web_fetch";
@@ -53,6 +53,8 @@ pub struct RemoteFetchDiagnostics {
     pub dropped_item_count: usize,
     pub unmatched_item_count: usize,
     pub used_text_fallback: bool,
+    pub queue_ms: Option<u128>,
+    pub call_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +161,9 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                 Err(error) => return Err(error),
             }
 
+            if !self.client.fetch_available(Instant::now()).await {
+                return Err(RemoteExtractError::Upstream);
+            }
             let urls = request
                 .items
                 .iter()
@@ -168,16 +173,20 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                 "urls": urls,
                 "full_content": false,
             });
+            let attempt_started = Instant::now();
             let permit = match timeout_at(deadline, self.client.fetch_semaphore().acquire()).await
             {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => return Err(RemoteExtractError::Upstream),
                 Err(_) => return Err(RemoteExtractError::Timeout),
             };
+            let queue_ms = Some(attempt_started.elapsed().as_millis());
+            let call_started = Instant::now();
             let result = self
                 .client
                 .call_tool(FETCH_TOOL, arguments, deadline)
                 .await;
+            let call_ms = Some(call_started.elapsed().as_millis());
             drop(permit);
 
             match result {
@@ -193,7 +202,23 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                     if result.is_error {
                         return Err(RemoteExtractError::Upstream);
                     }
-                    return decode_fetch(&result, &request);
+                    match decode_fetch(&result, &request) {
+                        Ok(mut batch) => {
+                            batch.diagnostics.queue_ms = queue_ms;
+                            batch.diagnostics.call_ms = call_ms;
+                            self.client.record_fetch_success().await;
+                            return Ok(batch);
+                        }
+                        Err(error) => {
+                            self.client
+                                .record_fetch_error(
+                                    EndpointFailureKind::MalformedResponse,
+                                    Instant::now(),
+                                )
+                                .await;
+                            return Err(error);
+                        }
+                    }
                 }
                 Err(McpPeerError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
@@ -205,10 +230,36 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         tool_rediscovered = true;
                         continue;
                     }
-                    return Err(map_peer_error(error));
+                    let mapped = map_peer_error(error);
+                    self.client
+                        .record_fetch_error(
+                            endpoint_failure_kind(&mapped),
+                            Instant::now(),
+                        )
+                        .await;
+                    return Err(mapped);
                 }
             }
         }
+    }
+}
+
+fn endpoint_failure_kind(error: &RemoteExtractError) -> EndpointFailureKind {
+    match error {
+        RemoteExtractError::Unauthorized => EndpointFailureKind::Unauthorized,
+        RemoteExtractError::Forbidden => EndpointFailureKind::Forbidden,
+        RemoteExtractError::RateLimited(retry_after) => {
+            EndpointFailureKind::RateLimited(*retry_after)
+        }
+        RemoteExtractError::Network => EndpointFailureKind::Network,
+        RemoteExtractError::Timeout => EndpointFailureKind::Timeout,
+        RemoteExtractError::MalformedResponse => EndpointFailureKind::MalformedResponse,
+        RemoteExtractError::ToolMissing
+        | RemoteExtractError::SchemaMismatch
+        | RemoteExtractError::RpcMethodUnavailable
+        | RemoteExtractError::SessionExpired
+        | RemoteExtractError::InvalidRequest
+        | RemoteExtractError::Upstream => EndpointFailureKind::Upstream,
     }
 }
 
@@ -463,6 +514,8 @@ fn build_batch(
             dropped_item_count,
             unmatched_item_count,
             used_text_fallback,
+            queue_ms: None,
+            call_ms: None,
         },
     })
 }
@@ -816,6 +869,8 @@ mod tests {
             .expect("remote batch");
         assert_eq!(batch.items.len(), 1);
         assert_eq!(batch.items[0].markdown, "# Hello");
+        assert!(batch.diagnostics.queue_ms.is_some());
+        assert!(batch.diagnostics.call_ms.is_some());
     }
 
     #[tokio::test]
