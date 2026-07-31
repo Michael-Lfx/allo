@@ -70,6 +70,10 @@
   --flowy-text-4: #94a3b8;
   --flowy-focus-ring: color-mix(in srgb, var(--flowy-accent) 45%, transparent);
   --flowy-overlay-scrim: color-mix(in srgb, #020617 45%, transparent);
+  --flowy-modal-radius: var(--flowy-radius-lg);
+  --flowy-modal-shadow:
+    0 20px 52px color-mix(in srgb, #0f172a 18%, transparent),
+    0 4px 14px color-mix(in srgb, #0f172a 8%, transparent);
 
   /* Ban decorative pink flood fills in commercial slice */
   --flowy-ban-wash: transparent;
@@ -98,6 +102,9 @@ body[arco-theme='dark'] {
   --flowy-text-4: #64748b;
   --flowy-focus-ring: color-mix(in srgb, var(--flowy-accent) 55%, transparent);
   --flowy-overlay-scrim: color-mix(in srgb, #000 62%, transparent);
+  --flowy-modal-shadow:
+    0 24px 64px color-mix(in srgb, #000 52%, transparent),
+    0 4px 16px color-mix(in srgb, #000 32%, transparent);
 }
 
 .flowy-type-display {

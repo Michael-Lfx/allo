@@ -23,8 +23,9 @@ import {
   Spin,
   Tag,
 } from '@arco-design/web-react';
-import { ArrowLeft, Delete, Export, FolderOpen, Play, Refresh, VideoOne } from '@icon-park/react';
+import { ArrowLeft, Delete, Export, FolderOpen, Play, Refresh, Share, VideoOne } from '@icon-park/react';
 import { ipcBridge } from '@/common';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -43,6 +44,7 @@ import {
   listArtifacts,
   loadArtifactMediaUrl,
   planSession,
+  publishSessionToTvShow,
   renderSession,
   reviseSession,
 } from './api';
@@ -87,6 +89,7 @@ const WorkspacePage: React.FC = () => {
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
+  const { status: cloudStatus } = useCloudAuth();
 
   const [session, setSession] = useState<VimaxSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -108,6 +111,7 @@ const WorkspacePage: React.FC = () => {
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [publishing, setPublishing] = useState(false);
 
   const [runStatus, setRunStatus] = useState<SessionStatus | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactNode[]>([]);
@@ -115,6 +119,7 @@ const WorkspacePage: React.FC = () => {
   const [preview, setPreview] = useState<ArtifactContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [finalBlobUrl, setFinalBlobUrl] = useState<string | null>(null);
+  const [coverBlobUrl, setCoverBlobUrl] = useState<string | null>(null);
 
   const [reviseTarget, setReviseTarget] = useState('');
   const [reviseInstruction, setReviseInstruction] = useState('');
@@ -196,10 +201,16 @@ const WorkspacePage: React.FC = () => {
     try {
       const st = await getSessionStatus(sessionId);
       setRunStatus(st);
-      if (st.status === 'succeeded' || st.final_video) {
+      if (st.status === 'succeeded' || st.final_video || st.cover) {
         setSession((prev) =>
           prev
-            ? { ...prev, status: st.status, stage: st.stage, final_video: st.final_video ?? prev.final_video }
+            ? {
+                ...prev,
+                status: st.status,
+                stage: st.stage,
+                final_video: st.final_video ?? prev.final_video,
+                cover: st.cover ?? prev.cover,
+              }
             : prev
         );
       } else {
@@ -306,6 +317,36 @@ const WorkspacePage: React.FC = () => {
       cancelled = true;
     };
   }, [sessionId, runStatus?.final_video, session?.final_video]);
+
+  // Film poster (display-only) via authenticated blob URL.
+  useEffect(() => {
+    const rel = runStatus?.cover || session?.cover;
+    if (!sessionId || !rel) {
+      setCoverBlobUrl((prev) => {
+        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return;
+    }
+    let cancelled = false;
+    void loadArtifactMediaUrl(sessionId, rel)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setCoverBlobUrl((prev) => {
+          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return url;
+        });
+      })
+      .catch((e) => {
+        console.warn('[videoGeneration] cover load failed', e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, runStatus?.cover, session?.cover]);
 
   useEffect(() => {
     if (selectedPath) setReviseTarget(selectedPath);
@@ -598,6 +639,78 @@ const WorkspacePage: React.FC = () => {
     t,
   ]);
 
+  const handlePublishToTvShow = useCallback(async () => {
+    if (publishing || !sessionId || !session) return;
+    if (cloudStatus !== 'authenticated') {
+      message.warning(
+        t('videoGeneration.tvShow.authRequired.publish', {
+          defaultValue: '发布到 TV Show 需要先登录云端账号。',
+        })
+      );
+      navigate('/cloud-login');
+      return;
+    }
+    const status = runStatus?.status ?? session.status;
+    const hasFilm = Boolean(runStatus?.final_video || session.final_video);
+    const hasCover = Boolean(runStatus?.cover || session.cover);
+    if (status !== 'succeeded' || !hasFilm) {
+      message.warning(
+        t('videoGeneration.tvShow.publish.needSucceeded', {
+          defaultValue: '请先完成成片生成后再发布。',
+        })
+      );
+      return;
+    }
+    if (!hasCover) {
+      message.warning(
+        t('videoGeneration.tvShow.publish.needCover', {
+          defaultValue: '缺少封面海报，请完成渲染后再发布。',
+        })
+      );
+      return;
+    }
+    if (isActiveStatus(runStatus?.status) || planning || rendering) {
+      message.warning(
+        t('videoGeneration.tvShow.publish.busy', {
+          defaultValue: '规划或渲染进行中，请完成后再发布。',
+        })
+      );
+      return;
+    }
+    setPublishing(true);
+    try {
+      await publishSessionToTvShow(sessionId, {
+        title: session.title || undefined,
+      });
+      message.success(
+        t('videoGeneration.tvShow.publish.ok', {
+          defaultValue: '已提交审核，通过后会出现在 TV Show 广场。',
+        })
+      );
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.tvShow.publish.failed', { defaultValue: '发布失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    } finally {
+      setPublishing(false);
+    }
+  }, [
+    cloudStatus,
+    message,
+    navigate,
+    planning,
+    publishing,
+    rendering,
+    runStatus?.cover,
+    runStatus?.final_video,
+    runStatus?.status,
+    session,
+    sessionId,
+    t,
+  ]);
+
   const handleRevealFilm = useCallback(async () => {
     const rel = (runStatus?.final_video || session?.final_video || '').replace(/\\/g, '/').replace(/^\/+/, '');
     const root = (runStatus?.working_dir_abs || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -645,6 +758,12 @@ const WorkspacePage: React.FC = () => {
   const canRender = !busy && (hasStoryboard || isFailed);
   const canContinue = isFailed && !busy;
   const currentStatus = runStatus?.status ?? session?.status;
+  const canPublishTvShow =
+    !busy &&
+    !publishing &&
+    (runStatus?.status ?? session?.status) === 'succeeded' &&
+    Boolean(runStatus?.final_video || session?.final_video) &&
+    Boolean(runStatus?.cover || session?.cover);
 
   useEffect(() => {
     if (!hasStoryboard || storyboardVisibleTracked.current) return;
@@ -753,6 +872,18 @@ const WorkspacePage: React.FC = () => {
                 {t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
               </span>
             </Button>
+            <Button
+              type='outline'
+              size='small'
+              loading={publishing}
+              disabled={!canPublishTvShow}
+              onClick={() => void handlePublishToTvShow()}
+            >
+              <span className='inline-flex items-center gap-4px'>
+                <Share theme='outline' size={14} fill='currentColor' />
+                {t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 TV Show' })}
+              </span>
+            </Button>
             <Popconfirm
               title={t('videoGeneration.actions.deleteConfirm', {
                 defaultValue: '确定删除该任务？产物将一并清除。',
@@ -805,6 +936,7 @@ const WorkspacePage: React.FC = () => {
             <video
               key={finalBlobUrl}
               src={finalBlobUrl}
+              poster={coverBlobUrl ?? undefined}
               controls
               playsInline
               onPlay={() =>

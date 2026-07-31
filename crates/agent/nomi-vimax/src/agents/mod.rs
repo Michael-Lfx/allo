@@ -4,6 +4,7 @@ mod camera_image_generator;
 mod character_extractor;
 mod character_portraits_generator;
 mod event_extractor;
+mod film_cover;
 mod global_information_planner;
 mod novel_compressor;
 mod reference_image_selector;
@@ -18,6 +19,7 @@ pub use character_portraits_generator::{
     CharacterPortraitsGenerator, has_usable_cameo, has_usable_portrait, has_usable_portrait_sheet,
 };
 pub use event_extractor::EventExtractor;
+pub use film_cover::{ensure_cover_from_final_video, ensure_film_cover, COVER_FILENAME};
 pub use global_information_planner::GlobalInformationPlanner;
 pub use novel_compressor::NovelCompressor;
 pub use reference_image_selector::{ReferenceImageSelector, SelectorOutput};

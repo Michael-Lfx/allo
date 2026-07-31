@@ -1,7 +1,11 @@
 import { ipcBridge } from '@/common';
 import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
 import type { AgentId } from '@/common/types/ids';
-import { DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents } from '@/renderer/utils/model/agentTypes';
+import {
+  DETECTED_AGENTS_SWR_KEY,
+  DETECTED_AGENTS_SWR_OPTIONS,
+  fetchDetectedAgents,
+} from '@/renderer/utils/model/agentTypes';
 import { useCallback, useMemo } from 'react';
 import useSWR, { mutate } from 'swr';
 
@@ -20,7 +24,11 @@ export type AvailableBackend = {
  * and `refreshAgentDetection` to trigger a re-scan.
  */
 export const useDetectedAgents = () => {
-  const { data: rawAgents = [] } = useSWR<AgentMetadata[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
+  const { data: rawAgents = [] } = useSWR<AgentMetadata[]>(
+    DETECTED_AGENTS_SWR_KEY,
+    fetchDetectedAgents,
+    DETECTED_AGENTS_SWR_OPTIONS
+  );
 
   const availableBackends = useMemo<AvailableBackend[]>(
     () =>
@@ -37,8 +45,8 @@ export const useDetectedAgents = () => {
 
   const refreshAgentDetection = useCallback(async () => {
     try {
-      await ipcBridge.acpConversation.refreshCustomAgents.invoke();
-      await mutate(DETECTED_AGENTS_SWR_KEY);
+      const agents = await ipcBridge.acpConversation.refreshCustomAgents.invoke();
+      await mutate(DETECTED_AGENTS_SWR_KEY, agents, { revalidate: false });
     } catch {
       // ignore
     }

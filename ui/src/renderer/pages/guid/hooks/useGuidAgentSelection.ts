@@ -10,6 +10,7 @@ import type { AcpSessionModes } from '@/common/types/platform/acpTypes';
 import type { AcpModelInfo, AvailableAgent, EffectiveAgentInfo } from '../types';
 import {
   DETECTED_AGENTS_SWR_KEY,
+  DETECTED_AGENTS_SWR_OPTIONS,
   fetchDetectedAgents,
   type AgentMetadata,
   type AgentSource,
@@ -250,7 +251,11 @@ export const useGuidAgentSelection = ({
   const is_presetAgentPending = selectedAgentKey.startsWith('preset:') && !is_presetAgent;
 
   // --- SWR: Fetch detected execution engines (shared cache) ---
-  const { data: availableAgentsData } = useSWR<AvailableAgent[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
+  const { data: availableAgentsData } = useSWR<AvailableAgent[]>(
+    DETECTED_AGENTS_SWR_KEY,
+    fetchDetectedAgents,
+    DETECTED_AGENTS_SWR_OPTIONS
+  );
 
   // Fetch remote agents from DB and merge into available agents
   const { data: remoteAgentsData } = useSWR('remote-agents.list', () => ipcBridge.remoteAgent.list.invoke());

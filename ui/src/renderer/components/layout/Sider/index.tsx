@@ -12,13 +12,7 @@ import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import {
-  isBrowserCapabilityUnavailable,
-  useBrowserOverview,
-} from '@renderer/pages/browser/useBrowserInventory';
-import { parseSessionRoute } from '@renderer/utils/routes/sessionRoute';
-import {
   ConversationSiderActions,
-  SiderBrowserEntry,
   SiderConfigGroup,
   SiderConversationEntry,
   SiderKnowledgeEntry,
@@ -51,7 +45,7 @@ interface SiderProps {
  * by small-text section headers (`SiderSectionHeader`): 常用 (会话 / 桌面伙伴),
  * 对外服务 (对外伙伴), 数据空间 (学习 / 知识库), 自动化 (定时任务 / 需求平台),
  * 增强工具 (设定 / Skill / MCP), and a bottom-pinned 设置 group
- * (浏览器管理 + 模型管理 + the footer). Execution engines live as an
+ * (模型管理 + the footer). Execution engines live as an
  * independent tab inside Settings rather than being mixed into model
  * management.
  */
@@ -62,17 +56,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const location = useLocation();
   const { pathname, search, hash } = location;
   const { count: pendingInboxCount } = useKnowledgeInboxPending();
-  const {
-    overview: browserOverview,
-    unavailable: browserUnavailable,
-    transient: browserOverviewTransient,
-    retry: retryBrowserOverview,
-  } = useBrowserOverview();
-  const browserCapabilityUnavailable = isBrowserCapabilityUnavailable(
-    browserOverview,
-    browserUnavailable
-  );
-
   const navigate = useNavigate();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
@@ -121,17 +104,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
   const handleConversationClick = () => navTo('/guid');
   const handleVideoGenerationClick = () => navTo('/video-generation');
-  const handleBrowserClick = () => {
-    if (browserOverviewTransient) {
-      void retryBrowserOverview();
-    }
-    const currentSession = parseSessionRoute(pathname);
-    if (currentSession?.kind === 'conversation') {
-      navTo(`/browser?conversation_id=${encodeURIComponent(currentSession.id)}`);
-      return;
-    }
-    navTo(pathname === '/browser' && search ? `/browser${search}` : '/browser');
-  };
   const handleScheduledClick = () => navTo('/scheduled');
   const handleKnowledgeClick = () => navTo('/knowledge');
   const handleNomiClick = () => navTo('/nomi');
@@ -266,23 +238,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           )}
         </div>
       )}
-      {/* Bottom pinned group (设置) — Model & Agent and Open Capabilities sit directly above Settings */}
+      {/* Bottom pinned group (设置) — Model & Agent sit directly above Settings */}
       <div className='shrink-0 mt-auto pt-8px flex flex-col gap-2px border-t border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-b-0'>
-        {/* Browser management — lifecycle/visibility control for managed Chromium,
-            a settings-adjacent surface pinned directly above model management. */}
-        {!browserCapabilityUnavailable &&
-          browserOverview?.supported !== false &&
-          browserOverview?.enabled !== false && (
-          <SiderBrowserEntry
-            isMobile={isMobile}
-            isActive={pathname === '/browser'}
-            collapsed={collapsed}
-            runningCount={browserOverview?.running_lanes ?? 0}
-            queuedCount={browserOverview?.queued_lanes ?? 0}
-            siderTooltipProps={siderTooltipProps}
-            onClick={handleBrowserClick}
-          />
-        )}
         {!SERVER_MANAGED_MODELS && (
           <SiderModelHubEntry
             isMobile={isMobile}

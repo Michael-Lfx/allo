@@ -229,7 +229,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         <span className='min-w-0 flex-1 flex flex-col justify-center overflow-hidden gap-2px'>
           <span className='text-13px font-[500] truncate text-t-primary leading-16px'>{workpathDisplay.primary}</span>
           {workpathDisplay.secondary && (
-            <PathText path={workpathDisplay.secondary} className='text-11px font-[400] text-t-tertiary leading-13px' />
+            <PathText path={workpathDisplay.secondary} className='text-11px font-[400] text-t-secondary leading-13px' />
           )}
         </span>
       </Tooltip>
@@ -239,7 +239,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   const branchBadge =
     displayPreferences.showGitBranch && !isDefault && gitBranch ? (
       <Tooltip content={t('sessionList.currentGitBranch', { branch: gitBranch })} position='top'>
-        <span className='shrink-0 max-w-78px h-18px px-5px rd-4px bg-fill-2 text-11px text-t-tertiary flex items-center gap-3px min-w-0'>
+        <span className='shrink-0 max-w-78px h-18px px-5px rd-4px bg-fill-2 text-11px text-t-secondary flex items-center gap-3px min-w-0'>
           <BranchOne theme='outline' size='11' fill='currentColor' className='shrink-0' />
           <span className='truncate min-w-0'>{gitBranch}</span>
         </span>
@@ -307,7 +307,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               from the tooltip and copy op beside it. */}
           {renderWorkpathName()}
           {branchBadge}
-          {sessionCount > 0 && <span className='shrink-0 text-12px text-t-tertiary leading-none'>{sessionCount}</span>}
+          {sessionCount > 0 && <span className='shrink-0 text-12px text-t-secondary leading-none'>{sessionCount}</span>}
         </div>
 
         {/* Pinned dot indicator (rest state; hidden once hover ops appear) */}

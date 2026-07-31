@@ -83,6 +83,7 @@ describe('support chat structure', () => {
     expect(composer.includes('min-h-60px max-h-120px')).toBe(true);
     expect(composer.includes('h-32px flex items-center justify-between')).toBe(true);
     expect(composer.includes('size-28px')).toBe(true);
+    expect(composer.match(/data-button-shape='circle'/g)?.length).toBe(2);
     expect(composer.includes('textareaRef')).toBe(true);
 
     const joined = `${modal}\n${list}\n${composer}`;

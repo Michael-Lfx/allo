@@ -71,7 +71,7 @@ const SessionKindGroup: React.FC<SessionKindGroupProps> = ({
         <button
           type='button'
           aria-label={expanded ? t('common.collapse') : t('common.expand')}
-          className='size-18px flex items-center justify-center text-t-tertiary group-hover/kind:text-t-primary transition-colors shrink-0 bg-transparent border-none p-0 cursor-pointer'
+          className='size-18px flex items-center justify-center text-t-secondary group-hover/kind:text-t-primary transition-colors shrink-0 bg-transparent border-none p-0 cursor-pointer'
           onClick={(e) => {
             e.stopPropagation();
             onToggle();
@@ -99,10 +99,10 @@ const SessionKindGroup: React.FC<SessionKindGroupProps> = ({
             />
           </span>
         )}
-        <span className='text-12px text-t-tertiary group-hover/kind:text-t-primary transition-colors font-[500] leading-none min-w-0 truncate'>
+        <span className='text-12px text-t-secondary group-hover/kind:text-t-primary transition-colors font-[500] leading-none min-w-0 truncate'>
           {label}
         </span>
-        <span className='text-12px text-t-tertiary leading-none shrink-0'>({totalCount})</span>
+        <span className='text-12px text-t-secondary leading-none shrink-0'>({totalCount})</span>
         {!batchMode && (
           <span className='ml-auto shrink-0 flex items-center' onClick={(e) => e.stopPropagation()}>
             <Tooltip content={createLabel} position='top'>

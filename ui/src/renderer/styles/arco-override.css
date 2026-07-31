@@ -14,13 +14,15 @@ body {
 
 /* Keep action buttons on the same 6px corner system without affecting
    semantic controls such as switches, tabs, or radio buttons. */
-button:not([role]):not([data-button-shape='pill']),
-.arco-btn,
-[role='button'] {
+button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']):not(.arco-btn-shape-circle):not(.arco-btn-shape-round):not([class~='rd-full']),
+.arco-btn:not(.arco-btn-shape-circle):not(.arco-btn-shape-round),
+[role='button']:not([data-button-shape='pill']):not([data-button-shape='circle']):not([class~='rd-full']) {
   border-radius: 6px !important;
 }
 
 /* Icon-only actions explicitly declared as circular keep their round shape. */
+button[data-button-shape='circle'],
+button.arco-btn.arco-btn-shape-circle,
 .arco-btn.arco-btn-shape-circle {
   border-radius: 50% !important;
 }
@@ -281,6 +283,170 @@ body[arco-theme='dark'] .arco-modal-close-icon:hover {
 
 body[arco-theme='dark'] .arco-modal-confirm-icon {
   color: var(--warning) !important;
+}
+
+/* Shared modal system: a restrained, product-focused shell for dialogs,
+   confirmations, and the local NomiModal wrappers. */
+.arco-modal-mask {
+  background-color: var(--flowy-overlay-scrim, var(--color-mask-bg)) !important;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.arco-modal:not(.conversation-search-modal) {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  background: var(--flowy-surface-1, var(--dialog-fill-0));
+  border: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--border-base));
+  border-radius: var(--flowy-modal-radius, 12px);
+  box-shadow: var(--flowy-modal-shadow);
+}
+
+body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
+  background: var(--flowy-surface-1, var(--dialog-fill-0)) !important;
+  border-color: var(--flowy-border, var(--border-base)) !important;
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-header {
+  height: 56px;
+  padding: 0 24px;
+  border-bottom-color: var(--flowy-border, var(--border-base));
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-header .arco-modal-title {
+  text-align: left;
+  font-size: var(--flowy-text-heading, 16px);
+  font-weight: var(--flowy-weight-semibold, 600);
+  color: var(--flowy-text-1, var(--text-primary));
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-content {
+  padding: 20px 24px 24px;
+  color: var(--flowy-text-2, var(--text-secondary));
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px 20px;
+  border-top-color: var(--flowy-border, var(--border-base));
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-footer > .arco-btn {
+  min-width: 80px;
+  height: 36px;
+  margin-left: 0;
+  font-weight: var(--flowy-weight-medium, 500);
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-close-icon {
+  top: 12px;
+  right: 16px;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--flowy-radius-sm, 6px);
+  color: var(--flowy-text-3, var(--text-secondary));
+  transition:
+    background-color var(--flowy-motion-fast, 120ms) ease-out,
+    color var(--flowy-motion-fast, 120ms) ease-out;
+}
+
+.arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-close-icon:hover {
+  background: var(--flowy-surface-2, var(--color-fill-1));
+  color: var(--flowy-text-1, var(--text-primary));
+}
+
+/* Arco uses this compact variant for Modal.confirm, Modal.info, and related
+   feedback dialogs. Keep the hierarchy direct and the actions easy to scan. */
+.arco-modal-simple {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+}
+
+.arco-modal-simple .arco-modal-header {
+  height: auto;
+  margin-bottom: 16px;
+}
+
+.arco-modal-simple .arco-modal-title {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  text-align: left;
+  font-size: var(--flowy-text-heading, 16px);
+  font-weight: var(--flowy-weight-semibold, 600);
+  color: var(--flowy-text-1, var(--text-primary));
+}
+
+.arco-modal-simple .arco-modal-title .arco-icon {
+  flex: 0 0 auto;
+  margin-right: 0;
+}
+
+.arco-modal-simple .arco-modal-content {
+  color: var(--flowy-text-2, var(--text-secondary));
+  font-size: var(--flowy-text-body, 14px);
+  line-height: var(--flowy-leading-body, 1.5);
+}
+
+.arco-modal-simple .arco-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.arco-modal-simple .arco-modal-footer > .arco-btn {
+  min-width: 80px;
+  height: 36px;
+  margin-left: 0;
+  font-weight: var(--flowy-weight-medium, 500);
+}
+
+.nomifun-modal:not(.conversation-search-modal) .arco-modal-content {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: inherit !important;
+}
+
+.nomifun-modal-structured-header {
+  border-bottom-color: var(--flowy-border, var(--border-base)) !important;
+}
+
+.nomifun-modal-structured-footer {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--border-base));
+}
+
+.conversation-error-report-code {
+  margin-top: 12px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  border: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--border-base));
+  border-radius: var(--flowy-radius-md, 8px);
+  background: var(--flowy-surface-2, var(--color-fill-2));
+  color: var(--flowy-text-1, var(--text-primary));
+  font-family: var(--flowy-font-mono, ui-monospace, monospace);
+  font-size: var(--flowy-text-caption, 12px);
+  line-height: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arco-modal-mask,
+  .arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-close-icon {
+    transition: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 /* Sider footer popovers: WebUI and theme controls need a softer shell than Arco's default card. */

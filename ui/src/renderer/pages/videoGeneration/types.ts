@@ -23,6 +23,10 @@ export interface SessionSummary {
   /** RFC3339 string or epoch ms — client normalizes. */
   created_at?: string | number | null;
   updated_at?: string | number | null;
+  /** Relative path of finished video when available. */
+  final_video?: string | null;
+  /** Relative path of film poster (display-only, not muxed into the video). */
+  cover?: string | null;
 }
 
 /** Full session payload from `GET /api/vimax/sessions/:id`. */
@@ -42,8 +46,70 @@ export interface VimaxSession extends SessionSummary {
   target_duration_secs?: number | null;
   /** Relative or absolute URL of the finished video when available. */
   final_video?: string | null;
+  /** Relative path of film poster image (display-only). */
+  cover?: string | null;
   /** Relative working dir under data_dir/vimax (e.g. `.working_dir/<id>`). */
   working_dir?: string | null;
+}
+
+/** TV Show publish / plaza status from Flowy cloud. */
+export type TvShowStatus = 'pending' | 'published' | 'offline' | 'deleted';
+
+export interface TvShowAuthor {
+  id: number;
+  name: string;
+  avatarUrl?: string | null;
+}
+
+/** Plaza / mine list item (and detail with optional package fields). */
+export interface TvShowVideo {
+  id: number;
+  title: string;
+  coverUrl: string;
+  workflow: VimaxWorkflow | string;
+  style?: string | null;
+  targetDurationSecs?: number | null;
+  status: TvShowStatus | string;
+  publishedAt?: string | null;
+  submittedAt?: string | null;
+  updatedAt?: string | null;
+  author: TvShowAuthor;
+  likeCount?: number;
+  viewCount?: number;
+  liked?: boolean;
+  isMine?: boolean;
+  rejectReason?: string | null;
+  description?: string | null;
+  packageUrl?: string | null;
+  packageSizeBytes?: number | null;
+  archiveVersion?: number | null;
+  clientSessionId?: string | null;
+}
+
+export interface TvShowListResult {
+  total: number;
+  page: number;
+  pageSize: number;
+  list: TvShowVideo[];
+}
+
+export interface TvShowPublishResult {
+  id: number;
+  clientSessionId: string;
+  title: string;
+  status: TvShowStatus | string;
+  coverUrl: string;
+  packageUrl: string;
+  workflow: string;
+  submittedAt?: string | null;
+  publishedAt?: string | null;
+  author: TvShowAuthor;
+}
+
+export interface TvShowLikeResult {
+  id: number;
+  liked: boolean;
+  likeCount: number;
 }
 
 export interface CreateSessionBody {
@@ -108,6 +174,8 @@ export interface SessionStatus {
   status: VimaxRunStatus;
   error?: string | null;
   final_video?: string | null;
+  /** Relative path of film poster image (display-only). */
+  cover?: string | null;
   /** Absolute path of the session working directory on disk. */
   working_dir_abs?: string | null;
   /** RFC3339 timestamp of last progress update. */

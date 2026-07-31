@@ -189,6 +189,7 @@ export type AgentErrorResolution = {
 
 export type AgentStreamErrorInfo = {
   message: string;
+  incident_id?: string;
   code?: string;
   ownership?: AgentErrorOwnership;
   detail?: string;
@@ -789,6 +790,7 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
   }
 
   const code = typeof value.code === 'string' ? value.code : undefined;
+  const incident_id = typeof value.incident_id === 'string' ? value.incident_id : undefined;
   const ownership =
     typeof value.ownership === 'string' && AGENT_ERROR_OWNERSHIPS.has(value.ownership as AgentErrorOwnership)
       ? (value.ownership as AgentErrorOwnership)
@@ -800,6 +802,7 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
   const resolution = normalizeAgentErrorResolution(value.resolution);
 
   if (
+    !incident_id &&
     !code &&
     !ownership &&
     !detail &&
@@ -813,6 +816,7 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
   return {
     message: value.message,
+    ...(incident_id ? { incident_id } : {}),
     ...(code ? { code } : {}),
     ...(ownership ? { ownership } : {}),
     ...(detail ? { detail } : {}),

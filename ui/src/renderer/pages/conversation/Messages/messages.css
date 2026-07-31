@@ -275,28 +275,53 @@
 }
 
 .message-error-note__actions {
-  height: 28px;
+  display: inline-flex;
+  min-height: 28px;
   flex: none;
   align-self: center;
   align-items: center;
+  gap: 8px;
   justify-content: flex-end;
 }
 
+.message-error-note__actions .message-error-note__retry,
+.message-error-note__actions .message-error-note__recovery,
 .message-error-note__actions .message-error-note__feedback {
   box-sizing: border-box;
   height: 28px;
   min-height: 28px;
   margin: 0;
+  border-radius: 6px;
+}
+
+.message-error-note__actions .message-error-note__retry,
+.message-error-note__actions .message-error-note__recovery {
+  padding: 0 10px;
+}
+
+.message-error-note__actions .message-error-note__feedback {
   border: 1px solid color-mix(in srgb, var(--message-error-accent) 12%, var(--border-base));
   background: color-mix(in srgb, var(--color-bg-1) 86%, transparent);
   color: var(--color-text-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   line-height: 18px;
   padding: 0 9px;
+  white-space: nowrap;
 }
 
 .message-error-note__actions .message-error-note__feedback .pt-4px,
 .message-error-note__actions .message-error-note__feedback svg {
+  display: block;
+  flex: none;
   padding-top: 0 !important;
+}
+
+.message-error-note__actions .message-error-note__feedback span {
+  display: block;
+  line-height: 18px;
 }
 
 .message-error-note__actions .message-error-note__feedback:hover {

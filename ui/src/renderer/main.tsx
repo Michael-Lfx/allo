@@ -59,6 +59,11 @@ import Layout from './components/layout/Layout';
 import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
+import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
+import {
+  shouldScheduleAgentRefreshAfterHashChange,
+  shouldScheduleAgentRefreshForHash,
+} from './hooks/agent/agentDetectionRefresh';
 import { useAuth } from './hooks/context/AuthContext';
 import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
@@ -120,7 +125,7 @@ const Main = () => {
     // Prefetch `/api/agents` in the background so Guid selectors warm the SWR
     // cache without blocking the first paint on PATH scanning / agent list IO.
     void fetchDetectedAgents()
-      .then((agents) => swrMutate(DETECTED_AGENTS_SWR_KEY, agents, false))
+      .then((agents) => swrMutate(DETECTED_AGENTS_SWR_KEY, agents, { revalidate: false }))
       .catch((err) => {
         console.error('Failed to prefetch agents:', err);
       });
@@ -151,6 +156,64 @@ const Main = () => {
       active = false;
     };
   }, [ready, status]);
+
+  useEffect(() => {
+    if (!configReady || !shouldScheduleAgentRefreshForHash(window.location.hash)) return;
+
+    type IdleWindow = Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    let active = true;
+    let previousHash = window.location.hash;
+    let cancelScheduledRefresh = () => {};
+    const scheduleRefresh = () => {
+      cancelScheduledRefresh();
+      if (!shouldScheduleAgentRefreshForHash(window.location.hash)) return;
+      const idleWindow = window as IdleWindow;
+      const refresh = () => {
+        cancelScheduledRefresh = () => {};
+        if (active && document.visibilityState === 'visible') void refreshDetectedAgentsIfStale();
+      };
+
+      if (typeof idleWindow.requestIdleCallback === 'function') {
+        const idleId = idleWindow.requestIdleCallback(refresh, { timeout: 5000 });
+        cancelScheduledRefresh = () => {
+          idleWindow.cancelIdleCallback?.(idleId);
+        };
+        return;
+      }
+
+      const timeoutId = window.setTimeout(refresh, 1000);
+      cancelScheduledRefresh = () => window.clearTimeout(timeoutId);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') scheduleRefresh();
+    };
+    const onHashChange = () => {
+      const nextHash = window.location.hash;
+      if (!shouldScheduleAgentRefreshForHash(nextHash)) {
+        cancelScheduledRefresh();
+      } else if (shouldScheduleAgentRefreshAfterHashChange(previousHash, nextHash)) {
+        scheduleRefresh();
+      }
+      previousHash = nextHash;
+    };
+    scheduleRefresh();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', scheduleRefresh);
+    window.addEventListener('hashchange', onHashChange);
+
+    return () => {
+      active = false;
+      cancelScheduledRefresh();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', scheduleRefresh);
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, [configReady]);
 
   useEffect(() => {
     if (!ready || status !== 'authenticated') return;

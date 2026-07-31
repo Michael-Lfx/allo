@@ -8744,6 +8744,10 @@ mod tests {
         assert_eq!(content["content"], "The model provider rejected the request");
         assert_eq!(content["type"], "error");
         assert_eq!(content["error"]["code"], "USER_LLM_PROVIDER_AUTH_FAILED");
+        let incident_id = content["error"]["incident_id"]
+            .as_str()
+            .expect("persisted send error must include incident correlation");
+        assert!(!incident_id.is_empty());
         assert_eq!(content["error"]["ownership"], "user_llm_provider");
         assert_eq!(content["error"]["retryable"], false);
         assert_eq!(content["error"]["feedback_recommended"], false);
@@ -8761,6 +8765,7 @@ mod tests {
             .find(|evt| evt.name == "message.stream" && evt.data["type"] == "error")
             .expect("send error should be forwarded as message.stream error");
         assert_eq!(error_event.data["data"]["code"], "USER_LLM_PROVIDER_AUTH_FAILED");
+        assert_eq!(error_event.data["data"]["incident_id"], incident_id);
         assert_eq!(error_event.data["data"]["ownership"], "user_llm_provider");
         assert!(ws_events.iter().any(|evt| evt.name == "turn.completed"));
     }

@@ -99,6 +99,8 @@ impl AgentErrorResolution {
 pub struct AgentStreamErrorData {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incident_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<AgentErrorCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership: Option<AgentErrorOwnership>,
@@ -123,6 +125,7 @@ impl AgentStreamErrorData {
     pub fn legacy(message: impl Into<String>, code: Option<AgentErrorCode>) -> Self {
         Self {
             message: message.into(),
+            incident_id: Some(uuid::Uuid::now_v7().to_string()),
             code,
             ownership: None,
             detail: None,
@@ -144,6 +147,7 @@ impl AgentStreamErrorData {
     ) -> Self {
         Self {
             message: message.into(),
+            incident_id: Some(uuid::Uuid::now_v7().to_string()),
             code: Some(code),
             ownership: Some(ownership),
             detail,
@@ -182,6 +186,7 @@ mod tests {
 
         let json = serde_json::to_value(payload).unwrap();
         assert_eq!(json["message"], "The model provider rejected the request");
+        assert!(json["incident_id"].as_str().is_some_and(|value| !value.is_empty()));
         assert_eq!(json["code"], "USER_LLM_PROVIDER_AUTH_FAILED");
         assert_eq!(json["ownership"], "user_llm_provider");
         assert!(json.get("workspacePath").is_none());
@@ -221,6 +226,7 @@ mod tests {
         let payload: AgentStreamErrorData = serde_json::from_value(json).unwrap();
         assert_eq!(payload.message, "legacy failure");
         assert_eq!(payload.code, Some(AgentErrorCode::UnknownUpstreamError));
+        assert_eq!(payload.incident_id, None);
         assert_eq!(payload.ownership, None);
         assert_eq!(payload.workspace_path, None);
         assert_eq!(payload.retryable, None);
@@ -242,6 +248,7 @@ mod tests {
     fn workspace_path_field_uses_camel_case_wire_key_and_accepts_legacy_snake_case() {
         let payload = AgentStreamErrorData {
             message: "workspace path rejected".into(),
+            incident_id: Some("019c0000-0000-7000-8000-000000000001".into()),
             code: Some(AgentErrorCode::WorkspacePathEdgeWhitespaceRuntimeUnsupported),
             ownership: Some(AgentErrorOwnership::Nomifun),
             detail: Some("workspace detail".into()),

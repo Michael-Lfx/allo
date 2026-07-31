@@ -250,6 +250,7 @@
    capability accent instead of hard-coded light-theme colors. */
 .capability-header-btn {
   --capability-accent: rgb(var(--primary-6));
+  border-radius: 999px !important;
   position: relative !important;
   overflow: hidden;
   height: 30px !important;

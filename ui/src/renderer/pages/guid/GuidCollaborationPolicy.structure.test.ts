@@ -14,6 +14,7 @@ describe('Guid collaboration policy', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const chatSource = readSource(new URL('../conversation/components/ChatConversation.tsx', import.meta.url));
     const controlSource = readSource(new URL('../../components/collaboration/CollaborationPolicyControl.tsx', import.meta.url));
+    const controlCss = readSource(new URL('../../components/collaboration/CollaborationPolicyControl.module.css', import.meta.url));
 
     expect(pageSource.includes('<CollaborationPolicyControl')).toBe(true);
     expect(chatSource.includes('<CollaborationPolicyControl')).toBe(true);
@@ -25,6 +26,11 @@ describe('Guid collaboration policy', () => {
     expect(controlSource.includes("role='radio'")).toBe(true);
     expect(controlSource.includes('aria-checked={active}')).toBe(true);
     expect(controlSource.includes('getPopupContainer={() => document.body}')).toBe(true);
+    expect(controlSource.includes("data-compact={compact ? 'true' : 'false'}")).toBe(true);
+    expect(controlCss.includes(".trigger[data-compact='false']")).toBe(true);
+    expect(controlCss.includes('height: 34px !important')).toBe(true);
+    expect(controlCss.includes('border-radius: 999px !important')).toBe(true);
+    expect(controlCss.includes('transform: translateY(-1px)')).toBe(false);
     expect(controlSource.includes('collaboration.policy.description')).toBe(false);
     expect(controlSource.includes('collaboration.policy.askUserDescription')).toBe(false);
   });

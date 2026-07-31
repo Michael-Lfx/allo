@@ -66,17 +66,23 @@ impl AgentSendError {
         feedback_recommended: bool,
         resolution: Option<AgentErrorResolution>,
     ) -> Self {
-        Self {
-            stream_error: AgentStreamErrorData::classified(
-                message,
-                code,
-                ownership,
-                detail.map(|d| sanitize_error_detail(&d)),
-                retryable,
-                feedback_recommended,
-                resolution,
-            ),
-        }
+        let stream_error = AgentStreamErrorData::classified(
+            message,
+            code,
+            ownership,
+            detail.map(|d| sanitize_error_detail(&d)),
+            retryable,
+            feedback_recommended,
+            resolution,
+        );
+        tracing::warn!(
+            incident_id = stream_error.incident_id.as_deref().unwrap_or("unknown"),
+            ?code,
+            ?ownership,
+            retryable,
+            "Agent send error classified"
+        );
+        Self { stream_error }
     }
 
     pub fn from_app_error(err: AppError) -> Self {
@@ -86,21 +92,22 @@ impl AgentSendError {
     pub fn from_app_error_ref(err: &AppError) -> Self {
         let detail = strip_error_prefix(&err.to_string());
         match err {
-            AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported(path) => Self {
-                stream_error: AgentStreamErrorData {
-                    message: "This workspace path is no longer supported for execution".into(),
-                    code: Some(AgentErrorCode::WorkspacePathEdgeWhitespaceRuntimeUnsupported),
-                    ownership: Some(AgentErrorOwnership::Nomifun),
-                    detail: Some(sanitize_error_detail(&detail)),
-                    workspace_path: Some(path.clone()),
-                    retryable: Some(false),
-                    feedback_recommended: Some(false),
-                    resolution: Some(AgentErrorResolution::new(
+            AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported(path) => {
+                let mut error = Self::new(
+                    "This workspace path is no longer supported for execution",
+                    AgentErrorCode::WorkspacePathEdgeWhitespaceRuntimeUnsupported,
+                    AgentErrorOwnership::Nomifun,
+                    Some(detail),
+                    false,
+                    false,
+                    Some(AgentErrorResolution::new(
                         AgentErrorResolutionKind::StartNewSession,
                         Some(AgentErrorResolutionTarget::NewConversation),
                     )),
-                },
-            },
+                );
+                error.stream_error.workspace_path = Some(path.clone());
+                error
+            }
             AppError::Internal(_) => Self::new(
                 "Nomi failed while sending the message",
                 AgentErrorCode::NomifunInternalError,

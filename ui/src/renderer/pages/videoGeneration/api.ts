@@ -18,6 +18,10 @@ import type {
   ReviseBody,
   SessionStatus,
   SessionSummary,
+  TvShowLikeResult,
+  TvShowListResult,
+  TvShowPublishResult,
+  TvShowVideo,
   VimaxSession,
 } from './types';
 
@@ -305,4 +309,83 @@ export async function deleteCameo(sessionId: string, cameoId: string): Promise<v
     'DELETE',
     `${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos/${encodeURIComponent(cameoId)}`
   );
+}
+
+// ── TV Show (cloud plaza via local proxy) ───────────────────────────────────
+
+function tvShowQuery(params: Record<string, string | number | undefined | null>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null || value === '') continue;
+    qs.set(key, String(value));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : '';
+}
+
+/** Orchestrate cover + package OSS upload and Flowy publish for a local session. */
+export async function publishSessionToTvShow(
+  sessionId: string,
+  body?: { title?: string; description?: string }
+): Promise<TvShowPublishResult> {
+  return httpRequest<TvShowPublishResult>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/tv-show/publish`,
+    body ?? {}
+  );
+}
+
+export async function listTvShow(params?: {
+  page?: number;
+  pageSize?: number;
+  workflow?: string;
+  keyword?: string;
+  sort?: string;
+}): Promise<TvShowListResult> {
+  return httpRequest<TvShowListResult>(
+    'GET',
+    `${BASE}/tv-show/list${tvShowQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      workflow: params?.workflow,
+      keyword: params?.keyword,
+      sort: params?.sort,
+    })}`
+  );
+}
+
+export async function listMyTvShow(params?: {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+}): Promise<TvShowListResult> {
+  return httpRequest<TvShowListResult>(
+    'GET',
+    `${BASE}/tv-show/mine${tvShowQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      status: params?.status,
+    })}`
+  );
+}
+
+export async function getTvShowDetail(id: number): Promise<TvShowVideo> {
+  return httpRequest<TvShowVideo>('GET', `${BASE}/tv-show/${id}`);
+}
+
+export async function likeTvShow(id: number): Promise<TvShowLikeResult> {
+  return httpRequest<TvShowLikeResult>('POST', `${BASE}/tv-show/${id}/like`, {});
+}
+
+export async function unlikeTvShow(id: number): Promise<TvShowLikeResult> {
+  return httpRequest<TvShowLikeResult>('DELETE', `${BASE}/tv-show/${id}/like`);
+}
+
+export async function deleteTvShow(id: number): Promise<void> {
+  await httpRequest<unknown>('DELETE', `${BASE}/tv-show/${id}`);
+}
+
+/** Download TV Show package and import as a new local session. */
+export async function importTvShow(id: number): Promise<SessionSummary> {
+  return httpRequest<SessionSummary>('POST', `${BASE}/tv-show/${id}/import`, {});
 }

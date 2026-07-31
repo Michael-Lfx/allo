@@ -6,12 +6,15 @@ import FeedbackReportModal, {
   type FeedbackEventTags,
   type PrefilledScreenshot,
 } from '@/renderer/components/settings/SettingsModal/contents/FeedbackReportModal';
+import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
+import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 
 type OpenFeedbackOptions = {
   module?: string;
   autoScreenshot?: boolean;
   tags?: FeedbackEventTags;
   extra?: FeedbackEventExtra;
+  conversationErrorReport?: ConversationErrorReportContext;
 };
 
 type FeedbackContextValue = {
@@ -26,6 +29,7 @@ const captureScreenshot = async (): Promise<PrefilledScreenshot | null> => {
 };
 
 export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { reportConversationError } = useSupportChat();
   const [visible, setVisible] = useState(false);
   const [defaultModule, setDefaultModule] = useState<string | undefined>(undefined);
   const [prefilledScreenshots, setPrefilledScreenshots] = useState<PrefilledScreenshot[] | undefined>(undefined);
@@ -33,6 +37,10 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [feedbackExtra, setFeedbackExtra] = useState<FeedbackEventExtra | undefined>(undefined);
 
   const openFeedback = useCallback(async (options?: OpenFeedbackOptions) => {
+    if (options?.conversationErrorReport) {
+      reportConversationError(options.conversationErrorReport);
+      return;
+    }
     setDefaultModule(options?.module);
     setFeedbackTags(options?.tags);
     setFeedbackExtra(options?.extra);
@@ -43,7 +51,7 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setPrefilledScreenshots(undefined);
     }
     setVisible(true);
-  }, []);
+  }, [reportConversationError]);
 
   const handleCancel = useCallback(() => {
     setVisible(false);

@@ -10,21 +10,33 @@ import { describe, expect, test } from 'bun:test';
 const source = () => readFileSync(new URL('./useAgents.ts', import.meta.url), 'utf8');
 
 describe('useAgents detection refresh wiring', () => {
-  test('auto-refreshes shared detected-agent cache without every consumer issuing its own POST', () => {
+  test('keeps the throttled refresh available without calling it from the hook', () => {
     const text = source();
 
     expect(text.includes('AGENT_AUTO_REFRESH_MIN_INTERVAL_MS')).toBe(true);
-    expect(text.includes('agentAutoRefreshPromise')).toBe(true);
-    expect(text.includes('refreshDetectedAgentsIfStale')).toBe(true);
-    expect(text.includes('scheduleIdleAgentRefresh')).toBe(true);
-    expect(text.includes('useEffect')).toBe(true);
-    expect(text.includes('scheduleIdleAgentRefresh()')).toBe(true);
+    expect(text.includes('createAgentRefreshScheduler')).toBe(true);
+    expect(text.includes('export const refreshDetectedAgentsIfStale')).toBe(true);
+    expect(text.includes('useEffect')).toBe(false);
   });
 
-  test('refresh hits the backend refresh endpoint and then updates the shared SWR key', () => {
+  test('explicit refresh delegates to the snapshot replacement flow', () => {
     const text = source();
 
-    expect(text.includes('ipcBridge.acpConversation.refreshCustomAgents.invoke()')).toBe(true);
-    expect(text.includes('mutate(DETECTED_AGENTS_SWR_KEY)')).toBe(true);
+    expect(text.includes('refreshAgentAvailability')).toBe(true);
+    expect(text.includes('refreshSnapshot: () => ipcBridge.acpConversation.refreshCustomAgents.invoke()')).toBe(true);
+    expect(text.includes('replaceCachedSnapshot: (agents) => mutate(DETECTED_AGENTS_SWR_KEY, agents, { revalidate: false })')).toBe(true);
+  });
+
+  test('does not revalidate a prefetched snapshot during the first hook mount', () => {
+    const text = source();
+
+    expect(text.includes('DETECTED_AGENTS_SWR_OPTIONS')).toBe(true);
+  });
+
+  test('keeps the production refresh dependencies wired to the shared cache', () => {
+    const text = source();
+
+    expect(text.includes('refreshSnapshot: () => ipcBridge.acpConversation.refreshCustomAgents.invoke()')).toBe(true);
+    expect(text.includes('revalidate: false')).toBe(true);
   });
 });

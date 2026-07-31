@@ -1501,7 +1501,10 @@ export const acpConversation = {
     httpGet<AgentMetadata[], void>('/api/agents'),
     (agents) => agents.map(fromApiAgentMetadata)
   ),
-  refreshCustomAgents: httpPost<void, void>('/api/agents/refresh'),
+  refreshCustomAgents: withResponseMap(
+    httpPost<AgentMetadata[], void>('/api/agents/refresh'),
+    (agents) => agents.map(fromApiAgentMetadata)
+  ),
   testCustomAgent: httpPost<
     { step: 'success' } | { step: 'fail_cli'; error: string } | { step: 'fail_acp'; error: string },
     { command: string; acp_args?: string[]; env?: Record<string, string> }

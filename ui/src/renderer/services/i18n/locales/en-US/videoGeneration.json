@@ -25,6 +25,62 @@
     "card": {
       "updatedAt": "Updated {{time}}",
       "stage": "Stage: {{stage}}"
+    },
+    "tabs": {
+      "recent": "Recent projects",
+      "tvShow": "TV Show"
+    }
+  },
+  "tvShow": {
+    "title": "TV Show",
+    "subtitle": "Browse published community films, or check your submission status.",
+    "searchPlaceholder": "Search films...",
+    "scope": {
+      "plaza": "Plaza",
+      "mine": "My posts"
+    },
+    "status": {
+      "pending": "In review",
+      "published": "Published",
+      "offline": "Offline",
+      "deleted": "Deleted"
+    },
+    "card": {
+      "publishedAt": "{{time}}"
+    },
+    "empty": {
+      "plazaTitle": "No films on the plaza yet",
+      "plazaDesc": "Approved submissions will show up here.",
+      "mineTitle": "You haven’t published yet",
+      "mineDesc": "Open a finished film and tap “Publish to TV Show”."
+    },
+    "authRequired": {
+      "title": "Sign in to watch TV Show",
+      "desc": "Cloud account is required for the plaza and publishing.",
+      "login": "Sign in",
+      "publish": "Sign in to your cloud account before publishing to TV Show."
+    },
+    "detail": {
+      "title": "Film details",
+      "loadFailed": "Failed to load details"
+    },
+    "actions": {
+      "like": "Like",
+      "likeFailed": "Failed to like",
+      "deleteConfirm": "Delete this publication?",
+      "deleteOk": "Publication deleted",
+      "deleteFailed": "Failed to delete",
+      "import": "Import locally",
+      "importOk": "Project imported locally",
+      "importFailed": "Import failed"
+    },
+    "publish": {
+      "action": "Publish to TV Show",
+      "needSucceeded": "Finish rendering the film before publishing.",
+      "needCover": "A cover poster is required before publishing.",
+      "busy": "Finish planning or rendering before publishing.",
+      "ok": "Submitted for review. It will appear on the plaza after approval.",
+      "failed": "Publish failed"
     }
   },
   "create": {
@@ -114,6 +170,8 @@
     "character_portrait_start": "Generating character portrait",
     "world_assets_start": "Generating environment & prop plates",
     "world_assets_done": "Environment & prop plates ready",
+    "film_cover_start": "Generating film cover",
+    "film_cover_done": "Film cover ready",
     "render_start": "Starting render",
     "render_scene": "Rendering scene",
     "render_scene_skip": "Skipping completed scene",

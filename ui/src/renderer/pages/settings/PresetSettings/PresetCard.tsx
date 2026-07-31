@@ -1,11 +1,12 @@
 /**
- * PresetCard — A grid item for the preset list. Mirrors the AgentCard
- * visual language (rounded-16px bordered surface on bg-2, soft hover) but is
+ * PresetCard — A grid item for the preset list. Uses the compact management
+ * card language (tight radius, neutral border, quiet hover) but is
  * richer: avatar + name + source badge + enable Switch in the header, a 2-line
  * description clamp, a resolved tag-chip row, and a hover-revealed action
  * footer (Duplicate / Edit). The whole card is clickable → onEdit.
  *
- * Theme variables only; `<div onClick>` for clickables (no <button>).
+ * Theme variables only. The card itself is keyboard-operable while nested
+ * actions remain independent controls.
  */
 import type { PresetTag } from '@/common/types/agent/presetTypes';
 import type { PresetListItem } from './types';
@@ -60,13 +61,22 @@ const PresetCard: React.FC<PresetCardProps> = ({
     <div
       ref={cardRef}
       data-testid={`preset-card-${preset.preset_id}`}
+      role='button'
+      tabIndex={0}
       onClick={() => onEdit(preset)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onEdit(preset);
+        }
+      }}
       className={[
-        'group relative flex flex-col rounded-16px p-14px cursor-pointer',
-        'transition-all duration-180',
+        'group relative flex flex-col rd-8px border border-solid p-14px cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]',
+        'transition-[background-color,border-color,box-shadow] duration-180',
         highlighted
-          ? 'bg-[var(--color-fill-3)] shadow-[0_8px_22px_rgba(0,0,0,0.14)]'
-          : 'bg-[var(--color-bg-1)] hover:bg-[var(--color-fill-2)] hover:shadow-[0_8px_22px_rgba(0,0,0,0.12)]',
+          ? 'border-primary-6 bg-[var(--color-primary-light-1)]'
+          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-border-3)] hover:bg-[var(--color-fill-1)]',
       ].join(' ')}
     >
       {/* Header: avatar + name/badge, enable Switch pinned top-right */}
@@ -165,41 +175,27 @@ const PresetCard: React.FC<PresetCardProps> = ({
 
       {/* Hover footer — quiet action links, revealed on card hover */}
       <div
-        className='mt-auto pt-12px flex min-h-36px items-center justify-end gap-12px opacity-0 group-hover:opacity-100 transition-opacity duration-180'
+        className='mt-auto pt-12px flex min-h-36px items-center justify-end gap-12px opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-180'
         onClick={(e) => e.stopPropagation()}
       >
-        <span
-          role='button'
-          tabIndex={0}
+        <button
+          type='button'
           data-testid={`btn-duplicate-${preset.preset_id}`}
           onClick={() => onDuplicate(preset)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onDuplicate(preset);
-            }
-          }}
-          className='inline-flex items-center gap-4px leading-none text-12px text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
+          className='inline-flex items-center gap-4px border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
         >
           <Copy theme='outline' size={13} strokeWidth={3} />
           {t('settings.duplicatePreset', { defaultValue: 'Duplicate' })}
-        </span>
-        <span
-          role='button'
-          tabIndex={0}
+        </button>
+        <button
+          type='button'
           data-testid={`btn-edit-${preset.preset_id}`}
           onClick={() => onEdit(preset)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onEdit(preset);
-            }
-          }}
-          className='inline-flex items-center gap-4px leading-none text-12px text-[var(--color-text-2)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
+          className='inline-flex items-center gap-4px border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-2)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
         >
           <SettingOne theme='outline' size={13} strokeWidth={3} />
           {t('settings.editPreset', { defaultValue: 'Preset Details' })}
-        </span>
+        </button>
       </div>
     </div>
   );

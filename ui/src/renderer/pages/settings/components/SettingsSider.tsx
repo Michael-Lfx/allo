@@ -7,7 +7,6 @@ import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
 import {
   Computer,
-  Cpu,
   Earth,
   Headset,
   Info,
@@ -32,7 +31,6 @@ import { getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 /** Builtin settings tab IDs in display order (must match router paths). */
 export const BUILTIN_TAB_IDS = [
   'system',
-  'execution-engines',
   'browser-use',
   'computer-use',
   'poi',
@@ -95,12 +93,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     const visibleBuiltinTabIds = filterDeveloperGatedTabs(BUILTIN_TAB_IDS, developerMode === true);
     // Build builtin items
     const builtinMap: Record<string, SiderItem> = {
-      'execution-engines': {
-        id: 'execution-engines',
-        label: t('settings.executionEngineHub.railTitle'),
-        icon: <Cpu />,
-        path: 'execution-engines',
-      },
       system: { id: 'system', label: t('settings.system'), icon: <System />, path: 'system' },
       'browser-use': {
         id: 'browser-use',

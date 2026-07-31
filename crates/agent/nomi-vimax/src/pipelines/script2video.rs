@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::agents::{
     CameraImageGenerator, CharacterExtractor, CharacterPortraitsGenerator, ReferenceImageSelector,
-    StoryboardArtist, WorldAssetsPlanner, has_usable_portrait, rank_world_pairs_for_frame,
-    world_asset_pairs,
+    StoryboardArtist, WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
+    rank_world_pairs_for_frame, world_asset_pairs,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
@@ -123,6 +123,19 @@ impl Script2VideoPipeline {
 
         emit_pct(&progress, "construct_camera_tree", "正在构建机位树", 85.0);
         let camera_tree = self.construct_camera_tree(&shot_descriptions).await?;
+
+        // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
+        let film_root = resolve_film_root(&self.working_dir);
+        let synopsis = format!("{script}\n{user_requirement}");
+        let _ = ensure_film_cover(
+            &film_root,
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+            &style,
+            &synopsis,
+            &progress,
+        )
+        .await;
 
         emit_pct(&progress, "planned", "文本规划完成（含全局定妆图）", 100.0);
         Ok(PlanArtifacts {

@@ -508,6 +508,67 @@ pub async fn extract_last_frame(video_path: &Path, out_path: &Path) -> VimaxResu
     )))
 }
 
+/// Extract a still at roughly `ratio` through the video (0.0–1.0) → PNG.
+/// Falls back to the first frame, then the last frame.
+pub async fn extract_frame_at_ratio(
+    video_path: &Path,
+    out_path: &Path,
+    ratio: f64,
+) -> VimaxResult<()> {
+    let ffmpeg = require_ffmpeg()?;
+    if !video_path.is_file() {
+        return Err(VimaxError::Media(format!(
+            "video missing: {}",
+            video_path.display()
+        )));
+    }
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let out = out_path.to_str().unwrap_or("");
+    let vin = video_path.to_str().unwrap_or("");
+    let ratio = ratio.clamp(0.0, 0.95);
+
+    if let Some(dur) = probe_duration_secs(&ffmpeg, video_path).await {
+        let seek = (dur * ratio).max(0.0);
+        let seek_s = format!("{seek:.3}");
+        let status = run_ffmpeg(
+            &ffmpeg,
+            &[
+                "-y",
+                "-ss",
+                &seek_s,
+                "-i",
+                vin,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                out,
+            ],
+        )
+        .await?;
+        if status.success() && out_path.is_file() && is_usable_image_file(out_path) {
+            return Ok(());
+        }
+        let _ = tokio::fs::remove_file(out_path).await;
+    }
+
+    // First frame fallback.
+    let status = run_ffmpeg(
+        &ffmpeg,
+        &["-y", "-i", vin, "-frames:v", "1", "-q:v", "2", out],
+    )
+    .await?;
+    if status.success() && out_path.is_file() && is_usable_image_file(out_path) {
+        return Ok(());
+    }
+    let _ = tokio::fs::remove_file(out_path).await;
+
+    extract_last_frame(video_path, out_path).await
+}
+
 /// Extract the first frame of the *second* scene in a transition video.
 ///
 /// Mirrors ViMax `get_new_camera_image`: ContentDetector → Scene-002 first frame,

@@ -9,6 +9,7 @@ mod auth;
 mod channel;
 mod cloud;
 mod cloud_im;
+mod tv_show;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -118,6 +119,10 @@ pub use cloud::{
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
     CloudImMessageList, CloudImReadRequest, CloudImSendMessageRequest,
+};
+pub use tv_show::{
+    TvShowAuthor, TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest,
+    TvShowPublishResponse, TvShowPublishSessionRequest, TvShowVideo,
 };
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,

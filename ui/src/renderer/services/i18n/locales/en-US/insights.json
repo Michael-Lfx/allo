@@ -21,10 +21,14 @@
     "autoExtractIdleSecs": "Idle timeout (seconds)",
     "autoExtractIdleSecsHint": "Also enqueue after this many seconds without new messages (e.g. 300 = 5 minutes).",
     "minWorkTurnsHint": "Turn threshold uses min_work_turns from config (currently {{count}} turns).",
+    "skillMiningEnabled": "Skill mining",
+    "skillMiningHint": "Extract tool-use patterns from regular conversations into skill suggestions.",
     "redactedBody": "Include redacted skill body",
     "saved": "Insights settings saved"
   },
   "actions": {
+    "outboxTitle": "Outbox management",
+    "outboxDescription": "Review the local work-package queue and process or clear records when needed.",
     "flush": "Flush outbox",
     "flushSuccess": "Uploaded {{uploaded}}, duplicates {{duplicates}}, rejected {{rejected}}",
     "resetFailed": "Reset failed",

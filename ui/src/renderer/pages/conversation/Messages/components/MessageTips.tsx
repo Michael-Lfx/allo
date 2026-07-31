@@ -18,6 +18,7 @@ import { parseMessageFileMarker } from './messageFileMarker';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { useNavigate } from 'react-router-dom';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 
 const MODEL_RECOVERY_KINDS = new Set([
   'change_model',
@@ -114,6 +115,27 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
 
   const displayContent = json ? '' : content;
   const shouldShowFeedback = type === 'error';
+  const conversationErrorReport = useMemo<ConversationErrorReportContext | undefined>(() => {
+    if (type !== 'error') return undefined;
+    return {
+      error: structuredError ?? { message: content },
+      conversationId: message.conversation_id,
+      ...(message.message_id || message.msg_id
+        ? { messageId: message.message_id ?? message.msg_id }
+        : {}),
+      ...(message.turn_id ? { turnId: message.turn_id } : {}),
+      occurredAt: new Date(message.created_at ?? Date.now()).toISOString(),
+    };
+  }, [
+    content,
+    message.conversation_id,
+    message.created_at,
+    message.message_id,
+    message.msg_id,
+    message.turn_id,
+    structuredError,
+    type,
+  ]);
 
   const retryPayload = useMemo(() => {
     if (type !== 'error') return null;
@@ -193,31 +215,6 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
       code ? `${t('conversation.agentError.errorCode')}: ${code}` : '',
       structuredError.detail || structuredError.message,
     ].filter(Boolean);
-    const feedbackTags: Record<string, string> = {};
-    if (code) {
-      feedbackTags.agent_error_code = code;
-    }
-    if (ownership) {
-      feedbackTags.agent_error_ownership = ownership;
-    }
-    if (structuredError.retryable !== undefined) {
-      feedbackTags.agent_error_retryable = String(structuredError.retryable);
-    }
-    if (structuredError.resolution?.kind) {
-      feedbackTags.agent_error_resolution = structuredError.resolution.kind;
-    }
-    const feedbackExtra = {
-      agent_error: {
-        ...(code ? { code } : {}),
-        ...(ownership ? { ownership } : {}),
-        ...(structuredError.retryable !== undefined ? { retryable: structuredError.retryable } : {}),
-        ...(structuredError.feedback_recommended !== undefined
-          ? { feedback_recommended: structuredError.feedback_recommended }
-          : {}),
-        ...(structuredError.resolution ? { resolution: structuredError.resolution } : {}),
-      },
-    };
-
     return (
       <div className='w-full'>
         <div className={classNames('message-error-note', ownership && `message-error-note--${ownership}`)}>
@@ -303,8 +300,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                       {retryButton}
                       <FeedbackButton
                         module='conversation-session'
-                        feedbackTags={feedbackTags}
-                        feedbackExtra={feedbackExtra}
+                        conversationErrorReport={conversationErrorReport}
                         className='message-error-note__feedback'
                       />
                     </div>
@@ -365,7 +361,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 </Button>
               )}
               {retryButton}
-              <FeedbackButton module='conversation-session' />
+              <FeedbackButton module='conversation-session' conversationErrorReport={conversationErrorReport} />
             </div>
           )}
         </div>
@@ -417,7 +413,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
               </Button>
             )}
             {retryButton}
-            <FeedbackButton module='conversation-session' />
+            <FeedbackButton module='conversation-session' conversationErrorReport={conversationErrorReport} />
           </div>
         )}
       </div>

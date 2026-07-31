@@ -16,6 +16,11 @@ const cssRuleFor = (selector: string) => {
   return match?.[1] ?? '';
 };
 
+const cssRulesFor = (selector: string) => {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...cssSource.matchAll(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, 'g'))].map((match) => match[1]);
+};
+
 describe('MessageTips structured error presentation', () => {
   test('uses a NomiFun-native diagnostic note instead of the legacy open-source alert block', () => {
     expect(source.includes('message-error-note')).toBe(true);
@@ -56,9 +61,17 @@ describe('MessageTips structured error presentation', () => {
     expect(iconRule.includes('transform: none')).toBe(true);
   });
 
-  test('pins the feedback action to a centered footer slot without inherited icon offset', () => {
+  test('spaces footer actions and centers the feedback icon with its label', () => {
     expect(cssSource.includes('grid-template-columns: minmax(0, 1fr) auto')).toBe(true);
-    expect(cssSource.includes('height: 28px')).toBe(true);
+    const actionRules = cssRulesFor('.message-error-note__actions');
+    const feedbackRules = cssRulesFor('.message-error-note__actions .message-error-note__feedback');
+
+    expect(actionRules.some((rule) => rule.includes('gap: 8px'))).toBe(true);
+    expect(actionRules.some((rule) => rule.includes('min-height: 28px'))).toBe(true);
+    expect(feedbackRules.some((rule) => rule.includes('display: inline-flex'))).toBe(true);
+    expect(feedbackRules.some((rule) => rule.includes('align-items: center'))).toBe(true);
+    expect(feedbackRules.some((rule) => rule.includes('justify-content: center'))).toBe(true);
+    expect(feedbackRules.some((rule) => rule.includes('gap: 4px'))).toBe(true);
     expect(cssSource.includes('.message-error-note__actions .message-error-note__feedback')).toBe(true);
     expect(cssSource.includes('.message-error-note__feedback .pt-4px')).toBe(true);
     expect(cssSource.includes('padding-top: 0 !important')).toBe(true);

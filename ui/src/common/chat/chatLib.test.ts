@@ -15,10 +15,32 @@ import {
   composeMessage,
   joinPath,
   mergeTextMessageContent,
+  normalizeAgentStreamError,
   transformKnowledgeWritebackEvent,
   transformMessage,
   transformUserCreatedEvent,
 } from './chatLib';
+
+describe('agent stream error normalization', () => {
+  test('preserves incident correlation and accepts historical errors without it', () => {
+    expect(
+      normalizeAgentStreamError({
+        message: 'provider failed',
+        incident_id: '019c0000-0000-7000-8000-000000000001',
+        code: 'USER_LLM_PROVIDER_GATEWAY_ERROR',
+      })
+    ).toMatchObject({
+      incident_id: '019c0000-0000-7000-8000-000000000001',
+      code: 'USER_LLM_PROVIDER_GATEWAY_ERROR',
+    });
+    expect(
+      normalizeAgentStreamError({
+        message: 'historical failure',
+        code: 'UNKNOWN_UPSTREAM_ERROR',
+      })
+    ).toMatchObject({ code: 'UNKNOWN_UPSTREAM_ERROR' });
+  });
+});
 
 const MESSAGE_ID = parseMessageId('019b0000-0000-7000-8000-000000000001');
 const SECOND_MESSAGE_ID = parseMessageId('019b0000-0000-7000-8000-000000000002');

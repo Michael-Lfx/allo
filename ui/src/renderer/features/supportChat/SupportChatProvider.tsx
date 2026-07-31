@@ -14,6 +14,8 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { Message, Modal } from '@arco-design/web-react';
+import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import { isAuthExpiredHttpError } from '@/common/adapter/httpBridge';
 import type {
@@ -23,6 +25,12 @@ import type {
 } from '@/common/adapter/ipcBridge';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
 import { supportChatApi } from './api/supportChatApi';
+import { collectSupportDeviceInfo } from './collectSupportDeviceInfo';
+import { collectSupportLogUserInfo } from './collectSupportLogUserInfo';
+import {
+  buildConversationErrorReportMetadata,
+  type ConversationErrorReportContext,
+} from './conversationErrorReport';
 import type { SupportChatState, SupportMessage, SupportPendingMessage } from './api/supportChatTypes';
 import {
   collectNotifiableSysUserMessages,
@@ -49,6 +57,7 @@ type SupportChatContextValue = {
   hasUnread: boolean;
   unreadCount: number;
   sendMessage: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<void>;
+  reportConversationError: (context: ConversationErrorReportContext) => void;
   /** 图片秒上屏：同步挂 pending 气泡，上传/发送全部在后台进行。 */
   sendImages: (params: { content: string; images: SupportOutgoingImage[] }) => void;
   retryMessage: (clientMsgId: string) => Promise<void>;
@@ -92,6 +101,7 @@ function buildImagePayload(
 }
 
 export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { t } = useTranslation();
   const { status: cloudStatus, whoami } = useCloudAuth();
   const [state, dispatch] = useReducer(supportChatReducer, initialSupportChatState);
   const [modalOpen, setModalOpen] = useState(false);
@@ -386,6 +396,73 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [sendWithClientMsgId]
   );
 
+  const reportConversationError = useCallback(
+    (context: ConversationErrorReportContext) => {
+      if (cloudStatus !== 'authenticated') {
+        Message.warning(t('common.supportChat.authRequired'));
+        openSupportChat();
+        return;
+      }
+
+      const clientMsgId = crypto.randomUUID();
+      const content = t('common.supportChat.uploadLogsDefaultContent');
+      let preparedLogPayload: ICloudImAttachmentPayload | undefined;
+
+      const prepareLogPayload = async (): Promise<ICloudImAttachmentPayload> => {
+        if (preparedLogPayload) return preparedLogPayload;
+
+        const devicePromise = collectSupportDeviceInfo();
+        const packed = await supportChatApi.packLogs();
+        const [uploaded, device] = await Promise.all([
+          supportChatApi.uploadLogFromPath({
+            zipPath: packed.zipPath,
+            fileName: packed.fileName,
+          }),
+          devicePromise,
+        ]);
+        preparedLogPayload = {
+          ...(uploaded.url ? { url: uploaded.url } : {}),
+          ...(uploaded.objectKey ? { objectKey: uploaded.objectKey } : {}),
+          name: uploaded.name || packed.fileName,
+          contentType: uploaded.contentType || 'application/zip',
+          byteSize: uploaded.byteSize || packed.byteSize,
+          account: collectSupportLogUserInfo(whoami),
+          device,
+          report: buildConversationErrorReportMetadata(context),
+        };
+        return preparedLogPayload;
+      };
+
+      Modal.confirm({
+        title: t('settings.bugReportTitle'),
+        content: (
+          <div className='text-13px leading-20px text-t-secondary'>
+            <p className='m-0'>{t('settings.bugReportAutoInfo')}</p>
+            <p className='m-0 mt-8px'>{t('common.supportChat.uploadLogsConfirm')}</p>
+            {context.error.code ? (
+              <div className='conversation-error-report-code'>
+                {t('conversation.agentError.errorCode')}: {context.error.code}
+              </div>
+            ) : null}
+          </div>
+        ),
+        okText: t('settings.bugReportSubmit'),
+        cancelText: t('settings.bugReportCancel'),
+        onOk: async () => {
+          try {
+            const logPayload = await prepareLogPayload();
+            await sendWithClientMsgId(clientMsgId, content, { logPayload });
+            Message.success(t('settings.bugReportSuccess'));
+          } catch (error) {
+            Message.error(t('settings.bugReportError'));
+            throw error;
+          }
+        },
+      });
+    },
+    [cloudStatus, openSupportChat, sendWithClientMsgId, t, whoami]
+  );
+
   // 图片发送：同步挂出全部 pending 气泡（本地预览秒上屏），
   // 后台并行上传（文档 §4）、按顺序发送（文档 §5.2）；说明文字随最后一张，展示在整组图片之后。
   const sendImages = useCallback(
@@ -553,6 +630,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       hasUnread,
       unreadCount,
       sendMessage,
+      reportConversationError,
       sendImages,
       retryMessage,
       loadOlder,
@@ -564,6 +642,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       hasUnread,
       unreadCount,
       sendMessage,
+      reportConversationError,
       sendImages,
       retryMessage,
       loadOlder,

@@ -3,9 +3,8 @@
  * multi-select toggle chips, each led by an「All」chip, with a trailing
  * "Manage Tags" chip-button. Hides a row when its tag list is empty.
  *
- * Chips mirror the `.presetAgentTag` pill language: idle = fill-2 surface with
- * a border-2 hairline; active = primary-light-1 surface, primary-6 text,
- * primary-light-3 border. Theme variables only; `<div onClick>` (no <button>).
+ * Chips mirror the `.presetAgentTag` language: idle = fill-2 surface with a
+ * border-2 hairline; active = primary surface. Theme variables only.
  */
 import type { PresetTag, PresetTagDimension } from '@/common/types/agent/presetTypes';
 import type { PresetTagId } from '@/common/types/ids';
@@ -29,7 +28,7 @@ type PresetTagFilterBarProps = {
 
 const resolveTagLabel = (tag: PresetTag, localeKey: string): string => tag.label_i18n?.[localeKey] || tag.label;
 
-/** Idle/active pill. Active wraps the primary-light triad. */
+/** Idle/active filter control. */
 const FilterChip: React.FC<{
   label: string;
   active: boolean;
@@ -37,18 +36,11 @@ const FilterChip: React.FC<{
   testId?: string;
   variant?: 'default' | 'drawer';
 }> = ({ label, active, onClick, testId, variant = 'default' }) => (
-  <div
-    role='button'
-    tabIndex={0}
+  <button
+    type='button'
     data-testid={testId}
     aria-pressed={active}
     onClick={onClick}
-    onKeyDown={(e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        onClick();
-      }
-    }}
     className={
       variant === 'drawer'
         ? [
@@ -56,16 +48,16 @@ const FilterChip: React.FC<{
             active ? filterBarStyles.drawerFilterChipActive : '',
           ].filter(Boolean).join(' ')
         : [
-            'inline-flex items-center select-none cursor-pointer rounded-[16px] px-12px py-3px text-13px leading-20px',
-            'border border-solid transition-all duration-150 whitespace-nowrap',
+            'inline-flex items-center select-none cursor-pointer rounded-6px px-12px py-3px text-13px leading-20px',
+            'border border-solid transition-[background-color,border-color,color] duration-150 whitespace-nowrap',
             active
-              ? 'bg-[#151515] text-white border-white font-medium'
+              ? 'bg-primary-6 text-white border-primary-6 font-medium'
               : 'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border-[var(--color-border-2)] hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)]',
           ].join(' ')
     }
   >
     {label}
-  </div>
+  </button>
 );
 
 const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
@@ -99,16 +91,16 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
     const selected = value[dimension];
 
     return (
-      <div className={isDrawer ? filterBarStyles.drawerFilterRow : 'flex items-start gap-12px'}>
+      <div className={isDrawer ? filterBarStyles.drawerFilterRow : 'flex flex-col gap-6px sm:flex-row sm:items-start sm:gap-12px'}>
         {/* Left dimension label with accent rail */}
-        <div className={isDrawer ? filterBarStyles.drawerFilterLabel : 'flex items-center gap-7px flex-shrink-0 h-26px mt-1px'}>
+        <div className={isDrawer ? filterBarStyles.drawerFilterLabel : 'flex min-h-26px items-center gap-7px flex-shrink-0 sm:h-26px sm:mt-1px'}>
           <span
             className={isDrawer ? filterBarStyles.drawerFilterRail : 'inline-block w-3px h-12px rounded-[2px] bg-[var(--color-primary-light-3)]'}
             aria-hidden='true'
           />
           <span className={isDrawer ? '' : 'text-12px font-medium text-[var(--color-text-3)] whitespace-nowrap'}>{rowLabel}</span>
         </div>
-        <div className={isDrawer ? filterBarStyles.drawerFilterChips : 'flex flex-wrap items-center gap-8px min-w-0'}>
+        <div className={isDrawer ? filterBarStyles.drawerFilterChips : 'flex w-full flex-wrap items-center gap-8px min-w-0 sm:w-auto sm:flex-1'}>
           <FilterChip
             label={t('settings.presetTagAll', { defaultValue: 'All' })}
             active={selected.length === 0}
@@ -139,11 +131,11 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
       className={
         isDrawer
           ? [filterBarStyles.drawerFilterBar, className].filter(Boolean).join(' ')
-          : ['flex flex-col gap-12px rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-14px', className].filter(Boolean).join(' ')
+          : ['flex flex-col gap-12px rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-14px', className].filter(Boolean).join(' ')
       }
     >
-      <div className='flex items-start justify-between gap-12px'>
-        <div className={isDrawer ? filterBarStyles.drawerFilterRows : 'flex flex-col gap-12px min-w-0 flex-1'}>
+      <div className={isDrawer ? 'flex items-start justify-between gap-12px' : 'flex flex-col gap-12px sm:flex-row sm:items-start sm:justify-between'}>
+        <div className={isDrawer ? filterBarStyles.drawerFilterRows : 'flex flex-col gap-12px min-w-0 sm:flex-1'}>
           {renderRow('audience', t('settings.presetTagAudience', { defaultValue: 'Audience' }), audienceTags)}
           {renderRow('scenario', t('settings.presetTagScenario', { defaultValue: 'Skill Scenario' }), scenarioTags)}
           {!hasAudience && !hasScenario && (
@@ -154,23 +146,16 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
         </div>
         {/* Manage tags — a quiet chip-button anchored to the top-right */}
         {!hideManageTags && (
-          <div
-            role='button'
-            tabIndex={0}
+          <button
+            type='button'
             data-testid='btn-manage-tags'
             onClick={onManageTags}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onManageTags();
-              }
-            }}
             className={
               isDrawer
                 ? filterBarStyles.drawerManageChip
                 : [
-                    'inline-flex items-center gap-5px select-none cursor-pointer rounded-[16px] px-12px py-4px flex-shrink-0',
-                    'text-12px font-medium border border-dashed transition-all duration-150',
+                    'order-first inline-flex items-center gap-5px select-none cursor-pointer rd-6px px-12px py-4px self-start sm:order-none sm:self-auto flex-shrink-0',
+                    'text-12px font-medium border border-dashed transition-[background-color,border-color,color] duration-150',
                     'bg-transparent text-[var(--color-text-3)] border-[var(--color-border-3)]',
                     'hover:text-[rgb(var(--primary-6))] hover:border-[var(--color-primary-light-3)] hover:bg-[var(--color-primary-light-1)]',
                   ].join(' ')
@@ -178,7 +163,7 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
           >
             <SettingTwo theme='outline' size={13} strokeWidth={3} />
             {t('settings.presetManageTags', { defaultValue: 'Manage Tags' })}
-          </div>
+          </button>
         )}
       </div>
     </div>
