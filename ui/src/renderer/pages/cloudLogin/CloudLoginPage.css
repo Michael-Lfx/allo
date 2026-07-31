@@ -488,18 +488,26 @@ body.login-page-active {
 }
 
 .cloud-login-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
   margin-top: 28px;
   padding-top: 20px;
   border-top: 1px solid #f1f5f9;
   font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
   color: #94a3b8;
 }
 
+.cloud-login-footer__primary,
+.cloud-login-footer__legal-cluster {
+  display: inline-block;
+}
+
+.cloud-login-footer__legal-cluster {
+  white-space: nowrap;
+}
+
 .cloud-login-footer__dot {
+  margin: 0 6px;
   color: #cbd5e1;
 }
 
@@ -550,10 +558,12 @@ body.login-page-active {
 }
 
 .cloud-login-legal {
-  display: inline-flex;
-  align-items: center;
+  display: inline;
   gap: 6px;
-  flex-wrap: wrap;
+}
+
+.cloud-login-legal > * + * {
+  margin-left: 6px;
 }
 
 .cloud-login-legal a {
