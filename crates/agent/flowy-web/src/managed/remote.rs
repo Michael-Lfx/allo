@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -9,7 +8,7 @@ use nomi_mcp::{
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::Instant;
 
 use crate::types::{SearchQuery, SearchResult, WebError};
@@ -38,10 +37,36 @@ enum AdapterCompatibilityError {
 }
 
 #[derive(Default)]
-#[allow(dead_code)] // Consumed by fetch endpoint health in later phases.
-struct EndpointHealth {
+struct CooldownTracker {
     consecutive_failures: u32,
     cooldown_until: Option<Instant>,
+}
+
+impl CooldownTracker {
+    fn is_available(&self, now: Instant) -> bool {
+        self.cooldown_until.is_none_or(|cooldown_until| cooldown_until <= now)
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.cooldown_until = None;
+    }
+
+    fn record_network_error(&mut self, now: Instant) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        let exponent = self.consecutive_failures.saturating_sub(1).min(5);
+        let seconds = 15u64.saturating_mul(1u64 << exponent).min(5 * 60);
+        self.cooldown_until = Some(now + Duration::from_secs(seconds));
+    }
+
+    fn schedule_until(&mut self, until: Instant) {
+        self.cooldown_until = Some(until);
+    }
+}
+
+#[derive(Default)]
+struct EndpointHealth {
+    cooldown: CooldownTracker,
     disable_reason: Option<EndpointDisableReason>,
 }
 
@@ -51,9 +76,32 @@ pub(crate) enum EndpointFailureKind {
     Forbidden,
     RateLimited(Option<Duration>),
     Network,
-    Timeout,
-    Upstream,
     MalformedResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FetchToolFailureKind {
+    Upstream,
+    Timeout,
+    MalformedResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedFetchErrorKind {
+    Endpoint(EndpointFailureKind),
+    Tool(FetchToolFailureKind),
+}
+
+impl From<EndpointFailureKind> for ManagedFetchErrorKind {
+    fn from(kind: EndpointFailureKind) -> Self {
+        Self::Endpoint(kind)
+    }
+}
+
+impl From<FetchToolFailureKind> for ManagedFetchErrorKind {
+    fn from(kind: FetchToolFailureKind) -> Self {
+        Self::Tool(kind)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,17 +109,33 @@ enum EndpointDisableReason {
     Unauthorized,
 }
 
-impl EndpointHealth {
+#[derive(Default)]
+struct FetchToolHealth {
+    cooldown: CooldownTracker,
+}
+
+impl FetchToolHealth {
     fn is_available(&self, now: Instant) -> bool {
-        self.disable_reason.is_none()
-            && self
-                .cooldown_until
-                .is_none_or(|cooldown_until| cooldown_until <= now)
+        self.cooldown.is_available(now)
     }
 
     fn record_success(&mut self) {
-        self.consecutive_failures = 0;
-        self.cooldown_until = None;
+        self.cooldown.record_success();
+    }
+
+    fn record_error(&mut self, _kind: FetchToolFailureKind, now: Instant) {
+        self.cooldown.record_network_error(now);
+    }
+}
+
+impl EndpointHealth {
+    fn is_available(&self, now: Instant) -> bool {
+        self.disable_reason.is_none()
+            && self.cooldown.is_available(now)
+    }
+
+    fn record_success(&mut self) {
+        self.cooldown.record_success();
         self.disable_reason = None;
     }
 
@@ -81,41 +145,27 @@ impl EndpointHealth {
                 self.disable_reason = Some(EndpointDisableReason::Unauthorized);
             }
             EndpointFailureKind::Forbidden => {
-                self.cooldown_until = Some(now + Duration::from_secs(10 * 60));
+                self.cooldown
+                    .schedule_until(now + Duration::from_secs(10 * 60));
             }
             EndpointFailureKind::RateLimited(retry_after) => {
                 let delay = retry_after
                     .unwrap_or(Duration::from_secs(30))
                     .clamp(Duration::from_secs(30), Duration::from_secs(24 * 60 * 60));
-                self.cooldown_until = Some(now + delay);
+                self.cooldown.schedule_until(now + delay);
             }
-            EndpointFailureKind::Network
-            | EndpointFailureKind::Timeout
-            | EndpointFailureKind::Upstream
-            | EndpointFailureKind::MalformedResponse => {
-                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-                let exponent = self.consecutive_failures.saturating_sub(1).min(5);
-                let seconds = 15u64.saturating_mul(1u64 << exponent).min(5 * 60);
-                self.cooldown_until = Some(now + Duration::from_secs(seconds));
+            EndpointFailureKind::Network | EndpointFailureKind::MalformedResponse => {
+                self.cooldown.record_network_error(now);
             }
         }
     }
 }
 
-#[allow(dead_code)] // Consumed by fetch tool catalog compatibility in later phases.
-struct ToolCatalogSnapshot {
-    generation: u64,
-    tools: Option<Vec<McpToolDef>>,
-}
-
 pub(crate) struct ParallelMcpClient {
     peer: Arc<RemoteMcpPeer>,
-    #[allow(dead_code)] // Endpoint health is consumed by the fetch adapter phase.
     endpoint_health: Mutex<EndpointHealth>,
-    #[allow(dead_code)] // Tool catalog generation is consumed by fetch adapter phase.
-    tool_catalog: RwLock<ToolCatalogSnapshot>,
+    fetch_tool_health: Mutex<FetchToolHealth>,
     remote_fetch_semaphore: Semaphore,
-    remote_success: AtomicBool,
 }
 
 impl ParallelMcpClient {
@@ -129,13 +179,9 @@ impl ParallelMcpClient {
                 WebError::Provider("could not initialize managed Parallel MCP".to_owned())
             })?),
             endpoint_health: Mutex::new(EndpointHealth::default()),
-            tool_catalog: RwLock::new(ToolCatalogSnapshot {
-                generation: 0,
-                tools: None,
-            }),
+            fetch_tool_health: Mutex::new(FetchToolHealth::default()),
             // Limits Parallel web_fetch concurrency across conversations.
             remote_fetch_semaphore: Semaphore::new(1),
-            remote_success: AtomicBool::new(false),
         })
     }
 
@@ -148,28 +194,35 @@ impl ParallelMcpClient {
         &self.remote_fetch_semaphore
     }
 
-    pub(crate) fn is_remote_warm(&self) -> bool {
-        self.remote_success.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn mark_remote_success(&self) {
-        self.remote_success.store(true, Ordering::Relaxed);
-    }
-
-    pub(crate) async fn fetch_available(&self, now: Instant) -> bool {
+    pub(crate) async fn endpoint_available(&self, now: Instant) -> bool {
         self.endpoint_health.lock().await.is_available(now)
     }
 
-    pub(crate) async fn record_fetch_success(&self) {
+    pub(crate) async fn record_endpoint_success(&self) {
         self.endpoint_health.lock().await.record_success();
     }
 
     pub(crate) async fn record_fetch_error(
         &self,
-        kind: EndpointFailureKind,
+        kind: impl Into<ManagedFetchErrorKind>,
         now: Instant,
     ) {
-        self.endpoint_health.lock().await.record_error(kind, now);
+        match kind.into() {
+            ManagedFetchErrorKind::Endpoint(kind) => {
+                self.endpoint_health.lock().await.record_error(kind, now);
+            }
+            ManagedFetchErrorKind::Tool(kind) => {
+                self.fetch_tool_health.lock().await.record_error(kind, now);
+            }
+        }
+    }
+
+    pub(crate) async fn fetch_tool_available(&self, now: Instant) -> bool {
+        self.fetch_tool_health.lock().await.is_available(now)
+    }
+
+    pub(crate) async fn record_fetch_tool_success(&self) {
+        self.fetch_tool_health.lock().await.record_success();
     }
 
     pub(super) async fn shutdown(&self, deadline: Instant) {
@@ -360,9 +413,26 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                     session_retried = true;
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if let Some(client) = self.shared_client.as_ref()
+                        && matches!(error, SearchAttemptError::MalformedResponse)
+                    {
+                        client
+                            .record_fetch_error(
+                                EndpointFailureKind::MalformedResponse,
+                                Instant::now(),
+                            )
+                            .await;
+                    }
+                    return Err(error);
+                }
             }
 
+            if let Some(client) = self.shared_client.as_ref()
+                && !client.endpoint_available(Instant::now()).await
+            {
+                return Err(SearchAttemptError::Upstream);
+            }
             match self
                 .peer
                 .call_tool(self.tool_name, (self.argument_builder)(query), deadline)
@@ -377,6 +447,9 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                         }
                         return Err(SearchAttemptError::ToolMissing);
                     }
+                    if let Some(client) = self.shared_client.as_ref() {
+                        client.record_endpoint_success().await;
+                    }
                     return self.decode_result(&result, query.count as usize);
                 }
                 Err(McpPeerError::SessionExpired) if !session_retried => {
@@ -389,7 +462,15 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                         tool_rediscovered = true;
                         continue;
                     }
-                    return Err(map_peer_error(error));
+                    let mapped = map_peer_error(error);
+                    if let Some(client) = self.shared_client.as_ref()
+                        && let Some(kind) = search_endpoint_failure_kind(&mapped)
+                    {
+                        client
+                            .record_fetch_error(kind, Instant::now())
+                            .await;
+                    }
+                    return Err(mapped);
                 }
             }
         }
@@ -399,6 +480,26 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         if self.shared_client.is_none() {
             let _ = self.peer.shutdown(deadline).await;
         }
+    }
+}
+
+fn search_endpoint_failure_kind(error: &SearchAttemptError) -> Option<EndpointFailureKind> {
+    match error {
+        SearchAttemptError::Unauthorized => Some(EndpointFailureKind::Unauthorized),
+        SearchAttemptError::Forbidden => Some(EndpointFailureKind::Forbidden),
+        SearchAttemptError::RateLimited(retry_after) => {
+            Some(EndpointFailureKind::RateLimited(*retry_after))
+        }
+        SearchAttemptError::Network => Some(EndpointFailureKind::Network),
+        SearchAttemptError::MalformedResponse => Some(EndpointFailureKind::MalformedResponse),
+        SearchAttemptError::Timeout
+        | SearchAttemptError::QueueBusy
+        | SearchAttemptError::ToolMissing
+        | SearchAttemptError::SchemaMismatch
+        | SearchAttemptError::RpcMethodUnavailable
+        | SearchAttemptError::SessionExpired
+        | SearchAttemptError::InvalidRequest
+        | SearchAttemptError::Upstream => None,
     }
 }
 
@@ -566,8 +667,15 @@ pub(super) fn is_unknown_tool_message(message: &str, data: Option<&Value>) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed::fetch::{
+        FetchReadiness, ParallelFetchAdapter, RemoteExtractFallback,
+    };
     use nomi_mcp::protocol::McpToolDef;
     use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_partial_json, method},
+    };
 
     fn tool_with_output(schema: Option<Value>) -> McpToolDef {
         McpToolDef {
@@ -635,6 +743,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_initialization_makes_fetch_readiness_warm_transport() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "serverInfo": {"name": "mock", "version": "1"}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list", "id": 2})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [{
+                        "name": "web_search",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "objective": {"type": "string"},
+                                "search_queries": {"type": "array"}
+                            },
+                            "required": ["objective", "search_queries"]
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {"results": {"type": "array"}}
+                        }
+                    }]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        let search = RemoteSearchAdapter::parallel(client.clone());
+        search
+            .ensure_compatible(Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("search tool discovery");
+        let fetch = ParallelFetchAdapter::new(client);
+        assert_eq!(
+            fetch.fetch_readiness().await,
+            FetchReadiness::WarmTransportToolUnknown
+        );
+    }
+
+    #[tokio::test]
     async fn parallel_fetch_semaphore_has_one_permit() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let permit = client
@@ -653,13 +828,13 @@ mod tests {
     async fn fetch_endpoint_health_disables_unauthorized_and_recovers_on_success() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let now = Instant::now();
-        assert!(client.fetch_available(now).await);
+        assert!(client.endpoint_available(now).await);
         client
             .record_fetch_error(EndpointFailureKind::Unauthorized, now)
             .await;
-        assert!(!client.fetch_available(now).await);
-        client.record_fetch_success().await;
-        assert!(client.fetch_available(now).await);
+        assert!(!client.endpoint_available(now).await);
+        client.record_endpoint_success().await;
+        assert!(client.endpoint_available(now).await);
     }
 
     #[tokio::test]
@@ -672,7 +847,36 @@ mod tests {
                 now,
             )
             .await;
-        assert!(!client.fetch_available(now).await);
-        assert!(client.fetch_available(now + Duration::from_secs(30)).await);
+        assert!(!client.endpoint_available(now).await);
+        assert!(client.endpoint_available(now + Duration::from_secs(30)).await);
+    }
+
+    #[tokio::test]
+    async fn fetch_tool_health_is_independent_of_endpoint_health() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let now = Instant::now();
+        client
+            .record_fetch_error(FetchToolFailureKind::Upstream, now)
+            .await;
+        assert!(client.endpoint_available(now).await);
+        assert!(!client.fetch_tool_available(now).await);
+        client.record_fetch_tool_success().await;
+        assert!(client.fetch_tool_available(now).await);
+    }
+
+    #[test]
+    fn search_endpoint_health_excludes_tool_local_failures() {
+        assert!(matches!(
+            search_endpoint_failure_kind(&SearchAttemptError::MalformedResponse),
+            Some(EndpointFailureKind::MalformedResponse)
+        ));
+        assert_eq!(
+            search_endpoint_failure_kind(&SearchAttemptError::ToolMissing),
+            None
+        );
+        assert_eq!(
+            search_endpoint_failure_kind(&SearchAttemptError::Timeout),
+            None
+        );
     }
 }

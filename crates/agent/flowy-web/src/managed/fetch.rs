@@ -1,6 +1,5 @@
 #![allow(dead_code)] // Wired into the managed extract coordinator in Phase 7.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +13,12 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::time::{Instant, timeout_at};
 
+use crate::provider::extract_policy::{
+    CanonicalRequestedUrl, PreparedRemoteUrl, canonical_requested_url, prepare_remote_url,
+};
+
 use super::remote::{
-    EndpointFailureKind, ParallelMcpClient, is_explicit_unknown_tool,
+    EndpointFailureKind, FetchToolFailureKind, ParallelMcpClient, is_explicit_unknown_tool,
     is_explicit_unknown_tool_rpc, is_unknown_tool_message,
 };
 
@@ -29,7 +32,28 @@ pub struct RemoteExtractRequest {
 #[derive(Debug, Clone)]
 pub struct RemoteExtractRequestItem {
     pub index: usize,
-    pub requested_url: String,
+    pub prepared: PreparedRemoteUrl,
+}
+
+impl RemoteExtractRequestItem {
+    pub fn new(
+        index: usize,
+        requested_url: String,
+        allow_private: bool,
+    ) -> Result<Self, crate::provider::extract_policy::RemoteForbiddenReason> {
+        Ok(Self {
+            index,
+            prepared: prepare_remote_url(&requested_url, allow_private)?,
+        })
+    }
+
+    pub fn requested_url(&self) -> &str {
+        &self.prepared.requested_url
+    }
+
+    pub fn canonical_url(&self) -> &CanonicalRequestedUrl {
+        &self.prepared.canonical_url
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +76,7 @@ pub struct RemoteExtractBatch {
 pub struct RemoteFetchDiagnostics {
     pub dropped_item_count: usize,
     pub unmatched_item_count: usize,
+    pub source_truncated_count: usize,
     pub used_text_fallback: bool,
     pub queue_ms: Option<u128>,
     pub call_ms: Option<u128>,
@@ -59,7 +84,9 @@ pub struct RemoteFetchDiagnostics {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteExtractError {
-    Timeout,
+    Timeout {
+        kind: RemoteTimeoutKind,
+    },
     Network,
     Unauthorized,
     Forbidden,
@@ -73,6 +100,21 @@ pub enum RemoteExtractError {
     Upstream,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteTimeoutKind {
+    QueueDeadline,
+    CallDeadline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchReadiness {
+    ColdTransport,
+    WarmTransportToolUnknown,
+    Ready {
+        generation: u64,
+    },
+}
+
 #[async_trait]
 pub trait RemoteExtractFallback: Send + Sync {
     async fn extract_batch(
@@ -81,22 +123,26 @@ pub trait RemoteExtractFallback: Send + Sync {
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError>;
 
-    fn is_remote_warm(&self) -> bool {
-        false
+    async fn fetch_readiness(&self) -> FetchReadiness {
+        FetchReadiness::ColdTransport
     }
-
-    fn mark_remote_success(&self) {}
 }
 
 pub struct ParallelFetchAdapter {
     client: Arc<ParallelMcpClient>,
-    discovery: Mutex<Option<Result<(), FetchCompatibilityError>>>,
+    discovery: Mutex<Option<FetchCompatibilityCache>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum FetchCompatibilityError {
     ToolMissing,
     SchemaMismatch,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FetchCompatibilityCache {
+    generation: Option<u64>,
+    result: Result<(), FetchCompatibilityError>,
 }
 
 impl ParallelFetchAdapter {
@@ -108,9 +154,14 @@ impl ParallelFetchAdapter {
     }
 
     async fn ensure_compatible(&self, deadline: Instant) -> Result<(), RemoteExtractError> {
-        let mut cache = self.discovery.lock().await;
-        if let Some(result) = *cache {
-            return result.map_err(map_compatibility_error);
+        let peer_readiness = self.client.peer().readiness().await;
+        {
+            let cache = self.discovery.lock().await;
+            if let Some(cached) = cache.as_ref()
+                && cached.generation == peer_readiness.generation
+            {
+                return cached.result.map_err(map_compatibility_error);
+            }
         }
         let tools = self
             .client
@@ -123,7 +174,11 @@ impl ParallelFetchAdapter {
             .find(|tool| tool.name == FETCH_TOOL)
             .ok_or(FetchCompatibilityError::ToolMissing)
             .and_then(validate_fetch_schema);
-        *cache = Some(result);
+        let peer_readiness = self.client.peer().readiness().await;
+        *self.discovery.lock().await = Some(FetchCompatibilityCache {
+            generation: peer_readiness.generation,
+            result,
+        });
         result.map_err(map_compatibility_error)
     }
 
@@ -135,12 +190,21 @@ impl ParallelFetchAdapter {
 
 #[async_trait]
 impl RemoteExtractFallback for ParallelFetchAdapter {
-    fn is_remote_warm(&self) -> bool {
-        self.client.is_remote_warm()
-    }
-
-    fn mark_remote_success(&self) {
-        self.client.mark_remote_success();
+    async fn fetch_readiness(&self) -> FetchReadiness {
+        let peer_readiness = self.client.peer().readiness().await;
+        if !peer_readiness.initialized {
+            return FetchReadiness::ColdTransport;
+        }
+        let cache = self.discovery.lock().await;
+        match (peer_readiness.generation, cache.as_ref()) {
+            (
+                Some(generation),
+                Some(cached),
+            ) if cached.generation == Some(generation) && cached.result.is_ok() => {
+                FetchReadiness::Ready { generation }
+            }
+            _ => FetchReadiness::WarmTransportToolUnknown,
+        }
     }
 
     async fn extract_batch(
@@ -158,19 +222,47 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                     session_retried = true;
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if matches!(error, RemoteExtractError::MalformedResponse) {
+                        self.client
+                            .record_fetch_error(
+                                EndpointFailureKind::MalformedResponse,
+                                Instant::now(),
+                            )
+                            .await;
+                    } else {
+                        self.record_extract_error(&error).await;
+                    }
+                    return Err(error);
+                }
             }
 
-            if !self.client.fetch_available(Instant::now()).await {
+            if !self.client.endpoint_available(Instant::now()).await {
+                return Err(RemoteExtractError::Upstream);
+            }
+            if !self.client.fetch_tool_available(Instant::now()).await {
                 return Err(RemoteExtractError::Upstream);
             }
             let urls = request
                 .items
                 .iter()
-                .map(|item| item.requested_url.clone())
+                .map(|item| {
+                    let prepared = prepare_remote_url(&item.prepared.requested_url, false)
+                        .map_err(|_| RemoteExtractError::InvalidRequest)?;
+                    if prepared.canonical_url != item.prepared.canonical_url
+                        || prepared.outbound_url != item.prepared.outbound_url
+                    {
+                        return Err(RemoteExtractError::InvalidRequest);
+                    }
+                    Ok(prepared.outbound_url)
+                })
                 .collect::<Vec<_>>();
+            let mut prepared_urls = Vec::with_capacity(urls.len());
+            for url in urls {
+                prepared_urls.push(url?);
+            }
             let arguments = json!({
-                "urls": urls,
+                "urls": prepared_urls,
                 "full_content": false,
             });
             let attempt_started = Instant::now();
@@ -178,7 +270,11 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
             {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => return Err(RemoteExtractError::Upstream),
-                Err(_) => return Err(RemoteExtractError::Timeout),
+                Err(_) => {
+                    return Err(RemoteExtractError::Timeout {
+                        kind: RemoteTimeoutKind::QueueDeadline,
+                    });
+                }
             };
             let queue_ms = Some(attempt_started.elapsed().as_millis());
             let call_started = Instant::now();
@@ -200,19 +296,26 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         return Err(RemoteExtractError::ToolMissing);
                     }
                     if result.is_error {
+                        self.client
+                            .record_fetch_error(
+                                FetchToolFailureKind::Upstream,
+                                Instant::now(),
+                            )
+                            .await;
                         return Err(RemoteExtractError::Upstream);
                     }
                     match decode_fetch(&result, &request) {
                         Ok(mut batch) => {
                             batch.diagnostics.queue_ms = queue_ms;
                             batch.diagnostics.call_ms = call_ms;
-                            self.client.record_fetch_success().await;
+                            self.client.record_endpoint_success().await;
+                            self.client.record_fetch_tool_success().await;
                             return Ok(batch);
                         }
                         Err(error) => {
                             self.client
                                 .record_fetch_error(
-                                    EndpointFailureKind::MalformedResponse,
+                                    FetchToolFailureKind::MalformedResponse,
                                     Instant::now(),
                                 )
                                 .await;
@@ -231,12 +334,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         continue;
                     }
                     let mapped = map_peer_error(error);
-                    self.client
-                        .record_fetch_error(
-                            endpoint_failure_kind(&mapped),
-                            Instant::now(),
-                        )
-                        .await;
+                    self.record_extract_error(&mapped).await;
                     return Err(mapped);
                 }
             }
@@ -244,22 +342,56 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
     }
 }
 
-fn endpoint_failure_kind(error: &RemoteExtractError) -> EndpointFailureKind {
-    match error {
-        RemoteExtractError::Unauthorized => EndpointFailureKind::Unauthorized,
-        RemoteExtractError::Forbidden => EndpointFailureKind::Forbidden,
-        RemoteExtractError::RateLimited(retry_after) => {
-            EndpointFailureKind::RateLimited(*retry_after)
+impl ParallelFetchAdapter {
+    async fn record_extract_error(&self, error: &RemoteExtractError) {
+        match error {
+            RemoteExtractError::Unauthorized => {
+                self.client
+                    .record_fetch_error(EndpointFailureKind::Unauthorized, Instant::now())
+                    .await;
+            }
+            RemoteExtractError::Forbidden => {
+                self.client
+                    .record_fetch_error(EndpointFailureKind::Forbidden, Instant::now())
+                    .await;
+            }
+            RemoteExtractError::RateLimited(retry_after) => {
+                self.client
+                    .record_fetch_error(
+                        EndpointFailureKind::RateLimited(*retry_after),
+                        Instant::now(),
+                    )
+                    .await;
+            }
+            RemoteExtractError::Network => {
+                self.client
+                    .record_fetch_error(EndpointFailureKind::Network, Instant::now())
+                    .await;
+            }
+            RemoteExtractError::MalformedResponse => {
+                self.client
+                    .record_fetch_error(
+                        FetchToolFailureKind::MalformedResponse,
+                        Instant::now(),
+                    )
+                    .await;
+            }
+            RemoteExtractError::Timeout { .. } => {
+                self.client
+                    .record_fetch_error(FetchToolFailureKind::Timeout, Instant::now())
+                    .await;
+            }
+            RemoteExtractError::Upstream => {
+                self.client
+                    .record_fetch_error(FetchToolFailureKind::Upstream, Instant::now())
+                    .await;
+            }
+            RemoteExtractError::ToolMissing
+            | RemoteExtractError::SchemaMismatch
+            | RemoteExtractError::RpcMethodUnavailable
+            | RemoteExtractError::SessionExpired
+            | RemoteExtractError::InvalidRequest => {}
         }
-        RemoteExtractError::Network => EndpointFailureKind::Network,
-        RemoteExtractError::Timeout => EndpointFailureKind::Timeout,
-        RemoteExtractError::MalformedResponse => EndpointFailureKind::MalformedResponse,
-        RemoteExtractError::ToolMissing
-        | RemoteExtractError::SchemaMismatch
-        | RemoteExtractError::RpcMethodUnavailable
-        | RemoteExtractError::SessionExpired
-        | RemoteExtractError::InvalidRequest
-        | RemoteExtractError::Upstream => EndpointFailureKind::Upstream,
     }
 }
 
@@ -336,6 +468,14 @@ struct DecodedResult {
     final_url: Option<String>,
     title: Option<String>,
     markdown: String,
+    body_source: RemoteBodySource,
+    source_truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteBodySource {
+    Excerpts,
+    FullContent,
 }
 
 struct DecodedError {
@@ -406,6 +546,15 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
     } else {
         return None;
     };
+    let body_source = if excerpts.is_empty() {
+        RemoteBodySource::FullContent
+    } else {
+        RemoteBodySource::Excerpts
+    };
+    let explicit_truncated = item
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if markdown.trim().is_empty() {
         return None;
     }
@@ -414,6 +563,8 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
         final_url,
         title,
         markdown,
+        body_source,
+        source_truncated: body_source == RemoteBodySource::Excerpts || explicit_truncated,
     })
 }
 
@@ -434,18 +585,15 @@ fn build_batch(
 ) -> Result<RemoteExtractBatch, RemoteExtractError> {
     let mut assignments: Vec<Option<usize>> = vec![None; request.items.len()];
     let mut assignment_counts = vec![0usize; payload.results.len()];
-    let failed_urls = payload
-        .errors
-        .iter()
-        .map(|error| canonical_url(&error.url))
-        .collect::<HashSet<_>>();
-
     for (request_index, request_item) in request.items.iter().enumerate() {
+        let request_canonical = request_item.canonical_url().clone();
         let matching = payload
             .results
             .iter()
             .enumerate()
-            .filter(|(_, result)| canonical_url(&result.url) == canonical_url(&request_item.requested_url))
+            .filter(|(_, result)| {
+                canonical_requested_url(&result.url) == request_canonical
+            })
             .map(|(result_index, _)| result_index)
             .collect::<Vec<_>>();
         let selected = matching
@@ -459,30 +607,6 @@ fn build_batch(
         }
     }
 
-    let unmatched_requests = request
-        .items
-        .iter()
-        .enumerate()
-        .filter(|(index, item)| {
-            assignments[*index].is_none()
-                && !failed_urls.contains(&canonical_url(&item.requested_url))
-        })
-        .collect::<Vec<_>>();
-    let unused_results = payload
-        .results
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| assignment_counts[*index] == 0)
-        .collect::<Vec<_>>();
-    if unmatched_requests.len() == unused_results.len() {
-        for ((request_index, _), (result_index, _)) in
-            unmatched_requests.iter().zip(unused_results.iter())
-        {
-            assignments[*request_index] = Some(*result_index);
-            assignment_counts[*result_index] += 1;
-        }
-    }
-
     let mut items = Vec::new();
     let mut unmatched_item_count = 0usize;
     for (request_index, request_item) in request.items.iter().enumerate() {
@@ -493,11 +617,11 @@ fn build_batch(
         let result = &payload.results[result_index];
         items.push(RemoteExtractItem {
             index: request_item.index,
-            requested_url: request_item.requested_url.clone(),
+            requested_url: request_item.prepared.requested_url.clone(),
             final_url: result.final_url.clone(),
             title: result.title.clone(),
             markdown: result.markdown.clone(),
-            source_truncated: false,
+            source_truncated: result.source_truncated,
         });
     }
 
@@ -508,22 +632,21 @@ fn build_batch(
         .filter(|(result_index, _)| assignment_counts[*result_index] == 0)
         .count()
         + payload.malformed_result_count;
+    let source_truncated_count = items
+        .iter()
+        .filter(|item| item.source_truncated)
+        .count();
     Ok(RemoteExtractBatch {
         items,
         diagnostics: RemoteFetchDiagnostics {
             dropped_item_count,
             unmatched_item_count,
+            source_truncated_count,
             used_text_fallback,
             queue_ms: None,
             call_ms: None,
         },
     })
-}
-
-fn canonical_url(value: &str) -> String {
-    let value = value.trim();
-    let without_fragment = value.split('#').next().unwrap_or(value);
-    without_fragment.trim_end_matches('/').to_owned()
 }
 
 fn map_compatibility_error(error: FetchCompatibilityError) -> RemoteExtractError {
@@ -535,7 +658,9 @@ fn map_compatibility_error(error: FetchCompatibilityError) -> RemoteExtractError
 
 fn map_peer_error(error: McpPeerError) -> RemoteExtractError {
     match error {
-        McpPeerError::Timeout => RemoteExtractError::Timeout,
+        McpPeerError::Timeout => RemoteExtractError::Timeout {
+            kind: RemoteTimeoutKind::CallDeadline,
+        },
         McpPeerError::Network(_) => RemoteExtractError::Network,
         McpPeerError::Http {
             status: StatusCode::UNAUTHORIZED,
@@ -583,7 +708,7 @@ mod tests {
     use nomi_mcp::protocol::{McpContent, McpToolResult};
     use serde_json::json;
     use wiremock::{
-        Mock, MockServer, ResponseTemplate,
+        Mock, MockServer, Request, ResponseTemplate,
         matchers::{body_partial_json, method},
     };
 
@@ -592,9 +717,9 @@ mod tests {
             items: urls
                 .iter()
                 .enumerate()
-                .map(|(index, url)| RemoteExtractRequestItem {
-                    index,
-                    requested_url: (*url).to_owned(),
+                .map(|(index, url)| {
+                    RemoteExtractRequestItem::new(index, (*url).to_owned(), false)
+                        .expect("test URLs must be remote eligible")
                 })
                 .collect(),
         }
@@ -698,6 +823,61 @@ mod tests {
     }
 
     #[test]
+    fn unmapped_extra_result_is_dropped_without_position_fallback() {
+        let remote = result(
+            json!({
+                "results": [
+                    {"url": "https://example.com/extra", "excerpts": ["Extra"]}
+                ],
+                "errors": []
+            }),
+            None,
+        );
+        let batch = decode_fetch(&remote, &request(&["https://example.com/a"])).unwrap();
+        assert!(batch.items.is_empty());
+        assert_eq!(batch.diagnostics.dropped_item_count, 1);
+        assert_eq!(batch.diagnostics.unmatched_item_count, 1);
+    }
+
+    #[test]
+    fn plain_fragment_is_stripped_from_outbound_request_item() {
+        let remote_request = request(&["https://example.com/a#section-2"]);
+        assert_eq!(
+            remote_request.items[0].prepared.outbound_url,
+            "https://example.com/a"
+        );
+        assert_eq!(
+            remote_request.items[0].prepared.requested_url,
+            "https://example.com/a#section-2"
+        );
+    }
+
+    #[test]
+    fn excerpts_are_source_truncated_but_full_content_is_not() {
+        let excerpted = result(
+            json!({
+                "results": [{"url": "https://example.com/a", "excerpts": ["A"]}],
+                "errors": []
+            }),
+            None,
+        );
+        let batch = decode_fetch(&excerpted, &request(&["https://example.com/a"])).unwrap();
+        assert!(batch.items[0].source_truncated);
+        assert_eq!(batch.diagnostics.source_truncated_count, 1);
+
+        let full = result(
+            json!({
+                "results": [{"url": "https://example.com/a", "full_content": "# Full"}],
+                "errors": []
+            }),
+            None,
+        );
+        let batch = decode_fetch(&full, &request(&["https://example.com/a"])).unwrap();
+        assert!(!batch.items[0].source_truncated);
+        assert_eq!(batch.diagnostics.source_truncated_count, 0);
+    }
+
+    #[test]
     fn fans_out_duplicate_urls_to_original_indexes() {
         let remote = result(
             json!({
@@ -760,6 +940,12 @@ mod tests {
 
     #[test]
     fn maps_http_errors_to_fetch_errors() {
+        assert!(matches!(
+            map_peer_error(McpPeerError::Timeout),
+            RemoteExtractError::Timeout {
+                kind: RemoteTimeoutKind::CallDeadline
+            }
+        ));
         assert_eq!(
             map_peer_error(McpPeerError::Http {
                 status: StatusCode::TOO_MANY_REQUESTS,
@@ -813,6 +999,7 @@ mod tests {
                     "serverInfo": {"name": "mock", "version": "1"}
                 }
             })))
+            .up_to_n_times(1)
             .expect(1)
             .mount(server)
             .await;
@@ -821,15 +1008,97 @@ mod tests {
                 json!({"method": "notifications/initialized"}),
             ))
             .respond_with(ResponseTemplate::new(202))
+            .up_to_n_times(1)
             .expect(1)
             .mount(server)
             .await;
         Mock::given(method("POST"))
             .and(body_partial_json(json!({"method": "tools/list", "id": 2})))
             .respond_with(ResponseTemplate::new(200).set_body_json(tools_list_response()))
+            .up_to_n_times(1)
             .expect(1)
             .mount(server)
             .await;
+    }
+
+    async fn mount_stateful_peer(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "session-1")
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "serverInfo": {"name": "mock", "version": "1"}
+                        }
+                    })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list", "id": 2})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tools_list_response()))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    fn fetch_success_response(id: u64, url: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "structuredContent": {
+                    "results": [{
+                        "url": url,
+                        "excerpts": ["# Hello"]
+                    }],
+                    "errors": []
+                }
+            }
+        })
+    }
+
+    fn fetch_success_responder(
+        url: &'static str,
+    ) -> impl Fn(&Request) -> ResponseTemplate {
+        move |request: &Request| {
+            let id = serde_json::from_slice::<Value>(&request.body)
+                .ok()
+                .and_then(|value| value.get("id").and_then(Value::as_u64))
+                .unwrap_or(0);
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "structuredContent": {
+                            "results": [{
+                                "url": url,
+                                "excerpts": ["# Hello"]
+                            }],
+                            "errors": []
+                        }
+                    }
+                }))
+                .set_delay(Duration::from_millis(300))
+        }
     }
 
     #[tokio::test]
@@ -859,7 +1128,11 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
         );
-        let adapter = ParallelFetchAdapter::new(client);
+        let adapter = ParallelFetchAdapter::new(client.clone());
+        assert_eq!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::ColdTransport
+        );
         let batch = adapter
             .extract_batch(
                 request(&["https://example.com/a"]),
@@ -871,6 +1144,298 @@ mod tests {
         assert_eq!(batch.items[0].markdown, "# Hello");
         assert!(batch.diagnostics.queue_ms.is_some());
         assert!(batch.diagnostics.call_ms.is_some());
+        assert!(matches!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::Ready { generation: 1 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_readiness_is_warm_after_peer_discovery() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        client
+            .peer()
+            .discover_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("peer discovery");
+        let adapter = ParallelFetchAdapter::new(client.clone());
+        assert_eq!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::WarmTransportToolUnknown
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_readiness_returns_cold_after_session_expired() {
+        let server = MockServer::start().await;
+        mount_stateful_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        client
+            .peer()
+            .discover_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("initial peer discovery");
+        let result = client
+            .peer()
+            .call_tool(
+                FETCH_TOOL,
+                json!({"urls": ["https://example.com/a"]}),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(matches!(result, Err(McpPeerError::SessionExpired)));
+        let adapter = ParallelFetchAdapter::new(client);
+        assert_eq!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::ColdTransport
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_compatibility_revalidates_after_generation_change() {
+        let server = MockServer::start().await;
+        mount_stateful_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fetch_success_response(
+                3,
+                "https://example.com/a",
+            )))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client.clone());
+        adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("first remote batch");
+        assert!(matches!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::Ready { generation: 1 }
+        ));
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 4})))
+            .respond_with(ResponseTemplate::new(404))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let result = client
+            .peer()
+            .call_tool(
+                FETCH_TOOL,
+                json!({"urls": ["https://example.com/a"]}),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(McpPeerError::SessionExpired)),
+            "{result:?}"
+        );
+        assert_eq!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::ColdTransport
+        );
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "session-2")
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "serverInfo": {"name": "mock", "version": "1"}
+                        }
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list", "id": 6})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "result": {
+                    "tools": [{
+                        "name": "web_fetch",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"urls": {"type": "array"}},
+                            "required": ["urls"]
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "results": {"type": "array"},
+                                "errors": {"type": "array"}
+                            }
+                        }
+                    }]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 7})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fetch_success_response(
+                7,
+                "https://example.com/a",
+            )))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let batch = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("second remote batch");
+        assert_eq!(batch.items.len(), 1);
+        assert!(matches!(
+            adapter.fetch_readiness().await,
+            FetchReadiness::Ready { generation: 2 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_fetch_while_waiting_for_semaphore_does_not_call_tool() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        let _permit = client
+            .fetch_semaphore()
+            .try_acquire()
+            .expect("hold fetch permit");
+        let adapter = ParallelFetchAdapter::new(client.clone());
+        let task = tokio::spawn(async move {
+            adapter
+                .extract_batch(
+                    request(&["https://example.com/a"]),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_inflight_fetch_does_not_leave_a_second_request() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(fetch_success_response(3, "https://example.com/a"))
+                    .set_delay(Duration::from_secs(10)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let task = tokio::spawn(async move {
+            adapter
+                .extract_batch(
+                    request(&["https://example.com/a"]),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_fetch_calls_share_one_fetch_permit() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = Arc::new(
+            ParallelMcpClient::new_at_endpoint(server.uri()).expect("offline construction"),
+        );
+        let left = ParallelFetchAdapter::new(client.clone());
+        let right = ParallelFetchAdapter::new(client);
+        let left_task = tokio::spawn(async move {
+            left.extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+        });
+        let right_task = tokio::spawn(async move {
+            right.extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+        });
+        let (left, right) = tokio::join!(left_task, right_task);
+        let left = left.expect("left task").expect("left batch");
+        let right = right.expect("right task").expect("right batch");
+        assert_eq!(left.items.len(), 1);
+        assert_eq!(right.items.len(), 1);
+        assert!(
+            left.diagnostics.queue_ms.is_some_and(|ms| ms > 0)
+                || right.diagnostics.queue_ms.is_some_and(|ms| ms > 0),
+            "one of two concurrent fetch calls must wait for the shared permit"
+        );
     }
 
     #[tokio::test]

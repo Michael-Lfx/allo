@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant as StdInstant};
 
@@ -7,11 +7,13 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::time::{Instant, timeout_at};
 
 use crate::managed::fetch::{
-    RemoteExtractFallback, RemoteExtractItem, RemoteExtractRequest, RemoteExtractRequestItem,
+    FetchReadiness, RemoteExtractError, RemoteExtractFallback, RemoteExtractItem,
+    RemoteExtractRequest, RemoteExtractRequestItem, RemoteTimeoutKind,
 };
 use crate::provider::extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
-    RemoteFallbackDecision, classify_web_error, decide_remote_fallback_with_private,
+    RemoteFallbackDecision, RemoteFallbackReason, RemoteForbiddenReason,
+    canonical_requested_url, classify_web_error, decide_remote_fallback_with_private,
 };
 use crate::provider::{ExtractProvider, HttpExtractProvider};
 use crate::types::{
@@ -32,6 +34,40 @@ pub struct ExtractBatchOutcome {
     pub diagnostics: ExtractBatchDiagnostics,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExtractTimeoutCounts {
+    pub per_url_deadline: usize,
+    pub tool_deadline_before_start: usize,
+    pub tool_deadline_while_running: usize,
+    pub remote_queue_deadline: usize,
+    pub remote_call_deadline: usize,
+}
+
+impl ExtractTimeoutCounts {
+    fn record(&mut self, kind: ExtractTimeoutKind) {
+        match kind {
+            ExtractTimeoutKind::PerUrlDeadline => self.per_url_deadline += 1,
+            ExtractTimeoutKind::ToolDeadlineBeforeStart => {
+                self.tool_deadline_before_start += 1;
+            }
+            ExtractTimeoutKind::ToolDeadlineWhileRunning => {
+                self.tool_deadline_while_running += 1;
+            }
+            ExtractTimeoutKind::RemoteQueueDeadline => self.remote_queue_deadline += 1,
+            ExtractTimeoutKind::RemoteCallDeadline => self.remote_call_deadline += 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtractTimeoutKind {
+    PerUrlDeadline,
+    ToolDeadlineBeforeStart,
+    ToolDeadlineWhileRunning,
+    RemoteQueueDeadline,
+    RemoteCallDeadline,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtractItemOutcome {
     pub index: usize,
@@ -46,6 +82,10 @@ pub struct ExtractBatchDiagnostics {
     pub requested_count: usize,
     pub success_count: usize,
     pub failure_count: usize,
+    pub local_success_count: usize,
+    pub local_failure_count: usize,
+    pub final_success_count: usize,
+    pub final_failure_count: usize,
     pub remote_eligible_count: usize,
     pub remote_stage_count: usize,
     pub remote_attempted: bool,
@@ -56,6 +96,11 @@ pub struct ExtractBatchDiagnostics {
     pub remote_queue_ms: Option<u128>,
     pub remote_call_ms: Option<u128>,
     pub total_elapsed_ms: u128,
+    pub timeout_counts: ExtractTimeoutCounts,
+    pub fallback_reason_counts: BTreeMap<RemoteFallbackReason, usize>,
+    pub remote_forbidden_reason_counts: BTreeMap<RemoteForbiddenReason, usize>,
+    pub source_truncated_count: usize,
+    pub context_truncated_count: usize,
 }
 
 #[async_trait]
@@ -93,6 +138,7 @@ impl ExtractCoordinator for LocalExtractCoordinator {
         requests: Vec<ExtractRequest>,
         budget: ExtractBudget,
     ) -> ExtractBatchOutcome {
+        let started_at = StdInstant::now();
         let requested_count = requests.len();
         let labels = requests
             .iter()
@@ -101,6 +147,7 @@ impl ExtractCoordinator for LocalExtractCoordinator {
         let mut outcomes: Vec<Option<ExtractItemOutcome>> =
             (0..requested_count).map(|_| None).collect();
         let mut started = vec![false; requested_count];
+        let mut timeout_counts = ExtractTimeoutCounts::default();
         let mut in_flight = FuturesUnordered::new();
         let mut next_index = 0usize;
 
@@ -123,8 +170,11 @@ impl ExtractCoordinator for LocalExtractCoordinator {
             }) else {
                 break;
             };
-            let index = outcome.index;
-            outcomes[index] = Some(outcome);
+            let index = outcome.outcome.index;
+            if let Some(kind) = outcome.timeout_kind {
+                timeout_counts.record(kind);
+            }
+            outcomes[index] = Some(outcome.outcome);
 
             if next_index < requested_count {
                 started[next_index] = true;
@@ -142,12 +192,15 @@ impl ExtractCoordinator for LocalExtractCoordinator {
             if outcome.is_some() {
                 continue;
             }
-            let message = if started[index] {
-                "Page extraction did not complete before the tool deadline."
+            let timeout_kind = if started[index] {
+                ExtractTimeoutKind::ToolDeadlineWhileRunning
             } else {
-                "Page extraction did not complete before the tool deadline."
+                ExtractTimeoutKind::ToolDeadlineBeforeStart
             };
-            let error = WebError::Timeout(message.to_owned());
+            timeout_counts.record(timeout_kind);
+            let error = WebError::Timeout(
+                "Page extraction did not complete before the tool deadline.".to_owned(),
+            );
             *outcome = Some(ExtractItemOutcome {
                 index,
                 requested_url: labels[index].clone(),
@@ -173,11 +226,22 @@ impl ExtractCoordinator for LocalExtractCoordinator {
                 failure_count += 1;
             }
         }
+        let source_truncated_count = 0usize;
+        let mut context_truncated_count = 0usize;
+        for item in &items {
+            if item.page.as_ref().is_some_and(|page| page.truncated) {
+                context_truncated_count += 1;
+            }
+        }
         ExtractBatchOutcome {
             diagnostics: ExtractBatchDiagnostics {
                 requested_count,
                 success_count,
                 failure_count,
+                local_success_count: success_count,
+                local_failure_count: failure_count,
+                final_success_count: success_count,
+                final_failure_count: failure_count,
                 remote_eligible_count: 0,
                 remote_stage_count: 0,
                 remote_attempted: false,
@@ -187,11 +251,21 @@ impl ExtractCoordinator for LocalExtractCoordinator {
                 remote_budget_skipped_count: 0,
                 remote_queue_ms: None,
                 remote_call_ms: None,
-                total_elapsed_ms: 0,
+                total_elapsed_ms: started_at.elapsed().as_millis(),
+                timeout_counts,
+                fallback_reason_counts: BTreeMap::new(),
+                remote_forbidden_reason_counts: BTreeMap::new(),
+                source_truncated_count,
+                context_truncated_count,
             },
             items,
         }
     }
+}
+
+struct LocalExtractItemOutcome {
+    outcome: ExtractItemOutcome,
+    timeout_kind: Option<ExtractTimeoutKind>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,11 +286,12 @@ impl Default for RemoteBudgetPolicy {
 }
 
 impl RemoteBudgetPolicy {
-    fn allows(&self, cold: bool, remaining: Duration) -> bool {
-        let required = if cold {
-            self.cold_fetch_budget
-        } else {
-            self.warm_fetch_budget
+    fn allows(&self, readiness: FetchReadiness, remaining: Duration) -> bool {
+        let required = match readiness {
+            FetchReadiness::ColdTransport | FetchReadiness::WarmTransportToolUnknown => {
+                self.cold_fetch_budget
+            }
+            FetchReadiness::Ready { .. } => self.warm_fetch_budget,
         };
         remaining >= required + self.safety_margin
     }
@@ -296,6 +371,13 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         let mut eligible = Vec::new();
         let mut remote_forbidden_count = 0usize;
         let mut remote_budget_skipped_count = 0usize;
+        let mut local_success_count = 0usize;
+        let mut local_failure_count = 0usize;
+        let mut timeout_counts = ExtractTimeoutCounts::default();
+        let mut fallback_reason_counts = BTreeMap::new();
+        let mut remote_forbidden_reason_counts = BTreeMap::new();
+        let mut source_truncated_count = 0usize;
+        let mut context_truncated_count = 0usize;
         let mut started = vec![false; local_count];
         let mut in_flight = FuturesUnordered::new();
         let mut next_index = 0usize;
@@ -320,6 +402,9 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 break;
             };
             let index = outcome.index;
+            if let Some(kind) = outcome.timeout_kind {
+                timeout_counts.record(kind);
+            }
             local_outcomes[index] = Some(outcome.outcome);
 
             if next_index < local_count {
@@ -335,6 +420,15 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         }
 
         for (index, slot) in local_outcomes.iter_mut().enumerate() {
+            let timeout_kind = if slot.is_none() {
+                Some(if started[index] {
+                    ExtractTimeoutKind::ToolDeadlineWhileRunning
+                } else {
+                    ExtractTimeoutKind::ToolDeadlineBeforeStart
+                })
+            } else {
+                None
+            };
             let outcome = slot.take().unwrap_or_else(|| {
                 let error = WebError::Timeout(
                     "Page extraction did not complete before the tool deadline.".to_owned(),
@@ -348,8 +442,15 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                     diagnostics: LocalExtractDiagnostics::default(),
                 }
             });
+            if let Some(kind) = timeout_kind {
+                timeout_counts.record(kind);
+            }
             match &outcome.result {
                 Ok(page) => {
+                    local_success_count += 1;
+                    if page.truncated {
+                        context_truncated_count += 1;
+                    }
                     item_outcomes[index] = Some(ExtractItemOutcome {
                         index,
                         requested_url: outcome.requested_url.clone(),
@@ -359,18 +460,21 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                     });
                 }
                 Err(local_failure) => {
+                    local_failure_count += 1;
                     let decision =
                         decide_remote_fallback_with_private(&outcome, self.allow_private_for_tests);
                     let local_failure = local_failure.clone();
                     match decision {
-                        RemoteFallbackDecision::Eligible { .. } => {
+                        RemoteFallbackDecision::Eligible { reason } => {
+                            record_fallback_reason(&mut fallback_reason_counts, reason);
                             eligible.push(EligibleItem {
                                 index,
                                 requested_url: outcome.requested_url.clone(),
                                 local_failure,
                             });
                         }
-                        RemoteFallbackDecision::Forbidden { .. } => {
+                        RemoteFallbackDecision::Forbidden { reason } => {
+                            record_forbidden_reason(&mut remote_forbidden_reason_counts, reason);
                             remote_forbidden_count += 1;
                             item_outcomes[index] = Some(ExtractItemOutcome {
                                 index,
@@ -380,8 +484,9 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                                 final_error: Some(local_failure.error),
                             });
                         }
-                        RemoteFallbackDecision::NotNeeded
-                        | RemoteFallbackDecision::BudgetInsufficient { .. } => {
+                        RemoteFallbackDecision::NotNeeded => {}
+                        RemoteFallbackDecision::BudgetInsufficient { reason } => {
+                            record_fallback_reason(&mut fallback_reason_counts, reason);
                             item_outcomes[index] = Some(ExtractItemOutcome {
                                 index,
                                 requested_url: outcome.requested_url.clone(),
@@ -403,36 +508,29 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         let mut remote_queue_ms = None;
         let mut remote_call_ms = None;
         if !eligible.is_empty() {
-            let cold = !self.remote.is_remote_warm();
+            let readiness = self.remote.fetch_readiness().await;
             let remaining = budget
                 .absolute_deadline
                 .checked_duration_since(Instant::now())
                 .unwrap_or_default();
-            if self.budget_policy.allows(cold, remaining) {
+            if self.budget_policy.allows(readiness, remaining) {
                 remote_stage_count = 1;
                 remote_attempted = true;
                 let request = RemoteExtractRequest {
-                    items: dedupe_eligible(&eligible),
+                    items: dedupe_eligible(&eligible, self.allow_private_for_tests),
                 };
                 match self.remote.extract_batch(request, budget.absolute_deadline).await {
                     Ok(remote_batch) => {
                         remote_queue_ms = remote_batch.diagnostics.queue_ms;
                         remote_call_ms = remote_batch.diagnostics.call_ms;
-                        self.remote.mark_remote_success();
-                        let remote_by_index = remote_batch
-                            .items
-                            .iter()
-                            .map(|item| (item.index, item))
-                            .collect::<HashMap<_, _>>();
                         let remote_by_url = remote_batch
                             .items
                             .iter()
-                            .map(|item| (canonical_url(&item.requested_url), item))
+                            .map(|item| (canonical_requested_url(&item.requested_url), item))
                             .collect::<HashMap<_, _>>();
                         for item in eligible {
                             let remote_item = remote_by_url
-                                .get(&canonical_url(&item.requested_url))
-                                .or_else(|| remote_by_index.get(&item.index))
+                                .get(&canonical_requested_url(&item.requested_url))
                                 .copied();
                             let Some(remote_item) = remote_item else {
                                 item_outcomes[item.index] = Some(ExtractItemOutcome {
@@ -446,6 +544,12 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                                 continue;
                             };
                             let page = remote_page(&item, remote_item);
+                            if remote_item.source_truncated {
+                                source_truncated_count += 1;
+                            }
+                            if remote_item.markdown.chars().count() > EXTRACT_CHAR_LIMIT {
+                                context_truncated_count += 1;
+                            }
                             item_outcomes[item.index] = Some(ExtractItemOutcome {
                                 index: item.index,
                                 requested_url: item.requested_url.clone(),
@@ -456,7 +560,17 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                             remote_success_count += 1;
                         }
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        if let RemoteExtractError::Timeout { kind } = error {
+                            timeout_counts.record(match kind {
+                                RemoteTimeoutKind::QueueDeadline => {
+                                    ExtractTimeoutKind::RemoteQueueDeadline
+                                }
+                                RemoteTimeoutKind::CallDeadline => {
+                                    ExtractTimeoutKind::RemoteCallDeadline
+                                }
+                            });
+                        }
                         remote_failure_count = eligible.len();
                         for item in eligible {
                             item_outcomes[item.index] = Some(ExtractItemOutcome {
@@ -496,11 +610,15 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 failure_count += 1;
             }
         }
+        let final_success_count = success_count;
+        let final_failure_count = failure_count;
         tracing::info!(
             target: "flowy_web::managed_extract",
             requested_count,
-            local_success_count = success_count,
-            local_failure_count = failure_count,
+            local_success_count,
+            local_failure_count,
+            final_success_count,
+            final_failure_count,
             remote_eligible_count,
             remote_forbidden_count,
             remote_budget_skipped_count,
@@ -510,6 +628,15 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
             remote_queue_ms = remote_queue_ms.unwrap_or(0),
             remote_call_ms = remote_call_ms.unwrap_or(0),
             total_elapsed_ms = started_at.elapsed().as_millis(),
+            per_url_deadline = timeout_counts.per_url_deadline,
+            tool_deadline_before_start = timeout_counts.tool_deadline_before_start,
+            tool_deadline_while_running = timeout_counts.tool_deadline_while_running,
+            remote_queue_deadline = timeout_counts.remote_queue_deadline,
+            remote_call_deadline = timeout_counts.remote_call_deadline,
+            fallback_reason_counts = ?fallback_reason_counts,
+            remote_forbidden_reason_counts = ?remote_forbidden_reason_counts,
+            source_truncated_count,
+            context_truncated_count,
             "managed extract completed"
         );
         ExtractBatchOutcome {
@@ -517,6 +644,10 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 requested_count,
                 success_count,
                 failure_count,
+                local_success_count,
+                local_failure_count,
+                final_success_count,
+                final_failure_count,
                 remote_eligible_count,
                 remote_stage_count,
                 remote_attempted,
@@ -527,6 +658,11 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 remote_queue_ms,
                 remote_call_ms,
                 total_elapsed_ms: started_at.elapsed().as_millis(),
+                timeout_counts,
+                fallback_reason_counts,
+                remote_forbidden_reason_counts,
+                source_truncated_count,
+                context_truncated_count,
             },
             items,
         }
@@ -553,6 +689,7 @@ async fn run_managed_local(
                 }),
                 diagnostics: LocalExtractDiagnostics::default(),
             },
+            timeout_kind: None,
         };
     }
     let requested_url = request.url.clone();
@@ -560,9 +697,24 @@ async fn run_managed_local(
     let deadline = std::cmp::min(per_url_deadline, budget.absolute_deadline);
     let result = timeout_at(deadline, provider.extract_with_metadata(request)).await;
     match result {
-        Ok(outcome) => ManagedLocalOutcome { index, outcome },
+        Ok(outcome) => ManagedLocalOutcome {
+            index,
+            outcome,
+            timeout_kind: None,
+        },
         Err(_) => {
-            let error = WebError::Timeout("Page extraction timed out.".to_owned());
+            let (timeout_kind, message) = if deadline < per_url_deadline {
+                (
+                    ExtractTimeoutKind::ToolDeadlineWhileRunning,
+                    "Page extraction did not complete before the tool deadline.",
+                )
+            } else {
+                (
+                    ExtractTimeoutKind::PerUrlDeadline,
+                    "Page extraction timed out.",
+                )
+            };
+            let error = WebError::Timeout(message.to_owned());
             ManagedLocalOutcome {
                 index,
                 outcome: LocalExtractOutcome {
@@ -573,6 +725,7 @@ async fn run_managed_local(
                     }),
                     diagnostics: LocalExtractDiagnostics::default(),
                 },
+                timeout_kind: Some(timeout_kind),
             }
         }
     }
@@ -581,16 +734,34 @@ async fn run_managed_local(
 struct ManagedLocalOutcome {
     index: usize,
     outcome: LocalExtractOutcome,
+    timeout_kind: Option<ExtractTimeoutKind>,
 }
 
-fn dedupe_eligible(items: &[EligibleItem]) -> Vec<RemoteExtractRequestItem> {
+fn record_fallback_reason(
+    counts: &mut BTreeMap<RemoteFallbackReason, usize>,
+    reason: RemoteFallbackReason,
+) {
+    *counts.entry(reason).or_default() += 1;
+}
+
+fn record_forbidden_reason(
+    counts: &mut BTreeMap<RemoteForbiddenReason, usize>,
+    reason: RemoteForbiddenReason,
+) {
+    *counts.entry(reason).or_default() += 1;
+}
+
+fn dedupe_eligible(
+    items: &[EligibleItem],
+    allow_private: bool,
+) -> Vec<RemoteExtractRequestItem> {
     let mut seen = HashSet::new();
     items
         .iter()
-        .filter(|item| seen.insert(canonical_url(&item.requested_url)))
-        .map(|item| RemoteExtractRequestItem {
-            index: item.index,
-            requested_url: item.requested_url.clone(),
+        .filter(|item| seen.insert(canonical_requested_url(&item.requested_url)))
+        .filter_map(|item| {
+            RemoteExtractRequestItem::new(item.index, item.requested_url.clone(), allow_private)
+                .ok()
         })
         .collect()
 }
@@ -607,31 +778,28 @@ fn remote_page(item: &EligibleItem, remote_item: &RemoteExtractItem) -> Extracte
     }
 }
 
-fn canonical_url(value: &str) -> String {
-    let value = value.trim();
-    let without_fragment = value.split('#').next().unwrap_or(value);
-    without_fragment.trim_end_matches('/').to_owned()
-}
-
 async fn run_local_extract(
     provider: Arc<dyn ExtractProvider>,
     index: usize,
     url: String,
     budget: ExtractBudget,
-) -> ExtractItemOutcome {
+) -> LocalExtractItemOutcome {
     if let Some(invalid_index) = invalid_url_index(&url) {
         let error = WebError::InvalidArgument(format!(
             "urls[{invalid_index}] must be a string"
         ));
-        return ExtractItemOutcome {
-            index,
-            requested_url: url,
-            page: None,
-            local_failure: Some(LocalExtractFailure {
-                kind: LocalExtractFailureKind::InvalidUrl,
-                error: error.clone(),
-            }),
-            final_error: Some(error),
+        return LocalExtractItemOutcome {
+            outcome: ExtractItemOutcome {
+                index,
+                requested_url: url,
+                page: None,
+                local_failure: Some(LocalExtractFailure {
+                    kind: LocalExtractFailureKind::InvalidUrl,
+                    error: error.clone(),
+                }),
+                final_error: Some(error),
+            },
+            timeout_kind: None,
         };
     }
 
@@ -645,42 +813,57 @@ async fn run_local_extract(
     )
     .await
     {
-        Ok(Ok(page)) => ExtractItemOutcome {
-            index,
-            requested_url: url,
-            page: Some(page),
-            local_failure: None,
-            final_error: None,
+        Ok(Ok(page)) => LocalExtractItemOutcome {
+            outcome: ExtractItemOutcome {
+                index,
+                requested_url: url,
+                page: Some(page),
+                local_failure: None,
+                final_error: None,
+            },
+            timeout_kind: None,
         },
         Ok(Err(error)) => {
             let kind = classify_web_error(&error);
-            ExtractItemOutcome {
-                index,
-                requested_url: url,
-                page: None,
-                local_failure: Some(LocalExtractFailure {
-                    kind,
-                    error: error.clone(),
-                }),
-                final_error: Some(error),
+            LocalExtractItemOutcome {
+                outcome: ExtractItemOutcome {
+                    index,
+                    requested_url: url,
+                    page: None,
+                    local_failure: Some(LocalExtractFailure {
+                        kind,
+                        error: error.clone(),
+                    }),
+                    final_error: Some(error),
+                },
+                timeout_kind: None,
             }
         }
         Err(_) => {
-            let kind = if url_deadline < per_url_deadline {
-                "Page extraction did not complete before the tool deadline."
+            let (timeout_kind, message) = if url_deadline < per_url_deadline {
+                (
+                    ExtractTimeoutKind::ToolDeadlineWhileRunning,
+                    "Page extraction did not complete before the tool deadline.",
+                )
             } else {
-                "Page extraction timed out."
+                (
+                    ExtractTimeoutKind::PerUrlDeadline,
+                    "Page extraction timed out.",
+                )
             };
-            let error = WebError::Timeout(kind.to_owned());
-            ExtractItemOutcome {
-                index,
-                requested_url: url,
-                page: None,
-                local_failure: Some(LocalExtractFailure {
-                    kind: LocalExtractFailureKind::Timeout,
-                    error: error.clone(),
-                }),
-                final_error: Some(error),
+            let error = WebError::Timeout(message.to_owned());
+            LocalExtractItemOutcome {
+                outcome: ExtractItemOutcome {
+                    index,
+                    requested_url: url,
+                    page: None,
+                    local_failure: Some(LocalExtractFailure {
+                        kind: LocalExtractFailureKind::Timeout,
+                        error: error.clone(),
+                    }),
+                    final_error: Some(error),
+                },
+                timeout_kind: Some(timeout_kind),
             }
         }
     }
@@ -711,18 +894,19 @@ mod tests {
 
     use crate::managed::fetch::{
         RemoteExtractBatch, RemoteExtractError, RemoteExtractFallback, RemoteExtractItem,
-        RemoteExtractRequest,
+        RemoteExtractRequest, RemoteTimeoutKind,
     };
     use crate::provider::ExtractProvider;
     use crate::provider::HttpExtractProvider;
     use crate::types::{
-        EXTRACTOR_READABILITY, ExtractRequest, ExtractedPage, WebError,
+        EXTRACT_CHAR_LIMIT, EXTRACTOR_READABILITY, ExtractRequest, ExtractedPage, WebError,
     };
 
     use super::{
         ExtractBudget, ExtractCoordinator, LocalExtractCoordinator, ManagedExtractCoordinator,
         RemoteBudgetPolicy, invalid_url_index,
     };
+    use crate::provider::extract_policy::{RemoteFallbackReason, RemoteForbiddenReason};
 
     struct MockProvider {
         fail_urls: Vec<String>,
@@ -760,6 +944,10 @@ mod tests {
         calls: Arc<AtomicUsize>,
         request_items: Mutex<Vec<crate::managed::fetch::RemoteExtractRequestItem>>,
         fail: bool,
+        unmapped: bool,
+        timeout: Option<RemoteTimeoutKind>,
+        source_truncated: bool,
+        long_markdown: bool,
     }
 
     #[async_trait]
@@ -774,16 +962,30 @@ mod tests {
             if self.fail {
                 return Err(RemoteExtractError::Upstream);
             }
+            if let Some(kind) = self.timeout {
+                return Err(RemoteExtractError::Timeout { kind });
+            }
             let items = request
                 .items
                 .iter()
-                .map(|item| RemoteExtractItem {
-                    index: item.index,
-                    requested_url: item.requested_url.clone(),
-                    final_url: None,
-                    title: Some("Remote".to_owned()),
-                    markdown: "remote content".to_owned(),
-                    source_truncated: false,
+                .map(|item| {
+                    let requested_url = if self.unmapped {
+                        "https://example.com/unmapped".to_owned()
+                    } else {
+                        item.prepared.requested_url.clone()
+                    };
+                    RemoteExtractItem {
+                        index: item.index,
+                        requested_url,
+                        final_url: None,
+                        title: Some("Remote".to_owned()),
+                        markdown: if self.long_markdown {
+                            "x".repeat(EXTRACT_CHAR_LIMIT + 1)
+                        } else {
+                            "remote content".to_owned()
+                        },
+                        source_truncated: self.source_truncated,
+                    }
                 })
                 .collect();
             Ok(RemoteExtractBatch {
@@ -799,7 +1001,31 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
                 request_items: Mutex::new(Vec::new()),
                 fail,
+                unmapped: false,
+                timeout: None,
+                source_truncated: false,
+                long_markdown: false,
             }
+        }
+
+        fn unmapped(mut self) -> Self {
+            self.unmapped = true;
+            self
+        }
+
+        fn timeout(mut self, kind: RemoteTimeoutKind) -> Self {
+            self.timeout = Some(kind);
+            self
+        }
+
+        fn source_truncated(mut self) -> Self {
+            self.source_truncated = true;
+            self
+        }
+
+        fn long_markdown(mut self) -> Self {
+            self.long_markdown = true;
+            self
         }
     }
 
@@ -967,6 +1193,10 @@ mod tests {
         let outcome = task.await.unwrap();
         assert_eq!(outcome.diagnostics.success_count, 0);
         assert_eq!(outcome.diagnostics.failure_count, 2);
+        assert_eq!(
+            outcome.diagnostics.timeout_counts.per_url_deadline,
+            2
+        );
         assert!(
             outcome
                 .items
@@ -1045,6 +1275,36 @@ mod tests {
         .with_remote_budget(managed_budget_policy());
 
         let url = format!("{}/pdf?token=secret", server.uri());
+        let outcome = coordinator
+            .extract_many(vec![request(&url)], budget())
+            .await;
+        assert!(outcome.items[0].page.is_none());
+        assert!(outcome.items[0].final_error.is_some());
+        assert_eq!(outcome.diagnostics.remote_stage_count, 0);
+        assert_eq!(outcome.diagnostics.remote_forbidden_count, 1);
+        assert_eq!(
+            outcome
+                .diagnostics
+                .remote_forbidden_reason_counts
+                .get(&RemoteForbiddenReason::SensitiveQuery),
+            Some(&1)
+        );
+        assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn managed_coordinator_forbids_sensitive_fragment_from_remote() {
+        let server = MockServer::start().await;
+        mount_pdf(&server, "/pdf").await;
+        let remote = Arc::new(FakeRemote::new(false));
+        let coordinator = ManagedExtractCoordinator::new(
+            Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
+            remote.clone(),
+        )
+        .allow_private_for_tests()
+        .with_remote_budget(managed_budget_policy());
+
+        let url = format!("{}/pdf#access_token=secret", server.uri());
         let outcome = coordinator
             .extract_many(vec![request(&url)], budget())
             .await;
@@ -1168,5 +1428,131 @@ mod tests {
                 .to_string()
                 .contains("exceeds max")
         );
+    }
+
+    #[tokio::test]
+    async fn managed_coordinator_rejects_unmapped_remote_result() {
+        let server = MockServer::start().await;
+        mount_pdf(&server, "/pdf").await;
+        let remote = Arc::new(FakeRemote::new(false).unmapped());
+        let coordinator = ManagedExtractCoordinator::new(
+            Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
+            remote.clone(),
+        )
+        .allow_private_for_tests()
+        .with_remote_budget(managed_budget_policy());
+
+        let url = format!("{}/pdf", server.uri());
+        let outcome = coordinator
+            .extract_many(vec![request(&url)], budget())
+            .await;
+        assert!(outcome.items[0].page.is_none());
+        assert!(outcome.items[0].final_error.is_some());
+        assert_eq!(outcome.diagnostics.remote_success_count, 0);
+        assert_eq!(outcome.diagnostics.remote_failure_count, 1);
+    }
+
+    #[tokio::test]
+    async fn managed_coordinator_strips_plain_fragment_from_outbound() {
+        let server = MockServer::start().await;
+        mount_pdf(&server, "/pdf").await;
+        let remote = Arc::new(FakeRemote::new(false));
+        let coordinator = ManagedExtractCoordinator::new(
+            Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
+            remote.clone(),
+        )
+        .allow_private_for_tests()
+        .with_remote_budget(managed_budget_policy());
+
+        let url = format!("{}/pdf#section-2", server.uri());
+        let outcome = coordinator
+            .extract_many(vec![request(&url)], budget())
+            .await;
+        assert!(outcome.items[0].page.is_some());
+        let sent = remote.request_items.lock().await;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].prepared.requested_url, url);
+        assert_eq!(
+            sent[0].prepared.outbound_url,
+            format!("{}/pdf", server.uri())
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_coordinator_separates_local_and_final_metrics() {
+        let server = MockServer::start().await;
+        mount_pdf(&server, "/pdf").await;
+        let remote = Arc::new(FakeRemote::new(true));
+        let coordinator = ManagedExtractCoordinator::new(
+            Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
+            remote.clone(),
+        )
+        .allow_private_for_tests()
+        .with_remote_budget(managed_budget_policy());
+
+        let url = format!("{}/pdf", server.uri());
+        let outcome = coordinator
+            .extract_many(vec![request(&url)], budget())
+            .await;
+        assert_eq!(outcome.diagnostics.local_success_count, 0);
+        assert_eq!(outcome.diagnostics.local_failure_count, 1);
+        assert_eq!(outcome.diagnostics.final_success_count, 0);
+        assert_eq!(outcome.diagnostics.final_failure_count, 1);
+        assert!(outcome
+            .diagnostics
+            .fallback_reason_counts
+            .get(&RemoteFallbackReason::Pdf)
+            .is_some_and(|count| *count == 1));
+    }
+
+    #[tokio::test]
+    async fn managed_coordinator_counts_source_and_context_truncation() {
+        let server = MockServer::start().await;
+        mount_pdf(&server, "/pdf").await;
+        let remote = Arc::new(FakeRemote::new(false).source_truncated().long_markdown());
+        let coordinator = ManagedExtractCoordinator::new(
+            Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
+            remote.clone(),
+        )
+        .allow_private_for_tests()
+        .with_remote_budget(managed_budget_policy());
+
+        let url = format!("{}/pdf", server.uri());
+        let outcome = coordinator
+            .extract_many(vec![request(&url)], budget())
+            .await;
+        assert_eq!(outcome.diagnostics.source_truncated_count, 1);
+        assert_eq!(outcome.diagnostics.context_truncated_count, 1);
+    }
+
+    #[tokio::test]
+    async fn managed_coordinator_counts_remote_timeout_categories() {
+        for (kind, expected_field) in [
+            (RemoteTimeoutKind::QueueDeadline, "queue"),
+            (RemoteTimeoutKind::CallDeadline, "call"),
+        ] {
+            let server = MockServer::start().await;
+            mount_pdf(&server, "/pdf").await;
+            let remote = Arc::new(FakeRemote::new(false).timeout(kind));
+            let coordinator = ManagedExtractCoordinator::new(
+                Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
+                remote.clone(),
+            )
+            .allow_private_for_tests()
+            .with_remote_budget(managed_budget_policy());
+
+            let url = format!("{}/pdf", server.uri());
+            let outcome = coordinator
+                .extract_many(vec![request(&url)], budget())
+                .await;
+            assert_eq!(outcome.diagnostics.remote_failure_count, 1);
+            if expected_field == "queue" {
+                assert_eq!(outcome.diagnostics.timeout_counts.remote_queue_deadline, 1);
+                assert_eq!(outcome.diagnostics.timeout_counts.remote_call_deadline, 0);
+            } else {
+                assert_eq!(outcome.diagnostics.timeout_counts.remote_call_deadline, 1);
+                assert_eq!(outcome.diagnostics.timeout_counts.remote_queue_deadline, 0);
+            }
+        }
     }
 }

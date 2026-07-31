@@ -24,9 +24,13 @@ pub enum LocalExtractFailureKind {
     UnsupportedDocument,
     JavascriptShell,
     EmptyContent,
+    AccessChallenge,
+    LoginRequired,
+    Paywall,
     Dns,
     Tls,
     Network,
+    Parse,
     Timeout,
     HttpStatus(u16),
     InvalidUrl,
@@ -55,7 +59,7 @@ pub enum RemoteFallbackDecision {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RemoteFallbackReason {
     Pdf,
     UnsupportedDocument,
@@ -65,7 +69,7 @@ pub enum RemoteFallbackReason {
     Timeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RemoteForbiddenReason {
     Unauthorized,
     Forbidden,
@@ -73,10 +77,49 @@ pub enum RemoteForbiddenReason {
     Gone,
     RateLimited,
     CaptchaOrWaf,
+    LoginRequired,
+    Paywall,
     SensitiveQuery,
+    SensitiveFragment,
     CredentialsInUrl,
     PrivateOrLocalAddress,
     UnsupportedScheme,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CanonicalRequestedUrl(String);
+
+impl CanonicalRequestedUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedRemoteUrl {
+    pub requested_url: String,
+    pub outbound_url: String,
+    pub canonical_url: CanonicalRequestedUrl,
+}
+
+pub fn canonical_requested_url(value: &str) -> CanonicalRequestedUrl {
+    let value = value.trim();
+    let canonical = Url::parse(value).ok().map(|mut parsed| {
+        parsed.set_fragment(None);
+        let mut text = parsed.to_string();
+        if parsed.path() == "/" && parsed.query().is_none() {
+            text = text.trim_end_matches('/').to_owned();
+        }
+        text
+    });
+    CanonicalRequestedUrl(canonical.unwrap_or_else(|| {
+        value
+            .split('#')
+            .next()
+            .unwrap_or(value)
+            .trim_end_matches('/')
+            .to_owned()
+    }))
 }
 
 pub fn successful_outcome(
@@ -112,7 +155,10 @@ pub fn failed_outcome(
     error: WebError,
     diagnostics: LocalExtractDiagnostics,
 ) -> LocalExtractOutcome {
-    let kind = classify_web_error(&error);
+    let kind = diagnostics
+        .http_status
+        .map(LocalExtractFailureKind::HttpStatus)
+        .unwrap_or_else(|| classify_web_error(&error));
     LocalExtractOutcome {
         requested_url,
         result: Err(LocalExtractFailure { kind, error }),
@@ -155,10 +201,22 @@ pub fn decide_remote_fallback_with_private(
         LocalExtractFailureKind::EmptyContent => RemoteFallbackDecision::Eligible {
             reason: RemoteFallbackReason::EmptyContent,
         },
+        LocalExtractFailureKind::AccessChallenge => RemoteFallbackDecision::Forbidden {
+            reason: RemoteForbiddenReason::CaptchaOrWaf,
+        },
+        LocalExtractFailureKind::LoginRequired => RemoteFallbackDecision::Forbidden {
+            reason: RemoteForbiddenReason::LoginRequired,
+        },
+        LocalExtractFailureKind::Paywall => RemoteFallbackDecision::Forbidden {
+            reason: RemoteForbiddenReason::Paywall,
+        },
         LocalExtractFailureKind::Dns
         | LocalExtractFailureKind::Tls
         | LocalExtractFailureKind::Network => RemoteFallbackDecision::Eligible {
             reason: RemoteFallbackReason::TransientNetwork,
+        },
+        LocalExtractFailureKind::Parse => RemoteFallbackDecision::Forbidden {
+            reason: RemoteForbiddenReason::Forbidden,
         },
         LocalExtractFailureKind::Timeout => RemoteFallbackDecision::Eligible {
             reason: RemoteFallbackReason::Timeout,
@@ -179,7 +237,7 @@ pub fn decide_remote_fallback_with_private(
             reason: RemoteForbiddenReason::RateLimited,
         },
         LocalExtractFailureKind::HttpStatus(400) => RemoteFallbackDecision::Forbidden {
-            reason: RemoteForbiddenReason::CaptchaOrWaf,
+            reason: RemoteForbiddenReason::Forbidden,
         },
         LocalExtractFailureKind::HttpStatus(_) => RemoteFallbackDecision::Forbidden {
             reason: RemoteForbiddenReason::Forbidden,
@@ -203,6 +261,9 @@ fn classify_success(
     }
     if is_unsupported_document(resource.content_type.as_deref()) {
         return Some(LocalExtractFailureKind::UnsupportedDocument);
+    }
+    if let Some(kind) = classify_access_challenge(resource, page) {
+        return Some(kind);
     }
     if is_javascript_shell(resource, page) {
         return Some(LocalExtractFailureKind::JavascriptShell);
@@ -231,8 +292,53 @@ pub fn classify_web_error(error: &WebError) -> LocalExtractFailureKind {
         WebError::Provider(message) => parse_http_status(message)
             .map(LocalExtractFailureKind::HttpStatus)
             .unwrap_or(LocalExtractFailureKind::Network),
-        WebError::Parse(_) => LocalExtractFailureKind::Network,
+        WebError::Parse(_) => LocalExtractFailureKind::Parse,
     }
+}
+
+fn classify_access_challenge(
+    resource: &FetchedResource,
+    page: &ExtractedPage,
+) -> Option<LocalExtractFailureKind> {
+    let visible = page.markdown.trim();
+    if visible.chars().count() >= 400 {
+        return None;
+    }
+    if visible.chars().count() >= 80 {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&resource.body);
+    let lower = body.to_ascii_lowercase();
+    const CAPTCHA_MARKERS: &[&str] = &[
+        "cf-chl-",
+        "captcha",
+        "hcaptcha",
+        "recaptcha",
+        "checking your browser",
+        "verify you are human",
+        "attention required",
+    ];
+    if CAPTCHA_MARKERS.iter().any(|marker| lower.contains(marker)) {
+        return Some(LocalExtractFailureKind::AccessChallenge);
+    }
+    const LOGIN_PHRASES: &[&str] = &["sign in", "log in", "authenticate", "authentication"];
+    let has_password_input = lower.contains("type=\"password\"")
+        || lower.contains("type='password'")
+        || lower.contains("name=\"password\"")
+        || lower.contains("name='password'");
+    if has_password_input && LOGIN_PHRASES.iter().any(|phrase| lower.contains(phrase)) {
+        return Some(LocalExtractFailureKind::LoginRequired);
+    }
+    const PAYWALL_MARKERS: &[&str] = &[
+        "subscribe to continue",
+        "premium content",
+        "paywall overlay",
+        "paywall",
+    ];
+    if PAYWALL_MARKERS.iter().any(|marker| lower.contains(marker)) {
+        return Some(LocalExtractFailureKind::Paywall);
+    }
+    None
 }
 
 fn is_pdf(content_type: Option<&str>) -> bool {
@@ -338,23 +444,7 @@ fn forbidden_url_reason_with_private(
     raw: &str,
     allow_private: bool,
 ) -> Option<RemoteForbiddenReason> {
-    let url = Url::parse(raw.trim()).ok()?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Some(RemoteForbiddenReason::UnsupportedScheme);
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Some(RemoteForbiddenReason::CredentialsInUrl);
-    }
-    if !allow_private && forbidden_host(url.host()) {
-        return Some(RemoteForbiddenReason::PrivateOrLocalAddress);
-    }
-    let without_fragment = raw.trim().split('#').next().unwrap_or(raw.trim());
-    if let Ok(parsed) = Url::parse(without_fragment)
-        && has_sensitive_query(&parsed)
-    {
-        return Some(RemoteForbiddenReason::SensitiveQuery);
-    }
-    None
+    prepare_remote_url(raw, allow_private).err()
 }
 
 fn forbidden_host(host: Option<Host<&str>>) -> bool {
@@ -409,6 +499,60 @@ fn has_sensitive_query(url: &Url) -> bool {
         SENSITIVE_NAMES
             .iter()
             .any(|name| key == *name || key.starts_with("x-amz-") || key.starts_with("x-goog-"))
+    })
+}
+
+fn has_sensitive_fragment(url: &Url) -> bool {
+    const SENSITIVE_FRAGMENT_NAMES: &[&str] = &[
+        "access_token",
+        "id_token",
+        "token",
+        "code",
+        "api_key",
+        "signature",
+        "sig",
+        "credential",
+        "session",
+        "auth",
+    ];
+    let Some(fragment) = url.fragment() else {
+        return false;
+    };
+    fragment.split('&').any(|pair| {
+        let key = pair.split('=').next().unwrap_or(pair).to_ascii_lowercase();
+        SENSITIVE_FRAGMENT_NAMES
+            .iter()
+            .any(|name| key == *name)
+    })
+}
+
+pub fn prepare_remote_url(
+    raw: &str,
+    allow_private: bool,
+) -> Result<PreparedRemoteUrl, RemoteForbiddenReason> {
+    let raw = raw.trim();
+    let url = Url::parse(raw).map_err(|_| RemoteForbiddenReason::UnsupportedScheme)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(RemoteForbiddenReason::UnsupportedScheme);
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(RemoteForbiddenReason::CredentialsInUrl);
+    }
+    if !allow_private && forbidden_host(url.host()) {
+        return Err(RemoteForbiddenReason::PrivateOrLocalAddress);
+    }
+    if has_sensitive_query(&url) {
+        return Err(RemoteForbiddenReason::SensitiveQuery);
+    }
+    if has_sensitive_fragment(&url) {
+        return Err(RemoteForbiddenReason::SensitiveFragment);
+    }
+    let mut outbound = url;
+    outbound.set_fragment(None);
+    Ok(PreparedRemoteUrl {
+        requested_url: raw.to_owned(),
+        outbound_url: outbound.to_string(),
+        canonical_url: canonical_requested_url(raw),
     })
 }
 
@@ -620,5 +764,171 @@ mod tests {
             )),
             LocalExtractFailureKind::HttpStatus(404)
         );
+    }
+
+    #[test]
+    fn failed_outcome_prefers_structured_http_status() {
+        let outcome = failed_outcome(
+            "https://example.com/".to_owned(),
+            WebError::Parse("parse failed".to_owned()),
+            LocalExtractDiagnostics {
+                http_status: Some(404),
+                ..LocalExtractDiagnostics::default()
+            },
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::HttpStatus(404)
+        );
+        assert!(matches!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden {
+                reason: RemoteForbiddenReason::NotFound
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_failure_is_remote_forbidden() {
+        let outcome = failed_outcome(
+            "https://example.com/".to_owned(),
+            WebError::Parse("invalid html".to_owned()),
+            LocalExtractDiagnostics::default(),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::Parse
+        );
+        assert!(matches!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden { .. }
+        ));
+    }
+
+    #[test]
+    fn http_400_is_forbidden_but_not_mechanically_captcha() {
+        let outcome = failure("https://example.com/", LocalExtractFailureKind::HttpStatus(400));
+        assert_eq!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden {
+                reason: RemoteForbiddenReason::Forbidden
+            }
+        );
+    }
+
+    #[test]
+    fn plain_fragment_is_stripped_and_sensitive_fragment_is_forbidden() {
+        let prepared = prepare_remote_url("https://example.com/page#section-2", false)
+            .expect("plain fragment should be allowed");
+        assert_eq!(prepared.outbound_url, "https://example.com/page");
+        assert_eq!(
+            prepared.requested_url,
+            "https://example.com/page#section-2"
+        );
+        assert!(matches!(
+            prepare_remote_url("https://example.com/callback#access_token=secret", false),
+            Err(RemoteForbiddenReason::SensitiveFragment)
+        ));
+        assert!(matches!(
+            prepare_remote_url("https://example.com/callback#TOKEN=secret", false),
+            Err(RemoteForbiddenReason::SensitiveFragment)
+        ));
+    }
+
+    #[test]
+    fn canonical_url_only_normalizes_root_slash() {
+        assert_eq!(
+            canonical_requested_url("https://example.com/").as_str(),
+            "https://example.com"
+        );
+        assert_eq!(
+            canonical_requested_url("https://example.com/a/").as_str(),
+            "https://example.com/a/"
+        );
+    }
+
+    #[test]
+    fn captcha_waf_challenge_is_remote_forbidden() {
+        let resource = resource(
+            Some("text/html"),
+            b"<html><body>Checking your browser before accessing...</body></html>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/".to_owned(),
+            &resource,
+            page("Checking your browser"),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::AccessChallenge
+        );
+        assert!(matches!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden {
+                reason: RemoteForbiddenReason::CaptchaOrWaf
+            }
+        ));
+    }
+
+    #[test]
+    fn login_page_is_remote_forbidden() {
+        let resource = resource(
+            Some("text/html"),
+            b"<form><input type=\"password\" name=\"password\" /></form>Sign in".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/login".to_owned(),
+            &resource,
+            page("Sign in"),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::LoginRequired
+        );
+    }
+
+    #[test]
+    fn paywall_page_is_remote_forbidden() {
+        let resource = resource(
+            Some("text/html"),
+            b"<div class=\"paywall\">Subscribe to continue reading</div>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/article".to_owned(),
+            &resource,
+            page("Premium Content"),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::Paywall
+        );
+    }
+
+    #[test]
+    fn full_articles_with_access_control_links_are_not_blocked() {
+        let resource = resource(
+            Some("text/html"),
+            b"<a href=\"/login\">Sign in</a><article>Article text</article>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/article".to_owned(),
+            &resource,
+            page(&"Article ".repeat(60)),
+        );
+        assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
+    }
+
+    #[test]
+    fn captcha_technical_article_is_not_blocked() {
+        let resource = resource(
+            Some("text/html"),
+            b"<article>How recaptcha works</article>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/docs".to_owned(),
+            &resource,
+            page(&"This article explains recaptcha ".repeat(10)),
+        );
+        assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
     }
 }

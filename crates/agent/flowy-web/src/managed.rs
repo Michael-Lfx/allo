@@ -25,8 +25,9 @@ pub(crate) mod fetch;
 mod remote;
 
 pub use fetch::{
-    ParallelFetchAdapter, RemoteExtractBatch, RemoteExtractError, RemoteExtractFallback,
-    RemoteExtractItem, RemoteExtractRequest, RemoteExtractRequestItem,
+    FetchReadiness, ParallelFetchAdapter, RemoteExtractBatch, RemoteExtractError,
+    RemoteExtractFallback, RemoteExtractItem, RemoteExtractRequest, RemoteExtractRequestItem,
+    RemoteTimeoutKind,
 };
 use remote::{ParallelMcpClient, RemoteSearchAdapter};
 

@@ -11,10 +11,11 @@ pub use article::{ArticleExtractor, ArticleHtml, DomSmoothieExtractor};
 pub use duckduckgo::DuckDuckGoSearchProvider;
 pub use extract::ExtractProvider;
 pub use extract_policy::{
-    LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
-    RemoteFallbackDecision, RemoteFallbackReason, RemoteForbiddenReason, classify_web_error,
+    CanonicalRequestedUrl, LocalExtractDiagnostics, LocalExtractFailure,
+    LocalExtractFailureKind, LocalExtractOutcome, PreparedRemoteUrl, RemoteFallbackDecision,
+    RemoteFallbackReason, RemoteForbiddenReason, canonical_requested_url, classify_web_error,
     decide_remote_fallback, decide_remote_fallback_with_private, failed_outcome,
-    successful_outcome,
+    prepare_remote_url, successful_outcome,
 };
 pub use http_extract::HttpExtractProvider;
 pub use search::SearchProvider;
