@@ -301,26 +301,38 @@ fn classify_access_challenge(
     page: &ExtractedPage,
 ) -> Option<LocalExtractFailureKind> {
     let visible = page.markdown.trim();
-    if visible.chars().count() >= 400 {
-        return None;
-    }
-    if visible.chars().count() >= 80 {
-        return None;
-    }
+    let visible_chars = visible.chars().count();
     let body = String::from_utf8_lossy(&resource.body);
     let lower = body.to_ascii_lowercase();
-    const CAPTCHA_MARKERS: &[&str] = &[
+
+    const STRONG_CAPTCHA_MARKERS: &[&str] = &[
         "cf-chl-",
-        "captcha",
-        "hcaptcha",
-        "recaptcha",
+        "cf-challenge",
+        "challenge-platform",
+        "cloudflare challenge",
+        "hcaptcha iframe",
+        "hcaptcha script",
+        "hcaptcha.com",
+        "recaptcha iframe",
+        "recaptcha script",
+        "recaptcha/api",
+        "gstatic.com/recaptcha",
+        "captcha challenge",
         "checking your browser",
         "verify you are human",
         "attention required",
     ];
-    if CAPTCHA_MARKERS.iter().any(|marker| lower.contains(marker)) {
+    if STRONG_CAPTCHA_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
         return Some(LocalExtractFailureKind::AccessChallenge);
     }
+
+    if visible_chars >= 400 {
+        return None;
+    }
+
     const LOGIN_PHRASES: &[&str] = &["sign in", "log in", "authenticate", "authentication"];
     let has_password_input = lower.contains("type=\"password\"")
         || lower.contains("type='password'")
@@ -329,13 +341,26 @@ fn classify_access_challenge(
     if has_password_input && LOGIN_PHRASES.iter().any(|phrase| lower.contains(phrase)) {
         return Some(LocalExtractFailureKind::LoginRequired);
     }
-    const PAYWALL_MARKERS: &[&str] = &[
+
+    const PAYWALL_OVERLAY_MARKERS: &[&str] = &[
+        "class=\"paywall\"",
+        "class='paywall'",
+        "id=\"paywall\"",
+        "id='paywall'",
+        "paywall overlay",
+        "subscription overlay",
+    ];
+    const PAYWALL_PHRASES: &[&str] = &[
         "subscribe to continue",
         "premium content",
-        "paywall overlay",
-        "paywall",
     ];
-    if PAYWALL_MARKERS.iter().any(|marker| lower.contains(marker)) {
+    if PAYWALL_OVERLAY_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+        && PAYWALL_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+    {
         return Some(LocalExtractFailureKind::Paywall);
     }
     None
@@ -928,6 +953,117 @@ mod tests {
             "https://example.com/docs".to_owned(),
             &resource,
             page(&"This article explains recaptcha ".repeat(10)),
+        );
+        assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
+    }
+
+    #[test]
+    fn medium_cloudflare_challenge_is_remote_forbidden() {
+        let resource = resource(
+            Some("text/html"),
+            b"<div class=\"cf-chl-container\">Checking your browser...</div>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/challenge".to_owned(),
+            &resource,
+            page(&"C".repeat(150)),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::AccessChallenge
+        );
+        assert!(matches!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden {
+                reason: RemoteForbiddenReason::CaptchaOrWaf
+            }
+        ));
+    }
+
+    #[test]
+    fn medium_login_form_is_remote_forbidden() {
+        let resource = resource(
+            Some("text/html"),
+            b"<form><input type=\"password\" /></form>Sign in to continue".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/login".to_owned(),
+            &resource,
+            page(&"L".repeat(250)),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::LoginRequired
+        );
+        assert!(matches!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden {
+                reason: RemoteForbiddenReason::LoginRequired
+            }
+        ));
+    }
+
+    #[test]
+    fn medium_paywall_overlay_is_remote_forbidden() {
+        let resource = resource(
+            Some("text/html"),
+            b"<div class=\"paywall\">Subscribe to continue reading</div>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/article".to_owned(),
+            &resource,
+            page(&"P".repeat(300)),
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap_err().kind,
+            LocalExtractFailureKind::Paywall
+        );
+        assert!(matches!(
+            decide_remote_fallback(&outcome),
+            RemoteFallbackDecision::Forbidden {
+                reason: RemoteForbiddenReason::Paywall
+            }
+        ));
+    }
+
+    #[test]
+    fn medium_captcha_technical_article_is_not_blocked() {
+        let resource = resource(
+            Some("text/html"),
+            b"<article>How recaptcha works and why it exists</article>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/docs".to_owned(),
+            &resource,
+            page(&"T".repeat(250)),
+        );
+        assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
+    }
+
+    #[test]
+    fn medium_sign_in_navigation_is_not_blocked() {
+        let resource = resource(
+            Some("text/html"),
+            b"<nav><a href=\"/sign-in\">Sign in</a></nav><article>Body</article>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/article".to_owned(),
+            &resource,
+            page(&"N".repeat(300)),
+        );
+        assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
+    }
+
+    #[test]
+    fn medium_subscribe_button_blog_is_not_blocked() {
+        let resource = resource(
+            Some("text/html"),
+            b"<button>Subscribe</button><article>Blog body</article>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/blog".to_owned(),
+            &resource,
+            page(&"B".repeat(350)),
         );
         assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
     }
