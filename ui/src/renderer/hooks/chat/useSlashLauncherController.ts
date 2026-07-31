@@ -22,6 +22,11 @@ export function useSlashLauncherController(options: UseSlashLauncherControllerOp
   const previousQuery = useRef(query);
 
   useEffect(() => {
+    // A selected command removes or completes the slash token. The next `/`
+    // starts a new launcher session, even though its empty query is also `''`.
+    if (query === null) {
+      setDismissedQuery(null);
+    }
     if (previousQuery.current !== query) {
       previousQuery.current = query;
       setActiveIndex(0);
