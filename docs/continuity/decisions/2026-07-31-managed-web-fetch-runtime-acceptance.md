@@ -2,7 +2,7 @@
 
 Date: 2026-07-31
 
-Status: PARTIAL / BLOCKED
+Status: PARTIAL
 
 ## Environment
 
@@ -14,6 +14,12 @@ Status: PARTIAL / BLOCKED
 - Rust/Cargo: `1.95.0`
 - Bun: `1.3.14`
 - Parallel endpoint reachable: yes
+
+## Dependency Fix
+
+`react-virtuoso` was missing from `ui/package.json`. It was added in
+`f2357a9a fix(ui): declare missing react-virtuoso dependency`, installed in
+the acceptance worktree, and `bun run dev` now starts successfully.
 
 ## Executed
 
@@ -40,15 +46,22 @@ was printed. Discovery observed protocol `2025-11-25`, stateful session,
 
 ## Blocked
 
-Full desktop startup in the acceptance worktree could not be completed:
+Desktop startup passed:
 
-- `bun run dev` fails because `react-virtuoso` is imported by the UI but not
-  declared in `ui/package.json`.
-- Cargo dev build also fails on `sccache.exe` until the wrapper is explicitly
-  disabled; the default dev command does not set it.
+- Vite dev server ready on `http://127.0.0.1:5173/`
+- `Flowy.exe` started
+- Desktop backend serving on loopback
 
-Because the full desktop conversation flow was not started, these remain
-unverified:
+Real desktop session evidence:
+
+- `managed_search` succeeded through `provider=parallel`
+- `web_extract` completed with `requested_count=3`
+- `local_success_count=3`, `final_success_count=3`
+- `remote_eligible_count=0`, `remote_attempted=false`
+- `context_truncated_count=3`
+
+The desktop session has not yet exercised a real Parallel remote fallback, so
+these remain unverified:
 
 - Local-only call count with `managed_extract=true`
 - Model output shape in a real conversation
