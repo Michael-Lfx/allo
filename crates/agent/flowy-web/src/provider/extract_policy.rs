@@ -123,10 +123,17 @@ pub fn failed_outcome(
 pub fn decide_remote_fallback(
     outcome: &LocalExtractOutcome,
 ) -> RemoteFallbackDecision {
+    decide_remote_fallback_with_private(outcome, false)
+}
+
+pub fn decide_remote_fallback_with_private(
+    outcome: &LocalExtractOutcome,
+    allow_private: bool,
+) -> RemoteFallbackDecision {
     if outcome.result.is_ok() {
         return RemoteFallbackDecision::NotNeeded;
     }
-    if let Some(reason) = forbidden_url_reason(&outcome.requested_url) {
+    if let Some(reason) = forbidden_url_reason_with_private(&outcome.requested_url, allow_private) {
         return RemoteFallbackDecision::Forbidden { reason };
     }
     let failure = outcome
@@ -255,7 +262,8 @@ fn is_unsupported_document(content_type: Option<&str>) -> bool {
 }
 
 fn is_javascript_shell(resource: &FetchedResource, page: &ExtractedPage) -> bool {
-    if page.markdown.trim().chars().count() >= 400 {
+    let visible = page.markdown.trim();
+    if visible.chars().count() >= 400 {
         return false;
     }
     let body = String::from_utf8_lossy(&resource.body);
@@ -270,9 +278,19 @@ fn is_javascript_shell(resource: &FetchedResource, page: &ExtractedPage) -> bool
     if explicit.iter().any(|phrase| lower.contains(phrase)) {
         return true;
     }
-    if lower.contains("<div id=\"root\"")
+    let root_container = lower.contains("<div id=\"root\"")
         || lower.contains("<div id=\"app\"")
-        || lower.contains("<div id=\"__next\"")
+        || lower.contains("<div id=\"__next\"");
+    if root_container
+        && visible.is_empty()
+        && lower.contains("<script")
+    {
+        return true;
+    }
+    if root_container
+        && visible.chars().count() < 80
+        && (lower.contains("<script")
+            || explicit.iter().any(|phrase| lower.contains(phrase)))
     {
         return true;
     }
@@ -316,7 +334,10 @@ fn parse_http_status(message: &str) -> Option<u16> {
         .ok()
 }
 
-fn forbidden_url_reason(raw: &str) -> Option<RemoteForbiddenReason> {
+fn forbidden_url_reason_with_private(
+    raw: &str,
+    allow_private: bool,
+) -> Option<RemoteForbiddenReason> {
     let url = Url::parse(raw.trim()).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return Some(RemoteForbiddenReason::UnsupportedScheme);
@@ -324,7 +345,7 @@ fn forbidden_url_reason(raw: &str) -> Option<RemoteForbiddenReason> {
     if !url.username().is_empty() || url.password().is_some() {
         return Some(RemoteForbiddenReason::CredentialsInUrl);
     }
-    if forbidden_host(url.host()) {
+    if !allow_private && forbidden_host(url.host()) {
         return Some(RemoteForbiddenReason::PrivateOrLocalAddress);
     }
     let without_fragment = raw.trim().split('#').next().unwrap_or(raw.trim());
@@ -568,6 +589,20 @@ mod tests {
         let resource = resource(
             Some("text/html"),
             b"<html><body><p>Hello world.</p></body></html>".to_vec(),
+        );
+        let outcome = successful_outcome(
+            "https://example.com/".to_owned(),
+            &resource,
+            page("Hello world."),
+        );
+        assert_eq!(decide_remote_fallback(&outcome), RemoteFallbackDecision::NotNeeded);
+    }
+
+    #[test]
+    fn short_static_page_with_root_container_is_not_javascript_shell() {
+        let resource = resource(
+            Some("text/html"),
+            b"<html><body><div id=\"app\"><p>Hello world.</p></div></body></html>".to_vec(),
         );
         let outcome = successful_outcome(
             "https://example.com/".to_owned(),

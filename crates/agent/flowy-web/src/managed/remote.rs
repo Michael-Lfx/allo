@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use nomi_mcp::{
@@ -48,13 +49,14 @@ struct ToolCatalogSnapshot {
     tools: Option<Vec<McpToolDef>>,
 }
 
-pub(super) struct ParallelMcpClient {
+pub(crate) struct ParallelMcpClient {
     peer: Arc<RemoteMcpPeer>,
     #[allow(dead_code)] // Endpoint health is consumed by the fetch adapter phase.
     endpoint_health: Mutex<EndpointHealth>,
     #[allow(dead_code)] // Tool catalog generation is consumed by fetch adapter phase.
     tool_catalog: RwLock<ToolCatalogSnapshot>,
     remote_fetch_semaphore: Semaphore,
+    remote_success: AtomicBool,
 }
 
 impl ParallelMcpClient {
@@ -74,6 +76,7 @@ impl ParallelMcpClient {
             }),
             // Limits Parallel web_fetch concurrency across conversations.
             remote_fetch_semaphore: Semaphore::new(1),
+            remote_success: AtomicBool::new(false),
         })
     }
 
@@ -84,6 +87,14 @@ impl ParallelMcpClient {
     #[allow(dead_code)] // Used by the fetch adapter phase and admission tests.
     pub(super) fn fetch_semaphore(&self) -> &Semaphore {
         &self.remote_fetch_semaphore
+    }
+
+    pub(crate) fn is_remote_warm(&self) -> bool {
+        self.remote_success.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn mark_remote_success(&self) {
+        self.remote_success.store(true, Ordering::Relaxed);
     }
 
     pub(super) async fn shutdown(&self, deadline: Instant) {

@@ -13,7 +13,8 @@ pub use extract::ExtractProvider;
 pub use extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
     RemoteFallbackDecision, RemoteFallbackReason, RemoteForbiddenReason, classify_web_error,
-    decide_remote_fallback, failed_outcome, successful_outcome,
+    decide_remote_fallback, decide_remote_fallback_with_private, failed_outcome,
+    successful_outcome,
 };
 pub use http_extract::HttpExtractProvider;
 pub use search::SearchProvider;

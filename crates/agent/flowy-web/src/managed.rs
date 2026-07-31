@@ -20,9 +20,13 @@ use crate::{
 };
 
 mod decoders;
-mod fetch;
+pub(crate) mod fetch;
 mod remote;
 
+pub use fetch::{
+    ParallelFetchAdapter, RemoteExtractBatch, RemoteExtractError, RemoteExtractFallback,
+    RemoteExtractItem, RemoteExtractRequest, RemoteExtractRequestItem,
+};
 use remote::{ParallelMcpClient, RemoteSearchAdapter};
 
 const TOTAL_BUDGET: Duration = Duration::from_secs(10);

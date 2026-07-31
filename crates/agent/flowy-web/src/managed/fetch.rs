@@ -22,41 +22,41 @@ use super::remote::{
 const FETCH_TOOL: &str = "web_fetch";
 
 #[derive(Debug, Clone)]
-pub(crate) struct RemoteExtractRequest {
-    pub(crate) items: Vec<RemoteExtractRequestItem>,
+pub struct RemoteExtractRequest {
+    pub items: Vec<RemoteExtractRequestItem>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RemoteExtractRequestItem {
-    pub(crate) index: usize,
-    pub(crate) requested_url: String,
+pub struct RemoteExtractRequestItem {
+    pub index: usize,
+    pub requested_url: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RemoteExtractItem {
-    pub(crate) index: usize,
-    pub(crate) requested_url: String,
-    pub(crate) final_url: Option<String>,
-    pub(crate) title: Option<String>,
-    pub(crate) markdown: String,
-    pub(crate) source_truncated: bool,
+pub struct RemoteExtractItem {
+    pub index: usize,
+    pub requested_url: String,
+    pub final_url: Option<String>,
+    pub title: Option<String>,
+    pub markdown: String,
+    pub source_truncated: bool,
 }
 
 #[derive(Debug)]
-pub(crate) struct RemoteExtractBatch {
-    pub(crate) items: Vec<RemoteExtractItem>,
-    pub(crate) diagnostics: RemoteFetchDiagnostics,
+pub struct RemoteExtractBatch {
+    pub items: Vec<RemoteExtractItem>,
+    pub diagnostics: RemoteFetchDiagnostics,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RemoteFetchDiagnostics {
-    pub(crate) dropped_item_count: usize,
-    pub(crate) unmatched_item_count: usize,
-    pub(crate) used_text_fallback: bool,
+pub struct RemoteFetchDiagnostics {
+    pub dropped_item_count: usize,
+    pub unmatched_item_count: usize,
+    pub used_text_fallback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RemoteExtractError {
+pub enum RemoteExtractError {
     Timeout,
     Network,
     Unauthorized,
@@ -72,15 +72,21 @@ pub(crate) enum RemoteExtractError {
 }
 
 #[async_trait]
-pub(crate) trait RemoteExtractFallback: Send + Sync {
+pub trait RemoteExtractFallback: Send + Sync {
     async fn extract_batch(
         &self,
         request: RemoteExtractRequest,
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError>;
+
+    fn is_remote_warm(&self) -> bool {
+        false
+    }
+
+    fn mark_remote_success(&self) {}
 }
 
-pub(crate) struct ParallelFetchAdapter {
+pub struct ParallelFetchAdapter {
     client: Arc<ParallelMcpClient>,
     discovery: Mutex<Option<Result<(), FetchCompatibilityError>>>,
 }
@@ -127,6 +133,14 @@ impl ParallelFetchAdapter {
 
 #[async_trait]
 impl RemoteExtractFallback for ParallelFetchAdapter {
+    fn is_remote_warm(&self) -> bool {
+        self.client.is_remote_warm()
+    }
+
+    fn mark_remote_success(&self) {
+        self.client.mark_remote_success();
+    }
+
     async fn extract_batch(
         &self,
         request: RemoteExtractRequest,

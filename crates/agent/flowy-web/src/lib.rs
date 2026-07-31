@@ -6,7 +6,7 @@ pub mod types;
 
 pub use coordinator::{
     ExtractBatchOutcome, ExtractBudget, ExtractCoordinator, ExtractItemOutcome,
-    LocalExtractCoordinator,
+    LocalExtractCoordinator, ManagedExtractCoordinator, RemoteBudgetPolicy,
 };
 pub use tools::{WebExtractTool, WebSearchTool};
 pub use types::*;

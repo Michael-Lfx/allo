@@ -92,12 +92,6 @@ impl HttpExtractProvider {
                 addrs = resolve_validated(&url, self.allow_private).await?;
                 continue;
             }
-            if !status.is_success() {
-                return Err(WebError::Provider(format!(
-                    "fetch failed: HTTP {status} for {url}"
-                )));
-            }
-
             let content_type = response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
@@ -123,6 +117,45 @@ impl HttpExtractProvider {
         req: ExtractRequest,
     ) -> Result<(FetchedResource, ExtractedPage), WebError> {
         let resource = self.fetch_resource(&req.url).await?;
+        if !resource.status.is_success() {
+            return Err(WebError::Provider(format!(
+                "fetch failed: HTTP {} for {}",
+                resource.status, resource.final_url
+            )));
+        }
+        let page = self.page_from_resource(&resource)?;
+        Ok((resource, page))
+    }
+
+    pub async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
+        let requested_url = req.url.clone();
+        match self.fetch_resource(&req.url).await {
+            Err(error) => {
+                let diagnostics = diagnostics_from_web_error(&error);
+                failed_outcome(requested_url, error, diagnostics)
+            }
+            Ok(resource) => {
+                let diagnostics = LocalExtractDiagnostics {
+                    content_type: resource.content_type.clone(),
+                    http_status: Some(resource.status.as_u16()),
+                    body_truncated: resource.body_truncated,
+                };
+                if !resource.status.is_success() {
+                    let error = WebError::Provider(format!(
+                        "fetch failed: HTTP {} for {}",
+                        resource.status, resource.final_url
+                    ));
+                    return failed_outcome(requested_url, error, diagnostics);
+                }
+                match self.page_from_resource(&resource) {
+                    Ok(page) => successful_outcome(requested_url, &resource, page),
+                    Err(error) => failed_outcome(requested_url, error, diagnostics),
+                }
+            }
+        }
+    }
+
+    fn page_from_resource(&self, resource: &FetchedResource) -> Result<ExtractedPage, WebError> {
         let html = String::from_utf8_lossy(&resource.body).into_owned();
         let final_url = resource.final_url.clone();
         let url_str = final_url.as_str();
@@ -158,15 +191,7 @@ impl HttpExtractProvider {
                 extractor: extractor.to_owned(),
             }
         };
-        Ok((resource, page))
-    }
-
-    pub async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
-        let requested_url = req.url.clone();
-        match self.extract_resource(req).await {
-            Ok((resource, page)) => successful_outcome(requested_url, &resource, page),
-            Err(error) => failed_outcome(requested_url, error, LocalExtractDiagnostics::default()),
-        }
+        Ok(page)
     }
 
     async fn send(&self, url: &Url, addrs: &[SocketAddr]) -> Result<reqwest::Response, WebError> {
@@ -225,6 +250,21 @@ fn normalize_content_type(value: &str) -> String {
         .unwrap_or(value)
         .trim()
         .to_ascii_lowercase()
+}
+
+fn diagnostics_from_web_error(error: &WebError) -> LocalExtractDiagnostics {
+    if let WebError::Provider(message) = error {
+        let http_status = message
+            .split("HTTP ")
+            .nth(1)
+            .and_then(|part| part.split(' ').next())
+            .and_then(|status| status.parse().ok());
+        return LocalExtractDiagnostics {
+            http_status,
+            ..LocalExtractDiagnostics::default()
+        };
+    }
+    LocalExtractDiagnostics::default()
 }
 
 #[async_trait]
@@ -524,5 +564,28 @@ mod tests {
     fn normalizes_content_type_without_parameters() {
         assert_eq!(normalize_content_type("text/html; charset=utf-8"), "text/html");
         assert_eq!(normalize_content_type("  APPLICATION/PDF "), "application/pdf");
+    }
+
+    #[tokio::test]
+    async fn extract_with_metadata_preserves_http_failure_diagnostics() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(404)
+                    .insert_header("content-type", "text/html")
+                    .set_body_bytes("<html>not found</html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let outcome = provider
+            .extract_with_metadata(ExtractRequest {
+                url: server.uri(),
+            })
+            .await;
+        assert!(outcome.result.is_err());
+        assert_eq!(outcome.diagnostics.http_status, Some(404));
+        assert_eq!(outcome.diagnostics.content_type.as_deref(), Some("text/html"));
     }
 }
