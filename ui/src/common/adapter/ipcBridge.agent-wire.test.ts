@@ -25,4 +25,9 @@ describe('agent metadata wire ID contract', () => {
     expect(bridgeSource.includes('/api/agents/custom/${p.id}')).toBe(false);
     expect(bridgeSource.includes('/api/agents/${p.id}/enabled')).toBe(false);
   });
+
+  test('maps refreshed agent metadata instead of discarding the response', () => {
+    expect(bridgeSource.includes("httpPost<AgentMetadata[], void>('/api/agents/refresh')")).toBe(true);
+    expect(bridgeSource.includes('(agents) => agents.map(fromApiAgentMetadata)')).toBe(true);
+  });
 });

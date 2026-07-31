@@ -19,7 +19,12 @@ import { type AcpModelInfo } from '@/common/types/platform/acpTypes';
 import { useModelProviderList } from '@renderer/hooks/agent/useModelProviderList';
 import GuidModelSelector from '@renderer/pages/guid/components/GuidModelSelector';
 import { WorkspaceFolderSelect } from '@renderer/components/workspace';
-import { DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents, type AgentMetadata } from '@renderer/utils/model/agentTypes';
+import {
+  DETECTED_AGENTS_SWR_KEY,
+  DETECTED_AGENTS_SWR_OPTIONS,
+  fetchDetectedAgents,
+  type AgentMetadata,
+} from '@renderer/utils/model/agentTypes';
 import { createCronSchedule, getCurrentCronTimeZone } from '@renderer/pages/cron/cronUtils';
 import { useAllCronJobs } from '@renderer/pages/cron/useCronJobs';
 import { getConversationCreateErrorMessage } from '@renderer/pages/conversation/utils/conversationCreateError';
@@ -202,7 +207,11 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
     return presetId;
   }, [editJob?.metadata.agent_config?.preset_id, presetPresets]);
 
-  const { data: detectedAgents } = useSWR<AgentMetadata[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
+  const { data: detectedAgents } = useSWR<AgentMetadata[]>(
+    DETECTED_AGENTS_SWR_KEY,
+    fetchDetectedAgents,
+    DETECTED_AGENTS_SWR_OPTIONS
+  );
 
   // Populate form when entering edit mode
   useEffect(() => {

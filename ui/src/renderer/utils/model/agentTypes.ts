@@ -6,6 +6,14 @@ import type { AgentId } from '@/common/types/ids';
 /** SWR key for agent metadata rows (from `/api/agents`). */
 export const DETECTED_AGENTS_SWR_KEY = 'agents.detected';
 
+/**
+ * The app shell prefetches this snapshot before rendering consumers. Fetch
+ * when the cache is empty, but do not immediately re-fetch an existing seed.
+ */
+export const DETECTED_AGENTS_SWR_OPTIONS = {
+  revalidateIfStale: false,
+};
+
 /** Type of an agent. */
 export type AgentType = 'acp' | 'remote' | 'nomi' | 'openclaw-gateway' | 'nanobot';
 
@@ -102,10 +110,5 @@ export type AgentMetadata = {
 
 /** Shared fetcher for DETECTED_AGENTS_SWR_KEY — single source of truth. */
 export async function fetchDetectedAgents(): Promise<AgentMetadata[]> {
-  try {
-    return await ipcBridge.acpConversation.getAvailableAgents.invoke();
-  } catch {
-    // fallback to empty
-  }
-  return [];
+  return await ipcBridge.acpConversation.getAvailableAgents.invoke();
 }

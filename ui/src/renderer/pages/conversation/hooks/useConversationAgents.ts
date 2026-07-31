@@ -6,7 +6,11 @@ import {
   fetchPresetCatalog,
   PRESET_CATALOG_SWR_KEY,
 } from '@/renderer/hooks/preset/presetCatalog';
-import { DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents } from '@/renderer/utils/model/agentTypes';
+import {
+  DETECTED_AGENTS_SWR_KEY,
+  DETECTED_AGENTS_SWR_OPTIONS,
+  fetchDetectedAgents,
+} from '@/renderer/utils/model/agentTypes';
 import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
 
 export type UseConversationAgentsResult = {
@@ -33,7 +37,7 @@ export const useConversationAgents = (): UseConversationAgentsResult => {
     data: cliAgents,
     isLoading: isLoadingAgents,
     mutate,
-  } = useSWR<AgentMetadata[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
+  } = useSWR<AgentMetadata[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents, DETECTED_AGENTS_SWR_OPTIONS);
 
   const {
     data: presetCatalog,

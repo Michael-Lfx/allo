@@ -1,6 +1,5 @@
 
 
-import { ipcBridge } from '@/common';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
 import { useAgents } from '@/renderer/hooks/agent/useAgents';
@@ -78,7 +77,7 @@ export const useCustomAgentsLoader = ({
   // Execution-engine rows come from the shared agents cache — every subscriber
   // (guid / conversation / settings / channels / MCP flows) reads through the
   // same `DETECTED_AGENTS_SWR_KEY` so we make at most one network request.
-  const { agents, revalidate } = useAgents();
+  const { agents, revalidate, refreshCustomAgents: refreshDetectedAgents } = useAgents();
   const customAgents = useMemo(
     () => agents.filter((a) => a.agent_source === 'custom' && availableCustomAgentIds.has(a.agent_id)),
     [agents, availableCustomAgentIds]
@@ -96,17 +95,17 @@ export const useCustomAgentsLoader = ({
   }, [presets, customAgents]);
 
   // Explicit refresh — used by "switch preset agent type" and the settings
-  // refresh button. Not triggered on mount; we rely on the backend's hydration
-  // + SWR's revalidate-on-focus to keep the list fresh without the old
-  // `useEffect → POST /refresh` loop that fired on every GuidPage mount.
+  // refresh button. Availability probing is scheduled once by the app shell
+  // after it becomes interactive and again on focus/visibility, while SWR
+  // focus revalidation only refreshes the cached registry snapshot.
   const refreshCustomAgents = useCallback(async () => {
     try {
-      await ipcBridge.acpConversation.refreshCustomAgents.invoke();
+      await refreshDetectedAgents();
     } catch (error) {
       console.error('Failed to refresh custom agents:', error);
+      await revalidate();
     }
-    await revalidate();
-  }, [revalidate]);
+  }, [refreshDetectedAgents, revalidate]);
 
   return {
     presets,

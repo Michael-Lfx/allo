@@ -7,7 +7,12 @@ import type { IResponseMessage } from '@/common/adapter/ipcBridge';
 import type { TChatConversation } from '@/common/config/storage';
 import type { AcpModelInfo } from '@/common/types/platform/acpTypes';
 import { savePreferredModelId } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
-import { DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents, type AgentMetadata } from '@/renderer/utils/model/agentTypes';
+import {
+  DETECTED_AGENTS_SWR_KEY,
+  DETECTED_AGENTS_SWR_OPTIONS,
+  fetchDetectedAgents,
+  type AgentMetadata,
+} from '@/renderer/utils/model/agentTypes';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import useSWR, { mutate as mutateGlobal } from 'swr';
 
@@ -143,7 +148,11 @@ export const useAcpModelInfo = ({
     [mutateModelInfo]
   );
 
-  const { data: agentsData } = useSWR<AgentMetadata[]>(enabled ? DETECTED_AGENTS_SWR_KEY : null, fetchDetectedAgents);
+  const { data: agentsData } = useSWR<AgentMetadata[]>(
+    enabled ? DETECTED_AGENTS_SWR_KEY : null,
+    fetchDetectedAgents,
+    DETECTED_AGENTS_SWR_OPTIONS
+  );
   const handshakeModelInfo = useMemo<AcpModelInfo | null>(() => {
     if (!backend || !agentsData?.length) return null;
     const matched = agentsData.find((a) => (a.backend ?? a.agent_type) === backend);

@@ -2,39 +2,37 @@
 
 import { ipcBridge } from '@/common';
 import type { AgentMetadata } from '@/renderer/utils/model/agentTypes';
-import { DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents } from '@/renderer/utils/model/agentTypes';
-import { useCallback, useEffect } from 'react';
+import {
+  DETECTED_AGENTS_SWR_KEY,
+  DETECTED_AGENTS_SWR_OPTIONS,
+  fetchDetectedAgents,
+} from '@/renderer/utils/model/agentTypes';
+import {
+  AGENT_AUTO_REFRESH_MIN_INTERVAL_MS,
+  createAgentRefreshScheduler,
+  refreshAgentAvailability,
+} from './agentDetectionRefresh';
+import { useCallback } from 'react';
 import useSWR, { mutate } from 'swr';
 
-const AGENT_AUTO_REFRESH_MIN_INTERVAL_MS = 30_000;
-
-let lastAgentAutoRefreshAt = 0;
-let agentAutoRefreshPromise: Promise<void> | null = null;
-
 async function refreshDetectedAgentsCache(): Promise<void> {
-  await ipcBridge.acpConversation.refreshCustomAgents.invoke();
-  await mutate(DETECTED_AGENTS_SWR_KEY);
+  await refreshAgentAvailability({
+    refreshSnapshot: () => ipcBridge.acpConversation.refreshCustomAgents.invoke(),
+    replaceCachedSnapshot: (agents) => mutate(DETECTED_AGENTS_SWR_KEY, agents, { revalidate: false }),
+  });
 }
 
-export async function refreshDetectedAgentsIfStale(): Promise<void> {
-  const now = Date.now();
-  if (agentAutoRefreshPromise) {
-    return agentAutoRefreshPromise;
-  }
-  if (lastAgentAutoRefreshAt > 0 && now - lastAgentAutoRefreshAt < AGENT_AUTO_REFRESH_MIN_INTERVAL_MS) {
-    return;
-  }
-
-  lastAgentAutoRefreshAt = now;
-  agentAutoRefreshPromise = refreshDetectedAgentsCache()
-    .catch((error) => {
-      console.error('Failed to refresh detected agents:', error);
-    })
-    .finally(() => {
-      agentAutoRefreshPromise = null;
-    });
-  return agentAutoRefreshPromise;
-}
+/**
+ * Re-probe agent commands at most once per interval. The app shell schedules
+ * this after it becomes interactive; consumers must not call it during mount.
+ */
+export const refreshDetectedAgentsIfStale = createAgentRefreshScheduler({
+  task: refreshDetectedAgentsCache,
+  intervalMs: AGENT_AUTO_REFRESH_MIN_INTERVAL_MS,
+  onError: (error) => {
+    console.error('Failed to refresh detected agents:', error);
+  },
+});
 
 export type UseAgentsResult = {
   agents: AgentMetadata[];
@@ -42,7 +40,7 @@ export type UseAgentsResult = {
   error: unknown;
   /** Force re-fetch of `/api/agents` and broadcast to all subscribers. */
   revalidate: () => Promise<AgentMetadata[] | undefined>;
-  /** POST `/api/agents/refresh` then revalidate — use this for explicit "refresh" buttons. */
+  /** POST `/api/agents/refresh` then replace the shared cache — use for explicit refresh buttons. */
   refreshCustomAgents: () => Promise<void>;
 };
 
@@ -54,13 +52,13 @@ export type UseAgentsResult = {
  * same `DETECTED_AGENTS_SWR_KEY`.
  */
 export const useAgents = (): UseAgentsResult => {
-  const { data, isLoading, error } = useSWR<AgentMetadata[]>(DETECTED_AGENTS_SWR_KEY, fetchDetectedAgents);
+  const { data, isLoading, error } = useSWR<AgentMetadata[]>(
+    DETECTED_AGENTS_SWR_KEY,
+    fetchDetectedAgents,
+    DETECTED_AGENTS_SWR_OPTIONS
+  );
   const revalidate = useCallback(() => mutate<AgentMetadata[]>(DETECTED_AGENTS_SWR_KEY), []);
   const refreshCustomAgents = useCallback(refreshDetectedAgentsCache, []);
-
-  useEffect(() => {
-    void refreshDetectedAgentsIfStale();
-  }, []);
 
   return {
     agents: data ?? [],
