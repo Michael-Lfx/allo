@@ -20,3 +20,10 @@ fn managed_web_handle_supports_ddg_only_fallback() {
     let handle = ManagedWebHandle::ddg_only().expect("offline construction");
     assert!(handle.extract_coordinator().is_none());
 }
+
+#[tokio::test]
+async fn managed_web_shutdown_is_idempotent() {
+    let handle = ManagedWebHandle::keyless_default(false).expect("offline construction");
+    handle.shutdown().await;
+    handle.shutdown().await;
+}
