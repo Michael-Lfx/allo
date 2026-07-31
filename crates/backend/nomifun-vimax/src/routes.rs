@@ -14,7 +14,7 @@ use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomi_vimax::CameoUpdate;
-use nomifun_api_types::ApiResponse;
+use nomifun_api_types::{ApiResponse, TvShowPublishSessionRequest};
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
 
@@ -57,6 +57,21 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
             "/api/vimax/sessions/{id}/cameos/{cameo_id}/file",
             get(get_cameo_file),
         )
+        .route(
+            "/api/vimax/sessions/{id}/tv-show/publish",
+            post(publish_session_to_tv_show),
+        )
+        .route("/api/vimax/tv-show/list", get(tv_show_list))
+        .route("/api/vimax/tv-show/mine", get(tv_show_mine))
+        .route(
+            "/api/vimax/tv-show/{id}",
+            get(tv_show_detail).delete(tv_show_delete),
+        )
+        .route(
+            "/api/vimax/tv-show/{id}/like",
+            post(tv_show_like).delete(tv_show_unlike),
+        )
+        .route("/api/vimax/tv-show/{id}/import", post(import_tv_show))
         .with_state(state)
         .merge(cameo_upload)
 }
@@ -430,4 +445,101 @@ async fn get_cameo_file(
         .header(header::CACHE_CONTROL, "private, max-age=60")
         .body(Body::from(bytes))
         .map_err(|e| AppError::Internal(e.to_string()))?)
+}
+
+async fn publish_session_to_tv_show(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Option<Json<TvShowPublishSessionRequest>>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowPublishResponse>>, AppError> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let result = state.service.publish_session_to_tv_show(&id, req).await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TvShowListQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    workflow: Option<String>,
+    keyword: Option<String>,
+    sort: Option<String>,
+    status: Option<String>,
+}
+
+async fn tv_show_list(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    axum::extract::Query(query): axum::extract::Query<TvShowListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .tv_show_list(
+                query.page,
+                query.page_size,
+                query.workflow,
+                query.keyword,
+                query.sort,
+            )
+            .await?,
+    )))
+}
+
+async fn tv_show_mine(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    axum::extract::Query(query): axum::extract::Query<TvShowListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .tv_show_mine(query.page, query.page_size, query.status)
+            .await?,
+    )))
+}
+
+async fn tv_show_detail(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowVideo>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.tv_show_detail(id).await?)))
+}
+
+async fn tv_show_like(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowLikeResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.tv_show_like(id).await?)))
+}
+
+async fn tv_show_unlike(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowLikeResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.tv_show_unlike(id).await?,
+    )))
+}
+
+async fn tv_show_delete(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.tv_show_delete(id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn import_tv_show(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomi_vimax::SessionRecord>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.import_tv_show(id).await?)))
 }

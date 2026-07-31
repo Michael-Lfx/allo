@@ -5899,6 +5899,7 @@ dependencies = [
  "nomifun-common",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -6860,11 +6861,13 @@ dependencies = [
  "nomifun-auth",
  "nomifun-cloud",
  "nomifun-common",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
  "tower-http",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

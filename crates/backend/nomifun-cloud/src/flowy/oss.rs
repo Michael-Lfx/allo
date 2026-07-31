@@ -10,6 +10,16 @@ use super::FlowyApiClient;
 
 /// Default presign TTL (15 minutes); matches server default.
 const DEFAULT_PRESIGN_EXPIRES_SECS: u64 = 900;
+/// Longer TTL for large `.nomivimax` packages.
+const PACKAGE_PRESIGN_EXPIRES_SECS: u64 = 3600;
+
+/// Result of a completed OSS presign + PUT.
+#[derive(Debug, Clone)]
+pub struct OssUploadResult {
+    pub public_url: String,
+    pub object_key: Option<String>,
+    pub byte_size: u64,
+}
 
 impl FlowyApiClient {
     /// `POST {业务根}/uploads/oss/presignPut` — JWT only (not API Key).
@@ -37,6 +47,21 @@ impl FlowyApiClient {
         file_name: &str,
         content_type: &str,
     ) -> Result<String, ServerClientError> {
+        Ok(self
+            .upload_bytes_via_oss_detailed(session, bytes, file_name, content_type, None)
+            .await?
+            .public_url)
+    }
+
+    /// Presign + PUT; returns `publicUrl`, optional `objectKey`, and byte size.
+    pub async fn upload_bytes_via_oss_detailed(
+        &self,
+        session: &ServerSession,
+        bytes: &[u8],
+        file_name: &str,
+        content_type: &str,
+        expires_seconds: Option<u64>,
+    ) -> Result<OssUploadResult, ServerClientError> {
         if bytes.is_empty() {
             return Err(ServerClientError::InvalidResponse(
                 "refusing OSS upload of empty body".into(),
@@ -54,7 +79,7 @@ impl FlowyApiClient {
         };
 
         let presign = self
-            .presign_oss_put(session, file_name, content_type, None)
+            .presign_oss_put(session, file_name, content_type, expires_seconds)
             .await?;
 
         let public_url = presign
@@ -69,9 +94,37 @@ impl FlowyApiClient {
             })?
             .to_string();
 
+        let object_key = presign
+            .object_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
         self.put_presigned_object(&presign, content_type, bytes)
             .await?;
-        Ok(public_url)
+        Ok(OssUploadResult {
+            public_url,
+            object_key,
+            byte_size: bytes.len() as u64,
+        })
+    }
+
+    /// Upload a large package (e.g. `.nomivimax`) with a longer presign TTL.
+    pub async fn upload_package_via_oss(
+        &self,
+        session: &ServerSession,
+        bytes: &[u8],
+        file_name: &str,
+    ) -> Result<OssUploadResult, ServerClientError> {
+        self.upload_bytes_via_oss_detailed(
+            session,
+            bytes,
+            file_name,
+            "application/zip",
+            Some(PACKAGE_PRESIGN_EXPIRES_SECS),
+        )
+        .await
     }
 
     /// HTTP PUT to the presigned URL with `requiredHeaders` (no Flowy auth injection).
