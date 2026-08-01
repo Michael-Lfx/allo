@@ -19,7 +19,7 @@ pub use models::{
     AgentExecutionStepDependencyRow, AgentExecutionStepDetailRow, AgentExecutionStepRow,
     AgentExecutionTemplateDetailRows, AgentExecutionTemplateParticipantRow,
     AgentExecutionTemplateRow,
-    AgentMetadataRow, ConnectorCredentialRow,
+    AgentMetadataRow,
     ConversationArtifactRow, IdmmActionReservationRow,
     CreateKnowledgeTagParams, CreationTaskRow, CronJobRunRow, CronRunReservationRow,
     KnowledgeBaseRow, KnowledgeBindingRow,
@@ -37,12 +37,20 @@ pub use models::{
     UpdatePresetTagParams, UpsertPresetStateParams,
 };
 pub use models::{
+    CsAgentRow, CsAuditEventRow, CsChannelBindingRow, CsDialogueRow, CsMessageRow, CsNoteRow,
+    NewCsAgentRow,
+};
+pub use models::{
     NewProviderModel, ProviderConnectionRow, ProviderModelRow, ProviderModelUpdate,
     UpsertProviderConnectionParams,
 };
 pub use models::GoalRow;
 pub use repository::{IGoalRepository, SqliteGoalRepository, UpsertGoalParams};
 pub use repository::channel::UpdatePluginStatusParams;
+pub use repository::customer_service::{
+    CsDialogueKey, ICustomerServiceRepository, UpdateCsAgentParams,
+};
+pub use repository::SqliteCustomerServiceRepository;
 pub use repository::conversation::{
     ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,
     ConversationTurnAdmissionState,
@@ -76,8 +84,9 @@ pub use repository::{
     RetryAgentExecutionStep, SettleAgentExecutionAttemptParams, UpdateAgentExecutionParams,
     CreateAcpSessionParams, CreateTerminalParams, IAcpSessionRepository,
     IAgentMetadataRepository, IAttachmentRepository, ChannelInboundClaim,
-    IChannelRepository, SettleChannelInboundReceiptParams,
-    IClientPreferenceRepository, ICompanionTokenRepository, IConnectorCredentialRepository,
+    IChannelRepository, PENDING_PROMPT_EXPIRY_MS, PENDING_PROMPT_QUEUE_LIMIT,
+    PendingPromptEnqueue, SettleChannelInboundReceiptParams,
+    IClientPreferenceRepository, ICompanionTokenRepository,
     IConversationRepository, ICronRepository, IIdmmInterventionRepository,
     IdmmActionReservationKey, IdmmActionReserveResult, IdmmActionSettleResult,
     IdmmActionSettlement, IdmmActionTurnIdentity, IKnowledgeRepository,
@@ -93,7 +102,7 @@ pub use repository::{
     SqliteAgentExecutionRepository,
     SqliteAgentExecutionTemplateRepository,
     SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteCompanionTokenRepository,
-    SqliteConnectorCredentialRepository, SqliteConversationRepository, SqliteCronRepository,
+    SqliteConversationRepository, SqliteCronRepository,
     SqliteIdmmInterventionRepository, SqliteKnowledgeRepository, SqliteMcpServerRepository,
     SqliteOAuthTokenRepository,
     SqliteProviderConnectionRepository, SqliteProviderModelRepository, SqliteProviderRepository,

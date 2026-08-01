@@ -1,4 +1,4 @@
-# 以桌面应用方式运行 Flowy
+# 以桌面应用方式运行 NomiFun
 
 桌面应用 (`nomifun-desktop`) 是一个 [Tauri](https://tauri.app/) 外壳，**在同一进程内**链接 Rust 后端 (`nomifun-app`)。这里没有派生的后端二进制，没有 Electron，也没有捆绑的 `nomicore`。外壳在一个空闲的 `127.0.0.1` 端口上将后端启动为异步任务，然后将打包好的 SPA (`ui/dist`) 加载进 WebView，并使其指向 `http://127.0.0.1:<port>/api`。
 
@@ -8,7 +8,7 @@
 [WebUI 远程访问](./webui-remote-access.zh.md)（应用内功能），或
 [自托管 Web 服务器](./web-server-deployment.zh.md)（独立服务器）。
 
-![Flowy 桌面主窗口](../images/desktop-01-main-window.png)
+![NomiFun 桌面主窗口](../images/desktop-01-main-window.png)
 
 ## 快速开始
 
@@ -16,7 +16,7 @@
 
 桌面应用需要：
 
-- 受支持的平台：**Windows 10 版本 1803（build 17134）及以上**、macOS 11+、主流 Linux 发行版。Windows 7 / 8 / 8.1 **不受支持**——参见[疑难排查](../reference/troubleshooting.zh.md#安装时报无法定位程序输入点-getpackagesbypackagefamily)。
+- Tauri 支持的平台 (Windows 10+、macOS 11+、主流 Linux 发行版)。
 - WebView 运行时：Windows 上的 **WebView2** (Win 11 预装；Win 10 上请安装 [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/))，macOS 上的 **WKWebView** (内置)，Linux 上的 **WebKitGTK** (`libwebkit2gtk-4.1-0`)。
 - 用于开发：Rust 工具链、[Bun](https://bun.sh) ≥ 1.3.13，以及对应平台的 Tauri 构建依赖 (参见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/))。
 
@@ -45,11 +45,11 @@ bun run build
 $ bun run build
    Compiling nomifun-app v0.1.0
     Finished `release` profile [optimized] target(s)
-    Bundling Flowy.app (macos)
-    Bundling Flowy_0.1.0_aarch64.dmg (macos)
+    Bundling NomiFun.app (macos)
+    Bundling NomiFun_0.1.0_aarch64.dmg (macos)
     Finished 2 bundles at:
-      target/release/bundle/macos/Flowy.app
-      target/release/bundle/dmg/Flowy_0.1.0_aarch64.dmg
+      target/release/bundle/macos/NomiFun.app
+      target/release/bundle/dmg/NomiFun_0.1.0_aarch64.dmg
 ```
 
 ## 窗口与标题栏
@@ -58,7 +58,7 @@ $ bun run build
 
 - 默认尺寸：`1280 × 832`，最小 `880 × 600`。
 - 各处都可调整大小 (即使没有 OS 绘制的装饰，Windows 上的边缘调整和 Snap 仍然可用)。
-- 标题栏：`Flowy`。
+- 标题栏：`NomiFun`。
 
 > 窗口边框因系统而异：Windows / Linux 上是带应用内控件的无边框标题栏，macOS
 > 上保留原生红绿灯按钮（内容延伸至 `Overlay` 栏下）。
@@ -83,17 +83,17 @@ $ bun run build
 
 ## 数据存储位置
 
-桌面应用将 SQLite 数据库、agent 状态、日志和 Bun 运行时缓存持久化到按用户的应用数据目录下 —— Windows 上是 **`%LOCALAPPDATA%\Flowy\Nomi`**，macOS 上是 **`~/Library/Application Support/Flowy/Nomi`**，Linux 上是 **`$XDG_DATA_HOME/Flowy/Nomi`** (由共享的 `nomifun_app::cli::default_data_dir()` 解析)。同一 build channel 的宿主共享默认目录；开发脚本改用隔离的同级目录 `Nomi-dev`。开发环境需要 stable 状态副本时可运行 `bun run seed:dev`。当前目录或旧根目录中的 pre-v3 数据集会整体退役；其中的产品行不会搬入 v3。
+已安装桌面应用将 SQLite 数据库、agent 状态、日志和 Bun 运行时缓存持久化到 stable 的按用户应用数据目录下 —— Windows 上是 **`%LOCALAPPDATA%\NomiFun`**，macOS 上是 **`~/Library/Application Support/NomiFun`**，Linux 上是 **`$XDG_DATA_HOME/NomiFun`**（由 `nomifun_app::cli::default_data_dir()` 解析）。同一 build channel 的宿主共享默认目录；开发脚本改用隔离的同级目录 `NomiFun-dev`。开发环境需要 stable 状态副本时可运行 `bun run seed:dev`。
 
-在启动应用前设置 `NOMIFUN_DATA_DIR=<absolute path>`，数据目录就会变为 `$NOMIFUN_DATA_DIR/Nomi`。后端启动时会对数据目录取排他的 `server.lock`；若启动失败 (例如该目录已被另一个实例占用)，桌面外壳会弹出原生错误对话框并退出。
+在启动应用前设置 `NOMIFUN_DATA_DIR=<absolute path>`，该路径**就是**数据目录——所有宿主都按字面值使用，不附加 `/Nomi` 后缀。后端启动时会对数据目录取排他的 `server.lock`；若启动失败 (例如该目录已被另一个实例占用)，桌面外壳会弹出原生错误对话框并退出。
 
-> 旧版本默认使用 `<system temp>/nomifun-data/Nomi`。在那里发现的安装会在启动时自动迁移到按用户位置 (一次性)：数据被复制，数据库中存储的绝对路径会被改写，旧目录保留作为备份。可再生的缓存 (解压出的 Bun 运行时、日志、浏览器配置 …) 不会带过去 —— 它们会在首次使用时重建。
+> 旧版本把数据存在 `NomiFun/Nomi` 下 (dev 为 `NomiFun/Nomi-dev`；更早为 `<system temp>/nomifun-data/Nomi`)。升级后首次启动时，一次性的自动迁移会把这类遗留数据集搬入新的数据根。迁移是抗崩溃的，中断后会在下次启动续跑；若旧应用实例仍在运行，则推迟到下次启动。数据库中存储的绝对路径 (知识库根目录、终端 cwd、自定义工作区) 会在搬迁后一次性改写。
 
 要重新开始，**退出应用**并删除该目录。要迁移，将该目录复制到新机器上即可。
 
 ```text
-~/Library/Application Support/Flowy/Nomi/    # macOS（Windows/Linux 路径见上文）
-├── flowy-backend.db        # SQLite 状态（会话、设置、session 等）
+~/Library/Application Support/NomiFun/    # macOS（Windows/Linux 路径见上文）
+├── nomifun-backend.db        # SQLite 状态（会话、设置、session 等）
 ├── logs/                     # nomicore.log
 ├── companion/                # 伙伴 + 共享记忆中枢
 ├── knowledge/                # 受管理的知识库
@@ -118,19 +118,16 @@ $ bun run build
 
 ## 更新器状态
 
-Tauri 更新器插件 (`tauri-plugin-updater`) 已接入；渲染进程可
-`invoke('check_for_updates')`（有新版本返回版本字符串，否则 `null`）。
+Tauri 更新器插件 (`tauri-plugin-updater`) 已接入，渲染进程暴露了 `invoke('check_for_updates')` (返回新版本字符串，若已是最新则返回 `null`)。然而：
 
-- **OTA 真源**：`apps/desktop/tauri.conf.json` 的 endpoint 指向 ModelScope
-  `allo/channels/alpha/latest.json`（pubkey keyID `E0F1394F8E92CE41`）。
-- 发版、产物命名（`Flowy_` 前缀）、多平台合并与上传见根目录
-  [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)。
-- `bun run build:updater` / 各平台 `build:* --config apps/desktop/tauri.updater.conf.json`
-  会产出带 `.sig` 的更新包。
+- 在 `apps/desktop/tauri.conf.json` 中配置的端点 (`plugins.updater.endpoints`) 是一个**占位符** (`https://REPLACE-WITH-YOUR-HOST/...`)。在你将其替换为一个提供已签名的 `latest.json` 的真实 HTTPS URL 之前，更新器检查会失败。
+- 包含的 `pubkey` 是一个为本地测试生成的**开发密钥**。**在任何公开发布前请替换它**，并将私钥存储在 CI 密钥中。
+- `bun run build:updater` 会生成已签名的更新构件 (在每个安装器旁边附带 `.sig` 文件)。
 
-OS 代码签名是另一层：macOS 见 `bun run build:signed` 与
-`apps/desktop/signing/README.md`；Windows Authenticode 见
-`WINDOWS_CERTIFICATE_THUMBPRINT` + `build:win --signed` / `release:win`。
+完整 updater 流程（签名环境变量、`latest.json` schema、支持的平台键）在
+`apps/desktop/updater/README.md` 中。OS 级别代码签名/公证是另一层：macOS
+Developer ID 签名与公证已通过 `bun run build:signed` 和
+`apps/desktop/signing/README.md` 接好；Windows 签名仍需要外部代码签名证书。
 
 ## 故障排查
 
@@ -138,7 +135,7 @@ OS 代码签名是另一层：macOS 见 `bun run build:signed` 与
 确保已安装 WebView 运行时 (Windows 10 上的 WebView2 需要 Evergreen Bootstrapper)。在 Linux 上需要 `libwebkit2gtk-4.1-0`。
 
 **"Failed to bind backend port"。**
-另一个进程占用了 `127.0.0.1` 临时端口。后端会尝试 `pick_free_port()`，失败时回退到 `8799` —— 退出任何其他 Flowy 实例后再试。
+另一个进程占用了 `127.0.0.1` 临时端口。后端会尝试 `pick_free_port()`，失败时回退到 `8799` —— 退出任何其他 NomiFun 实例后再试。
 
 **Agent 命令失败并报 `bun: command not found`。**
 Agent 引擎会派生 Bun 作为子进程来执行工具。请安装 Bun (`curl -fsSL https://bun.sh/install | bash`) 并确保它在系统 `PATH` 上，或者使用 `NOMIFUN_EMBED_BUN=1` 构建桌面包以将其嵌入。

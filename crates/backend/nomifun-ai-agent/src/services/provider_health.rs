@@ -104,7 +104,8 @@ impl ProviderHealthCheckService {
             });
 
         if task == ModelTask::Chat {
-            let config = self.resolve_probe_config(&row, model)?;
+            let protocol = profile.as_ref().and_then(|p| p.protocol.as_deref());
+            let config = self.resolve_probe_config(&row, model, protocol)?;
             let response = if should_use_openai_model_probe(&row.platform, &config) {
                 run_openai_model_probe(
                     persisted_provider_id,
@@ -180,9 +181,10 @@ impl ProviderHealthCheckService {
         &self,
         row: &Provider,
         model_id: &str,
+        protocol: Option<&str>,
     ) -> Result<NomiResolvedConfig, AppError> {
         let api_key = nomifun_common::decrypt_string(&row.api_key_encrypted, &self.encryption_key)?;
-        let provider = map_nomi_provider(&row.platform, model_id, row.model_protocols.as_deref());
+        let provider = map_nomi_provider(&row.platform, protocol);
         let (base_url, compat_overrides) =
             resolve_nomi_url_and_compat(&row.platform, &row.base_url, &provider, row.is_full_url);
         let bedrock_config = if row.platform == "bedrock" {
@@ -920,12 +922,10 @@ mod tests {
                 api_key_encrypted: &encrypted,
                 models: "[]",
                 enabled: true,
-                capabilities: "[]",
                 model_context_limits: None,
                 model_protocols: None,
                 model_descriptions: None,
                 model_enabled: None,
-                model_health: None,
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: None,
@@ -1117,12 +1117,10 @@ mod tests {
                 api_key_encrypted: "enc",
                 models: "[]",
                 enabled: true,
-                capabilities: "[]",
                 model_context_limits: None,
                 model_protocols: None,
                 model_descriptions: None,
                 model_enabled: None,
-                model_health: None,
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: None,

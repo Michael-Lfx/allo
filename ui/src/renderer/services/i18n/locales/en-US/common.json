@@ -1,15 +1,12 @@
 {
   "siderSection": {
-    "common": "Start",
-    "publicService": "Public Service",
+    "common": "Common",
+    "services": "Services",
     "data": "Data",
     "automation": "Automation",
-    "config": "Config",
     "tools": "Tools",
     "settings": "Settings"
   },
-  "navExpand": "Expand app navigation",
-  "navCollapse": "Hide Sidebar",
   "send": "Send",
   "cancel": "Cancel",
   "save": "Save",
@@ -19,7 +16,7 @@
   "folder": "Folder",
   "filePicker": {
     "recent": "Recent",
-    "chooseDifferentFolder": "Open Folder"
+    "chooseDifferentFolder": "Choose a different folder"
   },
   "upload": "Upload",
   "model": "Model",
@@ -64,6 +61,7 @@
   "deleteFailed": "Failed to delete",
   "default": "Default",
   "defaultModel": "Default Model",
+  "modelUnavailableHint": "The selected model is no longer available. Please pick another one.",
   "escToCancel": "esc to cancel",
   "create": "Create",
   "createSuccess": "Created successfully",
@@ -77,10 +75,10 @@
   "historyBack": "Back",
   "more": "More",
   "refresh": "Refresh",
-  "tray.showWindow": "Show Flowy",
+  "tray.showWindow": "Show NomiFun",
   "tray.newChat": "New Chat",
   "tray.closeToTray": "Hide to Tray",
-  "tray.about": "About Flowy",
+  "tray.about": "About NomiFun",
   "tray.restart": "Restart App",
   "tray.quit": "Quit",
   "tray.runningTasks": "Running Tasks",
@@ -88,54 +86,15 @@
   "tray.checkUpdate": "Check Update",
   "tray.recentChats": "Recent Chats",
   "tray.untitled": "Untitled",
-  "userMenu": {
-    "creditsBalance": "Credits",
-    "changeSkin": "Appearance",
-    "contactSupport": "Contact support",
-    "contactSupportWithUnread": "Contact support, {{count}} unread replies",
-    "logout": "Sign out",
-    "loadingCredits": "Loading…",
-    "creditsUnavailable": "—"
-  },
-  "supportChat": {
-    "title": "Contact support",
-    "emptyHint": "Describe your issue. Support will reply here after review.",
-    "composerPlaceholder": "Describe your issue…",
-    "addAttachment": "Add attachment",
-    "uploadImage": "Upload image",
-    "uploadLogs": "Upload logs",
-    "uploadLogsConfirm": "Logs are only used for troubleshooting and may include chat history, device information, and similar data",
-    "uploadLogsReady": "Logs uploaded and sent",
-    "uploadLogsFailed": "Failed to pack, upload, or send logs",
-    "uploadLogsDefaultContent": "Attached logs for troubleshooting",
-    "removeLogs": "Remove logs",
-    "attachmentUnavailable": "Attachments are not available yet",
-    "removeImage": "Remove image",
-    "invalidImage": "Only PNG / JPG under 5MB each",
-    "imageLimitReached": "You can upload up to {{count}} images",
-    "uploadImageFailed": "Failed to upload image",
-    "imageMessage": "Image",
-    "send": "Send",
-    "sending": "Sending",
-    "sent": "Delivered",
-    "sendFailed": "Failed to send",
-    "retry": "Retry",
-    "recalled": "Message recalled",
-    "loadingOlder": "Loading earlier messages…",
-    "connectionError": "Unable to reach support right now",
-    "syncWarning": "Message sync interrupted, retrying",
-    "authRequired": "Your login session expired",
-    "relogin": "Sign in again"
-  },
   "backendStartup": {
     "incompatibleRuntime": {
       "title": "This system is not supported by the bundled backend",
-      "description": "Flowy opened, but the local Flowy backend cannot run on this Linux version. Please upgrade to a supported Linux distribution and restart Flowy.",
+      "description": "NomiFun opened, but the local NomiFun backend cannot run on this Linux version. Please upgrade to a supported Linux distribution and restart NomiFun.",
       "requiredVersions": "Required runtime symbols: {{versions}}"
     },
     "incompleteInstallation": {
-      "title": "Flowy installation is incomplete",
-      "description": "This installation is missing required local resources, so Flowy cannot start. Please download and reinstall the latest Flowy. If the issue returns after reinstalling, check whether security or antivirus software quarantined Flowy.",
+      "title": "NomiFun installation is incomplete",
+      "description": "This installation is missing required local resources, so NomiFun cannot start. Please download and reinstall the latest NomiFun. If the issue returns after reinstalling, check whether security or antivirus software quarantined NomiFun.",
       "downloadLatest": "Download latest",
       "sendDiagnostics": "Send diagnostics"
     }

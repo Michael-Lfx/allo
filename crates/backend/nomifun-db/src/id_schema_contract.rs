@@ -25,15 +25,16 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "attachments",
     "channel_inbound_receipts",
     "channel_pairing_codes",
+    "channel_pending_prompts",
     "channel_plugins",
     "channel_session_bindings",
     "channel_sessions",
     "channel_users",
     "client_preferences",
     "companion_access_token",
-    "connector_credentials",
     "conversation_artifacts",
     "conversation_creation_keys",
+    "conversation_delivery_notify",
     "conversation_delivery_receipts",
     "conversation_execution_links",
     "conversation_mcp_servers",
@@ -42,6 +43,12 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "cron_job_runs",
     "cron_run_reservations",
     "cron_jobs",
+    "cs_agents",
+    "cs_audit_events",
+    "cs_channel_bindings",
+    "cs_dialogues",
+    "cs_messages",
+    "cs_notes",
     "goals",
     "idmm_action_reservations",
     "idmm_interventions",
@@ -114,15 +121,19 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("agent_metadata", "agent_id"),
     ("attachments", "attachment_id"),
     ("channel_plugins", "channel_plugin_id"),
+    ("channel_pending_prompts", "prompt_id"),
     ("channel_sessions", "channel_session_id"),
     ("channel_users", "channel_user_id"),
-    ("connector_credentials", "credential_id"),
     ("conversation_artifacts", "conversation_artifact_id"),
     ("conversations", "conversation_id"),
     ("creation_tasks", "creation_task_id"),
     ("cron_job_runs", "cron_job_run_id"),
     ("cron_run_reservations", "cron_job_run_id"),
     ("cron_jobs", "cron_job_id"),
+    ("cs_agents", "cs_agent_id"),
+    ("cs_dialogues", "cs_dialogue_id"),
+    ("cs_messages", "cs_message_id"),
+    ("cs_notes", "cs_note_id"),
     ("idmm_action_reservations", "reservation_id"),
     ("idmm_interventions", "intervention_id"),
     ("knowledge_bases", "knowledge_base_id"),
@@ -179,14 +190,16 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("channel_inbound_receipts", "provider_event_id"),
     ("channel_inbound_receipts", "user_scope_id"),
     ("channel_pairing_codes", "platform_user_id"),
+    ("channel_pending_prompts", "prompt_id"),
+    ("channel_pending_prompts", "chat_id"),
     ("channel_plugins", "channel_plugin_id"),
     ("channel_session_bindings", "chat_id"),
     ("channel_sessions", "channel_session_id"),
     ("channel_sessions", "chat_id"),
     ("channel_users", "channel_user_id"),
     ("channel_users", "platform_user_id"),
-    ("connector_credentials", "credential_id"),
     ("conversation_artifacts", "conversation_artifact_id"),
+    ("conversation_delivery_notify", "operation_id"),
     ("conversation_delivery_receipts", "conversation_id"),
     ("conversation_delivery_receipts", "message_id"),
     ("conversation_delivery_receipts", "operation_id"),
@@ -198,6 +211,11 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("creation_tasks", "creation_task_id"),
     ("creation_tasks", "node_id"),
     ("creation_tasks", "remote_task_id"),
+    ("cs_agents", "cs_agent_id"),
+    ("cs_dialogues", "cs_dialogue_id"),
+    ("cs_dialogues", "chat_id"),
+    ("cs_messages", "cs_message_id"),
+    ("cs_notes", "cs_note_id"),
     ("goals", "session_id"),
     ("idmm_action_reservations", "reservation_id"),
     ("idmm_interventions", "intervention_id"),
@@ -559,6 +577,15 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("channel_session_bindings", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", false, "idx_channel_session_bindings_plugin_id", Cascade),
     text_ref!("channel_session_bindings", "channel_user_id" => "channel_users", "channel_user_id", false, "idx_channel_session_bindings_user_id", Cascade),
     text_ref!("channel_session_bindings", "channel_session_id" => "channel_sessions", "channel_session_id", false, "idx_channel_session_bindings_session_id", Cascade),
+    // Busy-time prompt queue rows (spec D1) are short-lived operational
+    // records; settled rows keep their historical scope even after the bot,
+    // session, or conversation is deleted.
+    text_ref!("channel_pending_prompts", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", false, "idx_cpp_plugin_chat", KeepHistory),
+    text_ref!("channel_pending_prompts", "channel_session_id" => "channel_sessions", "channel_session_id", false, "idx_cpp_session", KeepHistory),
+    text_ref!("channel_pending_prompts", "conversation_id" => "conversations", "conversation_id", false, "idx_cpp_conversation_state", KeepHistory),
+    // Delivery-notify registrations (spec D2) reference the requester
+    // conversation; a settled registration outlives requester deletion.
+    text_ref!("conversation_delivery_notify", "requester_conversation_id" => "conversations", "conversation_id", false, "idx_cdn_requester", KeepHistory),
     text_ref!("channel_sessions", "channel_user_id" => "channel_users", "channel_user_id", false, "idx_channel_sessions_channel_user_id", Cascade),
     text_ref!("channel_sessions", "conversation_id" => "conversations", "conversation_id", true, "idx_channel_sessions_conversation_id", SetNull),
     text_ref!("channel_sessions", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", true, "idx_channel_sessions_channel_plugin_id", SetNull),
@@ -637,8 +664,22 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("cron_run_reservations", "cron_job_id" => "cron_jobs", "cron_job_id", false, "idx_cron_run_reservations_cron_job_id", Cascade),
     text_ref!("cron_run_reservations", "conversation_id" => "conversations", "conversation_id", true, "idx_cron_run_reservations_conversation_id", SetNull),
     external_ref!("channel_plugins", "companion_id", Text, true, CanonicalUuidV7, "idx_channel_plugins_companion_id", SetNull),
-    external_ref!("channel_plugins", "public_agent_id", Text, true, CanonicalUuidV7, "idx_channel_plugins_public_agent_id", SetNull),
     text_ref!("channel_users", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", true, "idx_channel_users_channel_plugin_id", Cascade),
+    // ── customer-service domain (015) ────────────────────────────────
+    // Provider/KB references keep history on parent deletion: the runtime
+    // resolves them per turn and degrades gracefully to "model/KB missing".
+    text_ref!("cs_agents", "provider_id" => "providers", "provider_id", true, "idx_cs_agents_provider_id", KeepHistory),
+    text_ref!("cs_channel_bindings", "cs_agent_id" => "cs_agents", "cs_agent_id", false, "idx_cs_channel_bindings_agent", Cascade),
+    text_ref!("cs_channel_bindings", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", false, "idx_cs_channel_bindings_plugin", Cascade),
+    text_ref!("cs_dialogues", "cs_agent_id" => "cs_agents", "cs_agent_id", false, "idx_cs_dialogues_agent", Cascade),
+    // A dialogue transcript survives bot/visitor deletion as history.
+    text_ref!("cs_dialogues", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", false, "idx_cs_dialogues_identity", KeepHistory),
+    text_ref!("cs_dialogues", "channel_user_id" => "channel_users", "channel_user_id", false, "idx_cs_dialogues_channel_user", KeepHistory),
+    text_ref!("cs_messages", "cs_dialogue_id" => "cs_dialogues", "cs_dialogue_id", false, "idx_cs_messages_dialogue", Cascade),
+    text_ref!("cs_notes", "cs_agent_id" => "cs_agents", "cs_agent_id", true, "idx_cs_notes_agent", Cascade),
+    // Audit events are retained after the agent is deleted; retention-days
+    // cleanup is the only pruning authority.
+    text_ref!("cs_audit_events", "cs_agent_id" => "cs_agents", "cs_agent_id", false, "idx_cs_audit_agent_time", KeepHistory),
     text_ref!("creation_tasks", "canvas_id" => "workshop_canvases", "canvas_id", true, "idx_creation_tasks_canvas_id", SetNull),
     text_ref!("creation_tasks", "provider_id" => "providers", "provider_id", false, "idx_creation_tasks_provider_id", Restrict),
     text_ref!("idmm_action_reservations", "user_id" => "users", "user_id", false, "idx_idmm_action_reservations_user_id", Cascade),
@@ -804,11 +845,6 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "providers", "provider_id", "idx_cron_jobs_nomi_provider_id", Restrict, RequireParent
     ),
     json_text_ref!(
-        "knowledge_bases", "extra", "$.source.credentialRef",
-        "SELECT json_extract(extra, '$.source.credentialRef') AS value FROM knowledge_bases WHERE json_extract(extra, '$.source.credentialRef') IS NOT NULL" =>
-        "connector_credentials", "credential_id", "idx_knowledge_bases_extra_credential_ref", Restrict, RequireParent
-    ),
-    json_text_ref!(
         "workshop_assets", "origin", "$.provider_id",
         "SELECT json_extract(origin, '$.provider_id') AS value FROM workshop_assets WHERE origin IS NOT NULL" =>
         "providers", "provider_id", "idx_workshop_assets_origin_provider_id", KeepHistory, AllowMissingHistoricalParent
@@ -873,10 +909,12 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT json_extract(extra, '$.companion_id') AS value FROM conversations",
         "idx_conversations_extra_companion_id", KeepHistory
     ),
-    json_external_ref!(
-        "conversations", "extra", "$.public_agent_id",
-        "SELECT json_extract(extra, '$.public_agent_id') AS value FROM conversations",
-        "idx_conversations_extra_public_agent_id", KeepHistory
+    // Customer-service agents mount knowledge bases by ID; a deleted base
+    // simply stops contributing hits, so history is allowed to keep the value.
+    json_text_ref!(
+        "cs_agents", "knowledge_base_ids", "$[]",
+        "SELECT item.value AS value FROM cs_agents, json_each(cs_agents.knowledge_base_ids) item" =>
+        "knowledge_bases", "knowledge_base_id", "idx_cs_agents_knowledge_base_ids_json", KeepHistory, AllowMissingHistoricalParent
     ),
 ];
 
@@ -921,6 +959,22 @@ pub async fn validate_id_schema_contract(pool: &SqlitePool) -> Result<(), DbErro
     require_column(pool, "conversations", "admission_epoch", "INTEGER", true).await?;
     require_column(
         pool,
+        "conversation_delivery_receipts",
+        "result_error_code",
+        "TEXT",
+        false,
+    )
+    .await?;
+    require_column(
+        pool,
+        "conversation_delivery_receipts",
+        "result_error_retryable",
+        "INTEGER",
+        false,
+    )
+    .await?;
+    require_column(
+        pool,
         "conversations",
         "active_turn_operation_id",
         "TEXT",
@@ -944,6 +998,21 @@ pub async fn validate_id_schema_contract(pool: &SqlitePool) -> Result<(), DbErro
     require_column(pool, "preset_tags", "key", "TEXT", true).await?;
     require_single_column_unique_index(pool, "preset_tags", "key").await?;
     require_column(pool, "preset_tag_bindings", "preset_tag_id", "TEXT", true).await?;
+    // Channel bot ownership domain (migration 020): every row names its owning
+    // domain and defaults to the legacy companion pool.
+    require_column(pool, "channel_plugins", "owner_domain", "TEXT", true).await?;
+    let owner_domain_default: Option<String> = sqlx::query_scalar(
+        "SELECT dflt_value FROM pragma_table_info('channel_plugins') \
+         WHERE name = 'owner_domain'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    if owner_domain_default.as_deref() != Some("'companion'") {
+        return Err(DbError::Init(
+            "v3 schema channel_plugins.owner_domain must default to 'companion'".to_owned(),
+        ));
+    }
 
     validate_logical_reference_registry(pool).await?;
     validate_logical_reference_coverage(pool).await?;
@@ -1220,6 +1289,22 @@ async fn validate_no_triggers(pool: &SqlitePool) -> Result<(), DbError> {
             ],
         ),
         (
+            "trg_channel_plugins_owner_domain_insert_guard",
+            &[
+                "BEFORE INSERT ON CHANNEL_PLUGINS",
+                "NEW.OWNER_DOMAIN = 'CUSTOMER_SERVICE' AND NEW.COMPANION_ID IS NOT NULL",
+                "RAISE(ABORT, 'CUSTOMER-SERVICE CHANNEL BOTS CANNOT CARRY A COMPANION BINDING')",
+            ],
+        ),
+        (
+            "trg_channel_plugins_owner_domain_update_guard",
+            &[
+                "BEFORE UPDATE OF OWNER_DOMAIN, COMPANION_ID ON CHANNEL_PLUGINS",
+                "NEW.OWNER_DOMAIN = 'CUSTOMER_SERVICE' AND NEW.COMPANION_ID IS NOT NULL",
+                "RAISE(ABORT, 'CUSTOMER-SERVICE CHANNEL BOTS CANNOT CARRY A COMPANION BINDING')",
+            ],
+        ),
+        (
             "trg_conversation_delivery_receipts_identity_immutable",
             &[
                 "BEFORE UPDATE OF OPERATION_ID, MESSAGE_ID, CONVERSATION_ID, USER_ID, KIND, REQUEST_PAYLOAD, CREATED_AT ON CONVERSATION_DELIVERY_RECEIPTS",
@@ -1241,6 +1326,8 @@ async fn validate_no_triggers(pool: &SqlitePool) -> Result<(), DbError> {
                 "NEW.RESULT_OK IS NOT NULL",
                 "NEW.RESULT_TEXT IS NOT NULL",
                 "NEW.RESULT_ERROR IS NOT NULL",
+                "NEW.RESULT_ERROR_CODE IS NOT NULL",
+                "NEW.RESULT_ERROR_RETRYABLE IS NOT NULL",
                 "NEW.COMPLETED_AT IS NOT NULL",
                 "NEW.STATUS = 'COMPLETED'",
                 "TYPEOF(NEW.COMPLETED_AT) <> 'INTEGER'",
@@ -1253,12 +1340,14 @@ async fn validate_no_triggers(pool: &SqlitePool) -> Result<(), DbError> {
         (
             "trg_conversation_delivery_receipts_lifecycle_update_guard",
             &[
-                "BEFORE UPDATE OF STATUS, RESULT_OK, RESULT_TEXT, RESULT_ERROR, COMPLETED_AT ON CONVERSATION_DELIVERY_RECEIPTS",
+                "BEFORE UPDATE OF STATUS, RESULT_OK, RESULT_TEXT, RESULT_ERROR, RESULT_ERROR_CODE, RESULT_ERROR_RETRYABLE, COMPLETED_AT ON CONVERSATION_DELIVERY_RECEIPTS",
                 "OLD.STATUS = 'COMPLETED'",
                 "NEW.STATUS IS NOT OLD.STATUS",
                 "NEW.RESULT_OK IS NOT OLD.RESULT_OK",
                 "NEW.RESULT_TEXT IS NOT OLD.RESULT_TEXT",
                 "NEW.RESULT_ERROR IS NOT OLD.RESULT_ERROR",
+                "NEW.RESULT_ERROR_CODE IS NOT OLD.RESULT_ERROR_CODE",
+                "NEW.RESULT_ERROR_RETRYABLE IS NOT OLD.RESULT_ERROR_RETRYABLE",
                 "NEW.COMPLETED_AT IS NOT OLD.COMPLETED_AT",
                 "NEW.STATUS = 'ACCEPTED'",
                 "NEW.STATUS = 'COMPLETED'",
@@ -2271,6 +2360,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn delivery_receipt_structured_error_columns_are_nullable_and_guarded() {
+        let database = init_database_memory().await.expect("database");
+        let pool = database.pool();
+        for (column, expected_type) in [
+            ("result_error_code", "TEXT"),
+            ("result_error_retryable", "INTEGER"),
+        ] {
+            let row = sqlx::query(
+                "SELECT type, \"notnull\" FROM pragma_table_info('conversation_delivery_receipts') \
+                 WHERE name = ?",
+            )
+            .bind(column)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|_| {
+                panic!("conversation_delivery_receipts.{column} must exist")
+            });
+            assert_eq!(
+                row.get::<String, _>("type").to_ascii_uppercase(),
+                expected_type,
+                "conversation_delivery_receipts.{column} type"
+            );
+            assert_eq!(
+                row.get::<i64, _>("notnull"),
+                0,
+                "conversation_delivery_receipts.{column} must stay nullable"
+            );
+        }
+
+        // The rebuilt lifecycle update guard must treat the new columns as
+        // part of the immutable terminal outcome.
+        let update_guard: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' \
+             AND name = 'trg_conversation_delivery_receipts_lifecycle_update_guard'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("lifecycle update guard");
+        let normalized = normalize_sql(&update_guard);
+        for fragment in [
+            "NEW.RESULT_ERROR_CODE IS NOT OLD.RESULT_ERROR_CODE",
+            "NEW.RESULT_ERROR_RETRYABLE IS NOT OLD.RESULT_ERROR_RETRYABLE",
+        ] {
+            assert!(
+                normalized.contains(fragment),
+                "update guard must cover structured error columns: missing {fragment}"
+            );
+        }
+    }
+
     #[test]
     fn external_agent_actor_is_registered_as_external_keep_history() {
         let reference = LOGICAL_REFERENCES
@@ -2591,72 +2731,5 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(unchanged, "succeeded");
-    }
-
-    #[tokio::test]
-    async fn json_business_reference_audit_rejects_integer_credential_ids() {
-        let database = init_database_memory().await.expect("database");
-        let pool = database.pool();
-        let provider_id = nomifun_common::generate_id();
-        sqlx::query(
-            "INSERT INTO providers \
-             (provider_id, platform, name, base_url, api_key_encrypted, created_at, updated_at) \
-             VALUES (?, 'contract', 'JSON audit provider', 'https://example.invalid', '', 1, 1)",
-        )
-        .bind(&provider_id)
-        .execute(pool)
-        .await
-        .expect("provider");
-        sqlx::query(
-            "INSERT INTO creation_tasks \
-             (creation_task_id, provider_id, model, capability, params, status, submitted_at) \
-             VALUES (?, ?, 'model', 'text', '{}', 'queued', 1)",
-        )
-        .bind(nomifun_common::generate_id())
-        .bind(&provider_id)
-        .execute(pool)
-        .await
-        .expect("creation task");
-        sqlx::query(
-            "INSERT INTO connector_credentials \
-             (credential_id, kind, name, payload_encrypted, created_at, updated_at) \
-             VALUES (?, 'contract', 'JSON audit credential', 'ciphertext', 1, 1)",
-        )
-        .bind(nomifun_common::generate_id())
-        .execute(pool)
-        .await
-        .expect("credential");
-        assert!(
-            sqlx::query(
-                "INSERT INTO workshop_assets \
-                 (asset_id, kind, title, origin, created_at, updated_at) \
-                 VALUES (?, 'image', 'legacy integer task reference', \
-                         '{\"task_id\":1}', 1, 1)",
-            )
-            .bind(nomifun_common::generate_id())
-            .execute(pool)
-            .await
-            .is_err(),
-            "legacy origin.task_id must be rejected by the v3 schema"
-        );
-        sqlx::query(
-            "INSERT INTO knowledge_bases \
-             (knowledge_base_id, name, root_path, extra, created_at, updated_at) \
-             VALUES (?, 'invalid integer credential reference', '/tmp/invalid-credential-ref', \
-                     '{\"source\":{\"credentialRef\":1}}', 1, 1)",
-        )
-        .bind(nomifun_common::generate_id())
-        .execute(pool)
-        .await
-        .expect("invalid JSON fixture");
-
-        let findings = audit_logical_reference_orphans(pool)
-            .await
-            .expect("JSON reference audit");
-        assert!(findings.iter().any(|finding| {
-            finding.child_table == "knowledge_bases"
-                && finding.child_column == "extra:$.source.credentialRef"
-                && finding.count == 1
-        }));
     }
 }

@@ -1,19 +1,20 @@
 import { ipcBridge } from '@/common';
-import { FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID, SERVER_MANAGED_MODELS } from '@/common/config/constants';
+import { GOOGLE_AUTH_PROVIDER_ID } from '@/common/config/constants';
 import type { IProvider } from '@/common/config/storage';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import useSWR, { mutate, type SWRConfiguration } from 'swr';
 import { useGoogleAuthModels } from './useGoogleAuthModels';
-import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabilities';
-import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
-import { clearAvailableModelsCache } from '@/renderer/pages/guid/utils/modelUtils';
-import { AUTO_MODEL_ID } from '@/renderer/utils/model/autoModel';
 
 export interface ModelProviderListResult {
+  /** Enabled providers in selector order — provider METADATA only. Which
+   * models a surface may list comes from `useModelsForTask` (catalog resolve);
+   * the old name-heuristic `getAvailableModels` filter is gone. */
   providers: IProvider[];
   configuredProviders: IProvider[];
   isLoading: boolean;
+  /** Enabled models on a provider row (no capability heuristics). Prefer
+   * `useModelsForTask` for task-filtered pickers. */
   getAvailableModels: (provider: IProvider) => string[];
   formatModelLabel: (provider: { platform?: string } | undefined, modelName?: string) => string;
 }
@@ -21,58 +22,30 @@ export interface ModelProviderListResult {
 export const PROVIDERS_SWR_KEY = 'providers';
 
 // Provider config is local application state. Keep it stable after the initial
-// load and refresh only through explicit mutate() calls after CRUD operations,
-// plus the mount-time catalog refresh below (model selector pages).
+// load and refresh only through explicit mutate() calls after CRUD operations.
 export const PROVIDERS_SWR_OPTIONS: SWRConfiguration<IProvider[], Error> = {
   revalidateOnFocus: false,
   revalidateOnReconnect: false,
   shouldRetryOnError: false,
 };
 
-let providersAutoRefreshPromise: Promise<IProvider[] | void> | null = null;
-
 export const fetchProviders = async (): Promise<IProvider[]> => {
   return (await ipcBridge.mode.listProviders.invoke()) ?? [];
 };
 
 /**
- * Sync Flowy chat catalog → local builtin provider (full replace on success),
- * then replace the shared providers SWR cache. Soft-fails when not logged in.
- *
- * Uses `{ revalidate: false }` after writing so an in-flight stale
- * `GET /api/providers` cannot overwrite the freshly synced projection.
+ * Optional cloud catalog sync then replace the shared providers SWR cache.
+ * Soft-fails when cloud sync is unavailable (not logged in / no cloud host).
  */
 export async function refreshProvidersCatalog(): Promise<IProvider[]> {
   try {
     await ipcBridge.cloud.syncModels.invoke();
   } catch (error) {
-    console.warn('[providers] Failed to sync Flowy chat model catalog:', error);
+    console.warn('[providers] Failed to sync chat model catalog:', error);
   }
   const providers = await fetchProviders();
-  clearAvailableModelsCache();
   await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
   return providers;
-}
-
-/**
- * Mount-time refresh for pages with a model selector.
- * In-flight dedupe only — every page enter must hit upstream so delisted
- * models are dropped from the local SQLite projection.
- */
-export async function refreshProvidersCatalogIfStale(): Promise<void> {
-  if (providersAutoRefreshPromise) {
-    await providersAutoRefreshPromise;
-    return;
-  }
-
-  providersAutoRefreshPromise = refreshProvidersCatalog()
-    .catch((error) => {
-      console.error('[providers] Failed to refresh model catalog:', error);
-    })
-    .finally(() => {
-      providersAutoRefreshPromise = null;
-    });
-  await providersAutoRefreshPromise;
 }
 
 export const useProvidersQuery = () => {
@@ -80,94 +53,48 @@ export const useProvidersQuery = () => {
 };
 
 /**
- * Shared hook that builds the provider list (including Google Auth)
- * and exposes helpers consumed by both conversation and channel settings.
- *
- * On mount, re-syncs the Flowy chat catalog and refreshes the local SWR cache
- * so model selectors always see the latest server list when entering a page.
+ * Shared hook that builds the provider list (including Google Auth) and
+ * exposes provider metadata/label helpers. Task-capable MODEL lists are
+ * resolved by `useModelsForTask` against the backend catalog — this hook
+ * deliberately no longer filters models by capability name heuristics.
  */
 export const useModelProviderList = (): ModelProviderListResult => {
   const { isGoogleAuth, isLoading: isGoogleAuthLoading } = useGoogleAuthModels();
 
   const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery();
 
-  useEffect(() => {
-    void refreshProvidersCatalogIfStale();
-  }, []);
-
-  // Mutable cache for available-model filtering
-  const available_modelsCacheRef = useRef(new Map<string, string[]>());
-
-  // 当 modelConfig 变化时清除缓存
-  useEffect(() => {
-    available_modelsCacheRef.current.clear();
-  }, [modelConfig]);
-
-  const getAvailableModels = useCallback((provider: IProvider): string[] => {
-    // 包含 model_enabled 状态到缓存 key 中
-    const model_enabledKey = provider.model_enabled ? JSON.stringify(provider.model_enabled) : 'all-enabled';
-    const cacheKey = `${provider.id}-${(provider.models || []).join(',')}-${model_enabledKey}`;
-    const cache = available_modelsCacheRef.current;
-    if (cache.has(cacheKey)) {
-      return cache.get(cacheKey)!;
-    }
-    const result: string[] = [];
-    for (const modelName of provider.models || []) {
-      // 检查模型是否被禁用（默认为启用）
-      const isModelEnabled = provider.model_enabled?.[modelName] !== false;
-      if (!isModelEnabled) continue;
-
-      const functionCalling = hasSpecificModelCapability(provider, modelName, 'function_calling');
-      const excluded = hasSpecificModelCapability(provider, modelName, 'excludeFromPrimary');
-      if ((functionCalling === true || functionCalling === undefined) && excluded !== true) {
-        result.push(modelName);
-      }
-    }
-    // Prepend the 'auto' fallback so it is always selectable (it bypasses the
-    // capability/exclude gating above by construction) and becomes the default
-    // first-available pick — the backend routes to a concrete model when the
-    // client sends model === 'auto'.
-    const withAuto = [AUTO_MODEL_ID, ...result];
-    cache.set(cacheKey, withAuto);
-    return withAuto;
-  }, []);
-
   const configuredProviders = useMemo(() => {
     const list: IProvider[] = Array.isArray(modelConfig) ? modelConfig : [];
-    // Server-managed mode only exposes Flowy Cloud; skip virtual Google Auth.
-    if (SERVER_MANAGED_MODELS || !isGoogleAuth) {
-      return list;
+    if (isGoogleAuth) {
+      const googleProvider: IProvider = {
+        id: GOOGLE_AUTH_PROVIDER_ID,
+        name: 'Gemini Google Auth',
+        platform: 'gemini-with-google-auth',
+        base_url: '',
+        api_key: '',
+        model: [],
+        enabled: true, // Google Auth provider 始终启用
+      } as unknown as IProvider;
+      return [googleProvider, ...list];
     }
-    const googleProvider: IProvider = {
-      id: GOOGLE_AUTH_PROVIDER_ID,
-      name: 'Gemini Google Auth',
-      platform: 'gemini-with-google-auth',
-      base_url: '',
-      api_key: '',
-      model: [],
-      capabilities: [{ type: 'text' }, { type: 'vision' }, { type: 'function_calling' }],
-      enabled: true, // Google Auth provider 始终启用
-    } as unknown as IProvider;
-    return [googleProvider, ...list];
+    return list;
   }, [isGoogleAuth, modelConfig]);
 
   const providers = useMemo(() => {
-    // 过滤掉被禁用的 provider（默认为启用）
-    const list = configuredProviders.filter((p) => p.enabled !== false);
-    if (SERVER_MANAGED_MODELS) {
-      return list.filter((p) => p.id === FLOWY_BUILTIN_PROVIDER_ID && getAvailableModels(p).length > 0);
-    }
-    // 过滤掉没有可用模型的 provider
-    return orderModelSelectorProviders(list.filter((p) => getAvailableModels(p).length > 0));
-  }, [configuredProviders, getAvailableModels]);
+    // 过滤掉被禁用的 provider（默认为启用）。
+    // 注意：不再按「是否有可用模型」过滤 —— 模型级别的可用性由
+    // useModelsForTask（后端 catalog resolve）决定，空组不会被渲染。
+    return orderModelSelectorProviders(configuredProviders.filter((p) => p.enabled !== false));
+  }, [configuredProviders]);
 
-  const formatModelLabel = useCallback(
-    (provider: { platform?: string; model_descriptions?: Record<string, string> } | undefined, modelName?: string) => {
-      if (!modelName) return '';
-      return formatCloudModelLabel(modelName, provider?.model_descriptions);
-    },
-    []
-  );
+  const getAvailableModels = useCallback((provider: IProvider): string[] => {
+    return (provider.models || []).filter((modelName) => provider.model_enabled?.[modelName] !== false);
+  }, []);
+
+  const formatModelLabel = useCallback((_provider: { platform?: string } | undefined, modelName?: string) => {
+    if (!modelName) return '';
+    return modelName;
+  }, []);
 
   return {
     providers,

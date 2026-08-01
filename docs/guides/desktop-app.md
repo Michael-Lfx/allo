@@ -1,4 +1,4 @@
-# Running Flowy as a Desktop App
+# Running NomiFun as a Desktop App
 
 The desktop app (`nomifun-desktop`) is a [Tauri](https://tauri.app/) shell that links the Rust backend (`nomifun-app`) **into the same process**. There is no spawned backend binary, no Electron, no bundled `nomicore`. The shell starts the backend as an async task on a free `127.0.0.1` port, then loads the bundled SPA (`ui/dist`) into a WebView and points it at `http://127.0.0.1:<port>/api`.
 
@@ -10,7 +10,7 @@ see [WebUI Remote Access](./webui-remote-access.md) for the in-app feature, or
 [Self-Host the Web Server](./web-server-deployment.md) for the standalone
 server.
 
-![Flowy desktop main window](../images/desktop-01-main-window.png)
+![NomiFun desktop main window](../images/desktop-01-main-window.png)
 
 ## Quick start
 
@@ -18,7 +18,7 @@ server.
 
 The desktop app requires:
 
-- A supported platform: **Windows 10 version 1803 (build 17134) or newer**, macOS 11+, mainstream Linux distros. Windows 7 / 8 / 8.1 are **not supported** — see [Troubleshooting](../reference/troubleshooting.md#the-installer-fails-with-无法定位程序输入点-getpackagesbypackagefamily).
+- A platform Tauri supports (Windows 10+, macOS 11+, mainstream Linux distros).
 - A WebView runtime: **WebView2** on Windows (preinstalled on Win 11; on Win 10 install the [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/)), **WKWebView** on macOS (built-in), **WebKitGTK** on Linux (`libwebkit2gtk-4.1-0`).
 - For development: Rust toolchain, [Bun](https://bun.sh) ≥ 1.3.13, and the platform Tauri build deps (see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
 
@@ -47,11 +47,11 @@ A successful build prints the bundle locations, for example on macOS:
 $ bun run build
    Compiling nomifun-app v0.1.0
     Finished `release` profile [optimized] target(s)
-    Bundling Flowy.app (macos)
-    Bundling Flowy_0.1.0_aarch64.dmg (macos)
+    Bundling NomiFun.app (macos)
+    Bundling NomiFun_0.1.0_aarch64.dmg (macos)
     Finished 2 bundles at:
-      target/release/bundle/macos/Flowy.app
-      target/release/bundle/dmg/Flowy_0.1.0_aarch64.dmg
+      target/release/bundle/macos/NomiFun.app
+      target/release/bundle/dmg/NomiFun_0.1.0_aarch64.dmg
 ```
 
 ## Window and titlebar
@@ -60,7 +60,7 @@ The main window is **frameless** on Windows and Linux: the React titlebar compon
 
 - Default size: `1280 × 832`, minimum `880 × 600`.
 - Resizable everywhere (edge-resize and Snap still work on Windows even without OS-drawn decorations).
-- Title bar: `Flowy`.
+- Title bar: `NomiFun`.
 
 > The exact chrome differs per OS: a frameless titlebar with in-app controls on
 > Windows and Linux, and the native traffic-light buttons (content under an
@@ -86,17 +86,17 @@ The shell ships `tauri-plugin-autostart` so the renderer can opt the app into "l
 
 ## Where data is stored
 
-The desktop app persists the SQLite database, agent state, logs, and the Bun runtime cache under the per-user application-data directory — **`%LOCALAPPDATA%\Flowy\Nomi`** on Windows, **`~/Library/Application Support/Flowy/Nomi`** on macOS, **`$XDG_DATA_HOME/Flowy/Nomi`** on Linux (resolved by the shared `nomifun_app::cli::default_data_dir()`). Hosts on the same build channel share a default; development scripts use the isolated `Nomi-dev` sibling instead. Use `bun run seed:dev` when dev needs a copy of stable state. A pre-v3 dataset at this or an older root is retired as a complete dataset; its product rows are not relocated into v3.
+The installed desktop app persists the SQLite database, agent state, logs, and the Bun runtime cache under the stable per-user application-data directory — **`%LOCALAPPDATA%\NomiFun`** on Windows, **`~/Library/Application Support/NomiFun`** on macOS, **`$XDG_DATA_HOME/NomiFun`** on Linux (resolved by `nomifun_app::cli::default_data_dir()`). Hosts on the same build channel share a default; development scripts use the isolated `NomiFun-dev` sibling instead. Use `bun run seed:dev` when dev needs a copy of stable state.
 
-Set `NOMIFUN_DATA_DIR=<absolute path>` before launching the app and the data dir becomes `$NOMIFUN_DATA_DIR/Nomi`. The backend takes an exclusive `server.lock` on the data dir at startup; if it fails to start — for example because another instance already holds the directory — the desktop shell shows a native error dialog and exits.
+Set `NOMIFUN_DATA_DIR=<absolute path>` before launching the app and that path **is** the data dir — the value is taken literally on every host, with no `/Nomi` suffix. The backend takes an exclusive `server.lock` on the data dir at startup; if it fails to start — for example because another instance already holds the directory — the desktop shell shows a native error dialog and exits.
 
-> Older builds defaulted to `<system temp>/nomifun-data/Nomi`. An install found there is relocated to the per-user location automatically on launch (one-shot): data is copied, absolute paths stored in the database are rewritten, and the legacy directory is kept as a backup. Regenerable caches (the extracted Bun runtime, logs, browser profile, …) are not carried over — they rebuild on first use.
+> Older builds stored data under `NomiFun/Nomi` (dev: `NomiFun/Nomi-dev`; before that, `<system temp>/nomifun-data/Nomi`). On the first boot after upgrading, a one-shot automatic migration moves such a legacy dataset into the new root. The migration is crash-safe and resumes on the next boot if interrupted; if the old app instance is still running it is deferred to the next launch. Absolute paths stored in the database (knowledge-base roots, terminal cwds, custom workspaces) are rewritten once after the move.
 
 To start fresh, **quit the app** and delete that directory. To migrate, copy the directory to a new machine.
 
 ```text
-~/Library/Application Support/Flowy/Nomi/    # macOS (see paths above for Windows/Linux)
-├── flowy-backend.db        # SQLite state (conversations, settings, sessions, …)
+~/Library/Application Support/NomiFun/    # macOS (see paths above for Windows/Linux)
+├── nomifun-backend.db        # SQLite state (conversations, settings, sessions, …)
 ├── logs/                     # nomicore.log
 ├── companion/                # companions + the shared memory hub
 ├── knowledge/                # managed knowledge bases
@@ -122,20 +122,18 @@ If you want to access the same install from another device, do **not** expose th
 
 ## Updater status
 
-The Tauri updater plugin (`tauri-plugin-updater`) is wired in; the renderer can
-`invoke('check_for_updates')` (new version string, or `null` if current).
+The Tauri updater plugin (`tauri-plugin-updater`) is wired in and the renderer exposes `invoke('check_for_updates')` (returns the new version string or `null` if up to date). However:
 
-- **OTA source of truth**: `apps/desktop/tauri.conf.json` points at ModelScope
-  `allo/channels/alpha/latest.json` (pubkey keyID `E0F1394F8E92CE41`).
-- Release flow, `Flowy_` artifact naming, multi-platform merge, and upload:
-  root [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md).
-- `bun run build:updater` / per-platform
-  `build:* --config apps/desktop/tauri.updater.conf.json` produce `.sig`
-  updater packages.
+- The endpoint configured in `apps/desktop/tauri.conf.json` (`plugins.updater.endpoints`) is a **placeholder** (`https://REPLACE-WITH-YOUR-HOST/...`). Until you replace it with a real HTTPS URL serving a signed `latest.json`, the updater check will fail.
+- The included `pubkey` is a **development key** generated for local testing. **Replace it before any public release** and store your private key in a CI secret.
+- `bun run build:updater` produces signed update artifacts (extra `.sig` files next to each installer).
 
-OS code signing is separate: macOS via `bun run build:signed` and
-`apps/desktop/signing/README.md`; Windows Authenticode via
-`WINDOWS_CERTIFICATE_THUMBPRINT` + `build:win --signed` / `release:win`.
+The full updater flow (signing env vars, `latest.json` schema, supported platform
+keys) is documented in `apps/desktop/updater/README.md`. OS-level code signing /
+notarization is separate. macOS Developer ID signing and notarization are wired
+through `bun run build:signed` and documented in
+`apps/desktop/signing/README.md`; Windows signing still requires an external
+code-signing certificate.
 
 ## Troubleshooting
 
@@ -143,7 +141,7 @@ OS code signing is separate: macOS via `bun run build:signed` and
 Make sure the WebView runtime is installed (WebView2 on Windows 10 needs the Evergreen Bootstrapper). On Linux, `libwebkit2gtk-4.1-0` is required.
 
 **"Failed to bind backend port".**
-Another process is holding `127.0.0.1` ephemeral ports. The backend tries `pick_free_port()` and falls back to `8799` if that fails — quit any other Flowy instance and try again.
+Another process is holding `127.0.0.1` ephemeral ports. The backend tries `pick_free_port()` and falls back to `8799` if that fails — quit any other NomiFun instance and try again.
 
 **Agent commands fail with `bun: command not found`.**
 The agent engine spawns Bun as a child process for tool execution. Install Bun (`curl -fsSL https://bun.sh/install | bash`) and make sure it is on the system `PATH`, or build the desktop bundle with `NOMIFUN_EMBED_BUN=1` to embed it.

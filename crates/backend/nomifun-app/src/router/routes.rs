@@ -20,7 +20,7 @@ use nomifun_auth::{
 };
 use nomifun_channel::channel_routes;
 use nomifun_companion::{companion_public_routes, companion_routes};
-use nomifun_public_agent::public_agent_routes;
+use nomifun_customer_service::customer_service_routes;
 use nomifun_workshop::{workshop_public_routes, workshop_routes};
 use nomifun_creation::creation_routes;
 use nomifun_conversation::{conversation_ops_routes, conversation_routes};
@@ -66,11 +66,17 @@ async fn forward_instance_events(
     ws_manager: Arc<WebSocketManager>,
     authoritative_user_id: Arc<str>,
 ) {
+    // Instance-bus lag drops events just like user-bus lag: the same
+    // coalesced invalidation applies. Each bridge task owns its own
+    // coalescer (they run on independent receivers), so a simultaneous lag
+    // on both buses can at worst double the invalidation, which is idempotent.
+    let resync = LagResyncCoalescer::new(ws_manager.clone(), RESYNC_COALESCE_INTERVAL);
     loop {
         match receiver.recv().await {
             Ok(event) => ws_manager.broadcast_to_user(&authoritative_user_id, event),
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(skipped, audience = "instance", "realtime bridge lagged; continuing from newest event");
+                resync.on_lag(skipped);
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
@@ -81,7 +87,7 @@ async fn forward_user_events(
     mut receiver: tokio::sync::broadcast::Receiver<UserEventEnvelope>,
     ws_manager: Arc<WebSocketManager>,
 ) {
-    let resync = BrowserResyncCoalescer::new(ws_manager.clone(), RESYNC_COALESCE_INTERVAL);
+    let resync = LagResyncCoalescer::new(ws_manager.clone(), RESYNC_COALESCE_INTERVAL);
     loop {
         match receiver.recv().await {
             Ok(envelope) => ws_manager.broadcast_to_user(&envelope.user_id, envelope.event),
@@ -111,15 +117,20 @@ async fn forward_user_events(
 /// Minimum spacing between all-clients lag-resync invalidations (F61).
 const RESYNC_COALESCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Rate-limits `browser.inventory.changed` resync broadcasts.
+/// Rate-limits the lag-resync invalidation broadcasts.
 ///
 /// Leading edge: a lag outside the interval broadcasts immediately. Inside
 /// the interval, skipped counts accumulate and exactly one trailing broadcast
 /// is scheduled for the interval boundary, so no invalidation is ever lost —
 /// clients that refetched on the previous resync still learn about events
 /// dropped after it.
+///
+/// Each firing broadcasts TWO frames: the legacy
+/// `browser.inventory.changed` invalidation (backward compat — older clients
+/// only refresh browser inventory on it) and the generic
+/// `sync.resync-required` marker every domain UI can consume.
 #[derive(Clone)]
-struct BrowserResyncCoalescer {
+struct LagResyncCoalescer {
     ws_manager: Arc<WebSocketManager>,
     interval: std::time::Duration,
     state: Arc<std::sync::Mutex<ResyncCoalescerState>>,
@@ -131,7 +142,7 @@ struct ResyncCoalescerState {
     trailing_scheduled: bool,
 }
 
-impl BrowserResyncCoalescer {
+impl LagResyncCoalescer {
     fn new(ws_manager: Arc<WebSocketManager>, interval: std::time::Duration) -> Self {
         Self {
             ws_manager,
@@ -153,8 +164,7 @@ impl BrowserResyncCoalescer {
         if now >= state.next_allowed && !state.trailing_scheduled {
             state.next_allowed = now + self.interval;
             drop(state);
-            self.ws_manager
-                .broadcast_all(browser_inventory_resync_event(skipped));
+            self.broadcast_resync(skipped);
             return;
         }
         state.pending_skipped = state.pending_skipped.saturating_add(skipped);
@@ -176,10 +186,21 @@ impl BrowserResyncCoalescer {
                 state.next_allowed = tokio::time::Instant::now() + coalescer.interval;
                 std::mem::take(&mut state.pending_skipped)
             };
-            coalescer
-                .ws_manager
-                .broadcast_all(browser_inventory_resync_event(skipped));
+            coalescer.broadcast_resync(skipped);
         });
+    }
+
+    /// One coalesced firing: legacy inventory invalidation first, then the
+    /// generic resync marker, so old clients act on the first frame and
+    /// marker-aware clients on the second.
+    fn broadcast_resync(&self, skipped: u64) {
+        self.ws_manager
+            .broadcast_all(browser_inventory_resync_event(skipped));
+        self.ws_manager
+            .broadcast_all(nomifun_api_types::WebSocketMessage::new(
+                "sync.resync-required",
+                serde_json::json!({"scope": "all", "skipped": skipped}),
+            ));
     }
 }
 
@@ -287,6 +308,9 @@ pub async fn create_router(services: &AppServices) -> Router {
         provider_repo: Arc::new(nomifun_db::SqliteProviderRepository::new(
             services.database.pool().clone(),
         )),
+        provider_model_repo: Arc::new(nomifun_db::SqliteProviderModelRepository::new(
+            services.database.pool().clone(),
+        )),
         idmm_service: states.idmm.service.clone(),
         knowledge_service: services.knowledge_service.clone(),
         // 创意工坊 canvas index: a fresh repo over the same pool the workshop
@@ -356,6 +380,36 @@ pub async fn create_router(services: &AppServices) -> Router {
             .message_loop
             .run(channel_components.message_rx, channel_components.confirm_rx),
     );
+    // Start the busy-time queue drain (spec D1): it consumes `turn.completed`
+    // envelopes from the same in-process bus the conversation service
+    // publishes through, recovers persisted queued prompts on startup, and
+    // expires stale ones.
+    tokio::spawn(
+        channel_components
+            .queue_drain
+            .run(services.event_bus.subscribe_user()),
+    );
+
+    // Spec D2: register the delivery-notify observer on the conversation
+    // service instance that executes gateway `nomi_send_to_conversation`
+    // turns (the same instance wired into GatewayDeps above). When a watched
+    // turn completes, the observer injects a receipt message into the
+    // requester session; a channel-bound requester relays the companion's
+    // summary to its IM chat through the standard stream relay.
+    let delivery_notify_observer = Arc::new(crate::delivery_notify::DeliveryNotifyObserver::new(
+        states.conversation.service.clone(),
+        services.agent_runtime_registry.clone(),
+        services.authoritative_user_id.clone(),
+        states.channel.repo.clone(),
+        channel_components.manager.clone()
+            as Arc<dyn nomifun_channel::stream_relay::ChannelSender>,
+        channel_components.message_service.pending_decisions(),
+        channel_components.message_service.asset_resolver(),
+    ));
+    states
+        .conversation
+        .service
+        .with_turn_completion_observer(delivery_notify_observer);
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
         "startup: channel message loop spawned"
@@ -368,15 +422,14 @@ pub async fn create_router(services: &AppServices) -> Router {
         let mgr = chan_mgr.clone();
         let factory = chan_factory.clone();
         let companion_service = services.companion_service.clone();
-        let public_agent_service = services.public_agent_service.clone();
         tokio::spawn(async move {
             // Self-heal ghost owner bindings BEFORE restoring: a channel row
-            // bound to a 伙伴 / 对外伙伴 that was deleted before the delete-hook
-            // existed (or missed by it) keeps reserving its bot identity
+            // bound to a 伙伴 that was deleted before the delete-hook existed
+            // (or missed by it) keeps reserving its bot identity
             // (UNIQUE(type,bot_key)), so re-enabling that bot under a live owner
             // fails with "already bound" forever. Unbind rows whose owner is no
-            // longer in the roster so they become adoptable again. Both rosters
-            // are scanned into memory at service construction, so an empty list
+            // longer in the roster so they become adoptable again. The roster is
+            // scanned into memory at service construction, so an empty list
             // here means the owner really is gone.
             let live_companions: std::collections::HashSet<String> = companion_service
                 .list_companions()
@@ -385,24 +438,14 @@ pub async fn create_router(services: &AppServices) -> Router {
                 .map(|c| c.companion_id)
                 .filter(|id| !id.is_empty())
                 .collect();
-            let live_public_agents: std::collections::HashSet<String> = public_agent_service
-                .list()
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "reconcile_orphaned_owners: public-agent roster unavailable");
-                    Vec::new()
-                })
-                .into_iter()
-                .map(|a| a.public_agent_id.into_string())
-                .collect();
             // Safety valve: never mass-unbind on an ambiguous "no owners at all"
-            // signal (e.g. a roster that failed to load). If the user genuinely
-            // has zero companions AND zero public agents, there is nothing to
-            // reconcile against — skip rather than risk unbinding every row.
-            if live_companions.is_empty() && live_public_agents.is_empty() {
+            // signal. If the user genuinely has zero companions, there is
+            // nothing to reconcile against — skip rather than risk unbinding
+            // every row.
+            if live_companions.is_empty() {
                 tracing::info!("reconcile_orphaned_owners: empty roster, skipping to avoid mass-unbind");
             } else {
-                mgr.reconcile_orphaned_owners(&live_companions, &live_public_agents).await;
+                mgr.reconcile_orphaned_owners(&live_companions).await;
             }
 
             if let Err(e) = mgr.restore_plugins(&factory).await {
@@ -478,7 +521,7 @@ pub async fn create_router(services: &AppServices) -> Router {
 
 #[cfg(test)]
 mod realtime_bridge_tests {
-    use super::{BrowserResyncCoalescer, forward_instance_events, forward_user_events};
+    use super::{LagResyncCoalescer, forward_instance_events, forward_user_events};
     use nomifun_api_types::WebSocketMessage;
     use nomifun_realtime::{BroadcastEventBus, EventBroadcaster, UserEventSink, WebSocketManager, WsOutbound};
     use serde_json::json;
@@ -496,12 +539,29 @@ mod realtime_bridge_tests {
         serde_json::from_str(&text).expect("forwarded websocket event must be valid JSON")
     }
 
+    /// Each coalesced firing emits the backward-compatible inventory
+    /// invalidation first, then the generic resync marker.
+    async fn receive_resync_pair(
+        receiver: &mut mpsc::Receiver<WsOutbound>,
+        expected_skipped: u64,
+    ) {
+        let inventory = receive_event(receiver).await;
+        assert_eq!(inventory.name, "browser.inventory.changed");
+        assert_eq!(inventory.data["change_kind"], "resync_required");
+        assert_eq!(inventory.data["skipped"], expected_skipped);
+
+        let generic = receive_event(receiver).await;
+        assert_eq!(generic.name, "sync.resync-required");
+        assert_eq!(generic.data["scope"], "all");
+        assert_eq!(generic.data["skipped"], expected_skipped);
+    }
+
     #[tokio::test]
     async fn lag_resyncs_are_coalesced_with_a_guaranteed_trailing_broadcast() {
         let manager = Arc::new(WebSocketManager::new());
         let (client_tx, mut client_rx) = mpsc::channel(8);
         manager.add_client("owner-a".into(), "token".into(), client_tx);
-        let coalescer = BrowserResyncCoalescer::new(
+        let coalescer = LagResyncCoalescer::new(
             Arc::clone(&manager),
             std::time::Duration::from_millis(200),
         );
@@ -512,10 +572,7 @@ mod realtime_bridge_tests {
         coalescer.on_lag(2);
         coalescer.on_lag(3);
 
-        let leading = receive_event(&mut client_rx).await;
-        assert_eq!(leading.name, "browser.inventory.changed");
-        assert_eq!(leading.data["change_kind"], "resync_required");
-        assert_eq!(leading.data["skipped"], 1);
+        receive_resync_pair(&mut client_rx, 1).await;
         assert!(
             client_rx.try_recv().is_err(),
             "suppressed lags must not broadcast before the interval boundary"
@@ -523,26 +580,20 @@ mod realtime_bridge_tests {
 
         // The scheduled trailing task fires at the interval boundary and no
         // invalidation is lost: the suppressed counts accumulate into it.
-        let trailing = receive_event(&mut client_rx).await;
-        assert_eq!(trailing.name, "browser.inventory.changed");
-        assert_eq!(
-            trailing.data["skipped"], 5,
-            "suppressed lag counts must accumulate into the trailing resync"
-        );
+        receive_resync_pair(&mut client_rx, 5).await;
         assert!(
             client_rx.try_recv().is_err(),
-            "three lag errors must produce exactly two broadcasts"
+            "three lag errors must produce exactly two coalesced firings"
         );
 
         // A later lag (outside the interval) broadcasts immediately again.
         tokio::time::sleep(std::time::Duration::from_millis(450)).await;
         coalescer.on_lag(7);
-        let next = receive_event(&mut client_rx).await;
-        assert_eq!(next.data["skipped"], 7);
+        receive_resync_pair(&mut client_rx, 7).await;
     }
 
     #[tokio::test]
-    async fn instance_bridge_continues_with_newest_event_after_lag() {
+    async fn instance_bridge_emits_resync_to_all_clients_after_lag() {
         let bus = Arc::new(BroadcastEventBus::new(1));
         let receiver = bus.subscribe();
         bus.broadcast(WebSocketMessage::new("dropped", json!({})));
@@ -559,6 +610,13 @@ mod realtime_bridge_tests {
             Arc::from("owner-a"),
         ));
 
+        // Instance-bus lag drops instance-scoped events too, so every client
+        // gets the same coalesced invalidation as on user-bus lag.
+        receive_resync_pair(&mut client_rx, 1).await;
+        receive_resync_pair(&mut other_rx, 1).await;
+
+        // The bridge then continues from the newest event, still scoped to
+        // the authoritative user.
         let event = receive_event(&mut client_rx).await;
         assert_eq!(event.name, "after-lag");
         assert_eq!(event.data["seq"], 2);
@@ -610,13 +668,19 @@ mod realtime_bridge_tests {
         manager.add_client("owner-b".into(), "token-b".into(), other_tx);
         let task = tokio::spawn(forward_user_events(receiver, manager));
 
-        let owner_resync = receive_event(&mut owner_rx).await;
-        let other_resync = receive_event(&mut other_rx).await;
-        for resync in [&owner_resync, &other_resync] {
-            assert_eq!(resync.name, "browser.inventory.changed");
-            assert_eq!(resync.data["change_kind"], "resync_required");
-            assert_eq!(resync.data["resync_required"], true);
-            assert!(resync.data.get("sequence").is_none());
+        // Both clients receive the invalidation pair; neither frame carries
+        // any inventory data from the dropped envelopes.
+        for rx in [&mut owner_rx, &mut other_rx] {
+            let inventory = receive_event(rx).await;
+            assert_eq!(inventory.name, "browser.inventory.changed");
+            assert_eq!(inventory.data["change_kind"], "resync_required");
+            assert_eq!(inventory.data["resync_required"], true);
+            assert!(inventory.data.get("sequence").is_none());
+
+            let generic = receive_event(rx).await;
+            assert_eq!(generic.name, "sync.resync-required");
+            assert_eq!(generic.data["scope"], "all");
+            assert!(generic.data.get("sequence").is_none());
         }
 
         let event = receive_event(&mut owner_rx).await;
@@ -661,6 +725,7 @@ pub fn create_router_with_all_state(
     let auth_mw_state = AuthState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
+        cookie_config: services.cookie_config.clone(),
     };
     let instance_owner_state =
         InstanceOwnerState::new(services.authoritative_user_id.clone());
@@ -791,10 +856,10 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
-    // 对外伙伴 (public companion) enterprise-service domain — its OWN routes,
-    // separate from the desktop companion. Protected by auth middleware.
-    let public_agent_authenticated = protect_instance_owner(
-        public_agent_routes(states.public_agent.clone()),
+    // 客服独立域 (customer-service domain) — roster/bindings/notes/dialogues
+    // REST surface. Protected by auth middleware.
+    let customer_service_authenticated = protect_instance_owner(
+        customer_service_routes(states.customer_service.clone()),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -1072,7 +1137,7 @@ pub fn create_router_with_all_state(
         .merge(requirement_authenticated)
         .merge(idmm_authenticated)
         .merge(companion_authenticated)
-        .merge(public_agent_authenticated)
+        .merge(customer_service_authenticated)
         .merge(workshop_authenticated)
         .merge(creation_authenticated)
         .merge(knowledge_authenticated)

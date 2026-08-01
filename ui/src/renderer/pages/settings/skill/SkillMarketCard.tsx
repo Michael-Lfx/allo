@@ -1,7 +1,7 @@
 import type { PresetTag } from '@/common/types/agent/presetTypes';
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import { getAvatarColorClass, normalizeTestId } from './skillPresentation';
-import { translateMarketDescription } from './skillMarket';
+import { marketSourceLabel, translateMarketDescription } from './skillMarket';
 import { Button, Tag } from '@arco-design/web-react';
 import { Plus } from '@icon-park/react';
 import React from 'react';
@@ -14,16 +14,21 @@ type SkillMarketCardProps = {
   onAdd: (item: ISkillMarketItem) => void;
 };
 
-const MAX_VISIBLE_TAGS = 3;
+const MAX_VISIBLE_TAGS = 4;
 
 const resolveTagLabel = (tag: PresetTag, localeKey: string): string => tag.label_i18n?.[localeKey] || tag.label;
 
 const MarketSourceBadge: React.FC<{ source: ISkillMarketItem['source'] }> = ({ source }) => {
-  const label = source === 'clawhub' ? 'ClawHub' : 'SkillHub';
-  const className =
-    source === 'clawhub'
-      ? '!bg-primary-1 !text-primary-6'
-      : '!bg-[rgba(var(--success-6),0.1)] !text-[rgb(var(--success-6))]';
+  const label = marketSourceLabel(source);
+  const className = {
+    clawhub: '!bg-primary-1 !text-primary-6',
+    loophub: '!bg-[rgba(var(--warning-6),0.12)] !text-[rgb(var(--warning-7))]',
+    skillhub: '!bg-[rgba(var(--success-6),0.1)] !text-[rgb(var(--success-6))]',
+    skillhub_mcp: '!bg-[rgba(var(--arcoblue-6),0.1)] !text-[rgb(var(--arcoblue-6))]',
+    mcpworld: '!bg-[rgba(var(--purple-6),0.1)] !text-[rgb(var(--purple-6))]',
+    clawhub_plugins: '!bg-[rgba(var(--orange-6),0.12)] !text-[rgb(var(--orange-7))]',
+    skillhub_packages: '!bg-[rgba(var(--cyan-6),0.1)] !text-[rgb(var(--cyan-7))]',
+  }[source];
 
   return (
     <Tag
@@ -39,10 +44,12 @@ const MarketSourceBadge: React.FC<{ source: ISkillMarketItem['source'] }> = ({ s
 const SkillMarketCard: React.FC<SkillMarketCardProps> = ({ item, tagByKey, localeKey, onAdd }) => {
   const { t } = useTranslation();
   const testId = normalizeTestId(item.id);
+  const requiresApiKey = item.tags?.includes('requires_api_key') ?? false;
+  const noApiKey = item.tags?.includes('no_api_key') ?? false;
   const resolvedTags = [...(item.audience_tags ?? []), ...(item.scenario_tags ?? [])]
     .map((key) => tagByKey.get(key))
     .filter((tag): tag is PresetTag => Boolean(tag));
-  const rawTags = (item.tags ?? []).filter((tag) => !tagByKey.has(tag));
+  const rawTags = (item.tags ?? []).filter((tag) => !tagByKey.has(tag) && tag !== 'requires_api_key' && tag !== 'no_api_key');
   const visibleResolvedTags = resolvedTags.slice(0, MAX_VISIBLE_TAGS);
   const visibleRawTags = resolvedTags.length === 0 ? rawTags.slice(0, MAX_VISIBLE_TAGS) : [];
   const totalTagCount = resolvedTags.length > 0 ? resolvedTags.length : rawTags.length;
@@ -53,47 +60,55 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({ item, tagByKey, local
     <div
       data-testid={`skill-market-card-${testId}`}
       className={[
-        'group relative flex min-w-0 flex-col rounded-8px border border-solid p-12px outline-none',
-        'transition-[border-color,box-shadow,transform] duration-180',
-        'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:-translate-y-px hover:border-[var(--color-primary-light-4)] hover:shadow-[0_3px_12px_rgba(0,0,0,0.05)]',
+        'group relative flex flex-col rounded-16px border border-solid p-14px outline-none',
+        'transition-all duration-180',
+        'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-primary-light-4)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)]',
       ].join(' ')}
     >
       <Button
         size='mini'
         type='primary'
         data-testid={`btn-add-market-skill-${testId}`}
-        className='!absolute !right-12px !top-12px !rounded-6px !h-28px !px-10px !text-12px focus-visible:!outline focus-visible:!outline-2 focus-visible:!outline-offset-2 focus-visible:!outline-[rgb(var(--primary-5))] active:!translate-y-px'
-        icon={<Plus theme='outline' size={12} strokeWidth={3} fill='white' />}
+        className='!absolute !right-12px !top-12px !rounded-[100px] !h-26px !px-10px !text-12px'
+        icon={<Plus theme='outline' size={12} strokeWidth={3} />}
         onClick={() => onAdd(item)}
       >
         {t('common.add', { defaultValue: 'Add' })}
       </Button>
 
-      <div className='flex min-w-0 items-start gap-10px pr-76px'>
+      <div className='flex items-start gap-10px pr-68px'>
         <div
-          className={`flex-shrink-0 w-34px h-34px rounded-8px flex items-center justify-center font-bold text-13px shadow-sm ${getAvatarColorClass(item.name)}`}
+          className={`flex-shrink-0 w-36px h-36px rounded-10px flex items-center justify-center font-bold text-13px shadow-sm ${getAvatarColorClass(item.name)}`}
           title={`#${item.rank || '-'}`}
         >
           {item.rank ? `#${item.rank}` : item.name.charAt(0).toUpperCase()}
         </div>
-        <div className='min-w-0 flex-1 pt-1px'>
-          <div className='flex min-w-0 items-center gap-6px'>
+        <div className='min-w-0 flex-1 pt-2px'>
+          <div className='flex items-center gap-6px min-w-0 flex-wrap'>
             <span
-              className='truncate min-w-0 text-14px font-600 leading-20px text-[var(--color-text-1)]'
+              className='truncate max-w-full text-14px font-medium leading-20px text-[var(--color-text-1)]'
               title={item.name}
             >
               {item.name}
             </span>
-          </div>
-          <div className='mt-3px flex min-w-0 items-center gap-6px'>
             <MarketSourceBadge source={item.source} />
-            {item.stats && <span className='truncate text-11px leading-14px text-[var(--color-text-3)]'>{item.stats}</span>}
+            {requiresApiKey && (
+              <Tag size='small' bordered={false} className='!bg-[rgba(var(--warning-6),0.12)] !text-[rgb(var(--warning-7))] !rounded-6px !text-10px'>
+                {t('settings.market.requiresApi', { defaultValue: 'Needs API' })}
+              </Tag>
+            )}
+            {!requiresApiKey && noApiKey && (
+              <Tag size='small' bordered={false} className='!bg-[rgba(var(--success-6),0.1)] !text-[rgb(var(--success-6))] !rounded-6px !text-10px'>
+                {t('settings.market.noApi', { defaultValue: 'No API' })}
+              </Tag>
+            )}
           </div>
+          {item.stats && <div className='mt-2px text-11px text-[var(--color-text-3)] truncate'>{item.stats}</div>}
         </div>
       </div>
 
       <div
-        className='mt-12px text-12px leading-18px text-[var(--color-text-3)] min-h-[36px]'
+        className='mt-10px text-12px leading-18px text-[var(--color-text-3)] min-h-[36px]'
         title={item.description || undefined}
         style={{
           display: '-webkit-box',
@@ -106,11 +121,11 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({ item, tagByKey, local
       </div>
 
       {(visibleResolvedTags.length > 0 || visibleRawTags.length > 0) && (
-        <div className='mt-12px flex flex-wrap items-center gap-5px'>
+        <div className='mt-12px flex flex-wrap items-center gap-6px'>
           {visibleResolvedTags.map((tag) => (
             <span
               key={tag.key}
-              className='inline-flex items-center rounded-4px px-7px py-1px text-11px leading-16px bg-[var(--color-fill-2)] text-[var(--color-text-2)]'
+              className='inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]'
             >
               {resolveTagLabel(tag, localeKey)}
             </span>
@@ -118,26 +133,24 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({ item, tagByKey, local
           {visibleRawTags.map((tag) => (
             <span
               key={tag}
-              className='inline-flex items-center rounded-4px px-7px py-1px text-11px leading-16px bg-[var(--color-fill-2)] text-[var(--color-text-2)]'
+              className='inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]'
             >
               {tag}
             </span>
           ))}
           {overflowCount > 0 && (
-            <span className='inline-flex items-center rounded-4px px-5px py-1px text-11px leading-16px text-[var(--color-text-3)]'>
+            <span className='inline-flex items-center rounded-[12px] px-7px py-1px text-11px leading-16px text-[var(--color-text-3)]'>
               +{overflowCount}
             </span>
           )}
         </div>
       )}
 
-      {item.install_command && (
-        <div className='mt-12px flex min-w-0 items-center border-t border-solid border-[var(--color-border-1)] pt-9px'>
-          <code className='truncate text-10px leading-16px text-[var(--color-text-3)]' title={item.install_command}>
-            {item.install_command}
-          </code>
-        </div>
-      )}
+      <div className='mt-auto pt-10px flex min-w-0 items-center justify-between gap-10px'>
+        <span className='truncate text-11px text-[var(--color-text-3)] font-mono' title={item.install_command}>
+          {item.install_command}
+        </span>
+      </div>
     </div>
   );
 };

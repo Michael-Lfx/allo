@@ -27,12 +27,13 @@ fn source_from_str(s: &str) -> ProfileSource {
 
 /// CRUD over the row-level model catalog (`/api/provider-models`).
 ///
-/// This service deliberately does NOT write back to the legacy
-/// `providers.models` JSON column: since the Task 4 projection, every reader
-/// of catalog membership (including `ProviderService::list`) projects from
-/// `provider_models` rows, so a row created/deleted here is immediately
-/// visible there. Dual-write only exists in the legacy→new direction to guard
-/// against direct writers of the old column drifting.
+/// Since migration 016 dropped the legacy per-model `providers` columns, the
+/// `provider_models` row store is the ONLY per-model store: every reader of
+/// catalog membership (including `ProviderService::list`) projects from these
+/// rows, so a row created/deleted here is immediately visible there. The
+/// legacy wire maps (`models`, `model_enabled`, ...) still exist on the
+/// provider DTOs for compatibility, but they are translated to/from rows at
+/// the wire boundary — there is no second store to keep in sync.
 #[derive(Clone)]
 pub struct ProviderModelService {
     repo: Arc<dyn IProviderModelRepository>,
@@ -411,12 +412,10 @@ mod tests {
                 api_key_encrypted: &nomifun_common::encrypt_string("sk-test", &[0x42; 32]).unwrap(),
                 models: "[]",
                 enabled: true,
-                capabilities: "[]",
                 model_context_limits: None,
                 model_protocols: None,
                 model_descriptions: None,
                 model_enabled: None,
-                model_health: None,
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: None,
@@ -727,12 +726,10 @@ mod tests {
                 api_key_encrypted: "enc",
                 models: "[]",
                 enabled: true,
-                capabilities: "[]",
                 model_context_limits: None,
                 model_protocols: None,
                 model_descriptions: None,
                 model_enabled: None,
-                model_health: None,
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: None,

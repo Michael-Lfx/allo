@@ -1,11 +1,15 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useGoogleAuthModels } from '@/renderer/hooks/agent/useGoogleAuthModels';
-import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Build a unique key for a provider/model pair.
@@ -13,21 +17,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 const buildModelKey = (providerId?: string, modelName?: string) => {
   if (!providerId || !modelName) return null;
   return `${providerId}:${modelName}`;
-};
-
-/**
- * Check if a model key still exists in the selectable catalog.
- */
-const isModelKeyAvailable = (
-  key: string | null,
-  providers: IProvider[] | undefined,
-  getAvailableModels: (provider: IProvider) => string[]
-) => {
-  if (!key || !providers || providers.length === 0) return false;
-  return providers.some((provider) => {
-    if (!provider.id) return false;
-    return getAvailableModels(provider).some((modelName) => buildModelKey(provider.id, modelName) === key);
-  });
 };
 
 /** Provider-based agent keys that share the model list UI */
@@ -64,14 +53,37 @@ export type GuidModelSelectionResult = {
  */
 export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): GuidModelSelectionResult => {
   const { isGoogleAuth } = useGoogleAuthModels();
-  // Share the conversation catalog so Guid only sees flowy-cloud under
-  // SERVER_MANAGED_MODELS and uses the same available-model filter.
-  const {
-    providers: modelList,
-    getAvailableModels,
-    formatModelLabel,
-    isLoading,
-  } = useModelProviderList();
+  // Chat-capable catalog from the unified backend resolve — replaces the old
+  // duplicate guid/utils/modelUtils name-heuristic implementation.
+  const { groups } = useModelsForTask('chat');
+
+  const modelList = useMemo(() => groups.map((group) => group.provider), [groups]);
+  const modelsByProvider = useMemo(
+    () => new Map(groups.map((group) => [group.provider.id, group.models])),
+    [groups]
+  );
+
+  const availableModelsFor = useCallback(
+    (provider: IProvider | undefined): string[] =>
+      provider ? (modelsByProvider.get(provider.id) ?? []) : [],
+    [modelsByProvider]
+  );
+
+  /** Check if a model key still exists in the chat catalog. */
+  const isModelKeyAvailable = useCallback(
+    (key: string | null): boolean => {
+      if (!key) return false;
+      return groups.some((group) =>
+        group.models.some((modelName) => buildModelKey(group.provider.id, modelName) === key)
+      );
+    },
+    [groups]
+  );
+
+  const formatGeminiModelLabel = useCallback((_provider: { platform?: string } | undefined, modelName?: string) => {
+    if (!modelName) return '';
+    return modelName;
+  }, []);
 
   const [current_model, _setCurrentModel] = useState<TProviderWithModel>();
   const selectedModelKeyRef = useRef<string | null>(null);
@@ -98,7 +110,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
   // Set default model when modelList or agent changes
   useEffect(() => {
     const setDefaultModel = async () => {
-      if (isLoading || !modelList || modelList.length === 0) {
+      if (!modelList || modelList.length === 0) {
         return;
       }
       // When agent switches, reset selection so we reload from the new storage key
@@ -109,7 +121,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       }
 
       const currentKey = selectedModelKeyRef.current || buildModelKey(current_model?.id, current_model?.use_model);
-      if (!agentChanged && isModelKeyAvailable(currentKey, modelList, getAvailableModels)) {
+      if (!agentChanged && isModelKeyAvailable(currentKey)) {
         if (!selectedModelKeyRef.current && currentKey) {
           selectedModelKeyRef.current = currentKey;
         }
@@ -123,11 +135,16 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       }
 
       // First-available enabled model — the fallback whenever nothing valid was
-      // saved. `modelList` already excludes providers with no selectable models,
-      // so the first provider is guaranteed to expose at least one. Prefer the
-      // filtered catalog (`getAvailableModels`) over raw `provider.models[0]`.
+      // saved. `modelList` mirrors the catalog groups (only providers with at
+      // least one chat-capable model), so the first provider is guaranteed to
+      // expose at least one selectable model. Use the CATALOG list the picker
+      // shows rather than raw `provider.models[0]`, which can be a model that
+      // is not chat-capable and thus never appears in the picker — picking it
+      // would leave current_model pointing at an unselectable model. This
+      // guarantees the lead (主管) model is always set and editable, so submit
+      // is never silently blocked in auto/range mode.
       const firstProvider = modelList[0];
-      const firstAvailableModel = firstProvider ? (getAvailableModels(firstProvider)[0] ?? '') : '';
+      const firstAvailableModel = availableModelsFor(firstProvider)[0] ?? '';
 
       let defaultModel: IProvider | undefined;
       let resolvedUseModel: string;
@@ -135,7 +152,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       if (savedModel) {
         const { provider_id, model } = savedModel;
         const exactMatch = modelList.find((m) => m.id === provider_id);
-        if (exactMatch && getAvailableModels(exactMatch).includes(model)) {
+        if (exactMatch && availableModelsFor(exactMatch).includes(model)) {
           defaultModel = exactMatch;
           resolvedUseModel = model;
         } else {
@@ -158,12 +175,14 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     setDefaultModel().catch((error) => {
       console.error('Failed to set default model:', error);
     });
-  }, [getAvailableModels, isLoading, modelList, setCurrentModel, storageKey]);
+    // availableModelsFor / isModelKeyAvailable derive from the same catalog
+    // groups as modelList, so modelList is the single change signal.
+  }, [modelList, storageKey]);
 
   return {
     modelList,
     isGoogleAuth,
-    formatGeminiModelLabel: formatModelLabel,
+    formatGeminiModelLabel,
     current_model,
     setCurrentModel,
   };

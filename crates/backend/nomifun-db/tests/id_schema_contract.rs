@@ -58,7 +58,6 @@ const UNCONDITIONAL_UUIDV7_BUSINESS_IDS: &[(&str, &str)] = &[
     ("requirements", "requirement_id"),
     ("mcp_servers", "mcp_server_id"),
     ("webhooks", "webhook_id"),
-    ("connector_credentials", "credential_id"),
     ("creation_tasks", "creation_task_id"),
     ("conversation_artifacts", "conversation_artifact_id"),
     ("idmm_action_reservations", "reservation_id"),
@@ -128,7 +127,7 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    assert_eq!(tables.len(), 86);
+    assert_eq!(tables.len(), 93);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -307,6 +306,8 @@ async fn runtime_v3_schema_has_no_physical_foreign_keys_or_cascades_and_only_gua
             "channel_inbound_receipts_no_delete",
             "channel_inbound_receipts_scope_set_once",
             "channel_session_bindings_identity_immutable",
+            "trg_channel_plugins_owner_domain_insert_guard",
+            "trg_channel_plugins_owner_domain_update_guard",
             "trg_conversation_delivery_receipts_identity_immutable",
             "trg_conversation_delivery_receipts_lifecycle_insert_guard",
             "trg_conversation_delivery_receipts_lifecycle_update_guard",
@@ -557,13 +558,6 @@ async fn remaining_product_business_ids_reject_duplicates_and_non_uuid_values() 
             "INSERT INTO webhooks \
              (webhook_id, name, url, created_at, updated_at) \
              VALUES (?, ?, 'https://example.invalid/hook', 1, 1)",
-        ),
-        (
-            "connector_credentials",
-            "credential_id",
-            "INSERT INTO connector_credentials \
-             (credential_id, kind, name, payload_encrypted, created_at, updated_at) \
-             VALUES (?, 'contract', ?, 'ciphertext', 1, 1)",
         ),
     ];
     for (table, column, statement) in cases {
@@ -922,34 +916,6 @@ async fn remaining_uuid_logical_links_and_json_registry_enforce_text_values() {
     .await
     .expect("UUID task origin");
 
-    let credential_id = nomifun_common::generate_id();
-    sqlx::query(
-        "INSERT INTO connector_credentials \
-         (credential_id, kind, name, payload_encrypted, created_at, updated_at) \
-         VALUES (?, 'contract', 'knowledge credential', 'ciphertext', 1, 1)",
-    )
-    .bind(&credential_id)
-    .execute(pool)
-    .await
-    .expect("credential");
-    sqlx::query(
-        "INSERT INTO knowledge_bases \
-         (knowledge_base_id, name, root_path, extra, created_at, updated_at) \
-         VALUES (?, 'credential knowledge', '/tmp/credential-knowledge', ?, 1, 1)",
-    )
-    .bind(nomifun_common::generate_id())
-    .bind(
-        serde_json::json!({
-            "source": {
-                "kind": "contract",
-                "credentialRef": credential_id
-            }
-        })
-        .to_string(),
-    )
-    .execute(pool)
-    .await
-    .expect("UUID credential reference");
 
     let task_value_type: String = sqlx::query_scalar(
         "SELECT typeof(json_extract(origin, '$.creation_task_id')) \
@@ -1020,15 +986,6 @@ async fn remaining_uuid_logical_links_and_json_registry_enforce_text_values() {
             "{label} must be rejected"
         );
     }
-    let credential_value_type: String = sqlx::query_scalar(
-        "SELECT typeof(json_extract(extra, '$.source.credentialRef')) \
-         FROM knowledge_bases WHERE json_extract(extra, '$.source.credentialRef') = ?",
-    )
-    .bind(&credential_id)
-    .fetch_one(pool)
-    .await
-    .expect("knowledge credential JSON value");
-    assert_eq!(credential_value_type, "text");
 }
 
 #[tokio::test]
@@ -1129,7 +1086,6 @@ async fn external_owner_columns_enforce_uuidv7_without_requiring_local_parents()
     let pool = database.pool();
     let plugin_id = nomifun_common::generate_id();
     let companion_id = nomifun_common::generate_id();
-    let public_agent_id = nomifun_common::generate_id();
     let binding_companion_id = nomifun_common::generate_id();
     let knowledge_binding_id = nomifun_common::KnowledgeBindingId::new();
     let token_companion_id = nomifun_common::generate_id();
@@ -1144,15 +1100,6 @@ async fn external_owner_columns_enforce_uuidv7_without_requiring_local_parents()
     .execute(pool)
     .await
     .expect("external companion ID does not require a local parent");
-    sqlx::query(
-        "UPDATE channel_plugins \
-         SET companion_id = NULL, public_agent_id = ? WHERE channel_plugin_id = ?",
-    )
-    .bind(&public_agent_id)
-    .bind(&plugin_id)
-    .execute(pool)
-    .await
-    .expect("external public-agent ID does not require a local parent");
     sqlx::query(
         "INSERT INTO knowledge_bindings \
          (knowledge_binding_id, target_kind, target_companion_id, updated_at) \
@@ -1173,8 +1120,7 @@ async fn external_owner_columns_enforce_uuidv7_without_requiring_local_parents()
     .expect("external companion token ID does not require a local parent");
 
     for statement in [
-        "UPDATE channel_plugins SET public_agent_id = 'public_agent_bad' WHERE channel_plugin_id = ?",
-        "UPDATE channel_plugins SET companion_id = 'companion_bad', public_agent_id = NULL WHERE channel_plugin_id = ?",
+        "UPDATE channel_plugins SET companion_id = 'companion_bad' WHERE channel_plugin_id = ?",
     ] {
         assert!(
             sqlx::query(statement)
@@ -1214,10 +1160,8 @@ async fn scalar_external_business_ids_require_uuidv7_without_parent_existence() 
     let database = init_database_memory().await.expect("database");
     let pool = database.pool();
     let companion_id = nomifun_common::CompanionId::new();
-    let public_agent_id = nomifun_common::PublicAgentId::new();
     let knowledge_binding_id = nomifun_common::KnowledgeBindingId::new();
     let plugin_a = nomifun_common::ChannelPluginId::new();
-    let plugin_b = nomifun_common::ChannelPluginId::new();
 
     sqlx::query(
         "INSERT INTO channel_plugins \
@@ -1229,16 +1173,6 @@ async fn scalar_external_business_ids_require_uuidv7_without_parent_existence() 
     .execute(pool)
     .await
     .expect("external companion need not have a SQLite parent");
-    sqlx::query(
-        "INSERT INTO channel_plugins \
-         (channel_plugin_id, type, name, enabled, config, public_agent_id, created_at, updated_at) \
-         VALUES (?, 'test-agent', 'external public agent', 1, '{}', ?, 1, 1)",
-    )
-    .bind(plugin_b.as_str())
-    .bind(public_agent_id.as_str())
-    .execute(pool)
-    .await
-    .expect("external public agent need not have a SQLite parent");
     sqlx::query(
         "INSERT INTO companion_access_token (companion_id, token_hash, created_at) \
          VALUES (?, 'hash', 1)",
@@ -1264,10 +1198,6 @@ async fn scalar_external_business_ids_require_uuidv7_without_parent_existence() 
          (channel_plugin_id, type, name, enabled, config, companion_id, created_at, updated_at) \
          VALUES ('0190f5fe-7c00-7a00-8000-000000000201', 'invalid-companion', \
                  'invalid companion', 1, '{}', '1', 1, 1)",
-        "INSERT INTO channel_plugins \
-         (channel_plugin_id, type, name, enabled, config, public_agent_id, created_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8000-000000000202', 'invalid-agent', \
-                 'invalid agent', 1, '{}', '1', 1, 1)",
         "INSERT INTO companion_access_token (companion_id, token_hash, created_at) \
          VALUES ('1', 'invalid', 1)",
         "INSERT INTO knowledge_bindings \

@@ -68,6 +68,9 @@ use nomifun_knowledge::{
 #[path = "service_test/acp_error_recovery_test.rs"]
 mod acp_error_recovery_test;
 
+#[path = "service_test/summon_test.rs"]
+mod summon_test;
+
 const SQLITE_TEST_OWNER: &str = "0190f5fe-7c00-7a00-8000-000000000001";
 const TEST_USER_1: &str = "0190f5fe-7c00-7a00-8000-000000000011";
 const TEST_USER_2: &str = "0190f5fe-7c00-7a00-8000-000000000012";
@@ -640,6 +643,8 @@ impl IConversationRepository for MockRepo {
             result_ok: None,
             result_text: None,
             result_error: None,
+            result_error_code: None,
+            result_error_retryable: None,
             created_at: now,
             updated_at: now,
             completed_at: None,
@@ -789,6 +794,8 @@ impl IConversationRepository for MockRepo {
             receipt.result_ok = Some(completion.result_ok);
             receipt.result_text = completion.result_text.clone();
             receipt.result_error = completion.result_error.clone();
+            receipt.result_error_code = completion.result_error_code.clone();
+            receipt.result_error_retryable = completion.result_error_retryable;
             receipt.updated_at = receipt.updated_at.max(completed_at);
             receipt.completed_at = Some(completed_at.max(receipt.created_at));
         }
@@ -818,6 +825,8 @@ impl IConversationRepository for MockRepo {
         expected_admission_epoch: i64,
         expected_active_operation_id: Option<&str>,
         _reason: &str,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
         completed_at: TimestampMs,
     ) -> Result<TurnLifecycleTransition, DbError> {
         if let Some(operation_id) = expected_active_operation_id {
@@ -856,6 +865,8 @@ impl IConversationRepository for MockRepo {
                 receipt.result_ok = Some(false);
                 receipt.result_text = None;
                 receipt.result_error = Some(_reason.to_owned());
+                receipt.result_error_code = result_error_code.map(str::to_owned);
+                receipt.result_error_retryable = result_error_retryable;
                 receipt.updated_at = receipt.updated_at.max(completed_at);
                 receipt.completed_at =
                     Some(completed_at.max(receipt.created_at));
@@ -1701,17 +1712,33 @@ async fn preset_resolved_nomi_model_does_not_bypass_explicit_template_authority(
     ] {
         nomifun_db::sqlx::query(
             "INSERT INTO providers (\
-                provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-                capabilities, created_at, updated_at\
+                provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+                created_at, updated_at\
              ) VALUES (?, 'openai', ?, 'https://example.invalid', \
-                       'encrypted', ?, 1, '[]', 1, 1)",
+                       'encrypted', 1, 1, 1)",
         )
         .bind(provider_id)
         .bind(provider_id)
-        .bind(models)
         .execute(database.pool())
         .await
         .unwrap();
+        for (index, model) in serde_json::from_str::<Vec<String>>(models)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+        {
+            nomifun_db::sqlx::query(
+                "INSERT INTO provider_models \
+                 (provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at) \
+                 VALUES (?, ?, 1, ?, '[]', '[]', '{}', 'inferred', 1, 1)",
+            )
+            .bind(provider_id)
+            .bind(model)
+            .bind(index as i64)
+            .execute(database.pool())
+            .await
+            .unwrap();
+        }
     }
     nomifun_db::sqlx::query(
         "INSERT INTO presets \
@@ -2807,10 +2834,19 @@ async fn delete_rejects_soft_deleted_execution_attempt_transcript() {
     let database = init_database_memory().await.unwrap();
     nomifun_db::sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?1, 'openai', 'test', 'https://example.invalid', \
-                   'encrypted', '[\"model_test\"]', 1, '[]', 1, 1)",
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'model_test', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
     )
     .bind(PROVIDER_ID_1)
     .execute(database.pool())
@@ -6437,6 +6473,78 @@ async fn idempotent_send_replay_reuses_pending_turn_and_completed_receipt() {
 }
 
 #[tokio::test]
+async fn empty_final_text_finish_persists_structured_error_code_on_receipt() {
+    const USER_ID: &str = SQLITE_TEST_OWNER;
+
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> =
+        Arc::new(MockAgentRuntimeRegistry::new());
+    let svc = ConversationService::new(
+        Arc::<str>::from(USER_ID),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let workspace = isolated_test_workspace("empty-final-text-code");
+    let request: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "agent_id": TEST_ACP_AGENT_ID, "workspace": workspace }
+    }))
+    .unwrap();
+    let conversation = svc.create(USER_ID, request).await.unwrap();
+    let operation_id = "execution:decision:empty-final-text";
+
+    // The mock agent terminates with Finish and no streamed text, which is
+    // exactly the historical asymmetry: result_ok = false without any error
+    // reason. D4 requires the structured code to name it.
+    svc.send_message_idempotent(
+        USER_ID,
+        &conversation.conversation_id,
+        operation_id,
+        make_send_req(),
+        &runtime_registry,
+    )
+    .await
+    .unwrap();
+    wait_for_turn_released(&svc, &conversation.conversation_id).await;
+
+    let receipt = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let receipt = repo
+                .get_delivery_receipt(
+                    USER_ID,
+                    &conversation.conversation_id,
+                    operation_id,
+                )
+                .await
+                .unwrap();
+            if let Some(receipt) = receipt
+                && receipt.status == "completed"
+            {
+                return receipt;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("turn receipt must reach its terminal state");
+    assert_eq!(receipt.result_ok, Some(false));
+    assert_eq!(receipt.result_error_code.as_deref(), Some("empty_final_text"));
+    assert_eq!(receipt.result_error_retryable, Some(false));
+    assert_eq!(
+        receipt.result_error, None,
+        "the legacy free-text column keeps its historical Finish shape"
+    );
+}
+
+#[tokio::test]
 async fn public_idempotent_send_reuses_one_turn_and_never_restarts_after_completion() {
     const USER_ID: &str = SQLITE_TEST_OWNER;
     const CLIENT_KEY: &str = "0190f5fe-7c00-7a00-8000-000000000777";
@@ -7457,10 +7565,19 @@ async fn agent_execution_admission_cutpoint_fixture(
     let database = init_database_memory().await.unwrap();
     nomifun_db::sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?1, 'openai', 'test', 'https://example.invalid', \
-                   'encrypted', '[\"model_test\"]', 1, '[]', 1, 1)",
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'model_test', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
     )
     .bind(PROVIDER_ID_1)
     .execute(database.pool())
@@ -7779,6 +7896,8 @@ async fn finish_exact_sqlite_turn_for_test(
                 result_ok: false,
                 result_text: None,
                 result_error: Some("fixture terminal proof".to_owned()),
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now_ms(),
         )
@@ -8370,6 +8489,8 @@ async fn background_reconcile_stale_operation_cannot_settle_or_terminate_success
             result_ok: false,
             result_text: None,
             result_error: Some("settled A".to_owned()),
+            result_error_code: None,
+            result_error_retryable: None,
         },
         now_ms(),
     )
@@ -8639,6 +8760,8 @@ async fn boot_reconcile_treats_exact_terminal_generation_as_noop_without_buildin
                 result_ok: true,
                 result_text: Some("completed before restart".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now_ms(),
         )
@@ -8679,6 +8802,300 @@ async fn boot_reconcile_treats_exact_terminal_generation_as_noop_without_buildin
         "an absorbing terminal generation is read-only during boot"
     );
 }
+
+/// Test-side terminal-proof authority: proves the exact generation it was
+/// armed with and records every consultation.
+struct StubTerminalProofProvider {
+    proves: Mutex<HashMap<String, (i64, Option<String>)>>,
+    consultations: Mutex<Vec<(String, crate::terminal_proof::OrphanProofRequirement)>>,
+}
+
+impl StubTerminalProofProvider {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            proves: Mutex::new(HashMap::new()),
+            consultations: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn arm(&self, conversation_id: &str, epoch: i64, operation_id: Option<&str>) {
+        self.proves.lock().unwrap().insert(
+            conversation_id.to_owned(),
+            (epoch, operation_id.map(str::to_owned)),
+        );
+    }
+
+    fn consultations(&self) -> Vec<(String, crate::terminal_proof::OrphanProofRequirement)> {
+        self.consultations.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::terminal_proof::TurnTerminalProofProvider for StubTerminalProofProvider {
+    async fn prove_orphan_generation_terminal(
+        &self,
+        _user_id: &str,
+        conversation_id: &str,
+        requirement: crate::terminal_proof::OrphanProofRequirement,
+        admission_epoch: i64,
+        active_operation_id: Option<&str>,
+    ) -> crate::terminal_proof::TerminalProofDecision {
+        self.consultations
+            .lock()
+            .unwrap()
+            .push((conversation_id.to_owned(), requirement));
+        match self.proves.lock().unwrap().get(conversation_id) {
+            Some((epoch, operation))
+                if *epoch == admission_epoch
+                    && operation.as_deref() == active_operation_id =>
+            {
+                crate::terminal_proof::TerminalProofDecision::Proven {
+                    evidence: "stub terminal proof".to_owned(),
+                }
+            }
+            _ => crate::terminal_proof::TerminalProofDecision::Unproven {
+                reason: "stub provider was not armed for this generation".to_owned(),
+            },
+        }
+    }
+}
+
+#[tokio::test]
+async fn boot_reconcile_heals_proven_orphan_as_interrupted_failure() {
+    for (index, backend) in [
+        AgentType::Nomi.serde_name(),
+        AgentType::Acp.serde_name(),
+        AgentType::Nanobot.serde_name(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = format!("boot-heal-proven-{index}");
+        let (service, repo, slow_registry, runtime_registry, database, conversation_id) =
+            background_reconciliation_fixture(
+                &key,
+                Arc::new(crate::NoExecutionConversationBoundary),
+            )
+            .await;
+        nomifun_db::sqlx::query(
+            "UPDATE conversations SET type = ? WHERE conversation_id = ? AND user_id = ?",
+        )
+        .bind(backend)
+        .bind(&conversation_id)
+        .bind(SQLITE_TEST_OWNER)
+        .execute(database.pool())
+        .await
+        .unwrap();
+        let (operation_id, _, _, admitted_epoch) =
+            claim_background_turn_for_test(repo.as_ref(), &conversation_id, &key).await;
+
+        let provider = StubTerminalProofProvider::new();
+        provider.arm(&conversation_id, admitted_epoch, Some(&operation_id));
+        service.with_terminal_proof_provider(provider.clone());
+
+        assert_eq!(
+            service
+                .reconcile_locally_quiescent_orphan_on_boot(
+                    SQLITE_TEST_OWNER,
+                    &conversation_id,
+                    &runtime_registry,
+                )
+                .await
+                .unwrap(),
+            QuiescentOrphanReconciliation::Reconciled,
+            "{backend}"
+        );
+
+        // The healed generation is a durable, structured interrupted failure.
+        let row = repo.get(&conversation_id).await.unwrap().unwrap();
+        assert_eq!(row.status.as_deref(), Some("finished"), "{backend}");
+        let admission = repo
+            .get_turn_admission_state(SQLITE_TEST_OWNER, &conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(admission.epoch, admitted_epoch + 1, "{backend}");
+        assert!(admission.active_operation_id.is_none(), "{backend}");
+        let receipt = repo
+            .get_delivery_receipt(SQLITE_TEST_OWNER, &conversation_id, &operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.status, "completed", "{backend}");
+        assert_eq!(receipt.result_ok, Some(false), "{backend}");
+        assert_eq!(
+            receipt.result_error_code.as_deref(),
+            Some(crate::relay_error_code::INTERRUPTED_BY_RESTART),
+            "{backend}"
+        );
+        assert_eq!(receipt.result_error_retryable, Some(true), "{backend}");
+
+        // Healing never constructs a runtime; it surfaces a persisted tips
+        // row and re-opens sending on next admission.
+        assert_eq!(slow_registry.build_calls(), 0, "{backend}");
+        let messages = repo
+            .get_messages(&conversation_id, 1, 50, SortOrder::Asc)
+            .await
+            .unwrap();
+        assert!(
+            messages.items.iter().any(|message| {
+                message.r#type == "tips"
+                    && message.status.as_deref() == Some("error")
+                    && message
+                        .content
+                        .contains(crate::relay_error_code::INTERRUPTED_BY_RESTART)
+            }),
+            "{backend}: healed turn must persist an interrupted-by-restart tip"
+        );
+
+        // Idempotent replay: the healed generation is terminal, so a second
+        // boot pass is a read-only no-op.
+        assert_eq!(
+            service
+                .reconcile_locally_quiescent_orphan_on_boot(
+                    SQLITE_TEST_OWNER,
+                    &conversation_id,
+                    &runtime_registry,
+                )
+                .await
+                .unwrap(),
+            QuiescentOrphanReconciliation::AlreadyTerminal,
+            "{backend}"
+        );
+
+        // A fresh admission works after healing: the conversation is usable.
+        let (_, _, _, next_epoch) =
+            claim_background_turn_for_test(repo.as_ref(), &conversation_id, "post-heal").await;
+        assert_eq!(next_epoch, admitted_epoch + 2, "{backend}");
+    }
+}
+
+#[tokio::test]
+async fn boot_reconcile_keeps_remote_backend_quarantined_even_with_provider() {
+    const KEY: &str = "boot-remote-stays-quarantined";
+    let (service, repo, _slow_registry, runtime_registry, database, conversation_id) =
+        background_reconciliation_fixture(
+            KEY,
+            Arc::new(crate::NoExecutionConversationBoundary),
+        )
+        .await;
+    nomifun_db::sqlx::query(
+        "UPDATE conversations SET type = ? WHERE conversation_id = ? AND user_id = ?",
+    )
+    .bind(AgentType::Remote.serde_name())
+    .bind(&conversation_id)
+    .bind(SQLITE_TEST_OWNER)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    let (operation_id, _, _, admitted_epoch) =
+        claim_background_turn_for_test(repo.as_ref(), &conversation_id, KEY).await;
+
+    let provider = StubTerminalProofProvider::new();
+    provider.arm(&conversation_id, admitted_epoch, Some(&operation_id));
+    service.with_terminal_proof_provider(provider.clone());
+
+    service
+        .reconcile_locally_quiescent_orphan_on_boot(
+            SQLITE_TEST_OWNER,
+            &conversation_id,
+            &runtime_registry,
+        )
+        .await
+        .expect_err("remote work cannot be proven terminal locally");
+    assert!(
+        provider.consultations().is_empty(),
+        "an external-execution backend must never consult a local proof provider"
+    );
+    let row = repo.get(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(row.status.as_deref(), Some("running"));
+    let receipt = repo
+        .get_delivery_receipt(SQLITE_TEST_OWNER, &conversation_id, &operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.status, "accepted");
+}
+
+#[tokio::test]
+async fn boot_reconcile_stays_quarantined_when_proof_generation_mismatches() {
+    const KEY: &str = "boot-heal-generation-mismatch";
+    let (service, repo, _slow_registry, runtime_registry, _database, conversation_id) =
+        background_reconciliation_fixture(
+            KEY,
+            Arc::new(crate::NoExecutionConversationBoundary),
+        )
+        .await;
+    let (operation_id, _, _, admitted_epoch) =
+        claim_background_turn_for_test(repo.as_ref(), &conversation_id, KEY).await;
+
+    // Armed for a *different* generation: the provider must refuse and the
+    // sweep must keep the fail-closed Conflict.
+    let provider = StubTerminalProofProvider::new();
+    provider.arm(&conversation_id, admitted_epoch + 1, Some(&operation_id));
+    service.with_terminal_proof_provider(provider);
+
+    service
+        .reconcile_locally_quiescent_orphan_on_boot(
+            SQLITE_TEST_OWNER,
+            &conversation_id,
+            &runtime_registry,
+        )
+        .await
+        .expect_err("a generation outside the boot-frozen snapshot must stay quarantined");
+    let row = repo.get(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(row.status.as_deref(), Some("running"));
+    let receipt = repo
+        .get_delivery_receipt(SQLITE_TEST_OWNER, &conversation_id, &operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.status, "accepted");
+}
+
+#[tokio::test]
+async fn background_reconcile_heals_proven_orphan_and_reports_terminal_reread() {
+    const KEY: &str = "background-heal-proven";
+    let (service, repo, slow_registry, runtime_registry, _database, conversation_id) =
+        background_reconciliation_fixture(
+            KEY,
+            Arc::new(crate::NoExecutionConversationBoundary),
+        )
+        .await;
+    let (operation_id, _, _, admitted_epoch) =
+        claim_background_turn_for_test(repo.as_ref(), &conversation_id, KEY).await;
+
+    let provider = StubTerminalProofProvider::new();
+    provider.arm(&conversation_id, admitted_epoch, Some(&operation_id));
+    service.with_terminal_proof_provider(provider);
+
+    assert_eq!(
+        service
+            .reconcile_quiescent_running_turn_for_background(
+                SQLITE_TEST_OWNER,
+                &conversation_id,
+                KEY,
+                &runtime_registry,
+            )
+            .await
+            .unwrap(),
+        BackgroundTurnReconciliationDisposition::ReconciledOrTerminalReRead
+    );
+    let receipt = repo
+        .get_delivery_receipt(SQLITE_TEST_OWNER, &conversation_id, &operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.status, "completed");
+    assert_eq!(receipt.result_ok, Some(false));
+    assert_eq!(
+        receipt.result_error_code.as_deref(),
+        Some(crate::relay_error_code::INTERRUPTED_BY_RESTART)
+    );
+    let row = repo.get(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(row.status.as_deref(), Some("finished"));
+    assert_eq!(slow_registry.build_calls(), 0);
+}
+
 
 async fn wait_for_public_admission_terminal(
     repo: &SqliteConversationRepository,
@@ -9708,6 +10125,8 @@ async fn completed_turn_receipt_read_boundaries_adopt_its_still_active_running_g
             true,
             Some("authoritative public result"),
             None,
+            None,
+            None,
             now_ms(),
         )
         .await
@@ -9775,6 +10194,8 @@ async fn completed_turn_receipt_read_boundaries_adopt_its_still_active_running_g
             false,
             None,
             Some("authoritative internal result"),
+            None,
+            None,
             now_ms(),
         )
         .await
@@ -9833,6 +10254,8 @@ async fn completed_turn_receipt_read_boundaries_adopt_its_still_active_running_g
             &proof_operation,
             true,
             Some("authoritative proof result"),
+            None,
+            None,
             None,
             now_ms(),
         )
@@ -9899,6 +10322,8 @@ async fn completed_turn_receipt_read_boundaries_adopt_its_still_active_running_g
             &edit_operation,
             true,
             Some("authoritative edit result"),
+            None,
+            None,
             None,
             now_ms(),
         )
@@ -11162,7 +11587,8 @@ async fn send_message_turn_writeback_runs_after_system_continuation_final_answer
         .expect("knowledge.writeback should be broadcast");
     assert!(
         first_writeback_idx < turn_idx,
-        "turn completion must remain behind durable turn-final knowledge writeback"
+        "the durable write-back start intent must be published before turn completion; \
+         the terminal state itself is detached and may land after it"
     );
     let final_writeback_idx = events
         .iter()
@@ -11237,19 +11663,27 @@ async fn send_message_turn_writeback_runs_after_system_continuation_final_answer
 }
 
 #[tokio::test]
-async fn stop_during_slow_turn_writeback_keeps_exact_turn_fenced_until_child_quiesces() {
+async fn slow_turn_writeback_completes_turn_immediately_and_never_blocks_next_send() {
     const USER_ID: &str = SQLITE_TEST_OWNER;
     const FIRST_KEY: &str = "slow-turn-final-writeback-first";
     const SECOND_KEY: &str = "slow-turn-final-writeback-second";
-    const STOP_RACE_KEY: &str = "slow-turn-final-writeback-stop-race";
 
     let database = init_database_memory().await.unwrap();
     nomifun_db::sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?1, 'openai', 'writeback fixture', 'https://example.invalid', \
-                   'encrypted', '[\"m1\"]', 1, '[]', 1, 1)",
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'm1', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
     )
     .bind(PROVIDER_ID_1)
     .execute(database.pool())
@@ -11372,174 +11806,37 @@ async fn stop_during_slow_turn_writeback_keeps_exact_turn_fenced_until_child_qui
     tokio::time::timeout(Duration::from_secs(2), completer.wait_started())
         .await
         .expect("turn-final writeback should start");
-    let first_writeback_msg_id = broadcaster
-        .take_events()
-        .into_iter()
+
+    // The turn must complete and release immediately after the model
+    // terminal, while the detached knowledge write-back is still blocked
+    // inside its completer call.
+    wait_for_turn_released(&svc, &conv.conversation_id).await;
+
+    let mut observed_events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            observed_events.extend(broadcaster.take_events());
+            if observed_events.iter().any(|event| event.name == "turn.completed") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("turn.completed must be published while the writeback is still running");
+    let first_writeback_msg_id = observed_events
+        .iter()
         .find(|event| {
             event.name == "knowledge.writeback" && event.data["status"] == "started"
         })
         .and_then(|event| event.data["msg_id"].as_str().map(ToOwned::to_owned))
         .expect("first writeback started event should identify its assistant row");
 
-    let second_req: SendMessageRequest = serde_json::from_value(json!({ "content": "second" })).unwrap();
-    let second = svc
-        .send_message_with_idempotency_key(
-            USER_ID,
-            &conv.conversation_id,
-            SECOND_KEY,
-            second_req,
-            &runtime_registry_dyn,
-        )
-        .await;
-
-    assert!(
-        matches!(second, Err(AppError::Conflict(_))),
-        "slow turn-final writeback must retain exact turn ownership: {second:?}"
-    );
-    let running = svc.runtime_summary_for(&conv.conversation_id).await;
-    assert!(running.is_processing);
-    assert!(!running.can_send_message);
-    assert_eq!(
-        repo.get(&conv.conversation_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .status
-            .as_deref(),
-        Some("running")
-    );
-    assert!(
-        !broadcaster
-            .take_events()
-            .into_iter()
-            .any(|event| event.name == "turn.completed"),
-        "turn.completed must not precede writeback terminal persistence"
-    );
-
-    // Elapsed time has no authority to fabricate a terminal result or release
-    // the exact turn while the real knowledge worker is still alive.
-    tokio::time::sleep(Duration::from_millis(5_200)).await;
-    let events_before_release = broadcaster.take_events();
-    assert!(
-        !events_before_release.iter().any(|event| {
-            event.name == "knowledge.writeback"
-                && event.data["msg_id"].as_str()
-                    == Some(first_writeback_msg_id.as_str())
-                && event.data["status"] == "interrupted"
-        }),
-        "crossing the old five-second grace must not fabricate an interrupted terminal"
-    );
-
-    let cancel_task = {
-        let service = svc.clone();
-        let conversation_id = conv.conversation_id.clone();
-        let runtime_registry = Arc::clone(&runtime_registry_dyn);
-        tokio::spawn(async move {
-            service
-                .cancel(USER_ID, &conversation_id, &runtime_registry)
-                .await
-        })
-    };
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while runtime_registry.termination_count() == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("stop should prove backend teardown while writeback remains blocked");
-    assert!(
-        !cancel_task.is_finished(),
-        "backend exit alone must not bypass the tracked writeback fence"
-    );
-
-    assert_eq!(
-        repo.get(&conv.conversation_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .status
-            .as_deref(),
-        Some("running"),
-        "stop must retain durable Running until writeback publication quiesces"
-    );
-    let operation_id = format!(
-        "public-turn:v1:{USER_ID}:{}:{FIRST_KEY}",
-        conv.conversation_id
-    );
-    let accepted = repo
-        .get_delivery_receipt(USER_ID, &conv.conversation_id, &operation_id)
-        .await
-        .unwrap()
-        .expect("the blocked exact turn must retain its durable receipt");
-    assert_eq!(accepted.status, "accepted");
-    let events_during_stop = broadcaster.take_events();
-    assert!(
-        !events_during_stop
-            .iter()
-            .any(|event| event.name == "turn.completed"),
-        "stop must not publish completion while its writeback child is active"
-    );
-
-    let stop_race = tokio::time::timeout(
-        Duration::from_secs(2),
-        svc.send_message_with_idempotency_key(
-            USER_ID,
-            &conv.conversation_id,
-            STOP_RACE_KEY,
-            serde_json::from_value(json!({ "content": "must stay fenced" })).unwrap(),
-            &runtime_registry_dyn,
-        ),
-    )
-    .await
-    .expect("the stop tombstone should reject a successor without waiting");
-    assert!(
-        matches!(stop_race, Err(AppError::Conflict(_))),
-        "a replacement send must remain fenced while stop awaits writeback: {stop_race:?}"
-    );
-
-    completer.release();
-    tokio::time::timeout(Duration::from_secs(6), cancel_task)
-    .await
-    .expect("stop should finish after the real writeback terminal")
-    .expect("stop task should not panic")
-    .expect("stop should finalize the exact generation");
-
-    let mut terminal_events = events_during_stop;
-    terminal_events.extend(broadcaster.take_events());
-    let writeback_index = terminal_events
-        .iter()
-        .position(|event| {
-            event.name == "knowledge.writeback"
-                && event.data["msg_id"].as_str() == Some(first_writeback_msg_id.as_str())
-                && event.data["status"] == "failed"
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "released writeback should reach its real terminal state: {:?}",
-                terminal_events
-                    .iter()
-                    .filter(|event| event.name == "knowledge.writeback")
-                    .map(|event| (
-                        event.data["msg_id"].as_str(),
-                        event.data["status"].as_str(),
-                        event.data["retryable"].as_bool(),
-                    ))
-                    .collect::<Vec<_>>()
-            )
-        });
-    let completion_index = terminal_events
-        .iter()
-        .position(|event| event.name == "turn.completed")
-        .expect("stop should publish one completion after durable closure");
-    assert!(
-        writeback_index < completion_index,
-        "knowledge writeback terminal must precede turn.completed"
-    );
-    let failed = &terminal_events[writeback_index];
-    assert_eq!(failed.data["retryable"], true);
-    wait_for_turn_released(&svc, &conv.conversation_id).await;
     let idle = svc.runtime_summary_for(&conv.conversation_id).await;
-    assert!(!idle.is_processing);
+    assert!(
+        !idle.is_processing,
+        "a blocked detached writeback must not keep the conversation processing"
+    );
     assert!(idle.can_send_message);
     assert_eq!(
         repo.get(&conv.conversation_id)
@@ -11548,15 +11845,70 @@ async fn stop_during_slow_turn_writeback_keeps_exact_turn_fenced_until_child_qui
             .unwrap()
             .status
             .as_deref(),
-        Some("finished")
+        Some("finished"),
+        "the turn must durably finish while the writeback worker is still alive"
+    );
+    let operation_id = format!(
+        "public-turn:v1:{USER_ID}:{}:{FIRST_KEY}",
+        conv.conversation_id
     );
     let completed_receipt = repo
         .get_delivery_receipt(USER_ID, &conv.conversation_id, &operation_id)
         .await
         .unwrap()
-        .expect("stop must settle the accepted exact-turn receipt");
+        .expect("the completed exact turn must settle its durable receipt");
     assert_eq!(completed_receipt.status, "completed");
-    assert_eq!(completed_receipt.result_ok, Some(false));
+    assert_eq!(completed_receipt.result_ok, Some(true));
+
+    // A live detached run must project as running (not interrupted): the
+    // in-flight run guard is what keeps the read-time orphan projection
+    // truthful while the worker is still blocked.
+    let projected = svc
+        .get_message(USER_ID, &conv.conversation_id, &first_writeback_msg_id)
+        .await
+        .expect("assistant message must stay readable during a live writeback");
+    let projected_status = projected.content["knowledge_writeback"]["status"]
+        .as_str()
+        .expect("live writeback state should be present on the assistant row")
+        .to_owned();
+    assert!(
+        matches!(projected_status.as_str(), "started" | "extracting" | "writing"),
+        "a live detached writeback must not be projected as interrupted: {projected_status}"
+    );
+
+    // The next ordinary user message is admitted and runs to completion
+    // while the previous turn's writeback is still blocked.
+    let second_req: SendMessageRequest = serde_json::from_value(json!({ "content": "second" })).unwrap();
+    svc.send_message_with_idempotency_key(
+        USER_ID,
+        &conv.conversation_id,
+        SECOND_KEY,
+        second_req,
+        &runtime_registry_dyn,
+    )
+    .await
+    .expect("a blocked detached writeback must never fence the next send");
+    wait_for_turn_released(&svc, &conv.conversation_id).await;
+
+    completer.release();
+
+    // The released worker publishes its real (failed, retryable) terminal
+    // long after the owning turn completed — completion never waited for it.
+    let failed = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            if let Some(event) = broadcaster.take_events().into_iter().find(|event| {
+                event.name == "knowledge.writeback"
+                    && event.data["msg_id"].as_str() == Some(first_writeback_msg_id.as_str())
+                    && event.data["status"] == "failed"
+            }) {
+                break event;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("released writeback should reach its real terminal state");
+    assert_eq!(failed.data["retryable"], true);
 
     let stored = repo
         .get_message(&conv.conversation_id, &first_writeback_msg_id)
@@ -12326,6 +12678,8 @@ async fn agent_execution_steer_operation_cannot_cross_turn_generation() {
                 result_ok: false,
                 result_text: None,
                 result_error: Some("turn A ended".to_owned()),
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now_ms(),
         )
@@ -13646,10 +14000,19 @@ async fn edit_resubmit_rebuilds_a_missing_terminal_runtime_before_rewind() {
     let database = init_database_memory().await.unwrap();
     nomifun_db::sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?1, 'openai', 'edit fixture', 'https://example.invalid', \
-                   'encrypted', '[\"m1\"]', 1, '[]', 1, 1)",
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'm1', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
     )
     .bind(PROVIDER_ID_1)
     .execute(database.pool())
@@ -13726,6 +14089,8 @@ async fn edit_resubmit_rebuilds_a_missing_terminal_runtime_before_rewind() {
                 result_ok: true,
                 result_text: None,
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now_ms(),
         )
@@ -13815,10 +14180,19 @@ async fn edit_rewind_then_transcript_delete_failure_quarantines_runtime_before_f
     let database = init_database_memory().await.unwrap();
     nomifun_db::sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?1, 'openai', 'edit fixture', 'https://example.invalid', \
-                   'encrypted', '[\"m1\"]', 1, '[]', 1, 1)",
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'm1', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
     )
     .bind(PROVIDER_ID_1)
     .execute(database.pool())
@@ -14153,11 +14527,10 @@ async fn view_warmup_of_finished_writeback_session_never_builds_or_reconciles_mo
         KnowledgeEventEmitter::new(broadcaster.clone(), Arc::from(USER_ID)),
     ));
     svc.with_knowledge_service(knowledge.clone());
+    let (writeback_provider, writeback_rows) = test_provider(PROVIDER_ID_1, &["knowledge-model"]);
     svc.with_failover_deps(
-        Arc::new(StubProviderRepo::new(vec![test_provider(
-            PROVIDER_ID_1,
-            &["knowledge-model"],
-        )])),
+        Arc::new(StubProviderRepo::new(vec![writeback_provider])),
+        Arc::new(StubProviderModelRepo::new(writeback_rows)),
         Arc::new(FixedClientPrefRepo {
             preferences: vec![ClientPreference {
                 id: 1,
@@ -14300,6 +14673,21 @@ async fn view_warmup_of_finished_writeback_session_never_builds_or_reconciles_mo
         Some("finished"),
         "the exact keyed finalizer, not a generic status shortcut, must close the aggregate"
     );
+
+    // The turn-final write-back is detached from turn completion; wait for its
+    // durable terminal before asserting the mutated mount content it produces.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if broadcaster.take_events().into_iter().any(|event| {
+                event.name == "knowledge.writeback" && event.data["status"] == "written"
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("detached turn-final writeback should reach its written terminal");
 
     let mutated_plan = knowledge
         .prepare_mounts_for_session(&workpath_key, &workspace)
@@ -15319,48 +15707,58 @@ use nomifun_db::{
     CreateProviderParams, IClientPreferenceRepository, IProviderRepository, UpdateProviderParams,
 };
 
-/// Provider repo stub: serves a fixed candidate set to the picker and records
-/// any `model_health` write so a test can assert the unhealthy stamp.
+/// Provider repo stub: serves a fixed candidate set to the picker.
 struct StubProviderRepo {
     providers: Vec<Provider>,
-    health_writes: Mutex<Vec<(String, String)>>,
 }
 
 impl StubProviderRepo {
     fn new(providers: Vec<Provider>) -> Self {
-        Self {
-            providers,
-            health_writes: Mutex::new(vec![]),
-        }
-    }
-
-    fn health_writes(&self) -> Vec<(String, String)> {
-        self.health_writes.lock().unwrap().clone()
+        Self { providers }
     }
 }
 
-fn test_provider(id: &str, models: &[&str]) -> Provider {
-    Provider {
+/// A provider fixture plus its `provider_models` rows (the per-model catalog
+/// lives exclusively on rows since migration 016).
+fn test_provider(id: &str, models: &[&str]) -> (Provider, Vec<nomifun_db::ProviderModelRow>) {
+    let provider = Provider {
         id: 0,
         provider_id: id.into(),
         platform: "openai".into(),
         name: id.into(),
         base_url: "https://example.com".into(),
         api_key_encrypted: "x".into(),
-        models: serde_json::to_string(models).unwrap(),
         enabled: true,
-        capabilities: "[]".into(),
-        model_context_limits: None,
-        model_protocols: None,
-        model_descriptions: None,
-        model_enabled: None,
-        model_health: None,
         bedrock_config: None,
         is_full_url: false,
         sort_order: 0,
         created_at: 0,
         updated_at: 0,
-    }
+    };
+    let rows = models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| nomifun_db::ProviderModelRow {
+            id: 0,
+            provider_id: id.into(),
+            model: (*model).into(),
+            enabled: true,
+            sort_order: index as i64,
+            tasks: "[]".into(),
+            traits: "[]".into(),
+            protocol: None,
+            connection_role: None,
+            params: "{}".into(),
+            context_limit: None,
+            description: None,
+            source: "inferred".into(),
+            health: None,
+            health_checked_at: None,
+            created_at: 0,
+            updated_at: 0,
+        })
+        .collect();
+    (provider, rows)
 }
 
 #[async_trait::async_trait]
@@ -15378,10 +15776,7 @@ impl IProviderRepository for StubProviderRepo {
     async fn create(&self, _params: CreateProviderParams<'_>) -> Result<Provider, DbError> {
         unimplemented!("not used in failover tests")
     }
-    async fn update(&self, id: &str, params: UpdateProviderParams<'_>) -> Result<Provider, DbError> {
-        if let Some(Some(health)) = params.model_health {
-            self.health_writes.lock().unwrap().push((id.to_owned(), health.to_owned()));
-        }
+    async fn update(&self, id: &str, _params: UpdateProviderParams<'_>) -> Result<Provider, DbError> {
         Ok(self
             .providers
             .iter()
@@ -15391,6 +15786,96 @@ impl IProviderRepository for StubProviderRepo {
     }
     async fn delete(&self, _id: &str) -> Result<(), DbError> {
         Ok(())
+    }
+}
+
+/// Provider-model row stub: serves the fixed per-model catalog to the picker
+/// and records `set_health` writes so a test can assert the unhealthy stamp.
+struct StubProviderModelRepo {
+    rows: Vec<nomifun_db::ProviderModelRow>,
+    health_writes: Mutex<Vec<(String, String, String)>>,
+}
+
+impl StubProviderModelRepo {
+    fn new(rows: Vec<nomifun_db::ProviderModelRow>) -> Self {
+        Self {
+            rows,
+            health_writes: Mutex::new(vec![]),
+        }
+    }
+
+    fn health_writes(&self) -> Vec<(String, String, String)> {
+        self.health_writes.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl nomifun_db::IProviderModelRepository for StubProviderModelRepo {
+    async fn list(&self) -> Result<Vec<nomifun_db::ProviderModelRow>, DbError> {
+        Ok(self.rows.clone())
+    }
+    async fn list_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<nomifun_db::ProviderModelRow>, DbError> {
+        Ok(self
+            .rows
+            .iter()
+            .filter(|row| row.provider_id == provider_id)
+            .cloned()
+            .collect())
+    }
+    async fn get(
+        &self,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<Option<nomifun_db::ProviderModelRow>, DbError> {
+        Ok(self
+            .rows
+            .iter()
+            .find(|row| row.provider_id == provider_id && row.model == model)
+            .cloned())
+    }
+    async fn create(
+        &self,
+        _provider_id: &str,
+        _row: &nomifun_db::NewProviderModel<'_>,
+    ) -> Result<nomifun_db::ProviderModelRow, DbError> {
+        unimplemented!("not used in failover tests")
+    }
+    async fn insert_if_absent(
+        &self,
+        _provider_id: &str,
+        _row: &nomifun_db::NewProviderModel<'_>,
+    ) -> Result<bool, DbError> {
+        unimplemented!("not used in failover tests")
+    }
+    async fn update(
+        &self,
+        _provider_id: &str,
+        _model: &str,
+        _update: &nomifun_db::ProviderModelUpdate<'_>,
+    ) -> Result<nomifun_db::ProviderModelRow, DbError> {
+        unimplemented!("not used in failover tests")
+    }
+    async fn set_health(
+        &self,
+        provider_id: &str,
+        model: &str,
+        health_json: Option<&str>,
+    ) -> Result<bool, DbError> {
+        self.health_writes.lock().unwrap().push((
+            provider_id.to_owned(),
+            model.to_owned(),
+            health_json.unwrap_or_default().to_owned(),
+        ));
+        Ok(self
+            .rows
+            .iter()
+            .any(|row| row.provider_id == provider_id && row.model == model))
+    }
+    async fn delete(&self, _provider_id: &str, _model: &str) -> Result<bool, DbError> {
+        unimplemented!("not used in failover tests")
     }
 }
 
@@ -15447,11 +15932,10 @@ impl IClientPreferenceRepository for FixedClientPrefRepo {
 #[tokio::test]
 async fn explicit_knowledge_model_preference_overrides_the_conversation_model() {
     let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
+    let (writeback_provider, writeback_rows) = test_provider(PROVIDER_ID_2, &["knowledge-model"]);
     svc.with_failover_deps(
-        Arc::new(StubProviderRepo::new(vec![test_provider(
-            PROVIDER_ID_2,
-            &["knowledge-model"],
-        )])),
+        Arc::new(StubProviderRepo::new(vec![writeback_provider])),
+        Arc::new(StubProviderModelRepo::new(writeback_rows)),
         Arc::new(FixedClientPrefRepo {
             preferences: vec![ClientPreference {
                 id: 1,
@@ -15486,11 +15970,10 @@ async fn explicit_knowledge_model_preference_overrides_the_conversation_model() 
 #[tokio::test]
 async fn invalid_explicit_knowledge_model_never_falls_back_to_session_model() {
     let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
+    let (writeback_provider, writeback_rows) = test_provider(PROVIDER_ID_1, &["session-model"]);
     svc.with_failover_deps(
-        Arc::new(StubProviderRepo::new(vec![test_provider(
-            PROVIDER_ID_1,
-            &["session-model"],
-        )])),
+        Arc::new(StubProviderRepo::new(vec![writeback_provider])),
+        Arc::new(StubProviderModelRepo::new(writeback_rows)),
         Arc::new(FixedClientPrefRepo {
             preferences: vec![ClientPreference {
                 id: 1,
@@ -15638,18 +16121,22 @@ fn pwm(provider_id: &str, model: &str) -> ProviderWithModel {
 /// events were (or were NOT) emitted for the turn — the suppressed-error
 /// failover invariant (gap #8) needs to confirm no error event reaches the wire.
 fn make_failover_service(
-    providers: Vec<Provider>,
+    providers: Vec<(Provider, Vec<nomifun_db::ProviderModelRow>)>,
 ) -> (
     ConversationService,
     Arc<MockBroadcaster>,
     Arc<MockRepo>,
-    Arc<StubProviderRepo>,
+    Arc<StubProviderModelRepo>,
 ) {
     let repo = Arc::new(MockRepo::new());
     let broadcaster = Arc::new(MockBroadcaster::new());
     let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(StubAgentMetadataRepo);
     let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
-    let provider_repo = Arc::new(StubProviderRepo::new(providers));
+    let (provider_rows, model_rows): (Vec<_>, Vec<_>) = providers.into_iter().unzip();
+    let provider_repo = Arc::new(StubProviderRepo::new(provider_rows));
+    let provider_model_repo = Arc::new(StubProviderModelRepo::new(
+        model_rows.into_iter().flatten().collect(),
+    ));
     let svc = ConversationService::new(
         Arc::<str>::from(TEST_USER_1),
         std::env::temp_dir(),
@@ -15661,8 +16148,12 @@ fn make_failover_service(
         Arc::new(StubAcpSessionRepo::default()),
         Arc::new(crate::NoExecutionConversationBoundary),
     );
-    svc.with_failover_deps(provider_repo.clone(), Arc::new(StubClientPrefRepo));
-    (svc, broadcaster, repo, provider_repo)
+    svc.with_failover_deps(
+        provider_repo.clone(),
+        provider_model_repo.clone(),
+        Arc::new(StubClientPrefRepo),
+    );
+    (svc, broadcaster, repo, provider_model_repo)
 }
 
 fn provider_fault_then_finish_agent(conv_id: &str) -> Arc<ScriptedAgent> {
@@ -15730,12 +16221,12 @@ async fn failover_pre_response_fault_rebuilds_with_next_model_and_resends() {
     assert_eq!(model.provider_id, PROVIDER_ID_2);
     assert_eq!(model.model, "m2");
 
-    // stamp_unhealthy defaults to true → failed model stamped on its provider.
+    // stamp_unhealthy defaults to true → failed model row stamped.
     let writes = provider_repo.health_writes();
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0].0, PROVIDER_ID_1);
-    assert!(writes[0].1.contains("\"m1\""), "failed model must be in the health write");
-    assert!(writes[0].1.contains("unhealthy"));
+    assert_eq!(writes[0].1, "m1", "failed model must be the stamped row");
+    assert!(writes[0].2.contains("unhealthy"));
 }
 
 #[tokio::test]

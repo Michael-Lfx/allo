@@ -5,12 +5,12 @@ pub mod agent_execution_template;
 mod bind;
 pub mod attachment;
 pub mod channel;
-pub mod connector_credential;
 mod client_preference;
 pub mod conversation;
 pub mod creation_task;
 pub mod cron;
 pub mod goal;
+pub mod customer_service;
 pub mod idmm_intervention;
 pub mod companion_token;
 pub mod knowledge;
@@ -31,11 +31,11 @@ mod sqlite_agent_execution_template;
 mod sqlite_attachment;
 mod sqlite_channel;
 mod sqlite_client_preference;
-mod sqlite_connector_credential;
 mod sqlite_conversation;
 mod sqlite_creation_task;
 mod sqlite_cron;
 mod sqlite_goal;
+mod sqlite_customer_service;
 mod sqlite_idmm_intervention;
 mod sqlite_companion_token;
 mod sqlite_knowledge;
@@ -66,13 +66,13 @@ pub use agent_execution::*;
 pub use agent_execution_template::*;
 pub use attachment::IAttachmentRepository;
 pub use channel::{
-    ChannelInboundClaim, IChannelRepository, SettleChannelInboundReceiptParams,
+    ChannelInboundClaim, IChannelRepository, PENDING_PROMPT_EXPIRY_MS,
+    PENDING_PROMPT_QUEUE_LIMIT, PendingPromptEnqueue, SettleChannelInboundReceiptParams,
 };
 pub use client_preference::IClientPreferenceRepository;
 pub(crate) use client_preference::{
     provider_preference_delete_action, ProviderPreferenceDeleteAction,
 };
-pub use connector_credential::IConnectorCredentialRepository;
 pub use conversation::IConversationRepository;
 pub use creation_task::{
     CreateCreationTaskParams, ICreationTaskRepository, ListCreationTasksParams, UpdateCreationTaskParams,
@@ -107,11 +107,11 @@ pub use sqlite_agent_execution_template::SqliteAgentExecutionTemplateRepository;
 pub use sqlite_attachment::SqliteAttachmentRepository;
 pub use sqlite_channel::SqliteChannelRepository;
 pub use sqlite_client_preference::SqliteClientPreferenceRepository;
-pub use sqlite_connector_credential::SqliteConnectorCredentialRepository;
 pub use sqlite_conversation::SqliteConversationRepository;
 pub use sqlite_creation_task::SqliteCreationTaskRepository;
 pub use sqlite_cron::SqliteCronRepository;
 pub use sqlite_goal::SqliteGoalRepository;
+pub use sqlite_customer_service::SqliteCustomerServiceRepository;
 pub use sqlite_idmm_intervention::SqliteIdmmInterventionRepository;
 pub use sqlite_companion_token::SqliteCompanionTokenRepository;
 pub use sqlite_knowledge::SqliteKnowledgeRepository;

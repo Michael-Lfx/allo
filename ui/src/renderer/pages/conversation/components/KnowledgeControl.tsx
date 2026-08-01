@@ -116,12 +116,6 @@ function getKindBadge(kind: IKnowledgeBase['kind']): KindBadgeStyle {
         textClass: 'text-[rgb(var(--success-5))]',
         borderClass: 'border-[rgba(var(--success-6),0.3)]',
       };
-    case 'feishu':
-      return {
-        bgClass: 'bg-[rgba(var(--warning-6),0.12)]',
-        textClass: 'text-[rgb(var(--warning-5))]',
-        borderClass: 'border-[rgba(var(--warning-6),0.3)]',
-      };
     case 'blank':
     default:
       return {
@@ -138,8 +132,6 @@ function kindLabel(kind: IKnowledgeBase['kind'], t: TFunction): string {
       return t('knowledge.card.kindLocal', { defaultValue: '本地文件夹' });
     case 'web':
       return t('knowledge.card.kindWeb', { defaultValue: '网页' });
-    case 'feishu':
-      return t('knowledge.card.kindFeishu', { defaultValue: '飞书' });
     case 'blank':
     default:
       return t('knowledge.card.kindBlank', { defaultValue: '空白' });
@@ -171,7 +163,6 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
   const kindLabelsByKind = useMemo(
     () => ({
       blank: kindLabel('blank', t),
-      feishu: kindLabel('feishu', t),
       local: kindLabel('local', t),
       web: kindLabel('web', t),
     }),
@@ -313,11 +304,9 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
     try {
       await ipcBridge.knowledge.setBinding.invoke({ kind, target_id: id, ...next });
       if (next.enabled !== binding.enabled) {
-        Message.success(
-          next.enabled
-            ? t('knowledge.control.enabledOk', { defaultValue: '知识已接入这场对话。' })
-            : t('knowledge.control.disabledOk')
-        );
+        const enabledKey =
+          target?.kind === 'terminal' ? 'knowledge.control.enabledOkTerminal' : 'knowledge.control.enabledOk';
+        Message.success(next.enabled ? t(enabledKey) : t('knowledge.control.disabledOk'));
         if (next.enabled) {
           setMountPulse(true);
           window.setTimeout(() => setMountPulse(false), 480);

@@ -26,10 +26,10 @@ async fn database() -> nomifun_db::Database {
     .unwrap();
     nomifun_db::sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?, 'openai', 'Fixture provider', 'https://example.invalid', \
-                   'encrypted', '[]', 1, '[]', 1, 1)",
+                   'encrypted', 1, 1, 1)",
     )
     .bind(PROVIDER_ID)
     .execute(database.pool())
@@ -640,6 +640,8 @@ async fn recovery_adopts_completed_initial_turn_receipt_without_rescheduling() {
             &operation_id,
             true,
             Some("durable result"),
+            None,
+            None,
             None,
             nomifun_common::now_ms(),
         )
@@ -1809,6 +1811,8 @@ async fn late_attempt_custodian_cannot_touch_successor_conversation_generation()
                 admitted_a.epoch,
                 Some(&operation_a),
                 "generation A was cancelled",
+                None,
+                None,
                 nomifun_common::now_ms(),
             )
             .await

@@ -1,15 +1,12 @@
 {
   "siderSection": {
-    "common": "开始",
-    "publicService": "对外服务",
+    "common": "常用",
+    "services": "服务",
     "data": "数据空间",
     "automation": "自动化",
-    "config": "配置",
     "tools": "增强工具",
     "settings": "设置"
   },
-  "navExpand": "展开应用导航",
-  "navCollapse": "隐藏侧边栏",
   "send": "发送",
   "cancel": "取消",
   "save": "保存",
@@ -19,7 +16,7 @@
   "folder": "文件夹",
   "filePicker": {
     "recent": "最近使用",
-    "chooseDifferentFolder": "打开文件夹"
+    "chooseDifferentFolder": "选择其他目录"
   },
   "upload": "上传",
   "model": "模型",
@@ -64,6 +61,7 @@
   "deleteFailed": "删除失败",
   "default": "默认",
   "defaultModel": "默认模型",
+  "modelUnavailableHint": "当前所选模型已不可用，请重新选择。",
   "escToCancel": "按 ESC 取消",
   "create": "创建",
   "createSuccess": "创建成功",
@@ -77,10 +75,10 @@
   "historyBack": "后退",
   "more": "更多",
   "refresh": "刷新",
-  "tray.showWindow": "显示 Flowy",
+  "tray.showWindow": "显示 NomiFun",
   "tray.newChat": "新建对话",
   "tray.closeToTray": "隐藏到托盘",
-  "tray.about": "关于 Flowy",
+  "tray.about": "关于 NomiFun",
   "tray.restart": "重启应用",
   "tray.quit": "退出",
   "tray.runningTasks": "运行中的任务",
@@ -88,54 +86,15 @@
   "tray.checkUpdate": "检查更新",
   "tray.recentChats": "最近对话",
   "tray.untitled": "未命名",
-  "userMenu": {
-    "creditsBalance": "积分余额",
-    "changeSkin": "换肤",
-    "contactSupport": "联系客服",
-    "contactSupportWithUnread": "联系客服，{{count}} 条未读回复",
-    "logout": "退出登录",
-    "loadingCredits": "加载中…",
-    "creditsUnavailable": "—"
-  },
-  "supportChat": {
-    "title": "联系客服",
-    "emptyHint": "请描述你遇到的问题。客服查看后会在这里回复。",
-    "composerPlaceholder": "描述你的问题…",
-    "addAttachment": "添加附件",
-    "uploadImage": "上传图片",
-    "uploadLogs": "上传日志",
-    "uploadLogsConfirm": "上传日志，仅用于排查问题，可能包含对话记录、设备信息等数据",
-    "uploadLogsReady": "日志已上传并发送",
-    "uploadLogsFailed": "日志打包、上传或发送失败",
-    "uploadLogsDefaultContent": "附上日志，请协助排查",
-    "removeLogs": "移除日志",
-    "attachmentUnavailable": "附件功能暂未开放",
-    "removeImage": "移除图片",
-    "invalidImage": "仅支持 PNG / JPG，且单张小于 5MB",
-    "imageLimitReached": "最多上传 {{count}} 张图片",
-    "uploadImageFailed": "图片上传失败",
-    "imageMessage": "图片",
-    "send": "发送",
-    "sending": "发送中",
-    "sent": "已送达",
-    "sendFailed": "发送失败",
-    "retry": "重试",
-    "recalled": "消息已撤回",
-    "loadingOlder": "加载更早消息…",
-    "connectionError": "暂时无法连接客服",
-    "syncWarning": "消息同步暂时中断，正在重试",
-    "authRequired": "登录状态已失效",
-    "relogin": "重新登录"
-  },
   "backendStartup": {
     "incompatibleRuntime": {
       "title": "当前系统不支持内置后端",
-      "description": "Flowy 已打开，但本地 Flowy 后端无法在当前 Linux 版本上运行。请升级到受支持的 Linux 发行版后重启 Flowy。",
+      "description": "NomiFun 已打开，但本地 NomiFun 后端无法在当前 Linux 版本上运行。请升级到受支持的 Linux 发行版后重启 NomiFun。",
       "requiredVersions": "需要的运行时符号：{{versions}}"
     },
     "incompleteInstallation": {
-      "title": "Flowy 安装不完整",
-      "description": "当前安装缺少必要的本地资源，Flowy 无法启动。请下载并重新安装最新版 Flowy；如果重新安装后仍然出现，请检查系统安全软件或杀毒软件是否隔离了 Flowy。",
+      "title": "NomiFun 安装不完整",
+      "description": "当前安装缺少必要的本地资源，NomiFun 无法启动。请下载并重新安装最新版 NomiFun；如果重新安装后仍然出现，请检查系统安全软件或杀毒软件是否隔离了 NomiFun。",
       "downloadLatest": "下载最新版",
       "sendDiagnostics": "发送诊断报告"
     }

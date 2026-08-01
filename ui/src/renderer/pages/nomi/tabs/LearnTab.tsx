@@ -1,4 +1,8 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -6,7 +10,7 @@ import { Button, InputNumber, Message, Select, Spin, Switch, Table, Tag } from '
 import { ipcBridge } from '@/common';
 import type { ICompanionLearnRun } from '@/common/adapter/ipcBridge';
 import type { ProviderId } from '@/common/types/ids';
-import { useModelProviderList } from '@renderer/hooks/agent/useModelProviderList';
+import { useModelsForTask } from '@renderer/hooks/agent/useModelsForTask';
 import type { useCompanionShared } from '../useNomi';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 
@@ -26,7 +30,9 @@ interface Props {
 const LearnTab: React.FC<Props> = ({ shared }) => {
   const { t } = useTranslation();
   const { sharedConfig, patchSharedConfig } = shared;
-  const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
+  // 学习模型做对话补全 —— 供应商/模型清单来自统一 chat catalog（后端 resolve）。
+  const { groups: chatGroups } = useModelsForTask('chat');
+  const providers = useMemo(() => chatGroups.map((group) => group.provider), [chatGroups]);
   const providerLabel = useModelSelectorProviderLabel();
   const [runs, setRuns] = useState<ICompanionLearnRun[]>([]);
   const [running, setRunning] = useState(false);
@@ -39,6 +45,10 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
   const currentProvider = useMemo(
     () => providers.find((p) => p.id === draftProviderId),
     [draftProviderId, providers]
+  );
+  const currentProviderModels = useMemo(
+    () => chatGroups.find((group) => group.provider.id === draftProviderId)?.models ?? [],
+    [chatGroups, draftProviderId]
   );
 
   const refreshRuns = useCallback(() => {
@@ -142,9 +152,9 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
               }
             }}
           >
-            {(currentProvider ? getAvailableModels(currentProvider) : []).map((m) => (
+            {(currentProvider ? currentProviderModels : []).map((m) => (
               <Select.Option key={m} value={m}>
-                {formatModelLabel(currentProvider, m)}
+                {m}
               </Select.Option>
             ))}
           </Select>
@@ -188,16 +198,6 @@ const LearnTab: React.FC<Props> = ({ shared }) => {
             />
             <span className='text-11px text-t-tertiary'>
               {t('nomi.evolve.autoActivateHint', { defaultValue: '多次重复的高置信技能直接启用（仍可在技能页撤销）' })}
-            </span>
-          </div>
-          <div className='flex items-center gap-8px'>
-            <span className='text-13px text-t-secondary'>{t('nomi.evolve.consolidate', { defaultValue: '定期整合冗余技能' })}</span>
-            <Switch
-              checked={sharedConfig.evolve.consolidate_enabled ?? false}
-              onChange={(checked) => void patchSharedConfig({ evolve: { consolidate_enabled: checked } })}
-            />
-            <span className='text-11px text-t-tertiary'>
-              {t('nomi.evolve.consolidateHint', { defaultValue: '每天巡检已有技能，把做同一类事的合并成一个（其余归档，可在技能页恢复）' })}
             </span>
           </div>
           <div className='flex items-center gap-8px flex-wrap'>

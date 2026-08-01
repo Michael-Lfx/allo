@@ -1,9 +1,8 @@
 # 安装
 
-Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
-[简介](introduction.zh.md)）。本页覆盖安装方式：
+NomiFun 有两种宿主模式，共享同一个 Rust 后端（参见
+[简介](introduction.zh.md)）。本页覆盖目前可行的全部三种安装方式：
 
-- [下载预构建桌面安装包](#下载预构建桌面安装包) —— 推荐终端用户路径。
 - [从源码构建桌面应用](#从源码构建桌面应用) —— `nomifun-desktop`
   （Tauri 外壳），桌面本地信任，单用户。
 - [从源码构建 Web 服务](#从源码构建-web-服务) —— `nomifun-web`，
@@ -11,26 +10,11 @@ Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
 - [Docker / Docker Compose](#docker--docker-compose) —— 同一个 Web 服务
   的容器化方案。
 
-## 下载预构建桌面安装包
-
-| 渠道 | 用途 |
-| --- | --- |
-| [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) | 手动安装包（`.exe` / `.dmg` / `.AppImage` 等） |
-| README 中的百度网盘镜像 | 中国大陆手动下载 |
-| ModelScope `allo/channels/alpha/latest.json` | **应用内 OTA 唯一真源**（已写入 `apps/desktop/tauri.conf.json`） |
-
-发版与 OTA 上传以根目录 [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)
-为准；产物文件名必须以 `Flowy_` / `Flowy.app` 为前缀。GitHub 一键发版脚本见
-[`RELEASING.zh-CN.md`](../../RELEASING.zh-CN.md)。从源码构建与打包细节见
-[`../contributing/building-and-packaging.zh.md`](../contributing/building-and-packaging.zh.md)。
-
-## 受支持的操作系统
-
-| 系统 | 最低版本 | 说明 |
-| --- | --- | --- |
-| Windows | **10 版本 1803（build 17134）**，x64 | Windows 7 / 8 / 8.1 不受支持，手动安装 WebView2 也无法解决。Rust 自 [1.78](https://blog.rust-lang.org/2024/02/26/Windows-7/) 起把 `x86_64-pc-windows-msvc` 的最低系统提到 Windows 10；且安装器调用的微软 WebView2 bootstrapper 已无法在 Windows 7 上启动。 |
-| macOS | 11（Big Sur） | 通用构建；WKWebView 系统自带。 |
-| Linux | 基于 glibc 且带 WebKitGTK 4.1 的发行版 | 例如 Ubuntu 22.04+，需要 `libwebkit2gtk-4.1-0`。 |
+> **桌面与 native service 打包仍取决于发布渠道。** Web 服务可以从源码构建，
+> 也可以直接使用官方 Docker 镜像
+> [`nomifun/nomifun-web`](https://hub.docker.com/repository/docker/nomifun/nomifun-web)。
+> 当前打包说明见
+> [`../contributing/building-and-packaging.zh.md`](../contributing/building-and-packaging.zh.md)。
 
 ## 前置条件
 
@@ -44,7 +28,7 @@ Flowy 有两种宿主模式，共享同一个 Rust 后端（参见
 | **Git** | 任何近期版本 | 克隆仓库，以及技能发现与若干内置工具会用到。 | |
 | **C/C++ 构建工具** | 因平台而异 | `rusqlite`（bundled）、`aws-lc-rs`、`libgit2-sys` 需要。 | Windows：MSVC + WebView2 运行时。macOS：Xcode CLT。Linux：`build-essential cmake clang pkg-config perl`。 |
 
-在运行 Flowy 的宿主上推荐安装（构建机不需要）：
+在运行 NomiFun 的宿主上推荐安装（构建机不需要）：
 
 - **`ripgrep`** —— 代码搜索后端；不可用时回退到 `grep`。
 - **`node` / `npm` / `npx`** —— 许多用户安装的 MCP stdio 服务通过
@@ -109,36 +93,36 @@ bun run build    # tauri build → 安装包 + 独立二进制
 - 位于 `target/release/bundle/` 下的平台安装包——`.exe`（NSIS，
   Windows）、`.dmg`/`.app`（macOS）、`.deb`/`.AppImage`（Linux）。
 
-`bun run build` 产物适合本地测试。公开发版与 OTA 见
-[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md)。macOS 用
-`bun run build:signed`（Developer ID + 公证）；Windows Authenticode 通过
-`WINDOWS_CERTIFICATE_THUMBPRINT` + `bun run build:win --signed`（`release:win`
-在指纹可用时会自动带上）。updater endpoint 与公钥已配置在
-`apps/desktop/tauri.conf.json`（ModelScope alpha 渠道）。
+`bun run build` 产物适合本地测试。要分发 macOS 构建，请配置
+`apps/desktop/signing/.env.signing` 并使用 `bun run build:signed`。Windows
+签名仍需要外部证书。若要测试 updater 骨架，可使用 `bun run build:updater`，
+它会把 `bundle.createUpdaterArtifacts` 设为 true。发布任何更新前，必须替换
+`apps/desktop/tauri.conf.json` 中的 updater endpoint 与公钥。
 
 ### 数据存放位置（桌面端）
 
-桌面应用把数据库与运行时文件存放在按用户区分的应用数据目录下，
-再拼接 `Nomi`：
+桌面应用把数据库与运行时文件存放在按用户区分的应用数据目录下：
 
 | 操作系统 | 默认路径 |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\Flowy\Nomi`（例如 `C:\Users\<you>\AppData\Local\Flowy\Nomi`） |
-| macOS | `~/Library/Application Support/Flowy/Nomi` |
-| Linux | `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`） |
+| Windows | `%LOCALAPPDATA%\NomiFun`（例如 `C:\Users\<you>\AppData\Local\NomiFun`） |
+| macOS | `~/Library/Application Support/NomiFun` |
+| Linux | `$XDG_DATA_HOME/NomiFun`（通常为 `~/.local/share/NomiFun`） |
 
-启动前可通过 `NOMIFUN_DATA_DIR=<absolute path>` 覆盖——外壳会附加
-`/Nomi`，因此目录会变成 `$NOMIFUN_DATA_DIR/Nomi`。
+启动前可通过 `NOMIFUN_DATA_DIR=<absolute path>` 覆盖——所有宿主都
+按字面值把它当作数据根（不再附加 `/Nomi`）。
 
-> 旧版本默认使用 `<system temp>/nomifun-data/Nomi`，操作系统的临时目录
-> 清理可能在那里销毁用户数据。现在应用首次启动时会自动把这类旧安装
-> 搬迁到按用户区分的位置（一次性）：复制数据、改写数据库内的绝对路径，
-> 并把旧目录保留作备份。若搬迁无法完成，应用会先从旧目录启动，并在
-> 下次启动时重试。
+> 旧版本把数据存在 `NomiFun/Nomi` 下（更早为
+> `<system temp>/nomifun-data/Nomi`，操作系统的临时目录清理可能在
+> 那里销毁用户数据）。升级后首次启动时，一次性的自动迁移会把这类
+> 遗留数据集搬入新的数据根：迁移是抗崩溃的，数据库内的绝对路径会在
+> 搬迁后一次性改写；若迁移无法完成，会在下次启动时续跑（旧应用实例
+> 仍在运行时则推迟到下次启动）。
 
-> 提示：面向用户的产品名是 **Flowy**（`productName` / 窗口标题）；数据目录
-> 仍落在 `…/Flowy/Nomi`。内部标识符保留 `nomifun`（crate、`NOMIFUN_*`
-> 环境变量）；桌面 bundle id 为 `com.flowy.desktop`。
+> 提示：应用对用户呈现的名称统一为 `NomiFun`——bundle 产品名
+> （`apps/desktop/tauri.conf.json`）、运行时窗口标题、发布产物与
+> 数据文件夹都用 `NomiFun`。内部标识符按设计仍保留旧的 `nomifun` 名
+> （crate、`NOMIFUN_*` 环境变量、`com.nomifun.*` bundle 标识符）。
 
 ## 从源码构建 Web 服务
 
@@ -202,11 +186,39 @@ nomifun-web \
 
 ## Docker / Docker Compose
 
-仓库附带一份多阶段 `Dockerfile` 与一份 `docker-compose.yml`，会构建出
-一个**无 GUI**镜像：在 `debian:bookworm-slim` 上的 SPA + `nomifun-web` +
-`bun`。
+官方 Docker Hub 镜像是
+[`nomifun/nomifun-web`](https://hub.docker.com/repository/docker/nomifun/nomifun-web)。
+它是一个**无 GUI**镜像：在 `debian:bookworm-slim` 上的 SPA + `nomifun-web` +
+`bun`。仓库也附带一份多阶段 `Dockerfile` 与一份 `docker-compose.yml`，
+用于从源码本地构建。下面示例使用已发布的 `v0.3.4` tag；后续有新版本时，
+可按 Docker Hub 页面替换。
 
-### 用 Compose 快速上手
+### 使用官方镜像快速上手
+
+```bash
+docker run -d \
+  --name nomifun-web \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -v nomifun-data:/data \
+  nomifun/nomifun-web:v0.3.4
+# 然后访问 http://<server-ip>:8787
+```
+
+如果要在服务可访问前关闭首次设置窗口，请预置首位管理员：
+
+```bash
+docker run -d \
+  --name nomifun-web \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -v nomifun-data:/data \
+  -e NOMIFUN_ADMIN_USERNAME=admin \
+  -e NOMIFUN_ADMIN_PASSWORD='change-me-to-something-strong' \
+  nomifun/nomifun-web:v0.3.4
+```
+
+### 用 Compose 从源码本地构建
 
 在仓库根目录：
 
@@ -294,7 +306,7 @@ curl -sS http://127.0.0.1:8787/api/auth/status
 
 ## 接下来
 
-- [快速上手](quick-start.zh.md) —— 你在 Flowy 中的第一段会话。
+- [快速上手](quick-start.zh.md) —— 你在 NomiFun 中的第一段会话。
 - [`../guides/web-server-deployment.md`](../guides/web-server-deployment.md)
   —— Web 主机的生产环境加固。
 - [`../contributing/development.zh.md`](../contributing/development.zh.md)

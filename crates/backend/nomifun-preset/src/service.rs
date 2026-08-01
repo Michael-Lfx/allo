@@ -23,6 +23,7 @@ pub struct PresetService {
     tag_repo: Arc<dyn IPresetTagRepository>,
     agent_repo: Arc<dyn IAgentMetadataRepository>,
     provider_repo: Arc<dyn IProviderRepository>,
+    provider_model_repo: Arc<dyn nomifun_db::IProviderModelRepository>,
     builtin: Arc<BuiltinPresetRegistry>,
     extension_registry: ExtensionRegistry,
     user_data_dir: PathBuf,
@@ -63,6 +64,7 @@ impl PresetService {
         tag_repo: Arc<dyn IPresetTagRepository>,
         agent_repo: Arc<dyn IAgentMetadataRepository>,
         provider_repo: Arc<dyn IProviderRepository>,
+        provider_model_repo: Arc<dyn nomifun_db::IProviderModelRepository>,
         builtin: Arc<BuiltinPresetRegistry>,
         extension_registry: ExtensionRegistry,
         user_data_dir: PathBuf,
@@ -73,6 +75,7 @@ impl PresetService {
             tag_repo,
             agent_repo,
             provider_repo,
+            provider_model_repo,
             builtin,
             extension_registry,
             user_data_dir,
@@ -409,6 +412,8 @@ impl PresetService {
             })?;
         }
         let providers = self.provider_repo.list().await?;
+        // Membership lives on provider_models rows since migration 016.
+        let model_rows = self.provider_model_repo.list().await?;
         let candidates: Vec<_> = providers
             .into_iter()
             .filter(|provider| {
@@ -420,8 +425,10 @@ impl PresetService {
             })
             .collect();
         for provider in candidates {
-            let models: Vec<String> = serde_json::from_str(&provider.models).unwrap_or_default();
-            if models.iter().any(|m| m == &preference.model) {
+            let has_model = model_rows.iter().any(|row| {
+                row.provider_id == provider.provider_id && row.model == preference.model
+            });
+            if has_model {
                 if preference.provider_id.is_none() {
                     warnings.push(format!(
                         "Unqualified model '{}' resolved to provider '{}'",
@@ -859,8 +866,8 @@ fn merge_update(mut p: PresetResponse, r: UpdatePresetRequest) -> PresetResponse
 
 fn apply_state(response:&mut PresetResponse,state:Option<&nomifun_db::PresetUserStateRow>){if let Some(s)=state{response.enabled=s.enabled;response.auto_selectable=s.auto_selectable;response.preferred_agent_id=s.preferred_agent_id.clone();response.sort_order=s.sort_order;response.last_used_at=s.last_used_at}}
 fn default_targets()->Vec<PresetTarget>{vec![PresetTarget::Conversation,PresetTarget::ExecutionStep,PresetTarget::Companion,PresetTarget::Cron]}
-fn target_strings(v:&[PresetTarget])->Vec<String>{v.iter().map(|v|match v{PresetTarget::Conversation=>"conversation",PresetTarget::ExecutionStep=>"execution_step",PresetTarget::Companion=>"companion",PresetTarget::PublicCompanion=>"public_companion",PresetTarget::Cron=>"cron"}.into()).collect()}
-fn parse_target(v:&str)->Option<PresetTarget>{match v{"conversation"=>Some(PresetTarget::Conversation),"execution_step"=>Some(PresetTarget::ExecutionStep),"companion"=>Some(PresetTarget::Companion),"public_companion"=>Some(PresetTarget::PublicCompanion),"cron"=>Some(PresetTarget::Cron),_=>None}}
+fn target_strings(v:&[PresetTarget])->Vec<String>{v.iter().map(|v|match v{PresetTarget::Conversation=>"conversation",PresetTarget::ExecutionStep=>"execution_step",PresetTarget::Companion=>"companion",PresetTarget::Cron=>"cron"}.into()).collect()}
+fn parse_target(v:&str)->Option<PresetTarget>{match v{"conversation"=>Some(PresetTarget::Conversation),"execution_step"=>Some(PresetTarget::ExecutionStep),"companion"=>Some(PresetTarget::Companion),"cron"=>Some(PresetTarget::Cron),_=>None}}
 fn dimension_str(v:PresetTagDimension)->&'static str{match v{PresetTagDimension::Audience=>"audience",PresetTagDimension::Scenario=>"scenario"}}
 fn parse_dimension(v:&str)->PresetTagDimension{if v=="scenario"{PresetTagDimension::Scenario}else{PresetTagDimension::Audience}}
 fn merge_preset_tags(builtin:&[crate::builtin::BuiltinTag],stored:Vec<nomifun_db::PresetTagRow>)->Vec<PresetTagResponse>{let builtin_by_key=builtin.iter().map(|tag|(tag.key.as_str(),tag)).collect::<HashMap<_,_>>();stored.into_iter().map(|tag|{let builtin=builtin_by_key.get(tag.key.as_str()).copied();PresetTagResponse{preset_tag_id:tag.preset_tag_id,key:tag.key,dimension:parse_dimension(&tag.dimension),label:builtin.map(|value|value.label.clone()).unwrap_or(tag.label),label_i18n:builtin.map(|value|value.label_i18n.clone()).unwrap_or_default(),sort_order:builtin.map(|value|value.sort_order).unwrap_or(tag.sort_order),builtin:builtin.is_some()}}).collect()}

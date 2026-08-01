@@ -5,7 +5,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use nomifun_common::{
     AgentId, CompanionId, ConversationId, CronJobId, MessageId, PaginatedResult, ProviderId,
-    ProviderWithModel, PublicAgentId, RemoteAgentId, RequirementId, TimestampMs, validate_uuidv7,
+    ProviderWithModel, RemoteAgentId, RequirementId, TimestampMs, validate_uuidv7,
 };
 
 use crate::error::DbError;
@@ -850,13 +850,6 @@ async fn lock_conversation_extra_references(
             ))
         })?;
     }
-    if let Some(public_agent_id) = optional_extra_id(object, "public_agent_id")? {
-        PublicAgentId::parse(public_agent_id).map_err(|error| {
-            DbError::Conflict(format!(
-                "Conversation extra.public_agent_id is not a canonical UUIDv7: {error}"
-            ))
-        })?;
-    }
 
     lock_provider_ids(tx, extra_idmm_bypass_provider_ids_from_value(object)?).await
 }
@@ -1216,6 +1209,7 @@ impl IConversationRepository for SqliteConversationRepository {
                 let completed = sqlx::query(
                     "UPDATE conversation_delivery_receipts \
                      SET status = 'completed', result_ok = ?, result_text = ?, result_error = ?, \
+                         result_error_code = ?, result_error_retryable = ?, \
                          completed_at = MAX(created_at, updated_at, ?), \
                          updated_at = MAX(created_at, updated_at, ?) \
                      WHERE operation_id = ? AND conversation_id = ? AND user_id = ? \
@@ -1224,6 +1218,8 @@ impl IConversationRepository for SqliteConversationRepository {
                 .bind(completion.result_ok)
                 .bind(completion.result_text.as_deref())
                 .bind(completion.result_error.as_deref())
+                .bind(completion.result_error_code.as_deref())
+                .bind(completion.result_error_retryable)
                 .bind(completed_at)
                 .bind(completed_at)
                 .bind(&completion.operation_id)
@@ -1416,6 +1412,7 @@ impl IConversationRepository for SqliteConversationRepository {
             let settled = sqlx::query(
                 "UPDATE conversation_delivery_receipts \
                  SET status = 'completed', result_ok = ?, result_text = ?, result_error = ?, \
+                     result_error_code = ?, result_error_retryable = ?, \
                      completed_at = MAX(created_at, updated_at, ?), \
                      updated_at = MAX(created_at, updated_at, ?) \
                  WHERE operation_id = ? AND conversation_id = ? AND user_id = ? \
@@ -1424,6 +1421,8 @@ impl IConversationRepository for SqliteConversationRepository {
             .bind(completion.result_ok)
             .bind(completion.result_text.as_deref())
             .bind(completion.result_error.as_deref())
+            .bind(completion.result_error_code.as_deref())
+            .bind(completion.result_error_retryable)
             .bind(completed_at)
             .bind(completed_at)
             .bind(&completion.operation_id)
@@ -1492,6 +1491,8 @@ impl IConversationRepository for SqliteConversationRepository {
         expected_admission_epoch: i64,
         expected_active_operation_id: Option<&str>,
         reason: &str,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
         completed_at: TimestampMs,
     ) -> Result<TurnLifecycleTransition, DbError> {
         if expected_admission_epoch < 0 || reason.trim().is_empty() {
@@ -1540,12 +1541,16 @@ impl IConversationRepository for SqliteConversationRepository {
             let settled = sqlx::query(
                 "UPDATE conversation_delivery_receipts \
                  SET status = 'completed', result_ok = 0, result_text = NULL, \
-                     result_error = ?, completed_at = MAX(created_at, updated_at, ?), \
+                     result_error = ?, result_error_code = ?, \
+                     result_error_retryable = ?, \
+                     completed_at = MAX(created_at, updated_at, ?), \
                      updated_at = MAX(created_at, updated_at, ?) \
                  WHERE operation_id = ? AND conversation_id = ? AND user_id = ? \
                    AND kind = 'turn' AND status = 'accepted'",
             )
             .bind(reason)
+            .bind(result_error_code)
+            .bind(result_error_retryable)
             .bind(completed_at)
             .bind(completed_at)
             .bind(&receipt.operation_id)
@@ -1672,12 +1677,16 @@ impl IConversationRepository for SqliteConversationRepository {
                 sqlx::query(
                     "UPDATE conversation_delivery_receipts \
                      SET status = 'completed', result_ok = 0, result_text = NULL, \
-                         result_error = ?, completed_at = MAX(created_at, updated_at, ?), \
+                         result_error = ?, result_error_code = ?, \
+                         result_error_retryable = ?, \
+                         completed_at = MAX(created_at, updated_at, ?), \
                          updated_at = MAX(created_at, updated_at, ?) \
                      WHERE conversation_id = ? AND user_id = ? \
                        AND kind = 'turn' AND status = 'accepted'",
                 )
                 .bind(reason)
+                .bind(result_error_code)
+                .bind(result_error_retryable)
                 .bind(completed_at)
                 .bind(completed_at)
                 .bind(conversation_id)
@@ -2805,10 +2814,16 @@ impl IConversationRepository for SqliteConversationRepository {
         }
 
         if receipt.status == "accepted" {
+            // Same extended-column write pattern as `complete_delivery_receipt`
+            // (spec D4): a dropped admission is a structured, retryable
+            // terminal outcome, not just free text.
             let settled = sqlx::query(
                 "UPDATE conversation_delivery_receipts \
                  SET status = 'completed', result_ok = 0, result_text = NULL, \
-                     result_error = ?, completed_at = MAX(created_at, updated_at, ?), \
+                     result_error = ?, \
+                     result_error_code = 'admission_abandoned', \
+                     result_error_retryable = 1, \
+                     completed_at = MAX(created_at, updated_at, ?), \
                      updated_at = MAX(created_at, updated_at, ?) \
                  WHERE operation_id = ? AND message_id = ? \
                    AND conversation_id = ? AND user_id = ? \
@@ -3339,11 +3354,14 @@ impl IConversationRepository for SqliteConversationRepository {
         result_ok: bool,
         result_text: Option<&str>,
         result_error: Option<&str>,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
         completed_at: i64,
     ) -> Result<bool, DbError> {
         let result = sqlx::query(
             "UPDATE conversation_delivery_receipts \
              SET status = 'completed', result_ok = ?, result_text = ?, result_error = ?, \
+                 result_error_code = ?, result_error_retryable = ?, \
                  completed_at = MAX(created_at, updated_at, ?), \
                  updated_at = MAX(created_at, updated_at, ?) \
              WHERE operation_id = ? AND conversation_id = ? AND user_id = ? \
@@ -3352,6 +3370,8 @@ impl IConversationRepository for SqliteConversationRepository {
         .bind(result_ok)
         .bind(result_text)
         .bind(result_error)
+        .bind(result_error_code)
+        .bind(result_error_retryable)
         .bind(completed_at)
         .bind(completed_at)
         .bind(operation_id)
@@ -3371,6 +3391,102 @@ impl IConversationRepository for SqliteConversationRepository {
                 && receipt.result_text.as_deref() == result_text
                 && receipt.result_error.as_deref() == result_error
         }))
+    }
+
+    async fn latest_completed_turn_receipt(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<ConversationDeliveryReceiptRow>, DbError> {
+        let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
+            "SELECT * FROM conversation_delivery_receipts \
+             WHERE user_id = ? AND conversation_id = ? \
+               AND kind = 'turn' AND status = 'completed' \
+             ORDER BY completed_at DESC, id DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(receipt)
+    }
+
+    async fn register_notify(
+        &self,
+        operation_id: &str,
+        requester_conversation_id: &str,
+        now: i64,
+    ) -> Result<(), DbError> {
+        if operation_id.trim().is_empty() {
+            return Err(DbError::Conflict(
+                "delivery-notify registration requires an operation id".to_owned(),
+            ));
+        }
+        ConversationId::parse(requester_conversation_id).map_err(|error| {
+            DbError::Conflict(format!(
+                "delivery-notify requester conversation id is invalid: {error}"
+            ))
+        })?;
+        let inserted = sqlx::query(
+            "INSERT INTO conversation_delivery_notify \
+                (operation_id, requester_conversation_id, state, created_at) \
+             VALUES (?, ?, 'pending', ?) \
+             ON CONFLICT(operation_id) DO NOTHING",
+        )
+        .bind(operation_id)
+        .bind(requester_conversation_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        if inserted.rows_affected() == 1 {
+            return Ok(());
+        }
+        // Same-pair re-registration is an idempotent replay; a different
+        // requester reusing the operation identity is a conflict.
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT requester_conversation_id FROM conversation_delivery_notify \
+             WHERE operation_id = ?",
+        )
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match existing.as_deref() {
+            Some(requester) if requester == requester_conversation_id => Ok(()),
+            _ => Err(DbError::Conflict(
+                "delivery-notify operation is already registered to another requester".to_owned(),
+            )),
+        }
+    }
+
+    async fn take_pending_notify(
+        &self,
+        operation_id: &str,
+        now: i64,
+    ) -> Result<Option<crate::models::ConversationDeliveryNotifyRow>, DbError> {
+        let row = sqlx::query_as::<_, crate::models::ConversationDeliveryNotifyRow>(
+            "UPDATE conversation_delivery_notify \
+             SET state = 'notified', settled_at = ? \
+             WHERE operation_id = ? AND state = 'pending' \
+             RETURNING operation_id, requester_conversation_id, state, created_at, settled_at",
+        )
+        .bind(now)
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn mark_notify_failed(&self, operation_id: &str, now: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE conversation_delivery_notify \
+             SET state = 'failed', settled_at = ? \
+             WHERE operation_id = ? AND state = 'notified'",
+        )
+        .bind(now)
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn project_assistant_message_with_receipt(
@@ -5396,10 +5512,10 @@ mod tests {
     async fn insert_fixture_provider(pool: &SqlitePool, provider_id: &str) {
         sqlx::query(
             "INSERT INTO providers (\
-                provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-                capabilities, created_at, updated_at\
+                provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+                created_at, updated_at\
              ) VALUES (?, 'openai', ?, 'https://example.invalid', \
-                       'encrypted', '[]', 1, '[]', 0, 0)",
+                       'encrypted', 1, 0, 0)",
         )
         .bind(provider_id)
         .bind(provider_id)
@@ -7009,6 +7125,8 @@ mod tests {
                 true,
                 Some("steered"),
                 None,
+                None,
+                None,
                 now + 2,
             )
             .await
@@ -7622,6 +7740,8 @@ mod tests {
                 original_operation_id,
                 true,
                 Some("original-result"),
+                None,
+                None,
                 None,
                 now + 2,
             )

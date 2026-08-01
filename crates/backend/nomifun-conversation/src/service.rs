@@ -26,6 +26,10 @@ use crate::ExecutionConversationBoundary;
 use crate::orphan_recovery::{
     RunningOrphanDisposition, running_orphan_disposition,
 };
+use crate::relay_error_code;
+use crate::terminal_proof::{
+    OrphanProofRequirement, TerminalProofDecision, TurnTerminalProofProvider,
+};
 use nomifun_api_types::{
     ApprovalCheckResponse, CloneConversationRequest, ConfirmRequest, ConfirmationListResponse,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse,
@@ -55,6 +59,11 @@ use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+/// In-session companion summon lifecycle (child module so it can reach the
+/// service's private repos; file kept separate to protect service.rs size).
+#[path = "summon.rs"]
+pub mod summon;
+
 use crate::convert::{
     TOOL_CONTENT_COMPACT_THRESHOLD_BYTES, message_needs_artifact_history_audit,
     parse_provider_with_model, project_historical_artifact_integrity,
@@ -73,6 +82,10 @@ use std::sync::RwLock;
 const MAX_CRON_CONTINUATIONS_PER_TURN: usize = 4;
 const TEMP_WORKSPACE_ID_EXTRA_KEY: &str = "temp_workspace_id";
 pub(crate) const PUBLIC_IDEMPOTENCY_KEY_MAX_BYTES: usize = 128;
+/// Origin marker of a spec-D2 delivery-notify receipt message. A turn whose
+/// durable request payload carries this origin may never register another
+/// delivery-notify (hard loop guard).
+pub const DELIVERY_NOTIFY_ORIGIN: &str = "delivery-notify";
 const RECEIPT_FOREGROUND_BUDGET: Duration = Duration::from_secs(2);
 /// Stop waits for relay/receipt cleanup, then generation-safely releases the
 /// exact cancelled turn so the endpoint itself always remains bounded.
@@ -148,6 +161,11 @@ pub struct IdempotentMessageDelivery {
     pub result_ok: Option<bool>,
     pub result_text: Option<String>,
     pub result_error: Option<String>,
+    /// Stable snake_case terminal error token (spec D4); `None` on success,
+    /// while in flight, and for pre-014 receipts.
+    pub result_error_code: Option<String>,
+    /// Whether the terminal failure is safe to retry automatically.
+    pub result_error_retryable: Option<bool>,
 }
 
 /// Read-only durable state of one public keyed Conversation turn.
@@ -995,6 +1013,30 @@ pub trait ConversationSupervisionHook: Send + Sync {
     fn on_turn_start(&self, conversation_id: &str, admitted_scope: IdmmTurnScope);
 }
 
+/// Completion hook for keyed turns (spec D2 delivery-notify push).
+///
+/// Defined here so `nomifun-conversation` stays free of gateway/companion
+/// dependencies; `nomifun-app` implements and injects it via
+/// [`ConversationService::with_turn_completion_observer`]. Invoked from a
+/// detached task AFTER the terminal turn receipt is durably persisted — it
+/// can never block or fail the exact-turn release path.
+#[async_trait::async_trait]
+pub trait TurnCompletionObserver: Send + Sync {
+    async fn on_turn_completed(&self, conversation_id: &str, operation_id: &str,
+        result_ok: bool, result_text: Option<&str>, result_error_code: Option<&str>);
+}
+
+/// Outcome of a delivery-notify registration attempt (spec D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryNotifyRegistration {
+    /// The requester will receive a completion receipt for the target turn.
+    Registered,
+    /// Hard anti-loop constraint: the requester's CURRENT turn was itself
+    /// started by a delivery-notify receipt (origin == "delivery-notify"),
+    /// so its sends must not register further receipts.
+    RefusedDeliveryNotifyOrigin,
+}
+
 #[derive(Clone)]
 pub struct ConversationService {
     /// Immutable installation owner used to derive the maximum runtime
@@ -1049,6 +1091,10 @@ pub struct ConversationService {
     /// as `cron_service`). Wired by `nomifun-app` so a desktop turn arms 智能决策
     /// supervision; `None` in contexts that don't run IDMM (tests, webui-only).
     supervision_hook: Arc<RwLock<Option<Arc<dyn ConversationSupervisionHook>>>>,
+    /// Spec D2 delivery-notify hook (same slot pattern): invoked after a
+    /// keyed turn's terminal receipt is durably persisted. `None` (default /
+    /// tests) disables completion push entirely.
+    turn_completion_observer: Arc<RwLock<Option<Arc<dyn TurnCompletionObserver>>>>,
     /// Phase 3 模型故障转移(plan D5)。挑选器要读 `providers` 表、配置要读
     /// `client_preferences`,而 `ConversationService::new` 不带这两个仓库。沿用
     /// `cron_service` / `supervision_hook` 的「构造后注册」槽位模式而非改 `new()`
@@ -1056,6 +1102,8 @@ pub struct ConversationService {
     /// [`Self::with_failover_deps`]。未注册(两槽为 `None`)即视为故障转移关闭
     /// —— fail-safe,所以不跑故障转移的上下文(测试、纯 webui)无需任何改动。
     failover_provider_repo: Arc<RwLock<Option<Arc<dyn nomifun_db::IProviderRepository>>>>,
+    failover_provider_model_repo:
+        Arc<RwLock<Option<Arc<dyn nomifun_db::IProviderModelRepository>>>>,
     failover_client_prefs: Arc<RwLock<Option<Arc<dyn nomifun_db::IClientPreferenceRepository>>>>,
     /// Goal persistence repository (wired post-construction via
     /// [`Self::with_goal_repo`], same slot pattern as the failover deps).
@@ -1073,6 +1121,12 @@ pub struct ConversationService {
     /// ConversationService; isolated tests must opt into the explicit no-op
     /// implementation instead of silently omitting this authority.
     execution_conversation_boundary: Arc<dyn ExecutionConversationBoundary>,
+    /// Boot-scoped exact terminal-proof authority (same post-construction
+    /// slot pattern as `cron_service`). Installed by `nomifun-app` after the
+    /// server-lock authority is validated and the durable agent-process
+    /// registry has been reaped; `None` (default / tests / hosts without the
+    /// lock) keeps every restart-orphan seam fail-closed exactly as before.
+    terminal_proof_provider: Arc<RwLock<Option<Arc<dyn TurnTerminalProofProvider>>>>,
 }
 
 // ── Construction & Dependency Injection ──────────────────────────────
@@ -1190,6 +1244,8 @@ impl ConversationService {
             result_ok,
             result_text: receipt.result_text.clone(),
             result_error: receipt.result_error.clone(),
+            result_error_code: receipt.result_error_code.clone(),
+            result_error_retryable: receipt.result_error_retryable,
         };
         match self
             .conversation_repo
@@ -1393,7 +1449,7 @@ impl ConversationService {
         Self::terminate_runtime_until_confirmed(
             runtime_registry,
             conversation_id,
-            AgentKillReason::AgentErrorRecovery,
+            AgentKillReason::ConfigurationChanged,
             "failed edit/resubmit destructive preparation",
         )
         .await;
@@ -1674,6 +1730,7 @@ impl ConversationService {
         conversation_id: &str,
         delivery: &DurableDeliveryLease,
         fallback_error: &str,
+        fallback_error_code: &'static str,
     ) {
         // The exact repository command below preserves an already-completed
         // receipt's authoritative result. If that receipt is still attached to
@@ -1686,6 +1743,10 @@ impl ConversationService {
             result_ok: false,
             result_text: None,
             result_error: Some(fallback_error.to_owned()),
+            result_error_code: Some(fallback_error_code.to_owned()),
+            result_error_retryable: Some(relay_error_code::fixed_code_retryable(
+                fallback_error_code,
+            )),
         };
         match self
             .conversation_repo
@@ -1726,6 +1787,8 @@ impl ConversationService {
         result_ok: bool,
         result_text: Option<&str>,
         result_error: Option<&str>,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
     ) -> bool {
         match repo
             .complete_delivery_receipt(
@@ -1735,6 +1798,8 @@ impl ConversationService {
                 result_ok,
                 result_text,
                 result_error,
+                result_error_code,
+                result_error_retryable,
                 now_ms(),
             )
             .await
@@ -1947,17 +2012,26 @@ impl ConversationService {
         result_ok: bool,
         result_text: Option<&str>,
         result_error: Option<&str>,
+        result_error_code: Option<(String, bool)>,
     ) -> Option<TurnReceiptCompletion> {
         operation_id
             .zip(kind)
             .zip(request_payload)
-            .map(|((operation_id, kind), request_payload)| TurnReceiptCompletion {
-                operation_id: operation_id.to_owned(),
-                kind: kind.to_owned(),
-                request_payload: request_payload.to_owned(),
-                result_ok,
-                result_text: result_text.map(str::to_owned),
-                result_error: result_error.map(str::to_owned),
+            .map(|((operation_id, kind), request_payload)| {
+                let (code, retryable) = match result_error_code {
+                    Some((code, retryable)) => (Some(code), Some(retryable)),
+                    None => (None, None),
+                };
+                TurnReceiptCompletion {
+                    operation_id: operation_id.to_owned(),
+                    kind: kind.to_owned(),
+                    request_payload: request_payload.to_owned(),
+                    result_ok,
+                    result_text: result_text.map(str::to_owned),
+                    result_error: result_error.map(str::to_owned),
+                    result_error_code: code,
+                    result_error_retryable: retryable,
+                }
             })
     }
 
@@ -1988,6 +2062,8 @@ impl ConversationService {
         result_ok: bool,
         result_text: Option<String>,
         result_error: Option<String>,
+        result_error_code: Option<String>,
+        result_error_retryable: Option<bool>,
         operation_guard: Option<(
             DurableOperationGuards,
             String,
@@ -2005,6 +2081,8 @@ impl ConversationService {
                     result_ok,
                     result_text.as_deref(),
                     result_error.as_deref(),
+                    result_error_code.as_deref(),
+                    result_error_retryable,
                 )
                 .await
                 {
@@ -2031,6 +2109,8 @@ impl ConversationService {
         result_ok: bool,
         result_text: Option<&str>,
         result_error: Option<&str>,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
         cancellation: &CancellationToken,
         operation_guard: Option<(
             &DurableOperationGuards,
@@ -2053,6 +2133,8 @@ impl ConversationService {
                     result_ok,
                     result_text.map(str::to_owned),
                     result_error.map(str::to_owned),
+                    result_error_code.map(str::to_owned),
+                    result_error_retryable,
                     operation_guard
                         .map(|(guard, key, generation)| (Arc::clone(guard), key.to_owned(), generation)),
                 );
@@ -2067,6 +2149,8 @@ impl ConversationService {
                 result_ok,
                 result_text,
                 result_error,
+                result_error_code,
+                result_error_retryable,
             );
             let completed = tokio::select! {
                 biased;
@@ -2091,6 +2175,8 @@ impl ConversationService {
                         result_ok,
                         result_text.map(str::to_owned),
                         result_error.map(str::to_owned),
+                        result_error_code.map(str::to_owned),
+                        result_error_retryable,
                         operation_guard
                             .map(|(guard, key, generation)| (Arc::clone(guard), key.to_owned(), generation)),
                     );
@@ -2109,6 +2195,8 @@ impl ConversationService {
                         result_ok,
                         result_text.map(str::to_owned),
                         result_error.map(str::to_owned),
+                        result_error_code.map(str::to_owned),
+                        result_error_retryable,
                         operation_guard
                             .map(|(guard, key, generation)| (Arc::clone(guard), key.to_owned(), generation)),
                     );
@@ -2157,13 +2245,16 @@ impl ConversationService {
             agent_metadata_repo,
             acp_session_repo,
             supervision_hook: Arc::new(RwLock::new(None)),
+            turn_completion_observer: Arc::new(RwLock::new(None)),
             failover_provider_repo: Arc::new(RwLock::new(None)),
+            failover_provider_model_repo: Arc::new(RwLock::new(None)),
             failover_client_prefs: Arc::new(RwLock::new(None)),
             goal_repo: Arc::new(RwLock::new(None)),
             title_completer: Arc::new(RwLock::new(None)),
             llm_title_fired: Arc::new(DashMap::new()),
             session_lifecycle: Arc::new(RwLock::new(None)),
             execution_conversation_boundary,
+            terminal_proof_provider: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -2200,6 +2291,25 @@ impl ConversationService {
         }
     }
 
+    /// Install the boot-scoped exact terminal-proof authority (spec:
+    /// `unproven_running_generation_error`). Only the host that validated the
+    /// exclusive server-lock authority and reaped the durable agent-process
+    /// registry may call this; installing a provider without that evidence
+    /// would let a liveness heuristic finalize a generation that can still
+    /// produce effects.
+    pub fn with_terminal_proof_provider(&self, provider: Arc<dyn TurnTerminalProofProvider>) {
+        if let Ok(mut guard) = self.terminal_proof_provider.write() {
+            *guard = Some(provider);
+        }
+    }
+
+    fn terminal_proof_provider(&self) -> Option<Arc<dyn TurnTerminalProofProvider>> {
+        self.terminal_proof_provider
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
     /// Register the IDMM supervision hook (post-construction, same pattern as
     /// `with_cron_service`). Called by `nomifun-app` so each desktop turn arms
     /// 智能决策 supervision for the conversation.
@@ -2207,6 +2317,104 @@ impl ConversationService {
         if let Ok(mut guard) = self.supervision_hook.write() {
             *guard = Some(hook);
         }
+    }
+
+    /// Register the spec D2 turn-completion observer (post-construction, same
+    /// slot pattern as `with_supervision_hook`). Shared across every clone of
+    /// this service instance.
+    pub fn with_turn_completion_observer(&self, observer: Arc<dyn TurnCompletionObserver>) {
+        if let Ok(mut guard) = self.turn_completion_observer.write() {
+            *guard = Some(observer);
+        }
+    }
+
+    // ── Delivery-notify registrations (spec D2) ──────────────────────
+
+    /// Register `requester_conversation_id` for a completion receipt of the
+    /// keyed public turn `(target_conversation_id, idempotency_key)`.
+    ///
+    /// Hard anti-loop constraint: when the requester's ACTIVE turn was itself
+    /// started by a delivery-notify receipt (its durable request payload has
+    /// `origin == "delivery-notify"`), the registration is refused so receipt
+    /// turns can never chain further receipts.
+    pub async fn register_delivery_notify(
+        &self,
+        user_id: &str,
+        target_conversation_id: &str,
+        idempotency_key: &str,
+        requester_conversation_id: &str,
+    ) -> Result<DeliveryNotifyRegistration, AppError> {
+        validate_public_idempotency_key(idempotency_key)?;
+        let target_key = parse_conv_id(target_conversation_id)?;
+        let requester_key = parse_conv_id(requester_conversation_id)?;
+
+        if self
+            .active_turn_origin(user_id, requester_key)
+            .await?
+            .as_deref()
+            == Some(DELIVERY_NOTIFY_ORIGIN)
+        {
+            return Ok(DeliveryNotifyRegistration::RefusedDeliveryNotifyOrigin);
+        }
+
+        let operation_id = Self::public_turn_operation_id(user_id, target_key, idempotency_key);
+        self.conversation_repo
+            .register_notify(&operation_id, requester_key, now_ms())
+            .await?;
+        Ok(DeliveryNotifyRegistration::Registered)
+    }
+
+    /// Atomically claim the pending delivery-notify registration for one
+    /// completed operation (single winner). `None` when nothing is registered
+    /// or a previous completion already took it.
+    pub async fn take_pending_delivery_notify(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<nomifun_db::models::ConversationDeliveryNotifyRow>, AppError> {
+        Ok(self
+            .conversation_repo
+            .take_pending_notify(operation_id, now_ms())
+            .await?)
+    }
+
+    /// Record that a taken registration's receipt delivery failed
+    /// (diagnostics only; the claim stays absorbed).
+    pub async fn mark_delivery_notify_failed(&self, operation_id: &str) -> Result<(), AppError> {
+        Ok(self
+            .conversation_repo
+            .mark_notify_failed(operation_id, now_ms())
+            .await?)
+    }
+
+    /// The `origin` recorded in the durable request payload of a
+    /// conversation's currently active keyed turn, if any.
+    async fn active_turn_origin(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        let admission = self
+            .conversation_repo
+            .get_turn_admission_state(user_id, conversation_id)
+            .await?;
+        let Some(operation_id) = admission.active_operation_id else {
+            return Ok(None);
+        };
+        let Some(receipt) = self
+            .conversation_repo
+            .get_delivery_receipt(user_id, conversation_id, &operation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let payload: serde_json::Value = match serde_json::from_str(&receipt.request_payload) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        Ok(payload
+            .get("origin")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned))
     }
 
     /// Register the repositories the Phase 3 model-failover seam needs
@@ -2219,10 +2427,14 @@ impl ConversationService {
     pub fn with_failover_deps(
         &self,
         provider_repo: Arc<dyn nomifun_db::IProviderRepository>,
+        provider_model_repo: Arc<dyn nomifun_db::IProviderModelRepository>,
         client_prefs: Arc<dyn nomifun_db::IClientPreferenceRepository>,
     ) {
         if let Ok(mut guard) = self.failover_provider_repo.write() {
             *guard = Some(provider_repo);
+        }
+        if let Ok(mut guard) = self.failover_provider_model_repo.write() {
+            *guard = Some(provider_model_repo);
         }
         if let Ok(mut guard) = self.failover_client_prefs.write() {
             *guard = Some(client_prefs);
@@ -2383,11 +2595,13 @@ impl ConversationService {
         &self,
     ) -> Option<(
         Arc<dyn nomifun_db::IProviderRepository>,
+        Arc<dyn nomifun_db::IProviderModelRepository>,
         Arc<dyn nomifun_db::IClientPreferenceRepository>,
     )> {
         let provider_repo = self.failover_provider_repo.read().ok()?.clone()?;
+        let provider_model_repo = self.failover_provider_model_repo.read().ok()?.clone()?;
         let client_prefs = self.failover_client_prefs.read().ok()?.clone()?;
-        Some((provider_repo, client_prefs))
+        Some((provider_repo, provider_model_repo, client_prefs))
     }
 
     /// Snapshot of the registered goal persistence repository (`None` until
@@ -2405,7 +2619,7 @@ impl ConversationService {
         session_model: Option<&ProviderWithModel>,
     ) -> Result<Option<ProviderWithModel>, String> {
         let fallback = session_model.cloned();
-        let Some((provider_repo, client_prefs)) = self.failover_deps() else {
+        let Some((provider_repo, provider_model_repo, client_prefs)) = self.failover_deps() else {
             return Ok(fallback);
         };
         let preferences = match client_prefs
@@ -2473,16 +2687,27 @@ impl ConversationService {
                 );
             }
         };
-        let models = serde_json::from_str::<Vec<String>>(&provider.models).unwrap_or_default();
-        let model_enabled = provider
-            .model_enabled
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<HashMap<String, bool>>(raw).ok())
-            .unwrap_or_default();
-        if !provider.enabled
-            || !models.iter().any(|model| model == &selected.model)
-            || model_enabled.get(&selected.model) == Some(&false)
+        // Membership + per-model enabled live on provider_models rows
+        // (migration 016): the selected model must have an enabled row.
+        let model_row = match provider_model_repo
+            .get(&selected.provider_id, &selected.model)
+            .await
         {
+            Ok(row) => row,
+            Err(error) => {
+                warn!(
+                    provider_id = %selected.provider_id,
+                    model = %selected.model,
+                    error = %ErrorChain(&error),
+                    "Failed to validate explicit knowledge write-back model"
+                );
+                return Err(
+                    "Could not validate the configured knowledge write-back model; retry"
+                        .to_owned(),
+                );
+            }
+        };
+        if !provider.enabled || !model_row.is_some_and(|row| row.enabled) {
             warn!(
                 provider_id = %selected.provider_id,
                 model = %selected.model,
@@ -3088,6 +3313,30 @@ impl ConversationService {
             .summary_from_parts(conversation_id, runtime_status, has_runtime, pending_confirmations)
     }
 
+    /// The most recent completed `turn` receipt for one owned Conversation.
+    ///
+    /// Read-only diagnostics for the gateway status surface (spec D4): the
+    /// receipt's structured `result_error_code` names the last terminal
+    /// failure. Returns `None` when no turn has ever completed.
+    pub async fn latest_completed_turn_receipt(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<nomifun_db::models::ConversationDeliveryReceiptRow>, AppError> {
+        let conversation_key = parse_conv_id(conversation_id)?;
+        self.conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+        Ok(self
+            .conversation_repo
+            .latest_completed_turn_receipt(user_id, conversation_key)
+            .await?)
+    }
+
     pub fn begin_runtime_build(&self, conversation_id: &str) -> Result<RuntimeBuildLease, AppError> {
         self.runtime_state.begin_runtime_build(conversation_id)
     }
@@ -3223,9 +3472,10 @@ impl ConversationService {
     /// that the exact prior authority observed the cancellation nor that its
     /// complete descendant tree is empty. Consequently this seam deliberately
     /// contains no runtime teardown, writeback settlement, lifecycle CAS, or
-    /// completion broadcast. A future recovery implementation must introduce
-    /// a persisted exact terminal-proof protocol rather than enabling a backend
-    /// in a static allow-list.
+    /// completion broadcast. Recovery happens exclusively through the
+    /// boot/background reconciliation seams, which consult the installed
+    /// [`TurnTerminalProofProvider`] (persisted exact terminal-proof protocol)
+    /// before finalizing; request-facing guards always fail closed here.
     fn unproven_running_generation_error(&self, row: &ConversationRow) -> AppError {
         let conversation_id = row.conversation_id.as_str();
         if self.runtime_state.has_active_turn(conversation_id) {
@@ -3234,12 +3484,203 @@ impl ConversationService {
             );
         }
         match running_orphan_disposition(&row.r#type) {
-            Ok(RunningOrphanDisposition::ExternalTerminalProofRequired) => AppError::Conflict(
+            // Every disposition is quarantined at request seams: proof can
+            // only be presented by the recovery seams below, never by a send.
+            Ok(_) => AppError::Conflict(
                 "Conversation has a durable running turn whose exact Agent terminal state is not proven"
                     .to_owned(),
             ),
             Err(error) => error,
         }
+    }
+
+    /// Attempt to finalize one orphaned durable generation under the
+    /// persisted exact terminal-proof protocol.
+    ///
+    /// The caller must hold the per-Conversation preparation gate and must
+    /// have re-read `row`/`admission` under it, with no process-local turn
+    /// owner. Returns `Ok(true)` only after the full healing sequence is
+    /// durable: orphaned knowledge write-backs settled, the accepted receipt
+    /// completed as a structured `interrupted_by_restart` failure, the
+    /// aggregate CASed `running -> finished` (epoch+1, owner cleared), an
+    /// error tips row persisted, and `turn.completed` projected. `Ok(false)`
+    /// means no proof covers this generation and the caller must keep the
+    /// quarantine exactly as before.
+    async fn try_finalize_proven_orphan_generation(
+        &self,
+        user_id: &str,
+        row: &ConversationRow,
+        admission: &ConversationTurnAdmissionState,
+    ) -> Result<bool, AppError> {
+        let conversation_id = row.conversation_id.as_str();
+        let Some(provider) = self.terminal_proof_provider() else {
+            return Ok(false);
+        };
+        let requirement = match running_orphan_disposition(&row.r#type)? {
+            RunningOrphanDisposition::LocalContainedAuthority => {
+                OrphanProofRequirement::LocalContainedAuthority
+            }
+            RunningOrphanDisposition::RegisteredLocalProcessTree => {
+                OrphanProofRequirement::RegisteredLocalProcessTree
+            }
+            RunningOrphanDisposition::RegisteredGatewayAuthorityRequired => {
+                OrphanProofRequirement::RegisteredGatewayAuthority
+            }
+            // Work may continue outside this machine; no local provider can
+            // vouch for it.
+            RunningOrphanDisposition::ExternalTerminalProofRequired => return Ok(false),
+        };
+        let decision = provider
+            .prove_orphan_generation_terminal(
+                user_id,
+                conversation_id,
+                requirement,
+                admission.epoch,
+                admission.active_operation_id.as_deref(),
+            )
+            .await;
+        let evidence = match decision {
+            TerminalProofDecision::Proven { evidence } => evidence,
+            TerminalProofDecision::Unproven { reason } => {
+                info!(
+                    conversation_id,
+                    agent_type = %row.r#type,
+                    reason,
+                    "Restart-orphan generation stays quarantined without terminal proof"
+                );
+                return Ok(false);
+            }
+        };
+
+        // The prior generation is provably terminal, so its detached
+        // knowledge write-back workers are gone too: settle their durable
+        // running states before the lifecycle CAS, mirroring the stop path.
+        // The in-memory activity fence is empty at boot but must still be
+        // awaited for the background-seam caller.
+        await_turn_writeback_quiesced(conversation_id).await;
+        reconcile_quiesced_writebacks_until_resolved(
+            Arc::clone(&self.conversation_repo),
+            Some(Arc::clone(&self.user_events)),
+            user_id,
+            conversation_id,
+        )
+        .await;
+
+        let transition = self
+            .conversation_repo
+            .finalize_exact_cancelled_turn_generation(
+                user_id,
+                conversation_id,
+                admission.epoch,
+                admission.active_operation_id.as_deref(),
+                "interrupted: the application exited before this turn reached a terminal state",
+                Some(relay_error_code::INTERRUPTED_BY_RESTART),
+                Some(relay_error_code::fixed_code_retryable(
+                    relay_error_code::INTERRUPTED_BY_RESTART,
+                )),
+                now_ms(),
+            )
+            .await?;
+        match transition {
+            TurnLifecycleTransition::Committed => {}
+            // A previous healer (or the crash-cutpoint repair) already closed
+            // this generation; nothing further to surface.
+            TurnLifecycleTransition::AlreadyApplied => {
+                info!(
+                    conversation_id,
+                    evidence, "Restart-orphan generation was already terminal during healing"
+                );
+                return Ok(true);
+            }
+            // The persisted generation moved while healing; fail closed and
+            // let the next reconciliation re-read authority from scratch.
+            TurnLifecycleTransition::Stale => {
+                warn!(
+                    conversation_id,
+                    "Restart-orphan healing observed a stale generation; retaining quarantine"
+                );
+                return Ok(false);
+            }
+        }
+
+        info!(
+            conversation_id,
+            agent_type = %row.r#type,
+            admission_epoch = admission.epoch,
+            operation_id = admission.active_operation_id.as_deref(),
+            evidence,
+            "Healed restart-orphan Conversation turn with persisted terminal proof"
+        );
+        self.surface_restart_interrupted_turn(user_id, row).await;
+        Ok(true)
+    }
+
+    /// Post-heal user surfaces: a persisted error tips row (so the transcript
+    /// explains the missing assistant reply on reload) and the linearized
+    /// `turn.completed` projection (so mounted views re-enable sending).
+    /// Both are best-effort: the durable finalization above is already the
+    /// authoritative outcome.
+    async fn surface_restart_interrupted_turn(&self, user_id: &str, row: &ConversationRow) {
+        let conversation_id = row.conversation_id.as_str();
+        let tip_id = Self::mint_msg_id();
+        let tip = MessageRow {
+            id: 0,
+            message_id: tip_id.clone(),
+            conversation_id: conversation_id.to_owned(),
+            msg_id: Some(tip_id),
+            r#type: "tips".into(),
+            content: serde_json::json!({
+                "content": "应用在任务执行中途退出，本次任务已中断。会话已恢复可用，可重新发送该请求。",
+                "type": "error",
+                "source": "interrupted_by_restart",
+                // Tips-content contract: the top-level code and the nested
+                // structured card both carry the SCREAMING token, which is the
+                // i18n key `conversation.agentError.codes.<CODE>` (the receipt
+                // column keeps the snake_case D4 token separately).
+                "code": "INTERRUPTED_BY_RESTART",
+                "error": {
+                    "message": "应用在任务执行中途退出，本次任务已中断。会话已恢复可用，可重新发送该请求。",
+                    "code": "INTERRUPTED_BY_RESTART",
+                    "retryable": true,
+                },
+            })
+            .to_string(),
+            position: Some("center".into()),
+            status: Some("error".into()),
+            hidden: false,
+            created_at: now_ms(),
+        };
+        if let Err(error) = self.conversation_repo.insert_message(&tip).await {
+            warn!(
+                conversation_id,
+                error = %ErrorChain(&error),
+                "Failed to persist restart-interruption tip after healing"
+            );
+        }
+
+        let (companion, companion_id, channel_platform) =
+            match companion_context_from_extra(&row.extra) {
+                Ok(context) => context,
+                Err(error) => {
+                    warn!(
+                        conversation_id,
+                        error = %ErrorChain(&error),
+                        "Healed Conversation has malformed companion context; projecting defaults"
+                    );
+                    (false, None, None)
+                }
+            };
+        StreamRelay::broadcast_turn_completed_with_context(
+            &self.user_events,
+            user_id,
+            conversation_id,
+            None,
+            Some(self.final_completion_runtime(conversation_id)),
+            companion,
+            companion_id,
+            None,
+            channel_platform,
+        );
     }
 
     /// Settle one exact accepted public background delivery after a process
@@ -3333,6 +3774,16 @@ impl ConversationService {
         if self.runtime_state.has_active_turn(conversation_id) {
             return Ok(BackgroundTurnReconciliationDisposition::LiveExactOwnerWait);
         }
+        // No local owner survives for this exact accepted generation. Present
+        // the persisted terminal proof; healing settles the receipt as a
+        // structured retryable failure, so consumers re-read the durable
+        // outcome instead of waiting forever on an owner that cannot exist.
+        if self
+            .try_finalize_proven_orphan_generation(user_id, &row, &admission)
+            .await?
+        {
+            return Ok(BackgroundTurnReconciliationDisposition::ReconciledOrTerminalReRead);
+        }
         let _ = running_orphan_disposition(&row.r#type);
         Ok(BackgroundTurnReconciliationDisposition::ExternalProofRequiredFailClosed)
     }
@@ -3343,8 +3794,10 @@ impl ConversationService {
     /// per-Conversation preparation gate; the caller's enumeration is only a
     /// hint. Retained Agent Execution transcripts are skipped for their
     /// engine-owned recovery path and exact terminal rows are harmless no-ops.
-    /// Every unresolved `Running`, or `Finished + active_operation=A`, row is
-    /// quarantined until a durable terminal proof exists.
+    /// An unresolved `Running`, or `Finished + active_operation=A`, row is
+    /// healed as a structured `interrupted_by_restart` failure when the
+    /// installed [`TurnTerminalProofProvider`] proves the prior generation
+    /// terminal, and stays quarantined otherwise.
     pub async fn reconcile_locally_quiescent_orphan_on_boot(
         &self,
         user_id: &str,
@@ -3390,6 +3843,15 @@ impl ConversationService {
             ));
         }
         lease.ensure_active()?;
+        if self.runtime_state.has_active_turn(conversation_id) {
+            return Err(self.unproven_running_generation_error(&row));
+        }
+        if self
+            .try_finalize_proven_orphan_generation(user_id, &row, &admission)
+            .await?
+        {
+            return Ok(QuiescentOrphanReconciliation::Reconciled);
+        }
         Err(self.unproven_running_generation_error(&row))
     }
 
@@ -3456,20 +3918,14 @@ impl ConversationService {
             }
         };
 
-        // A model turn is not durably complete while one of its detached
-        // knowledge write-back workers can still publish to the filesystem or
-        // persist a terminal message state.  The exact completion/preparation
-        // fences above exclude successor admission while this activity fence
-        // drains.  Reconcile every quiesced attempt without a total timeout
-        // before committing Conversation Finished or its delivery receipt.
-        await_turn_writeback_quiesced(conversation_id).await;
-        reconcile_quiesced_writebacks_until_resolved(
-            Arc::clone(&self.conversation_repo),
-            Some(Arc::clone(&self.user_events)),
-            user_id,
-            conversation_id,
-        )
-        .await;
+        // Detached knowledge write-back workers are deliberately NOT awaited
+        // here: a model turn is durably complete once its transcript and
+        // delivery receipt settle, while the turn-final write-back continues
+        // in the background under its own per-message run guard. Lifecycle
+        // owners that must not race a late knowledge publication
+        // (stop/reset/delete/clear/edit) cancel and drain those workers
+        // explicitly — cancel_and_wait_for_turn_writebacks followed by the
+        // quiesce/reconcile pair — before their own durable finalization.
 
         // There is deliberately no total business timeout here.  Every
         // individual database attempt is bounded by the repository/SQLite
@@ -3614,6 +4070,35 @@ impl ConversationService {
                 guard_key,
                 *generation,
             );
+        }
+        // Spec D2: the terminal receipt is durably persisted (the finalize
+        // loop above broke on Committed/AlreadyApplied) — hand the completion
+        // to the registered observer. Detached: the observer performs its own
+        // keyed sends and must never block or fail exact-turn release.
+        if let Some(completion) = receipt_completion.as_ref()
+            && completion.kind == "turn"
+            && let Some(observer) = self
+                .turn_completion_observer
+                .read()
+                .ok()
+                .and_then(|slot| slot.clone())
+        {
+            let conversation_id = conversation_id.to_owned();
+            let operation_id = completion.operation_id.clone();
+            let result_ok = completion.result_ok;
+            let result_text = completion.result_text.clone();
+            let result_error_code = completion.result_error_code.clone();
+            tokio::spawn(async move {
+                observer
+                    .on_turn_completed(
+                        &conversation_id,
+                        &operation_id,
+                        result_ok,
+                        result_text.as_deref(),
+                        result_error_code.as_deref(),
+                    )
+                    .await;
+            });
         }
         let turn_generation = turn_handle.turn_id();
         if !turn_handle.release() {
@@ -4854,7 +5339,7 @@ impl ConversationService {
             Self::terminate_runtime_with_proof(
                 runtime_registry,
                 id,
-                AgentKillReason::AgentErrorRecovery,
+                AgentKillReason::ConfigurationChanged,
                 "conversation configuration update",
             )
             .await?;
@@ -4978,7 +5463,7 @@ impl ConversationService {
         Self::terminate_runtime_with_proof(
             &self.runtime_registry,
             conversation_id,
-            AgentKillReason::AgentErrorRecovery,
+            AgentKillReason::ConfigurationChanged,
             "companion skill snapshot update",
         )
         .await
@@ -5226,12 +5711,12 @@ impl ConversationService {
         // quarantine. With no exact in-memory turn owner, a durable Running
         // row may still have descendants executing under the prior process.
         // Reject before installing the deletion tombstone or removing any
-        // transcript/receipt rows.
+        // transcript/receipt rows. Every disposition quarantines here: proof
+        // is presented only through the boot/background recovery seams.
         if existing.status.as_deref() == Some("running")
             && !self.runtime_state.has_active_turn(id)
-            && running_orphan_disposition(&existing.r#type)?
-                == RunningOrphanDisposition::ExternalTerminalProofRequired
         {
+            let _ = running_orphan_disposition(&existing.r#type)?;
             return Err(AppError::Conflict(
                 "Conversation has an unproven running turn from a prior process; deletion requires exact process-empty proof"
                     .to_owned(),
@@ -6625,6 +7110,8 @@ impl ConversationService {
             result_ok: receipt.result_ok,
             result_text: receipt.result_text,
             result_error: receipt.result_error,
+            result_error_code: receipt.result_error_code,
+            result_error_retryable: receipt.result_error_retryable,
         }))
     }
 
@@ -6681,6 +7168,8 @@ impl ConversationService {
                     result_ok: receipt.result_ok,
                     result_text: receipt.result_text,
                     result_error: receipt.result_error,
+                    result_error_code: receipt.result_error_code,
+                    result_error_retryable: receipt.result_error_retryable,
                 },
             )),
             status => Err(AppError::Conflict(format!(
@@ -6748,6 +7237,8 @@ impl ConversationService {
             result_ok: receipt.result_ok,
             result_text: receipt.result_text,
             result_error: receipt.result_error,
+            result_error_code: receipt.result_error_code,
+            result_error_retryable: receipt.result_error_retryable,
         }))
     }
 
@@ -7109,6 +7600,8 @@ impl ConversationService {
                 result_ok: receipt.result_ok,
                 result_text: receipt.result_text,
                 result_error: receipt.result_error,
+                result_error_code: receipt.result_error_code,
+                result_error_retryable: receipt.result_error_retryable,
             });
         }
 
@@ -7319,6 +7812,8 @@ impl ConversationService {
                 result_ok: receipt.result_ok,
                 result_text: receipt.result_text,
                 result_error: receipt.result_error,
+                result_error_code: receipt.result_error_code,
+                result_error_retryable: receipt.result_error_retryable,
             });
         }
         {
@@ -7337,6 +7832,8 @@ impl ConversationService {
                     result_ok: None,
                     result_text: None,
                     result_error: None,
+                    result_error_code: None,
+                    result_error_retryable: None,
                 });
             }
             operations.insert(
@@ -7379,6 +7876,7 @@ impl ConversationService {
                 conversation_key,
                 &delivery_lease,
                 "Durably admitted turn was cancelled before process-local execution",
+                relay_error_code::TURN_CANCELLED,
             )
             .await;
             if !delivery_lease.receipt_was_handed_off() {
@@ -7427,6 +7925,7 @@ impl ConversationService {
                         conversation_key,
                         &delivery_lease,
                         &format!("{}", ErrorChain(&error)),
+                        relay_error_code::PREPARATION_FAILED,
                     )
                     .await;
                 } else if promote_before_execution
@@ -7442,6 +7941,10 @@ impl ConversationService {
                         false,
                         None,
                         Some("Public turn was cancelled before execution admission"),
+                        Some(relay_error_code::TURN_CANCELLED),
+                        Some(relay_error_code::fixed_code_retryable(
+                            relay_error_code::TURN_CANCELLED,
+                        )),
                         &runtime_build_cancellation,
                         Some((
                             &self.durable_operations_in_flight,
@@ -7473,6 +7976,8 @@ impl ConversationService {
             result_ok: None,
             result_text: None,
             result_error: None,
+            result_error_code: None,
+            result_error_retryable: None,
         })
     }
 
@@ -7625,6 +8130,8 @@ impl ConversationService {
             result_ok: receipt.result_ok,
             result_text: receipt.result_text,
             result_error: receipt.result_error,
+            result_error_code: receipt.result_error_code,
+            result_error_retryable: receipt.result_error_retryable,
         }))
     }
 
@@ -7918,6 +8425,10 @@ impl ConversationService {
                                 false,
                                 None,
                                 Some(&receipt_error),
+                                Some(relay_error_code::PREPARATION_FAILED),
+                                Some(relay_error_code::fixed_code_retryable(
+                                    relay_error_code::PREPARATION_FAILED,
+                                )),
                                 &CancellationToken::new(),
                                 durable_guard.as_ref().map(|(key, generation)| {
                                     (
@@ -7972,6 +8483,10 @@ impl ConversationService {
                         false,
                         None,
                         Some(&receipt_error),
+                        Some(relay_error_code::PREPARATION_FAILED),
+                        Some(relay_error_code::fixed_code_retryable(
+                            relay_error_code::PREPARATION_FAILED,
+                        )),
                         &preparation_token,
                         durable_guard.as_ref().map(|(key, generation)| {
                             (&self.durable_operations_in_flight, key.as_str(), *generation)
@@ -8070,6 +8585,10 @@ impl ConversationService {
                 false,
                 None,
                 Some(&receipt_error),
+                Some(relay_error_code::ADMISSION_REJECTED),
+                Some(relay_error_code::fixed_code_retryable(
+                    relay_error_code::ADMISSION_REJECTED,
+                )),
                 &preparation_token,
                 durable_guard.as_ref().map(|(key, generation)| {
                     (&self.durable_operations_in_flight, key.as_str(), *generation)
@@ -8147,6 +8666,7 @@ impl ConversationService {
                 false,
                 None,
                 Some(&receipt_error),
+                relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
             );
             self.release_and_complete_turn(
                 &mut turn_handle,
@@ -8198,6 +8718,7 @@ impl ConversationService {
                     false,
                     None,
                     Some(&receipt_error),
+                    relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
                 );
                 self.release_and_complete_turn(
                     &mut turn_handle,
@@ -8373,6 +8894,11 @@ impl ConversationService {
                         false,
                         None,
                         Some(&receipt_error),
+                        // Classified build-failure code (e.g.
+                        // user_agent_handshake_timeout) so receipt consumers
+                        // don't have to parse result_error text; falls back
+                        // to preparation_failed for unclassifiable errors.
+                        relay_error_code::classified_preparation_failure(&err),
                     );
                     service
                         .release_and_complete_turn(
@@ -8442,6 +8968,9 @@ impl ConversationService {
                     false,
                     None,
                     Some(&receipt_error),
+                    // Preparation touches the agent (resume/set_mode/clear):
+                    // carry the classified code when one applies.
+                    relay_error_code::classified_preparation_failure(&err),
                 );
                 service
                     .release_and_complete_turn(
@@ -8506,6 +9035,7 @@ impl ConversationService {
                     false,
                     None,
                     Some(&receipt_error),
+                    relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
                 );
                 service
                     .release_and_complete_turn(
@@ -8570,7 +9100,12 @@ impl ConversationService {
                 String,
                 Option<ProviderWithModel>,
             )> = None;
-            let mut durable_completion: Option<(bool, Option<String>, Option<String>)> = None;
+            let mut durable_completion: Option<(
+                bool,
+                Option<String>,
+                Option<String>,
+                Option<(String, bool)>,
+            )> = None;
             // Phase 3 (review #1/#5): resolve the effective failover config ONCE
             // (it does not change mid-turn). Used to build the relay's error
             // suppressor so a pre-response provider fault that WILL be failed over
@@ -8589,6 +9124,7 @@ impl ConversationService {
                         false,
                         None,
                         Some("Agent turn was cancelled before send".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     break;
                 }
@@ -8600,6 +9136,7 @@ impl ConversationService {
                                 false,
                                 None,
                                 Some("Agent turn was cancelled before continuation admission".to_owned()),
+                                relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                             ));
                             final_turn_writeback = None;
                             break;
@@ -8689,6 +9226,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent turn was cancelled".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8713,6 +9251,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent event stream integrity was lost".to_owned()),
+                        relay_error_code::map_turn_failure(&outcome.terminal, None),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8730,6 +9269,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent turn was cancelled during session persistence".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8768,6 +9308,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent turn was cancelled during model failover".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8832,6 +9373,7 @@ impl ConversationService {
                                 false,
                                 outcome.final_text.clone(),
                                 Some("Agent turn was cancelled during image fallback".to_owned()),
+                                relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                             ));
                             break;
                         }
@@ -8859,6 +9401,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent turn was cancelled during fallback evaluation".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8897,6 +9440,10 @@ impl ConversationService {
                     outcome.final_text.clone(),
                     (!matches!(outcome.terminal, RelayTerminal::Finish))
                         .then(|| format!("{:?}", outcome.terminal)),
+                    relay_error_code::map_turn_failure(
+                        &outcome.terminal,
+                        outcome.final_text.as_deref(),
+                    ),
                 ));
 
                 let acp_evicted = service
@@ -8917,6 +9464,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent turn was cancelled during terminal cleanup".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8952,6 +9500,7 @@ impl ConversationService {
                         false,
                         outcome.final_text.clone(),
                         Some("Agent turn was cancelled before continuation".to_owned()),
+                        relay_error_code::fixed_failure(relay_error_code::TURN_CANCELLED),
                     ));
                     final_turn_writeback = None;
                     break;
@@ -8986,11 +9535,12 @@ impl ConversationService {
                 });
             }
 
-            let (ok, text, error) = durable_completion.unwrap_or_else(|| {
+            let (ok, text, error, error_code) = durable_completion.unwrap_or_else(|| {
                 (
                     false,
                     None,
                     Some("Agent turn ended without a terminal relay outcome".to_owned()),
+                    relay_error_code::fixed_failure(relay_error_code::OWNER_TASK_EXITED),
                 )
             });
             if turn_token.is_cancelled() {
@@ -8998,68 +9548,72 @@ impl ConversationService {
                 return;
             }
 
-            // Knowledge write-back is part of the authoritative turn. A
-            // Conversation is not Finished, its receipt is not Completed, and
-            // a replacement turn cannot be admitted until this post-model
-            // work has durably reached a terminal write-back state.
+            // Turn-final knowledge write-back is deliberately detached from
+            // the authoritative turn: the Conversation Finishes and its
+            // receipt completes immediately after the model terminal, while
+            // the write-back continues in the background under its own
+            // per-message run guard. The guard keeps read-time orphan
+            // projection truthful and lets stop/reset/delete/clear/edit
+            // cancel and drain the worker, and the durable "started" intent
+            // is persisted before the turn finalizes so a crash always
+            // leaves a reconcilable, retryable state behind.
             if let Some((
                 knowledge_service,
-                mut request,
+                request,
                 msg_id,
                 final_text,
                 session_model,
             )) = final_turn_writeback
             {
-                let attempt = TurnWritebackAttempt::new(
-                    Arc::clone(&repo),
-                    Arc::clone(&user_events),
-                    user_id_owned.clone(),
-                    conv_id.clone(),
-                    msg_id,
-                    source_user_message_id,
-                    request.scope.clone(),
-                    final_text.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    1,
-                );
-                let writeback_result = match service
-                    .resolve_turn_writeback_model(session_model.as_ref())
-                    .await
-                {
-                    Ok(model) => {
-                        request.model = model;
-                        request.cancellation = Some(turn_token.clone());
-                        AssertUnwindSafe(run_turn_writeback_report(
-                            knowledge_service,
-                            request,
-                            final_text,
-                            attempt,
-                        ))
-                        .catch_unwind()
-                        .await
+                if let Some(guard) = service.try_start_turn_writeback(&conv_id, &msg_id) {
+                    let attempt = TurnWritebackAttempt::new(
+                        Arc::clone(&repo),
+                        Arc::clone(&user_events),
+                        user_id_owned.clone(),
+                        conv_id.clone(),
+                        msg_id,
+                        source_user_message_id,
+                        request.scope.clone(),
+                        final_text.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        1,
+                    );
+                    match attempt.emit_started_intent().await {
+                        Ok(()) => {
+                            // No workspace binding lease is carried: the
+                            // write-back publishes through knowledge-base
+                            // storage roots rather than the conversation's
+                            // mount namespace, and holding a mounted-signature
+                            // lease here would turn a later binding change
+                            // into a user-visible Conflict while the
+                            // background worker drains.
+                            service.spawn_turn_writeback(
+                                knowledge_service,
+                                request,
+                                session_model,
+                                final_text,
+                                attempt,
+                                guard,
+                                None,
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                conversation_id = %conv_id,
+                                error = %error,
+                                "Skipping turn-final knowledge write-back; its durable start intent could not be persisted"
+                            );
+                        }
                     }
-                    Err(writeback_error) => AssertUnwindSafe(
-                        finish_turn_writeback_failure(attempt, writeback_error),
-                    )
-                    .catch_unwind()
-                    .await,
-                };
-                match writeback_result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(writeback_error)) => {
-                        error!(
-                            conversation_id = %conv_id,
-                            error = %ErrorChain(&writeback_error),
-                            "Knowledge write-back did not reach durable terminal state; retaining turn ownership"
-                        );
-                        // The current write-back owner retries terminal state
-                        // persistence internally. This branch is deliberately
-                        // fail-closed for future error variants.
-                        turn_token.cancelled().await;
-                        return;
-                    }
-                    Err(panic) => std::panic::resume_unwind(panic),
+                } else {
+                    // A concurrent owner for this exact message can only be a
+                    // manual retry admitted against a stale projection; that
+                    // run already owns the message's write-back state.
+                    warn!(
+                        conversation_id = %conv_id,
+                        "Skipping turn-final knowledge write-back; another write-back run already owns this message"
+                    );
                 }
             }
 
@@ -9073,6 +9627,7 @@ impl ConversationService {
                 ok,
                 text.as_deref(),
                 error.as_deref(),
+                error_code,
             );
             service
                 .release_and_complete_turn(
@@ -9162,6 +9717,7 @@ impl ConversationService {
                     false,
                     None,
                     Some("Agent turn task exited unexpectedly before durable completion"),
+                    relay_error_code::fixed_failure(relay_error_code::OWNER_TASK_EXITED),
                 );
                 service
                     .release_and_complete_turn(
@@ -9364,6 +9920,8 @@ impl ConversationService {
                 conv_id,
                 operation_id,
                 true,
+                None,
+                None,
                 None,
                 None,
                 now_ms(),
@@ -9891,6 +10449,8 @@ impl ConversationService {
                 result_ok: receipt.result_ok,
                 result_text: receipt.result_text,
                 result_error: receipt.result_error,
+                result_error_code: receipt.result_error_code,
+                result_error_retryable: receipt.result_error_retryable,
             });
         }
         let steer_fence_prefix =
@@ -9942,6 +10502,8 @@ impl ConversationService {
                 result_ok: receipt.result_ok,
                 result_text: receipt.result_text,
                 result_error: receipt.result_error,
+                result_error_code: receipt.result_error_code,
+                result_error_retryable: receipt.result_error_retryable,
             });
         }
 
@@ -9963,6 +10525,8 @@ impl ConversationService {
                         false,
                         None,
                         Some("the Agent turn ended before the steer was delivered"),
+                        None,
+                        None,
                         now_ms(),
                     )
                     .await?;
@@ -9981,6 +10545,8 @@ impl ConversationService {
                         false,
                         None,
                         Some(&detail),
+                        None,
+                        None,
                         now_ms(),
                     )
                     .await?;
@@ -10011,6 +10577,8 @@ impl ConversationService {
                 conv_id,
                 &operation_id,
                 true,
+                None,
+                None,
                 None,
                 None,
                 now_ms(),
@@ -10050,6 +10618,8 @@ impl ConversationService {
             result_ok: Some(true),
             result_text: None,
             result_error: None,
+            result_error_code: None,
+            result_error_retryable: None,
         })
     }
 
@@ -10292,6 +10862,8 @@ impl ConversationService {
                 result_ok: receipt.result_ok,
                 result_text: receipt.result_text,
                 result_error: receipt.result_error,
+                result_error_code: receipt.result_error_code,
+                result_error_retryable: receipt.result_error_retryable,
             });
         }
         let runtime_build_lease =
@@ -10496,6 +11068,8 @@ impl ConversationService {
                 result_ok: receipt.result_ok,
                 result_text: receipt.result_text,
                 result_error: receipt.result_error,
+                result_error_code: receipt.result_error_code,
+                result_error_retryable: receipt.result_error_retryable,
             });
         }
 
@@ -10611,6 +11185,7 @@ impl ConversationService {
                 conv_id,
                 &delivery,
                 &format!("{}", ErrorChain(&error)),
+                relay_error_code::PREPARATION_FAILED,
             )
             .await;
             if !delivery.receipt_was_handed_off() {
@@ -10663,6 +11238,7 @@ impl ConversationService {
                     conv_id,
                     &delivery,
                     &format!("{}", ErrorChain(&error)),
+                    relay_error_code::PREPARATION_FAILED,
                 )
                 .await;
                 if !delivery.receipt_was_handed_off() {
@@ -10682,6 +11258,8 @@ impl ConversationService {
             result_ok: None,
             result_text: None,
             result_error: None,
+            result_error_code: None,
+            result_error_retryable: None,
         })
     }
 
@@ -11047,6 +11625,10 @@ impl ConversationService {
                             expected_generation.epoch,
                             expected_generation.active_operation_id.as_deref(),
                             durable_reason,
+                            Some(relay_error_code::TURN_CANCELLED),
+                            Some(relay_error_code::fixed_code_retryable(
+                                relay_error_code::TURN_CANCELLED,
+                            )),
                             now_ms(),
                         )
                         .await
@@ -11249,11 +11831,10 @@ impl ConversationService {
             // backend's complete descendant tree is empty merely because its
             // registry has no exact active owner. Keep the receipt/aggregate
             // untouched and do not install a stop tombstone or user-cancel
-            // stamp until a backend presents queryable exact terminal proof.
-            if conversation.status.as_deref() == Some("running")
-                && running_orphan_disposition(&conversation.r#type)?
-                    == RunningOrphanDisposition::ExternalTerminalProofRequired
-            {
+            // stamp; only the boot/background recovery seams may present
+            // queryable exact terminal proof.
+            if conversation.status.as_deref() == Some("running") {
+                let _ = running_orphan_disposition(&conversation.r#type)?;
                 drop(user_cancel_preflight);
                 return Err(AppError::Conflict(
                     "Conversation has an unproven running turn from a prior process; stop cannot finalize it without exact process-empty proof"

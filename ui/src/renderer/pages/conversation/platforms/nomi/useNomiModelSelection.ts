@@ -1,11 +1,12 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
-import {
-  formatModelLabelForProvider,
-  hydrateProviderWithModel,
-} from '@/renderer/utils/model/cloudModelLabel';
+import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export type NomiModelSelection = {
@@ -13,8 +14,8 @@ export type NomiModelSelection = {
   providers: IProvider[];
   getAvailableModels: (provider: IProvider) => string[];
   handleSelectModel: (provider: IProvider, modelName: string) => Promise<void>;
-  formatModelLabel: (provider: IProvider | undefined, modelName?: string) => string;
-  getDisplayModelName: (modelName?: string, provider?: IProvider) => string;
+  formatModelLabel: (provider: { platform?: string } | undefined, modelName?: string) => string;
+  getDisplayModelName: (modelName?: string) => string;
 };
 
 export type UseNomiModelSelectionOptions = {
@@ -32,57 +33,56 @@ export const useNomiModelSelection = ({
     setCurrentModel(initialModel);
   }, [initialModel?.id, initialModel?.use_model]);
 
-  const { providers: allProviders, getAvailableModels, formatModelLabel: catalogFormatLabel } =
-    useModelProviderList();
+  const { formatModelLabel } = useModelProviderList();
+  // Unified chat catalog — the model list comes from the backend resolve
+  // (profiles + inference), not from frontend name heuristics.
+  const { groups } = useModelsForTask('chat');
 
   // Nomicore does not support Google Auth — filter it out
   const providers = useMemo(
-    () => allProviders.filter((p) => !p.platform?.toLowerCase().includes('gemini-with-google-auth')),
-    [allProviders]
+    () =>
+      groups
+        .map((group) => group.provider)
+        .filter((p) => !p.platform?.toLowerCase().includes('gemini-with-google-auth')),
+    [groups]
   );
 
-  const hydratedModel = useMemo(
-    () => hydrateProviderWithModel(providers, current_model),
-    [providers, current_model]
+  const modelsByProvider = useMemo(
+    () => new Map(groups.map((group) => [group.provider.id, group.models])),
+    [groups]
   );
 
-  const formatModelLabel = useCallback(
-    (provider: IProvider | undefined, modelName?: string) => {
-      if (!modelName) return '';
-      const resolved = provider ?? findHydratedProvider(providers, hydratedModel);
-      return catalogFormatLabel(resolved, modelName);
-    },
-    [catalogFormatLabel, hydratedModel, providers]
+  const getAvailableModels = useCallback(
+    (provider: IProvider): string[] => modelsByProvider.get(provider.id) ?? [],
+    [modelsByProvider]
   );
 
   const handleSelectModel = useCallback(
     async (provider: IProvider, modelName: string) => {
-      const selected = hydrateProviderWithModel(providers, {
+      const selected = {
         ...(provider as unknown as TProviderWithModel),
         use_model: modelName,
-      }) as TProviderWithModel;
+      } as TProviderWithModel;
       const ok = await onSelectModel(provider, modelName);
       if (ok) {
         setCurrentModel(selected);
       }
     },
-    [onSelectModel, providers]
+    [onSelectModel]
   );
 
   const getDisplayModelName = useCallback(
-    (modelName?: string, provider?: IProvider) => {
-      const resolvedName = modelName ?? hydratedModel?.use_model;
-      if (!resolvedName) return '';
-      const resolvedProvider = provider ?? findHydratedProvider(providers, hydratedModel);
-      const label = formatModelLabelForProvider(resolvedProvider, resolvedName);
+    (modelName?: string) => {
+      if (!modelName) return '';
+      const label = formatModelLabel(current_model, modelName);
       const maxLength = 20;
       return label.length > maxLength ? `${label.slice(0, maxLength)}...` : label;
     },
-    [hydratedModel, providers]
+    [current_model, formatModelLabel]
   );
 
   return {
-    current_model: hydratedModel,
+    current_model,
     providers,
     getAvailableModels,
     handleSelectModel,
@@ -90,10 +90,3 @@ export const useNomiModelSelection = ({
     getDisplayModelName,
   };
 };
-
-function findHydratedProvider(
-  providers: IProvider[],
-  model?: TProviderWithModel
-): IProvider | undefined {
-  return providers.find((p) => p.id === model?.id);
-}

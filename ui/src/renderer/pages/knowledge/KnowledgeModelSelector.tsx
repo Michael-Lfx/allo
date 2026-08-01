@@ -1,4 +1,8 @@
-
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -6,14 +10,12 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
 import { Brain, Down, Plus } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
-import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
+import { modelHealthOf } from '@/common/utils/providerModels';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { iconColors } from '@/renderer/styles/colors';
-import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
-import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
+import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
-import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 
 /**
  * A picked provider+model pair for the knowledge AI generators, or `null` to
@@ -77,23 +79,23 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { providers, getAvailableModels, isLoading } = useModelProviderList();
-  const { data: modelConfig } = useProvidersQuery();
+  // Chat-capable catalog (backend resolve; heuristics gone).
+  const { groups, isLoading } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
 
   const defaultLabel = t('common.defaultModel');
   const choiceAvailable =
     !choice ||
-    providers.some(
-      (provider) =>
-        provider.id === choice.provider_id &&
-        getAvailableModels(provider).includes(choice.model),
+    groups.some(
+      (group) =>
+        group.provider.id === choice.provider_id &&
+        group.models.includes(choice.model),
     );
   const choiceUnavailable = Boolean(choice && !isLoading && !choiceAvailable);
   const buttonLabel = choice
     ? choiceUnavailable
       ? `${choice.model} · ${t('knowledge.form.modelUnavailable')}`
-      : formatCloudModelLabel(choice.model)
+      : choice.model
     : defaultLabel;
 
   const droplist = (
@@ -101,31 +103,22 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
       <Menu.Item key='__default__' onClick={() => onChange(null)}>
         {defaultLabel}
       </Menu.Item>
-      {providers.length === 0
-        ? SERVER_MANAGED_MODELS
-          ? [
-              <Menu.Item key='no-models' disabled>
-                {t('settings.noAvailableModels')}
-              </Menu.Item>,
-            ]
-          : [
-              <Menu.Item
-                key='add-model'
-                className='text-12px text-t-secondary'
-                onClick={() => navigate('/models?section=models')}
-              >
-                <Plus theme='outline' size='12' />
-                {t('settings.addModel')}
-              </Menu.Item>,
-            ]
-        : providers.map((provider) => {
-            const models = getAvailableModels(provider);
-            if (models.length === 0) return null;
+      {groups.length === 0
+        ? [
+            <Menu.Item
+              key='add-model'
+              className='text-12px text-t-secondary'
+              onClick={() => navigate('/models?section=models')}
+            >
+              <Plus theme='outline' size='12' />
+              {t('settings.addModel')}
+            </Menu.Item>,
+          ]
+        : groups.map(({ provider, models }) => {
             return (
               <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>
                 {models.map((modelName) => {
-                  const matched = modelConfig?.find((p) => p.id === provider.id);
-                  const healthStatus = matched?.model_health?.[modelName]?.status || 'unknown';
+                  const healthStatus = modelHealthOf(provider, modelName)?.status || 'unknown';
                   const healthColor =
                     healthStatus === 'healthy'
                       ? 'bg-green-500'
@@ -141,7 +134,7 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
                         {healthStatus !== 'unknown' && (
                           <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
                         )}
-                        <span>{formatCloudModelLabel(modelName, provider.model_descriptions)}</span>
+                        <span>{modelName}</span>
                       </div>
                     </Menu.Item>
                   );

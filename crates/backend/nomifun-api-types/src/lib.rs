@@ -15,7 +15,6 @@ mod connection_test;
 mod conversation;
 mod cron;
 mod custom_agent;
-mod exposure;
 mod extension;
 mod file;
 mod goal;
@@ -60,7 +59,7 @@ pub use acp::{
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
     OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra, SessionMcpServer,
-    SessionMcpTransport, SlashCommandItem,
+    SessionMcpTransport, SlashCommandItem, SummonConfig,
 };
 pub use agent_discovery::{
     AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy,
@@ -87,7 +86,6 @@ pub use agent_execution_template::{
     CreateAgentExecutionTemplateRequest, CreateExecutionFromTemplateRequest,
     UpdateAgentExecutionTemplateRequest,
 };
-pub use exposure::{ExposureClamp, ExposureMode, SAFE_PUBLIC_SERVICE_TOOLS, exposure_clamp};
 pub use preset::{
     AgentPreference, CreatePresetRequest, CreatePresetTagRequest, ImportPresetsRequest,
     ImportPresetsResult, KnowledgeBaseBinding, ModelPreference, PresetImportError,
@@ -96,13 +94,14 @@ pub use preset::{
     SetPresetStateRequest, SkillBinding, UpdatePresetRequest, UpdatePresetTagRequest,
 };
 pub use auth::{
-    AuthStatusResponse, ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser,
-    QrLoginRequest, RefreshResponse, RefreshTokenRequest, UserInfoResponse,
+    AuthStatusResponse, ChangePasswordRequest, ChangeUsernameRequest, ChangeUsernameResponse, LoginRequest,
+    LoginResponse, PublicUser, QrLoginRequest, RefreshResponse, RefreshTokenRequest, UserInfoResponse,
     WebuiChangePasswordRequest, WebuiChangeUsernameRequest, WebuiChangeUsernameResponse,
     WebuiGenerateQrTokenResponse, WebuiResetPasswordResponse, WsTokenResponse,
 };
 pub use channel::{
-    ApprovePairingRequest, BridgeResponse, ChannelSessionResponse, ChannelUserResponse,
+    ApprovePairingRequest, BridgeResponse, CHANNEL_OWNER_DOMAIN_COMPANION,
+    CHANNEL_OWNER_DOMAIN_CUSTOMER_SERVICE, ChannelSessionResponse, ChannelUserResponse,
     DisablePluginRequest, EnablePluginRequest, EnablePluginResponse, PairingRequestResponse,
     PairingRequestedPayload,
     PluginStatusChangedPayload, PluginStatusResponse, RejectPairingRequest, RevokeUserRequest,
@@ -175,7 +174,7 @@ pub use insights::{
     InsightsResetOutboxResponse, UpdateInsightsContributionRequest,
 };
 pub use knowledge::{
-    ConnectorCredentialSummary, ConnectorSyncState, CreateKnowledgeTagRequest, KnowledgeMountInfo,
+    CreateKnowledgeTagRequest, KnowledgeMountInfo,
     KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag,
     UpdateKnowledgeTagRequest,
 };
@@ -227,12 +226,12 @@ pub use poi::{
     PoiTopicStatusRequest, UpdatePoiSettingsRequest,
 };
 pub use provider::{
-    BedrockAuthMethod, BedrockConfig, CreateProviderRequest, DetectProtocolRequest,
-    DetectedProtocol, DetectionSuggestion, FetchModelsAnonymousRequest, FetchModelsRequest,
-    FetchModelsResponse, HealthStatus, KeyTestResult, ModelCapability, ModelHealthStatus,
-    ModelInfo, ModelType, MultiKeyResult, ProtocolDetectionResponse, ProviderHealthCheckErrorKind,
-    ProviderHealthCheckRequest, ProviderHealthCheckResponse, ProviderResponse, SuggestionType,
-    UpdateProviderRequest,
+    BedrockAuthMethod, BedrockConfig, CloneProviderRequest, CreateProviderRequest,
+    DetectProtocolRequest, DetectedProtocol, DetectionSuggestion, FetchModelsAnonymousRequest,
+    FetchModelsRequest, FetchModelsResponse, HealthStatus, KeyTestResult, ModelCapability,
+    ModelHealthStatus, ModelInfo, ModelType, MultiKeyResult, ProtocolDetectionResponse,
+    ProviderHealthCheckErrorKind, ProviderHealthCheckRequest, ProviderHealthCheckResponse,
+    ProviderResponse, SuggestionType, UpdateProviderRequest,
 };
 pub use provider_connection::{ProviderConnectionResponse, UpsertProviderConnectionRequest};
 pub use provider_model::{
@@ -263,7 +262,9 @@ pub use skill::{
     MaterializeSkillsResponse, MaterializedSkillRef, NamedPathResponse, ReadPresetRuleRequest,
     ReadBuiltinResourceRequest, ReadSkillInfoRequest, ReadSkillInfoResponse,
     RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse, ScannedSkillResponse,
-    SetSkillTagsRequest, SkillListItemResponse, SkillMarketItemResponse, SkillMarketSyncRequest,
+    SetSkillTagsRequest, SkillListItemResponse, SkillMarketItemResponse, SkillMarketMcpConfigRequest,
+    SkillMarketMcpConfigResponse, SkillMarketPackageInstallError, SkillMarketPackageInstallResponse,
+    SkillMarketPackageRequest, SkillMarketPackageResponse, SkillMarketSyncRequest,
     SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse, WritePresetRuleRequest,
 };
 pub use system::{

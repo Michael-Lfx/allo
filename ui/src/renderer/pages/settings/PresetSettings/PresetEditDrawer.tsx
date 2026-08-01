@@ -25,7 +25,7 @@ import { createPresetTagDraftLifecycle } from './presetTagDraftLifecycle';
 import EmojiPicker from '@/renderer/components/chat/EmojiPicker';
 import MarkdownView from '@/renderer/components/Markdown';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
-import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
+import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useKnowledgeBases } from '@/renderer/pages/knowledge/useKnowledge';
@@ -261,12 +261,12 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
 
   const agentOptions = availableBackends;
 
-  const { providers, getAvailableModels } = useModelProviderList();
+  const { groups: chatGroups } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
   const modelOptions = useMemo(() => {
     const options = new Map<string, { value: string; label: string }>();
-    for (const provider of providers) {
-      for (const modelName of getAvailableModels(provider)) {
+    for (const { provider, models } of chatGroups) {
+      for (const modelName of models) {
         const value = `${provider.id}::${modelName}`;
         options.set(value, { value, label: `${providerLabel(provider)} · ${formatCloudModelLabel(modelName)}` });
       }
@@ -276,7 +276,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
       if (!options.has(value)) options.set(value, { value, label: formatCloudModelLabel(item.model) });
     }
     return Array.from(options.values());
-  }, [providers, getAvailableModels, editModels, providerLabel]);
+  }, [chatGroups, editModels, providerLabel]);
   const selectedModelValues = editModels.map((item) => `${item.provider_id ?? ANY_PROVIDER_TOKEN}::${item.model}`);
   const { bases: knowledgeBases } = useKnowledgeBases();
   const { mcpServers } = useMcpServers();
@@ -286,7 +286,6 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     { value: 'conversation', label: t('settings.presetTargetConversation', { defaultValue: 'Agent conversation' }) },
     { value: 'execution_step', label: t('settings.presetTargetExecutionStep', { defaultValue: '协作任务' }) },
     { value: 'companion', label: t('settings.presetTargetCompanion', { defaultValue: 'Companion' }) },
-    { value: 'public_companion', label: t('settings.presetTargetPublicCompanion', { defaultValue: 'Public companion' }) },
     { value: 'cron', label: t('settings.presetTargetCron', { defaultValue: 'Scheduled task' }) },
   ];
 

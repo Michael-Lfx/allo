@@ -22,7 +22,7 @@ import OpenClawChat from '../platforms/openclaw/OpenClawChat';
 import RemoteChat from '../platforms/remote/RemoteChat';
 import { saveNomiDefaultModel } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
 import { configService } from '@/common/config/configService';
-import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
+import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { resolveHealModel } from '../platforms/nomi/healConversationModel';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { getConversationOrNull, seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
@@ -437,7 +437,19 @@ const NomiConversationPanel: React.FC<{
     />
   );
 
-  const { providers: healProviders, getAvailableModels: healGetAvailable } = useModelProviderList();
+  // Heal against the unified chat catalog (backend resolve, no heuristics).
+  // On resolve failure/loading `chatGroups` is empty ⇒ resolveHealModel is a
+  // no-op, so a transient error can never trigger a destructive model swap.
+  const { groups: healGroups } = useModelsForTask('chat');
+  const healPool = useMemo(
+    () => ({
+      providers: healGroups.map((group) => group.provider),
+      getAvailableModels: (p: IProvider) =>
+        healGroups.find((group) => group.provider.id === p.id)?.models ?? [],
+    }),
+    [healGroups],
+  );
+  const { providers: healProviders, getAvailableModels: healGetAvailable } = healPool;
   useEffect(() => {
     if (!healProviders.length) return;
     const saved = configService.get('nomi.defaultModel');

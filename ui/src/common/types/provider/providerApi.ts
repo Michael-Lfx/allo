@@ -8,7 +8,8 @@
  * backend spec.
  */
 
-import type { IProvider, ModelCapability, ModelProfile, ModelTask, ModelTrait } from '@/common/config/storage';
+import type { IProvider, ModelProfile, ModelTask, ModelTrait } from '@/common/config/storage';
+import type { ProviderModelResponse } from '@/common/types/provider/providerModel';
 import { parseProviderId, type ProviderId } from '@/common/types/ids';
 
 /**
@@ -16,6 +17,10 @@ import { parseProviderId, type ProviderId } from '@/common/types/ids';
  *
  * The wire uses `provider_id`; renderer code deliberately keeps using
  * `IProvider.id`. Do not collapse the two shapes or read a wire-level `id`.
+ *
+ * The wire still carries a vestigial `capabilities: []` field; it is
+ * deliberately not mirrored here and never passed through to `IProvider`
+ * (row-level `models_detail` tasks/traits are the capability authority).
  */
 export interface ProviderResponse {
   provider_id: string;
@@ -25,13 +30,17 @@ export interface ProviderResponse {
   api_key: string;
   models: string[];
   enabled: boolean;
-  capabilities: ModelCapability[];
   model_context_limits?: Record<string, number>;
   model_protocols?: Record<string, string>;
   model_descriptions?: Record<string, string>;
   model_enabled?: Record<string, boolean>;
   model_health?: IProvider['model_health'];
   bedrock_config?: IProvider['bedrock_config'];
+  /**
+   * All authoritative per-model rows for this provider (`provider_models`),
+   * in `(sort_order, id)` order. Skipped on the wire when empty.
+   */
+  models_detail?: ProviderModelResponse[];
   is_full_url: boolean;
   sort_order: number;
   created_at: number;
@@ -51,7 +60,6 @@ export interface CreateProviderRequest {
   models?: string[];
   enabled?: boolean;
   sort_order?: number;
-  capabilities?: ModelCapability[];
   model_context_limits?: Record<string, number>;
   model_protocols?: Record<string, string>;
   model_descriptions?: Record<string, string>;
@@ -79,13 +87,13 @@ export function fromProviderResponse(response: ProviderResponse): IProvider {
     api_key: response.api_key,
     models: response.models,
     enabled: response.enabled,
-    capabilities: response.capabilities,
     model_context_limits: response.model_context_limits,
     model_protocols: response.model_protocols,
     model_descriptions: response.model_descriptions,
     model_enabled: response.model_enabled,
     model_health: response.model_health,
     bedrock_config: response.bedrock_config,
+    models_detail: response.models_detail,
     is_full_url: response.is_full_url,
     sort_order: response.sort_order,
   };
@@ -102,7 +110,6 @@ export function toCreateProviderRequest(input: CreateProviderInput): CreateProvi
     models: input.models,
     enabled: input.enabled,
     sort_order: input.sort_order,
-    capabilities: input.capabilities,
     model_context_limits: input.model_context_limits,
     model_protocols: input.model_protocols,
     model_descriptions: input.model_descriptions,
@@ -125,7 +132,6 @@ export interface UpdateProviderRequest {
   models?: string[];
   enabled?: boolean;
   sort_order?: number;
-  capabilities?: ModelCapability[];
   model_context_limits?: Record<string, number>;
   model_protocols?: Record<string, string>;
   model_descriptions?: Record<string, string>;

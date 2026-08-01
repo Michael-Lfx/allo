@@ -16,6 +16,7 @@ mod hooks;
 mod id;
 mod scoped_auth;
 mod pagination;
+pub mod paths;
 pub mod provider_lifecycle;
 pub mod provider_usage;
 mod timestamp;
@@ -50,18 +51,19 @@ pub use hooks::{OnConversationDelete, OnTerminalDelete, RequirementCreator};
 pub use id::{
     AgentExecutionAttemptId, AgentExecutionId, AgentExecutionParticipantId,
     AgentExecutionStepId, AgentExecutionTemplateId, AgentExecutionTemplateParticipantId,
-    AgentId, AttachmentId, ChannelPluginId, ChannelSessionId, ChannelUserId,
+    AgentId, AttachmentId, ChannelPendingPromptId, ChannelPluginId, ChannelSessionId, ChannelUserId,
     CompanionEventId, CompanionEvolutionFeedbackId, CompanionId, CompanionLearnRunId,
     CompanionMemoryId, CompanionSessionWindowId, CompanionSkillId, CompanionSkillPatternId,
-    CompanionSuggestionId, ConnectorCredentialId,
+    CompanionSuggestionId,
     ConversationArtifactId, ConversationId, CreationTaskId, CronJobId, CronJobRunId,
+    CsAgentId, CsDialogueId, CsMessageId, CsNoteId,
     EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID,
     IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
     LearningActivityId, LearningAttemptId, LearningConceptId, LearningCourseId,
     LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId,
     McpServerId, MessageId,
     PersistedArtifactId, PresetId, PresetTagId, PreviewSnapshotId, ProviderId,
-    PublicAgentAuditEntryId, PublicAgentId, RemoteAgentId, TerminalId, UUID_STRING_LEN,
+    RemoteAgentId, TerminalId, UUID_STRING_LEN,
     RequirementId, UserId, UuidV7Error, WebhookId,
     WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,
     is_reserved_provider_id, validate_uuidv7,

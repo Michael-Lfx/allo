@@ -13,7 +13,7 @@ use std::sync::Arc;
 use nomi_agent::moa::MoaResolvedSlot;
 use nomi_config::config::{MoaConfig, MoaSlot};
 use nomifun_api_types::{MoaSettings, NomiBuildExtra};
-use nomifun_db::IProviderRepository;
+use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use tracing::warn;
 
 use crate::types::{MoaSlotPrice, ResolvedMoaBridge};
@@ -71,6 +71,7 @@ pub(crate) fn moa_settings_to_config(settings: &MoaSettings) -> MoaConfig {
 /// when the catalog has no entry — so the manager can report turn cost.
 pub(crate) async fn resolve_moa_slots(
     provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
     encryption_key: &[u8; 32],
     workspace: &Path,
     config: &MoaConfig,
@@ -80,6 +81,7 @@ pub(crate) async fn resolve_moa_slots(
     for slot in &config.references {
         let resolved = super::provider_config::resolve_provider_config(
             provider_repo,
+            provider_model_repo,
             encryption_key,
             &slot.provider_id,
             &slot.model,
@@ -103,6 +105,7 @@ pub(crate) async fn resolve_moa_slots(
         // does not carry them; failure here just means "unknown".
         let fields = super::provider_config::resolve_provider_fields(
             provider_repo,
+            provider_model_repo,
             encryption_key,
             &slot.provider_id,
             &slot.model,
@@ -159,6 +162,7 @@ fn catalog_slot_prices(platform: &str, model: &str) -> (Option<f64>, Option<f64>
 pub(crate) async fn resolve_moa_bridge(
     extra: &NomiBuildExtra,
     provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
     encryption_key: &[u8; 32],
     workspace: &Path,
     data_dir: &Path,
@@ -168,8 +172,14 @@ pub(crate) async fn resolve_moa_bridge(
         return None;
     }
     let config = moa_settings_to_config(extra.moa.as_ref()?);
-    let (slots, slot_prices) =
-        resolve_moa_slots(provider_repo, encryption_key, workspace, &config).await;
+    let (slots, slot_prices) = resolve_moa_slots(
+        provider_repo,
+        provider_model_repo,
+        encryption_key,
+        workspace,
+        &config,
+    )
+    .await;
     if slots.is_empty() {
         warn!("MoA is configured but no reference slot resolved; running single-model");
         return None;

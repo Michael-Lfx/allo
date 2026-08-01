@@ -294,14 +294,10 @@ function clearBrowserAuthArtifacts(): void {
     // Best-effort cleanup only.
   }
 
-  try {
-    if (typeof document !== 'undefined') {
-      document.cookie = `${CSRF_COOKIE_NAME}=; Path=/; Max-Age=0`;
-      document.cookie = `csrf-token=; Path=/; Max-Age=0`;
-    }
-  } catch {
-    // Best-effort cleanup only.
-  }
+  // The CSRF cookie is deliberately NOT cleared here: it is independent of
+  // the session (an anti-forgery nonce, not a credential), the backend
+  // re-issues it on every response, and deleting it while other requests are
+  // in flight cascades them into fresh CSRF 403s (audit 2026-07-30, finding B).
 }
 
 function emitAuthExpiredEvent(): void {
@@ -497,20 +493,6 @@ export async function httpRequest<T>(
 ): Promise<T> {
   const url = `${getBaseUrl()}${path}`;
   const safePath = redactSensitiveText(path);
-  const headers: Record<string, string> = {};
-
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  // Trust (desktop) + CSRF (WebUI) headers — shared with the FileService upload XHR.
-  Object.assign(headers, buildBackendAuthHeaders(method));
-  if (options?.idempotencyKey !== undefined) {
-    headers['Idempotency-Key'] = options.idempotencyKey;
-  }
-  if (options?.initialOnly === true) {
-    headers['X-Nomifun-Initial-Delivery'] = '1';
-  }
 
   const isNoisyPath = NOISY_HTTP_FRAGMENTS.some((frag) => path.includes(frag));
   if (isDebugEnabled('debug:http') && !isNoisyPath) {
@@ -520,101 +502,153 @@ export async function httpRequest<T>(
     );
   }
 
-  // Optional client-side deadline (opt-in via options.timeoutMs). Aborts a
-  // request that outlives it so a hung/unreachable backend surfaces a legible
-  // error instead of the opaque platform network timeout minutes later.
-  const controller = options?.timeoutMs != null ? new AbortController() : undefined;
-  const timeoutHandle =
-    controller && options?.timeoutMs != null
-      ? setTimeout(() => controller.abort(), options.timeoutMs)
-      : undefined;
+  // At most two attempts: the second only for a CSRF-rejected mutation (see
+  // the retry condition below — the rejecting 403 re-seeds the csrf cookie,
+  // so one retry with freshly rebuilt headers succeeds).
+  for (let attempt = 0; ; attempt++) {
+    const headers: Record<string, string> = {};
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: controller?.signal,
-      // Every GET issued through this bridge targets mutable application state
-      // (conversation history, settings, catalogs, runtime status, ...).  The
-      // same URL is intentionally reused when a view remounts, so allowing the
-      // host WebView's HTTP cache to satisfy it can resurrect a pre-mutation
-      // response.  WebKitGTK is particularly eager to reuse loopback GETs, but
-      // the contract must be identical on macOS WKWebView, Windows WebView2 and
-      // ordinary WebUI browsers: a bridge read always observes the backend.
-      cache: method.toUpperCase() === 'GET' ? 'no-store' : undefined,
-    });
-  } catch (e) {
-    // No HTTP response was produced: our own timeout abort, or a transport
-    // failure (backend unreachable / connection reset). WKWebView renders the
-    // latter as an opaque "TypeError: Load failed"; rethrow something the UI
-    // and logs can actually act on.
-    if (controller?.signal.aborted) {
-      throw new BackendRequestError(
-        'timeout',
-        `Backend ${method} ${safePath} timed out after ${options?.timeoutMs}ms; the backend may be busy or unreachable`
-      );
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json';
     }
-    const detail = redactSensitiveText(e instanceof Error ? e.message : String(e));
-    throw new BackendRequestError(
-      'network',
-      `Backend ${method} ${safePath} failed: backend unreachable (${detail})`
-    );
-  } finally {
-    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-  }
 
-  if (!response.ok) {
-    // Read the body exactly once. A `Response` body is a one-shot stream, so
-    // calling `.json()` then `.text()` (e.g. as a parse fallback) throws
-    // "body stream already read". Many error responses have an empty or
-    // non-JSON body (axum-default 404/405, plain-text 5xx), so read text first
-    // and opportunistically parse it as JSON.
-    const rawText = await response.text();
-    let errorBody: unknown;
+    // Trust (desktop) + CSRF (WebUI) headers — shared with the FileService upload XHR.
+    // Rebuilt per attempt so a retry picks up a re-seeded csrf cookie.
+    Object.assign(headers, buildBackendAuthHeaders(method));
+    if (options?.idempotencyKey !== undefined) {
+      headers['Idempotency-Key'] = options.idempotencyKey;
+    }
+    if (options?.initialOnly === true) {
+      headers['X-Nomifun-Initial-Delivery'] = '1';
+    }
+
+    // Optional client-side deadline (opt-in via options.timeoutMs). Aborts a
+    // request that outlives it so a hung/unreachable backend surfaces a legible
+    // error instead of the opaque platform network timeout minutes later.
+    const controller = options?.timeoutMs != null ? new AbortController() : undefined;
+    const timeoutHandle =
+      controller && options?.timeoutMs != null
+        ? setTimeout(() => controller.abort(), options.timeoutMs)
+        : undefined;
+
+    let response: Response;
     try {
-      errorBody = rawText ? JSON.parse(rawText) : '';
-    } catch {
-      errorBody = rawText;
-    }
-    const authExpired = isAuthExpiredResponse(response.status, errorBody);
-    if (authExpired) {
-      handleHttpAuthExpired();
-    }
-    if (authExpired) {
-      if (isDebugEnabled('debug:http') && !isNoisyPath) {
-        console.debug(
-          `[httpBridge] ${method} ${safePath} → ${response.status} (auth-expired)`,
-          redactForLog(errorBody)
+      response = await fetch(url, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller?.signal,
+        // Every GET issued through this bridge targets mutable application state
+        // (conversation history, settings, catalogs, runtime status, ...).  The
+        // same URL is intentionally reused when a view remounts, so allowing the
+        // host WebView's HTTP cache to satisfy it can resurrect a pre-mutation
+        // response.  WebKitGTK is particularly eager to reuse loopback GETs, but
+        // the contract must be identical on macOS WKWebView, Windows WebView2 and
+        // ordinary WebUI browsers: a bridge read always observes the backend.
+        cache: method.toUpperCase() === 'GET' ? 'no-store' : undefined,
+      });
+    } catch (e) {
+      // No HTTP response was produced: our own timeout abort, or a transport
+      // failure (backend unreachable / connection reset). WKWebView renders the
+      // latter as an opaque "TypeError: Load failed"; rethrow something the UI
+      // and logs can actually act on.
+      if (controller?.signal.aborted) {
+        throw new BackendRequestError(
+          'timeout',
+          `Backend ${method} ${safePath} timed out after ${options?.timeoutMs}ms; the backend may be busy or unreachable`
         );
       }
-    } else if (options?.silentStatuses?.includes(response.status)) {
-      console.debug(
-        `[httpBridge] ${method} ${safePath} → ${response.status} (silenced)`,
-        redactForLog(errorBody)
+      const detail = redactSensitiveText(e instanceof Error ? e.message : String(e));
+      throw new BackendRequestError(
+        'network',
+        `Backend ${method} ${safePath} failed: backend unreachable (${detail})`
       );
-    } else {
-      console.error(`[httpBridge] ${method} ${safePath} → ${response.status}`, redactForLog(errorBody));
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
-    throw new BackendHttpError({ method, path, status: response.status, body: errorBody });
-  }
 
-  if (isDebugEnabled('debug:http') && !isNoisyPath) {
-    console.debug(`[httpBridge] ${method} ${safePath} → ${response.status} OK`);
-  }
+    if (!response.ok) {
+      // Read the body exactly once. A `Response` body is a one-shot stream, so
+      // calling `.json()` then `.text()` (e.g. as a parse fallback) throws
+      // "body stream already read". Many error responses have an empty or
+      // non-JSON body (axum-default 404/405, plain-text 5xx), so read text first
+      // and opportunistically parse it as JSON.
+      const rawText = await response.text();
+      let errorBody: unknown;
+      try {
+        errorBody = rawText ? JSON.parse(rawText) : '';
+      } catch {
+        errorBody = rawText;
+      }
 
-  const contentType = response.headers.get('Content-Type');
-  if (!contentType?.includes('application/json')) {
-    return undefined as T;
-  }
+      // CSRF self-healing: the backend re-seeds the csrf cookie on the very
+      // 403 that rejected us, so exactly one retry with rebuilt headers can
+      // succeed. The rejected mutation never executed server-side, making the
+      // retry safe. Guarded to WebUI browser mode where the double-submit
+      // cookie applies (audit 2026-07-30, finding B).
+      const isCsrfRejection =
+        response.status === 403 && bodyStringField(errorBody, 'error').includes('CSRF token validation failed');
+      if (isCsrfRejection && attempt === 0 && isWebUiBrowserMode() && MUTATING_METHODS.has(method.toUpperCase())) {
+        console.warn(`[httpBridge] ${method} ${safePath} → 403 CSRF; retrying once with re-seeded token`);
+        continue;
+      }
 
-  const json = await response.json();
-  // Backend wraps in { success, data, ... } — unwrap when present
-  if (json && typeof json === 'object' && 'data' in json) {
-    return json.data as T;
+      const authExpired = isAuthExpiredResponse(response.status, errorBody);
+      if (authExpired) {
+        handleHttpAuthExpired();
+      }
+      if (authExpired) {
+        if (isDebugEnabled('debug:http') && !isNoisyPath) {
+          console.debug(
+            `[httpBridge] ${method} ${safePath} → ${response.status} (auth-expired)`,
+            redactForLog(errorBody)
+          );
+        }
+      } else if (options?.silentStatuses?.includes(response.status)) {
+        console.debug(
+          `[httpBridge] ${method} ${safePath} → ${response.status} (silenced)`,
+          redactForLog(errorBody)
+        );
+      } else {
+        console.error(`[httpBridge] ${method} ${safePath} → ${response.status}`, redactForLog(errorBody));
+      }
+      throw new BackendHttpError({ method, path, status: response.status, body: errorBody });
+    }
+
+    if (isDebugEnabled('debug:http') && !isNoisyPath) {
+      console.debug(`[httpBridge] ${method} ${safePath} → ${response.status} OK`);
+    }
+
+    const contentType = response.headers.get('Content-Type');
+    if (!contentType?.includes('application/json')) {
+      // A 2xx text/html answer to an API call is never data: it is the web
+      // host's SPA fallback (or a proxy error page) masquerading as success —
+      // e.g. a stale tab calling an endpoint that no longer exists after a
+      // server upgrade. Returning `undefined` here silently blanked views;
+      // fail legibly instead (audit 2026-07-30, finding G).
+      if (contentType?.includes('text/html')) {
+        console.error(`[httpBridge] ${method} ${safePath} → ${response.status} text/html (contract violation)`);
+        throw new BackendHttpError({
+          method,
+          path,
+          status: response.status,
+          body: {
+            error:
+              'Backend answered with an HTML page instead of JSON — the endpoint does not exist on this server build (reload the page after a server upgrade)',
+            code: 'NON_JSON_RESPONSE',
+          },
+        });
+      }
+      return undefined as T;
+    }
+
+    const json = await response.json();
+    // Backend wraps in { success, data, ... } — unwrap when present
+    if (json && typeof json === 'object' && 'data' in json) {
+      return json.data as T;
+    }
+    return json as T;
   }
-  return json as T;
 }
 
 /**
@@ -829,6 +863,183 @@ let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsReconnectAttempt = 0;
 let wsLastActivityAtMs: number | null = null;
 
+/**
+ * Close code the backend uses when the token bound at the WS handshake aged
+ * out while the HTTP cookie session may still be alive via sliding renewal.
+ * Reconnecting picks up the refreshed cookie; this is NOT an authentication
+ * failure and must never trigger the logout flow. Mirrors
+ * `crates/backend/nomifun-realtime/src/types.rs` `WebSocketCloseCode::TokenAged`.
+ */
+const WS_CLOSE_TOKEN_AGED = 4409;
+
+/**
+ * The backend heartbeats every connection at least every 30s, so a socket
+ * with no inbound frame for ~2.5 heartbeat periods is wedged half-open (NAT
+ * eviction, container restart without RST, sleep/wake) — the OS will report
+ * OPEN indefinitely and no close event will ever fire.
+ */
+const WS_STALE_THRESHOLD_MS = 75_000;
+/** A CONNECTING handshake that outlives this is abandoned and retried. */
+const WS_CONNECT_TIMEOUT_MS = 30_000;
+const WS_WATCHDOG_INTERVAL_MS = 15_000;
+
+/**
+ * True after any observed connection loss (close event, constructor throw,
+ * watchdog/visibility recycle, server lag resync) until the recovery signal
+ * has been delivered. Deliberately NOT cleared when the last listener
+ * unsubscribes: a gap spanning a zero-listener window (route transition)
+ * must still resync the views mounted after it.
+ */
+let wsHadDeliveryGap = false;
+let wsConnectStartedAtMs: number | null = null;
+let wsWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Pure staleness predicate for the liveness watchdog (exported for tests). */
+export function isWsStale(nowMs: number, lastActivityAtMs: number | null): boolean {
+  return lastActivityAtMs != null && nowMs - lastActivityAtMs > WS_STALE_THRESHOLD_MS;
+}
+
+/**
+ * A listener or payload transform throwing must be diagnosable — a silent
+ * drop turns one malformed field into an invisible, permanent dead event
+ * class. Rate-limited per (kind, event) so a streaming event cannot flood.
+ */
+const wsFailureWarnAtMs = new Map<string, number>();
+function warnWsHandlerFailure(kind: 'listener' | 'transform', eventName: string, error: unknown): void {
+  const key = `${kind}:${eventName}`;
+  const now = Date.now();
+  const last = wsFailureWarnAtMs.get(key) ?? 0;
+  if (now - last < 60_000) return;
+  wsFailureWarnAtMs.set(key, now);
+  console.warn(`[httpBridge] ${kind} for ${eventName} threw; events of this class may be dropped`, error);
+}
+
+/**
+ * Deliver the synthetic local recovery signal. `ws.reconnected` is never sent
+ * by the server; stores subscribe to it to reload their durable snapshots
+ * after any delivery gap (the server does live fan-out with no replay).
+ */
+function dispatchLocalReconnected(): void {
+  const handlers = wsListeners.get('ws.reconnected');
+  if (!handlers) return;
+  for (const h of [...handlers]) {
+    try {
+      h(undefined);
+    } catch (error) {
+      warnWsHandlerFailure('listener', 'ws.reconnected', error);
+    }
+  }
+}
+
+/**
+ * Abandon the current socket and start a fresh connection lifecycle. Used
+ * when no close event can be trusted to arrive (wedged half-open socket,
+ * stuck handshake, tab returning to foreground with a dead socket).
+ *
+ * `immediate` skips the backoff: a user-visible foreground return deserves an
+ * instant attempt, while background watchdog recycles go through the normal
+ * reconnect schedule.
+ */
+function recycleWs(reason: string, options?: { immediate?: boolean }): void {
+  const current = ws;
+  wsHadDeliveryGap = true;
+  ws = null;
+  wsConnectStartedAtMs = null;
+  if (current) {
+    console.warn(`[ensureWs] recycling websocket (${reason})`);
+    try {
+      current.close();
+    } catch {
+      /* a wedged socket may refuse to close */
+    }
+  }
+  if (options?.immediate) {
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    wsReconnectAttempt = 0;
+    ensureWs();
+    return;
+  }
+  scheduleWsReconnect();
+}
+
+/**
+ * Pending jittered recovery for a server-requested resync. The server
+ * broadcasts `sync.resync-required` to every connected client at once (event
+ * bus lag is instance-global), so the recovery refetch fan-out is deferred
+ * behind a short random delay — N clients must not stampede the backend at
+ * the exact moment it is already too loaded to drain its bus — and repeated
+ * frames inside the window coalesce into one recovery.
+ */
+let wsResyncDispatchTimer: ReturnType<typeof setTimeout> | null = null;
+const WS_RESYNC_JITTER_MAX_MS = 2_000;
+
+function scheduleResyncDispatch(): void {
+  if (wsResyncDispatchTimer !== null) return;
+  wsResyncDispatchTimer = setTimeout(() => {
+    wsResyncDispatchTimer = null;
+    dispatchLocalReconnected();
+  }, Math.floor(Math.random() * WS_RESYNC_JITTER_MAX_MS));
+}
+
+/**
+ * Liveness watchdog: the client is otherwise purely reactive (it only ever
+ * replies to server pings), so a silent network break leaves readyState OPEN
+ * forever and every realtime view frozen until a manual refresh. Runs only
+ * while listeners exist — same lifecycle as the reconnect timer.
+ */
+function ensureWsWatchdog(): void {
+  if (wsWatchdogTimer !== null || typeof setInterval === 'undefined') return;
+  wsWatchdogTimer = setInterval(() => {
+    if (wsListeners.size === 0 || !ws) return;
+    const now = Date.now();
+    const stuckConnecting =
+      ws.readyState === WebSocket.CONNECTING &&
+      wsConnectStartedAtMs != null &&
+      now - wsConnectStartedAtMs > WS_CONNECT_TIMEOUT_MS;
+    const staleOpen = ws.readyState === WebSocket.OPEN && isWsStale(now, wsLastActivityAtMs);
+    if (stuckConnecting) {
+      recycleWs('handshake timeout');
+    } else if (staleOpen) {
+      recycleWs('no inbound frames past stale threshold');
+    }
+  }, WS_WATCHDOG_INTERVAL_MS);
+}
+
+function stopWsWatchdog(): void {
+  if (wsWatchdogTimer !== null) {
+    clearInterval(wsWatchdogTimer);
+    wsWatchdogTimer = null;
+  }
+}
+
+/**
+ * Foreground recovery: browsers throttle background tabs, and a socket that
+ * died while the tab was hidden may never surface a close event. On return
+ * to the foreground, recycle a dead or silent socket immediately instead of
+ * waiting out the backoff. Exported for tests (the production registration
+ * below additionally gates on `visibilityState === 'visible'`).
+ */
+export function __handleVisibilityRecovery(): void {
+  if (wsListeners.size === 0) return;
+  const now = Date.now();
+  const needsRecycle =
+    ws == null ||
+    ws.readyState === WebSocket.CLOSED ||
+    ws.readyState === WebSocket.CLOSING ||
+    (ws.readyState === WebSocket.OPEN && isWsStale(now, wsLastActivityAtMs));
+  if (!needsRecycle) return;
+  recycleWs('foreground return with dead or silent socket', { immediate: true });
+}
+
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') __handleVisibilityRecovery();
+  });
+}
+
 function ensureWs(): void {
   if (typeof window === 'undefined') {
     console.debug('[ensureWs] skipped: no window');
@@ -851,40 +1062,60 @@ function ensureWs(): void {
     ws = trustSecret ? new WebSocket(url, [trustSecret]) : new WebSocket(url);
   } catch (e) {
     console.error('[ensureWs] WebSocket constructor threw:', e);
+    wsHadDeliveryGap = true;
     scheduleWsReconnect();
     return;
   }
 
+  wsConnectStartedAtMs = Date.now();
   const current = ws;
 
   current.addEventListener('open', () => {
+    // A recycled (abandoned) socket may still surface events; only the
+    // current connection owns shared lifecycle state.
+    if (ws !== current) return;
     console.debug('[ensureWs] CONNECTED');
     wsLastActivityAtMs = Date.now();
-    // A non-zero attempt counter means we got here by reconnecting (the socket
-    // had dropped and `scheduleWsReconnect` ran). Notify local listeners so a
-    // live view can resync: the server only does a live fan-out with no replay,
-    // so every frame emitted while the socket was down was lost. Dispatch BEFORE
-    // resetting the counter. `ws.reconnected` is a synthetic local event name,
-    // never sent by the server.
-    const wasReconnect = wsReconnectAttempt > 0;
-    wsReconnectAttempt = 0;
-    if (wasReconnect) {
-      const handlers = wsListeners.get('ws.reconnected');
-      if (handlers) {
-        for (const h of [...handlers]) {
-          try {
-            h(undefined);
-          } catch {
-            /* never crash listener */
-          }
-        }
-      }
+    wsConnectStartedAtMs = null;
+    // A pending delivery-gap flag means frames were (possibly) lost since the
+    // last healthy connection: the server only does live fan-out with no
+    // replay, so notify local listeners to resync their durable snapshots.
+    // NOTE: the reconnect attempt counter is NOT reset here — a socket that
+    // opens and is immediately closed again (expired session rejected
+    // post-handshake) must keep backing off; the counter resets on the first
+    // inbound frame instead. `ws.reconnected` is a synthetic local event
+    // name, never sent by the server.
+    if (wsHadDeliveryGap) {
+      wsHadDeliveryGap = false;
+      dispatchLocalReconnected();
     }
   });
 
   current.addEventListener('close', (e) => {
+    if (ws !== current) return;
     console.debug('[ensureWs] CLOSED code=' + e.code + ' reason=' + e.reason);
-    if (ws === current) ws = null;
+    ws = null;
+    wsConnectStartedAtMs = null;
+    // Any close is a delivery gap: frames emitted until the reconnect
+    // completes are lost and must be recovered by a snapshot reload.
+    wsHadDeliveryGap = true;
+    // 1008 (policy violation) is an authentication rejection — the server
+    // uses 4408 for heartbeat timeouts and 4409 for an aged handshake token,
+    // so 1008 here means the session is gone. Kick the app-level auth-expired
+    // flow (WebUI: clears artifacts, redirects to login) and jump the backoff
+    // to its ceiling so we keep only a slow background probe instead of a
+    // ~1s reconnect/403 storm (audit 2026-07-30, finding F).
+    // 4409 (WS_CLOSE_TOKEN_AGED) deliberately takes the plain reconnect path:
+    // the next handshake presents the slid session cookie, and a genuinely
+    // dead session is re-rejected there with 1008.
+    if (e.code === 1008) {
+      handleHttpAuthExpired();
+      wsReconnectAttempt = Math.max(wsReconnectAttempt, 5);
+    } else if (e.code === WS_CLOSE_TOKEN_AGED) {
+      // Reconnect promptly: the refreshed cookie authenticates the next
+      // handshake without any user-visible interruption.
+      wsReconnectAttempt = 0;
+    }
     scheduleWsReconnect();
   });
 
@@ -894,10 +1125,15 @@ function ensureWs(): void {
   });
 
   current.addEventListener('message', (event: MessageEvent) => {
+    if (ws !== current) return;
     // Any inbound frame — server heartbeat pings included — proves the peer
     // is still delivering data. Recorded before parsing so even a malformed
-    // frame counts as socket liveness.
+    // frame counts as socket liveness. A delivered frame is also the signal
+    // that this connection is healthy and authenticated, so the reconnect
+    // backoff resets here (not on 'open', which an auth-rejecting server
+    // reaches too before immediately closing).
     wsLastActivityAtMs = Date.now();
+    wsReconnectAttempt = 0;
     try {
       const msg = JSON.parse(event.data as string) as {
         name?: string;
@@ -918,6 +1154,16 @@ function ensureWs(): void {
         }
         return;
       }
+      if (eventName === 'sync.resync-required') {
+        // The server's event bus lagged and dropped an unknown set of
+        // envelopes for this user. The socket itself is healthy, so reuse
+        // the reconnect recovery pipeline without rebuilding it: stores
+        // subscribed to `ws.reconnected` reload their durable snapshots
+        // after a jittered delay (see scheduleResyncDispatch).
+        console.warn('[httpBridge] server requested a resync (event bus lagged)', payload);
+        scheduleResyncDispatch();
+        return;
+      }
       if (isDebugEnabled('debug:ws') && eventName && !NOISY_WS_EVENTS.has(eventName)) {
         console.debug('[WS:msg]', eventName, JSON.stringify(payload).slice(0, 200));
       }
@@ -927,8 +1173,8 @@ function ensureWs(): void {
           for (const h of handlers) {
             try {
               h(payload);
-            } catch {
-              /* never crash listener */
+            } catch (error) {
+              warnWsHandlerFailure('listener', eventName, error);
             }
           }
         }
@@ -991,6 +1237,7 @@ export function wsEmitter<Params = undefined>(eventName: string): EmitterLike<Pa
       const cb = callback as WsCallback;
       wsListeners.get(eventName)!.add(cb);
       ensureWs();
+      ensureWsWatchdog();
       return () => {
         const listeners = wsListeners.get(eventName);
         listeners?.delete(cb);
@@ -1002,7 +1249,12 @@ export function wsEmitter<Params = undefined>(eventName: string): EmitterLike<Pa
             clearTimeout(wsReconnectTimer);
             wsReconnectTimer = null;
           }
+          if (wsResyncDispatchTimer) {
+            clearTimeout(wsResyncDispatchTimer);
+            wsResyncDispatchTimer = null;
+          }
           wsReconnectAttempt = 0;
+          stopWsWatchdog();
         }
       };
     },
@@ -1018,7 +1270,17 @@ export function wsMappedEmitter<Params = undefined, Raw = Params>(
   return {
     on: (callback: (params: Params) => void) => {
       return (inner.on as (callback: (raw: Raw) => void) => () => void)((raw) => {
-        callback(transform(raw));
+        // Run the transform outside the subscriber call so a payload the
+        // decoder rejects is logged as a transform failure (one malformed
+        // field must not become an invisible dead event class).
+        let mapped: Params;
+        try {
+          mapped = transform(raw);
+        } catch (error) {
+          warnWsHandlerFailure('transform', eventName, error);
+          return;
+        }
+        callback(mapped);
       });
     },
     emit: (() => {}) as EmitterLike<Params>['emit'],

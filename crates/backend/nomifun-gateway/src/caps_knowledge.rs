@@ -244,9 +244,6 @@ fn parse_url_source(urls: Option<Vec<String>>, mode: Option<&str>) -> Result<Opt
             .map(|url| KnowledgeSourceEntry { url, title: None, ..Default::default() })
             .collect(),
         last_fetched_at: None,
-        credential_ref: None,
-        scope: None,
-        sync: None,
     }))
 }
 
@@ -430,7 +427,8 @@ async fn set_binding(deps: Arc<GatewayDeps>, p: SetBindingParams) -> Value {
     match deps.knowledge_service.set_binding(kind, &target_id, binding).await {
         Ok(binding) => ok(json!({
             "binding": binding,
-            "note": "binding saved; bases are mounted into the target's workspace at its NEXT task start"
+            "note": "binding saved; a live terminal on this workpath re-syncs immediately, \
+                     other targets pick the bases up at their NEXT task start"
         })),
         Err(e) => json!({ "error": e.to_string() }),
     }

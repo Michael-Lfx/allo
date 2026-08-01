@@ -15,6 +15,7 @@ import SendBox from '@/renderer/components/chat/SendBox';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
+import SummonControl from '@/renderer/pages/conversation/components/SummonPanel';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
@@ -57,7 +58,7 @@ import {
   warmupConversationForPassiveMount,
 } from '@/renderer/pages/conversation/utils/warmupConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
-import { allSupportedExts } from '@/renderer/services/FileService';
+import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
 import { iconColors } from '@/renderer/styles/colors';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
@@ -65,13 +66,18 @@ import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { Message, Tag } from '@arco-design/web-react';
 import { Brain, MagicHat, Shield } from '@icon-park/react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
 import NomiModelSelector from './NomiModelSelector';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import type { ModelTrait } from '@/common/config/storage';
+
+/** Trait refinement for the vision guard (stable identity for the SWR key). */
+const VISION_INPUT_TRAITS: ModelTrait[] = ['vision_input'];
 
 const useNomiSendBoxDraft = getSendBoxDraftHook('nomi', {
   _type: 'nomi',
@@ -160,6 +166,40 @@ const NomiSendBox: React.FC<{
   const providerLabel = useModelSelectorProviderLabel();
   const { checkAndUpdateTitle } = useAutoTitle();
   const { current_model } = modelSelection;
+
+  // ── Vision guard ──────────────────────────────────────────────────────────
+  // Chat models that accept image input, from the unified catalog resolve.
+  // When the user sends image attachments through a model that is NOT in this
+  // set, warn once per model selection — never block the send (the backend
+  // returns a typed error if the model truly cannot take images).
+  const {
+    groups: visionGroups,
+    isLoading: isVisionCatalogLoading,
+    error: visionCatalogError,
+  } = useModelsForTask('chat', VISION_INPUT_TRAITS);
+  const warnedVisionModelKeyRef = useRef<string | null>(null);
+  const maybeWarnNonVisionModel = useCallback(
+    (files: string[]) => {
+      if (!current_model?.id || !current_model.use_model) return;
+      // Unresolved/failed catalog: never emit a false-positive warning.
+      if (isVisionCatalogLoading || visionCatalogError) return;
+      const hasImageAttachment = files.some((file) => {
+        const lower = file.toLowerCase();
+        return imageExts.some((ext) => lower.endsWith(ext));
+      });
+      if (!hasImageAttachment) return;
+      const supportsVision = visionGroups.some(
+        (group) =>
+          group.provider.id === current_model.id && group.models.includes(current_model.use_model)
+      );
+      if (supportsVision) return;
+      const selectionKey = `${current_model.id}:${current_model.use_model}`;
+      if (warnedVisionModelKeyRef.current === selectionKey) return;
+      warnedVisionModelKeyRef.current = selectionKey;
+      Message.warning(t('conversation.chat.visionModelHint', { model: current_model.use_model }));
+    },
+    [current_model?.id, current_model?.use_model, isVisionCatalogLoading, visionCatalogError, visionGroups, t]
+  );
 
   const {
     running,
@@ -489,6 +529,7 @@ const NomiSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
+    maybeWarnNonVisionModel(filesToSend);
 
     if (
       shouldEnqueueConversationCommand({
@@ -517,6 +558,7 @@ const NomiSendBox: React.FC<{
   const handleEditResubmit = useCallback(
     async (msgId: MessageId, createdAt: number, message: string) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
+      maybeWarnNonVisionModel(filesToSend);
       const oldSuffixLocalIds = snapshotEditSuffixLocalIds(
         messageListRef.current,
         msgId,
@@ -570,6 +612,7 @@ const NomiSendBox: React.FC<{
       workspacePath,
       clearFiles,
       markTurnAccepted,
+      maybeWarnNonVisionModel,
       reconcilePublicDeliveryReplay,
       messageListRef,
       removeMessagesByLocalIds,
@@ -648,6 +691,7 @@ const NomiSendBox: React.FC<{
 
   const onSteerHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
+    maybeWarnNonVisionModel(filesToSend);
     clearFiles();
     emitter.emit('nomi.selected.file.clear');
     await executeSteer({ input: message, files: filesToSend });
@@ -970,7 +1014,10 @@ const NomiSendBox: React.FC<{
         }
         rightTools={
           hasContextUsage || !hideModeSelector ? (
-            <div className='flex items-center gap-2 min-w-0' data-testid='nomi-sendbox-config-group'>
+            <div
+              className='sendbox-responsive-config-group flex flex-1 items-center justify-end gap-2 min-w-0'
+              data-testid='nomi-sendbox-config-group'
+            >
               {hasContextUsage && (
                 <ContextUsageRing
                   used={tokenUsage?.context_tokens}
@@ -982,6 +1029,7 @@ const NomiSendBox: React.FC<{
               {!hideModeSelector && (
                 <>
                   <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
+                  <SummonControl conversationId={conversation_id} />
                   {collaboratorSelectorNode}
                   {extraRightTools}
                   <AgentModeSelector

@@ -1,10 +1,9 @@
 # Installation
 
-Flowy has two host modes that share one Rust backend (see
-[Introduction](introduction.md)). This page covers:
+NomiFun has two host modes that share one Rust backend (see
+[Introduction](introduction.md)). This page covers all three ways to install
+it today:
 
-- [Download prebuilt desktop installers](#download-prebuilt-desktop-installers)
-  — recommended for end users.
 - [Desktop app from source](#desktop-app-from-source) — `nomifun-desktop`
   (Tauri shell), desktop local-trust, single-user.
 - [Web server from source](#web-server-from-source) — `nomifun-web`,
@@ -12,27 +11,13 @@ Flowy has two host modes that share one Rust backend (see
 - [Docker / Docker Compose](#docker--docker-compose) — the same web server,
   containerised.
 
-## Download prebuilt desktop installers
-
-| Channel | Purpose |
-| --- | --- |
-| [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) | Manual installers (`.exe` / `.dmg` / `.AppImage`, …) |
-| Baidu Netdisk mirror linked from the README | Mainland China manual download |
-| ModelScope `allo/channels/alpha/latest.json` | **In-app OTA single source of truth** (configured in `apps/desktop/tauri.conf.json`) |
-
-Release / OTA upload follows root
-[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md). Artifact names must
-use the `Flowy_` / `Flowy.app` prefix. GitHub one-click release scripts are in
-[`RELEASING.md`](../../RELEASING.md). Source build and packaging details:
-[`../contributing/building-and-packaging.md`](../contributing/building-and-packaging.md).
-
-## Supported operating systems
-
-| OS | Minimum | Notes |
-| --- | --- | --- |
-| Windows | **10 version 1803 (build 17134)**, x64 | Windows 7 / 8 / 8.1 are not supported, and cannot be made to work by installing WebView2 manually. Rust raised the baseline for `x86_64-pc-windows-msvc` to Windows 10 in [1.78](https://blog.rust-lang.org/2024/02/26/Windows-7/), and the Microsoft WebView2 bootstrapper the installer runs no longer starts on Windows 7. |
-| macOS | 11 (Big Sur) | Universal build; WKWebView is built in. |
-| Linux | glibc-based distro with WebKitGTK 4.1 | e.g. Ubuntu 22.04+. Requires `libwebkit2gtk-4.1-0`. |
+> **Desktop and native service packaging still depends on the release channel.**
+> The Web server can be built from source, and the official Docker image is
+> published as
+> [`nomifun/nomifun-web`](https://hub.docker.com/repository/docker/nomifun/nomifun-web).
+> See
+> [`../contributing/building-and-packaging.md`](../contributing/building-and-packaging.md)
+> for the current packaging notes.
 
 ## Prerequisites
 
@@ -115,39 +100,42 @@ bun run build    # tauri build → installers + standalone binary
 - Platform installers under `target/release/bundle/` — `.exe` (NSIS,
   Windows), `.dmg`/`.app` (macOS), `.deb`/`.AppImage` (Linux).
 
-`bun run build` artifacts are suitable for local testing. Public release and
-OTA follow [`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md). macOS:
-`bun run build:signed` (Developer ID + notarization). Windows Authenticode:
-`WINDOWS_CERTIFICATE_THUMBPRINT` + `bun run build:win --signed` (`release:win`
-enables this automatically when the thumbprint is available). The updater
-endpoint and pubkey are already configured in `apps/desktop/tauri.conf.json`
-(ModelScope alpha channel).
+`bun run build` artifacts are suitable for local testing. For distributable
+macOS builds, configure `apps/desktop/signing/.env.signing` and use
+`bun run build:signed`. Windows signing still requires an external certificate.
+To test the updater scaffold, use `bun run build:updater`, which sets
+`bundle.createUpdaterArtifacts` to true. The updater endpoint and public key in
+`apps/desktop/tauri.conf.json` must be replaced before shipping any update.
 
 ### Where data lives (desktop)
 
 The desktop app stores its database and runtime files under the per-user
-application-data directory, joined with `Nomi`:
+application-data directory:
 
 | OS | Default path |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\Flowy\Nomi` (e.g. `C:\Users\<you>\AppData\Local\Flowy\Nomi`) |
-| macOS | `~/Library/Application Support/Flowy/Nomi` |
-| Linux | `$XDG_DATA_HOME/Flowy/Nomi` (usually `~/.local/share/Flowy/Nomi`) |
+| Windows | `%LOCALAPPDATA%\NomiFun` (e.g. `C:\Users\<you>\AppData\Local\NomiFun`) |
+| macOS | `~/Library/Application Support/NomiFun` |
+| Linux | `$XDG_DATA_HOME/NomiFun` (usually `~/.local/share/NomiFun`) |
 
 Override with `NOMIFUN_DATA_DIR=<absolute path>` before launching — the
-shell appends `/Nomi`, so the dir becomes `$NOMIFUN_DATA_DIR/Nomi`.
+value is taken literally as the data root on every host (no `/Nomi`
+suffix appended).
 
-> Older builds defaulted to `<system temp>/nomifun-data/Nomi`, where OS temp
-> cleanup could destroy user data. On first launch the app now relocates such
-> a legacy install to the per-user location automatically (one-shot): data is
-> copied, absolute paths inside the database are rewritten, and the old
-> directory is kept as a backup. If the relocation cannot complete, the app
-> starts from the legacy directory and retries on the next launch.
+> Older builds stored data under `NomiFun/Nomi` (and, before that, under
+> `<system temp>/nomifun-data/Nomi`, where OS temp cleanup could destroy
+> user data). On the first boot after upgrading, a one-shot automatic
+> migration moves such a legacy dataset into the new root: the migration
+> is crash-safe, absolute paths inside the database are rewritten once
+> after the move, and if it cannot complete it resumes on the next launch
+> (it is deferred to the next launch if the old app instance is still
+> running).
 
-> Note: the user-facing product name is **Flowy** (`productName` / window
-> title); the data folder remains under `…/Flowy/Nomi`. Internal identifiers
-> keep `nomifun` (crates, `NOMIFUN_*` env vars). The desktop bundle id is
-> `com.flowy.desktop`.
+> Note: the app's user-facing name is `NomiFun` everywhere — the bundle
+> product name (`apps/desktop/tauri.conf.json`), the runtime window title,
+> release artifacts, and the data folder. Internal identifiers keep the legacy `nomifun`
+> name by design (crates, `NOMIFUN_*` env vars, the `com.nomifun.*`
+> bundle identifier).
 
 ## Web server from source
 
@@ -215,11 +203,41 @@ notes — see
 
 ## Docker / Docker Compose
 
-The repository ships a multi-stage `Dockerfile` and a `docker-compose.yml`
-that produce a **headless** (no GUI) image: SPA + `nomifun-web` + `bun` on
-`debian:bookworm-slim`.
+The official Docker Hub image is
+[`nomifun/nomifun-web`](https://hub.docker.com/repository/docker/nomifun/nomifun-web).
+It is a **headless** (no GUI) image: SPA + `nomifun-web` + `bun` on
+`debian:bookworm-slim`. The repository also ships a multi-stage `Dockerfile`
+and a `docker-compose.yml` for local source builds. The examples below use the
+published `v0.3.4` tag; replace it with a newer Docker Hub tag when one is
+available.
 
-### Quick start with Compose
+### Quick start with the official image
+
+```bash
+docker run -d \
+  --name nomifun-web \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -v nomifun-data:/data \
+  nomifun/nomifun-web:v0.3.4
+# then open http://<server-ip>:8787
+```
+
+To close the first-run setup window before the service is reachable, pre-seed
+the first admin:
+
+```bash
+docker run -d \
+  --name nomifun-web \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -v nomifun-data:/data \
+  -e NOMIFUN_ADMIN_USERNAME=admin \
+  -e NOMIFUN_ADMIN_PASSWORD='change-me-to-something-strong' \
+  nomifun/nomifun-web:v0.3.4
+```
+
+### Build locally with Compose
 
 From the repo root:
 

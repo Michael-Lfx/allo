@@ -1,6 +1,7 @@
 //! Agent runtime lifecycle, per-conversation runtime registration, and skill management.
 pub(crate) mod runtime_state;
 pub mod artifact_store;
+pub mod boot_process_reaper;
 pub mod runtime_handle;
 // Rendering page-fetch adapter for knowledge URL sources. The implementation
 // consumes the application-owned Browser Session Hub and keeps the knowledge
@@ -24,6 +25,7 @@ pub mod managed_search;
 pub mod managed_web;
 pub mod manager;
 pub mod nomi_session_persistence;
+pub mod one_shot;
 pub(crate) mod persistence;
 pub mod protocol;
 pub mod registry;
@@ -41,6 +43,7 @@ pub mod types;
 // become the single integration surface (see docs/specs/agent-extraction-checklist.md).
 pub use nomi_agent::companion_tools::CompanionMemorySink;
 pub use nomi_agent::companion_tools::{CompanionSkillSink, CreateCompanionSkillTool, SkillListing};
+pub use nomi_agent::summon_tools::{SummonContextSink, SummonProposalSink};
 pub use nomi_agent::cron_tools::{CronJobSummary, CronSink};
 pub use nomi_agent::requirement_tools::RequirementSink;
 pub use nomi_agent::SearchProviderBinding;
@@ -49,6 +52,9 @@ pub use nomi_config;
 pub use nomi_types;
 
 pub use runtime_state::AgentRuntimeState;
+pub use boot_process_reaper::{
+    AgentProcessReapReport, ConversationProcessReapVerdict, reap_orphan_agent_processes,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use runtime_handle::MockAgentRuntime;
 pub use runtime_handle::{
@@ -71,8 +77,9 @@ pub use factory::provider_config::{
     one_shot_completion, resolve_provider_config, streaming_completion, streaming_completion_kinded,
     streaming_completion_text_or_reasoning, user_message, DeltaKind,
 };
+pub use one_shot::{OneShotDeps, OneShotTool, OneShotTurnRequest, one_shot_handler, run_one_shot_turn};
 pub use factory::{
-    AgentFactoryDeps, CompanionPromptProvider, PublicAgentProvider, PublicAgentRuntime,
+    AgentFactoryDeps, CompanionPromptProvider, CompanionSummonProvider,
     build_agent_factory,
 };
 #[cfg(feature = "browser-use")]

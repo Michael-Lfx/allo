@@ -1,14 +1,16 @@
 import type { ConversationId } from '@/common/types/ids';
+import { AgentLogoIcon } from '@/renderer/components/agent/AgentBadge';
 import { conversationTarget } from '@/common/types/ids';
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
-import appLogo from '@/renderer/assets/logo.svg';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
+import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
 import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
+import { SummonHeaderBadge } from '@/renderer/pages/conversation/components/SummonPanel';
 import MobileWorkspaceOverlay from './MobileWorkspaceOverlay';
 import WorkspacePanelHeader from './WorkspacePanelHeader';
 import WorkspaceToolRail, {
@@ -25,6 +27,7 @@ import { useWorkspaceCollapse } from '@/renderer/pages/conversation/hooks/useWor
 import { useWorkspacePanelTabs } from '@/renderer/pages/conversation/hooks/useWorkspacePanelTabs';
 import { PreviewPanel, PreviewProvider, usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { dispatchWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';
+import { useConversationAgents } from '@/renderer/pages/conversation/hooks/useConversationAgents';
 import classNames from 'classnames';
 import { isDesktopShell, isMacOS, isWindows } from '@/renderer/utils/platform';
 import {
@@ -56,7 +59,7 @@ export interface ChatLayoutProps {
   headerExtra?: React.ReactNode;
   /**
    * Hide the session-capability controls baked into the header
-   * (IDMM / Knowledge).
+   * (AutoWork / IDMM / Knowledge).
    * Used by surfaces that deliberately offer a reduced feature set — e.g. the
    * desktop companion chat tab. Defaults to false (full conversation page).
    */
@@ -103,7 +106,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const { t } = useTranslation();
   const { conversation_id, workspacePath, isTemporaryWorkspace } = props;
   const workspaceTarget = conversation_id != null ? conversationTarget(conversation_id) : undefined;
-  const { workspaceEnabled = true } = props;
+  const { backend, preset, agent_name, workspaceEnabled = true } = props;
   const layout = useLayoutContext();
   // Desktop-shell mac/win runtime. MUST gate on `isDesktopShell()` first
   // (matching Titlebar): the titlebar workspace toggle only exists in the
@@ -168,6 +171,18 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       conversation_id,
       onRename: props.onRenameTitle,
     });
+
+  // Resolve backend display name from detected agents catalog (backend-authoritative).
+  // Custom ACP agents live in the same catalog with `agent_source === 'custom'`,
+  // so we no longer need a separate `acp.customAgents` ConfigStorage fallback.
+  const { cliAgents } = useConversationAgents();
+  const backendAgentName = backend
+    ? cliAgents.find((a) => a.backend === backend || a.agent_type === backend)?.name
+    : undefined;
+  const capitalizedBackend = backend ? backend.charAt(0).toUpperCase() + backend.slice(1) : backend;
+
+  // Compute display name with fallback chain
+  const display_name = preset?.name || agent_name || backendAgentName || capitalizedBackend;
 
   const {
     splitRatio: workspaceWidthPxPref,
@@ -298,13 +313,23 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           conversation_id={conversation_id}
           leading={
             props.headerLeading ??
-            (<img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />)
+            ((backend || preset) && (
+              <AgentLogoIcon
+                backend={backend}
+                agent_name={display_name}
+                agentLogo={preset?.logo}
+                agentLogoIsEmoji={preset?.isEmoji}
+              />
+            ))
           }
         />
       </FlexFullContainer>
       <div className='flex items-center gap-12px shrink-0'>
         {!props.hideAdvancedControls && conversation_id != null && (
           <>
+            {/* 召唤伙伴徽标（设计 B5）：仅已召唤会话渲染，被动展示伙伴名。 */}
+            <SummonHeaderBadge conversationId={conversation_id} />
+            <AutoWorkControl target={{ kind: 'conversation', id: conversation_id }} />
             <IdmmControl target={{ kind: 'conversation', id: conversation_id }} />
             <KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />
           </>
@@ -386,7 +411,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
                     lineClassName: 'opacity-30 group-hover:opacity-100 group-active:opacity-100',
                     lineStyle: { width: '2px' },
                   })}
-                <div className='preview-panel-content-enter h-full w-full overflow-hidden rounded-[15px]'>
+                <div className='h-full w-full overflow-hidden rounded-[15px]'>
                   <PreviewPanel />
                 </div>
               </div>

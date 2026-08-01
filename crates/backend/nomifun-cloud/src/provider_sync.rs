@@ -21,9 +21,6 @@ use crate::config_defaults::FLOWY_BUILTIN_PROVIDER_ID;
 use crate::flowy::{ClawModelEntry, FlowyApiClient};
 use crate::session::ServerSession;
 
-const FLOWY_CAPABILITIES_JSON: &str =
-    r#"[{"type":"text"},{"type":"vision"},{"type":"function_calling"}]"#;
-
 /// Upsert Flowy Cloud provider with JWT + server model catalog for the model selector.
 pub async fn sync_flowy_builtin_provider(
     provider_repo: &Arc<dyn IProviderRepository>,
@@ -76,22 +73,6 @@ pub async fn sync_flowy_builtin_provider(
         .as_ref()
         .map(|fields| fields.context_limits_json.as_str());
 
-    // Drop per-model enable flags for ids no longer in the catalog so delisted
-    // models cannot linger in auxiliary maps after a successful replace.
-    let pruned_enabled_json = if let Some(fields) = catalog_fields.as_ref() {
-        let existing_enabled = provider_repo
-            .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
-            .await
-            .map_err(|e| e.to_string())?
-            .and_then(|row| row.model_enabled);
-        Some(prune_model_enabled_json(
-            existing_enabled.as_deref(),
-            &fields.model_ids,
-        )?)
-    } else {
-        None
-    };
-
     if provider_repo
         .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
         .await
@@ -108,7 +89,6 @@ pub async fn sync_flowy_builtin_provider(
                     api_key_encrypted: Some(&api_key_encrypted),
                     models: models_json.as_deref(),
                     enabled: Some(true),
-                    capabilities: Some(FLOWY_CAPABILITIES_JSON),
                     // Replace per-model context limits from catalog `extra` on
                     // successful sync so Context Usage / compact budgets track
                     // each model's declared window (not the 128k engine default).
@@ -120,9 +100,10 @@ pub async fn sync_flowy_builtin_provider(
                         }
                     }),
                     model_descriptions: descriptions_json.map(Some),
-                    model_enabled: pruned_enabled_json
-                        .as_deref()
-                        .map(|s| if s == "{}" { None } else { Some(s) }),
+                    // Enabled flags live on `provider_models` since migration 016;
+                    // leave them untouched here (membership sync still drops
+                    // delisted model rows via `models`).
+                    model_enabled: None,
                     is_full_url: Some(false),
                     sort_order: Some(0),
                     ..Default::default()
@@ -151,12 +132,10 @@ pub async fn sync_flowy_builtin_provider(
                 api_key_encrypted: &api_key_encrypted,
                 models: &models,
                 enabled: true,
-                capabilities: FLOWY_CAPABILITIES_JSON,
                 model_context_limits: context_limits,
                 model_protocols: None,
                 model_descriptions: Some(fields.descriptions_json.as_str()),
                 model_enabled: None,
-                model_health: None,
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: Some(0),

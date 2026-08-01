@@ -1,25 +1,8 @@
 # 疑难排查
 
-运行 Flowy 时可能遇到的症状，以及它们背后真实的成因。如果你遇到的
+运行 NomiFun 时可能遇到的症状，以及它们背后真实的成因。如果你遇到的
 问题不在本表里，源码就是最快的参考——本页描述的每一个行为都对应
 `crates/backend/` 下的某个具体文件。
-
-## 桌面安装包（Windows）
-
-### 安装时报无法定位程序输入点 GetPackagesByPackageFamily
-
-这台机器是 Windows 7 或 8.x，Flowy 不支持。NSIS 安装器使用
-`webviewInstallMode: downloadBootstrapper`（见
-`apps/desktop/tauri.conf.json`），会下载并静默运行微软的
-`MicrosoftEdgeWebview2Setup.exe`。该 bootstrapper 解包出的
-`MicrosoftEdgeUpdate.exe` 导入了 `GetPackagesByPackageFamily`——这个
-`KERNEL32` 导出只在 Windows 8 及以后存在，所以 Windows 7 直接弹出
-入口点缺失对话框。
-
-手动安装 WebView2 也没用。Flowy 用当前的 Rust 工具链构建，而
-`x86_64-pc-windows-msvc` [自 Rust 1.78 起](https://blog.rust-lang.org/2024/02/26/Windows-7/)
-最低要求 Windows 10；锁文件里的 `windows`、`tao`、`wry` 也都按
-Windows 10 的 API 面开发。最低系统要求是 Windows 10 版本 1803。
 
 ## 后端端口 / 连接问题
 
@@ -209,15 +192,16 @@ cookie 的情况下加载。如果你的反向代理剥掉了 URL 路径段，�
   卷，或将宿主目录 `chown` 到正确的 UID。
 
 桌面外壳的默认数据目录是**按用户的应用数据目录**（Windows 上是
-`%LOCALAPPDATA%\Flowy\Nomi`，macOS 上是
-`~/Library/Application Support/Flowy/Nomi`，Linux 上是
-`$XDG_DATA_HOME/Flowy/Nomi`），它天然对启动应用的用户可写。设置
-`NOMIFUN_DATA_DIR=<absolute path>` 后目录会变成
-`$NOMIFUN_DATA_DIR/Nomi`。位于 `<system temp>/nomifun-data/Nomi` 的
-遗留安装会在启动时被自动搬迁到新默认位置（旧目录保留为备份）；若
-搬迁未能完成，应用会继续从遗留目录启动，并在下次启动时重试。
+`%LOCALAPPDATA%\NomiFun`，macOS 上是
+`~/Library/Application Support/NomiFun`，Linux 上是
+`$XDG_DATA_HOME/NomiFun`），它天然对启动应用的用户可写。设置
+`NOMIFUN_DATA_DIR=<absolute path>` 后，该路径即按字面值作为数据
+根——任何宿主都不附加 `/Nomi` 后缀。位于 `NomiFun/Nomi`（或更早的
+`<system temp>/nomifun-data/Nomi`）的遗留安装会在升级后首次启动时
+被自动迁移到新默认位置；迁移是抗崩溃的，未能完成时会在下次启动
+续跑（若旧应用实例仍在运行，则推迟到下次启动）。
 
-### `data directory ... is already in use by another running Flowy backend`（数据目录被占用）
+### `data directory ... is already in use by another running NomiFun backend`（数据目录被占用）
 
 所有宿主（桌面外壳、`nomifun-web`、`nomicore` 二进制）默认使用
 **同一个**按用户的数据目录，而后端启动时会对 `{data_dir}/server.lock`

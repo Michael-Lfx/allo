@@ -22,8 +22,8 @@ use crate::provider_model::row_to_model_response;
 /// Business logic for model provider CRUD with API key encryption/masking.
 ///
 /// Reads project the per-model surface (`models` + the per-model maps +
-/// `models_detail`) from the authoritative `provider_models` rows; the legacy
-/// JSON map columns on `providers` are still dual-written but no longer read.
+/// `models_detail`) from the authoritative `provider_models` rows; migration
+/// 016 dropped the legacy providers columns, so the rows are the only store.
 #[derive(Clone)]
 pub struct ProviderService {
     repo: Arc<dyn IProviderRepository>,
@@ -83,13 +83,14 @@ impl ProviderService {
 
         let encrypted_key = encrypt_string(&req.api_key, &self.encryption_key)?;
         let models_json = serialize_json(&req.models, "models")?;
-        let capabilities_json = serialize_json(&req.capabilities, "capabilities")?;
         let model_protocols_json = serialize_opt(&req.model_protocols, "model_protocols")?;
         let model_context_limits_json = serialize_opt(&req.model_context_limits, "model_context_limits")?;
         let model_descriptions_json = serialize_opt(&req.model_descriptions, "model_descriptions")?;
         let model_enabled_json = serialize_opt(&req.model_enabled, "model_enabled")?;
-        let model_health_json = serialize_opt(&req.model_health, "model_health")?;
         let bedrock_json = serialize_opt(&req.bedrock_config, "bedrock_config")?;
+        // `req.capabilities` and `req.model_health` are accepted-and-ignored
+        // since P3: the capabilities column was dropped in migration 017 and
+        // the server-side probe is the only health writer.
         let params = CreateProviderParams {
             provider_id: req.provider_id.as_deref(),
             platform: &req.platform,
@@ -98,12 +99,10 @@ impl ProviderService {
             api_key_encrypted: &encrypted_key,
             models: &models_json,
             enabled: req.enabled,
-            capabilities: &capabilities_json,
             model_context_limits: model_context_limits_json.as_deref(),
             model_protocols: model_protocols_json.as_deref(),
             model_descriptions: model_descriptions_json.as_deref(),
             model_enabled: model_enabled_json.as_deref(),
-            model_health: model_health_json.as_deref(),
             bedrock_config: bedrock_json.as_deref(),
             is_full_url: req.is_full_url,
             sort_order: req.sort_order,
@@ -128,14 +127,16 @@ impl ProviderService {
             .map(|k| encrypt_string(k, &self.encryption_key))
             .transpose()?;
         let models_json = serialize_opt(&req.models, "models")?;
-        let capabilities_json = serialize_opt(&req.capabilities, "capabilities")?;
         let model_protocols_json = serialize_opt(&req.model_protocols, "model_protocols")?;
         let model_context_limits_json = serialize_opt(&req.model_context_limits, "model_context_limits")?;
         let model_descriptions_json = serialize_opt(&req.model_descriptions, "model_descriptions")?;
         let model_enabled_json = serialize_opt(&req.model_enabled, "model_enabled")?;
-        let model_health_json = serialize_opt(&req.model_health, "model_health")?;
         let bedrock_json = serialize_opt(&req.bedrock_config, "bedrock_config")?;
 
+        // `req.capabilities` and `req.model_health` are accepted-and-ignored
+        // since P3: the capabilities column was dropped in migration 017 and
+        // the server-side probe is the only health writer — a PUT can no
+        // longer overwrite probe-written row health.
         let params = UpdateProviderParams {
             platform: req.platform.as_deref(),
             name: req.name.as_deref(),
@@ -143,12 +144,10 @@ impl ProviderService {
             api_key_encrypted: encrypted_key.as_deref(),
             models: models_json.as_deref(),
             enabled: req.enabled,
-            capabilities: capabilities_json.as_deref(),
             model_context_limits: model_context_limits_json.as_ref().map(|s| Some(s.as_str())),
             model_protocols: model_protocols_json.as_ref().map(|s| Some(s.as_str())),
             model_descriptions: model_descriptions_json.as_ref().map(|s| Some(s.as_str())),
             model_enabled: model_enabled_json.as_ref().map(|s| Some(s.as_str())),
-            model_health: model_health_json.as_ref().map(|s| Some(s.as_str())),
             bedrock_config: bedrock_json.as_ref().map(|s| Some(s.as_str())),
             is_full_url: req.is_full_url,
             sort_order: req.sort_order,
@@ -196,9 +195,12 @@ impl ProviderService {
     ///
     /// - The new provider row copies platform/base_url/api_key ciphertext
     ///   (same encryption key — the source bytes are reused verbatim, no
-    ///   decrypt/re-encrypt), models JSON, capabilities, legacy maps,
-    ///   bedrock_config, is_full_url and enabled; `name` gets a " copy"
-    ///   suffix; sort_order appends after the current max.
+    ///   decrypt/re-encrypt), bedrock_config, is_full_url and enabled;
+    ///   `name` uses the caller-supplied name when it trims non-empty, else
+    ///   `"{source name} copy"`; sort_order appends after the current max.
+    ///   The models array passed to the create is derived from the source
+    ///   `provider_models` rows (their order), since migration 016 removed
+    ///   the legacy providers columns.
     /// - `provider_models` rows are copied field-for-field from the source
     ///   rows (tasks/traits/params/source/protocol/connection_role/
     ///   context_limit/description/enabled/sort_order). `health` /
@@ -209,6 +211,7 @@ impl ProviderService {
     pub async fn clone_provider(
         &self,
         id: &str,
+        name: Option<&str>,
         connection_repo: &Arc<dyn IProviderConnectionRepository>,
     ) -> Result<ProviderResponse, AppError> {
         validate_id(id)?;
@@ -227,7 +230,21 @@ impl ProviderService {
         let source_model_rows = self.provider_model_repo.list_for_provider(id).await?;
         let source_connections = connection_repo.list_for_provider(id).await?;
 
-        let clone_name = format!("{} copy", source.name.trim_end());
+        // The membership array for the create call comes straight from the
+        // authoritative source rows (already ordered by sort_order).
+        let source_models: Vec<&str> = source_model_rows
+            .iter()
+            .map(|row| row.model.as_str())
+            .collect();
+        let models_json = serde_json::to_string(&source_models)
+            .map_err(|e| AppError::Internal(format!("Failed to serialize clone models: {e}")))?;
+
+        // A trimmed non-empty caller-supplied name wins; otherwise fall back
+        // to the legacy `"{source} copy"` default.
+        let clone_name = match name.map(str::trim) {
+            Some(name) if !name.is_empty() => name.to_owned(),
+            _ => format!("{} copy", source.name.trim_end()),
+        };
         let created = self
             .repo
             .create(CreateProviderParams {
@@ -238,16 +255,15 @@ impl ProviderService {
                 // Ciphertext copy: same encryption key, so re-encrypting would
                 // only mint a fresh nonce for identical plaintext.
                 api_key_encrypted: &source.api_key_encrypted,
-                models: &source.models,
+                models: &models_json,
                 enabled: source.enabled,
-                capabilities: &source.capabilities,
-                model_context_limits: source.model_context_limits.as_deref(),
-                model_protocols: source.model_protocols.as_deref(),
-                model_descriptions: source.model_descriptions.as_deref(),
-                model_enabled: source.model_enabled.as_deref(),
-                // Health is per-deployment state; keep it out of the clone's
-                // legacy column AND the dual-written rows.
-                model_health: None,
+                // The per-model surface is copied row-for-row below from the
+                // authoritative source rows; no map params needed. Health is
+                // per-deployment state and stays out of the clone.
+                model_context_limits: None,
+                model_protocols: None,
+                model_descriptions: None,
+                model_enabled: None,
                 bedrock_config: source.bedrock_config.as_deref(),
                 is_full_url: source.is_full_url,
                 sort_order: None,
@@ -255,12 +271,11 @@ impl ProviderService {
             .await?;
         let new_id = created.provider_id.clone();
 
-        // The repo create's dual-write materialized rows for every model in
-        // the legacy array — but with placeholder profiles (tasks/traits '[]',
-        // params '{}', source 'inferred'). Overwrite each from the
-        // authoritative source row; a source row absent from the legacy array
-        // (created via /api/provider-models, which does not write the legacy
-        // column back) is inserted instead.
+        // The repo create materialized placeholder rows for every model in
+        // the membership array (tasks/traits '[]', params '{}', source
+        // 'inferred'). Overwrite each from the authoritative source row; a
+        // row the create did not materialize (defensive: a concurrent source
+        // mutation) is inserted instead.
         for row in &source_model_rows {
             let update = ProviderModelUpdate {
                 enabled: Some(row.enabled),
@@ -417,8 +432,6 @@ impl ProviderService {
             decrypt_string(&row.api_key_encrypted, &self.encryption_key)?
         };
 
-        let capabilities = serde_json::from_str(&row.capabilities)
-            .map_err(|e| AppError::Internal(format!("Failed to parse capabilities JSON: {e}")))?;
         let bedrock_config = deserialize_opt(&row.bedrock_config, "bedrock_config")?;
 
         model_rows.sort_by_key(|a| (a.sort_order, a.id));
@@ -472,7 +485,9 @@ impl ProviderService {
             api_key,
             models,
             enabled: row.enabled,
-            capabilities,
+            // Retired: providers.capabilities was dropped in migration 017;
+            // the wire field stays for shape compat and is always empty.
+            capabilities: Vec::new(),
             model_context_limits: (!model_context_limits.is_empty()).then_some(model_context_limits),
             model_protocols: (!model_protocols.is_empty()).then_some(model_protocols),
             model_descriptions: (!model_descriptions.is_empty()).then_some(model_descriptions),
@@ -941,10 +956,9 @@ mod tests {
             provider.model_descriptions,
             Some(HashMap::from([("m3".to_string(), "描述".to_string())]))
         );
-        let health = provider.model_health.as_ref().unwrap();
-        assert_eq!(health.len(), 1);
-        assert_eq!(health["m1"].status, nomifun_api_types::HealthStatus::Healthy);
-        assert_eq!(health["m1"].latency, Some(22));
+        // The request's model_health map is accepted-and-ignored since P3:
+        // no row carries health, so the response map is absent.
+        assert!(provider.model_health.is_none());
 
         // models_detail mirrors all rows, in order, consistent with the maps.
         let detail = &provider.models_detail;
@@ -960,11 +974,10 @@ mod tests {
         assert_eq!(detail[0].protocol.as_deref(), Some("openai"));
         assert_eq!(detail[0].context_limit, Some(32_000));
         assert_eq!(detail[2].description.as_deref(), Some("描述"));
-        assert_eq!(
-            detail[0].health.as_ref().map(|h| h.status),
-            Some(nomifun_api_types::HealthStatus::Healthy)
+        assert!(
+            detail.iter().all(|d| d.health.is_none()),
+            "create's model_health map never reaches the rows"
         );
-        assert!(detail[1].health.is_none());
     }
 
     #[tokio::test]
@@ -980,8 +993,8 @@ mod tests {
         assert!(svc.list().await.unwrap()[0].model_enabled.is_none());
 
         // Flip one provider_models row directly, bypassing the repository's
-        // dual-write, so the legacy providers.model_enabled column still says
-        // "all enabled". A row-projected read must reflect the row.
+        // map-param sync path entirely. A row-projected read must reflect
+        // the row.
         nomifun_db::sqlx::query(
             "UPDATE provider_models SET enabled = 0 WHERE provider_id = ? AND model = 'm2'",
         )
@@ -1222,6 +1235,118 @@ mod tests {
         assert!(cleared.model_context_limits.is_none());
     }
 
+    // -- P3: capabilities retired + client health writes closed --
+
+    #[tokio::test]
+    async fn create_and_update_ignore_capabilities_and_respond_empty() {
+        let svc = setup().await;
+        let created = svc
+            .create(CreateProviderRequest {
+                capabilities: vec![nomifun_api_types::ModelCapability {
+                    capability_type: nomifun_api_types::ModelType::Vision,
+                    is_user_selected: Some(true),
+                }],
+                ..sample_create_request()
+            })
+            .await
+            .unwrap();
+        assert!(
+            created.capabilities.is_empty(),
+            "capabilities is retired (column dropped in migration 017) and must project []"
+        );
+
+        let updated = svc
+            .update(
+                &created.provider_id,
+                UpdateProviderRequest {
+                    capabilities: Some(vec![nomifun_api_types::ModelCapability {
+                        capability_type: nomifun_api_types::ModelType::Text,
+                        is_user_selected: None,
+                    }]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(updated.capabilities.is_empty());
+        assert!(svc.list().await.unwrap()[0].capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_ignores_model_health_map_keeping_probe_written_row_health() {
+        use nomifun_api_types::{HealthStatus, ModelHealthStatus};
+        let (svc, pool) = setup_with_pool().await;
+        let model_repo = model_repo_for_pool(&pool);
+        let created = svc
+            .create(CreateProviderRequest {
+                models: vec!["m1".into()],
+                ..sample_create_request()
+            })
+            .await
+            .unwrap();
+
+        // Seed a probe-written health value (the only legitimate writer).
+        model_repo
+            .set_health(
+                &created.provider_id,
+                "m1",
+                Some(r#"{"status":"healthy","latency":22}"#),
+            )
+            .await
+            .unwrap();
+
+        // A PUT carrying a conflicting model_health map must be ignored: the
+        // row keeps the probe value and the response reflects the row.
+        let updated = svc
+            .update(
+                &created.provider_id,
+                UpdateProviderRequest {
+                    model_health: Some(HashMap::from([(
+                        "m1".to_string(),
+                        ModelHealthStatus {
+                            status: HealthStatus::Unhealthy,
+                            last_check: Some(99),
+                            latency: None,
+                            error: Some("client-forged".into()),
+                        },
+                    )])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let row = model_repo.get(&created.provider_id, "m1").await.unwrap().unwrap();
+        assert_eq!(
+            row.health.as_deref(),
+            Some(r#"{"status":"healthy","latency":22}"#),
+            "PUT model_health must not overwrite probe-written row health"
+        );
+        let health = updated.model_health.as_ref().unwrap();
+        assert_eq!(health["m1"].status, HealthStatus::Healthy);
+        assert_eq!(health["m1"].latency, Some(22));
+
+        // An update that also rewrites membership still keeps the row health.
+        let updated = svc
+            .update(
+                &created.provider_id,
+                UpdateProviderRequest {
+                    models: Some(vec!["m1".into(), "m2".into()]),
+                    model_health: Some(HashMap::new()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let row = model_repo.get(&created.provider_id, "m1").await.unwrap().unwrap();
+        assert_eq!(row.health.as_deref(), Some(r#"{"status":"healthy","latency":22}"#));
+        assert_eq!(
+            updated.model_health.as_ref().map(|m| m.len()),
+            Some(1),
+            "response health comes from rows, not the ignored map"
+        );
+    }
+
     #[tokio::test]
     async fn provider_response_api_key_plaintext_matches_input() {
         // Replaces the masking test: api_key on the response is the
@@ -1250,12 +1375,10 @@ mod tests {
             api_key_encrypted: &encrypted,
             models: r#"["big-pickle"]"#,
             enabled: true,
-            capabilities: "[]",
             model_context_limits: None,
             model_protocols: None,
             model_descriptions: None,
             model_enabled: None,
-            model_health: None,
             bedrock_config: None,
             is_full_url: false,
             sort_order: None,
@@ -1283,12 +1406,10 @@ mod tests {
             api_key_encrypted: &encrypted,
             models: r#"["big-pickle"]"#,
             enabled: true,
-            capabilities: "[]",
             model_context_limits: None,
             model_protocols: None,
             model_descriptions: None,
             model_enabled: None,
-            model_health: None,
             bedrock_config: None,
             is_full_url: false,
             sort_order: None,
@@ -1614,7 +1735,7 @@ mod tests {
             .unwrap();
 
         let clone = svc
-            .clone_provider(&created.provider_id, &connection_repo)
+            .clone_provider(&created.provider_id, None, &connection_repo)
             .await
             .unwrap();
         assert_ne!(clone.provider_id, created.provider_id);
@@ -1656,6 +1777,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clone_uses_caller_supplied_name_when_trimmed_non_empty() {
+        let (svc, pool) = setup_with_pool().await;
+        let connection_repo = connection_repo_for_pool(&pool);
+        let created = svc.create(sample_create_request()).await.unwrap();
+
+        let named = svc
+            .clone_provider(&created.provider_id, Some("  My Custom Clone  "), &connection_repo)
+            .await
+            .unwrap();
+        assert_eq!(named.name, "My Custom Clone", "trimmed caller name wins");
+
+        // Blank / whitespace-only names fall back to the legacy default.
+        let blank = svc
+            .clone_provider(&created.provider_id, Some("   "), &connection_repo)
+            .await
+            .unwrap();
+        assert_eq!(blank.name, "Anthropic copy");
+
+        let defaulted = svc
+            .clone_provider(&created.provider_id, None, &connection_repo)
+            .await
+            .unwrap();
+        assert_eq!(defaulted.name, "Anthropic copy");
+    }
+
+    #[tokio::test]
     async fn clone_copies_connections_with_new_ids_and_same_ciphertext() {
         let (svc, pool) = setup_with_pool().await;
         let connection_repo = connection_repo_for_pool(&pool);
@@ -1677,7 +1824,7 @@ mod tests {
             .unwrap();
 
         let clone = svc
-            .clone_provider(&created.provider_id, &connection_repo)
+            .clone_provider(&created.provider_id, None, &connection_repo)
             .await
             .unwrap();
 
@@ -1717,7 +1864,7 @@ mod tests {
         let connection_repo = connection_repo_for_pool(&pool);
         let created = svc.create(sample_create_request()).await.unwrap();
         let clone = svc
-            .clone_provider(&created.provider_id, &connection_repo)
+            .clone_provider(&created.provider_id, None, &connection_repo)
             .await
             .unwrap();
 
@@ -1754,7 +1901,7 @@ mod tests {
             .await
             .unwrap();
         let clone = svc
-            .clone_provider(&created.provider_id, &connection_repo)
+            .clone_provider(&created.provider_id, None, &connection_repo)
             .await
             .unwrap();
         assert!(!clone.enabled, "enabled state follows the source");
@@ -1777,12 +1924,10 @@ mod tests {
             api_key_encrypted: &encrypted,
             models: r#"["big-pickle"]"#,
             enabled: true,
-            capabilities: "[]",
             model_context_limits: None,
             model_protocols: None,
             model_descriptions: None,
             model_enabled: None,
-            model_health: None,
             bedrock_config: None,
             is_full_url: false,
             sort_order: None,
@@ -1793,7 +1938,7 @@ mod tests {
         let svc = service_for_pool(&pool);
         let connection_repo = connection_repo_for_pool(&pool);
         assert!(matches!(
-            svc.clone_provider(&provider_id, &connection_repo).await,
+            svc.clone_provider(&provider_id, None, &connection_repo).await,
             Err(AppError::Forbidden(_))
         ));
     }
@@ -1803,13 +1948,13 @@ mod tests {
         let (svc, pool) = setup_with_pool().await;
         let connection_repo = connection_repo_for_pool(&pool);
         let err = svc
-            .clone_provider("0190f5fe-7c00-7a00-8000-000000000099", &connection_repo)
+            .clone_provider("0190f5fe-7c00-7a00-8000-000000000099", None, &connection_repo)
             .await
             .unwrap_err();
         assert_eq!(err.status_code(), axum::http::StatusCode::NOT_FOUND);
 
         let err = svc
-            .clone_provider("not-a-provider-id", &connection_repo)
+            .clone_provider("not-a-provider-id", None, &connection_repo)
             .await
             .unwrap_err();
         assert_eq!(err.status_code(), axum::http::StatusCode::BAD_REQUEST);
@@ -1972,11 +2117,11 @@ mod delete_guard_tests {
         let database = init_database_memory().await.unwrap();
         nomifun_db::sqlx::query(
             "INSERT INTO providers (\
-                provider_id, platform, name, base_url, api_key_encrypted, models, enabled,\
-                capabilities, created_at, updated_at\
+                provider_id, platform, name, base_url, api_key_encrypted, enabled,\
+                created_at, updated_at\
              ) VALUES (\
                 '0190f5fe-7c00-7a00-8000-000000000097', 'openai', 'Race provider', 'https://example.invalid',\
-                'encrypted', '[]', 1, '[]', 1, 1\
+                'encrypted', 1, 1, 1\
              )",
         )
         .execute(database.pool())

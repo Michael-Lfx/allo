@@ -28,15 +28,10 @@ import webhook from './webhook.json';
 import autowork from './autowork.json';
 import nomi from './nomi.json';
 import knowledge from './knowledge.json';
-import learning from './learning.json';
-import publicCompanion from './publicCompanion.json';
+import customerService from './customerService.json';
 import assetLibrary from './assetLibrary.json';
 import sessionList from './sessionList.json';
 import modelFailover from './modelFailover.json';
-import poi from './poi.json';
-import insights from './insights.json';
-import media from './media.json';
-import cloudLogin from './cloudLogin.json';
 import agentExecution from './agentExecution.json';
 import collaboration from './collaboration.json';
 import workshop from './workshop.json';
@@ -45,7 +40,6 @@ import workshopAssets from './workshopAssets.json';
 import workshopEditor from './workshopEditor.json';
 import workshopGeneration from './workshopGeneration.json';
 import workshopAgent from './workshopAgent.json';
-import videoGeneration from './videoGeneration.json';
 import browser from './browser.json';
 
 export default {
@@ -74,15 +68,10 @@ export default {
   autowork,
   nomi,
   knowledge,
-  learning,
-  publicCompanion,
+  customerService,
   assetLibrary,
   sessionList,
   modelFailover,
-  poi,
-  insights,
-  media,
-  cloudLogin,
   agentExecution,
   collaboration,
   workshop,
@@ -91,6 +80,5 @@ export default {
   workshopEditor,
   workshopGeneration,
   workshopAgent,
-  videoGeneration,
   browser,
 };

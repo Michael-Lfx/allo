@@ -3,19 +3,19 @@
 针对反复被问到的问题给出直白、简短的回答。如需更深入的解释，请顺着
 链接前往对应文档。
 
-## Flowy 与 nomifun 有什么区别？
+## NomiFun 与 nomifun 有什么区别？
 
-**Flowy** 是这个开源项目与面向用户的产品名：桌面应用、WebUI 界面、
+**NomiFun** 是这个开源项目与面向用户的产品名：桌面应用、WebUI 界面、
 代码库、工作区、GitHub 仓库和品牌都使用这个写法。
 
 在本代码库里，小写形式 `nomifun` 仅作为字面意义上的技术标识符出现
 ——包名（`nomifun-app`、`nomifun-web` 等）、桌面 bundle id
 `com.nomifun.desktop`、以 `NOMIFUN_` 为前缀的环境变量、仓库目录。
-任何作为应用或项目品牌展示给人看的地方，都使用 "Flowy"。
+任何作为应用或项目品牌展示给人看的地方，都使用 "NomiFun"。
 
 ## 有托管版本吗？
 
-没有。Flowy 是一个自托管项目。不存在 SaaS 实例、不存在
+没有。NomiFun 是一个自托管项目。不存在 SaaS 实例、不存在
 `nomifun.com` 上的托管登录、不存在你可以注册的中心账户系统。使用它的
 两种方式是：
 
@@ -41,21 +41,21 @@ Web 宿主与之相反：默认要求登录。两者的差异是有意的——�
 存在**数据目录**里。具体位置取决于你运行的是哪种宿主：
 
 - **桌面端**：默认在**按用户的应用数据目录**——Windows 上是
-  `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上是
-  `~/Library/Application Support/Flowy/Nomi`，Linux 上是
-  `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`）。
-  设置 `NOMIFUN_DATA_DIR=<absolute path>` 后目录会变成
-  `$NOMIFUN_DATA_DIR/Nomi`（覆盖语义不变）。旧版构建把数据存在
-  `<system temp>/nomifun-data/Nomi` 下；若存在这样的安装，启动时会
-  自动搬迁到新位置，旧目录保留为备份。
+  `%LOCALAPPDATA%\NomiFun`，macOS 上是
+  `~/Library/Application Support/NomiFun`，Linux 上是
+  `$XDG_DATA_HOME/NomiFun`（通常为 `~/.local/share/NomiFun`）。
+  设置 `NOMIFUN_DATA_DIR=<absolute path>` 后，该路径**就是**数据
+  目录——所有宿主都按字面值使用，不附加 `/Nomi` 后缀。旧版构建把
+  数据存在 `NomiFun/Nomi`（更早为 `<system temp>/nomifun-data/Nomi`）
+  下；若存在这样的遗留数据集，升级后首次启动时会自动迁移到新位置
+  （一次性、抗崩溃，中断后下次启动续跑）。
 - **Web（`nomifun-web`）**：你传给 `--data-dir`（或
-  `NOMIFUN_DATA_DIR`）的任何位置，按字面值生效——不附加 `/Nomi`
-  后缀。两者都未设置时，默认与桌面应用是**同一个按用户目录**，因此
-  开发中的 `bun run serve:web` 与已安装的应用看到的是同一份状态。
-- **Docker**：compose 文件中定义的命名卷（`nomifun-data`，挂载到
-  `/data`）。
+  `NOMIFUN_DATA_DIR`）的任何位置，按字面值生效。两者都未设置时，
+  默认与桌面应用是**同一个按用户目录**，因此开发中的
+  `bun run serve:web` 与已安装的应用看到的是同一份状态。
+- **Docker**：你挂载到 `/data` 的命名卷（例如 `nomifun-data:/data`）。
 
-数据目录里有 SQLite 数据库（`flowy-backend.db*`，首次启动时会将旧版 `nomifun-backend.db*` 重命名）、各智能体状态、
+数据目录里有 SQLite 数据库（`nomifun-backend.db*`）、各智能体状态、
 Bun 缓存、日志文件，以及任何嵌入式扩展数据。请像对待数据库一样备份
 它。由于所有宿主默认指向同一个目录，后端用一把排他的 `server.lock`
 守住它——同一数据目录上的第二个后端实例会快速失败，而不是悄悄破坏
@@ -66,26 +66,26 @@ Bun 缓存、日志文件，以及任何嵌入式扩展数据。请像对待数�
 
 ## 支持哪些智能体与提供商？
 
-Flowy 作为 ACP（Agent Client Protocol）后端运行的"智能体 CLI"
+NomiFun 作为 ACP（Agent Client Protocol）后端运行的"智能体 CLI"
 包括 `claude`、`codex`、`gemini`、`nomi`、`codebuddy`、`qwen` 与
 `opencode`。每一个都是一个独立的 CLI，需要你自己在系统上安装；
-Flowy 会从 `PATH` 上发现它们，并据此填充注册表。运行
+NomiFun 会从 `PATH` 上发现它们，并据此填充注册表。运行
 `nomicore doctor` 即可看到你的安装能识别到哪些。
 
 至于裸模型访问（例如提供商密钥、自定义的 OpenAI 兼容端点），系统
 通过 `/api/providers/*` 与应用内的设置 UI 支持可配置的提供商。API
-密钥由你提供；Flowy 会以静态加密的方式把它们存到数据目录。
+密钥由你提供；NomiFun 会以静态加密的方式把它们存到数据目录。
 
-并不存在一个会调用某个托管 Flowy 端点的内置智能体——根本就没有
+并不存在一个会调用某个托管 NomiFun 端点的内置智能体——根本就没有
 这样的端点。你配置的每一个智能体 / 提供商都由你自己控制。
 
-## Flowy 真的纯本地吗？
+## NomiFun 真的纯本地吗？
 
 应用逻辑与你的数据是本地的。但你接入的智能体未必——大多数 CLI 智能体
 都会向各自的提供商（Anthropic、OpenAI、Google 等）发起出站调用。那
 是你与该智能体之间的事。
 
-Flowy 自身在网络上做的事：
+NomiFun 自身在网络上做的事：
 
 - 可选的更新检查（system info / check-update 端点）。
 - 扩展市场（`/api/hub/*`）——仅在你主动使用时。
@@ -100,7 +100,7 @@ Flowy 自身在网络上做的事：
 数据目录加载。技能则是一组提示词/指令，按会话被解析进智能体的上下文。
 两者都是数据目录下的本地文件；市场流程只是把它们下载到该目录。
 
-智能体 CLI 二进制不属于扩展——它们是 Flowy 通过 ACP 协议作为子
+智能体 CLI 二进制不属于扩展——它们是 NomiFun 通过 ACP 协议作为子
 进程派生的外部 CLI。
 
 ## 我能在与 UI 不同的机器上跑智能体吗？
@@ -121,22 +121,19 @@ Apache-2.0 条款下使用、修改、再分发，并将代码打包——包括
 
 ## 有预构建安装包吗？
 
-有。桌面安装包通过 [GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases)
-分发；中国大陆也可使用 README 中的百度网盘镜像。应用内 OTA 的**唯一真源**是
-ModelScope 渠道清单（`allo/channels/alpha/latest.json`），端点已写在
-`apps/desktop/tauri.conf.json`。发版操作以根目录
-[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md) 为准（ModelScope 上传、
-产物命名、多平台合并）；GitHub 一键脚本仍可用于手动安装包，见
-[`RELEASING.zh-CN.md`](../../RELEASING.zh-CN.md)。
-
-也可以从源码构建：
+桌面包可以本地构建，macOS Developer ID 签名已通过 `bun run build:signed`
+脚本接好，updater 产物可用 `bun run build:updater` 生成。Web 服务已提供
+官方 Docker Hub 镜像
+[`nomifun/nomifun-web`](https://hub.docker.com/repository/docker/nomifun/nomifun-web)。
+当前受支持的安装路径是：
 
 - **桌面端**：`bun install && bun run build:ui && cargo run -p
   nomifun-desktop`（或 `cargo build --release -p nomifun-desktop`）。
-- **服务端**：`cargo build --release -p nomifun-web` 或
-  `docker compose up -d --build`。
+- **服务端**：运行 `nomifun/nomifun-web:v0.3.4`、从源码构建
+  （`cargo build --release -p nomifun-web`），或用
+  `docker compose up -d --build` 本地构建。
 
-安装入口见 [新手入门 · 安装](../getting-started/installation.zh.md)。
+已发布的制品会从项目 README 与 [新手入门指南](../getting-started/) 链接出来。
 
 ## 我把管理员密码搞丢了
 
@@ -176,4 +173,4 @@ ModelScope 渠道清单（`allo/channels/alpha/latest.json`），端点已写在
 - [API 概览](./api-overview.zh.md)
 - [疑难排查](./troubleshooting.zh.md)
 - [Web 服务部署](../guides/web-server-deployment.zh.md)
-- [作为桌面应用运行 Flowy](../guides/desktop-app.zh.md)
+- [作为桌面应用运行 NomiFun](../guides/desktop-app.zh.md)

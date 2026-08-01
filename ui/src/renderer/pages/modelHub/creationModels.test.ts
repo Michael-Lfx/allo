@@ -5,102 +5,74 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import type { IProvider } from '@/common/config/storage';
+import type { TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
+import {
+  buildCreationModelEntries,
+  filterCreationModels,
+  groupCreationModelsByProvider,
+} from './creationModels';
 
-import type { IProvider, ModelProfile } from '@/common/config/storage';
-import type { ProviderId } from '@/common/types/ids';
-import { getCreationModels } from './creationModels';
-
-const PROVIDER_ID = '0190f5fe-7c00-7a00-8000-000000000001' as ProviderId;
-const CATALOG_PROVIDER_ID = '0190f5fe-7c00-7a00-8000-000000000002' as ProviderId;
-
-const provider = (overrides: Partial<IProvider> = {}): IProvider =>
+const provider = (id: string, name: string): IProvider =>
   ({
-    id: PROVIDER_ID,
+    id,
+    name,
     platform: 'openai',
-    name: 'OpenAI',
-    base_url: 'https://api.openai.com',
-    api_key: 'k',
-    models: ['plain-chat', 'dall-e-3'],
     enabled: true,
-    ...overrides,
-  }) as IProvider;
+    models: [],
+  }) as unknown as IProvider;
 
-const catalogProvider = {
-  id: CATALOG_PROVIDER_ID,
-  name: 'Catalog Provider',
-  platform: 'openai',
-  enabled: true,
-  models: ['custom-visual-v1', 'stable-diffusion-chat-lookalike'],
-  model_enabled: {},
-} as unknown as IProvider;
+const providerA = provider('0190f5fe-7c00-7a00-8000-000000000001', 'Provider A');
+const providerB = provider('0190f5fe-7c00-7a00-8000-000000000002', 'Provider B');
 
-const profile = (
-  source: ModelProfile['source'],
-  model: string,
-  tasks: ModelProfile['tasks'],
-  providerId: ProviderId = PROVIDER_ID
-): ModelProfile => ({
-  provider_id: providerId,
-  model,
-  tasks,
-  traits: [],
-  params: {},
-  source,
-  updated_at: 1,
-});
+const groups = (provider_: IProvider, models: string[]): TaskModelGroup[] => [
+  { provider: provider_, models },
+];
 
-describe('getCreationModels profile precedence', () => {
-  test('user profile wins over catalog for the same model', () => {
-    const providers = [provider({ models: ['plain-chat'] })];
-    const profiles = [
-      profile('catalog', 'plain-chat', ['image_generation']),
-      profile('user', 'plain-chat', ['video_generation']),
-    ];
+describe('resolve-backed creation model entries', () => {
+  test('unions image_generation and image_edit under the image capability', () => {
+    const entries = buildCreationModelEntries([
+      { capability: 'image_generation', groups: groups(providerA, ['gen-only']) },
+      { capability: 'image_generation', groups: groups(providerA, ['edit-only', 'gen-only']) },
+      { capability: 'video_generation', groups: [] },
+    ]);
 
-    const entries = getCreationModels(providers, undefined, profiles);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].model).toBe('plain-chat');
-    expect(entries[0].capabilities).toEqual(['video_generation']);
+    expect(entries.map((e) => e.model)).toEqual(['gen-only', 'edit-only']);
+    expect(entries.every((e) => e.capabilities.includes('image_generation'))).toBe(true);
+    expect(filterCreationModels(entries, 'video_generation')).toEqual([]);
   });
 
-  test('catalog overrides heuristic so a non-image name is included', () => {
-    const providers = [provider({ models: ['plain-chat'] })];
-    const profiles = [profile('catalog', 'plain-chat', ['image_generation'])];
+  test('a model resolved for image and video yields one entry with both capabilities', () => {
+    const entries = buildCreationModelEntries([
+      { capability: 'image_generation', groups: groups(providerA, ['multi-modal']) },
+      { capability: 'video_generation', groups: groups(providerA, ['multi-modal', 'video-only']) },
+    ]);
 
-    expect(getCreationModels(providers, undefined, undefined)).toEqual([]);
-    const entries = getCreationModels(providers, undefined, profiles);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].capabilities).toEqual(['image_generation']);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].model).toBe('multi-modal');
+    expect(entries[0].capabilities).toEqual(['image_generation', 'video_generation']);
+    expect(entries[1].capabilities).toEqual(['video_generation']);
   });
 
-  test('inferred does not override heuristic', () => {
-    const providers = [provider({ models: ['plain-chat', 'dall-e-3'] })];
-    const profiles = [
-      profile('inferred', 'plain-chat', ['image_generation']),
-      profile('inferred', 'dall-e-3', []),
-    ];
+  test('capability filter and provider grouping preserve order', () => {
+    const entries = buildCreationModelEntries([
+      { capability: 'image_generation', groups: [...groups(providerA, ['a-img']), ...groups(providerB, ['b-img'])] },
+      { capability: 'video_generation', groups: groups(providerB, ['b-vid']) },
+    ]);
 
-    const withoutProfiles = getCreationModels(providers, undefined, undefined);
-    const withInferred = getCreationModels(providers, undefined, profiles);
+    expect(filterCreationModels(entries, 'image_generation').map((e) => e.model)).toEqual(['a-img', 'b-img']);
 
-    expect(withoutProfiles.map((e) => e.model)).toEqual(['dall-e-3']);
-    expect(withInferred.map((e) => e.model)).toEqual(['dall-e-3']);
-    expect(withInferred[0].capabilities).toEqual(['image_generation']);
+    const grouped = groupCreationModelsByProvider(entries);
+    expect(grouped.map((g) => g.providerId)).toEqual([providerA.id, providerB.id]);
+    expect(grouped[1].models.map((m) => m.model)).toEqual(['b-img', 'b-vid']);
   });
-});
 
-describe('creation model catalog authority', () => {
-  test('catalog profiles expose image models and override name guesses', () => {
-    const result = getCreationModels(
-      [catalogProvider],
-      'image_generation',
-      [
-        profile('catalog', 'custom-visual-v1', ['image_generation'], catalogProvider.id),
-        profile('catalog', 'stable-diffusion-chat-lookalike', ['chat'], catalogProvider.id),
-      ]
+  test('applies the provider label function to every entry', () => {
+    const entries = buildCreationModelEntries(
+      [{ capability: 'image_generation', groups: groups(providerA, ['gen']) }],
+      (p) => `label:${p.name}`
     );
 
-    expect(result.map((entry) => entry.model)).toEqual(['custom-visual-v1']);
-    expect(result[0].capabilities).toEqual(['image_generation']);
+    expect(entries[0].providerName).toBe('label:Provider A');
   });
 });

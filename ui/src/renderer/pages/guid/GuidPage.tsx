@@ -35,6 +35,7 @@ import PresetPickerDrawer from './components/PresetPickerDrawer';
 import type { LocalizableSkill } from '@/renderer/pages/settings/skill/skillDisplay';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
+import { SummonDrawer, useCompanionRoster } from '@/renderer/pages/conversation/components/SummonPanel';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
 import { isAutoWorkEntry } from './hooks/autoWorkEntry';
@@ -252,8 +253,9 @@ const GuidPage: React.FC = () => {
     containerRef: guidInputCardRef,
   });
 
-  // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
-  // collected up front and applied right after the conversation is created.
+  // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM /
+  // summon) — collected up front and applied right after the conversation is
+  // created.
   const advancedConfig = useGuidAdvancedConfig();
 
   // Knowledge activation hand-off from QuickCapture / empty-state sample seed.
@@ -268,6 +270,14 @@ const GuidPage: React.FC = () => {
       pendingAutoSendRef.current = true;
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one-shot on mount
+
+  // 召唤伙伴 draft entry (nomi launches only): pick in the shared drawer here,
+  // apply onto the conversation right after create.
+  const [summonDrawerOpen, setSummonDrawerOpen] = useState(false);
+  const companionRoster = useCompanionRoster();
+  const summonedCompanionName = advancedConfig.summon
+    ? (companionRoster.find((c) => c.companion_id === advancedConfig.summon?.companion_id)?.name ?? null)
+    : null;
 
   const mention = useGuidMention({
     availableAgents: agentSelection.availableAgents,
@@ -340,7 +350,6 @@ const GuidPage: React.FC = () => {
     is_presetAgentPending: agentSelection.is_presetAgentPending,
     selectedMode: agentSelection.selectedMode,
     selectedAcpModel: agentSelection.selectedAcpModel,
-    currentAcpCachedModelInfo: agentSelection.currentAcpCachedModelInfo,
     current_model: modelSelection.current_model,
 
     // Agent helpers
@@ -678,6 +687,16 @@ const GuidPage: React.FC = () => {
     ? agentSelection.currentEffectiveAgentInfo.agent_type
     : agentSelection.selectedAgent;
 
+  // Only the nomi factory reads `extra.summon` — drop a staged summon draft
+  // when the user switches away so it is never applied to a non-nomi launch.
+  useEffect(() => {
+    if (effectiveAgentType !== 'nomi' && advancedConfig.summon) {
+      advancedConfig.setSummon(null);
+      setSummonDrawerOpen(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveAgentType, advancedConfig.summon]);
+
   // Agents that use configured model providers instead of ACP probe-based models.
   // Only nomi now — Gemini runs as a regular ACP backend with ACP-cached models.
   const PROVIDER_BASED_AGENTS = new Set(['nomi']);
@@ -705,7 +724,6 @@ const GuidPage: React.FC = () => {
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
-      onAddModel={() => addProviderRef.current?.open()}
     />
   );
   const collaboratorSelectorNode = (
@@ -735,6 +753,7 @@ const GuidPage: React.FC = () => {
       runtimeType={effectiveAgentType}
       delegationPolicy={delegationPolicy}
       decisionPolicy={decisionPolicy}
+      className='guid-entry-policy-btn'
       onChange={(next) => {
         setDelegationPolicy(next.delegationPolicy);
         setDecisionPolicy(next.decisionPolicy);
@@ -934,26 +953,38 @@ const GuidPage: React.FC = () => {
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
-                advancedOpen ? (
-                  <ComposerEntryStrip
-                    isPresetAgent={agentSelection.is_presetAgent}
-                    presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                    presetAvatar={selectedPresetAvatar ?? undefined}
-                    onChoosePreset={() => {
-                      setDrawerMode('preset');
-                      setDrawerOpen(true);
-                    }}
-                    onAdjustSkills={handleOpenSkillsDrawer}
-                    onFree={() => {
-                      agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                    }}
-                    localeKey={localeKey}
-                    activeSkillCount={activeSkillCount}
-                    activeSkills={activeSkills}
-                    collaborationPolicyNode={collaborationPolicyNode}
-                  />
-                ) : undefined
+                <ComposerEntryStrip
+                  isPresetAgent={agentSelection.is_presetAgent}
+                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                  presetAvatar={selectedPresetAvatar ?? undefined}
+                  onAdjustSkills={handleOpenSkillsDrawer}
+                  onFree={() => {
+                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+                  }}
+                  localeKey={localeKey}
+                  activeSkillCount={activeSkillCount}
+                  activeSkills={activeSkills}
+                  collaborationPolicyNode={collaborationPolicyNode}
+                  onSummonCompanion={
+                    effectiveAgentType === 'nomi' ? () => setSummonDrawerOpen(true) : undefined
+                  }
+                  summonedCompanionName={summonedCompanionName}
+                />
               }
+            />
+
+            <SummonDrawer
+              visible={summonDrawerOpen}
+              onCancel={() => setSummonDrawerOpen(false)}
+              initial={advancedConfig.summon}
+              onApply={(draft) => {
+                advancedConfig.setSummon(draft);
+                setSummonDrawerOpen(false);
+              }}
+              onRelease={() => {
+                advancedConfig.setSummon(null);
+                setSummonDrawerOpen(false);
+              }}
             />
 
             {/* Editor host (modals + example prompts + fallback notice) */}

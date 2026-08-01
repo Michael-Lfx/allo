@@ -132,9 +132,6 @@ impl KnowledgeService {
                         rendered: false,
                     }],
                     last_fetched_at: None,
-                    credential_ref: None,
-                    scope: None,
-                    sync: None,
                 };
                 (
                     name.unwrap_or("Web Knowledge").trim().to_owned(),

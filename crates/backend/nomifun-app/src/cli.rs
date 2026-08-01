@@ -18,14 +18,33 @@ use nomifun_common::storage_paths;
 /// Sharing within a channel is deliberate, while isolating non-stable channels
 /// prevents development loops from touching installed-app state. The
 /// `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` env / `--data-dir` flag remain the
-/// escape hatch for an explicitly selected directory. Concurrent use of one
-/// dir is prevented by the exclusive server lock (see `bootstrap::server_lock`).
+/// escape hatch for an explicitly selected directory; the env value is the
+/// FINAL data root on every host (the desktop shell no longer appends
+/// anything). Concurrent use of one dir is prevented by the exclusive server
+/// lock (see `bootstrap::server_lock`).
+///
+/// Upstream NomiFun installs created before the Flowy layout used
+/// `NomiFun/Nomi<channel-suffix>` (see [`legacy_default_data_dir`]);
+/// `bootstrap::data_root` migrates them forward on boot when applicable.
 ///
 /// This is only the *unset* default — it does NOT consult env vars.
-/// Env semantics stay host-specific: the desktop shell appends `/Nomi` to the
-/// env value, web/nomicore take it literally (clap `env` binding).
+/// Env semantics are literal on every host (clap `env` binding / desktop
+/// `resolve_data_dir_from_env`).
 pub fn default_data_dir() -> PathBuf {
     storage_paths::default_data_dir(&crate::channel::dir_suffix())
+}
+
+/// The pre-Flowy / pre-0.3.4 default data directory for the active channel:
+/// `<app-data>/NomiFun/Nomi<channel-suffix>` (or the historic temp fallback
+/// `<system temp>/nomifun-data/Nomi<channel-suffix>`). Used only as the
+/// migration *source* by `bootstrap::data_root` and by the inherited-env
+/// sanitizer; never used for new datasets.
+pub fn legacy_default_data_dir() -> PathBuf {
+    let leaf = legacy_nomi_leaf(&crate::channel::dir_suffix());
+    dirs::data_local_dir()
+        .map(|dir| dir.join("NomiFun"))
+        .unwrap_or_else(|| std::env::temp_dir().join("nomifun-data"))
+        .join(leaf)
 }
 
 /// The data-dir leaf for the active build channel: `Nomi` on stable, `Nomi-dev`
@@ -37,6 +56,12 @@ pub fn default_data_dir() -> PathBuf {
 /// verbatim by clap, channel-agnostic).
 fn nomi_leaf(suffix: &str) -> String {
     storage_paths::nomi_leaf(suffix)
+}
+
+/// The pre-0.3.4 leaf under the `NomiFun` vendor directory (`Nomi`,
+/// `Nomi-dev`, …). Retained only so the migration can find old datasets.
+fn legacy_nomi_leaf(suffix: &str) -> String {
+    format!("Nomi{suffix}")
 }
 
 /// Reject empty `--data-dir` / `NOMIFUN_DATA_DIR` values. clap's env binding
@@ -217,15 +242,26 @@ mod tests {
     }
 
     #[test]
-    fn nomi_leaf_stable_is_plain_nomi() {
-        assert_eq!(super::nomi_leaf(""), "Nomi");
-    }
-
-    #[test]
     fn nomi_leaf_non_stable_attaches_suffix_to_nomi() {
         // The channel suffix must land on the `Nomi` leaf, yielding a sibling of
         // the production dir (`…/Flowy/Nomi-dev`) — never on `Flowy`.
         assert_eq!(super::nomi_leaf("-dev"), "Nomi-dev");
+    }
+
+    #[test]
+    fn legacy_default_keeps_the_historic_nomi_leaf_for_migration() {
+        let legacy = super::legacy_default_data_dir();
+        let leaf = super::legacy_nomi_leaf(&crate::channel::dir_suffix());
+        assert!(
+            legacy.ends_with(std::path::Path::new("NomiFun").join(&leaf))
+                || legacy.ends_with(std::path::Path::new("nomifun-data").join(&leaf)),
+            "legacy default should end with NomiFun/{leaf}, got {legacy:?}"
+        );
+        assert_ne!(
+            legacy,
+            super::default_data_dir(),
+            "legacy and current defaults must differ so migration has a direction"
+        );
     }
 
     #[test]

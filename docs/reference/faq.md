@@ -2,15 +2,15 @@
 
 Honest, short answers to questions that come up over and over. For deeper explanations follow the links.
 
-## What is the difference between Flowy and nomifun?
+## What is the difference between NomiFun and nomifun?
 
-**Flowy** is the open-source project and the user-facing product name: the desktop app, WebUI surface, codebase, workspace, GitHub repository, and brand all use this spelling.
+**NomiFun** is the open-source project and the user-facing product name: the desktop app, WebUI surface, codebase, workspace, GitHub repository, and brand all use this spelling.
 
-In this codebase the lowercase form `nomifun` shows up only as a literal technical identifier — package names (`nomifun-app`, `nomifun-web`, …), the desktop bundle id `com.nomifun.desktop`, environment variables prefixed `NOMIFUN_`, repository directories. Anywhere it is shown to a human as the app or project brand, use "Flowy".
+In this codebase the lowercase form `nomifun` shows up only as a literal technical identifier — package names (`nomifun-app`, `nomifun-web`, …), the desktop bundle id `com.nomifun.desktop`, environment variables prefixed `NOMIFUN_`, repository directories. Anywhere it is shown to a human as the app or project brand, use "NomiFun".
 
 ## Is there a hosted version?
 
-No. Flowy is a self-host project. There is no SaaS instance, no managed login at a `nomifun.com` URL, no central account system to sign up for. The two ways to use it are:
+No. NomiFun is a self-host project. There is no SaaS instance, no managed login at a `nomifun.com` URL, no central account system to sign up for. The two ways to use it are:
 
 - Install the desktop app and run it locally — `nomifun-desktop`.
 - Deploy `nomifun-web` on a server you control. See [Web Server Deployment](../guides/web-server-deployment.md).
@@ -31,27 +31,27 @@ network-reachable host needs an actual auth boundary.
 
 In the **data directory**. Its location depends on which host you are running:
 
-- **Desktop**: defaults to the **per-user application-data dir** — `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` (usually `~/.local/share/Flowy/Nomi`) on Linux. Set `NOMIFUN_DATA_DIR=<absolute path>` and the dir becomes `$NOMIFUN_DATA_DIR/Nomi` (unchanged override semantics). Older builds stored data under `<system temp>/nomifun-data/Nomi`; if such an install exists it is relocated to the new location automatically on launch, and the old dir is kept as a backup.
-- **Web (`nomifun-web`)**: whatever you pass to `--data-dir` (or `NOMIFUN_DATA_DIR`), taken literally — no `/Nomi` suffix. With neither set it defaults to the **same per-user dir as the desktop app**, so a dev `bun run serve:web` and the installed app see one shared state.
-- **Docker**: the named volume defined in the compose file (`nomifun-data` mounted at `/data`).
+- **Desktop**: defaults to the **per-user application-data dir** — `%LOCALAPPDATA%\NomiFun` on Windows, `~/Library/Application Support/NomiFun` on macOS, `$XDG_DATA_HOME/NomiFun` (usually `~/.local/share/NomiFun`) on Linux. Set `NOMIFUN_DATA_DIR=<absolute path>` and that path **is** the data dir — the value is taken literally on every host, no `/Nomi` suffix. Older builds stored data under `NomiFun/Nomi` (and before that `<system temp>/nomifun-data/Nomi`); an existing legacy dataset is migrated to the new location automatically on the first boot after upgrading (one-shot, crash-safe, resumed next boot if interrupted).
+- **Web (`nomifun-web`)**: whatever you pass to `--data-dir` (or `NOMIFUN_DATA_DIR`), taken literally. With neither set it defaults to the **same per-user dir as the desktop app**, so a dev `bun run serve:web` and the installed app see one shared state.
+- **Docker**: the named volume you mount to `/data` (for example `nomifun-data:/data`).
 
-The data directory contains the SQLite database (`flowy-backend.db*`, legacy `nomifun-backend.db*` is renamed on first boot), per-agent state, the Bun cache, log files, and any embedded extension data. Back it up like a database. Because every host defaults to the same directory, the backend guards it with an exclusive `server.lock` — a second backend instance on the same data dir fails fast instead of corrupting state.
+The data directory contains the SQLite database (`nomifun-backend.db*`), per-agent state, the Bun cache, log files, and any embedded extension data. Back it up like a database. Because every host defaults to the same directory, the backend guards it with an exclusive `server.lock` — a second backend instance on the same data dir fails fast instead of corrupting state.
 
 For the full lifecycle and `work-dir` semantics, see [Configuration Reference](./configuration.md#data-directory-and-work-directory-semantics).
 
 ## Which agents and providers are supported?
 
-The "Agent CLIs" Flowy runs as ACP (Agent Client Protocol) backends include `claude`, `codex`, `gemini`, `nomi`, `codebuddy`, `qwen`, and `opencode`. Each one is a separate CLI you install on your system; Flowy discovers them on `PATH` and the registry hydrates from there. Run `nomicore doctor` to see what your install detects.
+The "Agent CLIs" NomiFun runs as ACP (Agent Client Protocol) backends include `claude`, `codex`, `gemini`, `nomi`, `codebuddy`, `qwen`, and `opencode`. Each one is a separate CLI you install on your system; NomiFun discovers them on `PATH` and the registry hydrates from there. Run `nomicore doctor` to see what your install detects.
 
-For raw model access (e.g. provider keys, custom OpenAI-compatible endpoints), the system supports configurable providers via `/api/providers/*` and the in-app settings UI. You bring the API keys; Flowy stores them encrypted at rest in the data directory.
+For raw model access (e.g. provider keys, custom OpenAI-compatible endpoints), the system supports configurable providers via `/api/providers/*` and the in-app settings UI. You bring the API keys; NomiFun stores them encrypted at rest in the data directory.
 
-There is no built-in agent that calls out to a hosted Flowy endpoint — there is no such endpoint. Every agent / provider you configure is something you control.
+There is no built-in agent that calls out to a hosted NomiFun endpoint — there is no such endpoint. Every agent / provider you configure is something you control.
 
-## Is Flowy really local-only?
+## Is NomiFun really local-only?
 
 The application logic and your data are local. The agents you connect to may not be — most CLI agents make outbound calls to their respective providers (Anthropic, OpenAI, Google, …). That is between you and the agent.
 
-What Flowy itself does over the network:
+What NomiFun itself does over the network:
 
 - Optional update checks (system info / check-update endpoint).
 - Extension marketplace (`/api/hub/*`) — only if you actively use it.
@@ -63,7 +63,7 @@ There is no telemetry pipeline, no analytics SDK, no `SENTRY_DSN` integration in
 
 Extensions (themes, presets, channel plugins, settings tabs) are loaded by `nomifun-extension` from the data directory. Skills are bundles of prompts/instructions resolved into the agent's context per-conversation. Both are local files under your data dir; the marketplace flow simply downloads them into that directory.
 
-The agent CLI binaries are not extensions — they are external CLIs that Flowy launches as child processes via the ACP protocol.
+The agent CLI binaries are not extensions — they are external CLIs that NomiFun launches as child processes via the ACP protocol.
 
 ## Can I run agents on a different machine from the UI?
 
@@ -77,24 +77,17 @@ For lighter-weight remote access from a phone or another laptop without spinning
 
 ## Are there prebuilt installers?
 
-Yes. Desktop installers are published on
-[GitHub Releases](https://github.com/nomifun/nomifun-tauri/releases) (and a
-Baidu Netdisk mirror linked from the README for mainland China). In-app OTA
-uses **ModelScope as the single source of truth**
-(`allo/channels/alpha/latest.json`), configured in
-`apps/desktop/tauri.conf.json`. Release operations follow root
-[`BUILD_RELEASE.zh-CN.md`](../../BUILD_RELEASE.zh-CN.md) (ModelScope upload,
-artifact naming, multi-platform merge). GitHub one-click scripts remain for
-manual installer distribution; see [`RELEASING.md`](../../RELEASING.md).
+Desktop bundles can be built locally, macOS Developer ID signing is scripted
+through `bun run build:signed`, and updater artifacts can be generated with
+`bun run build:updater`. For the Web server, the official Docker Hub image is
+available as
+[`nomifun/nomifun-web`](https://hub.docker.com/repository/docker/nomifun/nomifun-web).
+The supported install paths are:
 
-You can still build from source:
+- **Desktop**: `bun install && bun run build:ui && cargo run -p nomifun-desktop` (or `cargo build --release -p nomifun-desktop`).
+- **Server**: run `nomifun/nomifun-web:v0.3.4`, build from source (`cargo build --release -p nomifun-web`), or build locally with `docker compose up -d --build`.
 
-- **Desktop**: `bun install && bun run build:ui && cargo run -p nomifun-desktop`
-  (or `cargo build --release -p nomifun-desktop`).
-- **Server**: `cargo build --release -p nomifun-web` or
-  `docker compose up -d --build`.
-
-See [Installation](../getting-started/installation.md).
+Published artifacts are linked from the project README and the [getting-started guide](../getting-started/).
 
 ## I lost my admin password
 
@@ -123,4 +116,4 @@ The desktop shell also produces a single binary (`nomifun-desktop`), but for dis
 - [API Overview](./api-overview.md)
 - [Troubleshooting](./troubleshooting.md)
 - [Web Server Deployment](../guides/web-server-deployment.md)
-- [Running Flowy as a Desktop App](../guides/desktop-app.md)
+- [Running NomiFun as a Desktop App](../guides/desktop-app.md)

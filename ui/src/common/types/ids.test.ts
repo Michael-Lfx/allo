@@ -11,7 +11,6 @@ import {
   isReservedProviderId,
   isSameSessionTarget,
   parseCompanionEvolutionFeedbackId,
-  parseConnectorCredentialId,
   parseChannelPluginId,
   parseChannelUserId,
   parseConversationId,
@@ -25,7 +24,8 @@ import {
   parseMessageId,
   parseOptionalEntityId,
   parsePresetId,
-  parseProviderId,  parsePublicAgentAuditEntryId,
+  parseProviderId,
+  parseCsAgentId,
   parseRemoteAgentId,
   parseRequirementId,
   parseTerminalId,
@@ -149,7 +149,7 @@ describe('entity ids', () => {
     expect(parseFigureId('0190f5fe-7c00-7a00-8000-000000000001')).toBe(
       '0190f5fe-7c00-7a00-8000-000000000001',
     );
-    expect(parsePublicAgentAuditEntryId('0190f5fe-7c00-7a00-8000-000000000002')).toBe(
+    expect(parseCsAgentId('0190f5fe-7c00-7a00-8000-000000000002')).toBe(
       '0190f5fe-7c00-7a00-8000-000000000002',
     );
     expect(parseCompanionEvolutionFeedbackId('0190f5fe-7c00-7a00-8000-000000000003')).toBe(
@@ -202,19 +202,6 @@ describe('entity ids', () => {
     expect(parseWebhookId(webhookId)).toBe(webhookId);
     for (const value of invalidBusinessIdValues(webhookId, 'webhook')) {
       expectInvalidEntityId(() => parseWebhookId(value));
-    }
-  });
-
-  test('credential_id accepts only a bare canonical lowercase UUIDv7', () => {
-    const credentialId = '0190f5fe-7c00-7a00-8000-00000000000a';
-    expect(parseConnectorCredentialId(credentialId)).toBe(credentialId);
-
-    for (const value of [
-      ...invalidBusinessIdValues(credentialId, 'credential'),
-      credentialId.replaceAll('-', ''),
-      `${credentialId} `,
-    ]) {
-      expectInvalidEntityId(() => parseConnectorCredentialId(value));
     }
   });
 

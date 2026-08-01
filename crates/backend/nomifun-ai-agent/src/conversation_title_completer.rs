@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomifun_common::AppError;
-use nomifun_db::IProviderRepository;
+use nomifun_db::{IProviderModelRepository, IProviderRepository, models::ProviderModelRow};
 use tracing::warn;
 
 use crate::factory::provider_config::{
@@ -38,6 +38,7 @@ pub trait ConversationTitleCompleter: Send + Sync {
 /// Provider-backed conversation title generator.
 pub struct LiveConversationTitleCompleter {
     pub provider_repo: Arc<dyn IProviderRepository>,
+    pub provider_model_repo: Arc<dyn IProviderModelRepository>,
     pub encryption_key: [u8; 32],
     pub workspace: PathBuf,
 }
@@ -49,12 +50,28 @@ impl LiveConversationTitleCompleter {
             .list()
             .await
             .map_err(|e| AppError::Internal(format!("failed to list providers: {e}")))?;
+        let rows = self
+            .provider_model_repo
+            .list()
+            .await
+            .map_err(|e| AppError::Internal(format!("failed to list provider models: {e}")))?;
+        let mut grouped: std::collections::HashMap<&str, Vec<&ProviderModelRow>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            grouped.entry(row.provider_id.as_str()).or_default().push(row);
+        }
         let mut reasoning_fallback: Option<(String, String)> = None;
         for provider in providers.iter().filter(|p| p.enabled) {
-            let models = enabled_models(&provider.models, provider.model_enabled.as_deref());
-            for model in models {
-                let pair = (provider.provider_id.clone(), model.clone());
-                if is_reasoning_heavy_model(&model) {
+            let Some(provider_rows) = grouped.get(provider.provider_id.as_str()) else {
+                continue;
+            };
+            for row in provider_rows.iter().filter(|r| r.enabled) {
+                let model = row.model.trim();
+                if model.is_empty() {
+                    continue;
+                }
+                let pair = (provider.provider_id.clone(), model.to_owned());
+                if is_reasoning_heavy_model(model) {
                     reasoning_fallback.get_or_insert(pair);
                 } else {
                     return Ok(pair);
@@ -91,20 +108,6 @@ impl LiveConversationTitleCompleter {
                 .await?;
         Ok(normalize_title_output(&raw))
     }
-}
-
-fn enabled_models(models_json: &str, model_enabled_json: Option<&str>) -> Vec<String> {
-    use std::collections::HashMap;
-
-    let models: Vec<String> = serde_json::from_str(models_json).unwrap_or_default();
-    let enabled: HashMap<String, bool> = model_enabled_json
-        .and_then(|raw| serde_json::from_str(raw).ok())
-        .unwrap_or_default();
-    models
-        .into_iter()
-        .map(|m| m.trim().to_owned())
-        .filter(|m| !m.is_empty() && enabled.get(m).copied().unwrap_or(true))
-        .collect()
 }
 
 fn is_reasoning_heavy_model(model: &str) -> bool {
@@ -400,6 +403,7 @@ impl ConversationTitleCompleter for LiveConversationTitleCompleter {
         let (provider_id, model) = self.resolve_default_model().await?;
         let cfg = resolve_provider_config(
             &self.provider_repo,
+            &self.provider_model_repo,
             &self.encryption_key,
             &provider_id,
             &model,

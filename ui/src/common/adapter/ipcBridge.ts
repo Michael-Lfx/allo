@@ -106,6 +106,16 @@ import type {
   SetManagedModelEnabledRequest,
   SetManagedModelServiceEnabledRequest,
 } from '../types/provider/managedModelService';
+import type {
+  CreateProviderModelRequest,
+  ProviderModelKeyRequest,
+  ProviderModelResponse,
+  UpdateProviderModelRequest,
+} from '../types/provider/providerModel';
+import type {
+  ProviderConnectionResponse,
+  UpsertProviderConnectionRequest,
+} from '../types/provider/providerConnection';
 import { buildSpeechToTextFormData, type SpeechToTextRequest, type SpeechToTextResult } from '../types/provider/speech';
 import type {
   TAdoptExecutionStepOutput,
@@ -174,7 +184,6 @@ import {
   parseCompanionSessionWindowId,
   parseCompanionSkillId,
   parseCompanionSuggestionId,
-  parseConnectorCredentialId,
   parseConversationId,
   parseCronJobId,
   parseCronJobRunId,
@@ -191,8 +200,10 @@ import {
   parseMcpServerId,
   parseOptionalEntityId,
   parseProviderId,
-  parsePublicAgentId,
-  parsePublicAgentAuditEntryId,
+  parseCsAgentId,
+  parseCsDialogueId,
+  parseCsMessageId,
+  parseCsNoteId,
   parseRequirementId,
   parseRemoteAgentId,
   parseSkillPatternId,
@@ -211,7 +222,6 @@ import {
   type CompanionSessionWindowId,
   type CompanionSkillId,
   type CompanionSuggestionId,
-  type ConnectorCredentialId,
   type FigureId,
   type IdmmInterventionId,
   type ExecutionAttemptId,
@@ -221,8 +231,11 @@ import {
   type McpServerId,
   type MessageId,
   type ProviderId,
-  type PublicAgentAuditEntryId,
-  type PublicAgentId,
+  type CsAgentId,
+  type CsDialogueId,
+  type CsMessageId,
+  type CsNoteId,
+  type ChannelUserId,
   type KnowledgeBaseId,
   type RequirementId,
   type RemoteAgentId,
@@ -540,6 +553,22 @@ export const fromApiTurnCompletedEvent = (raw: unknown): IConversationTurnComple
   };
 };
 
+/** In-session companion summon marker persisted at `extra.summon`（设计 B）。 */
+export interface ISummonConfig {
+  companion_id: CompanionId;
+  memory_ids: CompanionMemoryId[];
+  skill_exclusions: string[];
+  /** Server-stamped epoch ms — clients never set it. */
+  summoned_at: number;
+}
+
+export interface ISetSummonParams {
+  conversation_id: ConversationId;
+  companion_id: CompanionId;
+  memory_ids?: CompanionMemoryId[];
+  skill_exclusions?: string[];
+}
+
 export const conversation = {
   create: withResponseMap(
     httpPost<unknown, ICreateConversationParams>('/api/conversations', (p) => {
@@ -633,6 +662,20 @@ export const conversation = {
    *  伙伴专属会话「清空上下文」按钮调用。 */
   clearMessages: httpPost<boolean, { conversation_id: ConversationId }>(
     (p) => `/api/conversations/${p.conversation_id}/clear-messages`
+  ),
+  /** 召唤伙伴（设计 B）：把一位伙伴的技能与勾选记忆（只读）装进这条工作会话。
+   *  服务端盖 summoned_at 并回收运行时，下一条消息生效；会话非空闲返回 409。 */
+  setSummon: httpPut<ISummonConfig, ISetSummonParams>(
+    (p) => `/api/conversations/${p.conversation_id}/summon`,
+    (p) => ({
+      companion_id: p.companion_id,
+      memory_ids: p.memory_ids,
+      skill_exclusions: p.skill_exclusions,
+    })
+  ),
+  /** 解除召唤（幂等）；非空闲 409。技能目录在下一次运行时构建时按 manifest 卸载。 */
+  clearSummon: httpDelete<void, { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/summon`
   ),
   retryKnowledgeWriteback: httpPost<
     void,
@@ -1115,7 +1158,14 @@ export const dialog = {
 // File System — routed to /api/fs/* and /api/skills/*
 // ---------------------------------------------------------------------------
 
-export type SkillMarketSource = 'clawhub' | 'skillhub';
+export type SkillMarketSource =
+  | 'clawhub'
+  | 'skillhub'
+  | 'loophub'
+  | 'skillhub_mcp'
+  | 'mcpworld'
+  | 'clawhub_plugins'
+  | 'skillhub_packages';
 
 export interface ISkillMarketItem {
   id: string;
@@ -1135,6 +1185,24 @@ export interface ISkillMarketSyncResponse {
   fetched_at: number;
   items: ISkillMarketItem[];
   errors?: string[];
+}
+
+export interface ISkillMarketMcpConfigResponse {
+  config_json: unknown;
+}
+
+export interface ISkillMarketPackageResponse {
+  name: string;
+  description: string;
+  instructions: string;
+  skill_slugs: string[];
+  avatar?: string;
+}
+
+export interface ISkillMarketPackageInstallResponse {
+  package: ISkillMarketPackageResponse;
+  installed_skill_names: string[];
+  errors?: Array<{ skill_slug: string; error: string }>;
 }
 
 export const fs = {
@@ -1234,6 +1302,14 @@ export const fs = {
   syncSkillMarketRankings: httpPost<ISkillMarketSyncResponse, { sources?: SkillMarketSource[] }>(
     '/api/skills/market/rankings/sync'
   ),
+  resolveSkillMarketMcpConfig: httpPost<
+    ISkillMarketMcpConfigResponse,
+    { source: SkillMarketSource; id: string; url: string }
+  >('/api/skills/market/mcp/config'),
+  installSkillMarketPackage: httpPost<
+    ISkillMarketPackageInstallResponse,
+    { source: SkillMarketSource; id: string; url: string }
+  >('/api/skills/market/package/install'),
 };
 
 // ---------------------------------------------------------------------------
@@ -1386,12 +1462,32 @@ export const mode = {
   updateProvider: withResponseMap(httpPut<ProviderResponse, { provider_id: ProviderId } & UpdateProviderRequest>(
     (p) => `/api/providers/${p.provider_id}`,
     (p) => {
-      const { provider_id: _provider_id, ...body } = p;
+      // Call sites read-modify-write whole `IProvider` records into this body
+      // (`const { id, ...body } = provider`). `models_detail` is a
+      // response-only projection (`ProviderResponse.models_detail` →
+      // `IProvider.models_detail`); the deny_unknown_fields backend update
+      // contract must never see it.
+      const { provider_id: _provider_id, models_detail: _modelsDetail, ...body } =
+        p as typeof p & { models_detail?: unknown };
       return body;
     }
   ), fromProviderResponse),
   deleteProvider: httpDelete<void, { provider_id: ProviderId }>(
     (p) => `/api/providers/${p.provider_id}`
+  ),
+  /**
+   * Server-side provider clone (`POST /api/providers/{id}/clone`): copies the
+   * provider row plus every `provider_models` profile row (minus per-deployment
+   * health) and every connection profile. Optional body `{ name }` sets the
+   * copy's display name (e.g. a localized "<source> 副本"); omitted → the
+   * backend picks its default copy name.
+   */
+  cloneProvider: withResponseMap(
+    httpPost<ProviderResponse, { provider_id: ProviderId; name?: string }>(
+      (p) => `/api/providers/${p.provider_id}/clone`,
+      (p) => (p.name === undefined ? undefined : { name: p.name })
+    ),
+    fromProviderResponse
   ),
   fetchProviderModels: httpPost<FetchModelsResponse, { provider_id: ProviderId; try_fix?: boolean }>(
     (p) => `/api/providers/${p.provider_id}/models`,
@@ -1488,6 +1584,73 @@ export const modelsDev = {
     if (p.limit != null) qs.set('limit', String(p.limit));
     return `/api/models-dev/search?${qs}`;
   }),
+};
+
+// ---------------------------------------------------------------------------
+// Provider model catalog (row-level) — routed to /api/provider-models/*
+// ---------------------------------------------------------------------------
+
+const normalizeProviderModel = (row: ProviderModelResponse): ProviderModelResponse => ({
+  ...row,
+  provider_id: parseProviderId(row.provider_id),
+});
+
+export const providerModel = {
+  /** List catalog rows; pass `provider_id` to filter to one provider. */
+  list: withResponseMap(
+    httpGet<ProviderModelResponse[], { provider_id?: ProviderId }>((p) =>
+      p.provider_id === undefined
+        ? '/api/provider-models'
+        : `/api/provider-models?provider_id=${encodeURIComponent(p.provider_id)}`
+    ),
+    (rows) => rows.map(normalizeProviderModel)
+  ),
+  create: withResponseMap(
+    httpPost<ProviderModelResponse, CreateProviderModelRequest>('/api/provider-models'),
+    normalizeProviderModel
+  ),
+  update: withResponseMap(
+    httpPost<ProviderModelResponse, UpdateProviderModelRequest>('/api/provider-models/update'),
+    normalizeProviderModel
+  ),
+  remove: httpPost<void, ProviderModelKeyRequest>('/api/provider-models/delete'),
+};
+
+// ---------------------------------------------------------------------------
+// Provider connection profiles (per-role, non-default) —
+// routed to /api/providers/{id}/connections[/{role}]
+// ---------------------------------------------------------------------------
+
+const normalizeProviderConnection = (
+  connection: ProviderConnectionResponse
+): ProviderConnectionResponse => ({
+  ...connection,
+  provider_id: parseProviderId(connection.provider_id),
+});
+
+export const providerConnection = {
+  list: withResponseMap(
+    httpGet<ProviderConnectionResponse[], { provider_id: ProviderId }>(
+      (p) => `/api/providers/${p.provider_id}/connections`
+    ),
+    (connections) => connections.map(normalizeProviderConnection)
+  ),
+  upsert: withResponseMap(
+    httpPost<
+      ProviderConnectionResponse,
+      { provider_id: ProviderId } & UpsertProviderConnectionRequest
+    >(
+      (p) => `/api/providers/${p.provider_id}/connections`,
+      (p) => {
+        const { provider_id: _providerId, ...body } = p;
+        return body;
+      }
+    ),
+    normalizeProviderConnection
+  ),
+  remove: httpDelete<void, { provider_id: ProviderId; role: string }>(
+    (p) => `/api/providers/${p.provider_id}/connections/${encodeURIComponent(p.role)}`
+  ),
 };
 
 // ---------------------------------------------------------------------------
@@ -2177,7 +2340,31 @@ export const webui = {
   changeUsername: httpPost<{ username: string }, { newUsername: string }>('/api/webui/change-username', (p) => ({
     new_username: p.newUsername,
   })),
-  resetPassword: httpPost<{ new_password: string }, void>('/api/webui/reset-password'),
+  /**
+   * Authenticated self-service credential changes for WebUI browser sessions.
+   * Unlike the local-trust `/api/webui/*` variants above (desktop shell only,
+   * possession = auth), these verify the CURRENT password and work for a
+   * remote login — docker users change the login without touching container
+   * parameters. `changePassword` rotates the JWT secret server-side: every
+   * session (including this one) is invalidated and the user must sign in
+   * again with the new password.
+   */
+  account: {
+    changePassword: httpPost<void, { currentPassword: string; newPassword: string }>(
+      '/api/auth/change-password',
+      (p) => ({
+        current_password: p.currentPassword,
+        new_password: p.newPassword,
+      })
+    ),
+    changeUsername: httpPost<{ username: string }, { currentPassword: string; newUsername: string }>(
+      '/api/auth/change-username',
+      (p) => ({
+        current_password: p.currentPassword,
+        new_username: p.newUsername,
+      })
+    ),
+  },
   generateQRToken: httpPost<{ token: string; expires_at_ms: number }, void>('/api/webui/generate-qr-token'),
   /**
    * Per-companion Remote access tokens (local-trust-gated; desktop shell only).
@@ -3111,6 +3298,7 @@ export const extensions = {
 // ---------------------------------------------------------------------------
 
 import type {
+  ChannelOwnerDomain,
   IChannelPairingRequest,
   IChannelPluginStatus,
   IChannelSession,
@@ -3153,8 +3341,9 @@ function toPluginStatus(raw: RawPluginStatus): IChannelPluginStatus {
     activeUsers: (raw.active_users ?? 0) as number,
     botUsername: raw.bot_username as string | undefined,
     hasToken: (raw.has_token ?? false) as boolean,
+    // 所有权分域：缺省（过渡期后端未透出）按 companion 处理，与 DB DEFAULT 一致。
+    owner_domain: raw.owner_domain === 'customer_service' ? 'customer_service' : 'companion',
     companionId: raw.companion_id == null ? undefined : parseCompanionId(raw.companion_id),
-    publicAgentId: raw.public_agent_id == null ? null : parsePublicAgentId(raw.public_agent_id),
     botKey: raw.bot_key as string | undefined,
     isExtension: raw.is_extension as boolean | undefined,
     extensionMeta: raw.extension_meta as IChannelPluginStatus['extensionMeta'],
@@ -3212,8 +3401,10 @@ export const channel = {
    * 启用/更新机器人渠道。寻址契约（对应后端 EnableChannelSpec）：
    * - 裸 UUIDv7 `plugin_id` 指向已有渠道实体 → 更新该实体；
    * - 省略 `plugin_id` 并给 `plugin_type` → 新建一行（每宠多机器人路径）；
-   * - `companion_id` 把机器人绑到桌面伙伴，`public_agent_id` 把它绑到对外伙伴
-   *   （二者互斥）；同一机器人(bot_key)已绑其他对象时后端 409。
+   * - `companion_id` 把机器人绑到桌面伙伴；同一机器人(bot_key)已绑其他对象时后端 409。
+   *   （客服绑定归客服域所有：PUT /api/customer-service/agents/{id}/bindings。）
+   * - `owner_domain` 仅创建时可选（缺省 companion）；'customer_service' 域的行
+   *   与 companion_id 互斥（后端 400/ABORT）。
    */
   enablePlugin: withResponseMap(httpPost<
     { success: boolean; plugin_id?: unknown; error?: string },
@@ -3221,7 +3412,7 @@ export const channel = {
       plugin_id?: import('../types/ids').ChannelPluginId;
       plugin_type?: string;
       companion_id?: CompanionId;
-      public_agent_id?: PublicAgentId;
+      owner_domain?: ChannelOwnerDomain;
       config: Record<string, unknown>;
     }
   >('/api/channel/plugins/enable'), (raw): IChannelEnableResponse => {
@@ -3278,16 +3469,6 @@ export const channel = {
     }
   >(
     '/api/channel/settings/companion'
-  ),
-  /**
-   * Bind one public agent (对外伙伴) to a channel row.
-   * Symmetric to {@link setChannelCompanion} but for public agents — a channel
-   * bot serves EITHER a companion OR a public agent (mutually exclusive). Atomic on
-   * the backend: persists the binding AND resets only this channel row's sessions.
-   * A `null` `public_agent_id` clears the binding.
-   */
-  setChannelPublicAgent: httpPost<void, { plugin_id: import('../types/ids').ChannelPluginId; public_agent_id: PublicAgentId | null }>(
-    '/api/channel/settings/public-agent'
   ),
   /**
    * 启动微信扫码登录流程。后端立即返回，二维码生命周期事件经 WebSocket 的
@@ -4386,11 +4567,26 @@ export interface ICompanionMemory {
   scope_kind: 'user' | 'companion';
   /** Owning canonical companion id when private; `null` when shared. */
   scope_companion_id: CompanionId | null;
+  /** FTS highlight snippet (`<b>…</b>` markers) — list results of a full-text query only. */
+  snippet?: string | null;
+  /** Fused relevance rank — list results of a full-text query only. */
+  rank?: number | null;
 }
 
 export interface ICompanionMemoryPage {
   items: ICompanionMemory[];
   total: number;
+}
+
+/** Sort orders of the memory list (relevance needs a full-text `q`). */
+export type ICompanionMemorySort = 'relevance' | 'time' | 'importance';
+
+/** Atomic batch operations over memories (single server-side transaction). */
+export type ICompanionMemoryBatchAction = 'archive' | 'restore' | 'delete' | 'reclassify';
+
+/** One suspected-duplicate cluster from the merge assistant's dry run. */
+export interface ICompanionMemoryMergeGroup {
+  memories: ICompanionMemory[];
 }
 
 export interface ICompanionSuggestion {
@@ -4911,6 +5107,7 @@ export const companion = {
       q?: string;
       status?: string;
       scope_companion_id?: CompanionId;
+      sort?: ICompanionMemorySort;
       limit?: number;
       offset?: number;
       }
@@ -4920,6 +5117,7 @@ export const companion = {
       if (p?.q) params.set('q', p.q);
       if (p?.status) params.set('status', p.status);
       if (p?.scope_companion_id) params.set('scope_companion_id', p.scope_companion_id);
+      if (p?.sort) params.set('sort', p.sort);
       if (p?.limit) params.set('limit', String(p.limit));
       if (p?.offset) params.set('offset', String(p.offset));
       const qs = params.toString();
@@ -4947,6 +5145,30 @@ export const companion = {
     })
   ),
   deleteMemory: httpDelete<void, { memory_id: CompanionMemoryId }>((p) => `/api/companion/memories/${p.memory_id}`),
+  /** Atomic batch memory op (single transaction — any bad id rolls the whole batch back). */
+  batchMemories: httpPost<
+    void,
+    { ids: CompanionMemoryId[]; action: ICompanionMemoryBatchAction; kind?: ICompanionMemoryKind }
+  >('/api/companion/memories/batch'),
+  /** Merge-assistant dry run: suspected-duplicate groups over the active layer. */
+  memoryMergeSuggestions: withResponseMap(
+    httpPost<unknown[], void>('/api/companion/memories/merge-suggestions'),
+    (raw): ICompanionMemoryMergeGroup[] =>
+      raw.map((entry) => {
+        const value = asWireObject(entry, 'companion memory merge group');
+        if (!Array.isArray(value.memories)) {
+          throw new TypeError('companion memory merge group memories must be an array');
+        }
+        return { memories: value.memories.map(fromApiCompanionMemory) };
+      })
+  ),
+  /** Merge-assistant confirm: insert the merged memory, archive the source group. */
+  mergeMemories: withResponseMap(
+    httpPost<unknown, { group: CompanionMemoryId[]; merged_content: string; kind: ICompanionMemoryKind }>(
+      '/api/companion/memories/merge'
+    ),
+    fromApiCompanionMemory
+  ),
   listSuggestions: withResponseMap(
     httpGet<{ items: unknown[]; total: number }, { status?: string; limit?: number; offset?: number }>((p) => {
       const params = new URLSearchParams();
@@ -5391,23 +5613,12 @@ export type KnowledgeSourceMode = 'live' | 'snapshot';
 
 /** URL source config of a base (wire shape: camelCase, `lastFetchedAt` epoch-ms). */
 export interface IKnowledgeSource {
-  /** Source kind discriminator; "url" for URL sources, "feishu"/… for connectors. */
+  /** Source kind discriminator; "url" is the only kind today. */
   kind: string;
   mode: KnowledgeSourceMode;
   entries: IKnowledgeSourceEntry[];
   /** Last successful snapshot fetch (epoch ms); absent until the first fetch. */
   lastFetchedAt?: number;
-  /** Connector-backed sources: reference to a stored connector credential. */
-  credentialRef?: ConnectorCredentialId;
-  /** Connector-specific scope (e.g. Feishu `{ spaceId | space_id }`). Opaque to the core. */
-  scope?: Record<string, unknown>;
-  /** Connector sync state (cursor + interval + last outcome). */
-  sync?: {
-    intervalMinutes?: number;
-    lastSyncAt?: number;
-    cursor?: unknown;
-    lastError?: string;
-  };
 }
 
 /** Per-batch outcome of a URL-source fetch (create with snapshot source / refresh-source). */
@@ -5451,7 +5662,7 @@ export interface IKnowledgeBase {
   /** Tag keys attached to this base. */
   tags: string[];
   /** Source kind discriminator. */
-  kind: 'blank' | 'local' | 'web' | 'feishu';
+  kind: 'blank' | 'local' | 'web';
   /** Number of unreviewed staged inbox proposals. */
   pending_inbox: number;
 }
@@ -5569,208 +5780,229 @@ export interface IKnowledgeConsumer {
   enabled: boolean;
 }
 
-/** Wire-safe connector credential summary (never carries the secret payload). */
-export interface IConnectorCredentialSummary {
-  credentialId: ConnectorCredentialId;
-  /** Connector discriminator: "feishu", … */
-  kind: string;
-  name: string;
-  createdAt: number;
-}
-
-/** Identity returned by a successful connector credential validation. */
-export interface IConnectorIdentity {
-  tenant_name?: string;
-  scopes_available: string[];
-}
-
 // ---------------------------------------------------------------------------
-// Public Companion (对外伙伴) — an enterprise-grade agent that safely serves
-// STRANGERS (customer service): narrow-but-deep, Q&A + knowledge retrieval only,
-// all dangerous capabilities off. A SEPARATE first-class domain from the desktop
-// 伙伴 (companion): its own data, config, console, and audit trail — never mixed
-// into the desktop-companion roster or the conversation sidebar.
+// 客服 (Customer Service) — a standalone domain that safely serves STRANGERS
+// over IM channels. Replies come from disposable one-shot engine sessions whose
+// tool table is fixed at construction to three read-only tools; dialogues are
+// the domain's own aggregate (never Conversations, never the sidebar).
 //
-// Routed to /api/public-agents (hand-defined against the pinned backend contract).
+// Routed to /api/customer-service (hand-defined against the pinned backend contract).
 // ---------------------------------------------------------------------------
 
-/** Which model a public companion answers strangers with (independent of desktop 伙伴). */
-export interface IPublicAgentModel {
-  provider_id?: ProviderId;
-  model: string;
-  /** Optional display/override model id the backend may resolve; unset = use `model`. */
-  use_model?: string;
-}
-
-/** One public companion — an enterprise customer-service agent. */
-export interface IPublicAgent {
-  public_agent_id: PublicAgentId;
-  /** Local auto-increment ordinal assigned by the backend. */
-  seq: number;
+/** One customer-service agent (客服员工). */
+export interface ICsAgent {
+  cs_agent_id: CsAgentId;
   name: string;
-  /** 开场白 / 欢迎语 shown when a stranger opens a conversation. */
+  /** 问候语 shown when a visitor opens a conversation. */
   greeting: string;
-  /** 语气规范 — tone/voice guidance the agent must follow. */
-  tone: string;
-  model: IPublicAgentModel;
+  /** 人设话术 — persona/voice guidance the agent must follow. */
+  persona: string;
+  /** 服务策略 — business scope / off-limits topics / compliance phrasing. */
+  service_policy: string;
+  provider_id: ProviderId | null;
+  model: string | null;
   /** Platform knowledge-base ids this agent may retrieve from. */
   knowledge_base_ids: KnowledgeBaseId[];
-  /** 严格模式：only answer from bound knowledge bases (no free-form/general answers). */
-  grounded_mode: boolean;
-  /** 服务守则 — business scope / off-limits topics / compliance phrasing. */
-  service_policy: string;
-  /** Frozen execution configuration last applied to this public companion. */
-  applied_preset?: ResolvedPresetSnapshot;
-  /** How many days of audit entries to retain before auto-pruning. */
-  audit_retention_days: number;
-  /** Whether this agent is live (serving strangers) or paused. */
   enabled: boolean;
-  /** Epoch milliseconds. */
+  /** Per-agent concurrent turn ceiling (1..=64). */
+  max_concurrent: number;
+  audit_retention_days: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Editable fields on a customer-service agent (PATCH is a partial merge). */
+export type ICsAgentPatch = Partial<{
+  name: string;
+  greeting: string;
+  persona: string;
+  service_policy: string;
+  provider_id: ProviderId | null;
+  model: string | null;
+  knowledge_base_ids: KnowledgeBaseId[];
+  enabled: boolean;
+  max_concurrent: number;
+  audit_retention_days: number;
+}>;
+
+/** One bot ↔ customer-service agent binding (a bot serves at most one agent). */
+export interface ICsChannelBinding {
+  cs_agent_id: CsAgentId;
+  channel_plugin_id: ChannelPluginId;
   created_at: number;
 }
 
-/** Where a public-companion audit entry originated. */
-export type PublicAgentAuditSurface = 'channel' | 'desktop' | 'remote';
-/** What an audit-log row records: a served conversation turn, or an exposure/config change. */
-export type PublicAgentAuditKind = 'turn' | 'exposure_change';
-
-/** One reverse-chronological audit-log row for a public companion. */
-export interface IPublicAgentAuditEntry {
-  audit_entry_id: PublicAgentAuditEntryId;
-  /** Epoch milliseconds. */
-  at: number;
-  surface: PublicAgentAuditSurface;
-  /** IM platform when `surface === 'channel'` (e.g. "telegram"); null otherwise. */
-  channel_platform: string | null;
-  kind: PublicAgentAuditKind;
-  detail: string;
-}
-
-/** A page of audit entries (newest-first) plus the cursor for the next page. */
-export interface IPublicAgentAuditPage {
-  entries: IPublicAgentAuditEntry[];
-  /** `at` (epoch ms) to pass as `cursor` for the next page, or null when exhausted. */
-  next_cursor: number | null;
-}
-
-/** Editable fields on a public companion (all optional — PATCH is a partial merge). */
-export type IPublicAgentPatch = Partial<{
-  name: string;
-  greeting: string;
-  tone: string;
-  model: IPublicAgentModel;
-  knowledge_base_ids: KnowledgeBaseId[];
-  grounded_mode: boolean;
-  service_policy: string;
-  audit_retention_days: number;
+/** One customer-service note (FAQ / script / business fact; read-only at runtime). */
+export interface ICsNote {
+  cs_note_id: CsNoteId;
+  /** null = shared by every agent. */
+  cs_agent_id: CsAgentId | null;
+  kind: string;
+  content: string;
   enabled: boolean;
-}>;
+  created_at: number;
+  updated_at: number;
+}
 
-const fromApiPublicAgent = (raw: unknown): IPublicAgent => {
-  const agent = asWireObject(raw, 'public agent');
+/** One visitor dialogue lane ((bot, visitor, chat) triple). */
+export interface ICsDialogue {
+  cs_dialogue_id: CsDialogueId;
+  cs_agent_id: CsAgentId;
+  channel_plugin_id: ChannelPluginId;
+  channel_user_id: ChannelUserId;
+  chat_id: string;
+  state: 'open' | 'closed';
+  created_at: number;
+  last_activity: number;
+}
+
+/** One transcript row of a customer-service dialogue. */
+export interface ICsMessage {
+  cs_message_id: CsMessageId;
+  cs_dialogue_id: CsDialogueId;
+  role: 'visitor' | 'agent' | 'system';
+  content: string;
+  created_at: number;
+}
+
+const fromApiCsAgent = (raw: unknown): ICsAgent => {
+  const agent = asWireObject(raw, 'customer-service agent');
   if (Object.prototype.hasOwnProperty.call(agent, 'id')) {
-    throw new TypeError('public agent wire payload must use public_agent_id, not id');
+    throw new TypeError('customer-service agent wire payload must use cs_agent_id, not id');
   }
-  const model =
-    agent.model == null
-      ? {}
-      : asWireObject(agent.model, 'public agent model');
+  const rawKbIds = agent.knowledge_base_ids;
+  const kbIds: KnowledgeBaseId[] = typeof rawKbIds === 'string'
+    ? (JSON.parse(rawKbIds) as unknown[]).map(parseKnowledgeBaseId)
+    : ((rawKbIds ?? []) as unknown[]).map(parseKnowledgeBaseId);
   return {
-    ...(agent as unknown as IPublicAgent),
-    public_agent_id: parsePublicAgentId(agent.public_agent_id),
-    model: {
-      ...(model as unknown as IPublicAgentModel),
-      ...(model.provider_id == null
-        ? {}
-        : { provider_id: parseProviderId(model.provider_id) }),
-    },
-    knowledge_base_ids: (agent.knowledge_base_ids as unknown[]).map(parseKnowledgeBaseId),
-    ...(agent.applied_preset
-      ? {
-          applied_preset: fromApiResolvedPresetSnapshot(
-            agent.applied_preset as ResolvedPresetSnapshot
-          ),
-        }
-      : {}),
+    ...(agent as unknown as ICsAgent),
+    cs_agent_id: parseCsAgentId(agent.cs_agent_id),
+    provider_id: agent.provider_id == null ? null : parseProviderId(agent.provider_id),
+    knowledge_base_ids: kbIds,
   };
 };
 
-const fromApiPublicAgentAuditPage = (raw: unknown): IPublicAgentAuditPage => {
-  const page = asWireObject(raw, 'public agent audit page');
+const fromApiCsNote = (raw: unknown): ICsNote => {
+  const note = asWireObject(raw, 'customer-service note');
   return {
-    ...(page as unknown as IPublicAgentAuditPage),
-    entries: (page.entries as unknown[]).map((rawEntry) => {
-      const entry = asWireObject(rawEntry, 'public agent audit entry');
-      if (Object.prototype.hasOwnProperty.call(entry, 'id')) {
-        throw new TypeError(
-          'public agent audit wire payload must use audit_entry_id, not id'
-        );
-      }
-      return {
-        ...(entry as unknown as IPublicAgentAuditEntry),
-        audit_entry_id: parsePublicAgentAuditEntryId(entry.audit_entry_id),
-      };
-    }),
+    ...(note as unknown as ICsNote),
+    cs_note_id: parseCsNoteId(note.cs_note_id),
+    cs_agent_id: note.cs_agent_id == null ? null : parseCsAgentId(note.cs_agent_id),
   };
 };
 
-export const publicAgent = {
-  /** Roster of public companions. */
-  list: withResponseMap(httpGet<IPublicAgent[], void>('/api/public-agents'), (agents) => agents.map(fromApiPublicAgent)),
-  /** Create a new public companion (name only; everything else defaults server-side). */
-  create: withResponseMap(httpPost<IPublicAgent, { name: string }>('/api/public-agents'), fromApiPublicAgent),
-  /** One public companion by public_agent_id. */
-  get: withResponseMap(httpGet<IPublicAgent, { public_agent_id: PublicAgentId }>(
-    (p) => `/api/public-agents/${p.public_agent_id}`
-  ), fromApiPublicAgent),
-  /** RFC 7396-style partial merge over the editable fields. Returns the updated agent. */
-  patch: withResponseMap(httpPatch<IPublicAgent, { public_agent_id: PublicAgentId; patch: IPublicAgentPatch }>(
-    (p) => `/api/public-agents/${p.public_agent_id}`,
-    (p) => p.patch
-  ), fromApiPublicAgent),
-  applyPreset: withResponseMap(httpPost<
-    IPublicAgent,
-    {
-      public_agent_id: PublicAgentId;
-      preset_id: PresetReference;
-      locale?: string;
-      overrides?: import('../types/agent/presetTypes').PresetOverrides;
-    }
-  >(
-    (p) => `/api/public-agents/${p.public_agent_id}/apply-preset`,
-    (p) => ({
-      preset_id: p.preset_id,
-      locale: p.locale,
-      overrides: p.overrides ?? {},
-    })
-  ), fromApiPublicAgent),
-  /** Delete a public companion (204). */
-  remove: httpDelete<void, { public_agent_id: PublicAgentId }>(
-    (p) => `/api/public-agents/${p.public_agent_id}`
+const fromApiCsBinding = (raw: unknown): ICsChannelBinding => {
+  const binding = asWireObject(raw, 'customer-service binding');
+  return {
+    ...(binding as unknown as ICsChannelBinding),
+    cs_agent_id: parseCsAgentId(binding.cs_agent_id),
+    channel_plugin_id: parseChannelPluginId(binding.channel_plugin_id),
+  };
+};
+
+const fromApiCsDialogue = (raw: unknown): ICsDialogue => {
+  const dialogue = asWireObject(raw, 'customer-service dialogue');
+  return {
+    ...(dialogue as unknown as ICsDialogue),
+    cs_dialogue_id: parseCsDialogueId(dialogue.cs_dialogue_id),
+    cs_agent_id: parseCsAgentId(dialogue.cs_agent_id),
+    channel_plugin_id: parseChannelPluginId(dialogue.channel_plugin_id),
+    channel_user_id: parseChannelUserId(dialogue.channel_user_id),
+  };
+};
+
+const fromApiCsMessage = (raw: unknown): ICsMessage => {
+  const message = asWireObject(raw, 'customer-service message');
+  return {
+    ...(message as unknown as ICsMessage),
+    cs_message_id: parseCsMessageId(message.cs_message_id),
+    cs_dialogue_id: parseCsDialogueId(message.cs_dialogue_id),
+  };
+};
+
+export const customerService = {
+  /** Roster of customer-service agents. */
+  listAgents: withResponseMap(
+    httpGet<ICsAgent[], void>('/api/customer-service/agents'),
+    (agents) => agents.map(fromApiCsAgent)
   ),
-  /**
-   * Reverse-chronological (newest-first) audit page. Cursor-paginated by `at` (epoch ms):
-   * pass the previous page's `next_cursor` as `cursor` to load older entries. Degrades to
-   * an empty page when the backend hasn't shipped the endpoint yet (404 silenced).
-   */
-  listAudit: withResponseMap(httpGet<
-    IPublicAgentAuditPage,
-    { public_agent_id: PublicAgentId; limit?: number; cursor?: number | null; q?: string; kind?: PublicAgentAuditKind; days?: number }
-  >((p) => {
-    const params = new URLSearchParams();
-    params.set('limit', String(p.limit ?? 50));
-    if (p.cursor != null) params.set('cursor', String(p.cursor));
-    if (p.q) params.set('q', p.q);
-    if (p.kind) params.set('kind', p.kind);
-    if (p.days != null) params.set('days', String(p.days));
-    return `/api/public-agents/${p.public_agent_id}/audit?${params.toString()}`;
-  }, { silentStatuses: [404] }), fromApiPublicAgentAuditPage),
-  /** Purge audit entries older than N days. Returns how many days were cleared. */
-  clearAudit: httpDelete<
-    { deleted_days: number },
-    { public_agent_id: PublicAgentId; older_than_days: number }
-  >(
-    (p) => `/api/public-agents/${p.public_agent_id}/audit?older_than_days=${p.older_than_days}`
+  /** Create an agent (name required; everything else defaults server-side). */
+  createAgent: withResponseMap(
+    httpPost<ICsAgent, Partial<ICsAgentPatch> & { name: string }>('/api/customer-service/agents'),
+    fromApiCsAgent
+  ),
+  /** One agent by cs_agent_id. */
+  getAgent: withResponseMap(
+    httpGet<ICsAgent, { cs_agent_id: CsAgentId }>(
+      (p) => `/api/customer-service/agents/${p.cs_agent_id}`
+    ),
+    fromApiCsAgent
+  ),
+  /** Partial merge over the editable fields. Returns the updated agent. */
+  patchAgent: withResponseMap(
+    httpPatch<ICsAgent, { cs_agent_id: CsAgentId; patch: ICsAgentPatch }>(
+      (p) => `/api/customer-service/agents/${p.cs_agent_id}`,
+      (p) => p.patch
+    ),
+    fromApiCsAgent
+  ),
+  /** Delete an agent (cascades bindings/dialogues/private notes). */
+  removeAgent: httpDelete<unknown, { cs_agent_id: CsAgentId }>(
+    (p) => `/api/customer-service/agents/${p.cs_agent_id}`
+  ),
+  /** Bindings of one agent. */
+  listBindings: withResponseMap(
+    httpGet<ICsChannelBinding[], { cs_agent_id: CsAgentId }>(
+      (p) => `/api/customer-service/agents/${p.cs_agent_id}/bindings`
+    ),
+    (bindings) => bindings.map(fromApiCsBinding)
+  ),
+  /** FULL replacement of one agent's bot bindings (a listed bot is stolen from any other agent). */
+  replaceBindings: withResponseMap(
+    httpPut<ICsChannelBinding[], { cs_agent_id: CsAgentId; channel_plugin_ids: ChannelPluginId[] }>(
+      (p) => `/api/customer-service/agents/${p.cs_agent_id}/bindings`,
+      (p) => ({ channel_plugin_ids: p.channel_plugin_ids })
+    ),
+    (bindings) => bindings.map(fromApiCsBinding)
+  ),
+  /** Notes visible to one agent (shared + private), or all when omitted. */
+  listNotes: withResponseMap(
+    httpGet<ICsNote[], { cs_agent_id?: CsAgentId }>(
+      (p) => p.cs_agent_id
+        ? `/api/customer-service/notes?cs_agent_id=${p.cs_agent_id}`
+        : '/api/customer-service/notes'
+    ),
+    (notes) => notes.map(fromApiCsNote)
+  ),
+  createNote: withResponseMap(
+    httpPost<ICsNote, { cs_agent_id?: CsAgentId | null; kind?: string; content: string; enabled?: boolean }>(
+      '/api/customer-service/notes'
+    ),
+    fromApiCsNote
+  ),
+  patchNote: withResponseMap(
+    httpPatch<ICsNote, { cs_note_id: CsNoteId; kind?: string; content?: string; enabled?: boolean }>(
+      (p) => `/api/customer-service/notes/${p.cs_note_id}`,
+      (p) => ({ kind: p.kind, content: p.content, enabled: p.enabled })
+    ),
+    fromApiCsNote
+  ),
+  removeNote: httpDelete<unknown, { cs_note_id: CsNoteId }>(
+    (p) => `/api/customer-service/notes/${p.cs_note_id}`
+  ),
+  /** Dialogue lanes of one agent (newest activity first). */
+  listDialogues: withResponseMap(
+    httpGet<ICsDialogue[], { cs_agent_id: CsAgentId }>(
+      (p) => `/api/customer-service/dialogues?cs_agent_id=${p.cs_agent_id}`
+    ),
+    (dialogues) => dialogues.map(fromApiCsDialogue)
+  ),
+  /** Full transcript of one dialogue (chronological). */
+  listDialogueMessages: withResponseMap(
+    httpGet<ICsMessage[], { cs_dialogue_id: CsDialogueId }>(
+      (p) => `/api/customer-service/dialogues/${p.cs_dialogue_id}/messages`
+    ),
+    (messages) => messages.map(fromApiCsMessage)
   ),
 };
 
@@ -5787,34 +6019,12 @@ const KB_READ_TIMEOUT_MS = 30_000;
 const fromApiKnowledgeBase = (base: IKnowledgeBase): IKnowledgeBase => ({
   ...base,
   knowledge_base_id: parseKnowledgeBaseId(base.knowledge_base_id),
-  source: base.source == null
-    ? base.source
-    : {
-        ...base.source,
-        credentialRef: base.source.credentialRef == null
-          ? undefined
-          : parseConnectorCredentialId(base.source.credentialRef),
-      },
 });
 
 const fromApiKnowledgeBinding = (binding: IKnowledgeBinding): IKnowledgeBinding => ({
   ...binding,
   kb_ids: binding.kb_ids.map(parseKnowledgeBaseId),
 });
-
-const fromApiConnectorCredential = (
-  credential: IConnectorCredentialSummary
-): IConnectorCredentialSummary => {
-  if (Object.prototype.hasOwnProperty.call(credential, 'id')) {
-    throw new TypeError(
-      'connector credential wire payload must use credentialId, not generic id'
-    );
-  }
-  return {
-    ...credential,
-    credentialId: parseConnectorCredentialId(credential.credentialId),
-  };
-};
 
 const parseKnowledgeBindingTargetId = (
   kind: KnowledgeBindingKind,
@@ -5858,7 +6068,7 @@ export const knowledge = {
       description?: string;
       root_path?: string;
       /** Optional URL source; mode 'snapshot' fetches every entry before the response returns (slow — see source_fetch). */
-      source?: { kind: string; mode: KnowledgeSourceMode; entries?: IKnowledgeSourceEntry[]; credentialRef?: ConnectorCredentialId; scope?: Record<string, unknown>; sync?: { intervalMinutes?: number } };
+      source?: { kind: string; mode: KnowledgeSourceMode; entries?: IKnowledgeSourceEntry[] };
       /** Tag keys to assign at creation time. */
       tags?: string[];
     }
@@ -5920,7 +6130,7 @@ export const knowledge = {
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/refresh-source`,
     () => undefined
   ),
-  /** Attach / replace / clear a base's source config (e.g. wire a Feishu connector onto an existing base). */
+  /** Attach / replace / clear a base's source config. */
   setSource: withResponseMap(httpPut<IKnowledgeBase, { knowledge_base_id: KnowledgeBaseId; source: IKnowledgeSource | null }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/source`,
     (p) => ({ source: p.source })
@@ -6015,26 +6225,6 @@ export const knowledge = {
   listConsumers: httpGet<IKnowledgeConsumer[], { knowledge_base_id: KnowledgeBaseId }>((p) => `/api/knowledge/bases/${p.knowledge_base_id}/consumers`, { timeoutMs: KB_READ_TIMEOUT_MS }),
   /** Total unreviewed staged proposals across all bases (sidebar red-dot signal). */
   pendingInboxCount: httpGet<number, void>('/api/knowledge/inbox/pending-count', { timeoutMs: KB_READ_TIMEOUT_MS }),
-  // ── P3 source connectors (Feishu, …) ──
-  /** Pull a connector-backed base's remote docs into snapshots/ (distinct from refresh-source). */
-  syncSource: httpPost<IKnowledgeSourceFetchSummary, { knowledge_base_id: KnowledgeBaseId }>(
-    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/sync`,
-    () => undefined
-  ),
-  listCredentials: withResponseMap(httpGet<IConnectorCredentialSummary[], void>('/api/knowledge/connectors/credentials'), (items) => items.map(fromApiConnectorCredential)),
-  /** Validate then store a connector credential (probed before encryption; returns a secret-free summary). */
-  createCredential: withResponseMap(httpPost<IConnectorCredentialSummary, { kind: string; name: string; payload: Record<string, unknown> }>(
-    '/api/knowledge/connectors/credentials',
-    (p) => ({ kind: p.kind, name: p.name, payload: p.payload })
-  ), fromApiConnectorCredential),
-  deleteCredential: httpDelete<void, { credential_id: ConnectorCredentialId }>(
-    (p) => `/api/knowledge/connectors/credentials/${p.credential_id}`
-  ),
-  /** Re-probe a stored credential against its remote (the "test connection" action). */
-  testCredential: httpPost<IConnectorIdentity, { credential_id: ConnectorCredentialId }>(
-    (p) => `/api/knowledge/connectors/credentials/${p.credential_id}/test`,
-    () => undefined
-  ),
   onBaseCreated: wsMappedEmitter<IKnowledgeBase>('knowledge.base-created', fromApiKnowledgeBase),
   onBaseUpdated: wsMappedEmitter<IKnowledgeBase>('knowledge.base-updated', fromApiKnowledgeBase),
   onBaseDeleted: wsMappedEmitter<{ knowledge_base_id: KnowledgeBaseId }>(

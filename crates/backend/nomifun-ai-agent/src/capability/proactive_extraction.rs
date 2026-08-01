@@ -265,6 +265,7 @@ impl ProactiveSessionExtractor {
                     &interest_cfg,
                     session_llm_model.as_deref(),
                     &factory.provider_repo,
+                    &factory.provider_model_repo,
                 )
                 .await
             }

@@ -51,9 +51,11 @@ export type EntityKind =
   | 'companion-session-window'
   | 'skill-pattern'
   | 'figure'
-  | 'public-agent-audit-entry'
   | 'companion-evolution-feedback'
-  | 'public-agent'
+  | 'cs-agent'
+  | 'cs-dialogue'
+  | 'cs-message'
+  | 'cs-note'
   | 'channel-plugin'
   | 'channel-user'
   | 'channel-session'
@@ -62,7 +64,6 @@ export type EntityKind =
   | 'conversation-artifact'
   | 'mcp-server'
   | 'idmm-intervention'
-  | 'connector-credential'
   | 'requirement'
   | 'persisted-artifact'
   | 'user'
@@ -103,16 +104,17 @@ export type CompanionLearnRunId = EntityId<'companion-learn-run'>;
 export type CompanionSessionWindowId = EntityId<'companion-session-window'>;
 export type SkillPatternId = EntityId<'skill-pattern'>;
 export type FigureId = EntityId<'figure'>;
-export type PublicAgentAuditEntryId = EntityId<'public-agent-audit-entry'>;
 export type CompanionEvolutionFeedbackId = EntityId<'companion-evolution-feedback'>;
-export type PublicAgentId = EntityId<'public-agent'>;
+export type CsAgentId = EntityId<'cs-agent'>;
+export type CsDialogueId = EntityId<'cs-dialogue'>;
+export type CsMessageId = EntityId<'cs-message'>;
+export type CsNoteId = EntityId<'cs-note'>;
 export type ChannelPluginId = EntityId<'channel-plugin'>;
 export type ChannelUserId = EntityId<'channel-user'>;
 export type ChannelSessionId = EntityId<'channel-session'>;
 export type AttachmentId = EntityId<'attachment'>;
 export type PreviewSnapshotId = EntityId<'preview-snapshot'>;
 export type PersistedArtifactId = EntityId<'persisted-artifact'>;
-export type ConnectorCredentialId = EntityId<'connector-credential'>;
 export type IdmmInterventionId = EntityId<'idmm-intervention'>;
 export type UserId = EntityId<'user'>;
 export type CanvasId = EntityId<'canvas'>;
@@ -250,13 +252,17 @@ export const parseCompanionSessionWindowId = (value: unknown): CompanionSessionW
 export const parseSkillPatternId = (value: unknown): SkillPatternId =>
   parseEntityId('skill-pattern', value);
 export const parseFigureId = (value: unknown): FigureId => parseEntityId('figure', value);
-export const parsePublicAgentAuditEntryId = (value: unknown): PublicAgentAuditEntryId =>
-  parseEntityId('public-agent-audit-entry', value);
 export const parseCompanionEvolutionFeedbackId = (
   value: unknown
 ): CompanionEvolutionFeedbackId => parseEntityId('companion-evolution-feedback', value);
-export const parsePublicAgentId = (value: unknown): PublicAgentId =>
-  parseEntityId('public-agent', value);
+export const parseCsAgentId = (value: unknown): CsAgentId =>
+  parseEntityId('cs-agent', value);
+export const parseCsDialogueId = (value: unknown): CsDialogueId =>
+  parseEntityId('cs-dialogue', value);
+export const parseCsMessageId = (value: unknown): CsMessageId =>
+  parseEntityId('cs-message', value);
+export const parseCsNoteId = (value: unknown): CsNoteId =>
+  parseEntityId('cs-note', value);
 export const parseChannelPluginId = (value: unknown): ChannelPluginId =>
   parseEntityId('channel-plugin', value);
 export const parseChannelUserId = (value: unknown): ChannelUserId =>
@@ -269,8 +275,6 @@ export const parsePreviewSnapshotId = (value: unknown): PreviewSnapshotId =>
   parseEntityId('preview-snapshot', value);
 export const parsePersistedArtifactId = (value: unknown): PersistedArtifactId =>
   parseEntityId('persisted-artifact', value);
-export const parseConnectorCredentialId = (value: unknown): ConnectorCredentialId =>
-  parseEntityId('connector-credential', value);
 export const parseIdmmInterventionId = (value: unknown): IdmmInterventionId =>
   parseEntityId('idmm-intervention', value);
 export const parseUserId = (value: unknown): UserId => parseEntityId('user', value);

@@ -3,7 +3,7 @@
 /**
  * KnowledgeTagFilterBar — Two-row chip filter bar for the knowledge list page.
  *
- * Row 1: Kind filter (blank / local / web / feishu) with counts + sort control.
+ * Row 1: Kind filter (blank / local / web) with counts + sort control.
  * Row 2: User tag filter with colored dots, counts, + "Manage Tags" entry.
  *
  * Mirrors PresetTagFilterBar structure. Theme variables only; `<div onClick>`
@@ -41,7 +41,7 @@ export interface KnowledgeTagFilterBarProps {
 
 // ─── Kind definitions (ordered) ──────────────────────────────────────────────
 
-const KIND_ORDER: (KnowledgeKind)[] = ['blank', 'local', 'web', 'feishu'];
+const KIND_ORDER: (KnowledgeKind)[] = ['blank', 'local', 'web'];
 
 // ─── Sort labels ─────────────────────────────────────────────────────────────
 
@@ -191,8 +191,6 @@ const KnowledgeTagFilterBar: React.FC<KnowledgeTagFilterBarProps> = ({
         return t('knowledge.filter.kindLocal', { defaultValue: '本地' });
       case 'web':
         return t('knowledge.filter.kindWeb', { defaultValue: '网页' });
-      case 'feishu':
-        return t('knowledge.filter.kindFeishu', { defaultValue: '飞书' });
     }
   };
 

@@ -13,7 +13,7 @@ use nomi_auxiliary::{AuxiliaryClient, AuxiliaryClientBuilder, ChatLlmProvider};
 use nomi_config::InterestConfig;
 use nomi_types::message::{Message, Role};
 use nomifun_common::AppError;
-use nomifun_db::IProviderRepository;
+use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use tracing::{debug, warn};
 
 use crate::factory::provider_config::{one_shot_completion_no_thinking, resolve_provider_config, user_message};
@@ -30,6 +30,7 @@ const AUXILIARY_RETRY_BASE_DELAY_MS: u64 = 1_000;
 #[derive(Clone)]
 pub struct AuxiliaryClientFactory {
     pub provider_repo: Arc<dyn IProviderRepository>,
+    pub provider_model_repo: Arc<dyn IProviderModelRepository>,
     pub encryption_key: [u8; 32],
     pub workspace: PathBuf,
 }
@@ -37,11 +38,13 @@ pub struct AuxiliaryClientFactory {
 impl AuxiliaryClientFactory {
     pub fn new(
         provider_repo: Arc<dyn IProviderRepository>,
+        provider_model_repo: Arc<dyn IProviderModelRepository>,
         encryption_key: [u8; 32],
         workspace: PathBuf,
     ) -> Self {
         Self {
             provider_repo,
+            provider_model_repo,
             encryption_key,
             workspace,
         }
@@ -57,9 +60,10 @@ impl AuxiliaryClientFactory {
         &self,
         model_override: Option<&str>,
     ) -> Result<Arc<AuxiliaryClient>, AppError> {
-        let (provider_id, model) = resolve_auxiliary_model(&self.provider_repo, model_override)
-            .await
-            .ok_or_else(|| {
+        let (provider_id, model) =
+            resolve_auxiliary_model(&self.provider_repo, &self.provider_model_repo, model_override)
+                .await
+                .ok_or_else(|| {
                 AppError::Conflict(
                     "auxiliary LLM unavailable: flowy-cloud provider is not enabled or has no model"
                         .into(),
@@ -160,12 +164,14 @@ impl ChatLlmProvider for FlowyCloudAuxiliaryLlm {
 
 async fn resolve_flowy_cloud_model(
     provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
 ) -> Option<(String, String)> {
-    resolve_auxiliary_model(provider_repo, None).await
+    resolve_auxiliary_model(provider_repo, provider_model_repo, None).await
 }
 
 async fn resolve_auxiliary_model(
     provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
     model_override: Option<&str>,
 ) -> Option<(String, String)> {
     let row = provider_repo
@@ -178,7 +184,11 @@ async fn resolve_auxiliary_model(
     if let Some(model) = model_override.map(str::trim).filter(|m| !m.is_empty()) {
         return Some((FLOWY_CLOUD_PROVIDER_ID.to_string(), model.to_string()));
     }
-    first_enabled_model(&row.models, row.model_enabled.as_deref())
+    let models = provider_model_repo
+        .list_for_provider(FLOWY_CLOUD_PROVIDER_ID)
+        .await
+        .ok()?;
+    first_enabled_model(models.iter())
         .map(|model| (FLOWY_CLOUD_PROVIDER_ID.to_string(), model))
 }
 
@@ -194,6 +204,7 @@ pub async fn resolve_poi_llm_model(
     interest_cfg: &InterestConfig,
     session_model: Option<&str>,
     provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
 ) -> Option<String> {
     let configured = interest_cfg
         .llm_model
@@ -206,14 +217,14 @@ pub async fn resolve_poi_llm_model(
             if let Some(session) = session_model.map(str::trim).filter(|s| !s.is_empty()) {
                 return Some(session.to_string());
             }
-            return resolve_flowy_cloud_model(provider_repo)
+            return resolve_flowy_cloud_model(provider_repo, provider_model_repo)
                 .await
                 .map(|(_, model)| model);
         }
         return Some(model.to_string());
     }
 
-    if let Some(model) = resolve_flowy_cloud_model(provider_repo)
+    if let Some(model) = resolve_flowy_cloud_model(provider_repo, provider_model_repo)
         .await
         .map(|(_, model)| model)
     {
@@ -250,6 +261,7 @@ async fn completion_for_provider(
 ) -> Result<String, String> {
     let cfg = resolve_provider_config(
         &factory.provider_repo,
+        &factory.provider_model_repo,
         &factory.encryption_key,
         provider_id,
         model,
@@ -318,7 +330,13 @@ pub async fn try_build_auxiliary_client_for_poi(
     interest_cfg: &InterestConfig,
     session_model: Option<&str>,
 ) -> Option<Arc<AuxiliaryClient>> {
-    let model = resolve_poi_llm_model(interest_cfg, session_model, &factory.provider_repo).await;
+    let model = resolve_poi_llm_model(
+        interest_cfg,
+        session_model,
+        &factory.provider_repo,
+        &factory.provider_model_repo,
+    )
+    .await;
     match factory.build_client_with_model(model.as_deref()).await {
         Ok(client) => Some(client),
         Err(err) => {

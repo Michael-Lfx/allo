@@ -22,11 +22,11 @@ async fn setup() -> (SqliteConversationRepository, nomifun_db::Database) {
     let db = init_database_memory().await.unwrap();
     sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (\
             ?, 'openai', 'Fixture provider', 'https://example.invalid', \
-            'encrypted', '[]', 1, '[]', 0, 0\
+            'encrypted', 1, 0, 0\
          )",
     )
     .bind(PROVIDER_ID)
@@ -459,10 +459,10 @@ async fn session_deletion_retains_only_ambiguous_typed_owners_and_survives_reope
         .unwrap();
     sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (?, 'openai', 'Fixture provider', 'https://example.invalid', \
-                   'encrypted', '[]', 1, '[]', 0, 0)",
+                   'encrypted', 1, 0, 0)",
     )
     .bind(PROVIDER_ID)
     .execute(database.pool())
@@ -830,6 +830,8 @@ async fn internal_creation_and_delivery_operations_are_durable_and_repository_id
             false,
             None,
             Some("terminal provider error"),
+            None,
+            None,
             accepted_at + 2,
         )
         .await
@@ -843,6 +845,8 @@ async fn internal_creation_and_delivery_operations_are_durable_and_repository_id
             false,
             None,
             Some("terminal provider error"),
+            None,
+            None,
             accepted_at + 3,
         )
         .await
@@ -1033,6 +1037,8 @@ async fn atomic_turn_claim_has_one_leader_and_existing_receipt_never_readmits_li
                 result_ok: true,
                 result_text: Some("finished before replay".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now + 1,
         )
@@ -1074,11 +1080,11 @@ async fn public_turn_claim_and_edit_reservation_have_one_sqlite_winner() {
         .unwrap();
     sqlx::query(
         "INSERT INTO providers (\
-            provider_id, platform, name, base_url, api_key_encrypted, models, enabled, \
-            capabilities, created_at, updated_at\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
          ) VALUES (\
             ?, 'openai', 'Fixture provider', 'https://example.invalid', \
-            'encrypted', '[]', 1, '[]', 0, 0\
+            'encrypted', 1, 0, 0\
          )",
     )
     .bind(PROVIDER_ID)
@@ -1265,6 +1271,8 @@ async fn late_a_finalizer_cannot_touch_b_after_external_a_result() {
                 result_ok: true,
                 result_text: Some("late A".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now + 3,
         )
@@ -1315,6 +1323,8 @@ async fn exact_finalize_adopts_receipt_only_completion_for_its_active_generation
         false,
         None,
         Some("stop result"),
+        None,
+        None,
         now + 1,
     )
     .await
@@ -1330,6 +1340,8 @@ async fn exact_finalize_adopts_receipt_only_completion_for_its_active_generation
                 result_ok: true,
                 result_text: Some("late success".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now + 2,
         )
@@ -1398,6 +1410,8 @@ async fn exact_finalize_repairs_finished_row_that_still_owns_the_operation() {
                 result_ok: true,
                 result_text: Some("done".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             nomifun_common::now_ms() + 1,
         )
@@ -1448,6 +1462,8 @@ async fn missing_a_receipt_cannot_release_or_mutate_active_b_generation() {
                 result_ok: false,
                 result_text: None,
                 result_error: Some("ambiguous".to_owned()),
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now + 1,
         )
@@ -1511,6 +1527,8 @@ async fn exact_stop_for_a_cannot_finalize_active_b_from_another_service() {
             captured_a.epoch,
             captured_a.active_operation_id.as_deref(),
             "late stop A",
+            None,
+            None,
             now + 3,
         )
         .await
@@ -1528,6 +1546,60 @@ async fn exact_stop_for_a_cannot_finalize_active_b_from_another_service() {
         .unwrap()
         .unwrap();
     assert_eq!(b_receipt.status, "accepted");
+}
+
+#[tokio::test]
+async fn exact_cancelled_finalization_writes_structured_error_code() {
+    let (repo, _db) = setup().await;
+    let mut conversation = make_conversation("stop-structured-code");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+    let now = nomifun_common::now_ms();
+    let operation_id = "turn:stop-structured-code";
+    repo.claim_turn_delivery_receipt_and_admit(
+        USER_ID,
+        &conversation.conversation_id,
+        operation_id,
+        r#"{"content":"A"}"#,
+        0,
+        now,
+    )
+    .await
+    .unwrap();
+    let captured = repo
+        .get_turn_admission_state(USER_ID, &conversation.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.finalize_exact_cancelled_turn_generation(
+            USER_ID,
+            &conversation.conversation_id,
+            captured.epoch,
+            captured.active_operation_id.as_deref(),
+            "interrupted by backend restart",
+            Some("interrupted_by_restart"),
+            Some(true),
+            now + 1,
+        )
+        .await
+        .unwrap(),
+        TurnLifecycleTransition::Committed
+    );
+    let receipt = repo
+        .get_delivery_receipt(USER_ID, &conversation.conversation_id, operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.status, "completed");
+    assert_eq!(receipt.result_ok, Some(false));
+    assert_eq!(
+        receipt.result_error.as_deref(),
+        Some("interrupted by backend restart")
+    );
+    assert_eq!(
+        receipt.result_error_code.as_deref(),
+        Some("interrupted_by_restart")
+    );
+    assert_eq!(receipt.result_error_retryable, Some(true));
 }
 
 #[tokio::test]
@@ -1618,6 +1690,8 @@ async fn exact_stop_repairs_finished_edit_reservations_and_partial_admissions() 
                 expected_epoch,
                 Some(&operation_id),
                 "interrupted edit/resubmit",
+                None,
+                None,
                 nomifun_common::now_ms() + 2,
             )
             .await
@@ -1835,6 +1909,8 @@ async fn missing_exact_receipt_quarantines_running_and_finished_active_generatio
                 state.epoch,
                 Some(&operation_id),
                 "cannot prove old work stopped",
+                None,
+                None,
                 nomifun_common::now_ms() + 2,
             )
             .await,
@@ -1988,6 +2064,8 @@ async fn admission_epoch_boundaries_finish_at_i64_max_without_overflow() {
                 result_ok: true,
                 result_text: Some("done".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             nomifun_common::now_ms() + 1,
         )
@@ -2320,6 +2398,8 @@ async fn running_authority_rejects_unkeyed_and_raw_reopen_but_allows_receipt_adm
         true,
         Some("completed exactly once"),
         None,
+        None,
+        None,
         now + 4,
     )
     .await
@@ -2352,6 +2432,8 @@ async fn running_authority_rejects_unkeyed_and_raw_reopen_but_allows_receipt_adm
                 result_ok: true,
                 result_text: Some("completed exactly once".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             now + 5,
         )
@@ -2421,6 +2503,8 @@ async fn list_unsettled_turn_admissions_includes_running_and_finished_active_row
         partial_operation,
         true,
         Some("receipt committed before aggregate cleanup"),
+        None,
+        None,
         None,
         now + 2,
     )
@@ -2526,6 +2610,8 @@ async fn finalize_turn_atomically_finishes_conversation_and_receipt_and_replays(
         result_ok: true,
         result_text: Some("done".to_owned()),
         result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
     };
     assert_eq!(
         repo.finalize_exact_turn_operation(
@@ -2597,6 +2683,8 @@ async fn completed_old_receipt_cannot_finalize_a_new_running_turn_generation() {
         true,
         Some("old result"),
         None,
+        None,
+        None,
         now + 1,
     )
     .await
@@ -2628,6 +2716,8 @@ async fn completed_old_receipt_cannot_finalize_a_new_running_turn_generation() {
                 result_ok: true,
                 result_text: Some("old result".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             }),
             now + 3,
         )
@@ -2671,6 +2761,8 @@ async fn finalize_turn_rejects_stale_pending_without_settling_receipt() {
         result_ok: true,
         result_text: Some("must not commit".to_owned()),
         result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
     };
 
     assert_eq!(
@@ -2729,6 +2821,8 @@ async fn exact_finalize_adopts_terminal_receipt_and_missing_receipt_cannot_touch
             false,
             None,
             Some("original error"),
+            None,
+            None,
             accepted_at + 1,
         )
         .await
@@ -2741,6 +2835,8 @@ async fn exact_finalize_adopts_terminal_receipt_and_missing_receipt_cannot_touch
         result_ok: true,
         result_text: Some("different result".to_owned()),
         result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
     };
     assert_eq!(
         repo.finalize_exact_turn_operation(
@@ -2784,6 +2880,8 @@ async fn exact_finalize_adopts_terminal_receipt_and_missing_receipt_cannot_touch
         result_ok: true,
         result_text: Some("done".to_owned()),
         result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
     };
     assert!(matches!(
         repo.finalize_exact_turn_operation(
@@ -2841,6 +2939,8 @@ async fn finalize_turn_rolls_back_receipt_if_conversation_finish_write_fails() {
         result_ok: true,
         result_text: Some("would finish".to_owned()),
         result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
     };
 
     assert!(
@@ -3303,6 +3403,8 @@ async fn reset_terminal_conversation_clears_finished_aggregate_atomically() {
             completed_operation_id,
             true,
             Some("original result"),
+            None,
+            None,
             None,
             nomifun_common::now_ms(),
         )
@@ -4962,6 +5064,10 @@ async fn abandoned_candidate_owned_turn_is_settled_with_its_exact_generation() {
     assert_eq!(receipt.status, "completed");
     assert_eq!(receipt.result_ok, Some(false));
     assert_eq!(receipt.result_error.as_deref(), Some("request future dropped"));
+    // Spec D4 gap: the dropped-admission settlement must carry the structured
+    // terminal code so channel/gateway consumers can classify it as retryable.
+    assert_eq!(receipt.result_error_code.as_deref(), Some("admission_abandoned"));
+    assert_eq!(receipt.result_error_retryable, Some(true));
     let (status, epoch, active): (String, i64, Option<String>) = sqlx::query_as(
         "SELECT status, admission_epoch, active_turn_operation_id \
          FROM conversations WHERE conversation_id = ?",
@@ -5344,6 +5450,8 @@ async fn conversation_delivery_receipt_identity_and_retention_are_physical_invar
             true,
             Some("completed"),
             None,
+            None,
+            None,
             200,
         )
         .await
@@ -5361,6 +5469,8 @@ async fn conversation_delivery_receipt_identity_and_retention_are_physical_invar
                 result_ok: true,
                 result_text: Some("completed".to_owned()),
                 result_error: None,
+                result_error_code: None,
+                result_error_retryable: None,
             },
             201,
         )
@@ -5469,6 +5579,8 @@ async fn conversation_delivery_receipt_identity_and_retention_are_physical_invar
                 result_ok: false,
                 result_text: Some("usable partial final text".to_owned()),
                 result_error: Some("provider disconnected after partial output".to_owned()),
+                result_error_code: None,
+                result_error_retryable: None,
             },
             400,
         )
@@ -5641,6 +5753,8 @@ async fn late_abandon_of_a_preserves_external_a_result_and_active_b() {
             result_ok: true,
             result_text: Some("external A result".to_owned()),
             result_error: None,
+            result_error_code: None,
+            result_error_retryable: None,
         },
         200,
     )
@@ -5906,4 +6020,69 @@ async fn abandoned_admission_with_wrong_payload_epoch_or_result_shape_remains_qu
     assert_eq!(status, "running");
     assert_eq!(epoch, initial.epoch + 1);
     assert_eq!(active.as_deref(), Some(operation_id));
+}
+
+// == Delivery-notify registrations (spec D2) ==
+
+#[tokio::test]
+async fn delivery_notify_register_take_is_atomic_and_idempotent() {
+    let (repo, _db) = setup().await;
+    let operation_id = "public-turn:v1:owner:conv:key-1";
+    let requester = ConversationId::new().into_string();
+    let now = nomifun_common::now_ms();
+
+    repo.register_notify(operation_id, &requester, now).await.unwrap();
+    // Same-pair re-registration is an idempotent replay.
+    repo.register_notify(operation_id, &requester, now + 1).await.unwrap();
+    // A different requester reusing the operation identity is a conflict.
+    let other = ConversationId::new().into_string();
+    assert!(repo.register_notify(operation_id, &other, now + 2).await.is_err());
+
+    let taken = repo
+        .take_pending_notify(operation_id, now + 3)
+        .await
+        .unwrap()
+        .expect("pending registration must be taken");
+    assert_eq!(taken.operation_id, operation_id);
+    assert_eq!(taken.requester_conversation_id, requester);
+    assert_eq!(taken.state, "notified");
+    assert_eq!(taken.settled_at, Some(now + 3));
+
+    // A second take must observe nothing: the claim is single-winner.
+    assert!(repo.take_pending_notify(operation_id, now + 4).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn delivery_notify_take_of_unregistered_operation_is_none() {
+    let (repo, _db) = setup().await;
+    assert!(
+        repo.take_pending_notify("public-turn:v1:none", nomifun_common::now_ms())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn delivery_notify_failed_marking_applies_only_to_taken_rows() {
+    let (repo, _db) = setup().await;
+    let operation_id = "public-turn:v1:owner:conv:key-2";
+    let requester = ConversationId::new().into_string();
+    let now = nomifun_common::now_ms();
+
+    repo.register_notify(operation_id, &requester, now).await.unwrap();
+    // Not yet taken: mark_notify_failed is a no-op and the row stays pending.
+    repo.mark_notify_failed(operation_id, now + 1).await.unwrap();
+    let taken = repo.take_pending_notify(operation_id, now + 2).await.unwrap();
+    assert!(taken.is_some(), "pending row must survive a premature failure mark");
+
+    repo.mark_notify_failed(operation_id, now + 3).await.unwrap();
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM conversation_delivery_notify WHERE operation_id = ?",
+    )
+    .bind(operation_id)
+    .fetch_one(_db.pool())
+    .await
+    .unwrap();
+    assert_eq!(state, "failed");
 }
