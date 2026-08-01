@@ -26,6 +26,11 @@ type GuidInputCardProps = {
   inactiveBorderColor: string;
   activeShadow: string;
   dragHandlers: React.HTMLAttributes<HTMLDivElement>;
+  /**
+   * Ref bound to the card's root div — used by the host for Tauri native
+   * drag-drop hit-testing (desktop). Optional; omitted by non-desktop callers.
+   */
+  containerRef?: React.Ref<HTMLDivElement>;
 
   // Mention state
   mentionOpen: boolean;
@@ -62,6 +67,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   inactiveBorderColor,
   activeShadow,
   dragHandlers,
+  containerRef,
   mentionOpen,
   mentionSelectorBadge,
   mentionDropdown,
@@ -91,6 +97,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
 
   return (
     <div
+      ref={containerRef}
       className={`${styles.guidInputCardWrap} guid-input-card-shell relative rd-24px flex flex-col ${mentionOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all duration-200 ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
       style={{
         zIndex: 1,

@@ -8,6 +8,7 @@ import { hasSpecificModelCapability } from '@/renderer/utils/model/modelCapabili
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
 import { clearAvailableModelsCache } from '@/renderer/pages/guid/utils/modelUtils';
+import { AUTO_MODEL_ID } from '@/renderer/utils/model/autoModel';
 
 export interface ModelProviderListResult {
   providers: IProvider[];
@@ -122,8 +123,13 @@ export const useModelProviderList = (): ModelProviderListResult => {
         result.push(modelName);
       }
     }
-    cache.set(cacheKey, result);
-    return result;
+    // Prepend the 'auto' fallback so it is always selectable (it bypasses the
+    // capability/exclude gating above by construction) and becomes the default
+    // first-available pick — the backend routes to a concrete model when the
+    // client sends model === 'auto'.
+    const withAuto = [AUTO_MODEL_ID, ...result];
+    cache.set(cacheKey, withAuto);
+    return withAuto;
   }, []);
 
   const configuredProviders = useMemo(() => {

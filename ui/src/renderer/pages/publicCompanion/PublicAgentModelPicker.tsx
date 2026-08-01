@@ -11,6 +11,7 @@ import { useModelProviderList } from '@renderer/hooks/agent/useModelProviderList
 import type { IPublicAgentModel } from '@/common/adapter/ipcBridge';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatCloudModelLabel } from '@renderer/utils/model/cloudModelLabel';
 
 interface Props {
   value: IPublicAgentModel;
@@ -57,7 +58,7 @@ const PublicAgentModelPicker: React.FC<Props> = ({ value, onChange }) => {
       >
         {(currentProvider ? getAvailableModels(currentProvider) : []).map((m) => (
           <Select.Option key={m} value={m}>
-            {m}
+            {formatCloudModelLabel(m, currentProvider?.model_descriptions)}
           </Select.Option>
         ))}
       </Select>

@@ -10,6 +10,26 @@ use crate::engine::AgentEngine;
 use crate::output::OutputSink;
 use crate::session::Session;
 
+/// Host-owned search composition. The default keeps standalone and Web Host
+/// callers on their historical DDG-only behavior, while Desktop can explicitly
+/// provide Managed Search or disable only the search tool after construction
+/// failure.
+#[derive(Clone)]
+pub enum SearchProviderBinding {
+    DefaultDdg,
+    Provided(Arc<dyn flowy_web::provider::SearchProvider>),
+    Disabled,
+}
+
+/// Host-owned extract composition. The default keeps standalone and Web Host
+/// callers on the historical `HttpExtractProvider` path, while Desktop can
+/// explicitly provide a Managed Extract Coordinator.
+#[derive(Clone)]
+pub enum ExtractCoordinatorBinding {
+    LocalDefault,
+    Provided(Arc<dyn flowy_web::ExtractCoordinator>),
+}
+
 /// **extract-llm: session-model adapter for `BrowserTool`'s extract seam.**
 ///
 /// Wraps the session's [`LlmProvider`] + model params so `act(Extract)` can do real
@@ -287,6 +307,8 @@ pub struct AgentBootstrap {
     workspace: String,
     output: Arc<dyn OutputSink>,
     provider: Option<Arc<dyn LlmProvider>>,
+    search_provider: SearchProviderBinding,
+    extract_coordinator: ExtractCoordinatorBinding,
     resume_session: Option<Session>,
     extra_skill_dirs: Vec<PathBuf>,
     goal: Option<crate::goal::runtime::GoalSpec>,
@@ -336,6 +358,8 @@ impl AgentBootstrap {
             workspace: workspace.into(),
             output,
             provider: None,
+            search_provider: SearchProviderBinding::DefaultDdg,
+            extract_coordinator: ExtractCoordinatorBinding::LocalDefault,
             resume_session: None,
             extra_skill_dirs: Vec::new(),
             goal: None,
@@ -352,6 +376,32 @@ impl AgentBootstrap {
     /// Use a pre-created provider instead of creating one from config.
     pub fn provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
         self.provider = Some(provider);
+        self
+    }
+
+    /// Inject the host-owned web-search provider. This is composition state,
+    /// not user/model configuration; standalone callers retain DDG by default.
+    pub fn search_provider(
+        mut self,
+        provider: Arc<dyn flowy_web::provider::SearchProvider>,
+    ) -> Self {
+        self.search_provider = SearchProviderBinding::Provided(provider);
+        self
+    }
+
+    /// Disable only the model-visible web search tool while retaining the
+    /// local `web_extract` tool when web tools are otherwise enabled.
+    pub fn disable_web_search(mut self) -> Self {
+        self.search_provider = SearchProviderBinding::Disabled;
+        self
+    }
+
+    /// Inject the host-owned web-extract coordinator. Default remains local-only.
+    pub fn extract_coordinator(
+        mut self,
+        coordinator: Arc<dyn flowy_web::ExtractCoordinator>,
+    ) -> Self {
+        self.extract_coordinator = ExtractCoordinatorBinding::Provided(coordinator);
         self
     }
 
@@ -537,10 +587,37 @@ impl AgentBootstrap {
         // Web search/extract (keyless DuckDuckGo HTML scrape + SSRF-guarded HTTP
         // fetch → markdown). Default on; gated by `tools.web.enabled`.
         if self.config.tools.web.enabled {
-            let search = Arc::new(flowy_web::provider::DuckDuckGoSearchProvider::new());
-            let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
-            registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
-            registry.register(Box::new(flowy_web::tools::WebExtractTool::new(extract)));
+            if let Some(search) = match self.search_provider {
+                SearchProviderBinding::Provided(provider) => Some(provider),
+                SearchProviderBinding::Disabled => None,
+                SearchProviderBinding::DefaultDdg => {
+                    match flowy_web::provider::DuckDuckGoSearchProvider::try_new() {
+                        Ok(provider) => Some(Arc::new(provider)
+                            as Arc<dyn flowy_web::provider::SearchProvider>),
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "nomi_agent",
+                                error_class = "search_provider_initialization",
+                                error = %error,
+                                "DuckDuckGo search initialization failed; web_search disabled"
+                            );
+                            None
+                        }
+                    }
+                }
+            } {
+                registry.register(Box::new(flowy_web::tools::WebSearchTool::new(search)));
+            }
+            let extract = match self.extract_coordinator {
+                ExtractCoordinatorBinding::Provided(coordinator) => {
+                    flowy_web::tools::WebExtractTool::with_coordinator(coordinator)
+                }
+                ExtractCoordinatorBinding::LocalDefault => {
+                    let extract = Arc::new(flowy_web::provider::HttpExtractProvider::new());
+                    flowy_web::tools::WebExtractTool::new(extract)
+                }
+            };
+            registry.register(Box::new(extract));
         }
 
         // Numeric-session schemas share the same supervisor as Bash. The

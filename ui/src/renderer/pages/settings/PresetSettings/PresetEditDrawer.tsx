@@ -27,6 +27,7 @@ import MarkdownView from '@/renderer/components/Markdown';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useKnowledgeBases } from '@/renderer/pages/knowledge/useKnowledge';
 import { Avatar, Button, Checkbox, Collapse, Drawer, Input, Select, Tag, Typography } from '@arco-design/web-react';
 import { Close, Delete, Info, Plus, Robot } from '@icon-park/react';
@@ -267,12 +268,12 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     for (const provider of providers) {
       for (const modelName of getAvailableModels(provider)) {
         const value = `${provider.id}::${modelName}`;
-        options.set(value, { value, label: `${providerLabel(provider)} · ${modelName}` });
+        options.set(value, { value, label: `${providerLabel(provider)} · ${formatCloudModelLabel(modelName)}` });
       }
     }
     for (const item of editModels) {
       const value = `${item.provider_id ?? ANY_PROVIDER_TOKEN}::${item.model}`;
-      if (!options.has(value)) options.set(value, { value, label: item.model });
+      if (!options.has(value)) options.set(value, { value, label: formatCloudModelLabel(item.model) });
     }
     return Array.from(options.values());
   }, [providers, getAvailableModels, editModels, providerLabel]);

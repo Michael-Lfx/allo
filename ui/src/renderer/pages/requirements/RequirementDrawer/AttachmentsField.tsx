@@ -52,6 +52,8 @@ const AttachmentsField: React.FC<AttachmentsFieldProps> = ({
   const [message, messageCtx] = useArcoMessage();
   const [open, setOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Dropzone root ref for Tauri native drag-drop hit-testing (desktop).
+  const dropzoneRef = useRef<HTMLDivElement>(null);
   // click-to-upload (file input) in-flight flag
   const [attachUploading, setAttachUploading] = useState(false);
   // drag/paste go through an HTTP upload that doesn't surface in `value` until
@@ -82,6 +84,7 @@ const AttachmentsField: React.FC<AttachmentsFieldProps> = ({
     supportedExts: imageExts,
     onFilesAdded: handleFilesAdded,
     source: 'requirement',
+    containerRef: dropzoneRef,
   });
 
   const pasteService = usePasteService({
@@ -158,6 +161,7 @@ const AttachmentsField: React.FC<AttachmentsFieldProps> = ({
         <div className='border-t border-solid border-border-2 px-12px py-12px flex flex-col gap-8px'>
           <div className='text-12px text-t-secondary'>{t('requirements.form.attachmentsHelp')}</div>
           <div
+            ref={dropzoneRef}
             {...dragHandlers}
             onPaste={pasteService.onPaste}
             onFocus={pasteService.onFocus}

@@ -21,6 +21,7 @@ serde_json.workspace  = true
 async-trait.workspace = true
 thiserror.workspace   = true
 reqwest.workspace     = true
+httpdate.workspace    = true
 futures.workspace     = true
 sha2.workspace        = true
 base64.workspace      = true
@@ -28,3 +29,6 @@ base64.workspace      = true
 
 [features]
 test-utils = []
+
+[dev-dependencies]
+wiremock.workspace = true

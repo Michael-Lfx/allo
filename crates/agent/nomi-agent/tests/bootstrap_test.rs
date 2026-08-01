@@ -87,6 +87,11 @@ async fn bootstrap_registers_all_expected_tools() {
         .unwrap();
 
     let names = result.engine.tool_names();
+    assert_eq!(
+        names.iter().filter(|name| name.as_str() == "web_search").count(),
+        1,
+        "the model must see exactly one web_search tool"
+    );
 
     for expected in &[
         "Read",
@@ -132,6 +137,53 @@ async fn bootstrap_web_tools_gated_off_when_disabled() {
     let names = result.engine.tool_names();
     assert!(!names.iter().any(|n| n == "web_search"));
     assert!(!names.iter().any(|n| n == "web_extract"));
+}
+
+#[tokio::test]
+async fn bootstrap_disabled_search_keeps_extract_tool_only() {
+    let result = AgentBootstrap::new(minimal_config(), "/tmp/test-workspace", null_output())
+        .disable_web_search()
+        .build()
+        .await
+        .unwrap();
+    let names = result.engine.tool_names();
+    assert!(!names.iter().any(|name| name == "web_search"));
+    assert!(names.iter().any(|name| name == "web_extract"));
+}
+
+struct StaticExtractProvider;
+
+#[async_trait]
+impl flowy_web::provider::ExtractProvider for StaticExtractProvider {
+    fn name(&self) -> &str {
+        "static"
+    }
+
+    async fn extract(
+        &self,
+        _req: flowy_web::ExtractRequest,
+    ) -> Result<flowy_web::ExtractedPage, flowy_web::WebError> {
+        Ok(flowy_web::ExtractedPage {
+            url: "https://example.com/".to_owned(),
+            title: Some("Static".to_owned()),
+            markdown: "static page".to_owned(),
+            truncated: false,
+            provider: "static".to_owned(),
+            extractor: flowy_web::EXTRACTOR_READABILITY.to_owned(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_provided_extract_coordinator_registers_web_extract() {
+    let coordinator = flowy_web::LocalExtractCoordinator::new(Arc::new(StaticExtractProvider));
+    let result = AgentBootstrap::new(minimal_config(), "/tmp/test-workspace", null_output())
+        .extract_coordinator(Arc::new(coordinator))
+        .build()
+        .await
+        .unwrap();
+    let names = result.engine.tool_names();
+    assert!(names.iter().any(|name| name == "web_extract"));
 }
 
 #[tokio::test]

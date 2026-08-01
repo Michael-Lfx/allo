@@ -28,12 +28,17 @@ export type GuidInputResult = {
 
 type UseGuidInputOptions = {
   locationState: { workspace?: string } | null;
+  /**
+   * Container ref for Tauri native drag-drop hit-testing (desktop only).
+   * When omitted, the Tauri native path stays inactive and only HTML5 drop works.
+   */
+  containerRef?: React.RefObject<HTMLElement | null>;
 };
 
 /**
  * Hook that manages input state, file handling, and drag/paste for the Guid page.
  */
-export const useGuidInput = ({ locationState }: UseGuidInputOptions): GuidInputResult => {
+export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOptions): GuidInputResult => {
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<string[]>([]);
   const [dir, setDir] = useState<string>('');
@@ -68,6 +73,7 @@ export const useGuidInput = ({ locationState }: UseGuidInputOptions): GuidInputR
   const { isFileDragging, dragHandlers } = useDragUpload({
     supportedExts: allSupportedExts,
     onFilesAdded: handleFilesPasted,
+    containerRef,
   });
 
   // Use shared PasteService integration (paste appends to existing files)

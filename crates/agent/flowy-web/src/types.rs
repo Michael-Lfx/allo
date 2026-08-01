@@ -5,6 +5,7 @@ pub const DEFAULT_SEARCH_COUNT: u32 = 5;
 pub const MAX_SEARCH_COUNT: u32 = 10;
 pub const MAX_EXTRACT_URLS: usize = 3;
 pub const EXTRACT_CHAR_LIMIT: usize = 3_000;
+pub const MAX_EXTRACT_MODEL_CHARS: usize = 8_000;
 /// Quality gate: readability markdown shorter than this falls back to full page.
 pub const MIN_ARTICLE_CHARS: usize = 400;
 
@@ -22,6 +23,8 @@ pub struct SearchHit {
     pub title: String,
     pub url: String,
     pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
     pub rank: u32,
 }
 
@@ -47,7 +50,7 @@ pub struct ExtractedPage {
     pub extractor: String,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum WebError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

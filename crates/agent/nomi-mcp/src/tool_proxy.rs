@@ -716,6 +716,7 @@ mod tests {
                         name: (*tool_name).to_owned(),
                         description: Some(format!("remote {server_name}/{tool_name}")),
                         input_schema: json!({"type": "object"}),
+                        output_schema: None,
                         annotations: None,
                     }],
                     Box::new(MockTransport::new(vec![])) as Box<dyn McpTransport>,
@@ -739,6 +740,7 @@ mod tests {
                 name: (*tool_name).to_owned(),
                 description: Some(format!("remote {server_name}/{tool_name}")),
                 input_schema: json!({"type": "object"}),
+                output_schema: None,
                 annotations: None,
             })
             .collect();
@@ -762,6 +764,7 @@ mod tests {
                 name: tool_name.to_owned(),
                 description: Some(format!("remote {server_name}/{tool_name}")),
                 input_schema: json!({"type": "object"}),
+                output_schema: None,
                 annotations: None,
             }],
             Box::new(MockTransport::new(vec![json!({

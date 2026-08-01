@@ -82,6 +82,9 @@ const GuidPage: React.FC = () => {
 
   const location = useLocation();
   const guidContainerRef = useRef<HTMLDivElement>(null);
+  // Ref on the GuidInputCard root for Tauri native drag-drop hit-testing,
+  // mirroring the SendBox `.sendbox-panel` containerRef pattern.
+  const guidInputCardRef = useRef<HTMLDivElement>(null);
   const openPresetDetailsRef = useRef<(() => void) | null>(null);
   const addProviderRef = useRef<GuidAddProviderHandle>(null);
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
@@ -246,6 +249,7 @@ const GuidPage: React.FC = () => {
 
   const guidInput = useGuidInput({
     locationState: location.state as { workspace?: string } | null,
+    containerRef: guidInputCardRef,
   });
 
   // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
@@ -897,6 +901,7 @@ const GuidPage: React.FC = () => {
             ) : null}
 
             <GuidInputCard
+              containerRef={guidInputCardRef}
               input={guidInput.input}
               onInputChange={handleInputChange}
               onKeyDown={handleInputKeyDown}

@@ -13,8 +13,13 @@ import { useTranslation } from 'react-i18next';
 import styles from './ConversationQuestionLocator.module.css';
 import { buildTurnPreview, truncate } from './minimapUtils';
 
+type VirtuosoRange = { startIndex: number; endIndex: number };
 type ConversationQuestionLocatorProps = {
   conversation_id?: ConversationId;
+  /** Rendered window of the virtualized message list (default → all rendered). */
+  rangeRef?: React.RefObject<VirtuosoRange>;
+  /** Resolves a question message id → its row index in the message list. */
+  resolveDisplayIndexRef?: React.RefObject<(messageId: string) => number | null>;
 };
 
 export const pickActiveQuestionIndex = (questionTopOffsets: number[], anchorY: number): number => {
@@ -40,7 +45,11 @@ export const getDotDistanceLevel = (index: number, activeIndex: number): 0 | 1 |
   return 3;
 };
 
-const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = ({ conversation_id }) => {
+const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = ({
+  conversation_id,
+  rangeRef,
+  resolveDisplayIndexRef,
+}) => {
   const { t } = useTranslation();
   const list = useMessageList();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -63,19 +72,32 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
 
     const scrollerRect = scroller.getBoundingClientRect();
     const anchorY = Math.min(180, Math.max(96, scrollerRect.height * 0.34));
+    // react-virtuoso unmounts off-screen messages, so a DOM probe alone misreads
+    // them as "infinitely far below". Use the rendered window + display-index
+    // resolver (passed in from MessageList) to bucket each question, and only
+    // measure the ones that are actually mounted. Falls back to pure DOM probing
+    // when no range is provided (non-virtualized / legacy callers).
+    const range = rangeRef?.current ?? { startIndex: 0, endIndex: Number.POSITIVE_INFINITY };
+    const resolveDisplayIndex = resolveDisplayIndexRef?.current;
+    const measureTop = (businessId: string | undefined): number => {
+      if (!businessId) return Number.POSITIVE_INFINITY;
+      const el = document.querySelector<HTMLElement>(`[data-message-business-id="${businessId}"]`);
+      if (!el) return Number.POSITIVE_INFINITY;
+      return el.getBoundingClientRect().top - scrollerRect.top;
+    };
     const questionTopOffsets = turns.map((item) => {
       const businessId = item.messageId ?? item.msgId;
-      const messageElement = businessId
-        ? document.querySelector<HTMLElement>(`[data-message-business-id="${businessId}"]`)
-        : null;
-      if (!messageElement) return Number.POSITIVE_INFINITY;
-      return messageElement.getBoundingClientRect().top - scrollerRect.top;
+      const displayIndex = businessId && resolveDisplayIndex ? resolveDisplayIndex(businessId) : null;
+      if (displayIndex == null) return measureTop(businessId);
+      if (displayIndex < range.startIndex) return Number.NEGATIVE_INFINITY; // scrolled past (above window)
+      if (displayIndex > range.endIndex) return Number.POSITIVE_INFINITY; // not yet reached (below window)
+      return measureTop(businessId); // inside rendered window → precise measurement
     });
     const nextIndex = pickActiveQuestionIndex(questionTopOffsets, anchorY);
     if (nextIndex >= 0) {
       setActiveIndex((current) => (current === nextIndex ? current : nextIndex));
     }
-  }, [getScroller, turns]);
+  }, [getScroller, rangeRef, resolveDisplayIndexRef, turns]);
 
   const scheduleActiveQuestionSync = useCallback(() => {
     if (rafRef.current !== null) return;

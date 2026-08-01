@@ -1,12 +1,14 @@
 
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import { AUTO_MODEL_LABEL, isAutoModel } from './autoModel';
 
 /** Strip Flowy catalog `AIPC-` prefix for user-facing model labels. */
 export function formatCloudModelLabel(
   modelName: string,
   descriptions?: Record<string, string>
 ): string {
+  if (isAutoModel(modelName)) return AUTO_MODEL_LABEL;
   const described = descriptions?.[modelName]?.trim();
   const raw = described || modelName;
   return raw.replace(/^AIPC-/i, '');

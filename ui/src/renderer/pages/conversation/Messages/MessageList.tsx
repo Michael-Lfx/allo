@@ -19,12 +19,13 @@ import MessagePermission from './components/MessagePermission';
 import MessageAcpToolCall from '@renderer/pages/conversation/Messages/acp/MessageAcpToolCall';
 import classNames from 'classnames';
 import React, { createContext, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Virtuoso } from 'react-virtuoso';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
 import { uuid } from '@renderer/utils/common';
 import './messages.css';
 import HOC from '@renderer/utils/ui/HOC';
+import { useLatestRef } from '@renderer/hooks/ui/useLatestRef';
 import type { FileChangeInfo } from './MessageFileChanges';
 import { parseDiff } from './MessageFileChanges';
 import { useConversationArtifacts } from './artifacts';
@@ -1353,6 +1354,23 @@ const MessageList: React.FC<{
   // viewport once the prepend grows the content so the position doesn't jump.
   const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
 
+  // Virtuoso handle + rendered window, shared with ConversationQuestionLocator so
+  // its scroll-spy can classify questions react-virtuoso has unmounted (off-screen)
+  // instead of misreading them as "infinitely far below". Defaults cover the
+  // non-virtualized branch (scrollParent == null → everything is rendered).
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const virtuosoRangeRef = useRef<{ startIndex: number; endIndex: number }>({
+    startIndex: 0,
+    endIndex: Number.POSITIVE_INFINITY,
+  });
+  // Maps a turn's question message id → its row index in `displayList`, so the
+  // locator can tell whether that question is above/below/inside the rendered
+  // window. Held in a latest-ref so the closure always sees the freshest
+  // `displayList` without forcing the locator's scroll listener to resubscribe.
+  const resolveDisplayIndexRef = useLatestRef((messageId: string) =>
+    displayList.findIndex((item) => getProcessedItemSourceMessageIds(item).includes(messageId as SourceMessageId))
+  );
+
   const combinedScrollerRef = useCallback(
     (el: HTMLDivElement | null) => {
       handleScrollerRef(el);
@@ -1457,6 +1475,17 @@ const MessageList: React.FC<{
       if (targetIndex < 0) return;
 
       hideScrollButton();
+      // Virtualized list: scrollToIndex mounts the (possibly off-screen) target
+      // row before scrolling — getElementById cannot do this for unmounted items.
+      // Fall back to the element-based path only when Virtuoso isn't rendering.
+      if (virtuosoRef.current) {
+        virtuosoRef.current.scrollToIndex({
+          index: targetIndex,
+          align: detail.align || 'start',
+          behavior: detail.behavior || 'smooth',
+        });
+        return;
+      }
       requestAnimationFrame(() => {
         const targetElement = document.getElementById(
           `message-${getProcessedItemAnchorId(displayList[targetIndex])}`
@@ -1637,7 +1666,11 @@ const MessageList: React.FC<{
 
   return (
     <div className='relative flex-1 h-full'>
-      <ConversationQuestionLocator conversation_id={conversationContext?.conversation_id} />
+      <ConversationQuestionLocator
+        conversation_id={conversationContext?.conversation_id}
+        rangeRef={virtuosoRangeRef}
+        resolveDisplayIndexRef={resolveDisplayIndexRef}
+      />
 
       {/* Use PreviewGroup to wrap all messages for cross-message image preview */}
       <Image.PreviewGroup actionsLayout={['zoomIn', 'zoomOut', 'originalSize', 'rotateLeft', 'rotateRight']}>
@@ -1664,10 +1697,14 @@ const MessageList: React.FC<{
               ) : null}
               {scrollParent ? (
                 <Virtuoso
+                  ref={virtuosoRef}
                   data={displayList}
                   customScrollParent={scrollParent}
                   computeItemKey={(_index, item) => item.id}
                   increaseViewportBy={{ top: 800, bottom: 800 }}
+                  rangeChanged={({ startIndex, endIndex }) => {
+                    virtuosoRangeRef.current = { startIndex, endIndex };
+                  }}
                   components={{
                     Header: () => <div className='h-10px' />,
                     Footer: () => (
