@@ -43,6 +43,7 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
   const { goal, refresh } = useGoalStatus(conversation_id);
   const [subgoalsExpanded, setSubgoalsExpanded] = useState(false);
   const [contractExpanded, setContractExpanded] = useState(false);
+  const [clearedDismissed, setClearedDismissed] = useState(false);
   const goalCommand = useGoalCommand(conversation_id);
 
   useEffect(() => {
@@ -63,8 +64,11 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
   // isCleared 翻转会取消这只定时器。
   const isCleared = goal?.status === 'cleared';
   useEffect(() => {
-    if (!isCleared) return;
-    const timer = window.setTimeout(() => setGoal(null), CLEARED_AUTO_DISMISS_MS);
+    if (!isCleared) {
+      setClearedDismissed(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setClearedDismissed(true), CLEARED_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [isCleared]);
 
@@ -124,7 +128,7 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
     }
   }, [goal, t]);
 
-  if (!presentation || !goal) {
+  if (!presentation || !goal || clearedDismissed) {
     return null;
   }
 
