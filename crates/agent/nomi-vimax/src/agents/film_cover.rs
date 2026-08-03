@@ -101,12 +101,13 @@ async fn generate_cover(
     style: &str,
     synopsis: &str,
 ) -> VimaxResult<()> {
+    let aspect = load_aspect_ratio(film_dir).await;
     let candidates = collect_cover_candidates(film_dir);
-    let brief = ask_cover_brief(chat.as_ref(), style, synopsis, &candidates).await?;
+    let brief = ask_cover_brief(chat.as_ref(), style, synopsis, &candidates, &aspect).await?;
     let refs = filter_refs_for_brief(&candidates, brief.include_cast);
     let mut prompt = brief.prompt.trim().to_string();
     if prompt.is_empty() {
-        prompt = default_cover_prompt(style, synopsis, brief.include_cast, &brief.title_text);
+        prompt = default_cover_prompt(style, synopsis, brief.include_cast, &brief.title_text, &aspect);
     }
     if !brief.include_cast {
         prompt.push_str(
@@ -114,12 +115,26 @@ async fn generate_cover(
         );
     }
     prompt.push_str(&title_lettering_clause(&brief.title_text));
-    prompt.push_str(
-        " Cinematic film poster / key art, single strong composition, no watermark, no UI chrome, no buttons, no player controls.",
-    );
+    prompt.push_str(&format!(
+        " {} film poster / key art, single strong composition, no watermark, no UI chrome, no buttons, no player controls.",
+        crate::aspect::aspect_prompt_clause(&aspect)
+    ));
 
     let ref_paths: Vec<&Path> = refs.iter().map(|p| p.as_path()).collect();
     image.generate(&prompt, &ref_paths, out).await
+}
+
+async fn load_aspect_ratio(film_dir: &Path) -> String {
+    for dir in [film_dir, film_dir.parent().unwrap_or(film_dir)] {
+        let p = dir.join("aspect_ratio.txt");
+        if let Ok(text) = tokio::fs::read_to_string(&p).await {
+            let n = crate::aspect::normalize_aspect_ratio(&text);
+            if !n.is_empty() {
+                return n;
+            }
+        }
+    }
+    crate::aspect::DEFAULT_ASPECT_RATIO.to_string()
 }
 
 async fn ask_cover_brief(
@@ -127,6 +142,7 @@ async fn ask_cover_brief(
     style: &str,
     synopsis: &str,
     candidates: &[(PathBuf, String)],
+    aspect: &str,
 ) -> VimaxResult<CoverBrief> {
     let mut asset_lines = String::new();
     for (i, (path, kind)) in candidates.iter().enumerate() {
@@ -141,6 +157,7 @@ async fn ask_cover_brief(
     }
 
     let syn = truncate(synopsis.trim(), 1200);
+    let frame = crate::aspect::aspect_prompt_clause(aspect);
     let system = r#"You design a single film poster (key art) for a short AI-generated film.
 Return ONLY one JSON object:
 {"include_cast":true|false,"title_text":"string","prompt":"string"}
@@ -149,11 +166,12 @@ Rules:
 - include_cast=false for mood pieces, landscapes, object-driven stories, or when faces would distract.
 - title_text: a short theme-bearing title / wordmark (1–8 words or a few Chinese characters) that captures the film's meaning. Match the user's story language (Chinese story → 简体中文 title). Prefer evocative poster titles over literal long sentences. Empty only when lettering would hurt the image.
 - prompt: detailed image-model instructions for one poster still. Prefer English for visual directions, but quote title_text exactly as given so the model can render those glyphs.
+- The poster MUST match the requested aspect / frame orientation.
 - The poster SHOULD include integrated title lettering (painted / typeset into the key art) when title_text is non-empty — like a real movie poster, not a UI overlay.
 - Never ask for logos, subtitles blocks, watermarks, or player/UI chrome."#;
 
     let user = format!(
-        "Visual style: {style}\n\nStory / synopsis:\n{syn}\n\nAvailable reference assets:\n{asset_lines}\nChoose include_cast, invent a short title_text, and write the poster prompt."
+        "Visual style: {style}\nPoster frame: {frame} ({aspect})\n\nStory / synopsis:\n{syn}\n\nAvailable reference assets:\n{asset_lines}\nChoose include_cast, invent a short title_text, and write the poster prompt."
     );
 
     let raw = chat.complete_text(system, &user).await?;
@@ -168,7 +186,7 @@ Rules:
             Ok(CoverBrief {
                 include_cast: candidates.iter().any(|(_, k)| k == "cast"),
                 title_text: title.clone(),
-                prompt: default_cover_prompt(style, synopsis, true, &title),
+                prompt: default_cover_prompt(style, synopsis, true, &title, aspect),
             })
         }
     }
@@ -241,15 +259,22 @@ fn collect_cover_candidates(film_dir: &Path) -> Vec<(PathBuf, String)> {
     all
 }
 
-fn default_cover_prompt(style: &str, synopsis: &str, include_cast: bool, title_text: &str) -> String {
+fn default_cover_prompt(
+    style: &str,
+    synopsis: &str,
+    include_cast: bool,
+    title_text: &str,
+    aspect: &str,
+) -> String {
     let syn = truncate(synopsis.trim(), 400);
+    let frame = crate::aspect::aspect_prompt_clause(aspect);
     let base = if include_cast {
         format!(
-            "Cinematic key art poster, style: {style}. Story mood: {syn}. Hero characters in a dramatic still, film-poster lighting."
+            "{frame} cinematic key art poster, style: {style}. Story mood: {syn}. Hero characters in a dramatic still, film-poster lighting."
         )
     } else {
         format!(
-            "Cinematic key art poster, style: {style}. Story mood: {syn}. Evocative location/atmosphere only, no people."
+            "{frame} cinematic key art poster, style: {style}. Story mood: {syn}. Evocative location/atmosphere only, no people."
         )
     };
     if title_text.trim().is_empty() {

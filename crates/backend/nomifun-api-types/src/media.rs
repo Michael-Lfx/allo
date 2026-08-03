@@ -36,6 +36,8 @@ pub struct UpdateMediaSettingsRequest {
     #[serde(default)]
     pub video_default_duration: Option<u32>,
     #[serde(default)]
+    pub video_default_aspect_ratio: Option<String>,
+    #[serde(default)]
     pub workflows_enabled: Option<bool>,
     #[serde(default)]
     pub workflows_max_retries: Option<u32>,

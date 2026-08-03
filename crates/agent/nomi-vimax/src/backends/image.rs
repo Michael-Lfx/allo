@@ -23,10 +23,16 @@ const MAX_MULTI_REF_IMAGES: usize = 8;
 pub struct FlowyImage {
     services: FlowyVimaxServices,
     model_override: Option<String>,
+    /// Session / plan aspect ratio for cover & sized image outputs.
+    aspect_ratio: Option<String>,
 }
 
 impl FlowyImage {
-    pub fn new(services: FlowyVimaxServices, model_override: Option<String>) -> Self {
+    pub fn new(
+        services: FlowyVimaxServices,
+        model_override: Option<String>,
+        aspect_ratio: Option<String>,
+    ) -> Self {
         Self {
             services,
             model_override: model_override.and_then(|s| {
@@ -37,7 +43,25 @@ impl FlowyImage {
                     Some(t)
                 }
             }),
+            aspect_ratio: aspect_ratio.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(crate::aspect::normalize_aspect_ratio(&t))
+                }
+            }),
         }
+    }
+
+    fn resolved_aspect(&self) -> String {
+        self.aspect_ratio
+            .clone()
+            .unwrap_or_else(|| {
+                crate::aspect::normalize_aspect_ratio(
+                    &self.services.media.video.default_aspect_ratio,
+                )
+            })
     }
 
     async fn resolve_model(&self) -> VimaxResult<String> {
@@ -80,7 +104,7 @@ impl FlowyImage {
             prompt: prompt.to_string(),
             image_url: None,
             image_urls: image_urls.to_vec(),
-            extra: Value::Null,
+            extra: crate::aspect::image_request_extra_for_aspect(&self.resolved_aspect()),
         };
         let upstream = self
             .services

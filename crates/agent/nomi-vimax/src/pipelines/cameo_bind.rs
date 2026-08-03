@@ -344,6 +344,7 @@ mod tests {
             is_visible: true,
             static_features: "tall".into(),
             dynamic_features: None,
+            voice_profile: None,
         }
     }
 

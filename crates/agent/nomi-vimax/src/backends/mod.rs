@@ -64,19 +64,27 @@ impl FlowyVimaxServices {
     }
 
     pub fn image(&self) -> FlowyImage {
-        FlowyImage::new(self.clone(), None)
+        FlowyImage::new(self.clone(), None, None)
     }
 
     pub fn image_with_model(&self, model: Option<String>) -> FlowyImage {
-        FlowyImage::new(self.clone(), model)
+        FlowyImage::new(self.clone(), model, None)
+    }
+
+    pub fn image_with_model_and_aspect(
+        &self,
+        model: Option<String>,
+        aspect_ratio: Option<String>,
+    ) -> FlowyImage {
+        FlowyImage::new(self.clone(), model, aspect_ratio)
     }
 
     pub fn video(&self) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), None, None)
+        FlowyVideo::new(self.clone(), None, None, None)
     }
 
     pub fn video_with_model(&self, model: Option<String>) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, None)
+        FlowyVideo::new(self.clone(), model, None, None)
     }
 
     pub fn video_with_model_and_cancel(
@@ -84,7 +92,16 @@ impl FlowyVimaxServices {
         model: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, cancel)
+        FlowyVideo::new(self.clone(), model, cancel, None)
+    }
+
+    pub fn video_with_model_cancel_and_aspect(
+        &self,
+        model: Option<String>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        aspect_ratio: Option<String>,
+    ) -> FlowyVideo {
+        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio)
     }
 
     /// Upload a local image via OSS presign PUT and return the HTTPS `publicUrl`.
@@ -223,7 +240,7 @@ pub(crate) fn map_model_err(
     } else if lower.contains("captions are not enough")
         || (lower.contains("caption") && lower.contains("empty"))
     {
-        "Seedance 2.0 rejected empty/weak audio captions. The client retries without audio; if it still fails, ensure shot audio_desc has dialogue or SFX."
+        "Seedance 2.0 rejected empty/weak audio captions. The client reinforces ambient/BGM captions then retries without audio only as a last resort; ensure shot audio_desc has dialogue or SFX+BGM."
     } else if lower.contains("publicurl")
         || lower.contains("presign_not_configured")
         || lower.contains("oss put failed")

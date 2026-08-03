@@ -6,25 +6,13 @@
 
 /**
  * Shared Flowy image/video model catalog for media settings and video generation.
- * Backend `/api/media/models` has no server-side list cache; this SWR layer is the
- * only client cache — revalidated on every mount of a consumer (model selector pages).
+ * Always hits `/api/media/models` (which proxies the cloud catalog) — no client-side
+ * list cache. Each mount / explicit refresh fetches the latest ids.
  */
 
 import { ipcBridge } from '@/common';
 import type { IMediaModelList } from '@/common/adapter/ipcBridge';
-import { useCallback, useEffect } from 'react';
-import useSWR, { mutate, type SWRConfiguration } from 'swr';
-
-export const MEDIA_MODELS_SWR_KEY = 'media/models';
-
-export const MEDIA_MODELS_SWR_OPTIONS: SWRConfiguration<IMediaModelList, Error> = {
-  revalidateOnFocus: false,
-  revalidateOnReconnect: false,
-  revalidateOnMount: true,
-  shouldRetryOnError: false,
-};
-
-let mediaAutoRefreshPromise: Promise<void> | null = null;
+import { useCallback, useEffect, useState } from 'react';
 
 export const fetchMediaModels = async (): Promise<IMediaModelList> => {
   return (
@@ -35,29 +23,9 @@ export const fetchMediaModels = async (): Promise<IMediaModelList> => {
   );
 };
 
+/** Always request a fresh catalog from the backend (no shared cache). */
 export async function refreshMediaModelsCatalog(): Promise<IMediaModelList> {
-  const list = await fetchMediaModels();
-  // Replace cache without a follow-up revalidate so a slower in-flight fetch
-  // cannot resurrect a previous (longer) model list after delisting.
-  await mutate(MEDIA_MODELS_SWR_KEY, list, { revalidate: false });
-  return list;
-}
-
-export async function refreshMediaModelsCatalogIfStale(): Promise<void> {
-  if (mediaAutoRefreshPromise) {
-    await mediaAutoRefreshPromise;
-    return;
-  }
-
-  mediaAutoRefreshPromise = refreshMediaModelsCatalog()
-    .then(() => undefined)
-    .catch((error) => {
-      console.warn('[media] Failed to refresh image/video model catalog:', error);
-    })
-    .finally(() => {
-      mediaAutoRefreshPromise = null;
-    });
-  await mediaAutoRefreshPromise;
+  return fetchMediaModels();
 }
 
 export type UseMediaModelsResult = {
@@ -70,20 +38,32 @@ export type UseMediaModelsResult = {
 
 /**
  * Canonical hook for Flowy image/video model lists. Prefer this over calling
- * `ipcBridge.media.listModels` directly so mount-time revalidation is shared.
+ * `ipcBridge.media.listModels` directly so every consumer refreshes on mount.
  */
 export function useMediaModels(): UseMediaModelsResult {
-  const { data, isLoading, error } = useSWR<IMediaModelList>(
-    MEDIA_MODELS_SWR_KEY,
-    fetchMediaModels,
-    MEDIA_MODELS_SWR_OPTIONS
-  );
+  const [data, setData] = useState<IMediaModelList | undefined>(undefined);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
 
-  useEffect(() => {
-    void refreshMediaModelsCatalogIfStale();
+  const revalidate = useCallback(async (): Promise<IMediaModelList | undefined> => {
+    setIsLoading(true);
+    try {
+      const list = await fetchMediaModels();
+      setData(list);
+      setError(null);
+      return list;
+    } catch (err) {
+      setError(err);
+      console.warn('[media] Failed to fetch image/video model catalog:', err);
+      return undefined;
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
-  const revalidate = useCallback(() => mutate<IMediaModelList>(MEDIA_MODELS_SWR_KEY), []);
+  useEffect(() => {
+    void revalidate();
+  }, [revalidate]);
 
   return {
     imageModels: data?.image_models ?? [],

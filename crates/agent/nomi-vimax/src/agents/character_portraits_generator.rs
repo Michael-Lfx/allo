@@ -199,6 +199,7 @@ mod tests {
             is_visible: true,
             static_features: "a".repeat(400),
             dynamic_features: Some("b".repeat(400)),
+            voice_profile: None,
         };
         let n = CharacterPortraitsGenerator::features_line(&ch).chars().count();
         assert!(n <= 520);
@@ -238,6 +239,7 @@ mod tests {
             is_visible: true,
             static_features: "8岁男孩，黑短发，白T恤".into(),
             dynamic_features: None,
+            voice_profile: None,
         };
         let prompt = CharacterPortraitsGenerator::build_three_view_prompt(&ch, "cinematic film look");
         let lower = prompt.to_ascii_lowercase();
