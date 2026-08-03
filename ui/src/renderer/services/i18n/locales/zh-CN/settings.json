@@ -1,9 +1,9 @@
 {
   "title": "设置",
   "contextLimit": "上下文窗口 (tokens)",
-  "contextLimitPlaceholder": "留空 = 默认 200k",
+  "contextLimitPlaceholder": "留空 = 自动（目录优先，否则 128k）",
   "contextLimitSelectPlaceholder": "选择上下文窗口",
-  "contextLimitDefaultOption": "默认 200k",
+  "contextLimitDefaultOption": "自动（目录 / 128k）",
   "contextLimitCustomOption": "{{value}}（自定义）",
   "modelContextLimit": "模型上下文窗口",
   "modelContextLimitDefault": "默认",

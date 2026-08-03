@@ -8,7 +8,7 @@ export const CONTEXT_WINDOW_OPTIONS = [
   {
     value: DEFAULT_CONTEXT_LIMIT_VALUE,
     labelKey: 'settings.contextLimitDefaultOption',
-    defaultLabel: '默认 200k',
+    defaultLabel: 'Auto (catalog / 128k)',
   },
   { value: 32_000, defaultLabel: '32k' },
   { value: 64_000, defaultLabel: '64k' },

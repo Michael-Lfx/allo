@@ -48,9 +48,10 @@ pub(crate) struct ResolvedProviderFields {
 
 /// Load a provider row from the DB, decrypt its API key, map platform to nomi
 /// provider name, and resolve base URL / compat / bedrock fields. The
-/// per-model protocol override and context limit come from the model's
-/// `provider_models` row (absent row → no override, matching the legacy
-/// "no map entry" semantics).
+/// per-model protocol override comes from the model's `provider_models` row
+/// (absent row → no override). Context window is resolved as: explicit
+/// `provider_models.context_limit` → models.dev catalog → unset (128k default
+/// applied later by compact budget fitting).
 ///
 /// This is the shared extraction used by both the full `resolve_provider_config`
 /// (which also calls `Config::resolve`) and the nomi factory `build()` (which
@@ -97,6 +98,13 @@ pub(crate) async fn resolve_provider_fields(
         None
     };
 
+    // Context window priority (matches product contract):
+    // 1. explicit per-model override on provider_models.context_limit
+    // 2. models.dev catalog for mapped public platforms
+    // 3. None → CompactConfig default (128k) at apply_provider_context_budget
+    let user_context = model_row.and_then(|m| m.context_limit);
+    let catalog_context = catalog_context_window(&row.platform, model);
+
     Ok(ResolvedProviderFields {
         provider,
         api_key,
@@ -104,11 +112,30 @@ pub(crate) async fn resolve_provider_fields(
         base_url,
         compat_overrides,
         bedrock_config,
-        context_limit: model_row
-            .and_then(|m| m.context_limit)
-            .filter(|value| *value > 0),
+        context_limit: resolve_model_context_limit(user_context, catalog_context),
         platform: row.platform.clone(),
     })
+}
+
+/// Prefer an explicit per-model override; otherwise take models.dev when known.
+fn resolve_model_context_limit(
+    user_override: Option<i64>,
+    catalog_context: Option<i64>,
+) -> Option<i64> {
+    user_override
+        .filter(|value| *value > 0)
+        .or(catalog_context.filter(|value| *value > 0))
+}
+
+/// models.dev catalog context when the user has not set a per-model limit.
+/// Platforms with [`MergePolicy::Never`] (custom/bedrock/local/…) return `None`.
+fn catalog_context_window(platform: &str, model: &str) -> Option<i64> {
+    nomifun_models_dev::resolve_catalog_capabilities(
+        nomifun_models_dev::default_client(),
+        platform,
+        model,
+    )
+    .and_then(|c| c.context_window.map(|v| v as i64))
 }
 
 /// Resolve provider fields for a conversation send, falling back only when a
@@ -629,6 +656,40 @@ mod tests {
 
         let result = drain_text_response(rx).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_model_context_limit_prefers_user_override() {
+        assert_eq!(
+            resolve_model_context_limit(Some(32_000), Some(200_000)),
+            Some(32_000)
+        );
+    }
+
+    #[test]
+    fn resolve_model_context_limit_falls_back_to_catalog() {
+        assert_eq!(
+            resolve_model_context_limit(None, Some(200_000)),
+            Some(200_000)
+        );
+        assert_eq!(
+            resolve_model_context_limit(Some(0), Some(200_000)),
+            Some(200_000),
+            "non-positive override is treated as unset"
+        );
+    }
+
+    #[test]
+    fn resolve_model_context_limit_returns_none_without_sources() {
+        assert_eq!(resolve_model_context_limit(None, None), None);
+        assert_eq!(resolve_model_context_limit(Some(0), Some(0)), None);
+    }
+
+    #[test]
+    fn catalog_context_window_skips_never_merge_platforms() {
+        // custom/bedrock/local platforms never consult models.dev.
+        assert!(catalog_context_window("custom", "any-model").is_none());
+        assert!(catalog_context_window("bedrock", "any-model").is_none());
     }
 
     #[test]

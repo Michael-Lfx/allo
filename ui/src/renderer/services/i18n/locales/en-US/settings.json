@@ -1,9 +1,9 @@
 {
   "title": "Settings",
   "contextLimit": "Context window (tokens)",
-  "contextLimitPlaceholder": "Leave blank = default 200k",
+  "contextLimitPlaceholder": "Leave blank = auto (catalog first, else 128k)",
   "contextLimitSelectPlaceholder": "Select context window",
-  "contextLimitDefaultOption": "Default 200k",
+  "contextLimitDefaultOption": "Auto (catalog / 128k)",
   "contextLimitCustomOption": "{{value}} (custom)",
   "modelContextLimit": "Model context window",
   "modelContextLimitDefault": "Default",
