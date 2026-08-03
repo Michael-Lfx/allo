@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 /// JSON fields (bedrock_config) are stored as TEXT in SQLite and deserialized
 /// by the service layer. The per-model surface (membership, enabled,
 /// protocol, context limit, description, health) lives exclusively on
-/// `provider_models` rows since migration 016 dropped the legacy `models`
-/// array and the five per-model JSON map columns; migration 017 dropped the
+/// `provider_models` rows since migration 022 dropped the legacy `models`
+/// array and the five per-model JSON map columns; migration 023 dropped the
 /// provider-level `capabilities` column (the wire field is retired and
 /// always `[]`).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

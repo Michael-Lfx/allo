@@ -1,5 +1,5 @@
 -- providers.capabilities was the last legacy provider-level model-surface
--- column: migration 016 already dropped the models array + five per-model
+-- column: migration 022 already dropped the models array + five per-model
 -- maps, and every Rust reader now projects the per-model surface from
 -- provider_models rows. The wire keeps accepting `capabilities` for request
 -- compat, but the value is ignored and `ProviderResponse.capabilities` is

@@ -181,7 +181,7 @@ async fn migration_17_drops_model_profiles() {
 }
 
 #[tokio::test]
-async fn migration_16_drops_legacy_provider_model_columns_preserving_rows() {
+async fn migration_22_drops_legacy_provider_model_columns_preserving_rows() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -189,8 +189,8 @@ async fn migration_16_drops_legacy_provider_model_columns_preserving_rows() {
         .unwrap();
     migrate_to(&pool, 13).await;
 
-    // Legacy-shaped provider row: the 014 backfill materializes its
-    // provider_models rows, which must survive the 016 column drop intact.
+    // Legacy-shaped provider row: the 016 backfill materializes its
+    // provider_models rows, which must survive the 022 column drop intact.
     sqlx::query(
         "INSERT INTO providers (provider_id, platform, name, base_url, api_key_encrypted, models, enabled, capabilities, model_context_limits, model_protocols, model_descriptions, model_enabled, model_health, is_full_url, sort_order, created_at, updated_at) \
          VALUES (?, 'openai', 'P', 'https://x.test/v1', 'enc', ?, 1, '[]', ?, ?, ?, ?, ?, 0, 0, 1, 1)",
@@ -206,7 +206,7 @@ async fn migration_16_drops_legacy_provider_model_columns_preserving_rows() {
     .await
     .unwrap();
 
-    migrate_to(&pool, 15).await;
+    migrate_to(&pool, 21).await;
     let legacy_columns = [
         "models",
         "model_context_limits",
@@ -215,28 +215,28 @@ async fn migration_16_drops_legacy_provider_model_columns_preserving_rows() {
         "model_enabled",
         "model_health",
     ];
-    let columns_at_15: Vec<String> =
+    let columns_at_21: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('providers')")
             .fetch_all(&pool)
             .await
             .unwrap();
     for column in legacy_columns {
         assert!(
-            columns_at_15.iter().any(|name| name == column),
-            "column {column} must still exist at migration 15"
+            columns_at_21.iter().any(|name| name == column),
+            "column {column} must still exist at migration 21"
         );
     }
 
-    migrate_to(&pool, 16).await;
-    let columns_at_16: Vec<String> =
+    migrate_to(&pool, 22).await;
+    let columns_at_22: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('providers')")
             .fetch_all(&pool)
             .await
             .unwrap();
     for column in legacy_columns {
         assert!(
-            !columns_at_16.iter().any(|name| name == column),
-            "migration 16 must drop providers.{column}"
+            !columns_at_22.iter().any(|name| name == column),
+            "migration 22 must drop providers.{column}"
         );
     }
     // The remaining provider fields and the authoritative rows are untouched.
@@ -253,8 +253,8 @@ async fn migration_16_drops_legacy_provider_model_columns_preserving_rows() {
         "sort_order",
     ] {
         assert!(
-            columns_at_16.iter().any(|name| name == column),
-            "providers.{column} must survive migration 16"
+            columns_at_22.iter().any(|name| name == column),
+            "providers.{column} must survive migration 22"
         );
     }
     let (name, enabled): (String, i64) =
@@ -278,12 +278,12 @@ async fn migration_16_drops_legacy_provider_model_columns_preserving_rows() {
             ("gpt-4o".to_owned(), 1, Some(128_000), None),
             ("flux-pro".to_owned(), 0, None, Some("anthropic".to_owned())),
         ],
-        "the 014-backfilled rows must survive the 016 column drop verbatim"
+        "the 016-backfilled rows must survive the 022 column drop verbatim"
     );
 }
 
 #[tokio::test]
-async fn migration_21_drops_capabilities_preserving_rows() {
+async fn migration_23_drops_capabilities_preserving_rows() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -291,7 +291,7 @@ async fn migration_21_drops_capabilities_preserving_rows() {
         .unwrap();
     migrate_to(&pool, 13).await;
 
-    // Legacy-shaped provider row (pre-016 schema, so the legacy columns are
+    // Legacy-shaped provider row (pre-022 schema, so the legacy columns are
     // still insertable here); only name/enabled/capabilities matter below.
     sqlx::query(
         "INSERT INTO providers (provider_id, platform, name, base_url, api_key_encrypted, models, enabled, capabilities, is_full_url, sort_order, created_at, updated_at) \
@@ -302,26 +302,26 @@ async fn migration_21_drops_capabilities_preserving_rows() {
     .await
     .unwrap();
 
-    migrate_to(&pool, 16).await;
-    let columns_at_16: Vec<String> =
+    migrate_to(&pool, 22).await;
+    let columns_at_22: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('providers')")
             .fetch_all(&pool)
             .await
             .unwrap();
     assert!(
-        columns_at_16.iter().any(|name| name == "capabilities"),
-        "providers.capabilities must still exist at migration 16"
+        columns_at_22.iter().any(|name| name == "capabilities"),
+        "providers.capabilities must still exist at migration 22"
     );
 
-    migrate_to(&pool, 21).await;
-    let columns_at_17: Vec<String> =
+    migrate_to(&pool, 23).await;
+    let columns_at_23: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('providers')")
             .fetch_all(&pool)
             .await
             .unwrap();
     assert!(
-        !columns_at_17.iter().any(|name| name == "capabilities"),
-        "migration 17 must drop providers.capabilities"
+        !columns_at_23.iter().any(|name| name == "capabilities"),
+        "migration 23 must drop providers.capabilities"
     );
     // The remaining provider fields survive.
     for column in [
@@ -336,8 +336,8 @@ async fn migration_21_drops_capabilities_preserving_rows() {
         "sort_order",
     ] {
         assert!(
-            columns_at_17.iter().any(|name| name == column),
-            "providers.{column} must survive migration 17"
+            columns_at_23.iter().any(|name| name == column),
+            "providers.{column} must survive migration 23"
         );
     }
     // And the provider row itself is untouched.
@@ -348,7 +348,7 @@ async fn migration_21_drops_capabilities_preserving_rows() {
             .await
             .unwrap();
     assert_eq!((name.as_str(), enabled), ("P", 1));
-    // The 014-backfilled provider_models row survives too.
+    // The 016-backfilled provider_models row survives too.
     let models: Vec<String> = sqlx::query_scalar(
         "SELECT model FROM provider_models WHERE provider_id = ? ORDER BY sort_order",
     )

@@ -27,14 +27,14 @@ pub trait IProviderRepository: Send + Sync {
 ///
 /// `models` and the four per-model map params (`model_context_limits`,
 /// `model_protocols`, `model_descriptions`, `model_enabled`) are wire-compat
-/// INPUTS only: migration 016 dropped the matching providers columns, so
+/// INPUTS only: migration 022 dropped the matching providers columns, so
 /// these params feed exclusively the `provider_models` row sync
 /// (`sync_provider_models_tx`) — one row per `models` entry, mirrored columns
 /// seeded from the maps. They are never persisted on the providers row.
 ///
 /// There is deliberately no `model_health` param: since P3 the server-side
 /// health probe (`IProviderModelRepository::set_health`) is the only health
-/// writer, and no `capabilities` param: migration 017 dropped the column.
+/// writer, and no `capabilities` param: migration 023 dropped the column.
 #[derive(Debug)]
 pub struct CreateProviderParams<'a> {
     /// Optional caller-supplied stable business ID.
