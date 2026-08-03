@@ -1,4 +1,4 @@
-import { CloseSmall, EveryUser, Robot } from '@icon-park/react';
+import { CloseSmall, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
@@ -10,10 +10,6 @@ export interface ComposerEntryStripProps {
   onChoosePreset: () => void;
   onFree: () => void;
   collaborationPolicyNode?: React.ReactNode;
-  /** 召唤伙伴 draft entry — the Guid page wires it only for nomi launches. */
-  onSummonCompanion?: () => void;
-  /** Name of the drafted companion; the entry shows it as its label. */
-  summonedCompanionName?: string | null;
 }
 
 /**
@@ -28,8 +24,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   onChoosePreset,
   onFree,
   collaborationPolicyNode,
-  onSummonCompanion,
-  summonedCompanionName,
 }) => {
   const { t } = useTranslation();
 
@@ -46,26 +40,10 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
     }
   };
 
-  // --- Summon companion entry (optional; nomi launches only) ---
-  const summonLabel = summonedCompanionName || t('conversation.summon.button');
-  const summonEntry = onSummonCompanion ? (
-    <button
-      type='button'
-      className={`${styles.entryButton} ${styles.entryButtonInteractive}`}
-      onClick={onSummonCompanion}
-      aria-label={t('conversation.summon.buttonTooltip')}
-      data-testid='guid-summon-entry'
-    >
-      <EveryUser theme='outline' size={15} fill='currentColor' />
-      <span className={styles.entryButtonText}>{summonLabel}</span>
-    </button>
-  ) : null;
-
   if (isPresetAgent) {
     return (
       <div className={styles.entryStrip}>
         {collaborationPolicyNode}
-        {summonEntry}
         <span className={`${styles.entryButton} ${styles.entryButtonActive} ${styles.entryPersonaButton}`}>
           <span className={styles.entryAvatar}>{renderAvatar()}</span>
           <span className={styles.entryButtonText}>
@@ -97,7 +75,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         <Robot theme='outline' size={15} fill='currentColor' />
         <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>
       </button>
-      {summonEntry}
     </div>
   );
 };

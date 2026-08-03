@@ -10,8 +10,7 @@
  *
  * - `SummonDrawer`：可复用的三步 Drawer（伙伴单选 → 技能复选（默认全选，
  *   去勾 = skill_exclusions）→ 记忆多选（FTS 搜索/kind 过滤，复用 A 轨道
- *   listMemories 检索面 + 预算字数条））。不绑定会话——落地页（Guid）用它
- *   暂存「创建后再应用」的召唤草稿。
+ *   listMemories 检索面 + 预算字数条））。不绑定会话——由外壳决定应用目标。
  * - `SummonControl`：SendBox 工具条按钮 + 上述 Drawer 的会话绑定壳。已召唤时
  *   按钮变徽标态，点开可查看/调整/解除（解除 DELETE，幂等）。
  * - `SummonHeaderBadge`：会话头部的被动徽标（伙伴名），侧边栏条目徽标见
@@ -115,17 +114,17 @@ export const SummonHeaderBadge: React.FC<{ conversationId: ConversationId }> = (
 export interface SummonDrawerProps {
   visible: boolean;
   onCancel: () => void;
-  /** Prefill (live summon, or a pending draft on the Guid page). */
+  /** Prefill from the live in-session summon (or null for a fresh pick). */
   initial: SummonDraft | null;
   submitting?: boolean;
   onApply: (draft: SummonDraft) => void;
-  /** Shown only when provided AND `initial` is set (release / clear draft). */
+  /** Shown only when provided AND `initial` is set (release / clear). */
   onRelease?: () => void;
 }
 
 /**
  * 三步召唤 Drawer，本身不接触任何会话端点——由外壳决定「应用」落到哪里
- * （会话内 setSummon，或落地页暂存草稿创建后应用）。
+ * （例如会话内 setSummon）。
  */
 export const SummonDrawer: React.FC<SummonDrawerProps> = ({ visible, onCancel, initial, submitting = false, onApply, onRelease }) => {
   const { t } = useTranslation();
