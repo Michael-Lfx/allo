@@ -14,7 +14,8 @@
     "unread": "New execution",
     "unconfiguredHint": "No scheduled task yet. Create one with this conversation selected.",
     "createNow": "Create Now",
-    "defaultPrompt": "Every day at 10am, search for the latest AI news, summarize and output an insight report."
+    "defaultPrompt": "Every day at 10am, search for the latest AI news, summarize and output an insight report.",
+    "unconfigured": "No scheduled task"
   },
   "actions": {
     "goTo": "View Chat",

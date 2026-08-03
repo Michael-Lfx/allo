@@ -5,6 +5,7 @@
  */
 
 import type { ProviderModelResponse } from '@/common/types/provider/providerModel';
+import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
 import type { ModelTask } from '@/common/protocolBindings/ModelTask';
 import type { ModelTrait } from '@/common/protocolBindings/ModelTrait';
 import type { ProfileSource } from '@/common/protocolBindings/ProfileSource';
@@ -94,6 +95,26 @@ interface IChatConversation<T, Extra> {
 }
 
 // Token 使用统计数据类型
+export type CompactTriggerData = 'auto' | 'manual';
+
+export type SummarizedConversationProperties = {
+  trigger?: CompactTriggerData | null;
+  pre_compact_tokens?: number | null;
+  messages_summarized?: number | null;
+};
+
+export type ContextBreakdownData = {
+  system_prompt?: number;
+  tool_definitions?: number;
+  rules?: number;
+  skills?: number;
+  mcp_and_dynamic_tools?: number;
+  delegate_definitions?: number;
+  summarized_conversation?: number;
+  conversation?: number;
+  summarized?: SummarizedConversationProperties | null;
+};
+
 export interface TokenUsageData {
   total_tokens: number;
   /** Cumulative input tokens reported by the Nomi session usage payload. */
@@ -111,6 +132,11 @@ export interface TokenUsageData {
   context_tokens?: number;
   /** Effective context budget (gauge denominator). */
   context_window?: number;
+  /** Cursor-style category breakdown for the last provider request. */
+  context_breakdown?: ContextBreakdownData | null;
+  /** MoA reference fan-out stats for the last turn (nomi turn_completed
+   * carries it); null/absent when the turn had no fan-out. */
+  moa?: MoaTurnStatsData | null;
 }
 
 export type TChatConversation =

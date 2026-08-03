@@ -1,41 +1,30 @@
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { Suspense, useCallback, useEffect, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
+import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge';
+import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
+import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import {
-  isBrowserCapabilityUnavailable,
-  useBrowserOverview,
-} from '@renderer/pages/browser/useBrowserInventory';
-import { parseSessionRoute } from '@renderer/utils/routes/sessionRoute';
-import {
-  SiderAssetLibraryEntry,
-  SiderBrowserEntry,
-  SiderPresetEntry,
-  SiderSkillsEntry,
+  ConversationSiderActions,
   SiderConversationEntry,
-  SiderCustomerServiceEntry,
   SiderKnowledgeEntry,
-  SiderMcpEntry,
+  SiderLearningEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
-  SiderOpenCapabilitiesEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderSectionHeader,
-  SiderWorkshopEntry,
+  SiderVideoGenerationEntry,
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
+import styles from './Sider.module.css';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -52,9 +41,9 @@ interface SiderProps {
  * content-area secondary sidebar (`ConversationShell` / `ContentSider`),
  * reached via the "会话" entry. The rail holds top-level destinations grouped
  * by small-text section headers (`SiderSectionHeader`): 常用 (会话 / 桌面伙伴),
- * 数据空间 (知识库), 自动化 (定时任务 / 需求平台),
- * 增强工具 (设定 / Skill / MCP), 服务 (客服), and a bottom-pinned 设置 group
- * (浏览器管理 + 模型管理 + the footer). Execution engines live as an
+ * 对外服务 (对外伙伴), 数据空间 (学习 / 知识库), 自动化 (定时任务 / 需求平台),
+ * 增强工具 (设定 / Skill / MCP), and a bottom-pinned 设置 group
+ * (模型管理 + the footer). Execution engines live as an
  * independent tab inside Settings rather than being mixed into model
  * management.
  */
@@ -65,24 +54,31 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const location = useLocation();
   const { pathname, search, hash } = location;
   const { count: pendingInboxCount } = useKnowledgeInboxPending();
-  const {
-    overview: browserOverview,
-    unavailable: browserUnavailable,
-    transient: browserOverviewTransient,
-    retry: retryBrowserOverview,
-  } = useBrowserOverview();
-  const browserCapabilityUnavailable = isBrowserCapabilityUnavailable(
-    browserOverview,
-    browserUnavailable
-  );
-
   const navigate = useNavigate();
-  const { logout, status } = useAuth();
+  const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
+  const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
+  const [batchMode, setBatchMode] = useState(false);
+  const { preferences: displayPreferences } = useSidebarDisplayPreferences();
   const isSettings = pathname.startsWith('/settings');
   const lastNonSettingsPathRef = useRef('/guid');
-  // Logout is a WebUI-only affordance: the bundled desktop shell (Electron or
-  // Tauri) is single-user with no auth, so there is nothing to log out of.
-  const showLogout = !isDesktopShell() && status === 'authenticated';
+  const isDesktop = isDesktopShell();
+  // WebUI: local admin session logout. Desktop: cloud account logout (local auth is always on).
+  const showLocalLogout = !isDesktop && localStatus === 'authenticated';
+  const showCloudLogout = isDesktop && cloudStatus === 'authenticated';
+  const showLogout = showLocalLogout || showCloudLogout;
+  const userLabel = useMemo(() => {
+    if (showCloudLogout) {
+      return whoami?.email ?? whoami?.username ?? '';
+    }
+    return localUser?.username ?? whoami?.email ?? whoami?.username ?? '';
+  }, [localUser?.username, showCloudLogout, whoami?.email, whoami?.username]);
+  const planLabel = whoami?.plan ?? '';
+
+  const isSessionRoute =
+    pathname === '/guid' ||
+    pathname.startsWith('/conversation/') ||
+    pathname === '/terminal-new' ||
+    pathname.startsWith('/terminal/');
 
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
@@ -105,30 +101,16 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   );
 
   const handleConversationClick = () => navTo('/guid');
-  const handleBrowserClick = () => {
-    if (browserOverviewTransient) {
-      void retryBrowserOverview();
-    }
-    const currentSession = parseSessionRoute(pathname);
-    if (currentSession?.kind === 'conversation') {
-      navTo(`/browser?conversation_id=${encodeURIComponent(currentSession.id)}`);
-      return;
-    }
-    navTo(pathname === '/browser' && search ? `/browser${search}` : '/browser');
-  };
+  const handleVideoGenerationClick = () => navTo('/video-generation');
   const handleScheduledClick = () => navTo('/scheduled');
-  const handleRequirementsClick = () => navTo('/requirements');
   const handleKnowledgeClick = () => navTo('/knowledge');
-  const handleAssetLibraryClick = () => navTo('/assets');
   const handleNomiClick = () => navTo('/nomi');
-  const handleWorkshopClick = () => navTo('/workshop');
-  const handleCustomerServiceClick = () => navTo('/customer-service');
+  const handleLearningClick = () => navTo('/learn');
+  const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
-  const handleOpenCapabilitiesClick = () => navTo('/open-capabilities');
-  const handleModelHubClick = () => navTo('/models');
-
+  
   const handleSettingsClick = () => {
     cleanupSiderTooltips();
     blurActiveElement();
@@ -151,7 +133,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     cleanupSiderTooltips();
     blurActiveElement();
     try {
-      await logout();
+      if (showCloudLogout) {
+        await cloudLogout();
+      } else {
+        await localLogout();
+      }
     } catch (error) {
       console.error('Logout failed:', error);
       return; // logout 失败时不执行后续操作
@@ -159,7 +145,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     if (onSessionClick) {
       onSessionClick();
     }
-  }, [logout, onSessionClick]);
+  }, [cloudLogout, localLogout, onSessionClick, showCloudLogout]);
 
   useEffect(() => {
     if (!showLogout) return;
@@ -180,26 +166,19 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const tooltipEnabled = collapsed && !isMobile;
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
-  // The "会话" entry stays active across every route owned by ConversationShell.
-  const isSessionRoute =
-    pathname === '/guid' ||
-    pathname.startsWith('/conversation/') ||
-    pathname === '/terminal-new' ||
-    pathname.startsWith('/terminal/');
-
   return (
     <div className='size-full flex flex-col'>
       {/* Main content area */}
-      <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
-        {isSettings ? (
+      {isSettings ? (
+        <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
           <Suspense fallback={<div className='size-full' />}>
             <SettingsSider collapsed={collapsed} tooltipEnabled={tooltipEnabled} />
           </Suspense>
-        ) : (
-          <div className='size-full flex flex-col gap-2px'>
-            {/* 常用 — high-frequency primary destinations */}
-            <SiderSectionHeader label={t('common.siderSection.common')} collapsed={collapsed} />
-            {/* Conversations — opens the session secondary sidebar (ContentSider) */}
+        </div>
+      ) : (
+        <div className='flex-1 min-h-0 flex flex-col'>
+          <div data-testid='sider-primary-nav' className='shrink-0 flex flex-col gap-2px'>
+            {/* 会话 — 一级菜单入口 */}
             <SiderConversationEntry
               isMobile={isMobile}
               isActive={isSessionRoute}
@@ -207,25 +186,14 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            {/* Work partner (桌面伙伴) */}
-            <SiderNomiEntry
+            {/* ViMax video generation */}
+            <SiderVideoGenerationEntry
               isMobile={isMobile}
-              isActive={pathname.startsWith('/nomi')}
+              isActive={pathname.startsWith('/video-generation')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
-              onClick={handleNomiClick}
+              onClick={handleVideoGenerationClick}
             />
-            {/* Creative Workshop (创意工坊) — infinite-canvas AI creation surface */}
-            <SiderWorkshopEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/workshop')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleWorkshopClick}
-            />
-            {/* 数据空间 — data & storage (文件管理 reserved for later) */}
-            <SiderSectionHeader label={t('common.siderSection.data')} collapsed={collapsed} />
-            {/* Knowledge base */}
             <SiderKnowledgeEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/knowledge')}
@@ -234,17 +202,14 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onClick={handleKnowledgeClick}
               dot={pendingInboxCount > 0}
             />
-            {/* Asset library — unified management of creative-workshop assets */}
-            <SiderAssetLibraryEntry
+            <SiderLearningEntry
               isMobile={isMobile}
-              isActive={pathname.startsWith('/assets')}
+              isActive={pathname.startsWith('/learn')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
-              onClick={handleAssetLibraryClick}
+              onClick={handleLearningClick}
             />
             {/* 自动化 — automation platforms */}
-            <SiderSectionHeader label={t('common.siderSection.automation')} collapsed={collapsed} />
-            {/* Scheduled tasks */}
             <SiderScheduledEntry
               isMobile={isMobile}
               isActive={pathname === '/scheduled'}
@@ -252,93 +217,45 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleScheduledClick}
             />
-            {/* Requirements platform */}
-            <SiderRequirementsEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/requirements')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleRequirementsClick}
-            />
-            {/* 增强工具 — extension capabilities */}
-            <SiderSectionHeader label={t('common.siderSection.tools')} collapsed={collapsed} />
-            {/* Presets and skills are separate concepts and destinations. */}
-            <SiderPresetEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/presets')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handlePresetClick}
-            />
-            <SiderSkillsEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/skills')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleSkillsClick}
-            />
-            {/* MCP — MCP tool server configuration */}
-            <SiderMcpEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/mcp')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleMcpClick}
-            />
-            {/* 服务 — public-facing services (客服), a domain fully separate
-                from the desktop-companion group above. */}
-            <SiderSectionHeader label={t('common.siderSection.services')} collapsed={collapsed} />
-            <SiderCustomerServiceEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/customer-service')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleCustomerServiceClick}
-            />
           </div>
-        )}
-      </div>
-      {/* Bottom pinned group (设置) — Model & Agent and Open Capabilities sit directly above Settings */}
+          {/* 项目/工作路径树 — 独立滚动，一级菜单保持固定 */}
+          {!collapsed && (
+            <div
+              data-testid='sider-workspaces-scroll-area'
+              className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pl-5px pr-8px pt-2px pb-8px`}
+            >
+              <WorkpathSessionList
+                collapsed={false}
+                tooltipEnabled={false}
+                batchMode={batchMode}
+                displayPreferences={displayPreferences}
+                onBatchModeChange={setBatchMode}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {/* Bottom pinned group (设置) — Model & Agent sit directly above Settings */}
       <div className='shrink-0 mt-auto pt-8px flex flex-col gap-2px border-t border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-b-0'>
-        {/* 设置 — section label; the enclosing border-t already separates this region when collapsed */}
-        <SiderSectionHeader label={t('common.siderSection.settings')} collapsed={collapsed} collapsedRule={false} />
-        {/* Browser management — lifecycle/visibility control for managed Chromium,
-            a settings-adjacent surface pinned directly above model management. */}
-        {!browserCapabilityUnavailable &&
-          browserOverview?.supported !== false &&
-          browserOverview?.enabled !== false && (
-          <SiderBrowserEntry
+        {!SERVER_MANAGED_MODELS && (
+          <SiderModelHubEntry
             isMobile={isMobile}
-            isActive={pathname === '/browser'}
+            isActive={pathname.startsWith('/models')}
             collapsed={collapsed}
-            runningCount={browserOverview?.running_lanes ?? 0}
-            queuedCount={browserOverview?.queued_lanes ?? 0}
             siderTooltipProps={siderTooltipProps}
-            onClick={handleBrowserClick}
+            onClick={() => navTo('/models')}
           />
         )}
-        <SiderModelHubEntry
-          isMobile={isMobile}
-          isActive={pathname.startsWith('/models')}
-          collapsed={collapsed}
-          siderTooltipProps={siderTooltipProps}
-          onClick={handleModelHubClick}
-        />
-        <SiderOpenCapabilitiesEntry
-          isMobile={isMobile}
-          isActive={pathname.startsWith('/open-capabilities')}
-          collapsed={collapsed}
-          siderTooltipProps={siderTooltipProps}
-          onClick={handleOpenCapabilitiesClick}
-        />
         <SiderFooter
           isMobile={isMobile}
           isSettings={isSettings}
           collapsed={collapsed}
           siderTooltipProps={siderTooltipProps}
-          onSettingsClick={handleSettingsClick}
+          userLabel={userLabel}
+          planLabel={planLabel}
           showLogout={showLogout}
           onLogout={handleLogout}
+          onSettingsClick={handleSettingsClick}
         />
       </div>
     </div>

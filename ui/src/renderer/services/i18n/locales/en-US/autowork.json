@@ -20,7 +20,8 @@
       "userInterrupted": "stopped by user"
     },
     "resume": "Resume",
-    "resumeSuccess": "Tag resumed"
+    "resumeSuccess": "Tag resumed",
+    "webhook": "Webhook"
   },
   "runState": {
     "off": "Off",

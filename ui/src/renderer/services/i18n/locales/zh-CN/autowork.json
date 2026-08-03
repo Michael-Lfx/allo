@@ -20,7 +20,8 @@
       "userInterrupted": "手动停止"
     },
     "resume": "恢复",
-    "resumeSuccess": "标签已恢复"
+    "resumeSuccess": "标签已恢复",
+    "webhook": "绑定 Webhook"
   },
   "runState": {
     "off": "已关闭",

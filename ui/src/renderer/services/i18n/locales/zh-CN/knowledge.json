@@ -41,7 +41,8 @@
     "timeJustNow": "刚刚",
     "timeMinutesAgo": "{{count}} 分钟前",
     "timeWeeksAgo": "上周",
-    "timeYesterday": "昨天"
+    "timeYesterday": "昨天",
+    "ready": "可检索"
   },
   "columns": {
     "actions": "操作",
@@ -87,7 +88,9 @@
     "writeback": "回血知识库",
     "writebackEagerness": "回写意识",
     "writebackHint": "允许会话把新知识沉淀为 md 写回知识库",
-    "writebackMode": "回血模式"
+    "writebackMode": "回血模式",
+    "hideAdvanced": "收起高级选项",
+    "showAdvanced": "高级选项 ›"
   },
   "detail": {
     "addTag": "标签",
@@ -179,7 +182,11 @@
       "writebackStaged": "暂存审阅",
       "writebackStagedDesc": "新知识先进「待审」，你确认后才并入（推荐）",
       "writebackTitle": "回血（让会话把新知识写回本库）"
-    }
+    },
+    "searchTitle": "检索知识库",
+    "searchInputPlaceholder": "输入关键词，检索标题与正文…",
+    "searchHint": "输入关键词后即可看到命中文档",
+    "searchEmpty": "未找到匹配内容"
   },
   "editBase": "编辑知识库",
   "empty": {
@@ -288,7 +295,9 @@
     "step3Desc": "挂载到会话，模型会在 .nomi/knowledge/ 下随时查阅。",
     "step3Title": "挂载",
     "subtitle": "知识库是一个 Markdown 文档目录，可以挂载进任意会话，作为模型的扩展知识来源。",
-    "title": "开始管理你的专属知识"
+    "title": "开始管理你的专属知识",
+    "dropTitle": "拖入文件夹，或选一种方式开始",
+    "dropHint": "试问还没资料可答——先放入 Markdown，再去对话验证。"
   },
   "retry": "重试",
   "rootMissing": "目录不存在",
@@ -408,5 +417,24 @@
     "deleteFolderTitle": "确认删除目录？",
     "deleteFolderWarning": "删除目录“{{name}}”会一并清空其下所有文档和子目录，无法撤销。"
   },
-  "title": "知识库"
+  "title": "知识库",
+  "quick": {
+    "title": "把资料变成 Agent 的工作记忆",
+    "subtitle": "选一种来源，系统会建库并带你去对话里试问一句。",
+    "sampleTitle": "用示例库试试",
+    "sampleDesc": "内置 FAQ，60 秒看到有据回答",
+    "localTitle": "本地目录",
+    "localDesc": "引用电脑上已有的 Markdown 文件夹",
+    "webTitle": "抓取网页",
+    "webDesc": "粘贴 URL，快照进知识库",
+    "blankTitle": "空白库",
+    "blankDesc": "先建空库，稍后再放资料",
+    "captureWeb": "抓取并开始",
+    "createOk": "知识库已就绪，去对话里试试",
+    "createOkAuto": "知识库已就绪，正在打开对话并提问…",
+    "desktopOnly": "选择本地目录需要桌面端",
+    "urlRequired": "请粘贴一个网页 URL",
+    "selectedPath": "已选：{{path}}",
+    "moreSources": "更多来源（飞书 / 导入 zip）›"
+  }
 }

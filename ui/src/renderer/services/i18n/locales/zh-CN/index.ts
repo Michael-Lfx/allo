@@ -41,6 +41,12 @@ import workshopEditor from './workshopEditor.json';
 import workshopGeneration from './workshopGeneration.json';
 import workshopAgent from './workshopAgent.json';
 import browser from './browser.json';
+import poi from './poi.json';
+import insights from './insights.json';
+import media from './media.json';
+import cloudLogin from './cloudLogin.json';
+import learning from './learning.json';
+import videoGeneration from './videoGeneration.json';
 
 export default {
   common,
@@ -81,4 +87,10 @@ export default {
   workshopGeneration,
   workshopAgent,
   browser,
+  poi,
+  insights,
+  media,
+  cloudLogin,
+  learning,
+  videoGeneration,
 };

@@ -41,7 +41,8 @@
     "timeJustNow": "Just now",
     "timeMinutesAgo": "{{count}} minute(s) ago",
     "timeWeeksAgo": "Last week",
-    "timeYesterday": "Yesterday"
+    "timeYesterday": "Yesterday",
+    "ready": "Searchable"
   },
   "columns": {
     "actions": "Actions",
@@ -87,7 +88,9 @@
     "writeback": "Write-back",
     "writebackEagerness": "Write-back disposition",
     "writebackHint": "Allow the session to persist new knowledge as md files into the bases",
-    "writebackMode": "Write-back mode"
+    "writebackMode": "Write-back mode",
+    "hideAdvanced": "Hide advanced",
+    "showAdvanced": "Advanced ›"
   },
   "detail": {
     "addTag": "Tag",
@@ -179,7 +182,11 @@
       "writebackStaged": "Staged",
       "writebackStagedDesc": "New knowledge goes to \"Inbox\" first; you confirm before merging (recommended)",
       "writebackTitle": "Write-back (let sessions deposit new knowledge)"
-    }
+    },
+    "searchTitle": "Search knowledge",
+    "searchInputPlaceholder": "Search titles and body text…",
+    "searchHint": "Type a keyword to see matching documents",
+    "searchEmpty": "No matches"
   },
   "editBase": "Edit knowledge base",
   "empty": {
@@ -288,7 +295,9 @@
     "step3Desc": "Attach it to sessions; the model consults it under .nomi/knowledge/.",
     "step3Title": "Mount",
     "subtitle": "A knowledge base is a directory of Markdown documents you can mount into any session as an extended knowledge source.",
-    "title": "Start managing your own knowledge"
+    "title": "Start managing your own knowledge",
+    "dropTitle": "Drop a folder, or pick a starting path",
+    "dropHint": "Nothing to ground yet — add Markdown, then verify in chat."
   },
   "retry": "Retry",
   "rootMissing": "Directory missing",
@@ -408,5 +417,24 @@
     "deleteFolderTitle": "Delete folder?",
     "deleteFolderWarning": "Deleting “{{name}}” will remove all documents and subfolders inside it. This cannot be undone."
   },
-  "title": "Knowledge"
+  "title": "Knowledge",
+  "quick": {
+    "title": "Turn material into agent working memory",
+    "subtitle": "Pick a source. We'll create the base and take you to chat with a try prompt.",
+    "sampleTitle": "Try the sample base",
+    "sampleDesc": "Built-in FAQ — see a grounded answer in ~60s",
+    "localTitle": "Local folder",
+    "localDesc": "Reference an existing Markdown directory",
+    "webTitle": "Capture a page",
+    "webDesc": "Paste a URL and snapshot it into the base",
+    "blankTitle": "Blank base",
+    "blankDesc": "Create empty, add material later",
+    "captureWeb": "Capture and start",
+    "createOk": "Knowledge base ready — try it in chat",
+    "createOkAuto": "Knowledge base ready — opening chat and asking…",
+    "desktopOnly": "Picking a local folder requires the desktop app",
+    "urlRequired": "Paste a web URL",
+    "selectedPath": "Selected: {{path}}",
+    "moreSources": "More sources (Feishu / import zip) ›"
+  }
 }

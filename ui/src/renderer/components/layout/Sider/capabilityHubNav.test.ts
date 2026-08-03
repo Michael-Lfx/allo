@@ -6,15 +6,21 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('capability hub navigation', () => {
-  test('collapses presets, skills, and MCP under Config', () => {
+  test('keeps presets, skills, and MCP out of the primary rail', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+    const settingsSiderSource = readSource(
+      new URL('../../../pages/settings/components/SettingsSider.tsx', import.meta.url)
+    );
 
-    expect(siderSource.includes('SiderConfigGroup')).toBe(true);
-    expect(siderSource.includes('siderSection.config')).toBe(true);
     expect(siderSource.includes('<SiderPresetEntry')).toBe(false);
     expect(siderSource.includes('<SiderSkillsEntry')).toBe(false);
     expect(siderSource.includes('<SiderMcpEntry')).toBe(false);
+    expect(siderSource.includes('<SiderConfigGroup')).toBe(false);
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
+
+    for (const id of ["'presets'", "'skills'", "'mcp'"]) {
+      expect(settingsSiderSource.includes(id)).toBe(true);
+    }
   });
 
   test('shows the full capability rail without first-win collapse', () => {

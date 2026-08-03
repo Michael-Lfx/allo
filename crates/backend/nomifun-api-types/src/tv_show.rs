@@ -113,7 +113,7 @@ pub struct TvShowLikeResponse {
     pub like_count: i64,
 }
 
-/// Local HTTP body for publishing a session to TV Show (orchestration endpoint).
+/// Local HTTP body for publishing a session to TV Show (coordination endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TvShowPublishSessionRequest {

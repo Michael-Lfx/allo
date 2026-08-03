@@ -323,7 +323,7 @@ function tvShowQuery(params: Record<string, string | number | undefined | null>)
   return s ? `?${s}` : '';
 }
 
-/** Orchestrate cover + package OSS upload and Flowy publish for a local session. */
+/** Coordinate cover + package OSS upload and Flowy publish for a local session. */
 export async function publishSessionToTvShow(
   sessionId: string,
   body?: { title?: string; description?: string }
