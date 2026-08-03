@@ -1,5 +1,6 @@
 //! HTTP transport with auth injection, tracing headers, and retry policy.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use nomi_config::ServerConfig;
@@ -16,11 +17,24 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_VERSION_HEADER: &str = "x-client-version";
 const LEGACY_TOKEN_HEADER: &str = "token";
 
+/// Process-wide `reqwest::Client` so every transport shares one connection pool.
+/// `HttpTransport` instances are rebuilt per request by callers, and a fresh
+/// `Client` would force a new TCP+TLS handshake every time.
+static SHARED_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+
+fn shared_client() -> Result<Client, ServerClientError> {
+    SHARED_CLIENT
+        .get_or_init(|| Client::builder().build().map_err(|e| e.to_string()))
+        .clone()
+        .map_err(|e| ServerClientError::Http(format!("build client: {e}")))
+}
+
 /// Shared HTTP client for server auth and LLM calls.
 #[derive(Clone)]
 pub struct HttpTransport {
     client: Client,
     base_url: String,
+    timeout: Duration,
     user_agent: String,
 }
 
@@ -38,15 +52,10 @@ impl HttpTransport {
             return Err(ServerClientError::MissingBaseUrl);
         }
 
-        let timeout = Duration::from_secs(timeout_secs.max(1));
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| ServerClientError::Http(format!("build client: {e}")))?;
-
         Ok(Self {
-            client,
+            client: shared_client()?,
             base_url,
+            timeout: Duration::from_secs(timeout_secs.max(1)),
             user_agent: format!("nomifun/{}", env!("CARGO_PKG_VERSION")),
         })
     }
@@ -135,6 +144,7 @@ impl HttpTransport {
             let mut builder = self
                 .client
                 .request(method.clone(), &url)
+                .timeout(self.timeout)
                 .headers(headers.clone());
             if let Some(ref json) = body {
                 builder = builder.json(json);
@@ -209,6 +219,7 @@ impl HttpTransport {
         let response = self
             .client
             .post(&url)
+            .timeout(self.timeout)
             .headers(headers.clone())
             .multipart(form)
             .send()
@@ -246,6 +257,7 @@ impl HttpTransport {
 
         self.client
             .put(url)
+            .timeout(self.timeout)
             .headers(headers)
             .body(body)
             .send()
