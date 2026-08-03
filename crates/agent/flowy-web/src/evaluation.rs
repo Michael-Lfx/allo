@@ -17,7 +17,8 @@ use crate::coordinator::{
     ExtractBudget, ExtractCoordinator, LocalExtractAdapter, ManagedExtractCoordinator,
 };
 use crate::managed::{
-    FetchReadiness, ManagedMcpCallGate, ManagedSearchService, ParallelFetchAdapter, ParallelMcpClient,
+    FetchReadiness, ManagedMcpCallControl, ManagedMcpCallGate, ManagedSearchService,
+    ParallelFetchAdapter, ParallelMcpClient,
     RemoteExtractError, RemoteExtractFallback, RemoteExtractRequest,
     RemoteExtractRequestItem,
 };
@@ -26,7 +27,8 @@ use crate::managed::{RemoteExtractBatch, RemoteExtractItem};
 use crate::provider::{HttpExtractProvider, SearchProvider};
 use crate::provider::extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
-    RemoteFallbackDecision, decide_remote_fallback,
+    RemoteExtractCapabilities, RemoteFallbackDecision, RemoteFallbackPolicy,
+    decide_remote_fallback,
 };
 use crate::types::{ExtractRequest, ExtractedPage, SearchQuery, WebError};
 
@@ -375,10 +377,13 @@ pub(crate) trait EvaluationBackendFactory: Send + Sync {
     ) -> Result<Arc<dyn EvaluationBackend>, WebError>;
 }
 
-struct ProductionBackendFactory;
+struct ProductionBackendFactory {
+    control: Option<Arc<dyn ManagedMcpCallControl>>,
+}
 
 struct ProductionBackend {
     local: Arc<HttpExtractProvider>,
+    fetch: Arc<ParallelFetchAdapter>,
     remote: Arc<dyn RemoteExtractFallback>,
     search: Arc<ManagedSearchService>,
 }
@@ -394,11 +399,13 @@ impl EvaluationBackend for ProductionBackend {
     }
 
     async fn fetch_readiness(&self) -> FetchReadiness {
-        self.remote.fetch_readiness().await
+        self.remote.readiness().await
     }
 
     async fn warm_fetch(&self) -> Result<(), RemoteExtractError> {
-        self.remote.warm_fetch(Instant::now() + DEFAULT_EVALUATION_TIMEOUT).await
+        self.fetch
+            .warm_compatibility(Instant::now() + DEFAULT_EVALUATION_TIMEOUT)
+            .await
     }
 
     async fn warm_search(&self) -> Result<(), WebError> {
@@ -421,17 +428,23 @@ impl EvaluationBackendFactory for ProductionBackendFactory {
         &self,
         call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
     ) -> Result<Arc<dyn EvaluationBackend>, WebError> {
-        let client = match call_gate {
-            Some(gate) => Arc::new(ParallelMcpClient::new_with_call_gate(Arc::clone(&gate))?),
-            None => Arc::new(ParallelMcpClient::new()?),
+        let client = match (&self.control, call_gate) {
+            (Some(control), _) => Arc::new(ParallelMcpClient::new_with_call_control(Arc::clone(
+                control,
+            ))?),
+            (None, Some(gate)) => {
+                Arc::new(ParallelMcpClient::new_with_call_gate(Arc::clone(&gate))?)
+            }
+            (None, None) => Arc::new(ParallelMcpClient::new()?),
         };
         let search = Arc::new(ManagedSearchService::keyless_with_shared_client(
             Arc::clone(&client),
         )?);
-        let remote: Arc<dyn RemoteExtractFallback> =
-            Arc::new(ParallelFetchAdapter::new(Arc::clone(&client)));
+        let fetch = Arc::new(ParallelFetchAdapter::new(Arc::clone(&client)));
+        let remote: Arc<dyn RemoteExtractFallback> = Arc::clone(&fetch) as Arc<dyn RemoteExtractFallback>;
         Ok(Arc::new(ProductionBackend {
             local: Arc::new(HttpExtractProvider::new()),
+            fetch,
             remote,
             search,
         }))
@@ -512,18 +525,21 @@ impl LocalExtractAdapter for FaultInjectingLocalAdapter {
 
 impl FetchEvaluationHarness {
     pub fn keyless_production() -> Result<Self, WebError> {
-        Self::with_call_gate(None)
+        Self::from_factory_with_gate(
+            Arc::new(ProductionBackendFactory { control: None }),
+            None,
+        )
     }
 
-    pub(crate) fn keyless_production_with_call_gate(
-        gate: Arc<dyn ManagedMcpCallGate>,
+    pub(crate) fn keyless_production_with_call_control(
+        control: Arc<dyn ManagedMcpCallControl>,
     ) -> Result<Self, WebError> {
-        Self::with_call_gate(Some(gate))
-    }
-
-    fn with_call_gate(gate: Option<Arc<dyn ManagedMcpCallGate>>) -> Result<Self, WebError> {
-        let factory: Arc<dyn EvaluationBackendFactory> = Arc::new(ProductionBackendFactory);
-        Self::from_factory_with_gate(factory, gate)
+        Self::from_factory_with_gate(
+            Arc::new(ProductionBackendFactory {
+                control: Some(control),
+            }),
+            None,
+        )
     }
 
     pub(crate) fn from_factory(
@@ -764,9 +780,11 @@ impl FetchEvaluationHarness {
                 .to_owned();
             }
             EvaluationMode::E2e => {
-                let coordinator = ManagedExtractCoordinator::from_local_adapter(
+                let coordinator = ManagedExtractCoordinator::with_profile_and_capabilities(
                     backend.local(),
                     backend.remote(),
+                    RemoteFallbackPolicy::all_eligible(),
+                    RemoteExtractCapabilities::all_eligible(),
                 );
                 let batch = coordinator
                     .extract_many(
@@ -1263,9 +1281,11 @@ mod tests {
         let local = Arc::new(FaultInjectingLocalAdapter::new(delegated, failures))
             as Arc<dyn LocalExtractAdapter>;
         let remote = Arc::new(RecordingRemote::default());
-        let coordinator = ManagedExtractCoordinator::from_local_adapter(
+        let coordinator = ManagedExtractCoordinator::with_profile_and_capabilities(
             local,
             Arc::clone(&remote) as Arc<dyn RemoteExtractFallback>,
+            RemoteFallbackPolicy::all_eligible(),
+            RemoteExtractCapabilities::all_eligible(),
         );
         let outcome = coordinator
             .extract_many(

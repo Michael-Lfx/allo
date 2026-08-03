@@ -51,6 +51,11 @@ pub enum RemoteFallbackDecision {
     Eligible {
         reason: RemoteFallbackReason,
     },
+    /// The Local failure is safe to classify, but the active rollout profile
+    /// deliberately does not send this category to the remote provider yet.
+    Deferred {
+        reason: RemoteDeferredReason,
+    },
     Forbidden {
         reason: RemoteForbiddenReason,
     },
@@ -68,6 +73,123 @@ pub enum RemoteFallbackReason {
     TransientNetwork,
     Timeout,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RemoteDeferredReason {
+    ProfileNotEnabled(RemoteFallbackReason),
+    ProviderUnsupported(RemoteFallbackReason),
+    BudgetInsufficient(RemoteFallbackReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteExtractCapabilities {
+    supported: &'static [RemoteFallbackReason],
+}
+
+impl RemoteExtractCapabilities {
+    pub const fn evidence_backed() -> Self {
+        Self {
+            supported: &[
+                RemoteFallbackReason::Pdf,
+                RemoteFallbackReason::JavascriptShell,
+                RemoteFallbackReason::EmptyContent,
+            ],
+        }
+    }
+
+    #[allow(dead_code)]
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub const fn all_eligible() -> Self {
+        Self {
+            supported: &[
+                RemoteFallbackReason::Pdf,
+                RemoteFallbackReason::UnsupportedDocument,
+                RemoteFallbackReason::JavascriptShell,
+                RemoteFallbackReason::EmptyContent,
+                RemoteFallbackReason::TransientNetwork,
+                RemoteFallbackReason::Timeout,
+            ],
+        }
+    }
+
+    pub fn supports(self, reason: RemoteFallbackReason) -> bool {
+        self.supported.contains(&reason)
+    }
+}
+
+/// Remote fallback profile owned by the extraction policy module.
+///
+/// `AllEligible` preserves the broad policy used by evaluation and internal
+/// tests. Production Desktop uses `EvidenceBacked`, whose small allow-list is
+/// based on the completed PDF and JavaScript Provider evidence.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteFallbackProfile {
+    EvidenceBacked,
+    #[cfg(any(test, feature = "fetch-eval"))]
+    AllEligible,
+}
+
+impl RemoteFallbackProfile {
+    #[allow(dead_code)]
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub const fn all_eligible() -> Self {
+        Self::AllEligible
+    }
+
+    pub const fn evidence_backed() -> Self {
+        Self::EvidenceBacked
+    }
+
+    pub const fn allows(self, reason: RemoteFallbackReason) -> bool {
+        match self {
+            Self::EvidenceBacked => matches!(
+                reason,
+                RemoteFallbackReason::Pdf
+                    | RemoteFallbackReason::JavascriptShell
+                    | RemoteFallbackReason::EmptyContent
+            ),
+            #[cfg(any(test, feature = "fetch-eval"))]
+            Self::AllEligible => true,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn decide(
+        self,
+        outcome: &LocalExtractOutcome,
+        allow_private: bool,
+    ) -> RemoteFallbackDecision {
+        self.decide_with_capabilities(
+            outcome,
+            allow_private,
+            RemoteExtractCapabilities::evidence_backed(),
+        )
+    }
+
+    pub fn decide_with_capabilities(
+        self,
+        outcome: &LocalExtractOutcome,
+        allow_private: bool,
+        capabilities: RemoteExtractCapabilities,
+    ) -> RemoteFallbackDecision {
+        match decide_remote_fallback_with_private(outcome, allow_private) {
+            RemoteFallbackDecision::Eligible { reason } if !self.allows(reason) => {
+                RemoteFallbackDecision::Deferred {
+                    reason: RemoteDeferredReason::ProfileNotEnabled(reason),
+                }
+            }
+            RemoteFallbackDecision::Eligible { reason } if !capabilities.supports(reason) => {
+                RemoteFallbackDecision::Deferred {
+                    reason: RemoteDeferredReason::ProviderUnsupported(reason),
+                }
+            }
+            decision => decision,
+        }
+    }
+}
+
+pub(crate) type RemoteFallbackPolicy = RemoteFallbackProfile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RemoteForbiddenReason {
@@ -672,6 +794,62 @@ mod tests {
                 reason: RemoteFallbackReason::EmptyContent
             }
         ));
+    }
+
+    #[test]
+    fn evidence_backed_policy_allows_only_qualified_categories() {
+        let policy = RemoteFallbackPolicy::evidence_backed();
+        for (url, kind, reason) in [
+            (
+                "https://example.com/a.pdf",
+                LocalExtractFailureKind::Pdf,
+                RemoteFallbackReason::Pdf,
+            ),
+            (
+                "https://example.com/app",
+                LocalExtractFailureKind::JavascriptShell,
+                RemoteFallbackReason::JavascriptShell,
+            ),
+            (
+                "https://example.com/empty",
+                LocalExtractFailureKind::EmptyContent,
+                RemoteFallbackReason::EmptyContent,
+            ),
+        ] {
+            assert_eq!(
+                policy.decide(&failure(url, kind), false),
+                RemoteFallbackDecision::Eligible { reason }
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_backed_policy_defers_unqualified_transient_failures() {
+        let policy = RemoteFallbackPolicy::evidence_backed();
+        for kind in [
+            LocalExtractFailureKind::Dns,
+            LocalExtractFailureKind::Tls,
+            LocalExtractFailureKind::Network,
+            LocalExtractFailureKind::Timeout,
+            LocalExtractFailureKind::UnsupportedDocument,
+        ] {
+            let reason = match kind {
+                LocalExtractFailureKind::Dns
+                | LocalExtractFailureKind::Tls
+                | LocalExtractFailureKind::Network => RemoteFallbackReason::TransientNetwork,
+                LocalExtractFailureKind::Timeout => RemoteFallbackReason::Timeout,
+                LocalExtractFailureKind::UnsupportedDocument => {
+                    RemoteFallbackReason::UnsupportedDocument
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                policy.decide(&failure("https://example.com/", kind), false),
+                RemoteFallbackDecision::Deferred {
+                    reason: RemoteDeferredReason::ProfileNotEnabled(reason),
+                }
+            );
+        }
     }
 
     #[test]

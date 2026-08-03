@@ -65,6 +65,13 @@ notes at a high level rather than a complete historical log.
   evidence, requires exact cold-Compare plus warm-E2E triples, and records
   Local PDF/Unsupported Document deferrals as structured policy outcomes before
   any remote fallback is considered.
+- Added an evidence-backed Managed Fetch mode for Desktop canary rollout. It
+  keeps PDF/JavaScript/Empty Content as the only remote fallback categories,
+  validates every production MCP call at the transport seam, and supports the
+  `NOMIFUN_MANAGED_FETCH_MODE=off|evidence-backed` startup override.
+- Desktop now defaults to the evidence-backed Managed Fetch profile after the
+  completed canary acceptance; `NOMIFUN_MANAGED_FETCH_MODE=off` remains the
+  immediate Local-only rollback.
 
 ## v0.3.3 - 2026-07-30
 

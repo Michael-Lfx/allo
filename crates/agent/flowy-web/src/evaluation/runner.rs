@@ -32,15 +32,21 @@ use crate::coordinator::{
     ExtractBudget, ExtractCoordinator, LocalExtractAdapter, ManagedExtractCoordinator,
 };
 use crate::managed::{
-    FetchReadiness, ManagedMcpCallError, ManagedMcpCallGate, ManagedMcpTool,
-    RemoteExtractBatch, RemoteExtractError, RemoteExtractFallback, RemoteExtractItem,
-    RemoteExtractRequest, RemoteExtractRequestItem,
+    AuthorizedParallelCall, FetchReadiness, ManagedMcpCallControl, ManagedMcpCallError,
+    ManagedMcpCallGate, ManagedMcpTool, ParallelCallRejection,
+    RemoteExtractBatch,
+    RemoteExtractError, RemoteExtractFallback,
+    RemoteExtractItem, RemoteExtractRequest, RemoteExtractRequestItem,
 };
 use crate::managed::fetch::RemoteFetchDiagnostics;
 use crate::provider::extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
+    RemoteExtractCapabilities, RemoteFallbackPolicy,
 };
 use crate::types::{ExtractRequest, ExtractedPage, WebError};
+
+#[cfg(test)]
+use crate::managed::ParallelMcpCallPolicy;
 
 pub const MAX_CALLS_PER_RUN: u32 = 25;
 pub const MAX_CALLS_PER_DAY: u32 = 60;
@@ -162,7 +168,7 @@ enum QuotaLedgerError {
 /// A process-safe daily quota gate. It is called immediately before the
 /// Remote adapter, after Local policy has decided that a remote call is
 /// actually needed.
-pub(crate) struct FileQuotaGate {
+pub(crate) struct FileQuotaControl {
     path: PathBuf,
     daily_cap: u32,
     max_calls: u32,
@@ -176,7 +182,7 @@ pub(crate) struct FileQuotaGate {
     state: Mutex<GateState>,
 }
 
-impl FileQuotaGate {
+impl FileQuotaControl {
     pub(crate) fn new(path: PathBuf, daily_cap: u32, max_calls: u32) -> Self {
         Self {
             path,
@@ -253,28 +259,12 @@ impl FileQuotaGate {
         state.retry_after_ms = retry_after_ms;
         state.cooldown_until_unix = cooldown;
     }
-}
 
-#[async_trait]
-impl ManagedMcpCallGate for FileQuotaGate {
-    async fn before_call(
+    fn reserve_quota(
         &self,
         tool: ManagedMcpTool,
-        arguments: &Value,
         attempt: u8,
     ) -> Result<(), ManagedMcpCallError> {
-        if attempt > 3 {
-            self.retry_limit_violations.fetch_add(1, Ordering::SeqCst);
-            self.set_stop("safety_violation");
-            return Err(ManagedMcpCallError::RetryLimitExceeded);
-        }
-        if tool == ManagedMcpTool::Fetch && !safe_fetch_arguments(arguments) {
-            self.sensitive_egress_violations
-                .fetch_add(1, Ordering::SeqCst);
-            self.set_stop("safety_violation");
-            return Err(ManagedMcpCallError::UnsafeArguments);
-        }
-
         let _lock = self.call_lock.lock().expect("quota call lock poisoned");
         if self.run_calls.load(Ordering::SeqCst) >= self.max_calls {
             self.set_stop("quota_exhausted");
@@ -322,6 +312,18 @@ impl ManagedMcpCallGate for FileQuotaGate {
             }
         }
     }
+}
+
+#[async_trait]
+impl ManagedMcpCallGate for FileQuotaControl {
+    async fn before_call(
+        &self,
+        tool: ManagedMcpTool,
+        _arguments: &Value,
+        attempt: u8,
+    ) -> Result<(), ManagedMcpCallError> {
+        self.reserve_quota(tool, attempt)
+    }
 
     fn observe(
         &self,
@@ -338,38 +340,72 @@ impl ManagedMcpCallGate for FileQuotaGate {
             self.record_rate_limit(*retry_after);
         }
     }
+
+    fn observe_rejection(&self, error: ManagedMcpCallError) {
+        match error {
+            ManagedMcpCallError::RetryLimitExceeded => {
+                self.retry_limit_violations.fetch_add(1, Ordering::SeqCst);
+                self.set_stop("safety_violation");
+            }
+            ManagedMcpCallError::UnsafeArguments => {
+                self.sensitive_egress_violations
+                    .fetch_add(1, Ordering::SeqCst);
+                self.set_stop("safety_violation");
+            }
+            _ => {}
+        }
+    }
 }
 
-fn safe_fetch_arguments(arguments: &Value) -> bool {
-    let Some(object) = arguments.as_object() else {
-        return false;
-    };
-    let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    if keys != BTreeSet::from(["full_content", "urls"]) {
-        return false;
+#[async_trait]
+impl ManagedMcpCallControl for FileQuotaControl {
+    async fn reserve(
+        &self,
+        call: &AuthorizedParallelCall,
+    ) -> Result<(), crate::managed::ManagedMcpControlError> {
+        self.reserve_quota(call.tool(), call.attempt())
+            .map_err(|error| match error {
+                ManagedMcpCallError::QuotaExhausted => {
+                    crate::managed::ManagedMcpControlError::QuotaExhausted
+                }
+                ManagedMcpCallError::LedgerFailure => {
+                    crate::managed::ManagedMcpControlError::LedgerFailure
+                }
+                _ => crate::managed::ManagedMcpControlError::LedgerFailure,
+            })
     }
-    if arguments
-        .get("full_content")
-        .and_then(Value::as_bool)
-        != Some(false)
-    {
-        return false;
+
+    fn observe_rejection(&self, rejection: ParallelCallRejection) {
+        match rejection {
+            ParallelCallRejection::RetryLimitExceeded => {
+                self.retry_limit_violations.fetch_add(1, Ordering::SeqCst);
+                self.set_stop("safety_violation");
+            }
+            ParallelCallRejection::UnsafeArguments => {
+                self.sensitive_egress_violations
+                    .fetch_add(1, Ordering::SeqCst);
+                self.set_stop("safety_violation");
+            }
+        }
     }
-    let Some(urls) = arguments.get("urls").and_then(Value::as_array) else {
-        return false;
-    };
-    !urls.is_empty()
-        && urls.iter().all(|value| {
-            let Some(raw) = value.as_str() else {
-                return false;
-            };
-            let Ok(prepared) = crate::provider::extract_policy::prepare_remote_url(raw, false)
-            else {
-                return false;
-            };
-            prepared.outbound_url == raw
-        })
+
+    fn observe_result(
+        &self,
+        _call: &AuthorizedParallelCall,
+        result: &Result<nomi_mcp::protocol::McpToolResult, nomi_mcp::remote_peer::McpPeerError>,
+    ) {
+        if let Err(nomi_mcp::remote_peer::McpPeerError::Http {
+            status,
+            retry_after,
+        }) = result
+            && *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            self.record_rate_limit(*retry_after);
+        }
+    }
 }
+
+pub(crate) type FileQuotaGate = FileQuotaControl;
 
 fn update_ledger<T>(
     path: &Path,
@@ -545,14 +581,15 @@ async fn run_inner(
             config.max_calls,
         )))
     };
-    let harness_gate = gate
-        .as_ref()
-        .map(|value| Arc::clone(value) as Arc<dyn ManagedMcpCallGate>);
     let harness = match injected_factory {
-        Some(factory) => FetchEvaluationHarness::from_factory_with_gate(factory, harness_gate),
+        Some(factory) => FetchEvaluationHarness::from_factory_with_gate(
+            factory,
+            gate.as_ref()
+                .map(|value| Arc::clone(value) as Arc<dyn ManagedMcpCallGate>),
+        ),
         None => match gate.as_ref() {
-            Some(gate) => FetchEvaluationHarness::keyless_production_with_call_gate(
-                Arc::clone(gate) as Arc<dyn ManagedMcpCallGate>,
+            Some(gate) => FetchEvaluationHarness::keyless_production_with_call_control(
+                Arc::clone(gate) as Arc<dyn ManagedMcpCallControl>,
             ),
             None => FetchEvaluationHarness::keyless_production(),
         },
@@ -1802,12 +1839,14 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
         .saturating_sub(forbidden_remote_calls_before);
 
     let budget_remote_calls_before = counters.remote_calls.load(Ordering::SeqCst);
-    let budget_coordinator = ManagedExtractCoordinator::from_local_adapter(
+    let budget_coordinator = ManagedExtractCoordinator::with_profile_and_capabilities(
         Arc::new(DemoLocal),
         Arc::new(DemoRemote {
             counters: Arc::clone(&counters),
             gate: None,
         }),
+        RemoteFallbackPolicy::all_eligible(),
+        RemoteExtractCapabilities::all_eligible(),
     );
     let budget_outcome = budget_coordinator
         .extract_many(
@@ -1972,7 +2011,7 @@ impl EvaluationBackend for DemoBackend {
     }
 
     async fn fetch_readiness(&self) -> FetchReadiness {
-        self.remote.fetch_readiness().await
+        self.remote.readiness().await
     }
 
     async fn warm_fetch(&self) -> Result<(), RemoteExtractError> {
@@ -2044,6 +2083,10 @@ impl LocalExtractAdapter for DemoLocal {
 
 #[async_trait]
 impl RemoteExtractFallback for DemoRemote {
+    async fn readiness(&self) -> crate::managed::RemoteExtractReadiness {
+        crate::managed::RemoteExtractReadiness::Ready { generation: 1 }
+    }
+
     async fn extract_batch(
         &self,
         request: RemoteExtractRequest,
@@ -2080,9 +2123,6 @@ impl RemoteExtractFallback for DemoRemote {
         result
     }
 
-    async fn fetch_readiness(&self) -> FetchReadiness {
-        FetchReadiness::Ready { generation: 1 }
-    }
 }
 
 impl DemoRemote {
@@ -2842,10 +2882,14 @@ mod tests {
         assert_eq!(gate.fetch_calls(), 3);
         assert_eq!(gate.search_calls(), 1);
         assert_eq!(gate.recovery_calls(), 2);
+        let rejection = ParallelMcpCallPolicy
+            .authorize("web_fetch", fetch.clone(), 4)
+            .expect_err("the production policy owns retry limits");
         assert!(matches!(
-            ManagedMcpCallGate::before_call(&gate, ManagedMcpTool::Fetch, &fetch, 4).await,
-            Err(ManagedMcpCallError::RetryLimitExceeded)
+            rejection,
+            ParallelCallRejection::RetryLimitExceeded
         ));
+        ManagedMcpCallControl::observe_rejection(&gate, rejection);
         assert_eq!(gate.retry_limit_violations(), 1);
         let _ = fs::remove_file(path);
     }
@@ -2861,10 +2905,33 @@ mod tests {
             "urls": ["https://example.com/?token=secret"],
             "full_content": false,
         });
-        assert!(matches!(
-            ManagedMcpCallGate::before_call(&gate, ManagedMcpTool::Fetch, &sensitive, 1).await,
-            Err(ManagedMcpCallError::UnsafeArguments)
+        let rejection = ParallelMcpCallPolicy
+            .authorize("web_fetch", sensitive, 1)
+            .expect_err("the production policy owns URL safety");
+        assert!(matches!(rejection, ParallelCallRejection::UnsafeArguments));
+        ManagedMcpCallControl::observe_rejection(&gate, rejection);
+        assert_eq!(gate.actual_calls(), 0);
+        assert_eq!(gate.sensitive_egress_violations(), 1);
+        assert!(!path.exists(), "blocked calls must not initialize the quota ledger");
+    }
+
+    #[tokio::test]
+    async fn managed_call_gate_rejects_unsafe_search_before_quota() {
+        let path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-unsafe-search-{}.json",
+            Uuid::now_v7()
         ));
+        let gate = FileQuotaGate::new(path.clone(), 60, 10);
+        let unsafe_search = serde_json::json!({
+            "objective": "warm",
+            "search_queries": ["warm"],
+            "session_id": "must be blocked",
+        });
+        let rejection = ParallelMcpCallPolicy
+            .authorize("web_search", unsafe_search, 1)
+            .expect_err("the production policy owns Search argument safety");
+        assert!(matches!(rejection, ParallelCallRejection::UnsafeArguments));
+        ManagedMcpCallControl::observe_rejection(&gate, rejection);
         assert_eq!(gate.actual_calls(), 0);
         assert_eq!(gate.sensitive_egress_violations(), 1);
         assert!(!path.exists(), "blocked calls must not initialize the quota ledger");
@@ -2882,10 +2949,11 @@ mod tests {
             "full_content": false,
             "objective": "must be blocked",
         });
-        assert!(matches!(
-            gate.before_call(ManagedMcpTool::Fetch, &extra, 1).await,
-            Err(ManagedMcpCallError::UnsafeArguments)
-        ));
+        let rejection = ParallelMcpCallPolicy
+            .authorize("web_fetch", extra, 1)
+            .expect_err("the production policy owns Fetch argument safety");
+        assert!(matches!(rejection, ParallelCallRejection::UnsafeArguments));
+        ManagedMcpCallControl::observe_rejection(&gate, rejection);
         assert_eq!(gate.actual_calls(), 0);
         assert_eq!(gate.sensitive_egress_violations(), 1);
         assert!(!path.exists());

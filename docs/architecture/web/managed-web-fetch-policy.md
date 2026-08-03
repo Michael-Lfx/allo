@@ -1,11 +1,12 @@
 # Local-first Managed Extract Policy
 
-Date: 2026-07-31
+Date: 2026-08-02
 
 This policy governs the private Parallel `web_fetch` fallback behind the
-existing `web_extract` tool. It is the production policy for the managed
-Desktop capability once real acceptance passes. Until then, Desktop keeps
-`managed_extract=false`.
+existing `web_extract` tool. Desktop now starts in the evidence-backed profile
+after the completed PDF/JavaScript acceptance. `NOMIFUN_MANAGED_FETCH_MODE=off`
+is the emergency Local-only rollback; an explicit `evidence-backed` value is
+equivalent to the default.
 
 Full evolution record and lessons:
 [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
@@ -41,10 +42,16 @@ fan out to every original request index.
 
 ## Remote Eligible
 
-The first version may send these to Parallel only after local failure:
+The evidence-backed Desktop profile may send these to Parallel only after local
+failure:
 
 - PDF
 - JavaScript shell with no useful rendered body
+- Empty content
+
+The following remain policy-deferred and Local-only until separate production
+evidence is approved:
+
 - Unsupported public document content types
 - Local extraction with no valid body
 - Public URL transient DNS, TLS, or network failure
@@ -155,8 +162,13 @@ Managed Search and Managed Extract.
 
 ```text
 managed_search=true
-managed_extract=false (until real acceptance)
+managed_extract=Disabled | EvidenceBacked
 ```
+
+`EvidenceBacked` currently permits only PDF, JavaScript shell, and Empty
+Content fallback categories. The default is `EvidenceBacked`. Blank or unknown
+`NOMIFUN_MANAGED_FETCH_MODE` values fail closed to `Disabled` and emit a
+structured warning.
 
 If Parallel initialization fails:
 
@@ -182,10 +194,12 @@ never emits duplicate `tools/list` requests for the same peer.
 Logs record counts and timing only:
 
 - requested, local success/failure, final success/failure
-- remote eligible/forbidden/budget-skipped
+- remote policy candidates/deferred/eligible/forbidden/budget-skipped
 - remote attempted/success/failure and fallback/forbidden reason counts
 - timeout category counts (per-url, tool deadline, remote queue/call)
 - source_truncated_count and context_truncated_count
+- source-contract, safety rejection, recovery, provider-unavailable and
+  provider-init-failure counts
 - remote queue/call time and total elapsed
 
 Logs never record URLs, query parameters, page titles, bodies, user questions,

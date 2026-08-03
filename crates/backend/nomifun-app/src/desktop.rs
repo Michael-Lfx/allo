@@ -635,7 +635,7 @@ impl DesktopServer {
         let services = match AppServices::try_from_config_with_capabilities(
             database,
             &config,
-            AppHostCapabilities::desktop(),
+            AppHostCapabilities::desktop_runtime(),
         )
         .await
         {

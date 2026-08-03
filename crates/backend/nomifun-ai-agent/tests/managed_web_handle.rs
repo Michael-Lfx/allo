@@ -1,17 +1,19 @@
 #![cfg(feature = "managed-search")]
 
-use nomifun_ai_agent::ManagedWebHandle;
+use nomifun_ai_agent::{ManagedExtractMode, ManagedWebHandle};
 
 #[test]
 fn managed_web_handle_constructs_offline() {
-    let handle = ManagedWebHandle::keyless_default(false).expect("offline construction");
+    let handle = ManagedWebHandle::keyless_default(ManagedExtractMode::Disabled)
+        .expect("offline construction");
     let _provider = handle.search_provider();
     assert!(handle.extract_coordinator().is_none());
 }
 
 #[test]
 fn managed_web_handle_can_compose_extract_capability() {
-    let handle = ManagedWebHandle::keyless_default(true).expect("offline construction");
+    let handle = ManagedWebHandle::keyless_default(ManagedExtractMode::EvidenceBacked)
+        .expect("offline construction");
     assert!(handle.extract_coordinator().is_some());
 }
 
@@ -23,7 +25,8 @@ fn managed_web_handle_supports_ddg_only_fallback() {
 
 #[tokio::test]
 async fn managed_web_shutdown_is_idempotent() {
-    let handle = ManagedWebHandle::keyless_default(false).expect("offline construction");
+    let handle = ManagedWebHandle::keyless_default(ManagedExtractMode::Disabled)
+        .expect("offline construction");
     handle.shutdown().await;
     handle.shutdown().await;
 }

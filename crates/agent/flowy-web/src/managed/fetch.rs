@@ -1,5 +1,6 @@
 #![allow(dead_code)] // Wired into the managed extract coordinator in Phase 7.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -83,6 +84,9 @@ pub struct RemoteFetchDiagnostics {
     pub used_text_fallback: bool,
     pub queue_ms: Option<u128>,
     pub call_ms: Option<u128>,
+    /// Additional `web_fetch` calls caused by session recovery or tool
+    /// rediscovery. Discovery/list calls are not included.
+    pub recovery_call_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +104,10 @@ pub enum RemoteExtractError {
     SessionExpired,
     InvalidRequest,
     MalformedResponse,
+    SourceContractViolation {
+        unmatched_items: usize,
+        dropped_items: usize,
+    },
     Upstream,
 }
 
@@ -110,7 +118,7 @@ pub enum RemoteTimeoutKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FetchReadiness {
+pub enum RemoteExtractReadiness {
     ColdTransport,
     WarmTransportToolUnknown,
     Ready {
@@ -119,24 +127,25 @@ pub enum FetchReadiness {
 }
 
 #[async_trait]
-pub trait RemoteExtractFallback: Send + Sync {
+pub(crate) trait RemoteExtractProvider: Send + Sync {
     async fn extract_batch(
         &self,
         request: RemoteExtractRequest,
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError>;
 
-    async fn fetch_readiness(&self) -> FetchReadiness {
-        FetchReadiness::ColdTransport
-    }
-
-    /// Prepare the transport and fetch-tool compatibility cache without
-    /// issuing a `web_fetch` call. This is the boundary used to define a warm
-    /// evaluation attempt.
-    async fn warm_fetch(&self, _deadline: Instant) -> Result<(), RemoteExtractError> {
-        Ok(())
+    async fn readiness(&self) -> RemoteExtractReadiness {
+        RemoteExtractReadiness::ColdTransport
     }
 }
+
+// Transitional crate-private aliases keep the feature-gated evaluation and
+// legacy adapter tests source-compatible while the provider seam is migrated.
+// They are intentionally not exported from the crate root.
+#[cfg(any(test, feature = "fetch-eval"))]
+pub(crate) use RemoteExtractProvider as RemoteExtractFallback;
+#[cfg(any(test, feature = "fetch-eval"))]
+pub(crate) type FetchReadiness = RemoteExtractReadiness;
 
 pub struct ParallelFetchAdapter {
     client: Arc<ParallelMcpClient>,
@@ -196,14 +205,24 @@ impl ParallelFetchAdapter {
         *self.discovery.lock().await = None;
         self.client.invalidate_tools_cache().await;
     }
+
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub(crate) async fn fetch_readiness(&self) -> RemoteExtractReadiness {
+        self.readiness().await
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    pub(crate) async fn warm_compatibility(&self, deadline: Instant) -> Result<(), RemoteExtractError> {
+        self.ensure_compatible(deadline).await
+    }
 }
 
 #[async_trait]
-impl RemoteExtractFallback for ParallelFetchAdapter {
-    async fn fetch_readiness(&self) -> FetchReadiness {
+impl RemoteExtractProvider for ParallelFetchAdapter {
+    async fn readiness(&self) -> RemoteExtractReadiness {
         let peer_readiness = self.client.peer().readiness().await;
         if !peer_readiness.initialized {
-            return FetchReadiness::ColdTransport;
+            return RemoteExtractReadiness::ColdTransport;
         }
         let cache = self.discovery.lock().await;
         match (peer_readiness.generation, cache.as_ref()) {
@@ -211,14 +230,10 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                 Some(generation),
                 Some(cached),
             ) if cached.generation == Some(generation) && cached.result.is_ok() => {
-                FetchReadiness::Ready { generation }
+                RemoteExtractReadiness::Ready { generation }
             }
-            _ => FetchReadiness::WarmTransportToolUnknown,
+            _ => RemoteExtractReadiness::WarmTransportToolUnknown,
         }
-    }
-
-    async fn warm_fetch(&self, deadline: Instant) -> Result<(), RemoteExtractError> {
-        self.ensure_compatible(deadline).await
     }
 
     async fn extract_batch(
@@ -229,12 +244,14 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
         let mut session_retried = false;
         let mut tool_rediscovered = false;
         let mut tool_attempt = 0_u8;
+        let mut recovery_call_count = 0usize;
         loop {
             match self.ensure_compatible(deadline).await {
                 Ok(()) => {}
                 Err(RemoteExtractError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    recovery_call_count += 1;
                     continue;
                 }
                 Err(error) => {
@@ -307,6 +324,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         if !tool_rediscovered {
                             self.clear_compatibility().await;
                             tool_rediscovered = true;
+                            recovery_call_count += 1;
                             continue;
                         }
                         return Err(RemoteExtractError::ToolMissing);
@@ -324,6 +342,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         Ok(mut batch) => {
                             batch.diagnostics.queue_ms = queue_ms;
                             batch.diagnostics.call_ms = call_ms;
+                            batch.diagnostics.recovery_call_count = recovery_call_count;
                             self.client.record_endpoint_success().await;
                             self.client.record_fetch_tool_success().await;
                             return Ok(batch);
@@ -344,11 +363,13 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                 {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    recovery_call_count += 1;
                 }
                 Err(ManagedMcpCallError::Peer(error)) => {
                     if !tool_rediscovered && is_explicit_unknown_tool_rpc(&error) {
                         self.clear_compatibility().await;
                         tool_rediscovered = true;
+                        recovery_call_count += 1;
                         continue;
                     }
                     let mapped = map_peer_error(error);
@@ -399,6 +420,14 @@ impl ParallelFetchAdapter {
                     .await;
             }
             RemoteExtractError::MalformedResponse => {
+                self.client
+                    .record_fetch_error(
+                        FetchToolFailureKind::MalformedResponse,
+                        Instant::now(),
+                    )
+                    .await;
+            }
+            RemoteExtractError::SourceContractViolation { .. } => {
                 self.client
                     .record_fetch_error(
                         FetchToolFailureKind::MalformedResponse,
@@ -491,6 +520,7 @@ struct DecodedPayload {
     results: Vec<DecodedResult>,
     errors: Vec<DecodedError>,
     malformed_result_count: usize,
+    malformed_error_count: usize,
 }
 
 struct DecodedResult {
@@ -536,11 +566,20 @@ fn decode_payload(value: &Value) -> Result<DecodedPayload, ()> {
             malformed_result_count += 1;
         }
     }
-    let decoded_errors = errors.iter().filter_map(decode_error_item).collect();
+    let mut decoded_errors = Vec::new();
+    let mut malformed_error_count = 0usize;
+    for item in errors {
+        if let Some(decoded) = decode_error_item(item) {
+            decoded_errors.push(decoded);
+        } else {
+            malformed_error_count += 1;
+        }
+    }
     Ok(DecodedPayload {
         results: decoded_results,
         errors: decoded_errors,
         malformed_result_count,
+        malformed_error_count,
     })
 }
 
@@ -655,17 +694,43 @@ fn build_batch(
         });
     }
 
+    let requested_urls = request
+        .items
+        .iter()
+        .map(|item| item.canonical_url().clone())
+        .collect::<HashSet<_>>();
+    let result_urls = payload
+        .results
+        .iter()
+        .map(|result| canonical_requested_url(&result.url))
+        .collect::<HashSet<_>>();
+    let dropped_error_count = payload
+        .errors
+        .iter()
+        .filter(|error| {
+            let error_url = canonical_requested_url(&error.url);
+            !requested_urls.contains(&error_url) || result_urls.contains(&error_url)
+        })
+        .count();
     let dropped_item_count = payload
         .results
         .iter()
         .enumerate()
         .filter(|(result_index, _)| assignment_counts[*result_index] == 0)
         .count()
-        + payload.malformed_result_count;
+        + payload.malformed_result_count
+        + payload.malformed_error_count;
+    let dropped_item_count = dropped_item_count + dropped_error_count;
     let source_truncated_count = items
         .iter()
         .filter(|item| item.source_truncated)
         .count();
+    if unmatched_item_count > 0 || dropped_item_count > 0 {
+        return Err(RemoteExtractError::SourceContractViolation {
+            unmatched_items: unmatched_item_count,
+            dropped_items: dropped_item_count,
+        });
+    }
     Ok(RemoteExtractBatch {
         items,
         diagnostics: RemoteFetchDiagnostics {
@@ -675,6 +740,7 @@ fn build_batch(
             used_text_fallback,
             queue_ms: None,
             call_ms: None,
+            recovery_call_count: 0,
         },
     })
 }
@@ -875,10 +941,16 @@ mod tests {
             }),
             None,
         );
-        let batch = decode_fetch(&remote, &request(&["https://example.com/a", "https://example.com/missing"])).unwrap();
-        assert_eq!(batch.items.len(), 1);
-        assert_eq!(batch.diagnostics.dropped_item_count, 1);
-        assert_eq!(batch.diagnostics.unmatched_item_count, 1);
+        assert!(matches!(
+            decode_fetch(
+                &remote,
+                &request(&["https://example.com/a", "https://example.com/missing"])
+            ),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 1,
+                dropped_items: 1,
+            })
+        ));
     }
 
     #[test]
@@ -892,10 +964,49 @@ mod tests {
             }),
             None,
         );
-        let batch = decode_fetch(&remote, &request(&["https://example.com/a"])).unwrap();
-        assert!(batch.items.is_empty());
-        assert_eq!(batch.diagnostics.dropped_item_count, 1);
-        assert_eq!(batch.diagnostics.unmatched_item_count, 1);
+        assert!(matches!(
+            decode_fetch(&remote, &request(&["https://example.com/a"])),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 1,
+                dropped_items: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_error_item_is_a_source_contract_violation() {
+        let remote = result(
+            json!({
+                "results": [{"url": "https://example.com/a", "excerpts": ["A"]}],
+                "errors": [{"url": 42}]
+            }),
+            None,
+        );
+        assert!(matches!(
+            decode_fetch(&remote, &request(&["https://example.com/a"])),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 0,
+                dropped_items: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn extra_error_item_is_a_source_contract_violation() {
+        let remote = result(
+            json!({
+                "results": [{"url": "https://example.com/a", "excerpts": ["A"]}],
+                "errors": [{"url": "https://example.com/extra", "http_status_code": 404}]
+            }),
+            None,
+        );
+        assert!(matches!(
+            decode_fetch(&remote, &request(&["https://example.com/a"])),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 0,
+                dropped_items: 1,
+            })
+        ));
     }
 
     #[test]

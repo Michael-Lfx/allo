@@ -48,6 +48,18 @@ pub use nomi_agent::cron_tools::{CronJobSummary, CronSink};
 pub use nomi_agent::requirement_tools::RequirementSink;
 pub use nomi_agent::SearchProviderBinding;
 pub use nomi_agent::ExtractCoordinatorBinding;
+
+/// Host-selected mode for the private managed extraction fallback.
+///
+/// This type lives on the backend-to-agent seam so non-managed-search builds
+/// can still construct the host capability profile without depending on the
+/// optional `flowy-web` implementation crate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ManagedExtractMode {
+    #[default]
+    Disabled,
+    EvidenceBacked,
+}
 pub use nomi_config;
 pub use nomi_types;
 
