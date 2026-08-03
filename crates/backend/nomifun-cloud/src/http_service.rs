@@ -35,8 +35,14 @@ impl CloudService {
     pub fn new(data_dir: PathBuf) -> Result<Self, AppError> {
         let path = config_yaml_path(Some(&data_dir));
         let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
+        // Persist when the file is missing OR when base_url/provider were empty —
+        // otherwise other services that read yaml from disk (media/vimax) stay
+        // gated off by `api_ready() == false` for the whole process lifetime.
+        let should_persist = !path.exists()
+            || config.server.base_url.trim().is_empty()
+            || config.media.provider.trim().is_empty();
         ensure_gateway_defaults(&mut config);
-        if !path.exists() {
+        if should_persist {
             save_config_yaml(&path, &config).map_err(|e| AppError::Internal(e))?;
         }
         Ok(Self {
@@ -441,6 +447,7 @@ fn truncate_diag(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE;
 
     #[test]
     fn im_client_and_session_requires_auth() {
@@ -452,5 +459,26 @@ mod tests {
 
         let token = require_im_access_token(Some("jwt-abc".into())).expect("token");
         assert_eq!(token, "jwt-abc");
+    }
+
+    #[test]
+    fn new_persists_default_base_url_when_yaml_has_empty_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_yaml_path(Some(dir.path()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "server:\n  enabled: false\n  base_url: \"\"\nmedia:\n  provider: \"\"\n",
+        )
+        .unwrap();
+
+        let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
+        let settings = svc.server_settings();
+        assert_eq!(settings.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+        assert!(settings.enabled);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(DEFAULT_WECHAT_FLOWY_SERVER_BASE));
+        assert!(raw.contains("provider: flowy") || raw.contains("provider: \"flowy\""));
     }
 }

@@ -6379,6 +6379,7 @@ export type IUpdateMediaSettings = Partial<
     | 'image_save_locally'
     | 'video_save_locally'
     | 'video_default_duration'
+    | 'video_default_aspect_ratio'
     | 'workflows_enabled'
     | 'workflows_max_retries'
   >

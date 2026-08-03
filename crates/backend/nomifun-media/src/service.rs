@@ -9,7 +9,7 @@ use nomifun_api_types::{
     MediaCreditsResponse, MediaSettingsResponse, MediaWorkflowHistoryItem,
     MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
-use nomifun_cloud::{FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO};
+use nomifun_cloud::{FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO, ensure_gateway_defaults};
 use nomifun_common::AppError;
 
 pub struct MediaApiService {
@@ -20,8 +20,11 @@ pub struct MediaApiService {
 
 impl MediaApiService {
     pub fn new(data_dir: PathBuf) -> Result<Self, AppError> {
-        let config = load_user_config_file(&config_yaml_path(Some(&data_dir)))
-            .map_err(|e| AppError::Internal(e))?;
+        let path = config_yaml_path(Some(&data_dir));
+        let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
+        // Match CloudService: empty `server.base_url` must get production defaults,
+        // otherwise `flowy_media_exposed` stays false and model lists return empty.
+        ensure_gateway_defaults(&mut config);
         let workflow_root = data_dir.join("media").join("workflows");
         Ok(Self {
             data_dir,
@@ -30,12 +33,28 @@ impl MediaApiService {
         })
     }
 
-    fn gateway_config(&self) -> GatewayConfig {
-        self.config.lock().expect("media config lock").clone()
-    }
-
     fn config_path(&self) -> PathBuf {
         config_yaml_path(Some(&self.data_dir))
+    }
+
+    /// Load config from disk (so CloudService / settings writes are visible), then
+    /// apply gateway defaults. Never rely solely on the process-start snapshot.
+    fn load_effective_config(&self) -> Result<GatewayConfig, AppError> {
+        let mut cfg = load_user_config_file(&self.config_path()).map_err(|e| AppError::Internal(e))?;
+        ensure_gateway_defaults(&mut cfg);
+        // Keep in-memory copy aligned for subsequent update_settings merges.
+        if let Ok(mut guard) = self.config.lock() {
+            *guard = cfg.clone();
+        }
+        Ok(cfg)
+    }
+
+    fn gateway_config(&self) -> GatewayConfig {
+        self.load_effective_config().unwrap_or_else(|_| {
+            let mut cfg = self.config.lock().expect("media config lock").clone();
+            ensure_gateway_defaults(&mut cfg);
+            cfg
+        })
     }
 
     pub fn settings(&self) -> MediaSettingsResponse {
@@ -66,32 +85,39 @@ impl MediaApiService {
         &self,
         req: UpdateMediaSettingsRequest,
     ) -> Result<MediaSettingsResponse, AppError> {
-        {
-            let mut cfg = self.config.lock().expect("media config lock");
-            cfg.media.provider = "flowy".to_string();
-            if let Some(model) = req.image_model {
-                cfg.media.image.model = model;
-            }
-            if let Some(model) = req.video_model {
-                cfg.media.video.model = model;
-            }
-            if let Some(save) = req.image_save_locally {
-                cfg.media.image.save_locally = save;
-            }
-            if let Some(save) = req.video_save_locally {
-                cfg.media.video.save_locally = save;
-            }
-            if let Some(duration) = req.video_default_duration {
-                cfg.media.video.default_duration = duration;
-            }
-            if let Some(enabled) = req.workflows_enabled {
-                cfg.media.workflows.enabled = enabled;
-            }
-            if let Some(retries) = req.workflows_max_retries {
-                cfg.media.workflows.max_retries = retries;
-            }
-            save_config_yaml(&self.config_path(), &cfg).map_err(|e| AppError::Internal(e))?;
+        // Reload from disk first so we never overwrite `server.base_url` with a
+        // stale in-memory GatewayConfig that predated CloudService defaults.
+        let mut cfg = self.load_effective_config()?;
+        cfg.media.provider = "flowy".to_string();
+        if let Some(model) = req.image_model {
+            cfg.media.image.model = model;
         }
+        if let Some(model) = req.video_model {
+            cfg.media.video.model = model;
+        }
+        if let Some(save) = req.image_save_locally {
+            cfg.media.image.save_locally = save;
+        }
+        if let Some(save) = req.video_save_locally {
+            cfg.media.video.save_locally = save;
+        }
+        if let Some(duration) = req.video_default_duration {
+            cfg.media.video.default_duration = duration;
+        }
+        if let Some(aspect) = req.video_default_aspect_ratio {
+            let t = aspect.trim();
+            if !t.is_empty() {
+                cfg.media.video.default_aspect_ratio = t.to_string();
+            }
+        }
+        if let Some(enabled) = req.workflows_enabled {
+            cfg.media.workflows.enabled = enabled;
+        }
+        if let Some(retries) = req.workflows_max_retries {
+            cfg.media.workflows.max_retries = retries;
+        }
+        save_config_yaml(&self.config_path(), &cfg).map_err(|e| AppError::Internal(e))?;
+        *self.config.lock().expect("media config lock") = cfg;
         Ok(self.settings())
     }
 
@@ -137,9 +163,15 @@ impl MediaApiService {
         MediaWorkflowHistoryResponse { runs }
     }
 
+    /// Fetch the latest image/video model ids from the cloud catalog (no local cache).
     pub async fn list_models(&self) -> Result<(Vec<String>, Vec<String>), AppError> {
-        let cfg = self.gateway_config();
+        let cfg = self.load_effective_config()?;
         if !flowy_media_exposed(&cfg) {
+            tracing::warn!(
+                base_url_empty = cfg.server.base_url.trim().is_empty(),
+                media_provider = %cfg.media.provider,
+                "media list_models: Flowy media not exposed; returning empty catalog"
+            );
             return Ok((Vec::new(), Vec::new()));
         }
         let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -171,5 +203,68 @@ fn record_to_item(record: WorkflowRunRecord) -> MediaWorkflowHistoryItem {
         current_step: record.current_step,
         error: record.error,
         artifacts: record.artifacts,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE;
+    use nomifun_api_types::UpdateMediaSettingsRequest;
+
+    #[test]
+    fn new_applies_default_base_url_when_config_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = MediaApiService::new(dir.path().to_path_buf()).unwrap();
+        let settings = svc.settings();
+        assert!(settings.flowy_media_exposed);
+        let cfg = svc.gateway_config();
+        assert_eq!(cfg.server.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+    }
+
+    #[test]
+    fn new_applies_default_base_url_when_yaml_has_empty_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_yaml_path(Some(dir.path()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "server:\n  enabled: false\n  base_url: \"\"\nmedia:\n  provider: flowy\n",
+        )
+        .unwrap();
+        let svc = MediaApiService::new(dir.path().to_path_buf()).unwrap();
+        assert!(svc.settings().flowy_media_exposed);
+        assert_eq!(svc.gateway_config().server.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+    }
+
+    #[test]
+    fn update_settings_does_not_wipe_server_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_yaml_path(Some(dir.path()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Simulate CloudService having persisted a real base_url after Media started
+        // with an empty snapshot (historical bug).
+        std::fs::write(
+            &path,
+            format!(
+                "server:\n  enabled: true\n  base_url: \"{DEFAULT_WECHAT_FLOWY_SERVER_BASE}\"\nmedia:\n  provider: flowy\n  image:\n    model: old-image\n"
+            ),
+        )
+        .unwrap();
+        let svc = MediaApiService::new(dir.path().to_path_buf()).unwrap();
+        // Corrupt in-memory copy to prove update reloads from disk.
+        {
+            let mut guard = svc.config.lock().unwrap();
+            guard.server.base_url.clear();
+        }
+        svc.update_settings(UpdateMediaSettingsRequest {
+            image_model: Some("new-image".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(DEFAULT_WECHAT_FLOWY_SERVER_BASE));
+        assert!(raw.contains("new-image"));
+        assert!(svc.settings().flowy_media_exposed);
     }
 }

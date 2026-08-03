@@ -44,6 +44,8 @@ export interface VimaxSession extends SessionSummary {
   video_model?: string | null;
   /** Target finished video length in seconds (planning + clip allocation). */
   target_duration_secs?: number | null;
+  /** Seedance video + poster aspect ratio (`16:9`, `9:16`, …). */
+  aspect_ratio?: string | null;
   /** Relative or absolute URL of the finished video when available. */
   final_video?: string | null;
   /** Relative path of film poster image (display-only). */
@@ -128,6 +130,8 @@ export interface PlanBody {
   video_model?: string;
   /** Target finished video length in seconds. */
   target_duration_secs?: number;
+  /** Seedance / poster aspect ratio. */
+  aspect_ratio?: string;
 }
 
 /** Server-side Cameo photo metadata (`GET/POST /api/vimax/sessions/:id/cameos`). */

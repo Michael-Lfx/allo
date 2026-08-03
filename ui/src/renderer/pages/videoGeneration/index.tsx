@@ -39,6 +39,7 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
     user_requirement: draft.requirement.trim() || undefined,
     style: draft.style.trim() || undefined,
     target_duration_secs: draft.targetDurationSecs,
+    aspect_ratio: draft.aspectRatio,
     llm_model: draft.models.llm_model,
     image_model: draft.models.image_model || undefined,
     video_model: draft.models.video_model || undefined,

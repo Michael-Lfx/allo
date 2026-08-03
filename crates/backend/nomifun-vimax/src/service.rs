@@ -75,6 +75,7 @@ impl VimaxApiService {
         image_model: Option<String>,
         video_model: Option<String>,
         target_duration_secs: Option<u32>,
+        aspect_ratio: Option<String>,
     ) -> Result<(), AppError> {
         self.refresh_backends().await;
         self.inner
@@ -89,6 +90,7 @@ impl VimaxApiService {
                 image_model,
                 video_model,
                 target_duration_secs,
+                aspect_ratio,
             )
             .await
             .map_err(map_vimax_err)

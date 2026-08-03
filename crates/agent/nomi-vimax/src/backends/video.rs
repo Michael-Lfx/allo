@@ -27,6 +27,7 @@ pub struct FlowyVideo {
     services: FlowyVimaxServices,
     model_override: Option<String>,
     cancel: Option<CancellationToken>,
+    aspect_ratio: Option<String>,
 }
 
 impl FlowyVideo {
@@ -34,6 +35,7 @@ impl FlowyVideo {
         services: FlowyVimaxServices,
         model_override: Option<String>,
         cancel: Option<CancellationToken>,
+        aspect_ratio: Option<String>,
     ) -> Self {
         Self {
             services,
@@ -42,7 +44,25 @@ impl FlowyVideo {
                 if t.is_empty() { None } else { Some(t) }
             }),
             cancel,
+            aspect_ratio: aspect_ratio.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(crate::aspect::normalize_aspect_ratio(&t))
+                }
+            }),
         }
+    }
+
+    fn resolved_aspect(&self) -> String {
+        self.aspect_ratio
+            .clone()
+            .unwrap_or_else(|| {
+                crate::aspect::normalize_aspect_ratio(
+                    &self.services.media.video.default_aspect_ratio,
+                )
+            })
     }
 
     fn is_cancelled(&self) -> bool {
@@ -166,11 +186,24 @@ impl VimaxVideo for FlowyVideo {
             }
         }
 
-        let aspect = self.services.media.video.default_aspect_ratio.clone();
+        let aspect = self.resolved_aspect();
         let resolution = Some(self.services.media.video.default_resolution.clone());
-        // Seedance 2.0 / 2.0-fast I2V rejects duration outside [4, 15]; we use ≥5s clips.
-        let max_d = self.services.media.video.default_duration.clamp(5, 15);
-        let duration = duration_secs.clamp(5, max_d);
+        // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; ViMax plans clips in [5, 15].
+        // `default_duration` is only a fallback when callers omit duration — never a max cap.
+        // (Capping at default_duration=5 previously forced every shot to 5s and cut dialogue.)
+        let duration = duration_secs.clamp(
+            crate::planning::MIN_CLIP_DURATION_SECS,
+            crate::planning::MAX_CLIP_DURATION_SECS,
+        );
+        if duration != duration_secs {
+            tracing::warn!(
+                requested = duration_secs,
+                clamped = duration,
+                "video duration clamped to Seedance [{}, {}]",
+                crate::planning::MIN_CLIP_DURATION_SECS,
+                crate::planning::MAX_CLIP_DURATION_SECS,
+            );
+        }
         let want_last_frame = last_frame_out.is_some();
 
         let params = VideoCreateParams {
@@ -229,43 +262,85 @@ impl VimaxVideo for FlowyVideo {
         let record = match first {
             Ok(r) => r,
             Err(e) if is_seedance_caption_empty_err(&e) => {
-                // Seedance 2.0 audio pipeline rejected empty/weak captions — retry silent.
+                // First reinforce captions (keep audio on); only then fall back to silent.
                 tracing::warn!(
                     model = %model_for_err,
                     error = %e,
-                    "Seedance rejected audio captions; retrying with generate_audio=false"
+                    "Seedance rejected audio captions; retrying with reinforced ambient captions"
                 );
-                let mut silent = params;
-                silent.generate_audio = Some(false);
-                log_video_create_params(&silent, &local_frame_notes, out_path);
+                let mut reinforced = params.clone();
+                reinforced.prompt = reinforce_seedance_audio_captions(&params.prompt);
+                log_video_create_params(&reinforced, &local_frame_notes, out_path);
                 if self.is_cancelled() {
                     return Err(VimaxError::Cancelled);
                 }
                 if is_usable_video_file(out_path) {
                     return Ok(());
                 }
-                self.services
+                let second = self
+                    .services
                     .api
                     .generate_video_with_timeout_and_progress_cancellable(
                         &self.services.session,
-                        silent.to_json(),
+                        reinforced.to_json(),
                         timeout,
                         None,
-                        should_cancel,
+                        should_cancel.clone(),
                         None,
                     )
-                    .await
-                    .map_err(|e2| {
+                    .await;
+                match second {
+                    Ok(r) => r,
+                    Err(e2) if is_seedance_caption_empty_err(&e2) => {
+                        tracing::warn!(
+                            model = %model_for_err,
+                            error = %e2,
+                            "Seedance still rejected captions; retrying with generate_audio=false"
+                        );
+                        let mut silent = params;
+                        silent.generate_audio = Some(false);
+                        log_video_create_params(&silent, &local_frame_notes, out_path);
                         if self.is_cancelled() {
-                            return VimaxError::Cancelled;
+                            return Err(VimaxError::Cancelled);
                         }
-                        map_model_err(
+                        if is_usable_video_file(out_path) {
+                            return Ok(());
+                        }
+                        self.services
+                            .api
+                            .generate_video_with_timeout_and_progress_cancellable(
+                                &self.services.session,
+                                silent.to_json(),
+                                timeout,
+                                None,
+                                should_cancel,
+                                None,
+                            )
+                            .await
+                            .map_err(|e3| {
+                                if self.is_cancelled() {
+                                    return VimaxError::Cancelled;
+                                }
+                                map_model_err(
+                                    "video",
+                                    Some(model_for_err.as_str()),
+                                    "video_generate_silent_retry",
+                                    e3,
+                                )
+                            })?
+                    }
+                    Err(e2) => {
+                        if self.is_cancelled() {
+                            return Err(VimaxError::Cancelled);
+                        }
+                        return Err(map_model_err(
                             "video",
                             Some(model_for_err.as_str()),
-                            "video_generate_silent_retry",
+                            "video_generate_reinforced_audio",
                             e2,
-                        )
-                    })?
+                        ));
+                    }
+                }
             }
             Err(e) => {
                 if self.is_cancelled() {
@@ -321,6 +396,20 @@ fn is_seedance_caption_empty_err(err: &nomifun_cloud::ServerClientError) -> bool
         || s.contains("captions are not enough or empty")
         || (s.contains("caption") && s.contains("empty"))
         || (s.contains("caption") && s.contains("not enough"))
+}
+
+/// Append a strong ambient/BGM caption block so a second attempt can keep `generate_audio=true`.
+fn reinforce_seedance_audio_captions(prompt: &str) -> String {
+    const REINFORCE: &str = "Throughout: <clear environmental ambience and scene-matched foley> \
+(continuous cinematic atmospheric underscore, gentle and present for the full clip)";
+    let trimmed = prompt.trim_end();
+    if trimmed.to_ascii_lowercase().contains("throughout:") {
+        format!(
+            "{trimmed}\nAlso ensure audible sound for the whole clip: {REINFORCE}"
+        )
+    } else {
+        format!("{trimmed}\n{REINFORCE}")
+    }
 }
 
 fn log_video_create_params(
