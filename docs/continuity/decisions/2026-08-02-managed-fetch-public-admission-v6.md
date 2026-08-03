@@ -1,5 +1,8 @@
 # Managed Fetch public Admission v6 decision
 
+> Historical evidence: commit SHA fields in this record refer to the pre-rewrite
+> checkpoint. The rebase-era merge decision is recorded separately.
+
 Date: 2026-08-02
 Branch: `feat/fetch-optimization`
 Evidence SHA: `e90045a04fd82386e02178c5cc8a89606e1a341d`

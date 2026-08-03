@@ -583,16 +583,6 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                             });
                         }
                         RemoteFallbackDecision::NotNeeded => {}
-                        RemoteFallbackDecision::BudgetInsufficient { reason } => {
-                            record_fallback_reason(&mut fallback_reason_counts, reason);
-                            item_outcomes[index] = Some(ExtractItemOutcome {
-                                index,
-                                requested_url: outcome.requested_url.clone(),
-                                page: None,
-                                local_failure: Some(local_failure.clone()),
-                                final_error: Some(local_failure.error),
-                            });
-                        }
                     }
                 }
             }
@@ -947,7 +937,7 @@ fn dedupe_eligible(
         .iter()
         .filter(|item| seen.insert(canonical_requested_url(&item.requested_url)))
         .filter_map(|item| {
-            RemoteExtractRequestItem::new(item.index, item.requested_url.clone(), allow_private)
+            RemoteExtractRequestItem::new(item.requested_url.clone(), allow_private)
                 .ok()
         })
         .collect()
@@ -1183,9 +1173,7 @@ mod tests {
                         item.prepared.requested_url.clone()
                     };
                     RemoteExtractItem {
-                        index: item.index,
                         requested_url,
-                        final_url: None,
                         title: Some("Remote".to_owned()),
                         markdown: if self.long_markdown {
                             "x".repeat(EXTRACT_CHAR_LIMIT + 1)

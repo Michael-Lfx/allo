@@ -1,5 +1,8 @@
 # Managed Fetch Evaluation Infrastructure
 
+> Historical evidence: commit SHA fields in this record refer to the pre-rewrite
+> checkpoint. The rebase-era merge decision is recorded separately.
+
 Date: 2026-08-01
 
 Status: IMPLEMENTED; v5 preflight complete, retain experimental

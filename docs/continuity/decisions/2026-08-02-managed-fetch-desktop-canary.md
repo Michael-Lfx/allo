@@ -1,5 +1,11 @@
 # Managed Fetch Desktop Evidence-Backed Canary
 
+> Historical evidence: commit SHA fields in this record refer to the pre-rewrite
+> checkpoint. The rebase-era merge decision is recorded separately.
+
+> Historical record: the default-mode decision was made later. For the
+> current state, see `2026-08-03-managed-fetch-current-state.md`.
+
 Date: 2026-08-02
 Branch: `feat/fetch-optimization`
 Implementation commit: `487505121aad2d96bf3e8e73d3c3bdd59c2bcc77`

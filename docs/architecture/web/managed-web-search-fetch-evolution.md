@@ -311,8 +311,10 @@ Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构�
 
 ## 后续待完成
 
-- Desktop `managed_extract` 真实验收。
-- `managed_extract=true` 单独提交。
+- 正式 15+ URL Admission，以及在更多真实语料上复核当前有限的公开 Canary 证据。
+- 将 Network、Timeout、Unsupported Document 等 Deferred 类别纳入新的准入评审；本分支
+  不扩大 Remote 范围。
 - 如 Parallel 返回 SSE，重新评估 `MAX_SSE_EVENT_BYTES`。
-- 修复基线 `bun run check` 的 i18n / agent-vocabulary 问题（独立于本功能）。
-- 真实验收通过后，按 `managed-web-fetch-policy.md` 回滚和降级策略执行。
+- 维护 `bun run check` 的仓库级基线（若环境导致失败，须与本功能结果分开记录）。
+- 继续按 `managed-web-fetch-policy.md` 维护回滚和降级策略；当前 Desktop 验收已于
+  2026-08-02 完成，`NOMIFUN_MANAGED_FETCH_MODE=off` 仍可立即回滚到 Local-only。

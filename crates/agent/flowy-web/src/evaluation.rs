@@ -17,7 +17,7 @@ use crate::coordinator::{
     ExtractBudget, ExtractCoordinator, LocalExtractAdapter, ManagedExtractCoordinator,
 };
 use crate::managed::{
-    FetchReadiness, ManagedMcpCallControl, ManagedMcpCallGate, ManagedSearchService,
+    FetchReadiness, ManagedMcpCallControl, ManagedSearchService,
     ParallelFetchAdapter, ParallelMcpClient,
     RemoteExtractError, RemoteExtractFallback, RemoteExtractRequest,
     RemoteExtractRequestItem,
@@ -367,13 +367,13 @@ pub(crate) trait EvaluationBackend: Send + Sync {
     async fn fetch_readiness(&self) -> FetchReadiness;
     async fn warm_fetch(&self) -> Result<(), RemoteExtractError>;
     async fn warm_search(&self) -> Result<(), WebError>;
-    async fn shutdown(&self);
+    async fn shutdown(&self) -> Result<(), WebError>;
 }
 
 pub(crate) trait EvaluationBackendFactory: Send + Sync {
     fn create(
         &self,
-        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+        control: Option<Arc<dyn ManagedMcpCallControl>>,
     ) -> Result<Arc<dyn EvaluationBackend>, WebError>;
 }
 
@@ -418,24 +418,22 @@ impl EvaluationBackend for ProductionBackend {
             .map(|_| ())
     }
 
-    async fn shutdown(&self) {
-        self.search.shutdown().await;
+    async fn shutdown(&self) -> Result<(), WebError> {
+        self.search.shutdown().await
     }
 }
 
 impl EvaluationBackendFactory for ProductionBackendFactory {
     fn create(
         &self,
-        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+        control: Option<Arc<dyn ManagedMcpCallControl>>,
     ) -> Result<Arc<dyn EvaluationBackend>, WebError> {
-        let client = match (&self.control, call_gate) {
-            (Some(control), _) => Arc::new(ParallelMcpClient::new_with_call_control(Arc::clone(
+        let control = self.control.as_ref().or(control.as_ref());
+        let client = match control {
+            Some(control) => Arc::new(ParallelMcpClient::new_with_call_control(Arc::clone(
                 control,
             ))?),
-            (None, Some(gate)) => {
-                Arc::new(ParallelMcpClient::new_with_call_gate(Arc::clone(&gate))?)
-            }
-            (None, None) => Arc::new(ParallelMcpClient::new()?),
+            None => Arc::new(ParallelMcpClient::new()?),
         };
         let search = Arc::new(ManagedSearchService::keyless_with_shared_client(
             Arc::clone(&client),
@@ -456,7 +454,7 @@ impl EvaluationBackendFactory for ProductionBackendFactory {
 /// behind this interface. Test/Demo adapters cross the same seam.
 pub struct FetchEvaluationHarness {
     factory: Arc<dyn EvaluationBackendFactory>,
-    call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    control: Option<Arc<dyn ManagedMcpCallControl>>,
     backend: Arc<dyn EvaluationBackend>,
     fetch_warmed: tokio::sync::Mutex<bool>,
     search_warmed: tokio::sync::Mutex<bool>,
@@ -525,7 +523,7 @@ impl LocalExtractAdapter for FaultInjectingLocalAdapter {
 
 impl FetchEvaluationHarness {
     pub fn keyless_production() -> Result<Self, WebError> {
-        Self::from_factory_with_gate(
+        Self::from_factory_with_control(
             Arc::new(ProductionBackendFactory { control: None }),
             None,
         )
@@ -534,7 +532,7 @@ impl FetchEvaluationHarness {
     pub(crate) fn keyless_production_with_call_control(
         control: Arc<dyn ManagedMcpCallControl>,
     ) -> Result<Self, WebError> {
-        Self::from_factory_with_gate(
+        Self::from_factory_with_control(
             Arc::new(ProductionBackendFactory {
                 control: Some(control),
             }),
@@ -545,25 +543,25 @@ impl FetchEvaluationHarness {
     pub(crate) fn from_factory(
         factory: Arc<dyn EvaluationBackendFactory>,
     ) -> Result<Self, WebError> {
-        Self::from_factory_with_gate(factory, None)
+        Self::from_factory_with_control(factory, None)
     }
 
-    pub(crate) fn from_factory_with_gate(
+    pub(crate) fn from_factory_with_control(
         factory: Arc<dyn EvaluationBackendFactory>,
-        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+        control: Option<Arc<dyn ManagedMcpCallControl>>,
     ) -> Result<Self, WebError> {
-        let backend = factory.create(call_gate.clone())?;
+        let backend = factory.create(control.clone())?;
         Ok(Self {
             factory,
-            call_gate,
+            control,
             backend,
             fetch_warmed: tokio::sync::Mutex::new(false),
             search_warmed: tokio::sync::Mutex::new(false),
         })
     }
 
-    pub async fn shutdown(&self) {
-        self.backend.shutdown().await;
+    pub async fn shutdown(&self) -> Result<(), WebError> {
+        self.backend.shutdown().await
     }
 
     /// Return the production fetch peer readiness without sending a business
@@ -597,7 +595,7 @@ impl FetchEvaluationHarness {
             let mut result = FetchEvaluationResult::base(
                 case, mode, peer_mode, run_id, git_sha, attempt,
             );
-            let fresh_backend = match self.factory.create(self.call_gate.clone()) {
+            let fresh_backend = match self.factory.create(self.control.clone()) {
                 Ok(backend) => backend,
                 Err(error) => {
                     result.error_class = Some(error_class(&error));
@@ -605,7 +603,7 @@ impl FetchEvaluationHarness {
                     return result;
                 }
             };
-            let result = self
+            let mut result = self
                 .run_case_with_backend(
                     fresh_backend.as_ref(),
                     case,
@@ -616,7 +614,12 @@ impl FetchEvaluationHarness {
                     attempt,
                 )
                 .await;
-            fresh_backend.shutdown().await;
+            if fresh_backend.shutdown().await.is_err() {
+                // Keep any primary attempt error while making cleanup failure
+                // visible to the Runner. The Runner marks the evidence
+                // incomplete and stops the batch before it can be summarized.
+                result.outcome_class = "shutdown_failed".to_owned();
+            }
             return result;
         }
 
@@ -803,7 +806,7 @@ impl FetchEvaluationHarness {
     }
 
     async fn run_remote(&self, remote: Arc<dyn RemoteExtractFallback>, url: &str) -> RemoteRun {
-        let item = match RemoteExtractRequestItem::new(0, url.to_owned(), false) {
+        let item = match RemoteExtractRequestItem::new(url.to_owned(), false) {
             Ok(item) => item,
             Err(reason) => {
                 return RemoteRun::Rejected {
@@ -1261,9 +1264,7 @@ mod tests {
                         .items
                         .iter()
                         .map(|item| RemoteExtractItem {
-                            index: item.index,
                             requested_url: item.requested_url().to_owned(),
-                            final_url: None,
                             title: Some("Injected remote page".to_owned()),
                             markdown: "Injected remote page body".to_owned(),
                             source_truncated: false,

@@ -1,4 +1,5 @@
 use crate::provider::http_extract::FetchedResource;
+use crate::provider::document_kind::{DeferredDocumentKind, classify_document};
 use crate::types::{ExtractedPage, WebError};
 
 pub use crate::provider::url_safety::{
@@ -59,9 +60,6 @@ pub enum RemoteFallbackDecision {
     },
     Forbidden {
         reason: RemoteForbiddenReason,
-    },
-    BudgetInsufficient {
-        reason: RemoteFallbackReason,
     },
 }
 
@@ -326,11 +324,13 @@ fn classify_success(
     resource: &FetchedResource,
     page: &ExtractedPage,
 ) -> Option<LocalExtractFailureKind> {
-    if is_pdf(resource.content_type.as_deref()) {
-        return Some(LocalExtractFailureKind::Pdf);
-    }
-    if is_unsupported_document(resource.content_type.as_deref()) {
-        return Some(LocalExtractFailureKind::UnsupportedDocument);
+    if let Some(kind) = classify_document(resource.content_type.as_deref(), &resource.body) {
+        return Some(match kind {
+            DeferredDocumentKind::Pdf => LocalExtractFailureKind::Pdf,
+            DeferredDocumentKind::UnsupportedDocument => {
+                LocalExtractFailureKind::UnsupportedDocument
+            }
+        });
     }
     if let Some(kind) = classify_access_challenge(resource, page) {
         return Some(kind);
@@ -434,32 +434,6 @@ fn classify_access_challenge(
         return Some(LocalExtractFailureKind::Paywall);
     }
     None
-}
-
-fn is_pdf(content_type: Option<&str>) -> bool {
-    matches!(
-        content_type,
-        Some("application/pdf") | Some("application/x-pdf") | Some("application/acrobat")
-    )
-}
-
-fn is_unsupported_document(content_type: Option<&str>) -> bool {
-    let Some(content_type) = content_type else {
-        return false;
-    };
-    if content_type.starts_with("text/")
-        || matches!(
-            content_type,
-            "application/xhtml+xml"
-                | "application/json"
-                | "application/xml"
-                | "application/x-javascript"
-                | "application/javascript"
-        )
-    {
-        return false;
-    }
-    !is_pdf(Some(content_type))
 }
 
 fn is_javascript_shell(resource: &FetchedResource, page: &ExtractedPage) -> bool {

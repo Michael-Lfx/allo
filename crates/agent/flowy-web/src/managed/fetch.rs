@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Wired into the managed extract coordinator in Phase 7.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +22,7 @@ use super::remote::{
 };
 
 #[cfg(test)]
-use super::remote::{ManagedMcpCallGate, ManagedMcpTool};
+use super::remote::{AuthorizedParallelCall, ManagedMcpCallControl, ManagedMcpTool};
 
 const FETCH_TOOL: &str = "web_fetch";
 
@@ -35,22 +33,20 @@ pub struct RemoteExtractRequest {
 
 #[derive(Debug, Clone)]
 pub struct RemoteExtractRequestItem {
-    pub index: usize,
     pub prepared: PreparedRemoteUrl,
 }
 
 impl RemoteExtractRequestItem {
     pub fn new(
-        index: usize,
         requested_url: String,
         allow_private: bool,
     ) -> Result<Self, crate::provider::extract_policy::RemoteForbiddenReason> {
         Ok(Self {
-            index,
             prepared: prepare_remote_url(&requested_url, allow_private)?,
         })
     }
 
+    #[cfg(feature = "fetch-eval")]
     pub fn requested_url(&self) -> &str {
         &self.prepared.requested_url
     }
@@ -62,9 +58,7 @@ impl RemoteExtractRequestItem {
 
 #[derive(Debug, Clone)]
 pub struct RemoteExtractItem {
-    pub index: usize,
     pub requested_url: String,
-    pub final_url: Option<String>,
     pub title: Option<String>,
     pub markdown: String,
     pub source_truncated: bool,
@@ -80,7 +74,9 @@ pub struct RemoteExtractBatch {
 pub struct RemoteFetchDiagnostics {
     pub dropped_item_count: usize,
     pub unmatched_item_count: usize,
+    #[cfg(test)]
     pub source_truncated_count: usize,
+    #[cfg(test)]
     pub used_text_fallback: bool,
     pub queue_ms: Option<u128>,
     pub call_ms: Option<u128>,
@@ -206,7 +202,7 @@ impl ParallelFetchAdapter {
         self.client.invalidate_tools_cache().await;
     }
 
-    #[cfg(any(test, feature = "fetch-eval"))]
+    #[cfg(test)]
     pub(crate) async fn fetch_readiness(&self) -> RemoteExtractReadiness {
         self.readiness().await
     }
@@ -525,22 +521,13 @@ struct DecodedPayload {
 
 struct DecodedResult {
     url: String,
-    final_url: Option<String>,
     title: Option<String>,
     markdown: String,
-    body_source: RemoteBodySource,
     source_truncated: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemoteBodySource {
-    Excerpts,
-    FullContent,
 }
 
 struct DecodedError {
     url: String,
-    http_status: Option<u16>,
 }
 
 fn decode_payload(value: &Value) -> Result<DecodedPayload, ()> {
@@ -589,10 +576,6 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
         .get("title")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    let final_url = item
-        .get("final_url")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
     let full_content = item
         .get("full_content")
         .and_then(Value::as_str)
@@ -615,11 +598,6 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
     } else {
         return None;
     };
-    let body_source = if excerpts.is_empty() {
-        RemoteBodySource::FullContent
-    } else {
-        RemoteBodySource::Excerpts
-    };
     let explicit_truncated = item
         .get("truncated")
         .and_then(Value::as_bool)
@@ -629,22 +607,14 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
     }
     Some(DecodedResult {
         url,
-        final_url,
         title,
         markdown,
-        body_source,
-        source_truncated: body_source == RemoteBodySource::Excerpts || explicit_truncated,
+        source_truncated: !excerpts.is_empty() || explicit_truncated,
     })
 }
 
 fn decode_error_item(item: &Value) -> Option<DecodedError> {
-    Some(DecodedError {
-        url: item.get("url")?.as_str()?.to_owned(),
-        http_status: item
-            .get("http_status_code")
-            .and_then(Value::as_u64)
-            .and_then(|status| u16::try_from(status).ok()),
-    })
+    Some(DecodedError { url: item.get("url")?.as_str()?.to_owned() })
 }
 
 fn build_batch(
@@ -652,6 +622,8 @@ fn build_batch(
     request: &RemoteExtractRequest,
     used_text_fallback: bool,
 ) -> Result<RemoteExtractBatch, RemoteExtractError> {
+    #[cfg(not(test))]
+    let _ = used_text_fallback;
     let mut assignments: Vec<Option<usize>> = vec![None; request.items.len()];
     let mut assignment_counts = vec![0usize; payload.results.len()];
     for (request_index, request_item) in request.items.iter().enumerate() {
@@ -685,9 +657,7 @@ fn build_batch(
         };
         let result = &payload.results[result_index];
         items.push(RemoteExtractItem {
-            index: request_item.index,
             requested_url: request_item.prepared.requested_url.clone(),
-            final_url: result.final_url.clone(),
             title: result.title.clone(),
             markdown: result.markdown.clone(),
             source_truncated: result.source_truncated,
@@ -721,6 +691,7 @@ fn build_batch(
         + payload.malformed_result_count
         + payload.malformed_error_count;
     let dropped_item_count = dropped_item_count + dropped_error_count;
+    #[cfg(test)]
     let source_truncated_count = items
         .iter()
         .filter(|item| item.source_truncated)
@@ -736,7 +707,9 @@ fn build_batch(
         diagnostics: RemoteFetchDiagnostics {
             dropped_item_count,
             unmatched_item_count,
+            #[cfg(test)]
             source_truncated_count,
+            #[cfg(test)]
             used_text_fallback,
             queue_ms: None,
             call_ms: None,
@@ -812,9 +785,8 @@ mod tests {
         RemoteExtractRequest {
             items: urls
                 .iter()
-                .enumerate()
-                .map(|(index, url)| {
-                    RemoteExtractRequestItem::new(index, (*url).to_owned(), false)
+                .map(|url| {
+                    RemoteExtractRequestItem::new((*url).to_owned(), false)
                         .expect("test URLs must be remote eligible")
                 })
                 .collect(),
@@ -841,26 +813,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl ManagedMcpCallGate for RecordingGate {
-        async fn before_call(
+    impl ManagedMcpCallControl for RecordingGate {
+        async fn reserve(
             &self,
-            tool: ManagedMcpTool,
-            arguments: &Value,
-            attempt: u8,
-        ) -> Result<(), ManagedMcpCallError> {
+            call: &AuthorizedParallelCall,
+        ) -> Result<(), super::super::remote::ManagedMcpControlError> {
             self.calls
                 .lock()
                 .await
-                .push((tool, arguments.clone(), attempt));
+                .push((call.tool(), call.arguments().clone(), call.attempt()));
             Ok(())
-        }
-
-        fn observe(
-            &self,
-            _tool: ManagedMcpTool,
-            _attempt: u8,
-            _result: &Result<McpToolResult, McpPeerError>,
-        ) {
         }
     }
 
@@ -1398,7 +1360,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );
@@ -1443,7 +1405,7 @@ mod tests {
             "allo-fetch-eval-session-gate-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
@@ -1451,7 +1413,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );
@@ -1500,7 +1462,7 @@ mod tests {
             "allo-fetch-eval-tool-gate-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
@@ -1508,7 +1470,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );
@@ -1563,7 +1525,7 @@ mod tests {
             "allo-fetch-eval-combined-recovery-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
@@ -1571,7 +1533,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );
@@ -1607,14 +1569,14 @@ mod tests {
             "allo-fetch-eval-fourth-call-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
         ));
         let client = ParallelMcpClient::new_for_test_endpoint(
             server.uri(),
-            Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
         )
         .expect("offline construction");
         client
@@ -1673,7 +1635,7 @@ mod tests {
             "allo-fetch-eval-rate-gate-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
@@ -1681,7 +1643,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );

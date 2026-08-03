@@ -28,7 +28,7 @@ impl ManagedSearchHandle {
         self.service.clone()
     }
 
-    pub async fn shutdown(&self) {
-        self.service.shutdown().await;
+    pub async fn shutdown(&self) -> Result<(), WebError> {
+        self.service.shutdown().await
     }
 }

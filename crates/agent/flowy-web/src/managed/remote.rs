@@ -186,12 +186,13 @@ impl ManagedMcpTool {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum ManagedMcpCallError {
+    #[cfg_attr(not(any(test, feature = "fetch-eval")), allow(dead_code))]
     QuotaExhausted,
     UnsafeArguments,
     RetryLimitExceeded,
+    #[cfg_attr(not(any(test, feature = "fetch-eval")), allow(dead_code))]
     LedgerFailure,
     Peer(McpPeerError),
 }
@@ -202,31 +203,35 @@ pub(crate) enum ParallelCallRejection {
     RetryLimitExceeded,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Evaluation-only controls construct these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedMcpControlError {
+    #[cfg(any(test, feature = "fetch-eval"))]
     QuotaExhausted,
+    #[cfg(any(test, feature = "fetch-eval"))]
     LedgerFailure,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct AuthorizedParallelCall {
     tool: ManagedMcpTool,
     arguments: Value,
+    #[cfg(any(test, feature = "fetch-eval"))]
     attempt: u8,
 }
 
-#[allow(dead_code)]
 impl AuthorizedParallelCall {
+    #[cfg(any(test, feature = "fetch-eval"))]
     pub(crate) fn tool(&self) -> ManagedMcpTool {
         self.tool
     }
 
+    #[cfg(test)]
     pub(crate) fn arguments(&self) -> &Value {
         &self.arguments
     }
 
+    #[cfg(any(test, feature = "fetch-eval"))]
     pub(crate) fn attempt(&self) -> u8 {
         self.attempt
     }
@@ -260,6 +265,7 @@ impl ParallelMcpCallPolicy {
         Ok(AuthorizedParallelCall {
             tool,
             arguments,
+            #[cfg(any(test, feature = "fetch-eval"))]
             attempt,
         })
     }
@@ -302,107 +308,6 @@ enum ManagedSearchCallError {
     UnsafeArguments,
     RetryLimitExceeded,
     LedgerFailure,
-}
-
-#[cfg(any(test, feature = "fetch-eval"))]
-#[async_trait]
-pub(crate) trait ManagedMcpCallGate: Send + Sync {
-    async fn before_call(
-        &self,
-        tool: ManagedMcpTool,
-        arguments: &Value,
-        attempt: u8,
-    ) -> Result<(), ManagedMcpCallError>;
-
-    fn observe(
-        &self,
-        tool: ManagedMcpTool,
-        attempt: u8,
-        result: &Result<McpToolResult, McpPeerError>,
-    );
-
-    fn observe_rejection(&self, _error: ManagedMcpCallError) {}
-}
-
-#[cfg(any(test, feature = "fetch-eval"))]
-struct LegacyCallControl {
-    gate: Arc<dyn ManagedMcpCallGate>,
-}
-
-#[cfg(any(test, feature = "fetch-eval"))]
-#[async_trait]
-impl ManagedMcpCallControl for LegacyCallControl {
-    async fn reserve(
-        &self,
-        call: &AuthorizedParallelCall,
-    ) -> Result<(), ManagedMcpControlError> {
-        self.gate
-            .before_call(call.tool, &call.arguments, call.attempt)
-            .await
-            .map_err(|error| match error {
-                ManagedMcpCallError::QuotaExhausted => ManagedMcpControlError::QuotaExhausted,
-                ManagedMcpCallError::LedgerFailure => ManagedMcpControlError::LedgerFailure,
-                _ => ManagedMcpControlError::LedgerFailure,
-            })
-    }
-
-    fn observe_rejection(&self, rejection: ParallelCallRejection) {
-        let error = match rejection {
-            ParallelCallRejection::UnsafeArguments => ManagedMcpCallError::UnsafeArguments,
-            ParallelCallRejection::RetryLimitExceeded => ManagedMcpCallError::RetryLimitExceeded,
-        };
-        self.gate.observe_rejection(error);
-    }
-
-    fn observe_result(
-        &self,
-        call: &AuthorizedParallelCall,
-        result: &Result<McpToolResult, McpPeerError>,
-    ) {
-        self.gate.observe(call.tool, call.attempt, result);
-    }
-}
-
-/// Production call gate shared by Parallel Search and Fetch.
-///
-/// Evaluation adds quota and evidence accounting through another Adapter at
-/// this same seam. The production gate intentionally has no file ledger, but
-/// it keeps the outbound contract and recovery ceiling fail-closed for every
-/// real `tools/call`.
-#[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct ManagedMcpSafetyGate;
-
-#[cfg(test)]
-#[async_trait]
-impl ManagedMcpCallGate for ManagedMcpSafetyGate {
-    async fn before_call(
-        &self,
-        tool: ManagedMcpTool,
-        arguments: &Value,
-        attempt: u8,
-    ) -> Result<(), ManagedMcpCallError> {
-        if attempt > 3 {
-            return Err(ManagedMcpCallError::RetryLimitExceeded);
-        }
-        let safe = match tool {
-            ManagedMcpTool::Fetch => safe_fetch_arguments(arguments),
-            ManagedMcpTool::Search => safe_search_arguments(arguments),
-        };
-        if safe {
-            Ok(())
-        } else {
-            Err(ManagedMcpCallError::UnsafeArguments)
-        }
-    }
-
-    fn observe(
-        &self,
-        _tool: ManagedMcpTool,
-        _attempt: u8,
-        _result: &Result<McpToolResult, McpPeerError>,
-    ) {
-    }
 }
 
 pub(crate) fn safe_fetch_arguments(arguments: &Value) -> bool {
@@ -468,19 +373,7 @@ impl ParallelMcpClient {
         Self::new_at_endpoint_with_control(endpoint, Arc::new(NoopManagedMcpCallControl))
     }
 
-    #[allow(dead_code)]
-    #[cfg(any(test, feature = "fetch-eval"))]
-    pub(crate) fn new_with_call_gate(
-        gate: Arc<dyn ManagedMcpCallGate>,
-    ) -> Result<Self, WebError> {
-        Self::new_at_endpoint_with_control(
-            "https://search.parallel.ai/mcp",
-            Arc::new(LegacyCallControl { gate }),
-        )
-    }
-
-    #[allow(dead_code)]
-    #[cfg(any(test, feature = "fetch-eval"))]
+    #[cfg(feature = "fetch-eval")]
     pub(crate) fn new_with_call_control(
         control: Arc<dyn ManagedMcpCallControl>,
     ) -> Result<Self, WebError> {
@@ -490,12 +383,9 @@ impl ParallelMcpClient {
     #[cfg(test)]
     pub(crate) fn new_for_test_endpoint(
         endpoint: impl Into<String>,
-        gate: Option<Arc<dyn ManagedMcpCallGate>>,
+        control: Option<Arc<dyn ManagedMcpCallControl>>,
     ) -> Result<Self, WebError> {
-        let control: Arc<dyn ManagedMcpCallControl> = match gate {
-            Some(gate) => Arc::new(LegacyCallControl { gate }),
-            None => Arc::new(NoopManagedMcpCallControl),
-        };
+        let control = control.unwrap_or_else(|| Arc::new(NoopManagedMcpCallControl));
         Self::new_at_endpoint_with_control(endpoint, control)
     }
 
@@ -563,8 +453,11 @@ impl ParallelMcpClient {
         self.fetch_tool_health.lock().await.record_success();
     }
 
-    pub(super) async fn shutdown(&self, deadline: Instant) {
-        let _ = self.peer.shutdown(deadline).await;
+    pub(super) async fn shutdown(&self, deadline: Instant) -> Result<(), WebError> {
+        self.peer
+            .shutdown(deadline)
+            .await
+            .map_err(|error| WebError::Provider(format!("managed Parallel shutdown failed: {error}")))
     }
 
     #[allow(dead_code)] // Used by endpoint health and fetch adapter phases.
@@ -610,7 +503,9 @@ impl ParallelMcpClient {
             .reserve(&authorized)
             .await
             .map_err(|error| match error {
+                #[cfg(any(test, feature = "fetch-eval"))]
                 ManagedMcpControlError::QuotaExhausted => ManagedMcpCallError::QuotaExhausted,
+                #[cfg(any(test, feature = "fetch-eval"))]
                 ManagedMcpControlError::LedgerFailure => ManagedMcpCallError::LedgerFailure,
             })?;
         let result = self
@@ -881,10 +776,13 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         }
     }
 
-    async fn shutdown(&self, deadline: Instant) {
+    async fn shutdown(&self, deadline: Instant) -> Result<(), WebError> {
         if self.shared_client.is_none() {
-            let _ = self.peer.shutdown(deadline).await;
+            self.peer.shutdown(deadline).await.map_err(|error| {
+                WebError::Provider(format!("managed Parallel search shutdown failed: {error}"))
+            })?;
         }
+        Ok(())
     }
 }
 
@@ -1252,30 +1150,26 @@ mod tests {
 
     #[tokio::test]
     async fn production_gate_blocks_fourth_attempt_before_network() {
-        let gate = ManagedMcpSafetyGate;
+        let policy = ParallelMcpCallPolicy;
         let arguments = json!({
             "urls": ["https://example.com/"],
             "full_content": false
         });
         for attempt in 1..=3 {
-            gate.before_call(ManagedMcpTool::Fetch, &arguments, attempt)
-                .await
+            policy
+                .authorize("web_fetch", arguments.clone(), attempt)
                 .expect("first three attempts are allowed");
         }
         assert!(matches!(
-            gate.before_call(ManagedMcpTool::Fetch, &arguments, 4)
-                .await,
-            Err(ManagedMcpCallError::RetryLimitExceeded)
+            policy.authorize("web_fetch", arguments, 4),
+            Err(ParallelCallRejection::RetryLimitExceeded)
         ));
     }
 
     #[tokio::test]
     async fn production_gate_blocks_sensitive_fetch_before_wiremock_call() {
         let server = MockServer::start().await;
-        let client = ParallelMcpClient::new_for_test_endpoint(
-            server.uri(),
-            Some(Arc::new(ManagedMcpSafetyGate) as Arc<dyn ManagedMcpCallGate>),
-        )
+        let client = ParallelMcpClient::new_for_test_endpoint(server.uri(), None)
         .expect("offline construction");
         for url in [
             "https://example.com/?token=secret",
@@ -1440,7 +1334,7 @@ mod tests {
             "allo-fetch-eval-search-gate-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
@@ -1448,7 +1342,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );
@@ -1587,7 +1481,7 @@ mod tests {
             "allo-fetch-eval-search-warm-gate-{}.json",
             uuid::Uuid::now_v7()
         ));
-        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
             quota_path.clone(),
             60,
             10,
@@ -1595,7 +1489,7 @@ mod tests {
         let client = Arc::new(
             ParallelMcpClient::new_for_test_endpoint(
                 server.uri(),
-                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
             )
             .expect("offline construction"),
         );
@@ -1614,7 +1508,6 @@ mod tests {
         let request = crate::managed::fetch::RemoteExtractRequest {
             items: vec![
                 crate::managed::fetch::RemoteExtractRequestItem::new(
-                    0,
                     "https://example.com/".to_owned(),
                     false,
                 )

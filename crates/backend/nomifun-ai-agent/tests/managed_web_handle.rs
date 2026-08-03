@@ -27,6 +27,6 @@ fn managed_web_handle_supports_ddg_only_fallback() {
 async fn managed_web_shutdown_is_idempotent() {
     let handle = ManagedWebHandle::keyless_default(ManagedExtractMode::Disabled)
         .expect("offline construction");
-    handle.shutdown().await;
-    handle.shutdown().await;
+    handle.shutdown().await.expect("first managed web shutdown");
+    handle.shutdown().await.expect("idempotent managed web shutdown");
 }

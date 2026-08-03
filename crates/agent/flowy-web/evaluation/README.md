@@ -1,8 +1,20 @@
-# Managed fetch evaluation
+# Managed fetch evaluation operator runbook
 
-This directory contains the versioned public preflight corpus and its schema.
-It is used only with the opt-in `fetch-eval` feature; normal application
-builds do not load or execute it.
+This directory contains the versioned public corpus and its schema. The
+evaluation implementation contract lives in
+`docs/architecture/web/managed-fetch-evaluation.md`; this file is the
+operator runbook. The module is compiled only with `fetch-eval`; normal
+application builds do not load or execute it.
+
+## Safe operating rules
+
+- Use a clean worktree for preflight and Admission evidence.
+- Keep public manifests free of query strings, fragments, credentials, and
+  private URLs; use `url_env` only for local private cases.
+- Do not edit or delete ignored evidence while a campaign may be resumed.
+- Stop on Safety violations, source mismatches, 429, or quota exhaustion.
+- Never treat a preflight or a five-case pilot as a production enablement
+  decision.
 
 ## v6 public qualification and Warm Pilot (2026-08-02)
 
@@ -21,7 +33,8 @@ safe requested-URL identity. Challenge, 403/404, and Local-success candidates
 remain excluded. Consequently `admission-v6` has 20 PDFs but only 5 JS cases;
 the formal 15-case-per-category Admission gate is intentionally not started.
 
-The 30-attempt Warm Pilot completed from clean SHA `e90045a0` using 30 actual
+The 30-attempt Warm Pilot completed from the pre-rewrite clean checkpoint
+`e90045a0` using 30 actual
 Fetch calls (15 per category), with no Search calls or recovery calls. Safety
 five-field counts were all zero. PDF: 5/5 eligible and effective incremental
 successes, Q2+ 5/5, Warm P50 1322 ms and P95 2382 ms. JS: 5/5 eligible and
@@ -140,3 +153,24 @@ atomic replacement, while each JSONL attempt is flushed immediately. The
 feature-gated runner sends only the production Fetch argument object
 `{"urls": [...], "full_content": false}` through the same MCP call gate used
 by Fake/Wiremock tests.
+
+## Recovery invariants
+
+The Runner flushes a typed result line and an updated `RunStatus` after every
+completed attempt, then writes an incomplete `SafetyReport` checkpoint. A
+Campaign records the attempt intent before invoking the Runner and reconciles
+that intent before selecting a new attempt or migrating an old empty quota
+snapshot. Missing ledger state, UTC rollover, missing status/safety evidence,
+counter/provenance disagreement, or an unparseable result file is recorded as
+`incomplete_run`; it is never retried as if no call had occurred.
+
+Only a complete, typed Admission triple can be registered as completed:
+attempt 1 is `compare`/`cold`, attempts 2 and 3 are `e2e`/`warm`, and every
+record must match the Campaign run, Git SHA, corpus, scoring profile, category,
+and case set. Arbitrary JSONL lines, duplicate phases, or missing cases remain
+diagnostic/discarded evidence and cannot enter a summary.
+
+The current focused test inventory is 173 default `flowy-web` tests and 226
+`fetch-eval` library tests plus four example integration tests. These counts
+are evidence for the current checkout only; rerun the commands above after
+each source or corpus change.

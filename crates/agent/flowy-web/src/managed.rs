@@ -34,12 +34,12 @@ pub(crate) use fetch::{
     RemoteExtractItem, RemoteExtractReadiness, RemoteExtractRequest, RemoteExtractRequestItem,
 };
 pub(crate) use remote::ParallelMcpClient;
-#[cfg(test)]
+#[cfg(any(test, feature = "fetch-eval"))]
 #[allow(unused_imports)]
 pub(crate) use remote::ParallelMcpCallPolicy;
 #[cfg(feature = "fetch-eval")]
 pub(crate) use remote::{
-    AuthorizedParallelCall, ManagedMcpCallControl, ManagedMcpCallError, ManagedMcpCallGate,
+    AuthorizedParallelCall, ManagedMcpCallControl, ManagedMcpCallError,
     ManagedMcpControlError, ManagedMcpTool, ParallelCallRejection,
 };
 use remote::RemoteSearchAdapter;
@@ -139,7 +139,9 @@ trait ManagedSearchProvider: Send + Sync {
             })
     }
 
-    async fn shutdown(&self, _deadline: Instant) {}
+    async fn shutdown(&self, _deadline: Instant) -> Result<(), WebError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,24 +366,36 @@ impl ManagedSearchService {
         }
     }
 
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), WebError> {
         let deadline = Instant::now() + Duration::from_secs(2);
-        self.shutdown_adapters(deadline, true).await;
+        self.shutdown_adapters(deadline, true).await
     }
 
-    async fn shutdown_adapters(&self, deadline: Instant, close_parallel: bool) {
+    async fn shutdown_adapters(
+        &self,
+        deadline: Instant,
+        close_parallel: bool,
+    ) -> Result<(), WebError> {
+        let mut first_error = None;
         if close_parallel && let Some(client) = self.parallel_client.as_ref() {
-            client.shutdown(deadline).await;
+            if let Err(error) = client.shutdown(deadline).await {
+                first_error = Some(error);
+            }
         }
         for slot in &self.slots {
-            slot.adapter.shutdown(deadline).await;
+            if let Err(error) = slot.adapter.shutdown(deadline).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
+        first_error.map_or(Ok(()), Err)
     }
 }
 
 #[async_trait]
 trait ManagedProviderLifecycle: Send + Sync {
-    async fn shutdown(&self, deadline: Instant);
+    async fn shutdown(&self, deadline: Instant) -> Result<(), WebError>;
 }
 
 struct ParallelRuntimeLifecycle {
@@ -391,11 +405,12 @@ struct ParallelRuntimeLifecycle {
 
 #[async_trait]
 impl ManagedProviderLifecycle for ParallelRuntimeLifecycle {
-    async fn shutdown(&self, deadline: Instant) {
-        let _ = self
+    async fn shutdown(&self, deadline: Instant) -> Result<(), WebError> {
+        self
             .shutdown_once
-            .get_or_init(|| async { self.client.shutdown(deadline).await })
-            .await;
+            .get_or_try_init(|| async { self.client.shutdown(deadline).await })
+            .await
+            .map(|_| ())
     }
 }
 
@@ -407,17 +422,25 @@ struct ManagedProviderBundle {
 }
 
 impl ManagedProviderBundle {
-    async fn shutdown(&self) {
-        let _ = self.shutdown_once.get_or_init(|| async {
+    async fn shutdown(&self) -> Result<(), WebError> {
+        self.shutdown_once.get_or_try_init(|| async {
             let deadline = Instant::now() + Duration::from_secs(3);
+            let mut first_error = None;
             // The shared Parallel runtime is owned by the lifecycle bundle. Search
             // adapters only release their own resources here, so a cloned Search
             // and Fetch view can never close the same peer twice.
-            self.search.shutdown_adapters(deadline, false).await;
-            for lifecycle in &self.lifecycles {
-                lifecycle.shutdown(deadline).await;
+            if let Err(error) = self.search.shutdown_adapters(deadline, false).await {
+                first_error = Some(error);
             }
-        }).await;
+            for lifecycle in &self.lifecycles {
+                if let Err(error) = lifecycle.shutdown(deadline).await
+                    && first_error.is_none()
+                {
+                    first_error = Some(error);
+                }
+            }
+            first_error.map_or(Ok(()), Err)
+        }).await.map(|_| ())
     }
 }
 
@@ -531,8 +554,8 @@ impl ManagedWebService {
         self.bundle.extract.clone()
     }
 
-    pub async fn shutdown(&self) {
-        self.bundle.shutdown().await;
+    pub async fn shutdown(&self) -> Result<(), WebError> {
+        self.bundle.shutdown().await
     }
 }
 
@@ -890,6 +913,7 @@ mod tests {
     use crate::types::SearchHit;
     use nomi_mcp::protocol::McpToolResult;
     use serde_json::json;
+    use tokio::sync::Notify;
     use std::{
         collections::VecDeque,
         sync::atomic::{AtomicUsize, Ordering},
@@ -1509,8 +1533,9 @@ mod tests {
 
         #[async_trait]
         impl ManagedProviderLifecycle for CountingLifecycle {
-            async fn shutdown(&self, _deadline: Instant) {
+            async fn shutdown(&self, _deadline: Instant) -> Result<(), WebError> {
                 self.shutdowns.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
         }
 
@@ -1523,9 +1548,113 @@ mod tests {
             })],
             shutdown_once: OnceCell::new(),
         };
-        bundle.shutdown().await;
-        bundle.shutdown().await;
+        bundle.shutdown().await.expect("first shutdown");
+        bundle.shutdown().await.expect("idempotent shutdown");
         assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_provider_bundle_shutdown_concurrent_callers_share_flight() {
+        struct BlockingLifecycle {
+            shutdowns: Arc<AtomicUsize>,
+            started: Arc<Semaphore>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl ManagedProviderLifecycle for BlockingLifecycle {
+            async fn shutdown(&self, _deadline: Instant) -> Result<(), WebError> {
+                self.shutdowns.fetch_add(1, Ordering::SeqCst);
+                self.started.add_permits(1);
+                self.release.notified().await;
+                Ok(())
+            }
+        }
+
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Notify::new());
+        let bundle = Arc::new(ManagedProviderBundle {
+            search: Arc::new(ManagedSearchService::ddg_only().expect("offline search")),
+            extract: None,
+            lifecycles: vec![Arc::new(BlockingLifecycle {
+                shutdowns: Arc::clone(&shutdowns),
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            })],
+            shutdown_once: OnceCell::new(),
+        });
+
+        let first = tokio::spawn({
+            let bundle = Arc::clone(&bundle);
+            async move { bundle.shutdown().await }
+        });
+        let _ = started.acquire().await.expect("shutdown started");
+        let second = tokio::spawn({
+            let bundle = Arc::clone(&bundle);
+            async move { bundle.shutdown().await }
+        });
+        tokio::task::yield_now().await;
+        release.notify_one();
+        first.await.expect("first shutdown caller").expect("shutdown succeeds");
+        second.await.expect("second shutdown caller").expect("shutdown succeeds");
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_provider_bundle_shutdown_retries_after_initializer_cancellation() {
+        struct CancelThenCompleteLifecycle {
+            attempts: Arc<AtomicUsize>,
+            started: Arc<Semaphore>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl ManagedProviderLifecycle for CancelThenCompleteLifecycle {
+            async fn shutdown(&self, _deadline: Instant) -> Result<(), WebError> {
+                let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+                self.started.add_permits(1);
+                if attempt == 0 {
+                    std::future::pending::<()>().await;
+                }
+                self.release.notified().await;
+                Ok(())
+            }
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Notify::new());
+        let bundle = Arc::new(ManagedProviderBundle {
+            search: Arc::new(ManagedSearchService::ddg_only().expect("offline search")),
+            extract: None,
+            lifecycles: vec![Arc::new(CancelThenCompleteLifecycle {
+                attempts: Arc::clone(&attempts),
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            })],
+            shutdown_once: OnceCell::new(),
+        });
+
+        let first = tokio::spawn({
+            let bundle = Arc::clone(&bundle);
+            async move { bundle.shutdown().await }
+        });
+        let _ = started.acquire().await.expect("first shutdown started");
+        first.abort();
+        let _ = first.await;
+
+        let second = tokio::spawn({
+            let bundle = Arc::clone(&bundle);
+            async move { bundle.shutdown().await }
+        });
+        let _ = started.acquire().await.expect("retry shutdown started");
+        release.notify_one();
+        second
+            .await
+            .expect("retrying shutdown caller")
+            .expect("retry shutdown succeeds");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
 }

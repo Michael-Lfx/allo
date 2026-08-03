@@ -1,14 +1,21 @@
 # Managed Fetch Production Admission
 
+> Historical evidence: commit SHA fields in this record refer to the pre-rewrite
+> checkpoint. The rebase-era merge decision is recorded separately.
+
 Date: 2026-08-02
 Branch: `feat/fetch-optimization`
 
 ## Decision
 
-`candidate_for_enablement` for the evidence-backed Desktop profile, limited to
-PDF, JavaScript Shell, and Empty Content fallback categories. Unsupported
-Document, DNS/TLS/Network, Timeout, Browser-to-MCP loops, and user-configurable
-provider selection remain deferred.
+`insufficient_evidence` for the evidence-backed Desktop profile. The bounded
+canary proves the production safety chain and normal PDF/JavaScript fallback,
+but it is not the required 15+ independent-case Admission Campaign. PDF and
+JavaScript remain the approved experimental categories already wired to the
+Desktop profile; Empty Content remains in the same evidence-backed policy but
+has no independent Admission evidence and must not be described as a formal
+enablement recommendation. Unsupported Document, DNS/TLS/Network, Timeout,
+Browser-to-MCP loops, and user-configurable provider selection remain deferred.
 
 ## Evidence boundary
 

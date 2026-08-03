@@ -1,5 +1,8 @@
 # Managed Fetch Desktop 验收交接
 
+> Historical evidence: commit SHA fields in this record refer to the pre-rewrite
+> checkpoint. The rebase-era merge decision is recorded separately.
+
 > 已由 [2026-08-03 Managed Fetch 当前状态与后续交接](./2026-08-03-managed-fetch-current-state.md)
 > 取代。本文件保留为默认启用前的历史验收说明，不再代表当前分支状态。
 

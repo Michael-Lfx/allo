@@ -1,14 +1,22 @@
 # Managed Fetch 当前状态与后续交接
 
 ```yaml
-status: COMPLETE_LIMITED_ENABLEMENT
+status: COMPLETE_LOCAL_MAIN_MERGED
 date: 2026-08-03
-branch: feat/fetch-optimization
-code_baseline: 9c7133ea2475c50780f8b16a38705233d5d8a32b
-main_merge_base: 46fc4af1e8584a8a82612e688e325e32f64c9a41
-worktree_at_snapshot: clean
+branch: main
+canary_code_checkpoint: d11b012ff02e0e846ab5744210fd417bc353bfc3
+final_tip: query with `git rev-parse HEAD`
+main_merge_base: 796fa2bf07f9f97a74bb93b5b3586c759b6101a2
+worktree_at_snapshot: clean_after_local_main_merge
 remote_delivery: local_commits_only
 ```
+
+历史重写说明：原始 70 个提交已压缩为 5 个连续主题提交，并 rebase 到最新
+`origin/main`。备份分支 `backup/feat-fetch-optimization-pre-compact-aeb9a285`，并保留
+主分支刷新前的恢复点 `backup/feat-fetch-optimization-pre-final-rebase-24a8cf4`，
+保留原始历史；旧 ADR/Run 记录中的 SHA 均为 `pre-rewrite checkpoint`，不被替换为
+新的伪 provenance。本文件和最终 Merge Readiness ADR 以 rebase 后的代码与 Canary
+证据为准。
 
 ## 当前结论
 
@@ -40,6 +48,8 @@ Timeout 仍为 Deferred 或 Local-only；401/403/404/410/429、挑战页、登�
 - `RemoteExtractProvider` 为 crate-private 深模块接口；Evaluation warmup 不在生产接口中。
 - Parallel Search 与 Fetch 共享同一 runtime 和 endpoint health，并由 exactly-once lifecycle
   统一关闭；Fetch 工具级故障不会禁用无关 Search Provider。
+- Provider 与 Evaluation shutdown 使用可传播的 `Result`；失败可重试，不会把失败的
+  cleanup 缓存为成功，也不会把不完整 evidence 标记为 complete。
 - `ParallelMcpCallPolicy` 是不可绕过的网络前授权边界；Evaluation quota/control 只能附加
   配额和证据，不能替代生产安全策略。
 - Remote 结果只按 canonical requested URL 精确归属。Missing、Extra、Malformed、
@@ -66,8 +76,8 @@ Payload 或原始 Provider Response。
 
 代码基线完成过以下验证：
 
-- `cargo test -p flowy-web`：162 项通过；
-- `cargo test -p flowy-web --features fetch-eval --all-targets`：203 项库测试和 4 项集成
+- `cargo test -p flowy-web`：173 项通过（基础套件）；
+- `cargo test -p flowy-web --features fetch-eval --all-targets`：226 项库测试和 4 项集成
   测试通过；
 - `cargo test -p nomifun-app --features managed-search --lib managed_web`：3 项定向测试通过；
 - `cargo check -p flowy-web --no-default-features`：通过；
@@ -76,13 +86,14 @@ Payload 或原始 Provider Response。
 - `cargo fmt --all -- --check`、`git diff --check`：通过；
 - `.github/workflows` 下 `.yml`/`.yaml` 数量为 0。
 
-`bun run check` 中 typecheck、i18n、theme、icons、process-runtime-boundary 和
-browser-platform-boundary 通过；最终只被仓库既有的 8 条 agent-vocabulary retired
-reference 阻断。本分支没有修改这些无关基线文件。
+`bun run check` 在受限进程中报告环境级 `Operation not permitted`；使用批准的提升进程
+重跑完整通过。三条本分支新增退休词汇注释已改为当前术语，没有修改 UI 或无关基线文件。
 
 ## 真实 Provider 与 Desktop 证据
 
-脱敏 post-enable Canary 位于 ignored 目录 `fetch-evaluation-raw/post-enable-v8/`：
+脱敏 post-enable Canary 位于 ignored 目录 `fetch-evaluation-raw/post-enable-v8/`，作为历史
+人工验收证据保留；最终代码的 post-rebase Canary 位于
+`fetch-evaluation-raw/post-rebase-d11b012f/`：
 
 - run ID：`019fc192-56b3-74b1-bb37-16370d503dac`；
 - 9 个逻辑 attempt，9 个完成；
@@ -101,13 +112,23 @@ Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
 
 ## Git 与交付状态
 
-- 当前功能代码基线：`9c7133ea2475c50780f8b16a38705233d5d8a32b`；
-- 分支没有 upstream，所有提交仅在本地；
+- 当前 rebase 后代码基线：`d11b012ff02e0e846ab5744210fd417bc353bfc3`；
+- 5 个压缩提交相对最新 `origin/main=796fa2bf0` 为 ahead 5、behind 0；
+- 压缩前后的跟踪文件 tree 均为 `e4175ed4feb09308c7e62bed120f9d160dbe51b5`；
+- 本地 main 没有新增 upstream，五个提交仍仅在本地；
 - 未 Push、未建 PR、未创建或修改 GitHub Actions；
-- 工作区在写入本状态文档前为 clean；
+- 任务路径已提交；ignored 评测证据仍未删除、未暂存；
 - ignored 评测证据保留在本地，未删除、未暂存。
 
-关键提交：
+当前 main 包含的五个压缩提交：
+
+- `53a69d3e` `test(web): establish managed fetch evaluation foundation`
+- `f2c19111` `test(web): qualify managed fetch admission evidence`
+- `989d3e56` `feat(web): enable evidence-backed managed fetch on desktop`
+- `4fe63f49` `fix(web): harden managed fetch safety and campaign boundaries`
+- `HEAD` `refactor(web): finalize managed fetch maintenance and readiness` (query the live tip)
+
+原始细粒度提交仍可从备份分支读取。历史关键提交：
 
 - `c5f955eb` `test(web): define remote extract provider contracts`
 - `01359f73` `refactor(web): deepen managed extract provider assembly`
@@ -115,10 +136,13 @@ Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
 - `24838484` `feat(app): enable evidence-backed managed fetch on desktop`
 - `b6712533` `fix(web): close managed fetch policy edge cases`
 - `9c7133ea` `docs(web): record final managed fetch desktop acceptance`
+- `3169aecb`–`45c0511d`：Evaluation 模块拆分、Campaign 恢复/类型化、MCP Control
+  收敛、typed evidence 与 Summary fail-closed 校验。
 
 ## 证据边界与剩余事项
 
-当前完成的是有限类别的生产灰度接入，不是完整公开 Admission Campaign。以下事项必须
+当前完成的是有限类别的生产灰度接入，不是完整公开 Admission Campaign。历史 post-enable
+Canary 与 post-fix 六调用 Canary 均有效。以下事项必须
 另开分支、重新审批，不能从当前结论自动推导：
 
 1. 每类 15–20 个独立 URL 的正式公开 Admission；
@@ -127,6 +151,29 @@ Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
 4. Browser→MCP 自动循环；
 5. UI/数据库 Provider 选择器或运行时用户开关；
 6. 额外 Fetch Provider 的产品接入。
+
+本轮维护收口、主分支刷新后的最终冻结 Round 3 和本地 main 快进均已完成：
+
+7. 已修正权威架构文档的过期验收条目、启动失败时吞掉 Managed Search shutdown 错误，
+   并将 CHANGELOG 收敛为高层条目；
+8. 保留 `NOMIFUN_MANAGED_FETCH_MODE=off` 作为即时回滚。
+
+本地 `main` 已以 `--ff-only` 快进到最终五提交 tip；`feat/fetch-optimization` 已删除，
+恢复点 `backup/feat-fetch-optimization-pre-compact-aeb9a285` 和
+`backup/feat-fetch-optimization-pre-final-rebase-24a8cf4` 均保留。未 Push、未建 PR。
+
+已完成的 post-fix bounded Canary（证据目录为
+`fetch-evaluation-raw/post-refactor-55f17bda/`）：
+
+- W3C PDF：1 Cold Compare + 2 Warm E2E，3 次 Fetch，3/3 Q3；
+- ESLint JavaScript Shell：1 Cold Compare + 2 Warm E2E，3 次 Fetch，3/3 Q3；
+- Static HTML：Local success，0 次 Remote；
+- 总计 6 次实际 Fetch、0 Search、0 recovery、0 429/cooldown；
+- source mismatch、dropped item、sensitive egress、retry-limit violation、
+  cancellation-late result 全部为 0；三组 status/safety provenance 完整。
+- Run IDs（PDF/JS/HTML）：`019fc67d-e2cb-71f2-99b0-dcddc58be3fb`、
+  `019fc67e-3a4f-7603-9462-f21536386360`、
+  `019fc67e-8ae3-7361-be02-5fa600a6f184`。
 
 一个可维护性缺口仍然存在：Desktop `bun run dev` 的 stdout 没有形成可恢复的脱敏
 运行证据。若未来需要把人工验收升级为可审计发布门禁，应另行设计只保存计数和

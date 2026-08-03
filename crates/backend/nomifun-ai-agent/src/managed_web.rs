@@ -42,13 +42,18 @@ impl ManagedWebHandle {
         self.service.extract_coordinator()
     }
 
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), WebError> {
         match tokio::time::timeout(Duration::from_secs(3), self.service.shutdown()).await {
-            Ok(()) => {}
-            Err(_) => tracing::warn!(
-                target: "managed_web",
-                "managed web shutdown timed out after 3 seconds"
-            ),
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    target: "managed_web",
+                    "managed web shutdown timed out after 3 seconds"
+                );
+                Err(WebError::Timeout(
+                    "managed web shutdown timed out after 3 seconds".to_owned(),
+                ))
+            }
         }
     }
 }

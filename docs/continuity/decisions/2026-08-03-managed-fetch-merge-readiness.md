@@ -1,99 +1,132 @@
-# Managed Fetch merge-readiness decision
+# Managed Fetch rebase and merge-readiness decision
 
 Date: 2026-08-03
-Branch: `feat/fetch-optimization`
-Code/Canary HEAD: `9348bbe63d556cc415cdf20ef69a094c99284b7b`
-Documentation was reviewed again after the follow-up wording fixes.
+Branch: `main` (local fast-forward destination)
+Latest main: `origin/main=796fa2bf07f9f97a74bb93b5b3586c759b6101a2`
+Canary code checkpoint before the final documentation amendment: `d11b012ff02e0e846ab5744210fd417bc353bfc3`
+Final documentation tip: query with `git rev-parse HEAD` after this record is committed.
 
-## Scope
+## History closure
 
-This record covers the security closure and bounded canary needed before a
-local merge request may be opened. No push, merge, PR, UI/database/Web Host
-switch, Browser-to-MCP loop, GitHub Actions workflow, private URL, or category
-expansion was performed.
+The original 70 commits were rebuilt as five continuous topic commits:
 
-## Security closure
+1. `53a69d3e` — `test(web): establish managed fetch evaluation foundation`
+2. `f2c19111` — `test(web): qualify managed fetch admission evidence`
+3. `989d3e56` — `feat(web): enable evidence-backed managed fetch on desktop`
+4. `4fe63f49` — `fix(web): harden managed fetch safety and campaign boundaries`
+5. final tip — `refactor(web): finalize managed fetch maintenance and readiness` (query with `git rev-parse HEAD`)
 
-Local SSRF and Remote egress share host/IP safety primitives. Remote egress
-additionally rejects credentials, decoded or camelCase sensitive query/fragment
-names, and presigned-key variants while allowing ordinary query parameters.
-Authorization occurs before quota reserve and before transport. Remote
-source-contract errors remain batch fail-closed.
+The pre-rewrite history is recoverable from local branch
+`backup/feat-fetch-optimization-pre-compact-aeb9a285`; the pre-final-rebase tip is also
+recoverable from `backup/feat-fetch-optimization-pre-final-rebase-24a8cf4`. The tracked-file tree before
+and after compression was identical: `e4175ed4feb09308c7e62bed120f9d160dbe51b5`.
+Older ADR and Run references remain historical `pre-rewrite checkpoint` evidence; they
+are not replaced with new provenance.
 
-Quota evidence is atomic and fails closed on an empty ledger. Admission runs
-hold an ignored per-campaign lock for their lifetime, and cumulative cap
-exhaustion cannot wake the same campaign indefinitely. The final exact-cap
-completed state is preserved and summarized.
+The compact history was rebased onto the latest main. The only rebase conflicts were
+`CHANGELOG.md` and `docs/reference/configuration.md`; main's current content was kept,
+and the Managed Fetch release/configuration entries were added once. No Provider,
+Coordinator, Safety, Host, or runtime conflict occurred.
 
-## Code review
+## Behaviour and safety decision
 
-- Round 1 security-specialized review: P0=0, P1=0. Covered sensitive key
-  variants, encoded fragments, special domains, reserved ranges, and policy
-  ordering.
-- Round 2 full branch Standards review: P0=0, P1=0, P2=6 maintenance items
-  (runner decomposition, stringly campaign state, duplicate MIME logic,
-  duplicate control seams, cancellation cleanup shape, and missing concurrency
-  tests); none is P0/P1. The review passed after fixing evidence-path, shutdown
-  cancellation, quota atomicity, campaign locking, and exact-cap state
-  ordering.
-- Round 2 full branch Spec review: P0=0, P1=0, P2=0. Evidence-backed mode,
-  deferred/forbidden zero-egress, source mapping, rollback, and scope limits
-  matched the plan.
-- Round 3 frozen-candidate Standards review: P0=0, P1=0, P2=6 existing
-  non-blocking maintenance debts; Spec review: P0=0, P1=0, P2=0. The frozen
-  range was `origin/main...HEAD` with `origin/main=46fc4af1` unchanged.
+Fetch remains Local-first. Only PDF, JavaScript Shell, and Empty Content are allowed to
+enter the EvidenceBacked Parallel MCP Fetch fallback. Ordinary HTML returns from Local
+without Remote. Unsupported Document, DNS, TLS, Network, and Timeout remain deferred or
+Local-only. HTTP access-control failures, challenge/login/paywall pages, private hosts,
+and sensitive URLs never leave the process.
 
-## Final gates
+The production call order remains:
 
-- `cargo test -p flowy-web`: 167/167 passed.
-- `cargo test -p flowy-web --features fetch-eval --all-targets`: 209 library
-  tests plus 4 example integration tests passed.
-- `cargo test -p nomifun-app --features managed-search --lib managed_web`: 3/3
-  passed. The focused `nomifun-ai-agent` managed-web handle test was 4/4.
-- `cargo check --workspace`, flowy-web default/feature checks, `cargo fmt`,
-  and `git diff --check`: passed.
-- The full `nomifun-ai-agent` test binary compiled but its 915-test run was
-  stopped by the 10-minute tool limit at an existing long-running
-  `runtime_registry` test; this is reported as an environment/baseline limit,
-  not as a feature failure.
-- `bun run check` and each individual Bun check were blocked before script
-  execution by the environment's `Operation not permitted` error; no UI or
-  unrelated baseline file was changed.
-- `.github/workflows` contains zero YAML files. The pre-ADR gate snapshot was
-  ahead 49 and behind 0; the current documentation HEAD is ahead 50 and
-  behind 0 relative to `origin/main`.
+```text
+ParallelMcpCallPolicy::authorize
+-> ManagedMcpCallControl::reserve
+-> tools/call
+-> observe_result
+```
 
-## Bounded canary
-
-The new clean-HEAD run used corpus `2026-08-02-public-admission-v6` and six
-Remote Fetch calls total:
-
-| Case class | Attempts | Remote calls | Effective success | Quality | Warm elapsed |
-| --- | ---: | ---: | ---: | --- | --- |
-| public PDF | 3 | 3 | 3/3 | Q3 | 1.681–1.817 s |
-| JavaScript Shell | 3 | 3 | 3/3 | Q3 | 0.669–2.460 s |
-| static HTML control | 1 Local | 0 | Local success | Q4 | 0.678 s |
-
-All three status/safety reports were complete and provenance-clean. Safety
-counts were zero for source mismatch, dropped items, sensitive egress,
-retry-limit violations, and cancellation late results. No 429 or quota stop
-occurred. The first attempted run was rejected before external calls because
-its worktree was dirty; its evidence was preserved separately and is not part
-of the passing canary.
-
-## Decision and merge boundary
-
-Decision: `retain_experimental` for product rollout, and `merge-ready` for a
-local owner-reviewed integration into `main`. The canary demonstrates the
-repaired safety and normal PDF/JS fallback, but it is not the 15+ independent-
-case Admission Campaign.
-
-Rollback remains:
+Fetch arguments remain exactly `{urls, full_content=false}`. Requested URL mapping is
+canonical and exact; missing, extra, malformed, unmatched, or dropped results fail the
+whole Remote batch and restore each Local error. `off` remains the immediate rollback:
 
 ```text
 NOMIFUN_MANAGED_FETCH_MODE=off
 ```
 
-The next step is a local-only merge-readiness review against the latest
-`origin/main`. Formal 15+ URL Admission, private PDFs, unsupported/network
-categories, and any further default-policy expansion remain separate work.
+## Rebase gates
+
+All targeted gates passed after rebase:
+
+- `cargo test -p flowy-web`: 173 passed;
+- `cargo test -p flowy-web --features fetch-eval --all-targets`: 226 library tests + 4 example tests passed;
+- `cargo test -p nomifun-ai-agent --features managed-search --test managed_web_handle`: 4 passed;
+- `cargo test -p nomifun-app --features managed-search --lib managed_web`: 3 passed;
+- `cargo check -p flowy-web --no-default-features`: passed;
+- `cargo check -p flowy-web --features fetch-eval`: passed;
+- `cargo check --workspace`: passed with existing warnings only;
+- `cargo fmt --all -- --check`: passed;
+- `git diff --check`: passed;
+- `bun run check`: passed when run with the approved elevated process; the restricted
+  invocation reports the environment-only `Operation not permitted` error;
+- `.github/workflows` contains zero `.yml`/`.yaml` files.
+
+The repository's Cargo config references an unavailable `sccache.exe`; all Rust commands
+used the child-process-only override `--config build.rustc-wrapper=""`. No user or repo
+configuration was changed.
+
+## Rebase post-Canary
+
+Evidence is under the ignored directory `fetch-evaluation-raw/post-rebase-d11b012f/`.
+All five status/safety sidecars are complete, clean, and use the same code/corpus/profile
+provenance. Actual calls: 6 Fetch, 0 Search, 0 recovery, 0 429/cooldown.
+
+| Case | Attempts | Remote calls | Effective success | Quality | Warm elapsed |
+| --- | ---: | ---: | ---: | --- | --- |
+| W3C public PDF | 1 cold + 2 warm | 3 | 3/3 | Q3 | 1.908s, 3.201s |
+| ESLint JavaScript Shell | 1 cold + 2 warm | 3 | 3/3 | Q3 | 1.398s, 1.504s |
+| Static HTML control | 1 Local | 0 | Local success | Q4 | n/a |
+
+Warm elapsed P95 across the four E2E attempts was 3.201s, below the 8s gate. Safety
+counts were zero for sensitive egress, source mismatch, dropped items, retry-limit
+violations, and cancellation-late results. Run IDs:
+
+- PDF cold: `019fc711-e022-7fe2-8e05-32e3375fa450`;
+- PDF warm: `019fc712-0435-7013-9515-be2061aef146`;
+- JS cold: `019fc712-6675-7c33-9ee3-febc0ba53e89`;
+- JS warm: `019fc712-8cb1-7293-8b8c-3668849760c3`;
+- HTML: `019fc712-c2c0-77f2-9f7b-d83b402f1046`.
+
+The final code checkpoint propagates Managed Search shutdown errors during
+startup-failure cleanup, continues other cleanup stages while aggregating failures,
+removes stale acceptance claims from the authoritative architecture index, and keeps
+the Unreleased changelog at a high-level summary.
+
+This is a bounded preflight/merge regression check, not the formal 15+ URL Admission
+Campaign. It cannot produce `candidate_for_enablement` or authorize category expansion.
+
+## Review and delivery boundary
+
+The compression equivalence review passed: five commits, identical tracked tree, and no
+unintended file removal. The first rebase integration had only the two documented text
+conflicts; the refresh rebase onto `796fa2bf0` was conflict-free. The post-refresh frozen
+review ran against production tip `10629dcfa`; the final main tip differs only by this
+documentation-only amendment. Any future production-code change requires rerunning the
+final review and the bounded Canary.
+
+The previous frozen review at `125877af8` and the post-refresh frozen review at
+`10629dcfa` found zero P0/P1 findings on both Standards and Spec axes.
+It recorded one non-blocking P2 follow-up: `FileQuotaControl::record_rate_limit` currently
+keeps the in-memory rate-limit state when persisting cooldown evidence fails. The current
+Runner still stops the batch, but a process crash could lose the durable cooldown. The
+follow-up owner is the `flowy-web` Evaluation maintainer; it must add an injected ledger
+failure test and surface `quota_ledger_failed` before any future multi-day Admission run.
+This does not affect the production MCP path or the bounded Canary decision.
+
+Current decision: `local_main_fast_forward_complete`. Local `main` is ahead 5 and behind 0
+relative to refreshed `origin/main`; the fast-forward was verified and
+`feat/fetch-optimization` was deleted. Both recovery branches remain local. No push, PR,
+GitHub Actions workflow, private URL, Browser-to-MCP loop, or formal Admission Campaign was
+run.
+
+Formal 15+ URL Admission, private PDF validation, unsupported/network category expansion,
+and any further rollout policy change remain separate future work.

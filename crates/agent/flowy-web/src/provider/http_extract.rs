@@ -13,6 +13,7 @@ use crate::provider::extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
     failed_outcome, successful_outcome,
 };
+use crate::provider::document_kind::{DeferredDocumentKind, classify_document};
 use crate::provider::html_md::{html_to_markdown, truncate_chars};
 use crate::provider::ssrf::{check_scheme, resolve_extract_url, resolve_validated};
 use crate::provider::ExtractProvider;
@@ -148,10 +149,15 @@ impl HttpExtractProvider {
                     ));
                     return failed_outcome(requested_url, error, diagnostics);
                 }
-                if let Some(kind) = deferred_document_kind(
+                if let Some(kind) = classify_document(
                     resource.content_type.as_deref(),
                     &resource.body,
-                ) {
+                ).map(|kind| match kind {
+                    DeferredDocumentKind::Pdf => LocalExtractFailureKind::Pdf,
+                    DeferredDocumentKind::UnsupportedDocument => {
+                        LocalExtractFailureKind::UnsupportedDocument
+                    }
+                }) {
                     return LocalExtractOutcome {
                         requested_url,
                         result: Err(LocalExtractFailure {
@@ -173,7 +179,7 @@ impl HttpExtractProvider {
     }
 
     fn page_from_resource(&self, resource: &FetchedResource) -> Result<ExtractedPage, WebError> {
-        if deferred_document_kind(resource.content_type.as_deref(), &resource.body).is_some() {
+        if classify_document(resource.content_type.as_deref(), &resource.body).is_some() {
             return Err(WebError::Provider(
                 "local extract defers binary document parsing to managed fetch".to_owned(),
             ));
@@ -262,34 +268,6 @@ impl HttpExtractProvider {
             body.extend_from_slice(&chunk);
         }
         Ok((body, false))
-    }
-}
-
-fn deferred_document_kind(
-    content_type: Option<&str>,
-    body: &[u8],
-) -> Option<LocalExtractFailureKind> {
-    if body.starts_with(b"%PDF-") {
-        return Some(LocalExtractFailureKind::Pdf);
-    }
-    match content_type {
-        Some("application/pdf") | Some("application/x-pdf") | Some("application/acrobat") => {
-            Some(LocalExtractFailureKind::Pdf)
-        }
-        Some(content_type)
-            if content_type.starts_with("application/")
-                && !matches!(
-                    content_type,
-                    "application/xhtml+xml"
-                        | "application/json"
-                        | "application/xml"
-                        | "application/x-javascript"
-                        | "application/javascript"
-                ) =>
-        {
-            Some(LocalExtractFailureKind::UnsupportedDocument)
-        }
-        _ => None,
     }
 }
 

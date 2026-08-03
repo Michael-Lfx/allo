@@ -1628,10 +1628,14 @@ impl AppServices {
     /// Conversation runtime teardown must not call this; only Host shutdown
     /// owns the process-level Search lifecycle.
     #[cfg(feature = "managed-search")]
-    pub(crate) async fn shutdown_managed_search(&self) {
+    pub(crate) async fn shutdown_managed_search(&self) -> anyhow::Result<()> {
         if let Some(managed_web) = self.managed_web.as_ref() {
-            managed_web.shutdown().await;
+            managed_web
+                .shutdown()
+                .await
+                .map_err(|error| anyhow::anyhow!("managed search shutdown failed: {error}"))?;
         }
+        Ok(())
     }
 
     /// Close browser resources and the database after a startup-stage failure,
@@ -4648,7 +4652,7 @@ mod tests {
             services.managed_web.is_some(),
             "desktop capability must construct a ManagedWebHandle"
         );
-        services.shutdown_managed_search().await;
+        services.shutdown_managed_search().await.unwrap();
         services.database.close().await;
     }
 

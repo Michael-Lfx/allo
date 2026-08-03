@@ -1,5 +1,8 @@
 # Managed Fetch current state and Admission case-plan review
 
+> Historical evidence: commit SHA fields in this record refer to the pre-rewrite
+> checkpoint. The rebase-era merge decision is recorded separately.
+
 Date: 2026-08-02
 Branch: `feat/fetch-optimization`
 Snapshot HEAD: `3a8e4ae020d5d06e1795a7caf598ff1301145003`

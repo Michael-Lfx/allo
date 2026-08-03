@@ -53,7 +53,8 @@ The following remain policy-deferred and Local-only until separate production
 evidence is approved:
 
 - Unsupported public document content types
-- Local extraction with no valid body
+- Unclassified Local no-valid-body outcomes (only the explicit `EmptyContent`
+  classification is currently eligible)
 - Public URL transient DNS, TLS, or network failure
 - Local timeout when the remaining tool budget is sufficient
 

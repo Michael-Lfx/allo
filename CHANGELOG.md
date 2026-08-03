@@ -61,20 +61,10 @@ notes at a high level rather than a complete historical log.
   service notes) — dangerous capabilities are never registered, replacing the
   retired runtime `ExposureMode::PublicService` clamp.
 
-- Managed fetch evaluation now fails closed on incomplete or dirty Admission
-  evidence, requires exact cold-Compare plus warm-E2E triples, and records
-  Local PDF/Unsupported Document deferrals as structured policy outcomes before
-  any remote fallback is considered.
-- Added an evidence-backed Managed Fetch mode for Desktop canary rollout. It
-  keeps PDF/JavaScript/Empty Content as the only remote fallback categories,
-  validates every production MCP call at the transport seam, and supports the
-  `NOMIFUN_MANAGED_FETCH_MODE=off|evidence-backed` startup override.
-- Desktop now defaults to the evidence-backed Managed Fetch profile after the
-  completed canary acceptance; `NOMIFUN_MANAGED_FETCH_MODE=off` remains the
-  immediate Local-only rollback.
-- Hardened Managed Fetch egress with shared Local/Remote URL safety checks,
-  decoded sensitive-key rejection, atomic quota evidence, campaign run
-  serialization, and fail-closed exact-cap completion semantics.
+- Added and enabled evidence-backed Managed Fetch for Desktop, with fail-closed
+  evaluation, policy-gated PDF/JavaScript/Empty fallback, safe MCP egress,
+  resumable evidence, and a Local-only rollback via
+  `NOMIFUN_MANAGED_FETCH_MODE=off`.
 
 ## v0.3.3 - 2026-07-30
 
