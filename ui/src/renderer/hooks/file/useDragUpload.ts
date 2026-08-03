@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Message } from '@arco-design/web-react';
 import type { FileMetadata } from '@renderer/services/FileService';
-import { isSupportedFile, FileService } from '@renderer/services/FileService';
+import { FileService } from '@renderer/services/FileService';
 import type { UploadSource } from '@renderer/hooks/file/useUploadState';
 import type { ConversationId } from '@/common/types/ids';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
@@ -27,13 +27,12 @@ export interface UseDragUploadOptions {
 }
 
 export const useDragUpload = ({
-  supportedExts = [],
+  supportedExts: _supportedExts = [],
   onFilesAdded,
   conversation_id,
   source = 'sendbox',
   containerRef,
-}: UseDragUploadOptions) => {
-  const { t } = useTranslation();
+}: UseDragUploadOptions) => {  const { t } = useTranslation();
   const [isFileDragging, setIsFileDragging] = useState(false);
 
   // 拖拽计数器，防止状态闪烁
@@ -92,25 +91,8 @@ export const useDragUpload = ({
       try {
         const droppedFiles = e.nativeEvent.dataTransfer!.files;
 
-        // 第一步：先校验文件类型，筛选出支持的文件
-        const validFiles: File[] = [];
-
-        for (let i = 0; i < droppedFiles.length; i++) {
-          const file = droppedFiles[i];
-          if (supportedExts.length === 0 || isSupportedFile(file.name, supportedExts)) {
-            validFiles.push(file);
-          }
-          // 注意：不支持的文件会被静默过滤，与原逻辑保持一致
-        }
-
-        // 第二步：只处理校验通过的文件
-        if (validFiles.length > 0) {
-          // 创建 FileList 对象给 processDroppedFiles
-          const validFileList = Object.assign(validFiles, {
-            length: validFiles.length,
-            item: (index: number) => validFiles[index] || null,
-          }) as unknown as FileList;
-          const processedFiles = await FileService.processDroppedFiles(validFileList, conversation_id, source);
+        if (droppedFiles.length > 0) {
+          const processedFiles = await FileService.processDroppedFiles(droppedFiles, conversation_id, source);
 
           if (processedFiles.length > 0) {
             onFilesAdded(processedFiles);
@@ -121,7 +103,7 @@ export const useDragUpload = ({
         Message.error(t('conversation.workspace.dragFailed', 'Failed to process dropped files'));
       }
     },
-    [conversation_id, onFilesAdded, source, supportedExts, t]
+    [conversation_id, onFilesAdded, source, t]
   );
 
   /**

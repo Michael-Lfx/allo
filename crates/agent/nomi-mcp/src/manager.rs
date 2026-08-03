@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::config::{McpServerConfig, TransportType};
 use super::protocol::{
-    ClientCapabilities, ClientInfo, InitializeParams, InitializeResult, JsonRpcRequest,
+    InitializeResult, JsonRpcRequest, default_init_params,
     McpResource, McpToolDef, McpToolResult, ResourcesListResult, ResourcesReadResult,
     ToolsListResult,
 };
@@ -211,16 +211,7 @@ impl McpManager {
                 })?;
                 let args = config.args.as_deref().unwrap_or(&[]);
                 let env = config.env.as_ref().unwrap_or(&empty_map);
-                let init_params = InitializeParams {
-                    protocol_version: "2025-03-26".to_string(),
-                    capabilities: ClientCapabilities {
-                        tools: Some(json!({})),
-                    },
-                    client_info: ClientInfo {
-                        name: "nomi".to_string(),
-                        version: "0.3.0".to_string(),
-                    },
-                };
+                let init_params = default_init_params();
                 Box::new(
                     StdioTransport::spawn_with_cleanup_registry(
                         command,
@@ -250,16 +241,7 @@ impl McpManager {
         };
 
         // 2. Initialize handshake
-        let init_params = InitializeParams {
-            protocol_version: "2025-03-26".to_string(),
-            capabilities: ClientCapabilities {
-                tools: Some(json!({})),
-            },
-            client_info: ClientInfo {
-                name: "nomi".to_string(),
-                version: "0.3.0".to_string(),
-            },
-        };
+        let init_params = default_init_params();
 
         let init_req = JsonRpcRequest::new(
             1,

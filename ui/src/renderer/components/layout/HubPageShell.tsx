@@ -3,6 +3,7 @@
 import classNames from 'classnames';
 import React from 'react';
 import { SettingsViewModeProvider } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
+import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 
 interface HubPageShellProps {
   title: string;
@@ -21,10 +22,8 @@ interface HubPageShellProps {
 /**
  * HubPageShell — shared chrome for the homepage "hub" destinations (Model
  * Management, Presets, Skills, MCP). Mirrors the scroll container + centered content
- * column of `SettingsPageWrapper`, and provides the `page` view-mode context so
- * the embedded settings content components (which were originally authored for
- * the settings modal) lay out correctly — but without the settings-specific
- * mobile top navigation.
+ * column of `SettingsPageWrapper` so the embedded settings content components lay
+ * out correctly — but without the settings-specific mobile top navigation.
  */
 const HubPageShell: React.FC<HubPageShellProps> = ({
   title,
@@ -35,10 +34,17 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
   hideHeader = false,
   children,
 }) => {
+  const layout = useLayoutContext();
+  const isMobile = layout?.isMobile ?? false;
+
   return (
     <SettingsViewModeProvider value='page'>
       <div
-        className={classNames('app-page-shell w-full min-h-full box-border overflow-y-auto', className)}
+        className={classNames(
+          'app-page-shell w-full min-h-full box-border overflow-y-auto',
+          className,
+          isMobile ? 'px-16px py-16px' : 'px-12px md:px-40px py-32px'
+        )}
       >
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
           {!hideHeader && (

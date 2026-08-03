@@ -85,7 +85,6 @@ export type GuidSendDeps = {
   availableMcpServers: IMcpServer[];
   selectedMcpServerIds: McpServerId[] | undefined;
   currentEffectiveAgentInfo: EffectiveAgentInfo;
-  isGoogleAuth: boolean;
 
   /** Applies the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto the
    * freshly created conversation, before navigation. Never throws. */
@@ -170,7 +169,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     availableMcpServers,
     selectedMcpServerIds,
     currentEffectiveAgentInfo,
-    isGoogleAuth,
     applyAdvancedConfig,
     autoWork,
     goalMode,

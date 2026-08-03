@@ -1,28 +1,14 @@
 
 
-import ModalWrapper from '@renderer/components/base/ModalWrapper';
+import NomiModal from '@/renderer/components/base/NomiModal';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 const COPYRIGHT = '© 2025-2026 Flowy';
 
-// 以下导出类型与 props 形状保持不变，以兼容现有调用方（FeedbackButton / 一键反馈入口等）。
-export type PrefilledScreenshot = {
-  filename: string;
-  data: Uint8Array;
-  type: string;
-};
-
-export type FeedbackEventTags = Record<string, string>;
-export type FeedbackEventExtra = Record<string, unknown>;
-
 type FeedbackReportModalProps = {
   visible: boolean;
   onCancel: () => void;
-  defaultModule?: string;
-  prefilledScreenshots?: PrefilledScreenshot[];
-  feedbackTags?: FeedbackEventTags;
-  feedbackExtra?: FeedbackEventExtra;
 };
 
 /**
@@ -32,7 +18,7 @@ const FeedbackReportModal: React.FC<FeedbackReportModalProps> = ({ visible, onCa
   const { t } = useTranslation();
 
   return (
-    <ModalWrapper
+    <NomiModal
       title={t('settings.contactTitle')}
       visible={visible}
       onCancel={onCancel}
@@ -51,7 +37,7 @@ const FeedbackReportModal: React.FC<FeedbackReportModalProps> = ({ visible, onCa
         </p>
         <div className='mt-12px text-center text-12px text-t-tertiary'>{COPYRIGHT}</div>
       </div>
-    </ModalWrapper>
+    </NomiModal>
   );
 };
 

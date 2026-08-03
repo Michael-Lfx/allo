@@ -73,11 +73,13 @@ struct WatchRuntime {
 
 /// Confidence floor below which a bypass-model decision falls back to the
 /// conservative rule action. Phase-1's per-session `confidence_floor` is gone;
-/// the dual-watch config carries no per-watch floor, so a single conservative
-/// default applies (equivalent to Phase-1's `SidecarConfig::default` 0.0 would
-/// have *never* fallen back — but the spec's safety posture wants low-confidence
-/// guesses to fall back, so a modest floor is used).
-const CONFIDENCE_FLOOR: f32 = 0.0;
+/// the dual-watch config carries no per-watch floor.
+///
+/// 0.4 restores Phase-1's legacy default and the spec's safety posture: the
+/// sidecar contract emits confidence in 0..1, and a guess below the floor is
+/// answered by `PolicyState::conservative_fallback` (the supervisor's
+/// `low_confidence_rulefallback` arm) instead of being applied verbatim.
+const CONFIDENCE_FLOOR: f32 = 0.4;
 
 /// Per-target mutable policy state. Holds BOTH watch configs (D4) and routes each
 /// signal to the relevant one; `on_stall` reads that watch's base
@@ -1415,6 +1417,29 @@ mod tests {
             reason: String::new(),
         };
         assert_eq!(p.on_sidecar(&dec), SidecarStep::Apply(WakeAction::AnswerChoice("2".into())));
+    }
+
+    #[test]
+    fn sidecar_low_confidence_falls_back_to_rule() {
+        let p = PolicyState::new(sidecar_cfg());
+        let dec = SidecarDecision {
+            action: "answer_choice".into(),
+            text: "2".into(),
+            wait_secs: 0,
+            confidence: CONFIDENCE_FLOOR - 0.01,
+            reason: String::new(),
+        };
+        assert_eq!(p.on_sidecar(&dec), SidecarStep::Fallback);
+
+        // At exactly the floor the decision is applied (floor is exclusive).
+        let at_floor = SidecarDecision {
+            confidence: CONFIDENCE_FLOOR,
+            ..dec
+        };
+        assert_eq!(
+            p.on_sidecar(&at_floor),
+            SidecarStep::Apply(WakeAction::AnswerChoice("2".into()))
+        );
     }
 
     #[test]

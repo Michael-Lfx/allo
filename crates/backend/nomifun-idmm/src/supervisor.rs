@@ -1550,10 +1550,7 @@ impl IdmmInner {
             .unwrap_or(false)
     }
 
-    /// Whether `turn_text` (the just-finished turn's assistant text) is a pending
-    /// decision the DECISION watch will answer — reuses the probe's
-    /// `decision_in_text` (detects from the text itself, no persisted-row race),
-    /// gated on the decision watch being enabled. Lets AutoWork yield a
+    /// Whether `turn_text` is a PENDING DECISION the agent is waiting on —
     /// decision-ending turn to IDMM. False when the decision watch is off, the
     /// target is not buildable, or the text is not a decision.
     async fn has_pending_decision(&self, kind: IdmmTargetKind, target_id: &str, turn_text: &str) -> bool {
@@ -2001,6 +1998,12 @@ mod tests {
             self.pending.lock().unwrap().extend(seq);
             self
         }
+        /// Record a delivered action (inherent helper; only reachable through
+        /// the reserved delivery path).
+        async fn inject(&self, action: &WakeAction) -> Result<(), nomifun_common::AppError> {
+            self.injected.lock().unwrap().push(action.clone());
+            Ok(())
+        }
     }
     #[async_trait]
     impl SessionProbe for MockProbe {
@@ -2020,10 +2023,6 @@ mod tests {
                 let _ = tx.send(SessionSignal::Exited).await;
             });
             rx
-        }
-        async fn inject(&self, action: &WakeAction) -> Result<(), nomifun_common::AppError> {
-            self.injected.lock().unwrap().push(action.clone());
-            Ok(())
         }
         async fn action_scope(
             &self,
@@ -2069,11 +2068,6 @@ mod tests {
         }
         async fn pending_signal(&self) -> Option<SessionSignal> {
             self.pending.lock().unwrap().pop_front().flatten()
-        }
-        async fn decision_in_text(&self, turn_text: &str) -> bool {
-            // Mirror ConversationProbe: a numbered menu or an open question (no DB).
-            crate::detector::detect_chat_decision(turn_text).is_some()
-                || crate::detector::detect_chat_open_question(turn_text).is_some()
         }
     }
 
@@ -2175,6 +2169,13 @@ mod tests {
                 generation: CONVERSATION_TURN_GENERATION + 1,
             });
         }
+
+        /// Record a delivered action (inherent helper; only reachable through
+        /// the reserved delivery path).
+        async fn inject(&self, action: &WakeAction) -> Result<(), AppError> {
+            self.injected.lock().unwrap().push(action.clone());
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -2192,11 +2193,6 @@ mod tests {
                 .unwrap()
                 .take()
                 .expect("scope barrier probe can be observed only once")
-        }
-
-        async fn inject(&self, action: &WakeAction) -> Result<(), AppError> {
-            self.injected.lock().unwrap().push(action.clone());
-            Ok(())
         }
 
         async fn action_scope(&self) -> Result<Option<IdmmTurnScope>, AppError> {
@@ -3028,7 +3024,7 @@ mod tests {
 
         assert!(
             injected.lock().unwrap().is_empty(),
-            "unscoped terminal actions must never reach SessionProbe::inject"
+            "unscoped terminal actions must never reach SessionProbe::inject_reserved"
         );
         assert!(
             records.reservations.lock().unwrap().is_empty(),
@@ -3499,12 +3495,6 @@ mod tests {
                 .expect("fresh live probe is observed once")
         }
 
-        async fn inject(&self, _action: &WakeAction) -> Result<(), AppError> {
-            Err(AppError::Conflict(
-                "live generation-order probe does not inject".into(),
-            ))
-        }
-
         async fn action_scope(&self) -> Result<Option<IdmmTurnScope>, AppError> {
             Ok(None)
         }
@@ -3734,69 +3724,6 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&conv_shared, &term_shared),
             "conversation and terminal must not share one SupervisorShared cell"
-        );
-    }
-
-    // ── AutoWork↔IDMM seam: has_pending_decision lets AutoWork yield a
-    //    decision-ending turn to IDMM instead of finalizing/racing it. ──
-
-    #[tokio::test]
-    async fn has_pending_decision_true_when_decision_watch_on_and_text_is_decision() {
-        use nomifun_requirement::IdmmHandle;
-        // decision watch enabled + the just-finished turn TEXT is a 选择题 → AutoWork
-        // should yield (IDMM will answer it). Detection is from the text itself, so
-        // there is no race with the relay's message-status persistence.
-        let (probe, _injected) = MockProbe::new(vec![]);
-        let manager = IdmmManager::new(
-            deps_with(vec![]),
-            Arc::new(FixedProbeFactory(probe)),
-            Arc::new(EnabledConfigReader(rule_cfg())),
-        );
-        let menu = "1) 方案A\n2) 方案B\n请回复编号告诉我你的选择。";
-        assert!(
-            manager
-                .has_pending_decision(
-                    AutoWorkTargetKind::Conversation,
-                    CONVERSATION_TARGET_ID,
-                    menu,
-                )
-                .await
-        );
-        // …and plain prose with no question/menu is NOT a pending decision.
-        assert!(
-            !manager
-                .has_pending_decision(
-                    AutoWorkTargetKind::Conversation,
-                    CONVERSATION_TARGET_ID,
-                    "好的，已经实现完成。",
-                )
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn has_pending_decision_false_when_decision_watch_off() {
-        use nomifun_requirement::IdmmHandle;
-        // Fault-only config (decision watch disabled): even a 选择题 turn text must
-        // report no pending decision — AutoWork must NOT yield to an IDMM that will
-        // not answer questions (else it would needlessly wait the watchdog out).
-        let (probe, _injected) = MockProbe::new(vec![]);
-        let mut cfg = rule_cfg();
-        cfg.decision_watch.base.enabled = false;
-        let manager = IdmmManager::new(
-            deps_with(vec![]),
-            Arc::new(FixedProbeFactory(probe)),
-            Arc::new(EnabledConfigReader(cfg)),
-        );
-        let menu = "1) 方案A\n2) 方案B\n请回复编号告诉我你的选择。";
-        assert!(
-            !manager
-                .has_pending_decision(
-                    AutoWorkTargetKind::Conversation,
-                    CONVERSATION_TARGET_ID,
-                    menu,
-                )
-                .await
         );
     }
 }

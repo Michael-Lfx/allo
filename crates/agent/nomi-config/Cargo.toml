@@ -1,6 +1,6 @@
 [package]
 name = "nomi-config"
-description = "Configuration layer for Nomi: Config struct, ProviderCompat, auth, hooks, session config"
+description = "Configuration layer for Nomi: Config struct, ProviderCompat, hooks, session config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,7 +20,6 @@ toml_edit            = "0.25"
 anyhow.workspace     = true
 thiserror.workspace  = true
 dirs.workspace       = true
-chrono.workspace     = true
 reqwest = { workspace = true, features = ["stream"] }
 futures.workspace    = true
 glob.workspace       = true
@@ -38,6 +37,5 @@ tracing-subscriber.workspace = true
 
 
 [dev-dependencies]
-wiremock.workspace            = true
 tokio-test.workspace          = true
 tracing-subscriber.workspace  = true

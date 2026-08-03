@@ -2,7 +2,7 @@ import React from 'react';
 import { Button, Typography, Tooltip } from '@arco-design/web-react';
 import { IconDownload, IconRefresh } from '@arco-design/web-react/icon';
 import { useTranslation } from 'react-i18next';
-import ModalWrapper from '@/renderer/components/base/ModalWrapper';
+import NomiModal from '@/renderer/components/base/NomiModal';
 import { useHubAgents } from '@/renderer/hooks/agent/useHubAgents';
 import type { IHubAgentItem } from '@/common/types/agent/hub';
 import { resolveAgentLogo } from '@renderer/utils/model/agentLogo';
@@ -76,7 +76,7 @@ export const AgentHubModal: React.FC<AgentHubModalProps> = ({ visible, onCancel 
   };
 
   return (
-    <ModalWrapper
+    <NomiModal
       title={t('settings.agentManagement.installFromMarket')}
       visible={visible}
       onCancel={onCancel}
@@ -148,6 +148,6 @@ export const AgentHubModal: React.FC<AgentHubModalProps> = ({ visible, onCancel 
           </div>
         )}
       </div>
-    </ModalWrapper>
+    </NomiModal>
   );
 };

@@ -1,6 +1,6 @@
 
 
-import { bridge, logger } from '@/platform';
+import { bridge } from '@/platform';
 import { WEBUI_DEFAULT_PORT } from '@/common/config/constants';
 import { AUTH_EXPIRED_EVENT } from './httpBridge';
 
@@ -262,12 +262,3 @@ const win = window as CustomWindow;
     connect();
   };
 }
-
-logger.provider({
-  log(log) {
-    console.log('process.log', log.type, ...log.logs);
-  },
-  path() {
-    return Promise.resolve('');
-  },
-});

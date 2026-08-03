@@ -304,31 +304,27 @@ fn default_data_dir() -> PathBuf {
     nomifun_app::bootstrap::resolve_startup_data_root(requested)
 }
 
-/// Updater scaffold: ask the configured update endpoint whether a newer signed
-/// release is available. Invoked from the renderer via
-/// `invoke("check_for_updates")`. Returns the new version string, or `null` if
-/// up to date. Inert until `plugins.updater.endpoints` in tauri.conf.json serves
-/// a valid `latest.json` signed with the project key
-/// (see apps/desktop/updater/README.md).
-#[tauri::command]
-async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    match updater.check().await {
-        Ok(Some(update)) => Ok(Some(update.version)),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallUpdateProgress {
+    phase: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk_length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_length: Option<u64>,
 }
 
 /// Install the exact update version selected by the renderer through a
 /// Rust-owned updater handle. The renderer may check/download for progress, but
-/// it is never allowed to invoke the plugin's raw install commands.
+/// it is never allowed to invoke the plugin's raw install commands. Progress is
+/// streamed over the request-scoped channel so the modal never appears frozen
+/// while this security boundary re-checks and downloads the signed package.
 #[tauri::command]
 async fn install_update(
     app: tauri::AppHandle,
     server: tauri::State<'_, Arc<DesktopServer>>,
     version: String,
+    on_event: tauri::ipc::Channel<InstallUpdateProgress>,
 ) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
 
@@ -336,6 +332,12 @@ async fn install_update(
     if requested_version.is_empty() {
         return Err("update version must not be empty".to_owned());
     }
+
+    let _ = on_event.send(InstallUpdateProgress {
+        phase: "checking",
+        chunk_length: None,
+        content_length: None,
+    });
 
     let shutdown_server = server.inner().clone();
     let cleanup_app = app.clone();
@@ -377,10 +379,33 @@ async fn install_update(
         ));
     }
 
+    let download_progress = on_event.clone();
+    let download_finished = on_event.clone();
     let bytes = update
-        .download(|_, _| {}, || {})
+        .download(
+            move |chunk_length, content_length| {
+                let _ = download_progress.send(InstallUpdateProgress {
+                    phase: "downloading",
+                    chunk_length: Some(chunk_length),
+                    content_length,
+                });
+            },
+            move || {
+                let _ = download_finished.send(InstallUpdateProgress {
+                    phase: "downloaded",
+                    chunk_length: None,
+                    content_length: None,
+                });
+            },
+        )
         .await
         .map_err(|error| error.to_string())?;
+
+    let _ = on_event.send(InstallUpdateProgress {
+        phase: "installing",
+        chunk_length: None,
+        content_length: None,
+    });
     update.install(bytes).map_err(|error| error.to_string())
 }
 
@@ -712,6 +737,7 @@ impl StartupCleanup {
         }
     }
 
+    #[cfg(test)]
     fn is_verified(&self) -> bool {
         matches!(self, Self::NotStarted | Self::FailedVerified)
     }
@@ -1823,6 +1849,7 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn should_show_main_window_for_macos_reopen(_has_visible_windows: bool) -> bool {
     true
 }
@@ -2478,7 +2505,6 @@ fn main() -> std::process::ExitCode {
         .manage(Arc::new(ExitCoordinator::default()))
         .manage(memory_panel_window::MemoryPanelWindowState::default())
         .invoke_handler(tauri::generate_handler![
-            check_for_updates,
             install_update,
             companion_pointer::get_companion_local_pointer,
             updater_install_context::get_updater_install_context,

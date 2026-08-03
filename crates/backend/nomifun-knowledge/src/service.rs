@@ -753,6 +753,34 @@ impl KnowledgeService {
         key
     }
 
+    /// The workpath key a TERMINAL session's cwd resolves to. Must agree
+    /// byte-for-byte with the terminal service's
+    /// `session_workpath_key(cwd, work_dir)` — the registered managed roots
+    /// (the terminal work dirs) take precedence, and `data_dir` is only the
+    /// safety-net fallback while NO root has been registered. Checking
+    /// `data_dir` first (like the conversation derivation above) would map a
+    /// custom terminal cwd under `data_dir` to `__default__` when
+    /// `work_dir != data_dir`, while the terminal binds/mounts under the
+    /// literal key — live tools would then consult the wrong binding row.
+    fn terminal_workpath_key_for_cwd(&self, cwd: &str) -> String {
+        use crate::workpath::{DEFAULT_WORKPATH_KEY, session_workpath_key, workpath_key};
+        if cwd.trim().is_empty() {
+            return DEFAULT_WORKPATH_KEY.to_owned();
+        }
+        let path = std::path::Path::new(cwd);
+        if let Ok(roots) = self.extra_managed_roots.read()
+            && !roots.is_empty()
+        {
+            for root in roots.iter() {
+                if session_workpath_key(path, root) == DEFAULT_WORKPATH_KEY {
+                    return DEFAULT_WORKPATH_KEY.to_owned();
+                }
+            }
+            return workpath_key(cwd);
+        }
+        session_workpath_key(path, &self.data_dir)
+    }
+
     /// Replace the URL fetcher. Accepts any [`PageFetcher`] (tests pass a
     /// loopback-permitting [`HttpFetcher`]; the production rendering backend
     /// late-wires its `BrowserFetcher`), wrapping it in the `Arc<dyn …>` the
@@ -3560,6 +3588,18 @@ impl KnowledgeService {
         validate_kind(kind)?;
         let target_id = canonical_target_id(kind, target_id)?;
         self.repo.delete_binding(kind, &target_id).await?;
+        // Same observer contract as set_binding: a deleted row is a binding
+        // change (live terminal workspaces must drop their mounts + README
+        // instead of keeping them until the next relaunch). Fires after
+        // persistence; observers reading back see the default (disabled) row.
+        let hook = self
+            .binding_changed_hook
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Some(hook) = hook {
+            hook(kind, &target_id);
+        }
         Ok(())
     }
 
@@ -3725,25 +3765,13 @@ impl KnowledgeService {
         })
     }
 
-    /// Resolve conversation/terminal mounts exclusively through the canonical
-    /// workpath binding. The session-kind/id parameters remain in the method
-    /// shape for callers outside this crate, but v3 never reads per-session
-    /// binding rows as a fallback.
-    pub async fn ensure_mounts_for_session(
-        &self,
-        workpath: &str,
-        _session_kind: &str,
-        _session_id: &str,
-        workspace: &Path,
-    ) -> MountOutcome {
-        let key = workpath_key(workpath);
-        self.ensure_mounts_for_target(WORKPATH_BINDING_KIND, &key, workspace).await
-    }
-
     /// Synchronize workspace mounts for a target according to its binding.
     /// Deleted/missing bases are skipped (no FK by design); a disabled or
     /// empty binding clears previously created mounts. Never fails the
     /// session start — errors degrade to an empty outcome with warnings.
+    /// Conversation/terminal mounts resolve exclusively through the canonical
+    /// workpath binding (`WORKPATH_BINDING_KIND` + `workpath_key`); v3 never
+    /// reads per-session binding rows as a fallback.
     pub async fn ensure_mounts_for_target(&self, kind: &str, target_id: &str, workspace: &Path) -> MountOutcome {
         // Safety guard: when the workspace is the backend data root (or one
         // of its ancestors), the mount sync / legacy cleanup would run their
@@ -3939,22 +3967,6 @@ impl KnowledgeService {
         Ok(hits)
     }
 
-    /// Drop search-cache entries whose files no longer exist (e.g. after a base
-    /// delete). Off the hot path — the size cap already bounds waste.
-    pub fn prune_search_cache(&self) {
-        let mut guard = self.search_cache.write().unwrap_or_else(|e| e.into_inner());
-        let mut freed = 0usize;
-        guard.entries.retain(|path, doc| {
-            if path.exists() {
-                true
-            } else {
-                freed += doc.bytes;
-                false
-            }
-        });
-        guard.total_bytes = guard.total_bytes.saturating_sub(freed);
-    }
-
     /// Empty the search content cache (forced refresh / test isolation).
     pub fn clear_search_cache(&self) {
         let mut guard = self.search_cache.write().unwrap_or_else(|e| e.into_inner());
@@ -3974,7 +3986,7 @@ impl KnowledgeService {
     ///   registered base IDs (broadest fallback — the model still cannot widen
     ///   scope beyond what is registered).
     /// - Otherwise → returns the `kb_ids` from the workpath binding (same set
-    ///   `ensure_mounts_for_session` would mount).
+    ///   `ensure_mounts_for_target` would mount).
     ///
     /// Used by [`crate::mcp_server`] to resolve the search scope at runtime
     /// from the caller's cwd rather than relying on baked `kb_ids`.
@@ -3992,7 +4004,7 @@ impl KnowledgeService {
             return self.all_base_ids().await;
         }
 
-        // Look up the workpath binding — same row `ensure_mounts_for_session` uses.
+        // Look up the workpath binding — same row `ensure_mounts_for_target` uses.
         match self.get_binding(WORKPATH_BINDING_KIND, &key).await {
             Ok(binding) if binding.enabled && !binding.kb_ids.is_empty() => {
                 binding.kb_ids
@@ -4066,7 +4078,7 @@ impl KnowledgeService {
     ) -> (Vec<KnowledgeBaseId>, KnowledgeBinding, String) {
         use crate::workpath::WORKPATH_BINDING_KIND;
 
-        let key = self.workpath_key_for_cwd(cwd);
+        let key = self.terminal_workpath_key_for_cwd(cwd);
         let binding = self.get_binding(WORKPATH_BINDING_KIND, &key).await.unwrap_or_default();
         let bound = if binding.enabled {
             binding.kb_ids.clone()
@@ -8154,6 +8166,69 @@ mod tests {
         assert!(ids.is_empty(), "unbound terminal workspace must resolve empty, got {ids:?}");
     }
 
+    /// With a terminal work root registered, TERMINAL live resolution must key
+    /// by that root alone: a custom terminal cwd that happens to live under
+    /// `data_dir` (work_dir ≠ data_dir) binds/mounts under its LITERAL key on
+    /// the terminal side, so live dispatch must read the same row — not the
+    /// `__default__` row the conversation-side data_dir mapping would pick.
+    #[tokio::test]
+    async fn terminal_scope_keys_by_registered_work_root_not_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let service = Arc::new(make_service(&data_dir));
+        let kb = service.create_base("库", "", None, None).await.unwrap().knowledge_base_id;
+        service.add_managed_root(&dir.path().join("terminal-work"));
+
+        // The terminal side derives session_workpath_key(cwd, work_dir) →
+        // literal key for this cwd, and persists the binding there.
+        let cwd = data_dir.join("user-picked-dir");
+        let literal_key = crate::workpath::workpath_key(&cwd.to_string_lossy());
+        service
+            .set_binding(
+                crate::workpath::WORKPATH_BINDING_KIND,
+                &literal_key,
+                KnowledgeBinding {
+                    enabled: true,
+                    kb_ids: vec![kb.clone()],
+                    ..KnowledgeBinding::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let (ids, _, key) =
+            service.resolve_terminal_scope_for_cwd(&cwd.to_string_lossy()).await;
+        assert_eq!(key, literal_key, "terminal resolution must not fall back to data_dir mapping");
+        assert_eq!(ids, vec![kb]);
+    }
+
+    /// `delete_binding` is a binding change like any other: the in-process
+    /// hook must fire so live terminal workspaces drop stale mounts + README
+    /// immediately instead of keeping them until the next relaunch.
+    #[tokio::test]
+    async fn delete_binding_fires_in_process_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Arc::new(make_service(&dir.path().join("data")));
+        service
+            .set_binding("workpath", "/Users/a/proj", KnowledgeBinding {
+                enabled: true,
+                ..KnowledgeBinding::default()
+            })
+            .await
+            .unwrap();
+        let seen: Arc<StdMutex<Vec<(String, String)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let sink = seen.clone();
+        service.set_binding_changed_hook(Arc::new(move |kind, key| {
+            sink.lock().unwrap().push((kind.to_owned(), key.to_owned()));
+        }));
+        service.delete_binding("workpath", "/Users/a/proj/").await.unwrap();
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events, vec![("workpath".to_owned(), "/Users/a/proj".to_owned())]);
+        // Observer read-back sees the default (disabled) row.
+        let binding = service.get_binding("workpath", "/Users/a/proj").await.unwrap();
+        assert!(!binding.enabled);
+    }
+
     /// Branches on the system prompt: overview calls get strict JSON,
     /// snapshot-compression calls get plain markdown.
     struct FakeCompleter {
@@ -10312,7 +10387,7 @@ mod tests {
         .await;
 
         let outcome = service
-            .ensure_mounts_for_session(&key, "conversation", TEST_CONVERSATION_ID, &ws)
+            .ensure_mounts_for_target(WORKPATH_BINDING_KIND, &key, &ws)
             .await;
         assert_eq!(outcome.mounts.len(), 1, "{:?}", outcome.mounts);
         assert_eq!(outcome.mounts[0].knowledge_base_id.to_string(), kb_workpath);
@@ -10336,14 +10411,14 @@ mod tests {
         .await;
 
         let outcome = service
-            .ensure_mounts_for_session(&key, "conversation", TEST_CONVERSATION_ID, &ws)
+            .ensure_mounts_for_target(WORKPATH_BINDING_KIND, &key, &ws)
             .await;
         assert!(outcome.mounts.is_empty(), "{:?}", outcome.mounts);
 
         // Terminal sessions follow the same workpath-only rule.
         let _kb_term = bind_new_base(&service, "终端库", "terminal", TEST_TERMINAL_ID_2).await;
         let outcome = service
-            .ensure_mounts_for_session(&key, "terminal", TEST_TERMINAL_ID_2, &ws)
+            .ensure_mounts_for_target(WORKPATH_BINDING_KIND, &key, &ws)
             .await;
         assert!(outcome.mounts.is_empty(), "{:?}", outcome.mounts);
     }
@@ -10371,7 +10446,7 @@ mod tests {
             .unwrap();
 
         let outcome = service
-            .ensure_mounts_for_session(&key, "conversation", TEST_CONVERSATION_ID, &ws)
+            .ensure_mounts_for_target(WORKPATH_BINDING_KIND, &key, &ws)
             .await;
         assert!(outcome.mounts.is_empty(), "{:?}", outcome.mounts);
     }
@@ -10393,12 +10468,7 @@ mod tests {
 
         let kb = bind_new_base(&service, "默认库", WORKPATH_BINDING_KIND, DEFAULT_WORKPATH_KEY).await;
         let outcome = service
-            .ensure_mounts_for_session(
-                &key,
-                "conversation",
-                TEST_CONVERSATION_ID,
-                &temp_ws,
-            )
+            .ensure_mounts_for_target(WORKPATH_BINDING_KIND, &key, &temp_ws)
             .await;
         assert_eq!(outcome.mounts.len(), 1, "{:?}", outcome.mounts);
         assert_eq!(outcome.mounts[0].knowledge_base_id.to_string(), kb);
@@ -10423,14 +10493,9 @@ mod tests {
         assert!(binding.enabled);
         assert_eq!(binding.kb_ids, vec![KnowledgeBaseId::parse(kb.clone()).unwrap()]);
 
-        // The session lookup normalizes its own input too.
+        // The mount lookup normalizes its own input too.
         let outcome = service
-            .ensure_mounts_for_session(
-                &format!("{}/", ws.display()),
-                "conversation",
-                TEST_CONVERSATION_ID,
-                &ws,
-            )
+            .ensure_mounts_for_target(WORKPATH_BINDING_KIND, &format!("{}/", ws.display()), &ws)
             .await;
         assert_eq!(outcome.mounts.len(), 1, "{:?}", outcome.mounts);
         assert_eq!(outcome.mounts[0].knowledge_base_id.to_string(), kb);

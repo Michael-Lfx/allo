@@ -241,7 +241,6 @@ const GuidPage: React.FC = () => {
   const preselectAgentKey = navState?.selectedAgentKey;
   const agentSelection = useGuidAgentSelection({
     modelList: modelSelection.modelList,
-    isGoogleAuth: modelSelection.isGoogleAuth,
     localeKey,
     resetPreset: resetPresetRequested,
     preselectAgentKey,
@@ -360,7 +359,6 @@ const GuidPage: React.FC = () => {
     availableMcpServers,
     selectedMcpServerIds: guidSelectedMcpServerIds,
     currentEffectiveAgentInfo: agentSelection.currentEffectiveAgentInfo,
-    isGoogleAuth: modelSelection.isGoogleAuth,
     applyAdvancedConfig: advancedConfig.applyToConversation,
     autoWork: advancedConfig.autoWork,
     goalMode,

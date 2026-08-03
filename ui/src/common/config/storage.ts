@@ -1,9 +1,13 @@
-import type { MoaTurnStatsData } from '@/common/protocolBindings/MoaTurnStatsData';
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import type { ProviderModelResponse } from '@/common/types/provider/providerModel';
 import type { ModelTask } from '@/common/protocolBindings/ModelTask';
 import type { ModelTrait } from '@/common/protocolBindings/ModelTrait';
 import type { ProfileSource } from '@/common/protocolBindings/ProfileSource';
-import type { ProviderModelResponse } from '@/common/types/provider/providerModel';
-import type { SpeechToTextConfig } from '@/common/types/provider/speech';
 import type { PresetReference, ResolvedPresetSnapshot } from '@/common/types/agent/presetTypes';
 import type {
   TDecisionPolicy,
@@ -24,133 +28,6 @@ import type {
   ProviderId,
   RemoteAgentId,
 } from '@/common/types/ids';
-import { storage } from '@/platform';
-
-// 系统配置存储
-export const ConfigStorage = storage.buildStorage<IConfigStorageRefer>('agent.config');
-
-// 系统环境变量存储
-export const EnvStorage = storage.buildStorage<IEnvStorageRefer>('agent.env');
-
-export interface IConfigStorageRefer {
-  'google.config': {
-    /** Proxy URL for Google OAuth endpoint reachability / Google OAuth 端点代理 */
-    proxy?: string;
-  };
-  'codex.config'?: {
-    cli_path?: string;
-    yoloMode?: boolean;
-    sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  };
-  'acp.config': {
-    [backend: string]: {
-      auth_methodId?: string;
-      authToken?: string;
-      lastAuthTime?: number;
-      cli_path?: string;
-      yoloMode?: boolean;
-      /** Preferred session mode for new conversations / 新会话的默认模式 */
-      preferredMode?: string;
-      /** Preferred model ID for new conversations / 新会话的默认模型 */
-      preferredModelId?: string;
-      /** LLM prompt timeout in seconds (default: 300) / LLM 请求超时时间（秒，默认 300） */
-      promptTimeout?: number;
-    };
-  };
-  /** Global LLM prompt timeout in seconds (default: 300). Per-backend promptTimeout overrides this. */
-  'acp.promptTimeout'?: number;
-  /** Idle timeout in minutes before an ACP agent process is killed to reclaim memory (default: 5). */
-  'acp.agentIdleTimeout'?: number;
-  // Cached initialize results per ACP backend (persisted across sessions)
-  'acp.cachedInitializeResult'?: Record<string, import('@/common/types/platform/acpTypes').AcpInitializeResult>;
-  // Cached config options per ACP backend for Guid page pre-selection
-  'acp.cached_config_options'?: Record<string, import('@/common/types/platform/acpTypes').AcpSessionConfigOption[]>;
-  // Cached modes per ACP backend for Guid page / AgentModeSelector
-  'acp.cachedModes'?: Record<string, import('@/common/types/platform/acpTypes').AcpSessionModes>;
-  language: string;
-  theme: string;
-  colorScheme: string;
-  /** Persisted app-wide UI zoom factor for Display settings */
-  'ui.zoomFactor'?: number;
-  /** Last-known main window size and position, restored on next launch */
-  'window.bounds'?: { x?: number; y?: number; width: number; height: number };
-  /** 桌面模式下是否自动启用 WebUI / Auto-enable WebUI in desktop mode */
-  'webui.desktop.enabled'?: boolean;
-  /** 桌面模式下是否允许远程访问 / Allow remote access in desktop mode */
-  'webui.desktop.allowRemote'?: boolean;
-  /** 桌面模式下 WebUI 端口 / WebUI port in desktop mode */
-  'webui.desktop.port'?: number;
-  customCss: string; // 自定义 CSS 样式
-  'css.themes': ICssTheme[]; // 自定义 CSS 主题列表 / Custom CSS themes list
-  'css.activeThemeId': string; // 当前激活的主题 ID / Currently active theme ID
-  'nomi.config'?: {
-    /** Preferred session mode for new conversations / 新会话的默认模式 */
-    preferredMode?: string;
-  };
-  'nomi.defaultModel'?: { provider_id: ProviderId; model: string };
-  /** 新会话的协作模型偏好。空数组表示只使用主模型。 */
-  'nomi.collaborationModels'?: { provider_id: ProviderId; model: string }[];
-  'tools.imageGenerationModel': { provider_id: ProviderId; model: string } & {
-    /** @deprecated Image generation is now controlled via built-in MCP server toggle */
-    switch?: boolean;
-  };
-  'tools.speechToText'?: SpeechToTextConfig;
-  // 是否在粘贴文件到工作区时询问确认（true = 不再询问）
-  'workspace.pasteConfirm'?: boolean;
-  // 上传的文件是否保存到工作区目录（true = 保存到工作区，false = 保存到缓存目录）
-  'upload.saveToWorkspace'?: boolean;
-  // guid 页面上次选择的 agent 类型 / Last selected agent type on guid page
-  'guid.lastSelectedAgent'?: string;
-  // 任务完成时显示系统通知 / Show system notification when task completes
-  'system.notificationEnabled'?: boolean;
-  // 定时任务完成时显示系统通知 / Show system notification when scheduled task completes
-  'system.cronNotificationEnabled'?: boolean;
-  // 阻止系统休眠以保证定时任务执行 / Prevent system sleep to ensure scheduled tasks run
-  'system.keepAwake'?: boolean;
-  // Automatically preview newly created Office files in the current workspace
-  'system.autoPreviewOfficeFiles'?: boolean;
-  // Unlock advanced settings tabs (e.g. cloud account) after a password gate in System settings.
-  'system.developerMode'?: boolean;
-  // Telegram channel agent selection / Telegram Channel 所使用的 Agent
-  'channels.telegram.agent'?: {
-    agent_type: string;
-    backend?: string;
-    name?: string;
-  };
-  // Lark channel agent selection / Lark Channel 所使用的 Agent
-  'channels.lark.agent'?: {
-    agent_type: string;
-    backend?: string;
-    name?: string;
-  };
-  // DingTalk channel agent selection / DingTalk Channel 所使用的 Agent
-  'channels.dingtalk.agent'?: {
-    agent_type: string;
-    backend?: string;
-    name?: string;
-  };
-  // WeChat channel agent selection / WeChat Channel 所使用的 Agent
-  'channels.weixin.agent'?: {
-    agent_type: string;
-    backend?: string;
-    name?: string;
-  };
-  // WeCom channel agent selection / 企业微信 Channel 所使用的 Agent
-  'channels.wecom.agent'?: {
-    agent_type: string;
-    backend?: string;
-    name?: string;
-  };
-  // Skills Market: whether the nomifun-skills builtin skill is enabled
-  'skillsMarket.enabled'?: boolean;
-}
-
-export interface IEnvStorageRefer {
-  'nomifun.dir': {
-    workDir: string;
-    cacheDir: string;
-  };
-}
 
 /**
  * Conversation source type - identifies where the conversation was created
@@ -216,26 +93,6 @@ interface IChatConversation<T, Extra> {
   execution_attempt_id?: ExecutionAttemptId;
 }
 
-export type CompactTriggerData = 'auto' | 'manual';
-
-export type SummarizedConversationProperties = {
-  trigger?: CompactTriggerData | null;
-  pre_compact_tokens?: number | null;
-  messages_summarized?: number | null;
-};
-
-export type ContextBreakdownData = {
-  system_prompt?: number;
-  tool_definitions?: number;
-  rules?: number;
-  skills?: number;
-  mcp_and_dynamic_tools?: number;
-  delegate_definitions?: number;
-  summarized_conversation?: number;
-  conversation?: number;
-  summarized?: SummarizedConversationProperties | null;
-};
-
 // Token 使用统计数据类型
 export interface TokenUsageData {
   total_tokens: number;
@@ -254,11 +111,6 @@ export interface TokenUsageData {
   context_tokens?: number;
   /** Effective context budget (gauge denominator). */
   context_window?: number;
-  /** Cursor-style category breakdown for the last provider request. */
-  context_breakdown?: ContextBreakdownData | null;
-  /** MoA reference fan-out stats for the last turn (nomi turn_completed
-   * carries it); null/absent when the turn had no fan-out. */
-  moa?: MoaTurnStatsData | null;
 }
 
 export type TChatConversation =
@@ -447,7 +299,9 @@ export type IChatConversationRefer = {
  * `cargo test -p nomifun-api-types` 重新生成到 @/common/protocolBindings/）。
  * ModelTask 决定端点/请求体；ModelTrait 是同一任务内的细化（主要修饰 chat）。
  */
-export type { ModelTask, ModelTrait, ProfileSource };
+export type { ModelTask } from '@/common/protocolBindings/ModelTask';
+export type { ModelTrait } from '@/common/protocolBindings/ModelTrait';
+export type { ProfileSource } from '@/common/protocolBindings/ProfileSource';
 
 /** 权威 per-model 能力档案（键 (provider_id, model)）。 */
 export interface ModelProfile {

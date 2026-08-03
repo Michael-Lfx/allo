@@ -3,7 +3,6 @@
 import { ipcBridge } from '@/common';
 import type { FileChangeInfo, SnapshotInfo } from '@/common/types/platform/fileSnapshot';
 import Diff2Html from '@/renderer/components/media/Diff2Html';
-import { isTextFile } from '@/renderer/services/FileService';
 import { Button, Empty, Spin, Tooltip } from '@arco-design/web-react';
 import { Down, Minus, Plus, PreviewOpen, Redo, Refresh, Right } from '@icon-park/react';
 import { createTwoFilesPatch } from 'diff';
@@ -180,7 +179,6 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
   const loadDiffState = useCallback(
     async (change: FileChangeInfo) => {
       const file_name = change.relativePath;
-      if (!isTextFile(file_name)) return null;
 
       try {
         let before = '';
@@ -216,9 +214,6 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
 
   const handleToggleDiff = useCallback(
     async (change: FileChangeInfo) => {
-      const file_name = change.relativePath;
-      if (!isTextFile(file_name)) return;
-
       if (expandedFilePath === change.file_path) {
         setExpandedFilePath(null);
         return;
@@ -383,7 +378,6 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
                 const diffState = diffCache[change.file_path];
                 const isExpanded = expandedFilePath === change.file_path;
                 const isLoadingDiff = loadingFilePath === change.file_path;
-                const canExpand = isTextFile(change.relativePath);
 
                 return (
                   <FileChangeItem
@@ -392,7 +386,7 @@ const FileChangeList: React.FC<FileChangeListProps> = ({
                     diffState={diffState}
                     expanded={isExpanded}
                     loading={isLoadingDiff}
-                    expandable={canExpand}
+                    expandable
                     onToggle={() => {
                       void handleToggleDiff(change);
                     }}

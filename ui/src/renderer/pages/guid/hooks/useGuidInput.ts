@@ -71,7 +71,6 @@ export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOption
 
   // Use drag upload hook (drag treated like paste, appends to existing files)
   const { isFileDragging, dragHandlers } = useDragUpload({
-    supportedExts: allSupportedExts,
     onFilesAdded: handleFilesPasted,
     containerRef,
   });

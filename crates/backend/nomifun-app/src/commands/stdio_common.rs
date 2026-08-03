@@ -25,12 +25,9 @@ use tokio::sync::Mutex;
 type ScopedAccess<S> = LoopbackCapabilityAccess<LoopbackCapabilityClaims<S>>;
 
 const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
-const MAX_IDEMPOTENCY_KEY_LEN: usize = 128;
 
 fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_IDEMPOTENCY_KEY_LEN
-        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    nomifun_common::is_visible_ascii_key(value, nomifun_common::MAX_IDEMPOTENCY_KEY_LEN)
 }
 
 /// How a forwarded tool POST may be retried at the transport level.
@@ -229,6 +226,39 @@ where
 
     pub fn port(&self) -> u16 {
         self.inner.port
+    }
+
+    /// One authenticated POST to a loopback side-route (e.g. the knowledge
+    /// server's `/context`). Returns the parsed JSON body on HTTP 200; any
+    /// transport/auth/status failure is an `Err` the caller degrades on —
+    /// side-routes are best-effort metadata, never tool delivery.
+    pub(crate) async fn post_json(
+        &self,
+        path: &str,
+        mut body: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let access = self.ensure_access(false).await?;
+        inject_session(&mut body, &access.claims);
+        let url = format!("http://127.0.0.1:{}{}", self.inner.port, path);
+        let response = self
+            .inner
+            .http_client
+            .post(&url)
+            .bearer_auth(&access.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| format!("loopback POST {path} failed: {error}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| format!("loopback POST {path} read failed: {error}"))?;
+        if !status.is_success() {
+            return Err(format!("loopback POST {path} -> status={status}"));
+        }
+        serde_json::from_str(&text)
+            .map_err(|error| format!("loopback POST {path} returned invalid JSON: {error}"))
     }
 
     pub async fn access(&self) -> Result<ScopedAccess<S>, String> {

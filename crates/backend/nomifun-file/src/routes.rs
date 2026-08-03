@@ -6,10 +6,11 @@ use std::path::Path;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
-    ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, CancelZipRequest, CopyFilesRequest, CopyFilesResponse,
-    CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest, FileChangeInfoResponse, FileMetadataResponse,
-    FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest, GetImageBase64Request, ListWorkspaceFilesRequest,
-    ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, SnapshotBaselineRequest,
+    ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, BrowseEntry, CancelZipRequest, CopyFilesRequest,
+    CopyFilesResponse, CreateDirectoryRequest,
+    FetchRemoteImageRequest, FileChangeInfoResponse, FileMetadataResponse,
+    FileWatchRequest, GetFileMetadataRequest, GetImageBase64Request, ListWorkspaceFilesRequest,
+    ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, SnapshotBaselineRequest,
     SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
     SnapshotWorkspaceRequest, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteFileRequest, ZipRequest,
 };
@@ -20,7 +21,7 @@ use nomifun_auth::CurrentUser;
 use crate::browse;
 use crate::traits::{FileServiceRef, FileWatchServiceRef, SnapshotServiceRef};
 use crate::types::{
-    CompareResult, CopyResult, DirOrFile, FileChangeInfo, FileMetadata, SnapshotInfo, SnapshotMode, WorkspaceFlatFile,
+    CompareResult, CopyResult, FileChangeInfo, FileMetadata, SnapshotInfo, SnapshotMode, WorkspaceFlatFile,
     ZipEntry,
 };
 
@@ -64,16 +65,14 @@ pub fn file_routes(state: FileRouterState) -> Router {
     Router::new()
         // A. Core file operations
         .route("/api/fs/browse", get(browse_directory))
-        .route("/api/fs/dir", post(get_files_by_dir))
+        .route("/api/fs/directory", post(create_directory))
         .route("/api/fs/list", post(list_workspace_files))
         .route("/api/fs/metadata", post(get_file_metadata))
         .route("/api/fs/read", post(read_file))
-        .route("/api/fs/read-buffer", post(read_file_buffer))
         .route("/api/fs/write", post(write_file))
         .route("/api/fs/copy", post(copy_files))
         .route("/api/fs/remove", post(remove_entry))
         .route("/api/fs/rename", post(rename_entry))
-        .route("/api/fs/temp", post(create_temp_file))
         .route("/api/fs/image-base64", post(get_image_base64))
         .route("/api/fs/fetch-remote-image", post(fetch_remote_image))
         .route("/api/fs/zip", post(create_zip))
@@ -86,7 +85,6 @@ pub fn file_routes(state: FileRouterState) -> Router {
         .route("/api/fs/office-watch/stop", post(stop_office_watch))
         // E. Workspace snapshot
         .route("/api/fs/snapshot/init", post(snapshot_init))
-        .route("/api/fs/snapshot/info", post(snapshot_info))
         .route("/api/fs/snapshot/compare", post(snapshot_compare))
         .route("/api/fs/snapshot/baseline", post(snapshot_baseline))
         .route("/api/fs/snapshot/stage", post(snapshot_stage_file))
@@ -95,7 +93,6 @@ pub fn file_routes(state: FileRouterState) -> Router {
         .route("/api/fs/snapshot/unstage-all", post(snapshot_unstage_all))
         .route("/api/fs/snapshot/discard", post(snapshot_discard))
         .route("/api/fs/snapshot/reset", post(snapshot_reset))
-        .route("/api/fs/snapshot/branches", post(snapshot_branches))
         .route("/api/fs/snapshot/dispose", post(snapshot_dispose))
         .with_state(state)
         .merge(upload_router)
@@ -123,14 +120,21 @@ async fn browse_directory(
     Ok(Json(ApiResponse::ok(response)))
 }
 
-async fn get_files_by_dir(
+/// `POST /api/fs/directory` — create a direct child folder for the WebUI
+/// picker. The blocking filesystem operation shares `/browse`'s root policy.
+async fn create_directory(
     State(state): State<FileRouterState>,
-    body: Result<Json<GetFilesByDirRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<Vec<DirOrFileResponse>>>, AppError> {
+    body: Result<Json<CreateDirectoryRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<BrowseEntry>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let items = state.file_service.get_files_by_dir(&req.dir, &req.root).await?;
-    let response: Vec<DirOrFileResponse> = items.into_iter().map(to_dir_or_file_response).collect();
-    Ok(Json(ApiResponse::ok(response)))
+    let roots = state.browse_roots.clone();
+    let entry = tokio::task::spawn_blocking(move || {
+        browse::create_directory(&req.parent_path, &req.name, &roots)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("create-directory task failed: {}", e)))??;
+
+    Ok(Json(ApiResponse::ok(entry)))
 }
 
 async fn list_workspace_files(
@@ -165,23 +169,6 @@ async fn read_file(
         .read_file(&req.path, req.workspace.as_deref().map(Path::new))
         .await?;
     Ok(Json(ApiResponse::ok(content)))
-}
-
-async fn read_file_buffer(
-    State(state): State<FileRouterState>,
-    body: Result<Json<ReadFileBufferRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<Option<String>>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let data = state
-        .file_service
-        .read_file_buffer(&req.path, req.workspace.as_deref().map(Path::new))
-        .await?;
-    // Binary data is base64-encoded for JSON transport.
-    let encoded = data.map(|bytes| {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    });
-    Ok(Json(ApiResponse::ok(encoded)))
 }
 
 async fn write_file(
@@ -241,15 +228,6 @@ async fn rename_entry(
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     let new_path = state.file_service.rename_entry(&req.path, &req.new_name).await?;
     Ok(Json(ApiResponse::ok(RenameResponse { new_path })))
-}
-
-async fn create_temp_file(
-    State(state): State<FileRouterState>,
-    body: Result<Json<CreateTempFileRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<String>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let path = state.file_service.create_temp_file(&req.file_name).await?;
-    Ok(Json(ApiResponse::ok(path)))
 }
 
 /// Fields extracted from a `/api/fs/upload` multipart request.
@@ -465,15 +443,6 @@ async fn snapshot_init(
     Ok(Json(ApiResponse::ok(to_snapshot_info_response(info))))
 }
 
-async fn snapshot_info(
-    State(state): State<FileRouterState>,
-    body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<SnapshotInfoResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let info = state.snapshot_service.get_info(&req.workspace).await?;
-    Ok(Json(ApiResponse::ok(to_snapshot_info_response(info))))
-}
-
 async fn snapshot_compare(
     State(state): State<FileRouterState>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
@@ -561,15 +530,6 @@ async fn snapshot_reset(
     Ok(Json(ApiResponse::success()))
 }
 
-async fn snapshot_branches(
-    State(state): State<FileRouterState>,
-    body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let branches = state.snapshot_service.get_branches(&req.workspace).await?;
-    Ok(Json(ApiResponse::ok(branches)))
-}
-
 async fn snapshot_dispose(
     State(state): State<FileRouterState>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
@@ -582,22 +542,6 @@ async fn snapshot_dispose(
 // ---------------------------------------------------------------------------
 // Domain → DTO conversions
 // ---------------------------------------------------------------------------
-
-fn to_dir_or_file_response(d: DirOrFile) -> DirOrFileResponse {
-    let children = if d.is_dir {
-        Some(d.children.into_iter().map(to_dir_or_file_response).collect())
-    } else {
-        None
-    };
-    DirOrFileResponse {
-        name: d.name,
-        full_path: d.full_path,
-        relative_path: d.relative_path,
-        is_dir: d.is_dir,
-        is_file: !d.is_dir,
-        children,
-    }
-}
 
 fn to_flat_file_response(f: WorkspaceFlatFile) -> WorkspaceFlatFileResponse {
     WorkspaceFlatFileResponse {
@@ -673,45 +617,6 @@ fn to_compare_response(r: CompareResult) -> SnapshotCompareResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn dir_or_file_response_conversion_file() {
-        let d = DirOrFile {
-            name: "test.txt".into(),
-            full_path: "/ws/test.txt".into(),
-            relative_path: "test.txt".into(),
-            is_dir: false,
-            children: vec![],
-        };
-        let r = to_dir_or_file_response(d);
-        assert_eq!(r.name, "test.txt");
-        assert!(!r.is_dir);
-        assert!(r.is_file);
-        assert!(r.children.is_none());
-    }
-
-    #[test]
-    fn dir_or_file_response_conversion_dir_with_children() {
-        let d = DirOrFile {
-            name: "src".into(),
-            full_path: "/ws/src".into(),
-            relative_path: "src".into(),
-            is_dir: true,
-            children: vec![DirOrFile {
-                name: "main.rs".into(),
-                full_path: "/ws/src/main.rs".into(),
-                relative_path: "src/main.rs".into(),
-                is_dir: false,
-                children: vec![],
-            }],
-        };
-        let r = to_dir_or_file_response(d);
-        assert!(r.is_dir);
-        assert!(!r.is_file);
-        let children = r.children.unwrap();
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0].name, "main.rs");
-    }
 
     #[test]
     fn flat_file_response_conversion() {

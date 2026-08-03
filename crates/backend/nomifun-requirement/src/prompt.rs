@@ -126,8 +126,30 @@ fn build_requirement_prompt_with_native_tools(
     claim_token: &str,
     attachments: &[PromptAttachment],
 ) -> String {
+    build_native_tools_prompt(
+        &format!("[AutoWork] You are working through requirements in tag \"{tag}\"."),
+        req,
+        claim_generation,
+        claim_token,
+        attachments,
+        "",
+    )
+}
+
+/// Single source of truth for the native-tools prompt shape. The chat and
+/// terminal variants differ only in their opening line and optional extra
+/// sections, so sharing the template keeps the requirement block and the
+/// completion contract from drifting between the two surfaces.
+fn build_native_tools_prompt(
+    header: &str,
+    req: &Requirement,
+    claim_generation: i64,
+    claim_token: &str,
+    attachments: &[PromptAttachment],
+    extra_sections: &str,
+) -> String {
     format!(
-        "[AutoWork] You are working through requirements in tag \"{tag}\".\n\n\
+        "{header}\n\n\
          ## Current requirement\n\
          id: {id}\n\
          claim_generation: {claim_generation}\n\
@@ -135,7 +157,8 @@ fn build_requirement_prompt_with_native_tools(
          title: {title}\n\
          order: {order}\n\n\
          {content}\n\
-         {attachments_section}\n\
+         {attachments_section}\
+         {extra_sections}\n\
          ## When finished\n\
          - Call `requirement_complete({{\"id\":\"{id}\",\"claim_generation\":{claim_generation},\
          \"claim_token\":\"{claim_token}\",\"completion_note\":\"what you did\"}})` when done.\n\
@@ -143,7 +166,7 @@ fn build_requirement_prompt_with_native_tools(
          \"claim_generation\":{claim_generation},\"claim_token\":\"{claim_token}\",\
          \"status\":\"failed\",\"note\":\"reason\"}})`.\n\
          Do not pick the next requirement yourself — the platform will hand you the next one.",
-        tag = tag,
+        header = header,
         id = req.requirement_id,
         claim_generation = claim_generation,
         claim_token = claim_token,
@@ -151,6 +174,7 @@ fn build_requirement_prompt_with_native_tools(
         order = req.order_key,
         content = req.content,
         attachments_section = render_attachments_section(attachments),
+        extra_sections = extra_sections,
     )
 }
 
@@ -219,33 +243,30 @@ pub fn build_terminal_requirement_prompt(
     claim_generation: i64,
     claim_token: &str,
     attachments: &[PromptAttachment],
+    knowledge_mounted: bool,
 ) -> String {
-    format!(
-        "[AutoWork] You are working through requirements in tag \"{tag}\". Complete ONLY the \
-         requirement below.\n\n\
-         ## Current requirement\n\
-         id: {id}\n\
-         claim_generation: {claim_generation}\n\
-         claim_token: {claim_token}\n\
-         title: {title}\n\
-         order: {order}\n\n\
-         {content}\n\
-         {attachments_section}\n\
-         ## When finished\n\
-         - Call `requirement_complete({{\"id\":\"{id}\",\"claim_generation\":{claim_generation},\
-         \"claim_token\":\"{claim_token}\",\"completion_note\":\"what you did\"}})` when done.\n\
-         - If you cannot complete it, call `requirement_update_status({{\"id\":\"{id}\",\
-         \"claim_generation\":{claim_generation},\"claim_token\":\"{claim_token}\",\
-         \"status\":\"failed\",\"note\":\"reason\"}})`.\n\
-         Do not pick the next requirement yourself — the platform will hand you the next one.",
-        tag = tag,
-        id = req.requirement_id,
-        claim_generation = claim_generation,
-        claim_token = claim_token,
-        title = req.title,
-        order = req.order_key,
-        content = req.content,
-        attachments_section = render_attachments_section(attachments),
+    // One line, only when the workspace ACTUALLY has bases mounted (resolved
+    // live by the driver): points at the injected retrieval tool without
+    // re-listing bases (the MCP initialize instructions carry those). The old
+    // static TERMINAL_KNOWLEDGE_HINT was removed because it referenced file
+    // paths unconditionally; this replacement is gated and tool-based.
+    let knowledge_section = if knowledge_mounted {
+        "\n## Knowledge\n\
+         Curated knowledge bases are mounted for this workspace. Call `knowledge_search` \
+         before answering from memory when the requirement touches a topic they may cover.\n"
+    } else {
+        ""
+    };
+    build_native_tools_prompt(
+        &format!(
+            "[AutoWork] You are working through requirements in tag \"{tag}\". Complete ONLY the \
+             requirement below."
+        ),
+        req,
+        claim_generation,
+        claim_token,
+        attachments,
+        knowledge_section,
     )
 }
 
@@ -312,7 +333,7 @@ mod tests {
             assert!(p.contains("view each attached image"), "must instruct the model to read the images");
         }
         let p =
-            build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &atts());
+            build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &atts(), false);
         assert!(p.contains("Requirement attachments"));
         assert!(p.contains("设计稿.png"));
     }
@@ -329,7 +350,7 @@ mod tests {
             &[],
         );
         assert!(!p.contains("Requirement attachments"));
-        let p = build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &[]);
+        let p = build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &[], false);
         assert!(!p.contains("Requirement attachments"));
     }
 
@@ -480,8 +501,8 @@ mod tests {
     }
 
     #[test]
-    fn terminal_prompt_instructs_requirement_complete_and_has_no_knowledge_hint() {
-        let p = build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &[]);
+    fn terminal_prompt_instructs_requirement_complete_and_gates_knowledge_hint() {
+        let p = build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &[], false);
         assert!(p.contains(&format!("id: {ATTACHMENT_REQ_ID}")));
         assert!(p.contains("claim_generation: 7"));
         assert!(p.contains("\"claim_generation\":7"));
@@ -498,13 +519,25 @@ mod tests {
             p.contains("requirement_update_status"),
             "terminal prompt MUST instruct calling requirement_update_status on failure"
         );
-        // The old knowledge hint is gone (knowledge is now a real MCP tool).
+        // No mounts → zero knowledge prose (the old unconditional
+        // TERMINAL_KNOWLEDGE_HINT stays dead).
         assert!(
             !p.contains("knowledge"),
-            "terminal prompt must NOT contain the old TERMINAL_KNOWLEDGE_HINT"
+            "unmounted terminal prompt must NOT contain a knowledge hint"
         );
         // The old printed-marker protocol is gone.
         assert!(!p.contains("NOMI_AUTOWORK_END"), "terminal prompt must not ask for a marker");
+
+        // Mounted → exactly the tool-based one-liner (RC-5), no file paths.
+        let mounted = build_terminal_requirement_prompt("t", &req(), 7, CLAIM_TOKEN, &[], true);
+        assert!(
+            mounted.contains("knowledge_search"),
+            "mounted terminal prompt must point at the retrieval tool"
+        );
+        assert!(
+            !mounted.contains(".nomi/knowledge"),
+            "the hint is tool-based, never a file-path contract"
+        );
     }
 
     #[test]

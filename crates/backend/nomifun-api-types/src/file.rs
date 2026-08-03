@@ -5,14 +5,6 @@ use serde::{Deserialize, Serialize};
 // A. Core file operations — Request DTOs
 // ---------------------------------------------------------------------------
 
-/// Request body for `POST /api/fs/dir` — get files by directory.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GetFilesByDirRequest {
-    pub dir: String,
-    pub root: String,
-}
-
 /// Request body for `POST /api/fs/list` — list workspace files.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,15 +25,6 @@ pub struct GetFileMetadataRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadFileRequest {
-    pub path: String,
-    #[serde(default)]
-    pub workspace: Option<String>,
-}
-
-/// Request body for `POST /api/fs/read-buffer` — read file as binary.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReadFileBufferRequest {
     pub path: String,
     #[serde(default)]
     pub workspace: Option<String>,
@@ -90,13 +73,6 @@ pub struct RenameRequest {
     pub new_name: String,
 }
 
-/// Request body for `POST /api/fs/temp` — create temp file.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateTempFileRequest {
-    pub file_name: String,
-}
-
 /// Request body for `POST /api/fs/image-base64` — get image as base64.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,8 +118,7 @@ pub struct CancelZipRequest {
 
 /// Query parameters for `GET /api/fs/browse` — shallow directory browser.
 ///
-/// Unlike `/api/fs/dir` (which returns a recursive tree scoped to a workspace
-/// root), `browse` is a WebUI-only host-file picker: it lists a single
+/// `browse` is a WebUI-only host-file picker: it lists a single
 /// directory level, surfaces navigation hints (`can_go_up`, `parent_path`),
 /// and on Windows supports a `__ROOT__` sentinel for the drive-list screen.
 ///
@@ -162,6 +137,20 @@ pub struct BrowseDirectoryQuery {
     /// (directories only).
     #[serde(default, alias = "show_files")]
     pub show_files: Option<String>,
+}
+
+/// Request body for `POST /api/fs/directory` — create one folder from the
+/// WebUI host-file picker.
+///
+/// The parent is resolved through the same browse sandbox as
+/// [`BrowseDirectoryQuery`]. Only a single folder-name component is accepted;
+/// callers cannot use this endpoint to create an arbitrary nested path.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateDirectoryRequest {
+    #[serde(alias = "parent_path")]
+    pub parent_path: String,
+    pub name: String,
 }
 
 /// A single entry in a `/api/fs/browse` response.
@@ -206,18 +195,6 @@ pub struct BrowseDirectoryResponse {
 // ---------------------------------------------------------------------------
 // A. Core file operations — Response DTOs
 // ---------------------------------------------------------------------------
-
-/// A node in the directory tree returned by `getFilesByDir`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DirOrFileResponse {
-    pub name: String,
-    pub full_path: String,
-    pub relative_path: String,
-    pub is_dir: bool,
-    pub is_file: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub children: Option<Vec<DirOrFileResponse>>,
-}
 
 /// A flat file entry returned by `listWorkspaceFiles`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -389,15 +366,18 @@ mod tests {
         assert_eq!(path_only.path.as_deref(), Some(""));
     }
 
-    // -- Request deserialization tests --
-
     #[test]
-    fn get_files_by_dir_request_deserialization() {
-        let raw = r#"{"dir":"/home/user/project","root":"/home/user"}"#;
-        let req: GetFilesByDirRequest = serde_json::from_str(raw).unwrap();
-        assert_eq!(req.dir, "/home/user/project");
-        assert_eq!(req.root, "/home/user");
+    fn create_directory_request_accepts_webui_camelcase_wire_format() {
+        let req: CreateDirectoryRequest = serde_json::from_value(json!({
+            "parentPath": "/workspace",
+            "name": "new-folder"
+        }))
+        .unwrap();
+        assert_eq!(req.parent_path, "/workspace");
+        assert_eq!(req.name, "new-folder");
     }
+
+    // -- Request deserialization tests --
 
     #[test]
     fn copy_files_request_snake_case() {
@@ -481,46 +461,6 @@ mod tests {
     }
 
     // -- Response serialization tests --
-
-    #[test]
-    fn dir_or_file_response_serialization() {
-        let resp = DirOrFileResponse {
-            name: "src".into(),
-            full_path: "/project/src".into(),
-            relative_path: "src".into(),
-            is_dir: true,
-            is_file: false,
-            children: Some(vec![DirOrFileResponse {
-                name: "main.rs".into(),
-                full_path: "/project/src/main.rs".into(),
-                relative_path: "src/main.rs".into(),
-                is_dir: false,
-                is_file: true,
-                children: None,
-            }]),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["name"], "src");
-        assert_eq!(json["full_path"], "/project/src");
-        assert_eq!(json["relative_path"], "src");
-        assert_eq!(json["is_dir"], true);
-        assert_eq!(json["is_file"], false);
-        assert_eq!(json["children"][0]["name"], "main.rs");
-    }
-
-    #[test]
-    fn dir_or_file_response_no_children_omitted() {
-        let resp = DirOrFileResponse {
-            name: "file.txt".into(),
-            full_path: "/file.txt".into(),
-            relative_path: "file.txt".into(),
-            is_dir: false,
-            is_file: true,
-            children: None,
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert!(json.get("children").is_none());
-    }
 
     #[test]
     fn workspace_flat_file_response_serialization() {

@@ -10,7 +10,6 @@ import {
   Earth,
   Headset,
   Info,
-  Lightning,
   Pic,
   Brain,
   ChartPie,
@@ -27,6 +26,7 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Tooltip } from '@arco-design/web-react';
 import { getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
+import { buildSettingsNavItems } from './settingsNavigation';
 
 /** Builtin settings tab IDs in display order (must match router paths). */
 export const BUILTIN_TAB_IDS = [
@@ -44,18 +44,6 @@ export const BUILTIN_TAB_IDS = [
   'cloud-login',
   'about',
 ] as const;
-
-/**
- * Legacy anchor IDs that have been merged into other tabs.
- * When an extension anchors to one of these, it is redirected to the new host.
- * This keeps older extensions working without requiring them to update.
- */
-export const LEGACY_ANCHOR_REMAP: Record<string, string> = {
-  agent: 'execution-engines',
-  'agent-runtime': 'execution-engines',
-  'skills-hub': 'capabilities',
-  tools: 'capabilities',
-};
 
 /**
  * Group headers displayed above specific builtin tabs.
@@ -132,7 +120,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
       },
       'public-companions': {
         id: 'public-companions',
-        label: t('publicCompanion.siderTitle', { defaultValue: '对外伙伴' }),
+        label: t('publicCompanion.siderTitle', { defaultValue: '公开伙伴' }),
         icon: <Headset />,
         path: 'public-companions',
       },
@@ -163,35 +151,8 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
       about: { id: 'about', label: t('settings.about'), icon: <Info />, path: 'about' },
     };
 
-    // Start with ordered builtin IDs
-    const result: SiderItem[] = visibleBuiltinTabIds.map((id) => builtinMap[id]);
+    const builtins: SiderItem[] = visibleBuiltinTabIds.map((id) => builtinMap[id]);
 
-    // Extension tabs with position anchoring
-    const beforeMap = new Map<string, IExtensionSettingsTab[]>();
-    const afterMap = new Map<string, IExtensionSettingsTab[]>();
-    const unanchored: IExtensionSettingsTab[] = [];
-
-    for (const tab of extensionTabs) {
-      if (!tab.position) {
-        unanchored.push(tab);
-        continue;
-      }
-      const { relative_to: rawAnchor, placement } = tab.position;
-      const anchor = LEGACY_ANCHOR_REMAP[rawAnchor] ?? rawAnchor;
-      if (!result.some((item) => item.id === anchor)) {
-        unanchored.push(tab);
-        continue;
-      }
-      const map = placement === 'before' ? beforeMap : afterMap;
-      let list = map.get(anchor);
-      if (!list) {
-        list = [];
-        map.set(anchor, list);
-      }
-      list.push(tab);
-    }
-
-    // Helper to create SiderItem from extension tab
     const toSiderItem = (tab: IExtensionSettingsTab): SiderItem => {
       const resolvedIcon = resolveExtensionAssetUrl(tab.icon) || tab.icon;
       return {
@@ -203,27 +164,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
       };
     };
 
-    // Insert anchored tabs (reverse iteration to preserve indices)
-    for (let i = result.length - 1; i >= 0; i--) {
-      const builtinId = result[i].id;
-      const afters = afterMap.get(builtinId);
-      if (afters) {
-        result.splice(i + 1, 0, ...afters.map(toSiderItem));
-      }
-      const befores = beforeMap.get(builtinId);
-      if (befores) {
-        result.splice(i, 0, ...befores.map(toSiderItem));
-      }
-    }
-
-    // Append unanchored at the end of the "Application" group (before "about", the
-    // first "Other"-group item). Anchoring to the group's last builtin keeps these
-    // tabs inside the Application group regardless of where "system" sits in the order.
-    if (unanchored.length > 0) {
-      const aboutIdx = result.findIndex((item) => item.id === 'about');
-      const insertIdx = aboutIdx >= 0 ? aboutIdx : result.length;
-      result.splice(insertIdx, 0, ...unanchored.map(toSiderItem));
-    }
+    const { items: result, beforeCounts } = buildSettingsNavItems(builtins, extensionTabs, toSiderItem);
 
     // Compute group header render positions.
     //
@@ -235,7 +176,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     for (const [builtinId, headerKey] of Object.entries(GROUP_HEADER_BEFORE)) {
       const builtinIdx = result.findIndex((item) => item.id === builtinId);
       if (builtinIdx < 0) continue;
-      const beforeCount = beforeMap.get(builtinId)?.length ?? 0;
+      const beforeCount = beforeCounts.get(builtinId) ?? 0;
       headerAt.set(builtinIdx - beforeCount, headerKey);
     }
 

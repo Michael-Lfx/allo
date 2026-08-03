@@ -1,7 +1,7 @@
 
 
-import { Message } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
+import { copyText } from '@/renderer/utils/ui/clipboard';
 import MonacoEditor from '@monaco-editor/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -268,8 +268,9 @@ const HTMLPreview: React.FC<HTMLPreviewProps> = ({ content, file_path, hideToolb
    */
   const handleCopyHTML = useCallback(
     (html: string) => {
-      void navigator.clipboard.writeText(html);
-      messageApi.success(t('preview.html.copySuccess'));
+      copyText(html)
+        .then(() => messageApi.success(t('preview.html.copySuccess')))
+        .catch((error) => console.error('[HTMLViewer] Copy failed:', error));
       setContextMenu(null);
     },
     [messageApi, t]

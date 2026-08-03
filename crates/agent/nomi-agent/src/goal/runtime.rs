@@ -106,6 +106,26 @@ impl GoalRuntime {
         self.state.lock().unwrap().clone()
     }
 
+    /// Sync continuation hook used by the engine loop when no judge client is
+    /// wired. Prefer [`Self::evaluate_and_continue`] for host-driven judging.
+    pub fn maybe_continuation(&self) -> Option<Message> {
+        let mut g = self.state.lock().unwrap();
+        if !g.should_continue() {
+            return None;
+        }
+        g.auto_continuations += 1;
+        let prompt = render_continuation(
+            &g.objective,
+            g.blocked_threshold,
+            &g.subgoals,
+            g.contract.as_ref(),
+        );
+        Some(Message::now(
+            Role::User,
+            vec![ContentBlock::Text { text: prompt }],
+        ))
+    }
+
     /// Called at the engine's natural-termination point. Runs the judge on
     /// the assistant's last response and returns `Some(message)` to inject a
     /// continuation (verdict = continue), or `None` to stop:
