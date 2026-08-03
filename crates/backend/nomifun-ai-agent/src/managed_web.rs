@@ -1,7 +1,6 @@
 //! Backend-to-agent bridge for the desktop host's managed web runtime.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flowy_web::{
@@ -16,7 +15,6 @@ use crate::ManagedExtractMode;
 #[derive(Clone)]
 pub struct ManagedWebHandle {
     service: Arc<ManagedWebService>,
-    shutdown_once: Arc<AtomicBool>,
 }
 
 impl ManagedWebHandle {
@@ -27,14 +25,12 @@ impl ManagedWebHandle {
         };
         Ok(Self {
             service: Arc::new(ManagedWebService::keyless_default(flowy_mode)?),
-            shutdown_once: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub fn ddg_only() -> Result<Self, WebError> {
         Ok(Self {
             service: Arc::new(ManagedWebService::ddg_only()?),
-            shutdown_once: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -47,9 +43,6 @@ impl ManagedWebHandle {
     }
 
     pub async fn shutdown(&self) {
-        if self.shutdown_once.swap(true, Ordering::SeqCst) {
-            return;
-        }
         match tokio::time::timeout(Duration::from_secs(3), self.service.shutdown()).await {
             Ok(()) => {}
             Err(_) => tracing::warn!(

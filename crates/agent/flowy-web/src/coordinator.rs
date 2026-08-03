@@ -1503,21 +1503,23 @@ mod tests {
         .allow_private_for_tests()
         .with_remote_budget(managed_budget_policy());
 
-        let url = format!("{}/pdf?token=secret", server.uri());
-        let outcome = coordinator
-            .extract_many(vec![request(&url)], budget())
-            .await;
-        assert!(outcome.items[0].page.is_none());
-        assert!(outcome.items[0].final_error.is_some());
-        assert_eq!(outcome.diagnostics.remote_stage_count, 0);
-        assert_eq!(outcome.diagnostics.remote_forbidden_count, 1);
-        assert_eq!(
-            outcome
-                .diagnostics
-                .remote_forbidden_reason_counts
-                .get(&RemoteForbiddenReason::SensitiveQuery),
-            Some(&1)
-        );
+        for query in ["token=secret", "code=oauth-code", "clientSecret=secret"] {
+            let url = format!("{}/pdf?{query}", server.uri());
+            let outcome = coordinator
+                .extract_many(vec![request(&url)], budget())
+                .await;
+            assert!(outcome.items[0].page.is_none());
+            assert!(outcome.items[0].final_error.is_some());
+            assert_eq!(outcome.diagnostics.remote_stage_count, 0);
+            assert_eq!(outcome.diagnostics.remote_forbidden_count, 1);
+            assert_eq!(
+                outcome
+                    .diagnostics
+                    .remote_forbidden_reason_counts
+                    .get(&RemoteForbiddenReason::SensitiveQuery),
+                Some(&1)
+            );
+        }
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     }
 

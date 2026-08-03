@@ -1277,18 +1277,26 @@ mod tests {
             Some(Arc::new(ManagedMcpSafetyGate) as Arc<dyn ManagedMcpCallGate>),
         )
         .expect("offline construction");
-        let result = client
-            .call_tool(
-                "web_fetch",
-                json!({
-                    "urls": ["https://example.com/?token=secret"],
-                    "full_content": false
-                }),
-                Instant::now() + Duration::from_secs(1),
-                1,
-            )
-            .await;
-        assert!(matches!(result, Err(ManagedMcpCallError::UnsafeArguments)));
+        for url in [
+            "https://example.com/?token=secret",
+            "https://example.com/?code=oauth-code",
+            "https://example.com/?clientSecret=secret",
+            "https://localhost./file.pdf",
+            "https://foo.localhost/file.pdf",
+        ] {
+            let result = client
+                .call_tool(
+                    "web_fetch",
+                    json!({
+                        "urls": [url],
+                        "full_content": false
+                    }),
+                    Instant::now() + Duration::from_secs(1),
+                    1,
+                )
+                .await;
+            assert!(matches!(result, Err(ManagedMcpCallError::UnsafeArguments)), "{url}");
+        }
         assert_eq!(server.received_requests().await.unwrap().len(), 0);
     }
 

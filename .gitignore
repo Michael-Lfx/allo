@@ -41,7 +41,10 @@ ui/dist/
 /fetch-evaluation-*.json
 /fetch-evaluation-*.jsonl
 /fetch-evaluation-quota.local.json
+/fetch-evaluation-quota.local.json.lock
+/fetch-evaluation-quota-*.json.lock
 /fetch-evaluation-raw/
+/fetch-evaluation-raw/**/campaign.run.lock
 
 # Tauri
 apps/desktop/gen/

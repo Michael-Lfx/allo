@@ -1218,10 +1218,10 @@ mod tests {
     async fn fault_injector_returns_each_failure_kind_without_network_io() {
         let delegated = Arc::new(HttpExtractProvider::new()) as Arc<dyn LocalExtractAdapter>;
         for (url, expected) in [
-            ("https://dns.invalid/", LocalExtractFailureKind::Dns),
-            ("https://tls.invalid/", LocalExtractFailureKind::Tls),
-            ("https://network.invalid/", LocalExtractFailureKind::Network),
-            ("https://timeout.invalid/", LocalExtractFailureKind::Timeout),
+            ("https://dns.example.com/", LocalExtractFailureKind::Dns),
+            ("https://tls.example.com/", LocalExtractFailureKind::Tls),
+            ("https://network.example.com/", LocalExtractFailureKind::Network),
+            ("https://timeout.example.com/", LocalExtractFailureKind::Timeout),
         ] {
             let mut failures = std::collections::HashMap::new();
             failures.insert(url.to_owned(), match expected {
@@ -1274,7 +1274,7 @@ mod tests {
             }
         }
 
-        let url = "https://dns.invalid/".to_owned();
+        let url = "https://dns.example.com/".to_owned();
         let delegated = Arc::new(HttpExtractProvider::new()) as Arc<dyn LocalExtractAdapter>;
         let mut failures = std::collections::HashMap::new();
         failures.insert(url.clone(), InjectedFailure::Dns);

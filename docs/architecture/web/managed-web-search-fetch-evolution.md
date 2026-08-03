@@ -87,14 +87,16 @@ Parallel -> You.com Free -> DuckDuckGo
   5. Typed Parallel Fetch Adapter
   6. Local-first ManagedExtractCoordinator
   7. AgentBootstrap Host Binding
-  8. Desktop Host Composition，但 `managed_extract=false`
+  8. Desktop Host Composition；2026-08-02 起 unset 默认进入 EvidenceBacked，
+     `NOMIFUN_MANAGED_FETCH_MODE=off` 保留 Local-only 回滚
   9. 唯一 shutdown owner
   10. Fetch 诊断与 endpoint health
   11. 策略文档
   12. 启用前 Review 修复：URL 归属、fragment 出站、结构化失败分类、
       access challenge、source completeness、Peer generation readiness、
       共享 endpoint health / 独立 fetch tool health、timeout 与 local/final 指标
-- 当前分支已 rebase 到最新 `main`，开发分支为 `feat/managed-web-fetch`。
+- 历史实现最初来自 `feat/managed-web-fetch`；当前收口分支为
+  `feat/fetch-optimization`，以 EvidenceBacked Desktop 验收为准。
 
 ## 当前 Search 实现结果
 
@@ -136,7 +138,10 @@ Parallel -> You.com Free -> DuckDuckGo
 ### Managed fallback 路径
 
 - 仅 Desktop 的 `ManagedWebHandle` 可能注入 `ManagedExtractCoordinator`。
-- 当前 `AppHostCapabilities::managed_extract = false`，默认不启用。
+- 当前 Desktop `AppHostCapabilities` 通过显式 `ManagedExtractMode` 选择模式；
+  unset 默认是 EvidenceBacked，`off` 或非法值 fail-closed 为 Disabled。
+- Web Host 与 Nomi CLI 仍不构造 Managed Extract；本节的默认启用只适用于
+  Desktop Host。
 - 执行原则：
 
 ```text
@@ -168,9 +173,10 @@ Local-first
 - 取消边界覆盖：等待 fetch semaphore 时取消不发出 `tools/call`，在途 MCP call
   取消不残留 detached task；两个并发 adapter 共享同一个全局 Fetch permit。
 
-### 当前不启用原因
+### 已完成限定验收与后续边界
 
-Desktop `managed_extract` 保持关闭，直到完成真实验收：
+Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构成持续门禁，
+而不是关闭默认能力的当前状态：
 
 - 普通 HTML 只走本地
 - PDF / JS 远程有实际增益
@@ -203,7 +209,8 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 7. 敏感 URL 只禁止远程发送，不禁止本地读取；fragment 中的敏感键同样禁止。
 8. Parse 和 200 access challenge 页面不进入远程。
 9. 远程内容若来自 excerpts，则标记 source_truncated。
-10. Desktop 默认不启用，直到真实验收通过。
+10. Desktop unset 默认使用 EvidenceBacked；`off` 或非法值 fail-closed 为
+    Local-only。正式 15+ URL Admission 与更多类别仍需单独批准。
 
 ## 避坑清单
 

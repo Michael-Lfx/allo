@@ -1,12 +1,8 @@
-use crate::types::WebError;
 use std::net::{IpAddr, SocketAddr};
 use url::{Host, Url};
 
-const BLOCKED_HOSTS: &[&str] = &[
-    "localhost",
-    "metadata.google.internal",
-    "metadata.internal",
-];
+use crate::provider::url_safety::{is_forbidden_domain, is_forbidden_ip};
+use crate::types::WebError;
 
 /// Parse, scheme-check, and DNS-validate a URL before HTTP extract.
 ///
@@ -55,7 +51,7 @@ pub(crate) async fn resolve_validated(
         .host_str()
         .ok_or_else(|| WebError::InvalidArgument("URL has no host".into()))?;
 
-    if !allow_private && is_blocked_host(host) {
+    if !allow_private && is_forbidden_domain(host) {
         return Err(WebError::BlockedUrl(format!("URL host {host} is blocked")));
     }
 
@@ -63,7 +59,7 @@ pub(crate) async fn resolve_validated(
 
     if !allow_private
         && let Some(literal) = url.host().and_then(host_ip)
-        && forbidden_ip(&literal)
+        && is_forbidden_ip(&literal)
     {
         return Err(WebError::BlockedUrl(format!(
             "URL host {host} is a private or local address; fetching it is blocked"
@@ -79,18 +75,13 @@ pub(crate) async fn resolve_validated(
             "DNS resolution returned no addresses for {host}"
         )));
     }
-    if !allow_private && let Some(bad) = addrs.iter().find(|a| forbidden_ip(&a.ip())) {
+    if !allow_private && let Some(bad) = addrs.iter().find(|a| is_forbidden_ip(&a.ip())) {
         return Err(WebError::BlockedUrl(format!(
             "URL host {host} resolves to a private or local address ({}); fetching it is blocked",
             bad.ip()
         )));
     }
     Ok(addrs)
-}
-
-fn is_blocked_host(host: &str) -> bool {
-    let host_lower = host.to_ascii_lowercase();
-    BLOCKED_HOSTS.iter().any(|blocked| host_lower == *blocked)
 }
 
 fn host_ip(host: Host<&str>) -> Option<IpAddr> {
@@ -102,38 +93,6 @@ fn host_ip(host: Host<&str>) -> Option<IpAddr> {
 }
 
 /// SSRF address policy: anything not unambiguously public is forbidden.
-fn forbidden_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_documentation()
-                || octets[0] == 0
-                // CGNAT 100.64.0.0/10
-                || (octets[0] == 100 && (64..128).contains(&octets[1]))
-                // IETF protocol assignments 192.0.0.0/24
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        }
-        IpAddr::V6(v6) => {
-            let seg0 = v6.segments()[0];
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // Unique-local fc00::/7
-                || (seg0 & 0xfe00) == 0xfc00
-                // Link-local fe80::/10
-                || (seg0 & 0xffc0) == 0xfe80
-                // v4-mapped/compatible addresses inherit the v4 verdict.
-                || v6.to_ipv4_mapped().is_some_and(|v4| forbidden_ip(&IpAddr::V4(v4)))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

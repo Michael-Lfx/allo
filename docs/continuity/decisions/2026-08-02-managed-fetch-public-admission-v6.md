@@ -1,8 +1,8 @@
 # Managed Fetch public Admission v6 decision
 
-Date: 2026-08-02  
-Branch: `feat/fetch-optimization`  
-Evidence SHA: `e90045a04fd82386e02178c5cc8a89606e1a341d`  
+Date: 2026-08-02
+Branch: `feat/fetch-optimization`
+Evidence SHA: `e90045a04fd82386e02178c5cc8a89606e1a341d`
 Implementation/ADR follow-up SHA: `b5db9614479aa779c8781cae2a550ed79bc8a292`
 
 ## Scope and safety boundary

@@ -10,7 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OnceCell, Semaphore};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -386,19 +386,16 @@ trait ManagedProviderLifecycle: Send + Sync {
 
 struct ParallelRuntimeLifecycle {
     client: Arc<ParallelMcpClient>,
-    shutdown_once: Mutex<bool>,
+    shutdown_once: OnceCell<()>,
 }
 
 #[async_trait]
 impl ManagedProviderLifecycle for ParallelRuntimeLifecycle {
     async fn shutdown(&self, deadline: Instant) {
-        let mut shutdown_once = self.shutdown_once.lock().await;
-        if *shutdown_once {
-            return;
-        }
-        *shutdown_once = true;
-        drop(shutdown_once);
-        self.client.shutdown(deadline).await;
+        let _ = self
+            .shutdown_once
+            .get_or_init(|| async { self.client.shutdown(deadline).await })
+            .await;
     }
 }
 
@@ -406,25 +403,21 @@ struct ManagedProviderBundle {
     search: Arc<ManagedSearchService>,
     extract: Option<Arc<dyn ExtractCoordinator>>,
     lifecycles: Vec<Arc<dyn ManagedProviderLifecycle>>,
-    shutdown_once: Mutex<bool>,
+    shutdown_once: OnceCell<()>,
 }
 
 impl ManagedProviderBundle {
     async fn shutdown(&self) {
-        let mut shutdown_once = self.shutdown_once.lock().await;
-        if *shutdown_once {
-            return;
-        }
-        *shutdown_once = true;
-        drop(shutdown_once);
-        let deadline = Instant::now() + Duration::from_secs(3);
-        // The shared Parallel runtime is owned by the lifecycle bundle. Search
-        // adapters only release their own resources here, so a cloned Search
-        // and Fetch view can never close the same peer twice.
-        self.search.shutdown_adapters(deadline, false).await;
-        for lifecycle in &self.lifecycles {
-            lifecycle.shutdown(deadline).await;
-        }
+        let _ = self.shutdown_once.get_or_init(|| async {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            // The shared Parallel runtime is owned by the lifecycle bundle. Search
+            // adapters only release their own resources here, so a cloned Search
+            // and Fetch view can never close the same peer twice.
+            self.search.shutdown_adapters(deadline, false).await;
+            for lifecycle in &self.lifecycles {
+                lifecycle.shutdown(deadline).await;
+            }
+        }).await;
     }
 }
 
@@ -496,7 +489,7 @@ impl ManagedProviderFactory for KeylessManagedProviderFactory {
             .map(|client| {
                 vec![Arc::new(ParallelRuntimeLifecycle {
                     client: Arc::clone(client),
-                    shutdown_once: Mutex::new(false),
+                    shutdown_once: OnceCell::new(),
                 }) as Arc<dyn ManagedProviderLifecycle>]
             })
             .unwrap_or_default();
@@ -504,7 +497,7 @@ impl ManagedProviderFactory for KeylessManagedProviderFactory {
             search,
             extract,
             lifecycles,
-            shutdown_once: Mutex::new(false),
+            shutdown_once: OnceCell::new(),
         })
     }
 }
@@ -525,7 +518,7 @@ impl ManagedWebService {
                 search: Arc::new(ManagedSearchService::ddg_only()?),
                 extract: None,
                 lifecycles: Vec::new(),
-                shutdown_once: Mutex::new(false),
+                shutdown_once: OnceCell::new(),
             },
         })
     }
@@ -1528,7 +1521,7 @@ mod tests {
             lifecycles: vec![Arc::new(CountingLifecycle {
                 shutdowns: Arc::clone(&shutdowns),
             })],
-            shutdown_once: Mutex::new(false),
+            shutdown_once: OnceCell::new(),
         };
         bundle.shutdown().await;
         bundle.shutdown().await;

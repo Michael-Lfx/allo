@@ -108,6 +108,7 @@ pub struct RunStatus {
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     pub status: RunStatus,
+    pub output_path: PathBuf,
     pub status_path: PathBuf,
     pub safety_path: PathBuf,
 }
@@ -415,16 +416,22 @@ fn update_ledger<T>(
     if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|_| QuotaLedgerError::Io)?;
     }
-    let mut file = OpenOptions::new()
+    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+    let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open(path)
+        .open(lock_path)
         .map_err(|_| QuotaLedgerError::Io)?;
-    file.lock_exclusive()
+    lock.lock_exclusive()
         .map_err(|_| QuotaLedgerError::Io)?;
     let result = (|| {
-        let mut ledger = read_locked_ledger(&mut file)?;
+        let mut ledger = if path.exists() {
+            let mut file = File::open(path).map_err(|_| QuotaLedgerError::Io)?;
+            read_locked_ledger(&mut file)?
+        } else {
+            QuotaLedger::default()
+        };
         let today = Utc::now().date_naive().to_string();
         if ledger.utc_date != today {
             ledger = QuotaLedger {
@@ -437,16 +444,10 @@ fn update_ledger<T>(
         if ledger.used_calls > daily_cap {
             return Err(QuotaLedgerError::Exhausted);
         }
-        file.seek(SeekFrom::Start(0))
-            .map_err(|_| QuotaLedgerError::Io)?;
-        file.set_len(0)
-            .map_err(|_| QuotaLedgerError::Io)?;
-        serde_json::to_writer(&mut file, &ledger)
-            .map_err(|_| QuotaLedgerError::Io)?;
-        file.flush().map_err(|_| QuotaLedgerError::Io)?;
+        atomic_json_write(path, &ledger).map_err(|_| QuotaLedgerError::Io)?;
         Ok(output)
     })();
-    let _ = file.unlock();
+    let _ = lock.unlock();
     result
 }
 
@@ -457,7 +458,7 @@ fn read_locked_ledger(file: &mut File) -> Result<QuotaLedger, QuotaLedgerError> 
     std::io::Read::read_to_end(file, &mut bytes)
         .map_err(|_| QuotaLedgerError::Io)?;
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(QuotaLedger::default());
+        return Err(QuotaLedgerError::Io);
     }
     serde_json::from_slice(&bytes).map_err(|_| QuotaLedgerError::Io)
 }
@@ -778,6 +779,7 @@ async fn run_inner(
     harness.shutdown().await;
     Ok(RunOutcome {
         status,
+        output_path: config.output.clone(),
         status_path,
         safety_path,
     })
@@ -1750,10 +1752,10 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
         harness.fetch_readiness().await,
         FetchReadiness::Ready { .. }
     );
-    let fail = demo_case("https://demo.invalid/fail-dns");
+    let fail = demo_case("https://demo.example.com/fail-dns");
     let sensitive = demo_case("http://127.0.0.1/private");
-    let forbidden = demo_case("https://demo.invalid/challenge");
-    let mismatch = demo_case("https://demo.invalid/mismatch");
+    let forbidden = demo_case("https://demo.example.com/challenge");
+    let mismatch = demo_case("https://demo.example.com/mismatch");
 
     let mut modes_checked = 0;
     for mode in [
@@ -1769,10 +1771,10 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
         modes_checked += 1;
     }
     let fault_cases = [
-        demo_case("https://demo.invalid/fail-dns"),
-        demo_case("https://demo.invalid/fail-tls"),
-        demo_case("https://demo.invalid/fail-network"),
-        demo_case("https://demo.invalid/fail-timeout"),
+        demo_case("https://demo.example.com/fail-dns"),
+        demo_case("https://demo.example.com/fail-tls"),
+        demo_case("https://demo.example.com/fail-network"),
+        demo_case("https://demo.example.com/fail-timeout"),
     ];
     let mut fault_kinds_checked = 0;
     for (attempt, fault_case) in fault_cases.iter().enumerate() {
@@ -1851,7 +1853,7 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
     let budget_outcome = budget_coordinator
         .extract_many(
             vec![ExtractRequest {
-                url: "https://demo.invalid/budget".to_owned(),
+                url: "https://demo.example.com/budget".to_owned(),
             }],
             ExtractBudget {
                 absolute_deadline: Instant::now(),
@@ -1889,7 +1891,7 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
         rate_factory,
         Some(Arc::clone(&rate_gate) as Arc<dyn ManagedMcpCallGate>),
     )?;
-    let rate_case = demo_case("https://demo.invalid/rate");
+    let rate_case = demo_case("https://demo.example.com/rate");
     let rate_first = rate_harness
         .run_case_with_metadata(
             &rate_case,
@@ -2279,6 +2281,7 @@ pub struct AdmissionCampaign {
     config: CampaignConfig,
     status_path: PathBuf,
     status: CampaignStatus,
+    _run_lock: File,
 }
 
 impl AdmissionCampaign {
@@ -2294,6 +2297,15 @@ impl AdmissionCampaign {
         manifest.validate()?;
         let git_sha = read_git_sha()?;
         fs::create_dir_all(&config.output_dir)?;
+        let run_lock_path = config.output_dir.join("campaign.run.lock");
+        let run_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&run_lock_path)?;
+        run_lock
+            .try_lock_exclusive()
+            .map_err(|_| "another process is already running this Admission campaign")?;
         let status_path = config.output_dir.join("campaign.status.json");
 
         if status_path.exists() {
@@ -2303,6 +2315,7 @@ impl AdmissionCampaign {
                 config,
                 status_path,
                 status,
+                _run_lock: run_lock,
             });
         }
 
@@ -2339,6 +2352,7 @@ impl AdmissionCampaign {
             config,
             status_path,
             status,
+            _run_lock: run_lock,
         })
     }
 
@@ -2371,24 +2385,33 @@ impl AdmissionCampaign {
         self.persist_status()?;
 
         loop {
-            if self.status.actual_remote_calls >= self.config.campaign_cap {
-                self.status.state = "paused_for_quota".to_owned();
-                self.status.stop_reason = Some("campaign_cap_exhausted".to_owned());
-                self.status.resume_at_unix = Some(next_utc_midnight_unix());
-                self.persist_status()?;
-                return Ok(self.outcome(None));
-            }
-            let Some(batch_index) = self
+            let batch_index = self
                 .status
                 .batches
                 .iter()
-                .position(|batch| batch.state == "pending")
-            else {
+                .position(|batch| batch.state == "pending");
+            let remaining_calls = self
+                .config
+                .campaign_cap
+                .saturating_sub(self.status.actual_remote_calls);
+            match campaign_next_action(batch_index.is_some(), remaining_calls) {
+                "completed" => {
                 self.status.state = "completed".to_owned();
                 self.status.stop_reason = Some("completed".to_owned());
                 self.persist_status()?;
                 return Ok(self.outcome(Some(self.summary_path())));
-            };
+                }
+                "inconclusive_due_to_quota" => {
+                self.status.state = "inconclusive_due_to_quota".to_owned();
+                self.status.stop_reason = Some("campaign_cap_exhausted".to_owned());
+                self.status.resume_at_unix = None;
+                self.persist_status()?;
+                return Ok(self.outcome(None));
+                }
+                "run_batch" => {}
+                _ => unreachable!("campaign state helper returned an unknown action"),
+            }
+            let batch_index = batch_index.expect("run_batch requires a pending batch");
             let batch = &mut self.status.batches[batch_index];
             batch.attempt_index = batch.attempt_index.saturating_add(1);
             let attempt = batch.attempt_index;
@@ -2407,7 +2430,7 @@ impl AdmissionCampaign {
                 tag: Some(self.config.tag.clone()),
                 repeat: 3,
                 pacing_ms: self.config.pacing_ms,
-                max_calls: self.config.max_calls_per_batch,
+                max_calls: self.config.max_calls_per_batch.min(remaining_calls),
                 daily_cap: self.config.daily_cap,
                 quota_path: self.config.quota_path.clone(),
                 output,
@@ -2428,10 +2451,11 @@ impl AdmissionCampaign {
                 .status
                 .actual_remote_calls
                 .saturating_add(outcome.status.actual_remote_calls);
+            let campaign_cap_reached = self.status.actual_remote_calls >= self.config.campaign_cap;
             let evidence = CampaignEvidence {
                 result_path: outcome
-                    .status_path
-                    .with_extension("jsonl"),
+                    .output_path
+                    .clone(),
                 status_path: outcome.status_path.clone(),
                 safety_path: outcome.safety_path.clone(),
                 actual_remote_calls: outcome.status.actual_remote_calls,
@@ -2467,12 +2491,20 @@ impl AdmissionCampaign {
             ) {
                 batch.discarded_evidence.push(evidence);
                 batch.stop_reason = Some(stop_reason.clone());
-                self.status.state = "paused_for_quota".to_owned();
+                self.status.state = if campaign_cap_reached {
+                    "inconclusive_due_to_quota".to_owned()
+                } else {
+                    "paused_for_quota".to_owned()
+                };
                 self.status.stop_reason = Some(stop_reason);
-                self.status.resume_at_unix = outcome
-                    .status
-                    .cooldown_until_unix
-                    .or_else(|| Some(next_utc_midnight_unix()));
+                self.status.resume_at_unix = if campaign_cap_reached {
+                    None
+                } else {
+                    outcome
+                        .status
+                        .cooldown_until_unix
+                        .or_else(|| Some(next_utc_midnight_unix()))
+                };
                 self.persist_status()?;
                 return Ok(self.outcome(None));
             }
@@ -2656,6 +2688,16 @@ fn next_utc_midnight_unix() -> i64 {
         .unwrap_or_else(|| Utc::now().timestamp().saturating_add(86_400))
 }
 
+fn campaign_next_action(has_pending_batch: bool, remaining_calls: u32) -> &'static str {
+    if !has_pending_batch {
+        "completed"
+    } else if remaining_calls == 0 {
+        "inconclusive_due_to_quota"
+    } else {
+        "run_batch"
+    }
+}
+
 fn atomic_json_write_locked<T: Serialize>(
     path: &Path,
     value: &T,
@@ -2684,12 +2726,12 @@ mod tests {
     fn campaign_batches_are_stable_and_keep_categories_separate() {
         let mut cases = Vec::new();
         for index in (0..7).rev() {
-            let mut case = demo_case(&format!("https://demo.invalid/js-{index}"));
+            let mut case = demo_case(&format!("https://demo.example.com/js-{index}"));
             case.id = format!("js-{index}");
             cases.push(case);
         }
         for index in (0..3).rev() {
-            let mut case = demo_case(&format!("https://demo.invalid/pdf-{index}"));
+            let mut case = demo_case(&format!("https://demo.example.com/pdf-{index}"));
             case.id = format!("pdf-{index}");
             case.category = CaseCategory::PublicPdfText;
             cases.push(case);
@@ -2702,6 +2744,13 @@ mod tests {
         assert_eq!(batches[1].case_ids, ["js-0", "js-1", "js-2", "js-3", "js-4"]);
         assert_eq!(batches[2].case_ids, ["js-5", "js-6"]);
         assert!(batches.iter().all(|batch| batch.case_ids.len() <= 5));
+    }
+
+    #[test]
+    fn campaign_cap_only_stops_when_work_remains() {
+        assert_eq!(campaign_next_action(false, 0), "completed");
+        assert_eq!(campaign_next_action(true, 0), "inconclusive_due_to_quota");
+        assert_eq!(campaign_next_action(true, 1), "run_batch");
     }
 
     #[test]
@@ -2724,7 +2773,7 @@ mod tests {
     fn formal_campaign_rejects_category_pool_shortage() {
         let cases = (0..20)
             .map(|index| {
-                let mut case = demo_case(&format!("https://demo.invalid/case-{index}"));
+                let mut case = demo_case(&format!("https://demo.example.com/case-{index}"));
                 case.id = format!("case-{index}");
                 case
             })
@@ -2967,7 +3016,7 @@ mod tests {
         let manifest = FetchEvaluationManifest {
             schema_version: 1,
             corpus_version: "test-corpus".to_owned(),
-            cases: vec![demo_case("https://demo.invalid/fail-network")],
+            cases: vec![demo_case("https://demo.example.com/fail-network")],
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let factory = Arc::new(DemoBackendFactory {
@@ -3024,7 +3073,7 @@ mod tests {
         let manifest = FetchEvaluationManifest {
             schema_version: 1,
             corpus_version: "test-corpus".to_owned(),
-            cases: vec![demo_case("https://demo.invalid/setup")],
+            cases: vec![demo_case("https://demo.example.com/setup")],
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -3074,8 +3123,8 @@ mod tests {
             schema_version: 1,
             corpus_version: "test-corpus".to_owned(),
             cases: vec![
-                demo_case("https://demo.invalid/ledger-one"),
-                demo_case("https://demo.invalid/ledger-two"),
+                demo_case("https://demo.example.com/ledger-one"),
+                demo_case("https://demo.example.com/ledger-two"),
             ],
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -3122,8 +3171,8 @@ mod tests {
             schema_version: 1,
             corpus_version: "test-corpus".to_owned(),
             cases: vec![
-                demo_case("https://demo.invalid/mismatch"),
-                demo_case("https://demo.invalid/source-later"),
+                demo_case("https://demo.example.com/mismatch"),
+                demo_case("https://demo.example.com/source-later"),
             ],
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -3166,7 +3215,7 @@ mod tests {
         let status_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.status.json"));
         let safety_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.safety.json"));
         let output_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.summary.json"));
-        let case = demo_case("https://demo.invalid/incomplete");
+        let case = demo_case("https://demo.example.com/incomplete");
         let mut result = FetchEvaluationResult::base(
             &case,
             EvaluationMode::Local,
@@ -3430,7 +3479,7 @@ mod tests {
 
     #[test]
     fn admission_rejects_duplicate_phases() {
-        let case = demo_case("https://demo.invalid/duplicate-phase");
+        let case = demo_case("https://demo.example.com/duplicate-phase");
         let mut first = FetchEvaluationResult::base(
             &case,
             EvaluationMode::Compare,
@@ -3447,7 +3496,7 @@ mod tests {
 
     #[test]
     fn admission_requires_one_exact_three_phase_triple() {
-        let case = demo_case("https://demo.invalid/exact-triple");
+        let case = demo_case("https://demo.example.com/exact-triple");
         let mut cold = FetchEvaluationResult::base(
             &case,
             EvaluationMode::Compare,

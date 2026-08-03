@@ -89,6 +89,15 @@ A sensitive URL is still fetched locally. If local extraction succeeds, the
 content is returned normally. If local extraction fails, the original local
 error is returned and Parallel is never contacted.
 
+Local SSRF and Remote egress share the same crate-private host/IP safety
+primitives: lowercase hosts, trailing-dot normalization, special-use and
+single-label domain rejection, and non-public address ranges. Remote egress
+then applies the additional credential and decoded query/fragment parameter
+checks, rejecting token, signature, OAuth, session, and presigned-key variants
+(including camelCase and encoded names). Ordinary parameters such as
+`filename` remain allowed. The complete Remote proof runs again immediately
+before quota reservation and `tools/call`.
+
 The model-visible `requested_url` keeps the original fragment for local error
 and output attribution. The actual Parallel outbound URL is derived separately:
 non-sensitive fragments are stripped before sending, while sensitive fragments
@@ -188,6 +197,12 @@ The shared Parallel peer is shutdown exactly once by the process-level
 timeout so Browser and Database cleanup can still run. Concurrent tool
 discovery is serialized inside `RemoteMcpPeer`, so Search/Fetch initialization
 never emits duplicate `tools/list` requests for the same peer.
+
+Admission Campaigns also hold a per-campaign run lock for their whole lifetime;
+another process fails closed instead of competing for pending batches. A
+cumulative campaign cap is terminal when pending work remains, while a fully
+completed final batch still produces its summary even if it exactly consumes
+the cap.
 
 ## Diagnostics
 

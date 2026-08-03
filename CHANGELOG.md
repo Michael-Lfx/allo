@@ -72,6 +72,9 @@ notes at a high level rather than a complete historical log.
 - Desktop now defaults to the evidence-backed Managed Fetch profile after the
   completed canary acceptance; `NOMIFUN_MANAGED_FETCH_MODE=off` remains the
   immediate Local-only rollback.
+- Hardened Managed Fetch egress with shared Local/Remote URL safety checks,
+  decoded sensitive-key rejection, atomic quota evidence, campaign run
+  serialization, and fail-closed exact-cap completion semantics.
 
 ## v0.3.3 - 2026-07-30
 

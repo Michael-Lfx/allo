@@ -6,6 +6,7 @@ pub mod html_md;
 pub mod http_extract;
 pub mod search;
 pub mod ssrf;
+pub(crate) mod url_safety;
 
 pub use article::{ArticleExtractor, ArticleHtml, DomSmoothieExtractor};
 pub use duckduckgo::DuckDuckGoSearchProvider;

@@ -1,9 +1,10 @@
-use std::net::IpAddr;
-
-use url::{Host, Url};
-
 use crate::provider::http_extract::FetchedResource;
 use crate::types::{ExtractedPage, WebError};
+
+pub use crate::provider::url_safety::{
+    CanonicalRequestedUrl, PreparedRemoteUrl, RemoteForbiddenReason, canonical_requested_url,
+    prepare_remote_url,
+};
 
 #[derive(Debug)]
 pub struct LocalExtractOutcome {
@@ -190,59 +191,6 @@ impl RemoteFallbackProfile {
 }
 
 pub(crate) type RemoteFallbackPolicy = RemoteFallbackProfile;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RemoteForbiddenReason {
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    Gone,
-    RateLimited,
-    CaptchaOrWaf,
-    LoginRequired,
-    Paywall,
-    SensitiveQuery,
-    SensitiveFragment,
-    CredentialsInUrl,
-    PrivateOrLocalAddress,
-    UnsupportedScheme,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CanonicalRequestedUrl(String);
-
-impl CanonicalRequestedUrl {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PreparedRemoteUrl {
-    pub requested_url: String,
-    pub outbound_url: String,
-    pub canonical_url: CanonicalRequestedUrl,
-}
-
-pub fn canonical_requested_url(value: &str) -> CanonicalRequestedUrl {
-    let value = value.trim();
-    let canonical = Url::parse(value).ok().map(|mut parsed| {
-        parsed.set_fragment(None);
-        let mut text = parsed.to_string();
-        if parsed.path() == "/" && parsed.query().is_none() {
-            text = text.trim_end_matches('/').to_owned();
-        }
-        text
-    });
-    CanonicalRequestedUrl(canonical.unwrap_or_else(|| {
-        value
-            .split('#')
-            .next()
-            .unwrap_or(value)
-            .trim_end_matches('/')
-            .to_owned()
-    }))
-}
 
 pub fn successful_outcome(
     requested_url: String,
@@ -594,119 +542,11 @@ fn forbidden_url_reason_with_private(
     prepare_remote_url(raw, allow_private).err()
 }
 
-fn forbidden_host(host: Option<Host<&str>>) -> bool {
-    match host {
-        Some(Host::Ipv4(address)) => forbidden_ip(&IpAddr::V4(address)),
-        Some(Host::Ipv6(address)) => forbidden_ip(&IpAddr::V6(address)),
-        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        None => true,
-    }
-}
-
-fn forbidden_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-        }
-        IpAddr::V6(v6) => {
-            let segment = v6.segments()[0];
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (segment & 0xfe00) == 0xfc00
-                || (segment & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some_and(|v4| forbidden_ip(&IpAddr::V4(v4)))
-        }
-    }
-}
-
-fn has_sensitive_query(url: &Url) -> bool {
-    const SENSITIVE_NAMES: &[&str] = &[
-        "token",
-        "access_token",
-        "api_key",
-        "apikey",
-        "key",
-        "sig",
-        "signature",
-        "credential",
-        "authorization",
-        "auth",
-        "session",
-        "session_id",
-        "expires",
-    ];
-    url.query_pairs().any(|(key, _)| {
-        let key = key.to_ascii_lowercase();
-        SENSITIVE_NAMES
-            .iter()
-            .any(|name| key == *name || key.starts_with("x-amz-") || key.starts_with("x-goog-"))
-    })
-}
-
-fn has_sensitive_fragment(url: &Url) -> bool {
-    const SENSITIVE_FRAGMENT_NAMES: &[&str] = &[
-        "access_token",
-        "id_token",
-        "token",
-        "code",
-        "api_key",
-        "signature",
-        "sig",
-        "credential",
-        "session",
-        "auth",
-    ];
-    let Some(fragment) = url.fragment() else {
-        return false;
-    };
-    fragment.split('&').any(|pair| {
-        let key = pair.split('=').next().unwrap_or(pair).to_ascii_lowercase();
-        SENSITIVE_FRAGMENT_NAMES
-            .iter()
-            .any(|name| key == *name)
-    })
-}
-
-pub fn prepare_remote_url(
-    raw: &str,
-    allow_private: bool,
-) -> Result<PreparedRemoteUrl, RemoteForbiddenReason> {
-    let raw = raw.trim();
-    let url = Url::parse(raw).map_err(|_| RemoteForbiddenReason::UnsupportedScheme)?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(RemoteForbiddenReason::UnsupportedScheme);
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(RemoteForbiddenReason::CredentialsInUrl);
-    }
-    if !allow_private && forbidden_host(url.host()) {
-        return Err(RemoteForbiddenReason::PrivateOrLocalAddress);
-    }
-    if has_sensitive_query(&url) {
-        return Err(RemoteForbiddenReason::SensitiveQuery);
-    }
-    if has_sensitive_fragment(&url) {
-        return Err(RemoteForbiddenReason::SensitiveFragment);
-    }
-    let mut outbound = url;
-    outbound.set_fragment(None);
-    Ok(PreparedRemoteUrl {
-        requested_url: raw.to_owned(),
-        outbound_url: outbound.to_string(),
-        canonical_url: canonical_requested_url(raw),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::EXTRACTOR_FULLPAGE;
+    use url::Url;
 
     fn page(markdown: &str) -> ExtractedPage {
         ExtractedPage {
