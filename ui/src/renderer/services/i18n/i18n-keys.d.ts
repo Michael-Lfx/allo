@@ -761,6 +761,7 @@ export type I18nKey =
   | 'common.userMenu.creditsUnavailable'
   | 'common.userMenu.loadingCredits'
   | 'common.userMenu.logout'
+  | 'common.userMenu.refreshCredits'
   | 'common.version'
   | 'common.viewMoreLines'
   | 'common.website'

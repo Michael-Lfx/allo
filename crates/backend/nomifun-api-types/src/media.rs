@@ -49,6 +49,32 @@ pub struct MediaCreditsResponse {
     pub authenticated: bool,
 }
 
+/// Body for `POST /api/media/credits/checkin`. Wire field is `timeZone`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsCheckinRequest {
+    pub time_zone: String,
+}
+
+/// Result of a daily check-in. Mirrors the upstream Flowy response plus an
+/// `authenticated` flag so the client gets a uniform signal. `balance` is the
+/// post-check-in balance, so the client can update its display without a
+/// follow-up balance fetch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsCheckinResponse {
+    pub already_checked_in: bool,
+    #[serde(default)]
+    pub granted_points: i64,
+    #[serde(default)]
+    pub balance: i64,
+    #[serde(default)]
+    pub check_in_at: Option<String>,
+    #[serde(default)]
+    pub day_key: Option<i64>,
+    pub authenticated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaWorkflowHistoryItem {
     pub run_id: String,

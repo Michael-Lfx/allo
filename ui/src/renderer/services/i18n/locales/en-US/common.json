@@ -130,7 +130,8 @@
     "contactSupportWithUnread": "Contact support, {{count}} unread replies",
     "logout": "Sign out",
     "loadingCredits": "Loading…",
-    "creditsUnavailable": "—"
+    "creditsUnavailable": "—",
+    "refreshCredits": "Refresh balance"
   },
   "supportChat": {
     "title": "Contact support",

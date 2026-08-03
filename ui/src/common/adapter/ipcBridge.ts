@@ -6409,6 +6409,19 @@ export interface IMediaCredits {
   authenticated: boolean;
 }
 
+export interface IMediaCreditsCheckinParams {
+  timeZone: string;
+}
+
+export interface IMediaCreditsCheckinResult {
+  alreadyCheckedIn: boolean;
+  grantedPoints: number;
+  balance: number;
+  checkInAt?: string;
+  dayKey?: number;
+  authenticated: boolean;
+}
+
 export interface IMediaModelList {
   image_models: string[];
   video_models: string[];
@@ -6431,6 +6444,10 @@ export const media = {
   getSettings: httpGet<IMediaSettings, void>('/api/media/settings'),
   updateSettings: httpPatch<IMediaSettings, IUpdateMediaSettings>('/api/media/settings'),
   getCredits: httpGet<IMediaCredits, void>('/api/media/credits'),
+  checkin: httpPost<IMediaCreditsCheckinResult, IMediaCreditsCheckinParams>(
+    '/api/media/credits/checkin',
+    (p) => ({ timeZone: p.timeZone })
+  ),
   listModels: httpGet<IMediaModelList, void>('/api/media/models'),
   workflowHistory: httpGet<IMediaWorkflowHistory, { limit?: number }>(
     (p) => `/api/media/workflows/history${p.limit ? `?limit=${p.limit}` : ''}`

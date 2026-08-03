@@ -4,13 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { Logout, Message, Right, Theme, User } from '@icon-park/react';
+import { Logout, Message, Refresh, Right, Theme, User } from '@icon-park/react';
 import classNames from 'classnames';
-import { ipcBridge } from '@/common';
-import type { IMediaCredits } from '@/common/adapter/ipcBridge';
+import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import SiderThemePanel from './SiderThemePanel';
@@ -43,28 +42,21 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   const planText = planLabel?.trim() || '';
   const [menuVisible, setMenuVisible] = useState(false);
   const [skinVisible, setSkinVisible] = useState(false);
-  const [credits, setCredits] = useState<IMediaCredits | null>(null);
-  const [creditsLoading, setCreditsLoading] = useState(false);
-
-  const refreshCredits = useCallback(async () => {
-    setCreditsLoading(true);
-    try {
-      const result = await ipcBridge.media.getCredits.invoke();
-      setCredits(result);
-    } catch {
-      setCredits(null);
-    } finally {
-      setCreditsLoading(false);
-    }
-  }, []);
+  const {
+    balance,
+    authenticated,
+    isFetchingBalance,
+    lastRefreshAt,
+    cooldownSeconds,
+    canRefresh,
+    manualRefresh,
+  } = useCredits();
 
   const handleMenuVisibleChange = (visible: boolean) => {
     setMenuVisible(visible);
     if (!visible) {
       setSkinVisible(false);
-      return;
     }
-    void refreshCredits();
   };
 
   const handleLogout = () => {
@@ -79,11 +71,11 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     openSupportChat();
   };
 
-  const creditsText = creditsLoading
-    ? t('common.userMenu.loadingCredits', { defaultValue: '加载中…' })
-    : credits != null
-      ? String(credits.balance)
-      : t('common.userMenu.creditsUnavailable', { defaultValue: '—' });
+  const creditsText = !authenticated
+    ? t('common.userMenu.creditsUnavailable', { defaultValue: '—' })
+    : isFetchingBalance && lastRefreshAt === 0
+      ? t('common.userMenu.loadingCredits', { defaultValue: '加载中…' })
+      : String(balance);
 
   const unreadBadge = unreadCount > 99 ? '99+' : String(unreadCount);
   const supportLabel = hasUnread
@@ -97,7 +89,31 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     <div className='w-192px flex flex-col gap-1px p-4px'>
       <div className='flex items-center justify-between gap-8px h-30px px-8px text-12px'>
         <span className='text-t-secondary'>{t('common.userMenu.creditsBalance', { defaultValue: '积分余额' })}</span>
-        <span className='font-600 text-t-primary tabular-nums'>{creditsText}</span>
+        <span className='flex items-center gap-4px'>
+          <span className='font-600 text-t-primary tabular-nums'>{creditsText}</span>
+          {authenticated && (
+            <Tooltip content={t('common.userMenu.refreshCredits', { defaultValue: '刷新积分余额' })} position='lt'>
+              <button
+                type='button'
+                disabled={!canRefresh}
+                onClick={manualRefresh}
+                aria-label={t('common.userMenu.refreshCredits', { defaultValue: '刷新积分余额' })}
+                className='flex items-center justify-center size-18px rd-4px border-none bg-transparent text-t-tertiary transition-colors hover:bg-fill-2 hover:text-t-secondary disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer'
+              >
+                {cooldownSeconds > 0 ? (
+                  <span className='text-10px leading-none tabular-nums'>{cooldownSeconds}s</span>
+                ) : (
+                  <Refresh
+                    theme='outline'
+                    size='12'
+                    fill='currentColor'
+                    className={isFetchingBalance ? 'animate-spin' : ''}
+                  />
+                )}
+              </button>
+            </Tooltip>
+          )}
+        </span>
       </div>
 
       <Popover

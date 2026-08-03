@@ -13,8 +13,10 @@ import {
   Tag,
 } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
-import type { IMediaCredits, IMediaSettings, IMediaWorkflowHistoryItem } from '@/common/adapter/ipcBridge';
+import type { IMediaSettings, IMediaWorkflowHistoryItem } from '@/common/adapter/ipcBridge';
+import { Refresh } from '@icon-park/react';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
+import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import {
   SettingsGroup,
@@ -28,7 +30,14 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 const MediaSettings: React.FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<IMediaSettings | null>(null);
-  const [credits, setCredits] = useState<IMediaCredits | null>(null);
+  const {
+    balance,
+    authenticated,
+    isFetchingBalance,
+    cooldownSeconds,
+    canRefresh,
+    manualRefresh,
+  } = useCredits();
   const [history, setHistory] = useState<IMediaWorkflowHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -37,14 +46,12 @@ const MediaSettings: React.FC = () => {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, c, h] = await Promise.all([
+      const [s, h] = await Promise.all([
         ipcBridge.media.getSettings.invoke(),
-        ipcBridge.media.getCredits.invoke(),
         ipcBridge.media.workflowHistory.invoke({ limit: 50 }),
         revalidateMediaModels(),
       ]);
       setSettings(s);
-      setCredits(c);
       setHistory(h.runs);
     } catch (e) {
       Message.error(String(e));
@@ -105,18 +112,41 @@ const MediaSettings: React.FC = () => {
           description={t('media.description')}
           meta={
             <div className='space-y-4px text-12px leading-18px text-t-tertiary'>
-              {credits && <div className='tabular-nums'>{t('media.credits.balance', { balance: credits.balance })}</div>}
+              <div className='tabular-nums'>
+                {t('media.credits.balance', {
+                  balance: authenticated ? balance : '—',
+                })}
+              </div>
               {settings && (
                 <div>{settings.flowy_media_exposed ? t('media.agentHintReady') : t('media.agentHintLogin')}</div>
               )}
             </div>
           }
           action={
-            credits && (
-              <Tag color={credits.authenticated ? 'green' : 'gray'}>
-                {credits.authenticated ? t('media.credits.authenticated') : t('media.credits.notAuthenticated')}
+            <div className='flex items-center gap-8px'>
+              <Tag color={authenticated ? 'green' : 'gray'}>
+                {authenticated ? t('media.credits.authenticated') : t('media.credits.notAuthenticated')}
               </Tag>
-            )
+              <Button
+                size='mini'
+                type='text'
+                disabled={!canRefresh}
+                onClick={manualRefresh}
+                aria-label={t('common.userMenu.refreshCredits', { defaultValue: '刷新积分余额' })}
+                className='flex items-center justify-center text-t-tertiary'
+              >
+                {cooldownSeconds > 0 ? (
+                  <span className='text-12px tabular-nums'>{cooldownSeconds}s</span>
+                ) : (
+                  <Refresh
+                    theme='outline'
+                    size='14'
+                    fill='currentColor'
+                    className={isFetchingBalance ? 'animate-spin' : ''}
+                  />
+                )}
+              </Button>
+            </div>
           }
         />
 

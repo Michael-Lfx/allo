@@ -6,8 +6,8 @@ use nomi_config::{
 };
 use nomi_media::workflows::store::{WorkflowRunRecord, WorkflowRunStore};
 use nomifun_api_types::{
-    MediaCreditsResponse, MediaSettingsResponse, MediaWorkflowHistoryItem,
-    MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
+    MediaCreditsCheckinResponse, MediaCreditsResponse, MediaSettingsResponse,
+    MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
 use nomifun_cloud::{FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO, ensure_gateway_defaults};
 use nomifun_common::AppError;
@@ -152,6 +152,51 @@ impl MediaApiService {
         })
     }
 
+    /// Perform the Flowy daily check-in. `time_zone` is the client's IANA
+    /// timezone (e.g. "Asia/Shanghai"); the upstream server resolves the day
+    /// boundary from it. The response carries the post-check-in `balance`, so
+    /// callers can refresh their display without a follow-up balance fetch.
+    pub async fn checkin(
+        &self,
+        time_zone: String,
+    ) -> Result<MediaCreditsCheckinResponse, AppError> {
+        let unauthenticated = || MediaCreditsCheckinResponse {
+            already_checked_in: false,
+            granted_points: 0,
+            balance: 0,
+            check_in_at: None,
+            day_key: None,
+            authenticated: false,
+        };
+
+        let cfg = self.gateway_config();
+        if !flowy_media_exposed(&cfg) {
+            return Ok(unauthenticated());
+        }
+        let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
+        let session = nomifun_cloud::ServerSession::from_config(&cfg.server, &self.data_dir);
+        let token = session
+            .access_token()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let Some(token) = token.filter(|t| !t.trim().is_empty()) else {
+            return Ok(unauthenticated());
+        };
+        let _ = token;
+        let resp = api
+            .credits_checkin(&session, &time_zone)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(MediaCreditsCheckinResponse {
+            already_checked_in: resp.already_checked_in,
+            granted_points: resp.granted_points,
+            balance: resp.balance,
+            check_in_at: resp.check_in_at,
+            day_key: resp.day_key,
+            authenticated: true,
+        })
+    }
+
     pub fn workflow_history(&self, limit: usize) -> MediaWorkflowHistoryResponse {
         let runs = self
             .workflow_store
@@ -220,6 +265,19 @@ mod tests {
         assert!(settings.flowy_media_exposed);
         let cfg = svc.gateway_config();
         assert_eq!(cfg.server.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+    }
+
+    #[tokio::test]
+    async fn checkin_short_circuits_without_session() {
+        // A fresh tempdir has no Flowy session, so checkin must return
+        // authenticated:false without hitting the network.
+        let dir = tempfile::tempdir().unwrap();
+        let svc = MediaApiService::new(dir.path().to_path_buf()).unwrap();
+        let resp = svc.checkin("UTC".into()).await.unwrap();
+        assert!(!resp.authenticated);
+        assert_eq!(resp.balance, 0);
+        assert!(!resp.already_checked_in);
+        assert!(resp.day_key.is_none());
     }
 
     #[test]
