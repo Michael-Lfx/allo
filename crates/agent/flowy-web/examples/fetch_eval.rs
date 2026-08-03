@@ -9,8 +9,6 @@ use flowy_web::evaluation::{CaseCategory, EvaluationMode, EvaluationProfile, Pee
 #[derive(Debug, Parser)]
 #[command(name = "fetch_eval", about = "Run sanitized managed fetch evaluation")]
 struct Cli {
-    #[arg(long, env = "ALLO_FETCH_EVAL_GIT_SHA")]
-    git_sha: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -19,6 +17,7 @@ struct Cli {
 enum Command {
     Run(RunArgs),
     Admit(AdmitArgs),
+    Campaign(CampaignArgs),
     Summarize(SummarizeArgs),
     Demo(DemoArgs),
 }
@@ -51,8 +50,6 @@ struct RunArgs {
     quota_path: PathBuf,
     #[arg(long)]
     status: Option<PathBuf>,
-    #[arg(long)]
-    allow_dirty: bool,
     #[arg(long)]
     output: PathBuf,
 }
@@ -90,9 +87,29 @@ struct AdmitArgs {
     #[arg(long)]
     status: Option<PathBuf>,
     #[arg(long)]
-    allow_dirty: bool,
-    #[arg(long)]
     output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct CampaignArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    tag: String,
+    #[arg(long, default_value_t = 5)]
+    batch_size: usize,
+    #[arg(long, default_value_t = 3_000)]
+    pacing_ms: u64,
+    #[arg(long, default_value_t = 25)]
+    max_calls_per_batch: u32,
+    #[arg(long, default_value_t = 60)]
+    daily_cap: u32,
+    #[arg(long, default_value_t = 200)]
+    campaign_cap: u32,
+    #[arg(long, default_value = "fetch-evaluation-quota.local.json")]
+    quota_path: PathBuf,
+    #[arg(long)]
+    output_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -107,8 +124,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Run(args) => {
             let outcome = runner::run(RunConfig {
-                git_sha: cli.git_sha,
-                allow_dirty: args.allow_dirty,
                 mode: parse_mode(&args.mode)?,
                 peer_mode: parse_peer_mode(&args.peer_mode)?,
                 profile: parse_profile(&args.profile)?,
@@ -129,8 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Admit(args) => {
             let outcome = runner::run(RunConfig {
-                git_sha: cli.git_sha,
-                allow_dirty: args.allow_dirty,
                 mode: EvaluationMode::Compare,
                 peer_mode: PeerMode::Cold,
                 profile: EvaluationProfile::Admission,
@@ -148,6 +161,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await?;
             println!("{}", serde_json::to_string_pretty(&outcome.status)?);
+        }
+        Command::Campaign(args) => {
+            let mut campaign = runner::AdmissionCampaign::open_or_create(
+                runner::CampaignConfig {
+                    manifest: args.manifest,
+                    tag: args.tag,
+                    batch_size: args.batch_size,
+                    pacing_ms: args.pacing_ms,
+                    max_calls_per_batch: args.max_calls_per_batch,
+                    daily_cap: args.daily_cap,
+                    campaign_cap: args.campaign_cap,
+                    quota_path: args.quota_path,
+                    output_dir: args.output_dir,
+                },
+            )?;
+            let outcome = campaign.run_available().await?;
+            println!("{}", serde_json::to_string_pretty(&outcome)?);
+            if outcome.state == "completed" {
+                let summary = campaign.summarize()?;
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            }
         }
         Command::Summarize(args) => {
             let summary = runner::summarize_with_evidence(

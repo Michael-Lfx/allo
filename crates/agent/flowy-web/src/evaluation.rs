@@ -18,11 +18,11 @@ use crate::coordinator::{
 };
 use crate::managed::{
     FetchReadiness, ManagedMcpCallGate, ManagedSearchService, ParallelFetchAdapter, ParallelMcpClient,
-    RemoteExtractBatch, RemoteExtractError, RemoteExtractFallback, RemoteExtractRequest,
+    RemoteExtractError, RemoteExtractFallback, RemoteExtractRequest,
     RemoteExtractRequestItem,
 };
 #[cfg(test)]
-use crate::managed::RemoteExtractItem;
+use crate::managed::{RemoteExtractBatch, RemoteExtractItem};
 use crate::provider::{HttpExtractProvider, SearchProvider};
 use crate::provider::extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
@@ -63,7 +63,7 @@ pub enum PeerMode {
     SearchWarmed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum CaseCategory {
     PublicPdfText,
@@ -123,11 +123,23 @@ impl FetchEvaluationCase {
                 self.id
             ));
         }
+        if self.category == CaseCategory::RealPdfPrivate && self.url_env.is_none() {
+            return Err(format!(
+                "case {} real_pdf_private cases must use url_env",
+                self.id
+            ));
+        }
         if let Some(url) = &self.url {
             let parsed = url::Url::parse(url)
                 .map_err(|_| format!("case {} URL is not a valid HTTP(S) URL", self.id))?;
             if !matches!(parsed.scheme(), "http" | "https") {
                 return Err(format!("case {} URL must use HTTP or HTTPS", self.id));
+            }
+            if self.enabled && (parsed.query().is_some() || parsed.fragment().is_some()) {
+                return Err(format!(
+                    "case {} URL must not contain a query or fragment",
+                    self.id
+                ));
             }
         }
         if let Some(name) = &self.url_env
@@ -147,6 +159,15 @@ impl FetchEvaluationCase {
                 self.id
             ));
         }
+        let mut markers = std::collections::HashSet::new();
+        for marker in &self.expected_markers {
+            if marker.trim().is_empty() {
+                return Err(format!("case {} markers must not be blank", self.id));
+            }
+            if !markers.insert(marker) {
+                return Err(format!("case {} markers must be unique", self.id));
+            }
+        }
         if self.minimum_marker_hits == 0 {
             return Err(format!(
                 "case {} minimum_marker_hits must be positive",
@@ -165,8 +186,11 @@ impl FetchEvaluationCase {
                 self.id
             ));
         }
-        chrono::NaiveDate::parse_from_str(&self.verified_at, "%Y-%m-%d")
+        let verified_at = chrono::NaiveDate::parse_from_str(&self.verified_at, "%Y-%m-%d")
             .map_err(|_| format!("case {} verified_at must be YYYY-MM-DD", self.id))?;
+        if verified_at > chrono::Utc::now().date_naive() {
+            return Err(format!("case {} verified_at must not be in the future", self.id));
+        }
         Ok(())
     }
 
@@ -194,6 +218,12 @@ impl FetchEvaluationCase {
             .map_err(|_| format!("case {} URL is not a valid HTTP(S) URL", self.id))?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err(format!("case {} URL must use HTTP or HTTPS", self.id));
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(format!(
+                "case {} resolved URL must not contain a query or fragment",
+                self.id
+            ));
         }
         Ok(url)
     }
@@ -328,15 +358,6 @@ impl FetchEvaluationResult {
     }
 }
 
-/// Evaluation-only seam used by the runner's quota ledger. The production
-/// web tools never construct `QuotaExhausted`; the feature-gated runner uses
-/// it to stop before making another provider call.
-#[async_trait]
-pub trait EvaluationCallGate: Send + Sync {
-    async fn acquire(&self) -> Result<(), RemoteExtractError>;
-    fn observe(&self, result: &Result<RemoteExtractBatch, RemoteExtractError>);
-}
-
 #[async_trait]
 pub(crate) trait EvaluationBackend: Send + Sync {
     fn local(&self) -> Arc<dyn LocalExtractAdapter>;
@@ -348,12 +369,13 @@ pub(crate) trait EvaluationBackend: Send + Sync {
 }
 
 pub(crate) trait EvaluationBackendFactory: Send + Sync {
-    fn create(&self) -> Result<Arc<dyn EvaluationBackend>, WebError>;
+    fn create(
+        &self,
+        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    ) -> Result<Arc<dyn EvaluationBackend>, WebError>;
 }
 
-struct ProductionBackendFactory {
-    gate: Option<Arc<dyn ManagedMcpCallGate>>,
-}
+struct ProductionBackendFactory;
 
 struct ProductionBackend {
     local: Arc<HttpExtractProvider>,
@@ -395,9 +417,12 @@ impl EvaluationBackend for ProductionBackend {
 }
 
 impl EvaluationBackendFactory for ProductionBackendFactory {
-    fn create(&self) -> Result<Arc<dyn EvaluationBackend>, WebError> {
-        let client = match &self.gate {
-            Some(gate) => Arc::new(ParallelMcpClient::new_with_call_gate(Arc::clone(gate))?),
+    fn create(
+        &self,
+        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    ) -> Result<Arc<dyn EvaluationBackend>, WebError> {
+        let client = match call_gate {
+            Some(gate) => Arc::new(ParallelMcpClient::new_with_call_gate(Arc::clone(&gate))?),
             None => Arc::new(ParallelMcpClient::new()?),
         };
         let search = Arc::new(ManagedSearchService::keyless_with_shared_client(
@@ -418,6 +443,7 @@ impl EvaluationBackendFactory for ProductionBackendFactory {
 /// behind this interface. Test/Demo adapters cross the same seam.
 pub struct FetchEvaluationHarness {
     factory: Arc<dyn EvaluationBackendFactory>,
+    call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
     backend: Arc<dyn EvaluationBackend>,
     fetch_warmed: tokio::sync::Mutex<bool>,
     search_warmed: tokio::sync::Mutex<bool>,
@@ -496,16 +522,24 @@ impl FetchEvaluationHarness {
     }
 
     fn with_call_gate(gate: Option<Arc<dyn ManagedMcpCallGate>>) -> Result<Self, WebError> {
-        let factory: Arc<dyn EvaluationBackendFactory> = Arc::new(ProductionBackendFactory { gate });
-        Self::from_factory(factory)
+        let factory: Arc<dyn EvaluationBackendFactory> = Arc::new(ProductionBackendFactory);
+        Self::from_factory_with_gate(factory, gate)
     }
 
     pub(crate) fn from_factory(
         factory: Arc<dyn EvaluationBackendFactory>,
     ) -> Result<Self, WebError> {
-        let backend = factory.create()?;
+        Self::from_factory_with_gate(factory, None)
+    }
+
+    pub(crate) fn from_factory_with_gate(
+        factory: Arc<dyn EvaluationBackendFactory>,
+        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    ) -> Result<Self, WebError> {
+        let backend = factory.create(call_gate.clone())?;
         Ok(Self {
             factory,
+            call_gate,
             backend,
             fetch_warmed: tokio::sync::Mutex::new(false),
             search_warmed: tokio::sync::Mutex::new(false),
@@ -547,7 +581,7 @@ impl FetchEvaluationHarness {
             let mut result = FetchEvaluationResult::base(
                 case, mode, peer_mode, run_id, git_sha, attempt,
             );
-            let fresh_backend = match self.factory.create() {
+            let fresh_backend = match self.factory.create(self.call_gate.clone()) {
                 Ok(backend) => backend,
                 Err(error) => {
                     result.error_class = Some(error_class(&error));
@@ -1032,7 +1066,6 @@ fn format_remote_error(error: &RemoteExtractError) -> String {
     match error {
         RemoteExtractError::Timeout { kind } => format!("timeout_{kind:?}"),
         RemoteExtractError::RateLimited(_) => "rate_limited".to_owned(),
-        RemoteExtractError::QuotaExhausted => "quota_exhausted".to_owned(),
         other => format!("{other:?}").to_ascii_lowercase(),
     }
 }
@@ -1093,6 +1126,26 @@ mod tests {
             .unwrap()
             .insert("unexpected".to_owned(), serde_json::json!(true));
         assert!(serde_json::from_value::<FetchEvaluationCase>(json).is_err());
+    }
+
+    #[test]
+    fn manifest_rejects_blank_duplicate_future_and_private_inline_cases() {
+        let mut value = case();
+        value.expected_markers = vec![" ".to_owned()];
+        assert!(value.validate().is_err());
+        value.expected_markers = vec!["Marker".to_owned(), "Marker".to_owned()];
+        assert!(value.validate().is_err());
+        value.expected_markers = vec!["Marker".to_owned()];
+        value.verified_at = (chrono::Utc::now().date_naive() + chrono::Duration::days(1))
+            .to_string();
+        assert!(value.validate().is_err());
+
+        value.category = CaseCategory::RealPdfPrivate;
+        value.verified_at = "2026-08-01".to_owned();
+        assert!(value.validate().is_err());
+        value.url = None;
+        value.url_env = Some("ALLO_FETCH_CASE_REAL_PDF".to_owned());
+        assert!(value.validate().is_ok());
     }
 
     #[test]

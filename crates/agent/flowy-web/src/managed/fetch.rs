@@ -22,6 +22,9 @@ use super::remote::{
     is_explicit_unknown_tool, is_explicit_unknown_tool_rpc, is_unknown_tool_message,
 };
 
+#[cfg(test)]
+use super::remote::{ManagedMcpCallGate, ManagedMcpTool};
+
 const FETCH_TOOL: &str = "web_fetch";
 
 #[derive(Debug, Clone)]
@@ -96,10 +99,6 @@ pub enum RemoteExtractError {
     RpcMethodUnavailable,
     SessionExpired,
     InvalidRequest,
-    /// Evaluation-only admission failure. Production adapters never emit this
-    /// variant; the feature-gated runner uses it to stop before a remote call
-    /// when its local quota ledger is exhausted.
-    QuotaExhausted,
     MalformedResponse,
     Upstream,
 }
@@ -357,7 +356,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                     return Err(mapped);
                 }
                 Err(ManagedMcpCallError::QuotaExhausted) => {
-                    return Err(RemoteExtractError::QuotaExhausted);
+                    return Err(RemoteExtractError::Upstream);
                 }
                 Err(ManagedMcpCallError::UnsafeArguments) => {
                     return Err(RemoteExtractError::InvalidRequest);
@@ -421,8 +420,7 @@ impl ParallelFetchAdapter {
             | RemoteExtractError::SchemaMismatch
             | RemoteExtractError::RpcMethodUnavailable
             | RemoteExtractError::SessionExpired
-            | RemoteExtractError::InvalidRequest
-            | RemoteExtractError::QuotaExhausted => {}
+            | RemoteExtractError::InvalidRequest => {}
         }
     }
 }
@@ -771,6 +769,35 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingGate {
+        calls: Mutex<Vec<(ManagedMcpTool, Value, u8)>>,
+    }
+
+    #[async_trait]
+    impl ManagedMcpCallGate for RecordingGate {
+        async fn before_call(
+            &self,
+            tool: ManagedMcpTool,
+            arguments: &Value,
+            attempt: u8,
+        ) -> Result<(), ManagedMcpCallError> {
+            self.calls
+                .lock()
+                .await
+                .push((tool, arguments.clone(), attempt));
+            Ok(())
+        }
+
+        fn observe(
+            &self,
+            _tool: ManagedMcpTool,
+            _attempt: u8,
+            _result: &Result<McpToolResult, McpPeerError>,
+        ) {
+        }
+    }
+
     #[test]
     fn decodes_structured_success() {
         let remote = result(
@@ -1091,6 +1118,66 @@ mod tests {
             .await;
     }
 
+    #[cfg(feature = "fetch-eval")]
+    async fn mount_repeating_peer(server: &MockServer, stateful: bool) {
+        mount_repeating_peer_with_lists(server, stateful, 2).await;
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    async fn mount_repeating_peer_with_lists(
+        server: &MockServer,
+        stateful: bool,
+        tool_list_count: usize,
+    ) {
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(move |request: &Request| {
+                let id = serde_json::from_slice::<Value>(&request.body)
+                    .ok()
+                    .and_then(|value| value.get("id").and_then(Value::as_u64))
+                    .unwrap_or(0);
+                let response = ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "serverInfo": {"name": "mock", "version": "1"}
+                    }
+                }));
+                if stateful {
+                    response.insert_header("Mcp-Session-Id", "session-1")
+                } else {
+                    response
+                }
+            })
+            .expect(if stateful { 2 } else { 1 })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(if stateful { 2 } else { 1 })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(|request: &Request| {
+                let id = serde_json::from_slice::<Value>(&request.body)
+                    .ok()
+                    .and_then(|value| value.get("id").and_then(Value::as_u64))
+                    .unwrap_or(0);
+                let mut response = tools_list_response();
+                response["id"] = json!(id);
+                ResponseTemplate::new(200).set_body_json(response)
+            })
+            .expect(tool_list_count as u64)
+            .mount(server)
+            .await;
+    }
+
     fn fetch_success_response(id: u64, url: &str) -> Value {
         json!({
             "jsonrpc": "2.0",
@@ -1180,6 +1267,341 @@ mod tests {
             adapter.fetch_readiness().await,
             FetchReadiness::Ready { generation: 1 }
         ));
+    }
+
+    #[tokio::test]
+    async fn real_parallel_fetch_call_crosses_gate_with_exact_arguments() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fetch_success_response(
+                3,
+                "https://example.com/a",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let gate = Arc::new(RecordingGate::default());
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("remote batch");
+        let calls = gate.calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, ManagedMcpTool::Fetch);
+        assert_eq!(calls[0].2, 1);
+        assert_eq!(
+            calls[0].1.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["full_content", "urls"]
+        );
+        assert_eq!(calls[0].1["full_content"], false);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_session_recovery_crosses_gate_and_counts_recovery() {
+        let server = MockServer::start().await;
+        mount_repeating_peer(&server, true).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-session-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let result = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        let batch = result.expect("session recovery");
+
+        assert_eq!(batch.items[0].markdown, "# Hello");
+        assert_eq!(gate.actual_calls(), 2);
+        assert_eq!(gate.fetch_calls(), 2);
+        assert_eq!(gate.recovery_calls(), 1);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_unknown_tool_recovery_crosses_gate() {
+        let server = MockServer::start().await;
+        mount_repeating_peer(&server, false).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "content": [{"type": "text", "text": "unknown tool: web_fetch"}],
+                    "isError": true
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 5})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-tool-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let batch = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("unknown tool recovery");
+
+        assert_eq!(batch.items[0].markdown, "# Hello");
+        assert_eq!(gate.actual_calls(), 2);
+        assert_eq!(gate.fetch_calls(), 2);
+        assert_eq!(gate.recovery_calls(), 1);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_session_and_tool_recovery_use_only_three_calls() {
+        let server = MockServer::start().await;
+        mount_repeating_peer_with_lists(&server, true, 3).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 6})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "result": {
+                    "content": [{"type": "text", "text": "unknown tool: web_fetch"}],
+                    "isError": true
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 8})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-combined-recovery-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let batch = ParallelFetchAdapter::new(client)
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("combined recovery");
+
+        assert_eq!(batch.items[0].markdown, "# Hello");
+        assert_eq!(gate.actual_calls(), 3);
+        assert_eq!(gate.fetch_calls(), 3);
+        assert_eq!(gate.recovery_calls(), 2);
+        assert_eq!(gate.retry_limit_violations(), 0);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_fourth_call_is_blocked_before_wiremock() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-fourth-call-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = ParallelMcpClient::new_for_test_endpoint(
+            server.uri(),
+            Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+        )
+        .expect("offline construction");
+        client
+            .peer()
+            .discover_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("tool discovery");
+        let arguments = json!({
+            "urls": ["https://example.com/a"],
+            "full_content": false,
+        });
+        for attempt in 1..=3 {
+            client
+                .call_tool(
+                    FETCH_TOOL,
+                    arguments.clone(),
+                    Instant::now() + Duration::from_secs(5),
+                    attempt,
+                )
+                .await
+                .expect("allowed call");
+        }
+        assert!(matches!(
+            client
+                .call_tool(
+                    FETCH_TOOL,
+                    arguments,
+                    Instant::now() + Duration::from_secs(5),
+                    4,
+                )
+                .await,
+            Err(ManagedMcpCallError::RetryLimitExceeded)
+        ));
+        assert_eq!(gate.actual_calls(), 3);
+        assert_eq!(gate.retry_limit_violations(), 1);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_429_persists_cooldown_and_blocks_later_call() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "2")
+                    .set_body_string("rate limited"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-rate-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let first = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(matches!(
+            first,
+            Err(RemoteExtractError::RateLimited(Some(_)))
+        ));
+        let second = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(second.is_err());
+        assert_eq!(gate.actual_calls(), 1);
+        assert_eq!(gate.state().0.as_deref(), Some("rate_limited"));
+        assert!(gate.state().1.is_some());
+        assert!(gate.state().2.is_some());
+        let ledger: Value = serde_json::from_slice(
+            &std::fs::read(&quota_path).expect("quota ledger"),
+        )
+        .expect("valid quota ledger");
+        assert!(ledger["cooldown_until_unix"].as_i64().is_some());
+        let _ = std::fs::remove_file(quota_path);
     }
 
     #[tokio::test]

@@ -175,6 +175,7 @@ pub(crate) enum ManagedMcpTool {
     Search,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum ManagedMcpCallError {
     QuotaExhausted,
@@ -215,14 +216,24 @@ impl ParallelMcpClient {
         Self::new_at_endpoint_with_gate("https://search.parallel.ai/mcp", None)
     }
 
+    #[allow(dead_code)]
     pub(super) fn new_at_endpoint(endpoint: impl Into<String>) -> Result<Self, WebError> {
         Self::new_at_endpoint_with_gate(endpoint, None)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn new_with_call_gate(
         gate: Arc<dyn ManagedMcpCallGate>,
     ) -> Result<Self, WebError> {
         Self::new_at_endpoint_with_gate("https://search.parallel.ai/mcp", Some(gate))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_endpoint(
+        endpoint: impl Into<String>,
+        gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    ) -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_gate(endpoint, gate)
     }
 
     fn new_at_endpoint_with_gate(
@@ -915,6 +926,272 @@ mod tests {
             fetch.fetch_readiness().await,
             FetchReadiness::WarmTransportToolUnknown
         );
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_search_call_crosses_gate_and_counts_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "serverInfo": {"name": "mock", "version": "1"}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "notifications/initialized"})))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [{
+                        "name": "web_search",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "objective": {"type": "string"},
+                                "search_queries": {"type": "array"}
+                            },
+                            "required": ["objective", "search_queries"]
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {"results": {"type": "array"}}
+                        }
+                    }]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "structuredContent": {
+                        "results": [{
+                            "title": "Example",
+                            "url": "https://example.com/",
+                            "excerpts": ["example result"]
+                        }]
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-search-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let search = RemoteSearchAdapter::parallel(client);
+        let result = search
+            .search_attempt_with_diagnostics(
+                &SearchQuery {
+                    query: "managed fetch gate".to_owned(),
+                    count: 1,
+                },
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("remote search");
+
+        assert_eq!(result.result.hits.len(), 1);
+        assert_eq!(gate.actual_calls(), 1);
+        assert_eq!(gate.search_calls(), 1);
+        assert_eq!(gate.fetch_calls(), 0);
+        assert_eq!(gate.recovery_calls(), 0);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_search_warmup_and_fetch_share_one_gate_and_peer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "serverInfo": {"name": "mock", "version": "1"}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "notifications/initialized"})))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [
+                        {
+                            "name": "web_search",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "objective": {"type": "string"},
+                                    "search_queries": {"type": "array"}
+                                },
+                                "required": ["objective", "search_queries"]
+                            },
+                            "outputSchema": {
+                                "type": "object",
+                                "properties": {"results": {"type": "array"}}
+                            }
+                        },
+                        {
+                            "name": "web_fetch",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"urls": {"type": "array"}},
+                                "required": ["urls"]
+                            },
+                            "outputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "results": {"type": "array"},
+                                    "errors": {"type": "array"}
+                                }
+                            }
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({
+                "method": "tools/call",
+                "params": {"name": "web_search"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "structuredContent": {
+                        "results": [{
+                            "title": "Example",
+                            "url": "https://example.com/",
+                            "excerpts": ["example result"]
+                        }]
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({
+                "method": "tools/call",
+                "params": {"name": "web_fetch"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {
+                    "structuredContent": {
+                        "results": [{
+                            "url": "https://example.com/",
+                            "title": "Example",
+                            "full_content": "# Example\n\nManaged fetch gate"
+                        }],
+                        "errors": []
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-search-warm-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaGate::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallGate>),
+            )
+            .expect("offline construction"),
+        );
+        let search = RemoteSearchAdapter::parallel(Arc::clone(&client));
+        search
+            .search_attempt_with_diagnostics(
+                &SearchQuery {
+                    query: "managed fetch gate".to_owned(),
+                    count: 1,
+                },
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("search warmup");
+        let fetch = ParallelFetchAdapter::new(client);
+        let request = crate::managed::fetch::RemoteExtractRequest {
+            items: vec![
+                crate::managed::fetch::RemoteExtractRequestItem::new(
+                    0,
+                    "https://example.com/".to_owned(),
+                    false,
+                )
+                .expect("public fetch request"),
+            ],
+        };
+        let batch = fetch
+            .extract_batch(request, Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("fetch after search warmup");
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(gate.actual_calls(), 2);
+        assert_eq!(gate.search_calls(), 1);
+        assert_eq!(gate.fetch_calls(), 1);
+        assert_eq!(gate.recovery_calls(), 0);
+        let _ = std::fs::remove_file(quota_path);
     }
 
     #[tokio::test]

@@ -18,11 +18,12 @@ use chrono::Utc;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tempfile::NamedTempFile;
 use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::{
-    CaseCategory, EvaluationBackend, EvaluationBackendFactory, EvaluationCallGate,
+    CaseCategory, EvaluationBackend, EvaluationBackendFactory,
     EvaluationMode, EvaluationProfile, FetchEvaluationCase, FetchEvaluationHarness,
     FetchEvaluationManifest, FetchEvaluationResult, PeerMode, QualityGrade,
     EVALUATION_SCORING_VERSION,
@@ -47,8 +48,6 @@ pub const SCORING_VERSION: &str = EVALUATION_SCORING_VERSION;
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    pub git_sha: Option<String>,
-    pub allow_dirty: bool,
     pub mode: EvaluationMode,
     pub peer_mode: PeerMode,
     pub profile: EvaluationProfile,
@@ -65,11 +64,19 @@ pub struct RunConfig {
     pub status: Option<PathBuf>,
 }
 
+#[derive(Debug, Default, Clone)]
+pub(crate) struct TestRunMetadata {
+    pub(crate) git_sha: Option<String>,
+    pub(crate) allow_dirty: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunStatus {
     pub schema_version: u32,
     pub scoring_version: String,
+    #[serde(default = "default_diagnostic_profile")]
+    pub evaluation_profile: EvaluationProfile,
     pub run_id: String,
     pub git_sha: String,
     pub corpus_version: String,
@@ -107,7 +114,10 @@ pub struct SafetyReport {
     pub run_id: String,
     pub git_sha: String,
     pub corpus_version: String,
+    #[serde(default = "default_diagnostic_profile")]
     pub evaluation_profile: EvaluationProfile,
+    #[serde(default)]
+    pub dirty_worktree: bool,
     pub actual_remote_calls: u32,
     pub actual_fetch_calls: u32,
     pub actual_search_calls: u32,
@@ -117,9 +127,15 @@ pub struct SafetyReport {
     pub sensitive_egress_count: usize,
     pub retry_limit_violation_count: usize,
     pub cancellation_late_result_count: usize,
+    #[serde(default)]
+    pub cancellation_events_observed: usize,
     pub stop_reason: String,
     pub complete: bool,
     pub all_zero: bool,
+}
+
+fn default_diagnostic_profile() -> EvaluationProfile {
+    EvaluationProfile::Diagnostic
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -135,6 +151,12 @@ struct GateState {
     stop_reason: Option<String>,
     retry_after_ms: Option<u64>,
     cooldown_until_unix: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuotaLedgerError {
+    Exhausted,
+    Io,
 }
 
 /// A process-safe daily quota gate. It is called immediately before the
@@ -264,10 +286,10 @@ impl ManagedMcpCallGate for FileQuotaGate {
                 .cooldown_until_unix
                 .is_some_and(|until| until > now)
             {
-                return Err(RemoteExtractError::QuotaExhausted);
+                return Err(QuotaLedgerError::Exhausted);
             }
             if ledger.used_calls >= self.daily_cap {
-                return Err(RemoteExtractError::QuotaExhausted);
+                return Err(QuotaLedgerError::Exhausted);
             }
             ledger.used_calls = ledger.used_calls.saturating_add(1);
             Ok(())
@@ -288,8 +310,10 @@ impl ManagedMcpCallGate for FileQuotaGate {
                 }
                 Ok(())
             }
-            Err(RemoteExtractError::QuotaExhausted) => {
-                self.set_stop("quota_exhausted");
+            Err(QuotaLedgerError::Exhausted) => {
+                if self.state().0.as_deref() != Some("rate_limited") {
+                    self.set_stop("quota_exhausted");
+                }
                 Err(ManagedMcpCallError::QuotaExhausted)
             }
             Err(_) => {
@@ -317,6 +341,13 @@ impl ManagedMcpCallGate for FileQuotaGate {
 }
 
 fn safe_fetch_arguments(arguments: &Value) -> bool {
+    let Some(object) = arguments.as_object() else {
+        return false;
+    };
+    let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if keys != BTreeSet::from(["full_content", "urls"]) {
+        return false;
+    }
     if arguments
         .get("full_content")
         .and_then(Value::as_bool)
@@ -340,61 +371,22 @@ fn safe_fetch_arguments(arguments: &Value) -> bool {
         })
 }
 
-#[async_trait]
-impl EvaluationCallGate for FileQuotaGate {
-    async fn acquire(&self) -> Result<(), RemoteExtractError> {
-        if self.run_calls.load(Ordering::SeqCst) >= self.max_calls {
-            self.set_stop("quota_exhausted");
-            return Err(RemoteExtractError::QuotaExhausted);
-        }
-        let now = Utc::now().timestamp();
-        let daily_cap = self.daily_cap;
-        update_ledger(&self.path, daily_cap, |ledger| {
-            if ledger
-                .cooldown_until_unix
-                .is_some_and(|until| until > now)
-            {
-                return Err(RemoteExtractError::QuotaExhausted);
-            }
-            if ledger.used_calls >= daily_cap {
-                return Err(RemoteExtractError::QuotaExhausted);
-            }
-            ledger.used_calls = ledger.used_calls.saturating_add(1);
-            Ok(())
-        })
-        .map_err(|error| {
-            if matches!(error, RemoteExtractError::QuotaExhausted) {
-                self.set_stop("quota_exhausted");
-            }
-            error
-        })?;
-        self.run_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn observe(&self, result: &Result<RemoteExtractBatch, RemoteExtractError>) {
-        if let Err(RemoteExtractError::RateLimited(retry_after)) = result {
-            self.record_rate_limit(*retry_after);
-        }
-    }
-}
-
 fn update_ledger<T>(
     path: &Path,
     daily_cap: u32,
-    update: impl FnOnce(&mut QuotaLedger) -> Result<T, RemoteExtractError>,
-) -> Result<T, RemoteExtractError> {
+    update: impl FnOnce(&mut QuotaLedger) -> Result<T, QuotaLedgerError>,
+) -> Result<T, QuotaLedgerError> {
     if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|_| RemoteExtractError::Upstream)?;
+        fs::create_dir_all(parent).map_err(|_| QuotaLedgerError::Io)?;
     }
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(path)
-        .map_err(|_| RemoteExtractError::Upstream)?;
+        .map_err(|_| QuotaLedgerError::Io)?;
     file.lock_exclusive()
-        .map_err(|_| RemoteExtractError::Upstream)?;
+        .map_err(|_| QuotaLedgerError::Io)?;
     let result = (|| {
         let mut ledger = read_locked_ledger(&mut file)?;
         let today = Utc::now().date_naive().to_string();
@@ -407,47 +399,57 @@ fn update_ledger<T>(
         }
         let output = update(&mut ledger)?;
         if ledger.used_calls > daily_cap {
-            return Err(RemoteExtractError::QuotaExhausted);
+            return Err(QuotaLedgerError::Exhausted);
         }
         file.seek(SeekFrom::Start(0))
-            .map_err(|_| RemoteExtractError::Upstream)?;
+            .map_err(|_| QuotaLedgerError::Io)?;
         file.set_len(0)
-            .map_err(|_| RemoteExtractError::Upstream)?;
+            .map_err(|_| QuotaLedgerError::Io)?;
         serde_json::to_writer(&mut file, &ledger)
-            .map_err(|_| RemoteExtractError::Upstream)?;
-        file.flush().map_err(|_| RemoteExtractError::Upstream)?;
+            .map_err(|_| QuotaLedgerError::Io)?;
+        file.flush().map_err(|_| QuotaLedgerError::Io)?;
         Ok(output)
     })();
     let _ = file.unlock();
     result
 }
 
-fn read_locked_ledger(file: &mut File) -> Result<QuotaLedger, RemoteExtractError> {
+fn read_locked_ledger(file: &mut File) -> Result<QuotaLedger, QuotaLedgerError> {
     file.seek(SeekFrom::Start(0))
-        .map_err(|_| RemoteExtractError::Upstream)?;
+        .map_err(|_| QuotaLedgerError::Io)?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(file, &mut bytes)
-        .map_err(|_| RemoteExtractError::Upstream)?;
+        .map_err(|_| QuotaLedgerError::Io)?;
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(QuotaLedger::default());
     }
-    serde_json::from_slice(&bytes).map_err(|_| RemoteExtractError::Upstream)
+    serde_json::from_slice(&bytes).map_err(|_| QuotaLedgerError::Io)
 }
 
 pub async fn run(config: RunConfig) -> Result<RunOutcome, Box<dyn std::error::Error>> {
-    run_inner(&config, None).await
+    run_inner(&config, None, None).await
 }
 
+#[allow(dead_code)]
 pub(crate) async fn run_with_factory(
     config: RunConfig,
     factory: Arc<dyn EvaluationBackendFactory>,
 ) -> Result<RunOutcome, Box<dyn std::error::Error>> {
-    run_inner(&config, Some(factory)).await
+    run_inner(
+        &config,
+        Some(factory),
+        Some(TestRunMetadata {
+            git_sha: Some("test-sha".to_owned()),
+            allow_dirty: true,
+        }),
+    )
+    .await
 }
 
 async fn run_inner(
     config: &RunConfig,
     injected_factory: Option<Arc<dyn EvaluationBackendFactory>>,
+    test_metadata: Option<TestRunMetadata>,
 ) -> Result<RunOutcome, Box<dyn std::error::Error>> {
     validate_run_config(&config)?;
     let manifest: FetchEvaluationManifest = read_json(&config.manifest)?;
@@ -464,12 +466,15 @@ async fn run_inner(
     }
 
     let dirty_worktree = git_worktree_is_dirty()?;
-    if dirty_worktree && !config.allow_dirty {
-        return Err("worktree is dirty; use --allow-dirty only for non-admission diagnostics".into());
+    let test_metadata = test_metadata.unwrap_or_default();
+    if dirty_worktree && config.profile == EvaluationProfile::Admission {
+        return Err("Admission evidence requires a clean worktree".into());
     }
-    let git_sha = config
+    if dirty_worktree && !test_metadata.allow_dirty {
+        return Err("worktree is dirty; only internal diagnostic tests may allow dirty evidence".into());
+    }
+    let git_sha = test_metadata
         .git_sha
-        .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(read_git_sha()?);
     let run_id = Uuid::now_v7().to_string();
@@ -481,8 +486,9 @@ async fn run_inner(
     let output_file = create_new_output(&config.output)?;
     let mut writer = BufWriter::new(output_file);
     let mut status = RunStatus {
-        schema_version: 2,
+        schema_version: 3,
         scoring_version: SCORING_VERSION.to_owned(),
+        evaluation_profile: config.profile,
         run_id: run_id.clone(),
         git_sha: git_sha.clone(),
         corpus_version: manifest.corpus_version.clone(),
@@ -507,12 +513,13 @@ async fn run_inner(
     write_safety_report(
         &safety_path,
         &SafetyReport {
-            schema_version: 1,
+            schema_version: 2,
             scoring_version: SCORING_VERSION.to_owned(),
             run_id: run_id.clone(),
             git_sha: git_sha.clone(),
             corpus_version: manifest.corpus_version.clone(),
             evaluation_profile: config.profile,
+            dirty_worktree,
             actual_remote_calls: 0,
             actual_fetch_calls: 0,
             actual_search_calls: 0,
@@ -522,6 +529,7 @@ async fn run_inner(
             sensitive_egress_count: 0,
             retry_limit_violation_count: 0,
             cancellation_late_result_count: 0,
+            cancellation_events_observed: 0,
             stop_reason: "running".to_owned(),
             complete: false,
             all_zero: false,
@@ -537,8 +545,11 @@ async fn run_inner(
             config.max_calls,
         )))
     };
+    let harness_gate = gate
+        .as_ref()
+        .map(|value| Arc::clone(value) as Arc<dyn ManagedMcpCallGate>);
     let harness = match injected_factory {
-        Some(factory) => FetchEvaluationHarness::from_factory(factory),
+        Some(factory) => FetchEvaluationHarness::from_factory_with_gate(factory, harness_gate),
         None => match gate.as_ref() {
             Some(gate) => FetchEvaluationHarness::keyless_production_with_call_gate(
                 Arc::clone(gate) as Arc<dyn ManagedMcpCallGate>,
@@ -554,12 +565,13 @@ async fn run_inner(
             let _ = write_safety_report(
                 &safety_path,
                 &SafetyReport {
-                    schema_version: 1,
+                    schema_version: 2,
                     scoring_version: SCORING_VERSION.to_owned(),
                     run_id,
                     git_sha,
                     corpus_version: manifest.corpus_version,
                     evaluation_profile: config.profile,
+                    dirty_worktree,
                     actual_remote_calls: 0,
                     actual_fetch_calls: 0,
                     actual_search_calls: 0,
@@ -569,6 +581,7 @@ async fn run_inner(
                     sensitive_egress_count: 0,
                     retry_limit_violation_count: 0,
                     cancellation_late_result_count: 0,
+                    cancellation_events_observed: 0,
                     stop_reason: status.stop_reason.clone(),
                     complete: true,
                     all_zero: false,
@@ -649,6 +662,15 @@ async fn run_inner(
                 status.stop_reason = "safety_violation".to_owned();
                 break 'cases;
             }
+            if let Some(gate) = gate.as_ref()
+                && matches!(
+                    gate.state().0.as_deref(),
+                    Some("quota_ledger_failed" | "quota_exhausted" | "rate_limited")
+                )
+            {
+                status.stop_reason = gate.state().0.unwrap_or_default();
+                break 'cases;
+            }
             match result.error_class.as_deref() {
                 Some("rate_limited") => {
                     status.stop_reason = "rate_limited".to_owned();
@@ -688,13 +710,15 @@ async fn run_inner(
         }
     }
     write_status(&status_path, &status)?;
+    let cancellation_late_result_count = 0usize;
     let safety = SafetyReport {
-        schema_version: 1,
+        schema_version: 2,
         scoring_version: SCORING_VERSION.to_owned(),
         run_id: run_id.clone(),
         git_sha: git_sha.clone(),
         corpus_version: manifest.corpus_version.clone(),
         evaluation_profile: config.profile,
+        dirty_worktree,
         actual_remote_calls: status.actual_remote_calls,
         actual_fetch_calls: status.actual_fetch_calls,
         actual_search_calls: status.actual_search_calls,
@@ -703,13 +727,15 @@ async fn run_inner(
         dropped_remote_item_count,
         sensitive_egress_count: status.sensitive_egress_count,
         retry_limit_violation_count: status.retry_limit_violation_count,
-        cancellation_late_result_count: 0,
+        cancellation_late_result_count,
+        cancellation_events_observed: 0,
         stop_reason: status.stop_reason.clone(),
         complete: true,
         all_zero: source_mismatch_count == 0
             && dropped_remote_item_count == 0
             && status.sensitive_egress_count == 0
-            && status.retry_limit_violation_count == 0,
+            && status.retry_limit_violation_count == 0
+            && cancellation_late_result_count == 0,
     };
     write_safety_report(&safety_path, &safety)?;
     harness.shutdown().await;
@@ -786,21 +812,29 @@ fn default_safety_path(output: &Path) -> PathBuf {
 }
 
 fn write_status(path: &Path, status: &RunStatus) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_vec_pretty(status)?)?;
-    Ok(())
+    atomic_json_write(path, status)
 }
 
 fn write_safety_report(
     path: &Path,
     report: &SafetyReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    atomic_json_write(path, report)
+}
+
+fn atomic_json_write<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_vec_pretty(report)?)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp = NamedTempFile::new_in(parent)?;
+    serde_json::to_writer_pretty(temp.as_file_mut(), value)?;
+    temp.as_file_mut().flush()?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -829,7 +863,14 @@ fn git_worktree_is_dirty() -> Result<bool, Box<dyn std::error::Error>> {
 #[derive(Debug, Serialize)]
 pub struct EvaluationSummary {
     pub schema_version: u32,
+    pub result_schema_version: u32,
     pub scoring_version: String,
+    pub evaluation_profile: EvaluationProfile,
+    pub corpus_version: String,
+    pub dirty_worktree: bool,
+    pub evidence_complete: bool,
+    pub decision_reason: String,
+    pub legacy_evidence: bool,
     pub record_count: usize,
     pub independent_case_count: usize,
     pub run_ids: Vec<String>,
@@ -851,7 +892,9 @@ pub struct SafetySummary {
     pub retry_limit_violation_count: usize,
     pub cancellation_late_result_count: usize,
     pub report_present: bool,
+    pub complete: bool,
     pub all_zero: bool,
+    pub legacy_evidence: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -905,7 +948,7 @@ pub fn summarize_with_evidence(
         return Err("at least one JSONL input is required".into());
     }
     let mut results = Vec::new();
-    let mut legacy_schema = false;
+    let mut result_schema_versions = BTreeSet::new();
     for input in inputs {
         let file = File::open(input)?;
         for line in BufReader::new(file).lines() {
@@ -918,8 +961,8 @@ pub fn summarize_with_evidence(
                 .get("schema_version")
                 .and_then(Value::as_u64)
                 .ok_or("evaluation result has no schema_version")?;
+            result_schema_versions.insert(schema_version);
             if schema_version == 2 {
-                legacy_schema = true;
                 let object = value
                     .as_object_mut()
                     .ok_or("evaluation result must be a JSON object")?;
@@ -942,6 +985,15 @@ pub fn summarize_with_evidence(
     if results.is_empty() {
         return Err("input contains no evaluation results".into());
     }
+    if result_schema_versions.len() != 1
+        || !result_schema_versions
+            .iter()
+            .all(|schema| *schema == 2 || *schema == 3)
+    {
+        return Err("cannot summarize mixed or unsupported result schemas".into());
+    }
+    let legacy_schema = result_schema_versions.contains(&2);
+    let result_schema_version = *result_schema_versions.iter().next().unwrap_or(&3) as u32;
     let corpus_versions = results
         .iter()
         .map(|result| result.corpus_version.as_str())
@@ -974,28 +1026,85 @@ pub fn summarize_with_evidence(
     let safety_paths = resolve_evidence_paths(inputs, safety_paths, default_safety_path);
     let statuses = status_paths
         .iter()
+        .filter(|path| path.exists())
         .map(|path| read_json::<RunStatus>(path))
         .collect::<Result<Vec<_>, _>>()?;
     let reports = safety_paths
         .iter()
+        .filter(|path| path.exists())
         .map(|path| read_json::<SafetyReport>(path))
         .collect::<Result<Vec<_>, _>>()?;
-    for report in &reports {
-        if report.scoring_version != results[0].scoring_version
-            || report.corpus_version != results[0].corpus_version
-            || !result_run_ids.contains(report.run_id.as_str())
-        {
-            return Err("safety report provenance does not match evaluation results".into());
-        }
-    }
+    let mut status_runs = BTreeSet::new();
+    let mut report_runs = BTreeSet::new();
+    let mut legacy_evidence = legacy_schema;
+    let mut provenance_consistent = true;
+    let mut counter_consistent = true;
     for status in &statuses {
-        if status.scoring_version != results[0].scoring_version
-            || status.corpus_version != results[0].corpus_version
-            || !result_run_ids.contains(status.run_id.as_str())
-        {
+        if !status_runs.insert(status.run_id.as_str()) {
+            return Err("multiple status evidence files exist for one run".into());
+        }
+        if !result_run_ids.contains(status.run_id.as_str()) {
             return Err("status provenance does not match evaluation results".into());
         }
+        legacy_evidence |= status.schema_version != 3;
+        if status.schema_version == 3 {
+            provenance_consistent &= status.scoring_version == results[0].scoring_version
+                && status.corpus_version == results[0].corpus_version
+                && status.evaluation_profile == results[0].evaluation_profile
+                && status.git_sha == results[0].git_sha;
+        }
+        counter_consistent &= status.actual_remote_calls
+            == status.actual_fetch_calls.saturating_add(status.actual_search_calls);
     }
+    for report in &reports {
+        if !report_runs.insert(report.run_id.as_str()) {
+            return Err("multiple safety evidence files exist for one run".into());
+        }
+        if !result_run_ids.contains(report.run_id.as_str()) {
+            return Err("safety report provenance does not match evaluation results".into());
+        }
+        legacy_evidence |= report.schema_version != 2;
+        if report.schema_version == 2 {
+            provenance_consistent &= report.scoring_version == results[0].scoring_version
+                && report.corpus_version == results[0].corpus_version
+                && report.evaluation_profile == results[0].evaluation_profile
+                && report.git_sha == results[0].git_sha;
+        }
+        counter_consistent &= report.actual_remote_calls
+            == report.actual_fetch_calls.saturating_add(report.actual_search_calls);
+        if let Some(status) = statuses.iter().find(|status| status.run_id == report.run_id) {
+            counter_consistent &= status.actual_remote_calls == report.actual_remote_calls
+                && status.actual_fetch_calls == report.actual_fetch_calls
+                && status.actual_search_calls == report.actual_search_calls
+                && status.recovery_retry_calls == report.recovery_retry_calls;
+            provenance_consistent &= status.dirty_worktree == report.dirty_worktree;
+            counter_consistent &= status.stop_reason == report.stop_reason;
+        } else {
+            counter_consistent = false;
+        }
+    }
+    let all_status_runs = status_runs == result_run_ids;
+    let all_report_runs = report_runs == result_run_ids;
+    let status_complete = all_status_runs
+        && statuses.iter().all(|status| {
+            status.schema_version == 3
+                && status.stop_reason != "running"
+                && (matches!(
+                    status.stop_reason.as_str(),
+                    "quota_exhausted" | "rate_limited"
+                ) || status.completed_attempts == status.planned_attempts)
+        });
+    let reports_complete = all_report_runs && reports.iter().all(|report| {
+        report.schema_version == 2 && report.complete && report.stop_reason != "running"
+    });
+    let report_zero_consistent = reports.iter().all(|report| {
+        let computed = report.source_mismatch_count == 0
+            && report.dropped_remote_item_count == 0
+            && report.sensitive_egress_count == 0
+            && report.retry_limit_violation_count == 0
+            && report.cancellation_late_result_count == 0;
+        report.all_zero == computed
+    });
     let mut safety = SafetySummary {
         actual_remote_calls: reports.iter().map(|report| report.actual_remote_calls).sum(),
         actual_fetch_calls: reports.iter().map(|report| report.actual_fetch_calls).sum(),
@@ -1030,24 +1139,28 @@ pub fn summarize_with_evidence(
             .iter()
             .map(|report| report.cancellation_late_result_count)
             .sum();
-        safety.report_present = reports
-            .iter()
-            .map(|report| report.run_id.as_str())
-            .collect::<BTreeSet<_>>()
-            == result_run_ids;
+        safety.report_present = all_report_runs;
     }
-    safety.all_zero = safety.report_present
+    safety.complete = reports_complete
+        && status_complete
+        && provenance_consistent
+        && counter_consistent
+        && report_zero_consistent;
+    safety.legacy_evidence = legacy_evidence;
+    safety.all_zero = safety.complete
+        && !legacy_evidence
         && safety.source_mismatch_count == 0
         && safety.dropped_remote_item_count == 0
         && safety.sensitive_egress_count == 0
         && safety.retry_limit_violation_count == 0
         && safety.cancellation_late_result_count == 0;
-    let safety_evidence_present = safety.report_present
-        || safety.source_mismatch_count > 0
+    let safety_violation = safety.source_mismatch_count > 0
         || safety.dropped_remote_item_count > 0
         || safety.sensitive_egress_count > 0
         || safety.retry_limit_violation_count > 0
-        || safety.cancellation_late_result_count > 0;
+        || safety.cancellation_late_result_count > 0
+        || (safety.report_present && reports_complete && !report_zero_consistent);
+    let safety_evidence_present = safety.report_present && reports_complete;
 
     let mut outcome_counts = BTreeMap::new();
     let mut groups: BTreeMap<String, Vec<&FetchEvaluationResult>> = BTreeMap::new();
@@ -1075,17 +1188,29 @@ pub fn summarize_with_evidence(
             )
         })
         .collect::<Vec<_>>();
-    if profiles
-        .iter()
-        .any(|profile| *profile != EvaluationProfile::Admission)
-        || legacy_schema
+    if profiles.iter().any(|profile| *profile != EvaluationProfile::Admission)
+        || legacy_evidence
+        || !safety.complete
+        || safety_violation
     {
         for category in &mut categories {
-            if category.decision == "candidate_for_enablement" {
+            if safety_violation {
+                category.decision = "reject".to_owned();
+            } else if stopped_for_quota {
+                category.decision = "inconclusive_due_to_quota".to_owned();
+            } else if !safety.complete || legacy_evidence {
+                category.decision = "insufficient_evidence".to_owned();
+            } else if category.decision == "candidate_for_enablement" {
                 category.decision = "retain_experimental".to_owned();
             }
             for point in &mut category.threshold_sensitivity {
-                if point.decision == "candidate_for_enablement" {
+                if safety_violation {
+                    point.decision = "reject".to_owned();
+                } else if stopped_for_quota {
+                    point.decision = "inconclusive_due_to_quota".to_owned();
+                } else if !safety.complete || legacy_evidence {
+                    point.decision = "insufficient_evidence".to_owned();
+                } else if point.decision == "candidate_for_enablement" {
                     point.decision = "retain_experimental".to_owned();
                 }
             }
@@ -1094,9 +1219,51 @@ pub fn summarize_with_evidence(
     if profiles.contains(&EvaluationProfile::Admission) {
         validate_admission_composition(&results)?;
     }
+    let dirty_worktree = statuses.iter().any(|status| status.dirty_worktree)
+        || reports.iter().any(|report| report.dirty_worktree);
+    if profiles.contains(&EvaluationProfile::Admission) && dirty_worktree {
+        for category in &mut categories {
+            category.decision = "reject".to_owned();
+            for point in &mut category.threshold_sensitivity {
+                point.decision = "reject".to_owned();
+            }
+        }
+    }
+    let evidence_complete = !legacy_evidence
+        && status_complete
+        && reports_complete
+        && provenance_consistent
+        && counter_consistent
+        && report_zero_consistent
+        && (!profiles.contains(&EvaluationProfile::Admission) || !dirty_worktree);
+    let decision_reason = if safety_violation {
+        "safety_violation"
+    } else if profiles.contains(&EvaluationProfile::Admission) && dirty_worktree {
+        "dirty_admission"
+    } else if stopped_for_quota {
+        "quota_or_rate_limit"
+    } else if !evidence_complete {
+        "incomplete_run"
+    } else if legacy_evidence {
+        "legacy_evidence"
+    } else if profiles.contains(&EvaluationProfile::Preflight) {
+        "preflight_never_candidate"
+    } else if !profiles.contains(&EvaluationProfile::Admission) {
+        "diagnostic_profile"
+    } else {
+        "complete"
+    }
+    .to_owned();
     let summary = EvaluationSummary {
-        schema_version: 1,
-        scoring_version: SCORING_VERSION.to_owned(),
+        schema_version: 2,
+        result_schema_version,
+        scoring_version: results[0].scoring_version.clone(),
+        evaluation_profile: results[0].evaluation_profile,
+        corpus_version: results[0].corpus_version.clone(),
+        dirty_worktree,
+        evidence_complete,
+        decision_reason,
+        legacy_evidence,
         record_count: results.len(),
         independent_case_count: results
             .iter()
@@ -1122,7 +1289,7 @@ pub fn summarize_with_evidence(
     if let Some(parent) = output.parent().filter(|value| !value.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
-    fs::write(output, serde_json::to_vec_pretty(&summary)?)?;
+    atomic_json_write(output, &summary)?;
     Ok(summary)
 }
 
@@ -1131,37 +1298,76 @@ fn resolve_evidence_paths(
     explicit: &[PathBuf],
     derive: fn(&Path) -> PathBuf,
 ) -> Vec<PathBuf> {
-    if !explicit.is_empty() {
-        return explicit.to_vec();
-    }
-    inputs
-        .iter()
-        .map(|input| derive(input))
-        .filter(|path| path.exists())
+    let candidates = if !explicit.is_empty() {
+        explicit.to_vec()
+    } else {
+        inputs.iter().map(|input| derive(input)).collect()
+    };
+    let mut seen = BTreeSet::new();
+    candidates
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
         .collect()
 }
 
 fn validate_admission_composition(
     results: &[FetchEvaluationResult],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut phases: BTreeMap<(&str, &str), (usize, usize, BTreeSet<&str>)> = BTreeMap::new();
+    let mut cases: BTreeMap<&str, Vec<&FetchEvaluationResult>> = BTreeMap::new();
     for result in results {
-        let entry = phases
-            .entry((result.run_id.as_str(), result.case_id.as_str()))
-            .or_default();
-        match (result.mode, result.peer_mode) {
-            (EvaluationMode::Compare, PeerMode::Cold) => entry.0 += 1,
-            (EvaluationMode::E2e, PeerMode::Warm) => entry.1 += 1,
-            _ => {}
-        }
-        entry.2.insert(result.git_sha.as_str());
+        cases.entry(result.case_id.as_str()).or_default().push(result);
     }
-    for ((_, case_id), (cold, warm, shas)) in phases {
-        if cold > 1 || warm > 2 || shas.len() > 1 {
+    for (case_id, records) in cases {
+        if records.len() != 3 {
             return Err(format!(
-                "duplicate or mixed admission phase for case {case_id}"
+                "Admission case {case_id} must contain exactly one triple"
             )
             .into());
+        }
+        let run_ids = records
+            .iter()
+            .map(|record| record.run_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let git_shas = records
+            .iter()
+            .map(|record| record.git_sha.as_str())
+            .collect::<BTreeSet<_>>();
+        let categories = records.iter().map(|record| record.category).collect::<BTreeSet<_>>();
+        let corpora = records
+            .iter()
+            .map(|record| record.corpus_version.as_str())
+            .collect::<BTreeSet<_>>();
+        let profiles = records
+            .iter()
+            .map(|record| record.evaluation_profile)
+            .collect::<BTreeSet<_>>();
+        if run_ids.len() != 1
+            || git_shas.len() != 1
+            || categories.len() != 1
+            || corpora.len() != 1
+            || profiles != BTreeSet::from([EvaluationProfile::Admission])
+        {
+            return Err(format!("Admission case {case_id} has mixed provenance").into());
+        }
+        let mut by_attempt = BTreeMap::new();
+        for record in records {
+            if by_attempt.insert(record.attempt, record).is_some() {
+                return Err(format!("Admission case {case_id} has duplicate attempt").into());
+            }
+        }
+        let expected = [
+            (1, EvaluationMode::Compare, PeerMode::Cold),
+            (2, EvaluationMode::E2e, PeerMode::Warm),
+            (3, EvaluationMode::E2e, PeerMode::Warm),
+        ];
+        if by_attempt.len() != expected.len()
+            || expected.iter().any(|(attempt, mode, peer_mode)| {
+                by_attempt
+                    .get(attempt)
+                    .is_none_or(|record| record.mode != *mode || record.peer_mode != *peer_mode)
+            })
+        {
+            return Err(format!("Admission case {case_id} has invalid phase or attempt").into());
         }
     }
     Ok(())
@@ -1501,7 +1707,6 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
     let counters = Arc::new(DemoCounters::default());
     let factory = Arc::new(DemoBackendFactory {
         counters: Arc::clone(&counters),
-        gate: None,
     });
     let harness = FetchEvaluationHarness::from_factory(factory)?;
     let readiness_checked = matches!(
@@ -1640,9 +1845,11 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
     let rate_gate = Arc::new(FileQuotaGate::new(rate_quota_path.clone(), 60, 10));
     let rate_factory = Arc::new(DemoBackendFactory {
         counters: Arc::clone(&counters),
-        gate: Some(Arc::clone(&rate_gate) as Arc<dyn EvaluationCallGate>),
     });
-    let rate_harness = FetchEvaluationHarness::from_factory(rate_factory)?;
+    let rate_harness = FetchEvaluationHarness::from_factory_with_gate(
+        rate_factory,
+        Some(Arc::clone(&rate_gate) as Arc<dyn ManagedMcpCallGate>),
+    )?;
     let rate_case = demo_case("https://demo.invalid/rate");
     let rate_first = rate_harness
         .run_case_with_metadata(
@@ -1654,7 +1861,7 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
             1,
         )
         .await;
-    let rate_second = rate_harness
+    let _rate_second = rate_harness
         .run_case_with_metadata(
             &rate_case,
             EvaluationMode::Compare,
@@ -1668,7 +1875,7 @@ pub async fn run_demo(output: &Path) -> Result<DemoReport, Box<dyn std::error::E
     let _ = fs::remove_file(rate_quota_path);
     let rate_limit_calls_before_stop = counters.rate_calls.load(Ordering::SeqCst);
     let rate_limit_stop_verified = rate_first.error_class.as_deref() == Some("rate_limited")
-        && rate_second.error_class.as_deref() == Some("quota_exhausted")
+        && rate_gate.state().0.as_deref() == Some("rate_limited")
         && rate_limit_calls_before_stop == 1;
 
     let report = DemoReport {
@@ -1722,7 +1929,6 @@ struct DemoCounters {
 
 struct DemoBackendFactory {
     counters: Arc<DemoCounters>,
-    gate: Option<Arc<dyn EvaluationCallGate>>,
 }
 
 struct DemoBackend {
@@ -1735,17 +1941,20 @@ struct DemoLocal;
 
 struct DemoRemote {
     counters: Arc<DemoCounters>,
-    gate: Option<Arc<dyn EvaluationCallGate>>,
+    gate: Option<Arc<dyn ManagedMcpCallGate>>,
 }
 
 impl EvaluationBackendFactory for DemoBackendFactory {
-    fn create(&self) -> Result<Arc<dyn EvaluationBackend>, WebError> {
+    fn create(
+        &self,
+        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    ) -> Result<Arc<dyn EvaluationBackend>, WebError> {
         self.counters.factory_creations.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(DemoBackend {
             local: Arc::new(DemoLocal),
             remote: Arc::new(DemoRemote {
                 counters: Arc::clone(&self.counters),
-                gate: self.gate.clone(),
+                gate: call_gate,
             }),
             counters: Arc::clone(&self.counters),
         }))
@@ -1841,11 +2050,32 @@ impl RemoteExtractFallback for DemoRemote {
         _deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError> {
         if let Some(gate) = &self.gate {
-            gate.acquire().await?;
+            let arguments = serde_json::json!({
+                "urls": [request.items.first().map(RemoteExtractRequestItem::requested_url).unwrap_or_default()],
+                "full_content": false,
+            });
+            gate.before_call(ManagedMcpTool::Fetch, &arguments, 1)
+                .await
+                .map_err(|error| match error {
+                    ManagedMcpCallError::QuotaExhausted => RemoteExtractError::Upstream,
+                    ManagedMcpCallError::UnsafeArguments
+                    | ManagedMcpCallError::RetryLimitExceeded
+                    | ManagedMcpCallError::LedgerFailure => RemoteExtractError::Upstream,
+                    ManagedMcpCallError::Peer(_) => RemoteExtractError::Upstream,
+                })?;
         }
         let result = self.extract_batch_inner(request);
         if let Some(gate) = &self.gate {
-            gate.observe(&result);
+            if matches!(result, Err(RemoteExtractError::RateLimited(_))) {
+                gate.observe(
+                    ManagedMcpTool::Fetch,
+                    1,
+                    &Err(nomi_mcp::remote_peer::McpPeerError::Http {
+                        status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                        retry_after: Some(Duration::from_millis(500)),
+                    }),
+                );
+            }
         }
         result
     }
@@ -1930,9 +2160,540 @@ fn demo_case(url: &str) -> FetchEvaluationCase {
     }
 }
 
+/// Configuration for the resumable, multi-day public Admission campaign.
+///
+/// The campaign deliberately owns batching and provenance rather than making
+/// the CLI stitch together independent `admit` runs.  That keeps a paused
+/// batch resumable without allowing partial evidence to leak into a summary.
+#[derive(Debug, Clone)]
+pub struct CampaignConfig {
+    pub manifest: PathBuf,
+    pub tag: String,
+    pub batch_size: usize,
+    pub pacing_ms: u64,
+    pub max_calls_per_batch: u32,
+    pub daily_cap: u32,
+    pub campaign_cap: u32,
+    pub quota_path: PathBuf,
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignEvidence {
+    result_path: PathBuf,
+    status_path: PathBuf,
+    safety_path: PathBuf,
+    actual_remote_calls: u32,
+    run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignBatchStatus {
+    batch_index: usize,
+    category: String,
+    case_ids: Vec<String>,
+    state: String,
+    attempt_index: u32,
+    completed_evidence: Option<CampaignEvidence>,
+    discarded_evidence: Vec<CampaignEvidence>,
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignStatus {
+    schema_version: u32,
+    campaign_id: String,
+    scoring_version: String,
+    evaluation_profile: EvaluationProfile,
+    git_sha: String,
+    corpus_version: String,
+    tag: String,
+    batch_size: usize,
+    max_calls_per_batch: u32,
+    daily_cap: u32,
+    campaign_cap: u32,
+    actual_remote_calls: u32,
+    completed_batches: usize,
+    state: String,
+    stop_reason: Option<String>,
+    resume_at_unix: Option<i64>,
+    batches: Vec<CampaignBatchStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CampaignOutcome {
+    pub campaign_id: String,
+    pub state: String,
+    pub stop_reason: Option<String>,
+    pub resume_at_unix: Option<i64>,
+    pub actual_remote_calls: u32,
+    pub completed_batches: usize,
+    pub total_batches: usize,
+    pub summary_path: Option<PathBuf>,
+}
+
+pub struct AdmissionCampaign {
+    config: CampaignConfig,
+    status_path: PathBuf,
+    status: CampaignStatus,
+}
+
+impl AdmissionCampaign {
+    /// Open an existing campaign or create a new one.  Admission campaigns
+    /// are fail-closed: they require a clean worktree and freeze all scoring
+    /// provenance before the first external call.
+    pub fn open_or_create(config: CampaignConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        validate_campaign_config(&config)?;
+        if git_worktree_is_dirty()? {
+            return Err("Admission campaign requires a clean worktree".into());
+        }
+        let manifest: FetchEvaluationManifest = read_json(&config.manifest)?;
+        manifest.validate()?;
+        let git_sha = read_git_sha()?;
+        fs::create_dir_all(&config.output_dir)?;
+        let status_path = config.output_dir.join("campaign.status.json");
+
+        if status_path.exists() {
+            let status: CampaignStatus = read_json(&status_path)?;
+            validate_campaign_provenance(&status, &config, &manifest, &git_sha)?;
+            return Ok(Self {
+                config,
+                status_path,
+                status,
+            });
+        }
+
+        let batches = build_campaign_batches(&manifest.cases, &config.tag, config.batch_size)?;
+        if batches.is_empty() {
+            return Err("campaign selection contains no enabled, non-stale public cases".into());
+        }
+        if config.tag.starts_with("admission")
+            && let Some(reason) = admission_pool_shortage(&batches)
+        {
+            return Err(reason.into());
+        }
+        let status = CampaignStatus {
+            schema_version: 1,
+            campaign_id: Uuid::now_v7().to_string(),
+            scoring_version: SCORING_VERSION.to_owned(),
+            evaluation_profile: EvaluationProfile::Admission,
+            git_sha,
+            corpus_version: manifest.corpus_version.clone(),
+            tag: config.tag.clone(),
+            batch_size: config.batch_size,
+            max_calls_per_batch: config.max_calls_per_batch,
+            daily_cap: config.daily_cap,
+            campaign_cap: config.campaign_cap,
+            actual_remote_calls: 0,
+            completed_batches: 0,
+            state: "ready".to_owned(),
+            stop_reason: None,
+            resume_at_unix: None,
+            batches,
+        };
+        atomic_json_write_locked(&status_path, &status)?;
+        Ok(Self {
+            config,
+            status_path,
+            status,
+        })
+    }
+
+    /// Run as many complete batches as the current quota permits.  A partial
+    /// batch is retained as discarded evidence and is retried as a whole on
+    /// the next continuation, never mixed into a formal summary.
+    pub async fn run_available(
+        &mut self,
+    ) -> Result<CampaignOutcome, Box<dyn std::error::Error>> {
+        let current_sha = read_git_sha()?;
+        if git_worktree_is_dirty()? || current_sha != self.status.git_sha {
+            self.status.state = "reject".to_owned();
+            self.status.stop_reason = Some("campaign_provenance_mismatch".to_owned());
+            self.persist_status()?;
+            return Ok(self.outcome(None));
+        }
+        if self.status.state == "reject" {
+            return Ok(self.outcome(None));
+        }
+        if let Some(resume_at) = self.status.resume_at_unix
+            && Utc::now().timestamp() < resume_at
+        {
+            self.status.state = "paused_for_quota".to_owned();
+            self.persist_status()?;
+            return Ok(self.outcome(None));
+        }
+        self.status.resume_at_unix = None;
+        self.status.state = "running".to_owned();
+        self.status.stop_reason = None;
+        self.persist_status()?;
+
+        loop {
+            if self.status.actual_remote_calls >= self.config.campaign_cap {
+                self.status.state = "paused_for_quota".to_owned();
+                self.status.stop_reason = Some("campaign_cap_exhausted".to_owned());
+                self.status.resume_at_unix = Some(next_utc_midnight_unix());
+                self.persist_status()?;
+                return Ok(self.outcome(None));
+            }
+            let Some(batch_index) = self
+                .status
+                .batches
+                .iter()
+                .position(|batch| batch.state == "pending")
+            else {
+                self.status.state = "completed".to_owned();
+                self.status.stop_reason = Some("completed".to_owned());
+                self.persist_status()?;
+                return Ok(self.outcome(Some(self.summary_path())));
+            };
+            let batch = &mut self.status.batches[batch_index];
+            batch.attempt_index = batch.attempt_index.saturating_add(1);
+            let attempt = batch.attempt_index;
+            let output = self.config.output_dir.join(format!(
+                "batch-{:02}-attempt-{:02}.jsonl",
+                batch_index + 1,
+                attempt
+            ));
+            let run_config = RunConfig {
+                mode: EvaluationMode::Compare,
+                peer_mode: PeerMode::Cold,
+                profile: EvaluationProfile::Admission,
+                manifest: self.config.manifest.clone(),
+                case_ids: Some(batch.case_ids.clone()),
+                category: None,
+                tag: Some(self.config.tag.clone()),
+                repeat: 3,
+                pacing_ms: self.config.pacing_ms,
+                max_calls: self.config.max_calls_per_batch,
+                daily_cap: self.config.daily_cap,
+                quota_path: self.config.quota_path.clone(),
+                output,
+                status: None,
+            };
+            let outcome = match run(run_config).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    batch.state = "incomplete".to_owned();
+                    batch.stop_reason = Some("setup_failed".to_owned());
+                    self.status.state = "incomplete".to_owned();
+                    self.status.stop_reason = Some(format!("setup_failed: {error}"));
+                    self.persist_status()?;
+                    return Ok(self.outcome(None));
+                }
+            };
+            self.status.actual_remote_calls = self
+                .status
+                .actual_remote_calls
+                .saturating_add(outcome.status.actual_remote_calls);
+            let evidence = CampaignEvidence {
+                result_path: outcome
+                    .status_path
+                    .with_extension("jsonl"),
+                status_path: outcome.status_path.clone(),
+                safety_path: outcome.safety_path.clone(),
+                actual_remote_calls: outcome.status.actual_remote_calls,
+                run_id: outcome.status.run_id.clone(),
+            };
+            let safety: SafetyReport = read_json(&outcome.safety_path)?;
+            let stop_reason = outcome.status.stop_reason.clone();
+            if !safety.all_zero {
+                batch.state = "rejected".to_owned();
+                batch.stop_reason = Some("safety_violation".to_owned());
+                self.status.state = "reject".to_owned();
+                self.status.stop_reason = Some("safety_violation".to_owned());
+                batch.discarded_evidence.push(evidence);
+                self.persist_status()?;
+                return Ok(self.outcome(None));
+            }
+            if stop_reason == "completed"
+                && outcome.status.completed_attempts == outcome.status.planned_attempts
+            {
+                batch.state = "completed".to_owned();
+                batch.stop_reason = Some(stop_reason);
+                batch.completed_evidence = Some(evidence);
+                self.status.completed_batches += 1;
+                self.persist_status()?;
+                continue;
+            }
+            if matches!(
+                stop_reason.as_str(),
+                "quota_exhausted"
+                    | "rate_limited"
+                    | "quota_ledger_failed"
+                    | "campaign_cap_exhausted"
+            ) {
+                batch.discarded_evidence.push(evidence);
+                batch.stop_reason = Some(stop_reason.clone());
+                self.status.state = "paused_for_quota".to_owned();
+                self.status.stop_reason = Some(stop_reason);
+                self.status.resume_at_unix = outcome
+                    .status
+                    .cooldown_until_unix
+                    .or_else(|| Some(next_utc_midnight_unix()));
+                self.persist_status()?;
+                return Ok(self.outcome(None));
+            }
+            batch.state = "incomplete".to_owned();
+            batch.stop_reason = Some(stop_reason.clone());
+            batch.discarded_evidence.push(evidence);
+            self.status.state = "incomplete".to_owned();
+            self.status.stop_reason = Some(stop_reason);
+            self.persist_status()?;
+            return Ok(self.outcome(None));
+        }
+    }
+
+    pub fn summarize(&self) -> Result<EvaluationSummary, Box<dyn std::error::Error>> {
+        let mut inputs = Vec::new();
+        let mut statuses = Vec::new();
+        let mut safety = Vec::new();
+        for batch in &self.status.batches {
+            if let Some(evidence) = &batch.completed_evidence {
+                inputs.push(evidence.result_path.clone());
+                statuses.push(evidence.status_path.clone());
+                safety.push(evidence.safety_path.clone());
+            }
+        }
+        if inputs.is_empty() {
+            return Err("campaign has no complete batch evidence to summarize".into());
+        }
+        summarize_with_evidence(&inputs, &self.summary_path(), &statuses, &safety)
+    }
+
+    fn summary_path(&self) -> PathBuf {
+        self.config.output_dir.join("campaign.summary.json")
+    }
+
+    fn persist_status(&self) -> Result<(), Box<dyn std::error::Error>> {
+        atomic_json_write_locked(&self.status_path, &self.status)
+    }
+
+    fn outcome(&self, summary_path: Option<PathBuf>) -> CampaignOutcome {
+        CampaignOutcome {
+            campaign_id: self.status.campaign_id.clone(),
+            state: self.status.state.clone(),
+            stop_reason: self.status.stop_reason.clone(),
+            resume_at_unix: self.status.resume_at_unix,
+            actual_remote_calls: self.status.actual_remote_calls,
+            completed_batches: self.status.completed_batches,
+            total_batches: self.status.batches.len(),
+            summary_path,
+        }
+    }
+}
+
+fn validate_campaign_config(config: &CampaignConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if config.tag.trim().is_empty() {
+        return Err("campaign --tag must not be empty".into());
+    }
+    if config.batch_size == 0 || config.batch_size > 5 {
+        return Err("campaign --batch-size must be in 1..=5".into());
+    }
+    if config.max_calls_per_batch == 0 || config.max_calls_per_batch > MAX_CALLS_PER_RUN {
+        return Err(format!(
+            "campaign --max-calls-per-batch must be in 1..={MAX_CALLS_PER_RUN}"
+        )
+        .into());
+    }
+    if config.daily_cap == 0 || config.daily_cap > MAX_CALLS_PER_DAY {
+        return Err(format!(
+            "campaign --daily-cap must be in 1..={MAX_CALLS_PER_DAY}"
+        )
+        .into());
+    }
+    if config.campaign_cap == 0 || config.campaign_cap > 200 {
+        return Err("campaign --campaign-cap must be in 1..=200".into());
+    }
+    Ok(())
+}
+
+fn validate_campaign_provenance(
+    status: &CampaignStatus,
+    config: &CampaignConfig,
+    manifest: &FetchEvaluationManifest,
+    git_sha: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if status.schema_version != 1
+        || status.evaluation_profile != EvaluationProfile::Admission
+        || status.scoring_version != SCORING_VERSION
+        || status.git_sha != git_sha
+        || status.corpus_version != manifest.corpus_version
+        || status.tag != config.tag
+        || status.batch_size != config.batch_size
+        || status.max_calls_per_batch != config.max_calls_per_batch
+        || status.daily_cap != config.daily_cap
+        || status.campaign_cap != config.campaign_cap
+    {
+        return Err("campaign provenance/configuration mismatch".into());
+    }
+    let expected = build_campaign_batches(&manifest.cases, &config.tag, config.batch_size)?;
+    if status
+        .batches
+        .iter()
+        .map(|batch| (&batch.category, &batch.case_ids))
+        .collect::<Vec<_>>()
+        != expected
+            .iter()
+            .map(|batch| (&batch.category, &batch.case_ids))
+            .collect::<Vec<_>>()
+    {
+        return Err("campaign case plan changed; refusing to resume".into());
+    }
+    Ok(())
+}
+
+fn build_campaign_batches(
+    cases: &[FetchEvaluationCase],
+    tag: &str,
+    batch_size: usize,
+) -> Result<Vec<CampaignBatchStatus>, Box<dyn std::error::Error>> {
+    let today = Utc::now().date_naive();
+    let mut selected = select_cases(cases, None, None, Some(tag), today)?
+        .into_iter()
+        .filter(|case| {
+            matches!(
+                case.category,
+                CaseCategory::PublicPdfText | CaseCategory::JavascriptShell
+            )
+        })
+        .collect::<Vec<_>>();
+    selected.sort_by(|left, right| {
+        left.category
+            .cmp(&right.category)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut batches = Vec::new();
+    let mut next_index = 0usize;
+    for category in [CaseCategory::PublicPdfText, CaseCategory::JavascriptShell] {
+        let category_cases = selected
+            .iter()
+            .copied()
+            .filter(|case| case.category == category)
+            .collect::<Vec<_>>();
+        for chunk in category_cases.chunks(batch_size) {
+            batches.push(CampaignBatchStatus {
+                batch_index: next_index,
+                category: category_label(category).to_owned(),
+                case_ids: chunk.iter().map(|case| case.id.clone()).collect(),
+                state: "pending".to_owned(),
+                attempt_index: 0,
+                completed_evidence: None,
+                discarded_evidence: Vec::new(),
+                stop_reason: None,
+            });
+            next_index += 1;
+        }
+    }
+    Ok(batches)
+}
+
+fn admission_pool_shortage(batches: &[CampaignBatchStatus]) -> Option<String> {
+    let pdf_cases = batches
+        .iter()
+        .filter(|batch| batch.category == "public_pdf_text")
+        .map(|batch| batch.case_ids.len())
+        .sum::<usize>();
+    let js_cases = batches
+        .iter()
+        .filter(|batch| batch.category == "javascript_shell")
+        .map(|batch| batch.case_ids.len())
+        .sum::<usize>();
+    (pdf_cases < 15 || js_cases < 15).then(|| {
+        format!(
+            "candidate_pool_shortage: admission requires at least 15 cases per category (pdf={pdf_cases}, js={js_cases})"
+        )
+    })
+}
+
+fn next_utc_midnight_unix() -> i64 {
+    let tomorrow = Utc::now().date_naive() + chrono::Duration::days(1);
+    tomorrow
+        .and_hms_opt(0, 0, 0)
+        .map(|value| value.and_utc().timestamp())
+        .unwrap_or_else(|| Utc::now().timestamp().saturating_add(86_400))
+}
+
+fn atomic_json_write_locked<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut lock_path = path.to_path_buf();
+    lock_path.set_extension("lock");
+    if let Some(parent) = lock_path.parent().filter(|value| !value.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+    let result = atomic_json_write(path, value);
+    let _ = lock.unlock();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn campaign_batches_are_stable_and_keep_categories_separate() {
+        let mut cases = Vec::new();
+        for index in (0..7).rev() {
+            let mut case = demo_case(&format!("https://demo.invalid/js-{index}"));
+            case.id = format!("js-{index}");
+            cases.push(case);
+        }
+        for index in (0..3).rev() {
+            let mut case = demo_case(&format!("https://demo.invalid/pdf-{index}"));
+            case.id = format!("pdf-{index}");
+            case.category = CaseCategory::PublicPdfText;
+            cases.push(case);
+        }
+        let batches = build_campaign_batches(&cases, "demo", 5).expect("campaign plan");
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].category, "public_pdf_text");
+        assert_eq!(batches[0].case_ids, ["pdf-0", "pdf-1", "pdf-2"]);
+        assert_eq!(batches[1].category, "javascript_shell");
+        assert_eq!(batches[1].case_ids, ["js-0", "js-1", "js-2", "js-3", "js-4"]);
+        assert_eq!(batches[2].case_ids, ["js-5", "js-6"]);
+        assert!(batches.iter().all(|batch| batch.case_ids.len() <= 5));
+    }
+
+    #[test]
+    fn campaign_config_rejects_caps_outside_public_limits() {
+        let config = CampaignConfig {
+            manifest: PathBuf::from("manifest.json"),
+            tag: "admission".to_owned(),
+            batch_size: 6,
+            pacing_ms: 0,
+            max_calls_per_batch: 25,
+            daily_cap: 60,
+            campaign_cap: 200,
+            quota_path: PathBuf::from("quota.json"),
+            output_dir: PathBuf::from("out"),
+        };
+        assert!(validate_campaign_config(&config).is_err());
+    }
+
+    #[test]
+    fn formal_campaign_rejects_category_pool_shortage() {
+        let cases = (0..20)
+            .map(|index| {
+                let mut case = demo_case(&format!("https://demo.invalid/case-{index}"));
+                case.id = format!("case-{index}");
+                case
+            })
+            .collect::<Vec<_>>();
+        let batches = build_campaign_batches(&cases, "demo", 5).expect("campaign plan");
+        let reason = admission_pool_shortage(&batches).expect("shortage must be detected");
+        assert!(reason.contains("pdf=0"));
+        assert!(reason.contains("js=20"));
+    }
 
     #[test]
     fn percentile_uses_nearest_rank() {
@@ -2012,12 +2773,13 @@ mod tests {
     async fn quota_ledger_is_process_safe_and_enforces_caps() {
         let path = std::env::temp_dir().join(format!("allo-fetch-eval-quota-{}.json", Uuid::now_v7()));
         let gate = FileQuotaGate::new(path.clone(), 2, 2);
-        gate.acquire().await.unwrap();
-        gate.acquire().await.unwrap();
-        assert_eq!(
-            gate.acquire().await,
-            Err(RemoteExtractError::QuotaExhausted)
-        );
+        let fetch = serde_json::json!({"urls": ["https://example.com/"], "full_content": false});
+        gate.before_call(ManagedMcpTool::Fetch, &fetch, 1).await.unwrap();
+        gate.before_call(ManagedMcpTool::Fetch, &fetch, 1).await.unwrap();
+        assert!(matches!(
+            gate.before_call(ManagedMcpTool::Fetch, &fetch, 1).await,
+            Err(ManagedMcpCallError::QuotaExhausted)
+        ));
         let _ = fs::remove_file(path);
     }
 
@@ -2025,14 +2787,23 @@ mod tests {
     async fn quota_gate_persists_bounded_retry_after_and_cooldown() {
         let path = std::env::temp_dir().join(format!("allo-fetch-eval-rate-{}.json", Uuid::now_v7()));
         let gate = FileQuotaGate::new(path.clone(), 60, 25);
-        EvaluationCallGate::observe(&gate, &Err(RemoteExtractError::RateLimited(Some(
-            Duration::from_millis(1_500),
-        ))));
+        gate.observe(
+            ManagedMcpTool::Fetch,
+            1,
+            &Err(nomi_mcp::remote_peer::McpPeerError::Http {
+                status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                retry_after: Some(Duration::from_millis(1_500)),
+            }),
+        );
         let (reason, retry_after_ms, cooldown) = gate.state();
         assert_eq!(reason.as_deref(), Some("rate_limited"));
         assert_eq!(retry_after_ms, Some(1_500));
         assert!(cooldown.is_some());
-        assert_eq!(gate.acquire().await, Err(RemoteExtractError::QuotaExhausted));
+        let fetch = serde_json::json!({"urls": ["https://example.com/"], "full_content": false});
+        assert!(matches!(
+            gate.before_call(ManagedMcpTool::Fetch, &fetch, 1).await,
+            Err(ManagedMcpCallError::QuotaExhausted)
+        ));
         let ledger: QuotaLedger = read_json(&path).unwrap();
         assert_eq!(ledger.used_calls, 0);
         assert!(ledger.cooldown_until_unix.is_some());
@@ -2100,6 +2871,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_call_gate_rejects_extra_fetch_arguments_before_network() {
+        let path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-extra-args-{}.json",
+            Uuid::now_v7()
+        ));
+        let gate = FileQuotaGate::new(path.clone(), 60, 10);
+        let extra = serde_json::json!({
+            "urls": ["https://example.com/"],
+            "full_content": false,
+            "objective": "must be blocked",
+        });
+        assert!(matches!(
+            gate.before_call(ManagedMcpTool::Fetch, &extra, 1).await,
+            Err(ManagedMcpCallError::UnsafeArguments)
+        ));
+        assert_eq!(gate.actual_calls(), 0);
+        assert_eq!(gate.sensitive_egress_violations(), 1);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
     async fn injected_runner_flushes_jsonl_and_writes_safety_report() {
         let suffix = Uuid::now_v7().to_string();
         let manifest_path = std::env::temp_dir().join(format!("allo-fetch-eval-{suffix}.json"));
@@ -2112,12 +2904,9 @@ mod tests {
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let factory = Arc::new(DemoBackendFactory {
             counters: Arc::new(DemoCounters::default()),
-            gate: None,
         });
         let outcome = run_with_factory(
             RunConfig {
-                git_sha: Some("test-sha".to_owned()),
-                allow_dirty: true,
                 mode: EvaluationMode::Compare,
                 peer_mode: PeerMode::Cold,
                 profile: EvaluationProfile::Preflight,
@@ -2146,6 +2935,260 @@ mod tests {
         let _ = fs::remove_file(output_path);
         let _ = fs::remove_file(outcome.status_path);
         let _ = fs::remove_file(outcome.safety_path);
+    }
+
+    struct SetupFailureFactory;
+
+    impl EvaluationBackendFactory for SetupFailureFactory {
+        fn create(
+            &self,
+            _call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+        ) -> Result<Arc<dyn EvaluationBackend>, WebError> {
+            Err(WebError::Provider("deterministic setup failure".to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_setup_failure_persists_incomplete_evidence() {
+        let suffix = Uuid::now_v7().to_string();
+        let manifest_path = std::env::temp_dir().join(format!("allo-fetch-eval-setup-{suffix}.json"));
+        let output_path = std::env::temp_dir().join(format!("allo-fetch-eval-setup-{suffix}.jsonl"));
+        let manifest = FetchEvaluationManifest {
+            schema_version: 1,
+            corpus_version: "test-corpus".to_owned(),
+            cases: vec![demo_case("https://demo.invalid/setup")],
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let result = run_with_factory(
+            RunConfig {
+                mode: EvaluationMode::Compare,
+                peer_mode: PeerMode::Cold,
+                profile: EvaluationProfile::Preflight,
+                manifest: manifest_path.clone(),
+                case_ids: None,
+                category: None,
+                tag: None,
+                repeat: 1,
+                pacing_ms: 0,
+                max_calls: 1,
+                daily_cap: 1,
+                quota_path: std::env::temp_dir().join(format!("allo-fetch-quota-{suffix}.json")),
+                output: output_path.clone(),
+                status: None,
+            },
+            Arc::new(SetupFailureFactory),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let status_path = default_status_path(&output_path);
+        let safety_path = default_safety_path(&output_path);
+        let status: RunStatus = read_json(&status_path).unwrap();
+        let safety: SafetyReport = read_json(&safety_path).unwrap();
+        assert_eq!(status.stop_reason, "setup_failed");
+        assert_eq!(status.completed_attempts, 0);
+        assert!(safety.complete);
+        assert!(!safety.all_zero);
+        for path in [manifest_path, output_path, status_path, safety_path] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_ledger_failure_stops_before_later_case() {
+        let suffix = Uuid::now_v7().to_string();
+        let manifest_path = std::env::temp_dir().join(format!("allo-fetch-eval-ledger-{suffix}.json"));
+        let output_path = std::env::temp_dir().join(format!("allo-fetch-eval-ledger-{suffix}.jsonl"));
+        let quota_path = std::env::temp_dir().join(format!("allo-fetch-eval-ledger-{suffix}.lock"));
+        fs::create_dir(&quota_path).unwrap();
+        let manifest = FetchEvaluationManifest {
+            schema_version: 1,
+            corpus_version: "test-corpus".to_owned(),
+            cases: vec![
+                demo_case("https://demo.invalid/ledger-one"),
+                demo_case("https://demo.invalid/ledger-two"),
+            ],
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let outcome = run_with_factory(
+            RunConfig {
+                mode: EvaluationMode::Compare,
+                peer_mode: PeerMode::Cold,
+                profile: EvaluationProfile::Preflight,
+                manifest: manifest_path.clone(),
+                case_ids: None,
+                category: None,
+                tag: None,
+                repeat: 1,
+                pacing_ms: 0,
+                max_calls: 2,
+                daily_cap: 2,
+                quota_path: quota_path.clone(),
+                output: output_path.clone(),
+                status: None,
+            },
+            Arc::new(DemoBackendFactory {
+                counters: Arc::new(DemoCounters::default()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status.stop_reason, "quota_ledger_failed");
+        assert_eq!(outcome.status.completed_attempts, 1);
+        assert_eq!(outcome.status.actual_remote_calls, 0);
+        assert_eq!(fs::read_to_string(&output_path).unwrap().lines().count(), 1);
+        for path in [manifest_path, output_path, outcome.status_path, outcome.safety_path] {
+            let _ = fs::remove_file(path);
+        }
+        let _ = fs::remove_dir(quota_path);
+    }
+
+    #[tokio::test]
+    async fn runner_source_mismatch_stops_before_later_case() {
+        let suffix = Uuid::now_v7().to_string();
+        let manifest_path = std::env::temp_dir().join(format!("allo-fetch-eval-source-{suffix}.json"));
+        let output_path = std::env::temp_dir().join(format!("allo-fetch-eval-source-{suffix}.jsonl"));
+        let manifest = FetchEvaluationManifest {
+            schema_version: 1,
+            corpus_version: "test-corpus".to_owned(),
+            cases: vec![
+                demo_case("https://demo.invalid/mismatch"),
+                demo_case("https://demo.invalid/source-later"),
+            ],
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let outcome = run_with_factory(
+            RunConfig {
+                mode: EvaluationMode::Compare,
+                peer_mode: PeerMode::Cold,
+                profile: EvaluationProfile::Preflight,
+                manifest: manifest_path.clone(),
+                case_ids: None,
+                category: None,
+                tag: None,
+                repeat: 1,
+                pacing_ms: 0,
+                max_calls: 2,
+                daily_cap: 2,
+                quota_path: std::env::temp_dir().join(format!("allo-fetch-quota-{suffix}.json")),
+                output: output_path.clone(),
+                status: None,
+            },
+            Arc::new(DemoBackendFactory {
+                counters: Arc::new(DemoCounters::default()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status.stop_reason, "safety_violation");
+        assert_eq!(outcome.status.completed_attempts, 1);
+        assert_eq!(fs::read_to_string(&output_path).unwrap().lines().count(), 1);
+        for path in [manifest_path, output_path, outcome.status_path, outcome.safety_path] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn incomplete_running_safety_cannot_be_zero_gate_evidence() {
+        let suffix = Uuid::now_v7().to_string();
+        let result_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.jsonl"));
+        let status_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.status.json"));
+        let safety_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.safety.json"));
+        let output_path = std::env::temp_dir().join(format!("allo-incomplete-{suffix}.summary.json"));
+        let case = demo_case("https://demo.invalid/incomplete");
+        let mut result = FetchEvaluationResult::base(
+            &case,
+            EvaluationMode::Local,
+            PeerMode::Cold,
+            "run-incomplete",
+            "sha",
+            1,
+        );
+        result.corpus_version = "test-corpus".to_owned();
+        let status = RunStatus {
+            schema_version: 3,
+            scoring_version: SCORING_VERSION.to_owned(),
+            evaluation_profile: EvaluationProfile::Diagnostic,
+            run_id: "run-incomplete".to_owned(),
+            git_sha: "sha".to_owned(),
+            corpus_version: "test-corpus".to_owned(),
+            dirty_worktree: false,
+            planned_attempts: 1,
+            completed_attempts: 0,
+            actual_remote_calls: 0,
+            actual_fetch_calls: 0,
+            actual_search_calls: 0,
+            recovery_retry_calls: 0,
+            retry_limit_violation_count: 0,
+            sensitive_egress_count: 0,
+            stop_reason: "running".to_owned(),
+            retry_after_ms: None,
+            cooldown_until_unix: None,
+        };
+        let safety = SafetyReport {
+            schema_version: 2,
+            scoring_version: SCORING_VERSION.to_owned(),
+            run_id: "run-incomplete".to_owned(),
+            git_sha: "sha".to_owned(),
+            corpus_version: "test-corpus".to_owned(),
+            evaluation_profile: EvaluationProfile::Diagnostic,
+            dirty_worktree: false,
+            actual_remote_calls: 0,
+            actual_fetch_calls: 0,
+            actual_search_calls: 0,
+            recovery_retry_calls: 0,
+            source_mismatch_count: 0,
+            dropped_remote_item_count: 0,
+            sensitive_egress_count: 0,
+            retry_limit_violation_count: 0,
+            cancellation_late_result_count: 0,
+            cancellation_events_observed: 0,
+            stop_reason: "running".to_owned(),
+            complete: false,
+            all_zero: false,
+        };
+        fs::write(&result_path, format!("{}\n", serde_json::to_string(&result).unwrap())).unwrap();
+        fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
+        fs::write(&safety_path, serde_json::to_vec(&safety).unwrap()).unwrap();
+        let summary = summarize_with_evidence(
+            &[result_path.clone()],
+            &output_path,
+            &[status_path.clone()],
+            &[safety_path.clone()],
+        )
+        .unwrap();
+        assert!(!summary.evidence_complete);
+        assert!(!summary.safety.all_zero);
+        assert_eq!(summary.decision_reason, "incomplete_run");
+        for path in [result_path, status_path, safety_path, output_path] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn atomic_evidence_write_keeps_previous_json_on_serialization_failure() {
+        struct FailingSerialize;
+        impl Serialize for FailingSerialize {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("intentional failure"))
+            }
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "allo-atomic-evidence-{}.json",
+            Uuid::now_v7()
+        ));
+        fs::write(&path, br#"{"valid":true}"#).unwrap();
+        assert!(atomic_json_write(&path, &FailingSerialize).is_err());
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["valid"], true);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -2334,12 +3377,64 @@ mod tests {
         assert!(validate_admission_composition(&[first, duplicate]).is_err());
     }
 
+    #[test]
+    fn admission_requires_one_exact_three_phase_triple() {
+        let case = demo_case("https://demo.invalid/exact-triple");
+        let mut cold = FetchEvaluationResult::base(
+            &case,
+            EvaluationMode::Compare,
+            PeerMode::Cold,
+            "run",
+            "sha",
+            1,
+        );
+        cold.evaluation_profile = EvaluationProfile::Admission;
+        let mut warm_one = FetchEvaluationResult::base(
+            &case,
+            EvaluationMode::E2e,
+            PeerMode::Warm,
+            "run",
+            "sha",
+            2,
+        );
+        warm_one.evaluation_profile = EvaluationProfile::Admission;
+        let mut warm_two = warm_one.clone();
+        warm_two.attempt = 3;
+        assert!(validate_admission_composition(&[cold.clone(), warm_one.clone(), warm_two.clone()]).is_ok());
+
+        let mut cross_run = warm_two.clone();
+        cross_run.run_id = "other-run".to_owned();
+        assert!(validate_admission_composition(&[cold.clone(), warm_one.clone(), cross_run]).is_err());
+
+        let mut wrong_phase = warm_two.clone();
+        wrong_phase.mode = EvaluationMode::Compare;
+        assert!(validate_admission_composition(&[cold.clone(), warm_one, wrong_phase]).is_err());
+
+        assert!(validate_admission_composition(&[cold, warm_two.clone()]).is_err());
+        let mut extra = warm_two;
+        extra.attempt = 4;
+        assert!(validate_admission_composition(&[
+            FetchEvaluationResult::base(
+                &case,
+                EvaluationMode::Compare,
+                PeerMode::Cold,
+                "run",
+                "sha",
+                1,
+            ),
+            extra,
+        ]).is_err());
+    }
+
     #[tokio::test]
     async fn demo_covers_four_modes_and_safety_cases() {
         let path = std::env::temp_dir().join(format!("allo-fetch-eval-demo-{}.json", Uuid::now_v7()));
         let report = run_demo(&path).await.unwrap();
         assert!(report.passed);
         assert_eq!(report.modes_checked, 4);
+        assert_eq!(report.search_warmups, 1);
+        assert!(report.warm_fetch_warmups >= 1);
+        assert_eq!(report.cancellation_late_result_count, 0);
         let _ = fs::remove_file(path);
     }
 }

@@ -61,6 +61,11 @@ notes at a high level rather than a complete historical log.
   service notes) — dangerous capabilities are never registered, replacing the
   retired runtime `ExposureMode::PublicService` clamp.
 
+- Managed fetch evaluation now fails closed on incomplete or dirty Admission
+  evidence, requires exact cold-Compare plus warm-E2E triples, and records
+  Local PDF/Unsupported Document deferrals as structured policy outcomes before
+  any remote fallback is considered.
+
 ## v0.3.3 - 2026-07-30
 
 - Hardened the managed browser platform across lane/host lifecycle, startup,
