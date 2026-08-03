@@ -94,7 +94,6 @@ const GuidPage: React.FC = () => {
   // Ref on the GuidInputCard root for Tauri native drag-drop hit-testing,
   // mirroring the SendBox `.sendbox-panel` containerRef pattern.
   const guidInputCardRef = useRef<HTMLDivElement>(null);
-  const openPresetDetailsRef = useRef<(() => void) | null>(null);
   const addProviderRef = useRef<GuidAddProviderHandle>(null);
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
 
@@ -890,10 +889,6 @@ const GuidPage: React.FC = () => {
     />
   );
 
-  const handleRegisterOpenDetails = useCallback((openDetails: (() => void) | null) => {
-    openPresetDetailsRef.current = openDetails;
-  }, []);
-
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
       <div ref={guidContainerRef} className={styles.guidContainer}>
@@ -1058,16 +1053,10 @@ const GuidPage: React.FC = () => {
               }}
             />
 
-            {/* Editor host (modals + example prompts + fallback notice) */}
+            {/* Editor host (modals + fallback notice) */}
             <GuidPresetEditorHost
-              presets={agentSelection.presets}
               localeKey={localeKey}
-              selectedAgentKey={agentSelection.selectedAgentKey}
-              selectedAgentInfo={agentSelection.selectedAgentInfo}
               currentEffectiveAgentInfo={agentSelection.currentEffectiveAgentInfo}
-              onSetInput={guidInput.setInput}
-              onFocusInput={guidInput.handleTextareaFocus}
-              onRegisterOpenDetails={handleRegisterOpenDetails}
             />
           </div>
         </div>

@@ -143,6 +143,151 @@
   line-height: 20px;
 }
 
+.heroTitleInlineIcon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-0);
+  flex-shrink: 0;
+}
+
+.heroTitleInlineIcon img {
+  display: block;
+}
+
+.heroTitleEmoji {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.heroSubtitle {
+  margin: 0 auto 14px;
+  max-width: 760px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 20px;
+  color: var(--color-text-2);
+  background: var(--preset-surface-bg);
+  border: none;
+  line-height: 20px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.heroSubtitle:hover {
+  background: var(--preset-surface-bg-hover);
+}
+
+.heroSubtitleExpanded {
+  align-items: flex-start;
+  padding: 10px 14px;
+  border-radius: 16px;
+  cursor: default;
+}
+
+.heroSubtitleExpanded:hover {
+  background: var(--preset-surface-bg);
+}
+
+.heroSubtitleExpanded .heroSubtitleBack {
+  margin-top: 2px;
+}
+
+.heroSubtitleBack {
+  flex-shrink: 0;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  color: var(--color-text-2) !important;
+  border-color: var(--color-border-2) !important;
+  background: var(--bg-active) !important;
+}
+
+.heroSubtitleBack:hover {
+  background: var(--bg-3) !important;
+}
+
+.heroSubtitleToggle {
+  flex-shrink: 0;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--color-text-3) !important;
+  transition: transform 0.2s ease;
+}
+
+.heroSubtitleToggle:hover {
+  background: transparent !important;
+  color: var(--color-text-2) !important;
+}
+
+.heroSubtitleToggleExpanded {
+  transform: rotate(180deg);
+}
+
+.heroSubtitleText {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 20px;
+}
+
+.heroSubtitleTextExpanded {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.heroSubtitleDetail {
+  flex-shrink: 0;
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 6px !important;
+  border-radius: 10px !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--color-text-3) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  opacity: 0.9;
+}
+
+.heroSubtitleDetail:hover {
+  background: var(--color-fill-2) !important;
+  color: var(--color-text-2) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  opacity: 1;
+}
+
+.heroSubtitleDetail:focus,
+.heroSubtitleDetail:focus-visible,
+.heroSubtitleDetail:active {
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
 .poiStarterSection {
   width: 100%;
   margin: 0 0 16px;
@@ -243,6 +388,11 @@
 
 .presetPromptChip:hover {
   background: var(--preset-surface-bg-hover);
+}
+
+.guidInputCard {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .guidInputCardWrap {
@@ -1371,7 +1521,7 @@ button.guidResourceCard:focus-visible {
   position: relative;
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: 40px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
   border: 1px solid var(--drawer-hairline);
@@ -1584,115 +1734,6 @@ button.guidResourceCard:focus-visible {
   font-weight: 800;
 }
 
-/* Skill rows stay as one compact, two-line unit at every drawer width. Keep
-   these overrides after the shared card rules so the preset layout cannot
-   re-enable wrapping through the cascade. */
-.drawerSkillCard {
-  box-sizing: border-box;
-  grid-template-columns: 40px minmax(0, 1fr) 20px;
-  gap: 10px;
-  align-items: center;
-  min-height: 58px;
-  padding: 8px 12px;
-}
-
-.drawerSkillCard::before {
-  display: none;
-}
-
-.drawerSkillCard .drawerCardStatus {
-  position: static;
-  justify-self: end;
-  box-sizing: border-box;
-  width: 20px;
-  height: 20px;
-}
-
-.drawerSkillCard .drawerIconTile {
-  box-sizing: border-box;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-}
-
-.drawerSkillCard .drawerCardBody {
-  overflow: hidden;
-  padding-right: 0;
-}
-
-.drawerSkillTitleRow {
-  height: 20px;
-  flex-wrap: nowrap;
-  gap: 6px;
-  overflow: hidden;
-}
-
-.drawerSkillTitleRow .drawerCardTitle {
-  flex: 0 1 auto;
-  line-height: 20px;
-}
-
-.drawerSkillTitleRow .drawerBadge {
-  box-sizing: border-box;
-  flex: 0 0 auto;
-  height: 20px;
-  min-height: 20px;
-}
-
-.drawerSkillMetaRow {
-  height: 20px;
-  flex: 1 1 auto;
-  flex-wrap: nowrap;
-  gap: 5px;
-  min-width: 0;
-  margin-top: 0;
-  overflow: hidden;
-}
-
-.drawerSkillMetaRow .drawerTagChip {
-  box-sizing: border-box;
-  flex: 0 0 auto;
-  height: 20px;
-  min-height: 20px;
-}
-
-.drawerSkillDescription {
-  display: block;
-  height: 17px;
-  margin-top: 3px;
-  overflow: hidden;
-  line-height: 17px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  -webkit-line-clamp: 1;
-}
-
-.drawerCallAction {
-  display: inline-flex;
-  align-items: center;
-  align-self: center;
-  gap: 5px;
-  border-radius: 999px;
-  padding: 7px 10px;
-  color: rgb(var(--primary-6));
-  background: rgba(var(--primary-6), 0.09);
-  font-size: 12px;
-  font-weight: 720;
-  line-height: 1;
-  opacity: 0;
-  transform: translateX(6px);
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-  pointer-events: none;
-}
-
-.drawerCard:hover .drawerCallAction,
-.drawerCard:focus-visible .drawerCallAction {
-  opacity: 1;
-  transform: translateX(0);
-}
-
 .drawerFooter {
   display: flex;
   align-items: center;
@@ -1786,10 +1827,6 @@ button.guidResourceCard:focus-visible {
   .drawerIconTile {
     width: 42px;
     height: 42px;
-  }
-
-  .drawerCallAction {
-    display: none;
   }
 }
 

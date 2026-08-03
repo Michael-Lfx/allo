@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * GuidPresetEditorHost — hosts the editor modal tree (PresetEditDrawer +
- * DeletePresetModal + SkillConfirmModals), the openPresetDetails
- * registration, and the "selected preset example prompts" rendering.
+ * DeletePresetModal + SkillConfirmModals.
  *
  * Extracted from PresetSelectionArea so the entry page can render these
  * independently of the retired preset card grid.
@@ -18,21 +17,13 @@ import DeletePresetModal from '@/renderer/pages/settings/PresetSettings/DeletePr
 import SkillConfirmModals from '@/renderer/pages/settings/PresetSettings/SkillConfirmModals';
 import { resolveAvatarImageSrc } from '@/renderer/pages/settings/PresetSettings/presetUtils';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import styles from '../index.module.css';
-import type { AvailableAgent, EffectiveAgentInfo } from '../types';
-import type { Preset } from '@/common/types/agent/presetTypes';
-import React, { useCallback, useLayoutEffect, useMemo } from 'react';
+import type { EffectiveAgentInfo } from '../types';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 export interface GuidPresetEditorHostProps {
-  presets: Preset[];
   localeKey: string;
-  selectedAgentKey?: string;
-  selectedAgentInfo: AvailableAgent | undefined;
   currentEffectiveAgentInfo: EffectiveAgentInfo;
-  onSetInput: (text: string) => void;
-  onFocusInput: () => void;
-  onRegisterOpenDetails: (openDetails: (() => void) | null) => void;
 }
 
 const avatarImageMap: Record<string, string> = {
@@ -41,14 +32,8 @@ const avatarImageMap: Record<string, string> = {
 };
 
 const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
-  presets,
   localeKey,
-  selectedAgentKey,
-  selectedAgentInfo,
   currentEffectiveAgentInfo,
-  onSetInput,
-  onFocusInput,
-  onRegisterOpenDetails,
 }) => {
   const { t } = useTranslation();
   const [agentMessage, agentMessageContext] = useArcoMessage({ maxCount: 10 });
@@ -70,76 +55,6 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
   });
 
   const editAvatarImage = resolveAvatarImageSrc(editor.editAvatar, avatarImageMap);
-
-  // ── openPresetDetails registration ──
-  const openPresetDetails = useCallback(() => {
-    const presetId = selectedAgentInfo?.preset_id
-      ?? (selectedAgentKey?.startsWith('preset:') ? selectedAgentKey.slice(7) : null);
-    if (!presetId) {
-      agentMessage.warning(
-        t('common.failed', { defaultValue: 'Failed' }) +
-          `: ${t('settings.editPreset', { defaultValue: 'Preset Details' })}`
-      );
-      return;
-    }
-
-    const targetPreset = presets.find((preset) => preset.preset_id === presetId);
-    if (!targetPreset) {
-      agentMessage.warning(
-        t('common.failed', { defaultValue: 'Failed' }) +
-          `: ${t('settings.editPreset', { defaultValue: 'Preset Details' })}`
-      );
-      return;
-    }
-
-    void editor.handleEdit(targetPreset);
-  }, [agentMessage, presets, editor, selectedAgentInfo?.preset_id, selectedAgentKey, t]);
-
-  useLayoutEffect(() => {
-    onRegisterOpenDetails(openPresetDetails);
-  }, [onRegisterOpenDetails, openPresetDetails]);
-
-  // ── Resolved agent (shared between description block and promptsNode) ──
-  const resolvedAgent = useMemo(() => {
-    if (!selectedAgentInfo?.preset_id) return null;
-    return presets.find((preset) => preset.preset_id === selectedAgentInfo.preset_id) ?? null;
-  }, [presets, selectedAgentInfo?.preset_id]);
-
-  // ── Selected preset description ──
-  const descriptionNode = useMemo(() => {
-    if (!resolvedAgent) return null;
-    const description = resolvedAgent.description_i18n?.[localeKey] || resolvedAgent.description;
-    if (!description) return null;
-    return <p className='text-13px text-3 leading-relaxed mb-0'>{description}</p>;
-  }, [resolvedAgent, localeKey]);
-
-  // ── Example prompts rendering ──
-  const promptsNode = useMemo(() => {
-    if (!resolvedAgent) return null;
-    const prompts = resolvedAgent.examples;
-    if (!prompts || prompts.length === 0) return null;
-    return (
-      <div className='mt-16px'>
-        <div className={styles.presetPromptHint}>
-          {t('guid.promptExamplesHint', { defaultValue: 'Try these example prompts:' })}
-        </div>
-        <div className='flex flex-wrap gap-8px mt-12px'>
-          {prompts.map((prompt: string, index: number) => (
-            <div
-              key={index}
-              className={`${styles.presetPromptChip} px-12px py-6px text-2 text-13px rd-16px cursor-pointer transition-colors shadow-sm`}
-              onClick={() => {
-                onSetInput(prompt);
-                onFocusInput();
-              }}
-            >
-              {prompt}
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }, [resolvedAgent, localeKey, onFocusInput, onSetInput, t]);
 
   // ── Fallback notice ──
   const fallbackNotice = currentEffectiveAgentInfo.isFallback ? (
@@ -255,12 +170,6 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
   return (
     <>
       {fallbackNotice}
-      {(descriptionNode || promptsNode) && (
-        <div className='mt-16px max-w-700px mx-auto w-full'>
-          {descriptionNode}
-          {promptsNode}
-        </div>
-      )}
       {modalTree}
     </>
   );

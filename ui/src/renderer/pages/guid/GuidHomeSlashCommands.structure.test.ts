@@ -67,6 +67,14 @@ describe('Guid homepage slash launcher', () => {
     expect(editorHostSource.includes('onClick={openPresetDetails}')).toBe(false);
   });
 
+  test('does not render selected preset details beneath the homepage composer', () => {
+    const editorHostSource = readSource(new URL('./components/GuidPresetEditorHost.tsx', import.meta.url));
+
+    expect(editorHostSource.includes('descriptionNode')).toBe(false);
+    expect(editorHostSource.includes('promptsNode')).toBe(false);
+    expect(editorHostSource.includes('presetPromptHint')).toBe(false);
+  });
+
   test('keeps goal creation in the slash command instead of the action row toggle', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const actionRowSource = readSource(new URL('./components/GuidActionRow.tsx', import.meta.url));

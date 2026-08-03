@@ -54,6 +54,15 @@ describe('Guid preset picker visual system', () => {
     expect(css.includes('.drawerTagChip')).toBe(true);
   });
 
+  test('uses the card and its status indicator as the only preset selection affordance', () => {
+    const preset = readSource(new URL('./DrawerPresetCard.tsx', import.meta.url));
+    const css = readSource(new URL('../index.module.css', import.meta.url));
+
+    expect(preset.includes('styles.drawerCardStatus')).toBe(true);
+    expect(preset.includes('styles.drawerCallAction')).toBe(false);
+    expect(css.includes('.drawerCallAction')).toBe(false);
+  });
+
   test('lets the shared tag filter opt into the drawer skin', () => {
     const drawer = readSource(new URL('./PresetPickerDrawer.tsx', import.meta.url));
     const filter = readSource(new URL('../../settings/PresetSettings/PresetTagFilterBar.tsx', import.meta.url));
