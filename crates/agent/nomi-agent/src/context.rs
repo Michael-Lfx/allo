@@ -37,6 +37,18 @@ impl SystemPromptCache {
         }
     }
 
+    /// Invalidate a specific section by name.
+    pub fn invalidate(&mut self, section: &str) {
+        self.sections.remove(section);
+        self.joined = None;
+    }
+
+    /// Invalidate all cached sections (e.g., on /compact).
+    pub fn invalidate_all(&mut self) {
+        self.sections.clear();
+        self.joined = None;
+    }
+
     /// Install the immutable AGENTS.md snapshot resolved by session bootstrap.
     pub fn set_agents_md(&mut self, instructions: String) {
         self.sections.insert("agents_md", instructions);
@@ -286,15 +298,13 @@ pub fn build_system_prompt(
         }
     }
 
-    // Section: environment (working directory + current date) — placed LAST so
-    // the stable core above stays a reusable cache prefix (see the intro note).
-    // Cached like intro; the date is captured once at session build, matching the
-    // prior behavior when it lived inline in the intro section.
+    // Section: environment (working directory) — placed LAST so the stable
+    // core above stays a reusable cache prefix (see the intro note). The
+    // current date is deliberately excluded: it is volatile per day and rides
+    // the turn tail instead (injected by the engine) so this section stays
+    // byte-stable across days within one session's cwd.
     let env_section = cache.sections.entry("environment").or_insert_with(|| {
-        format!(
-            "Working directory: \"{cwd}\"\nCurrent date: {}",
-            chrono::Local::now().format("%Y-%m-%d")
-        )
+        format!("Working directory: \"{cwd}\"")
     });
     parts.push(env_section.clone());
 

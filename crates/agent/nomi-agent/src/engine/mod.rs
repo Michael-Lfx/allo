@@ -1372,12 +1372,18 @@ impl AgentEngine {
             // termination and auto-continues. Paused/terminal goals render
             // nothing, keeping the request byte-identical to a goal-less
             // session (and preserving the system-prompt cache prefix).
+            // Current date also rides the turn tail — putting it in the system
+            // prompt would break DeepSeek prefix caching every midnight.
             let mut turn_tail_extras = Vec::new();
+            turn_tail_extras.push(format!(
+                "Current date: {}",
+                chrono::Local::now().format("%Y-%m-%d")
+            ));
             if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
                 turn_tail_extras.push(ctx);
             }
             let turn_tail =
-                crate::context_contributor::build_turn_tail_context(turn_tail_extras);
+                crate::context_contributor::build_turn_tail_context(turn_tail_extras.clone());
             let messages = crate::context_contributor::inject_turn_tail_context(
                 self.messages.clone(),
                 turn_tail,
@@ -1385,6 +1391,19 @@ impl AgentEngine {
 
             // Record prompt state for cache diagnostics
             self.cache_detector.record_request(&system, &tools);
+
+            // Capture a raw category estimate for this exact request. After the
+            // provider reports input tokens we calibrate it to the occupancy gauge.
+            let mut request_breakdown = crate::context_usage::estimate_context_usage(
+                crate::context_usage::ContextUsageRequest {
+                    system_prompt: &system,
+                    system_prompt_sections: &self.system_prompt_sections,
+                    tools: &tools,
+                    messages: &self.messages,
+                    plan_mode_active: self.plan_state.is_active,
+                    turn_tail_extras: &turn_tail_extras,
+                },
+            );
 
             let request = LlmRequest {
                 model: self.model.clone(),
@@ -1781,6 +1800,9 @@ impl AgentEngine {
             }
 
             self.compact_state.last_input_tokens = effective_watermark;
+
+            request_breakdown.calibrate_to(effective_watermark);
+            self.last_context_breakdown = Some(request_breakdown);
 
             // Cache break detection
             let cache_stats = CacheStats {
@@ -2298,7 +2320,9 @@ impl AgentEngine {
                     ));
                     self.messages = result.messages;
                     self.editable_turn = None;
-                    compacted = true;
+                    // A no-op autocompact (too few messages to fold) must not
+                    // suppress the emergency gate — context was not reduced.
+                    compacted = result.messages_summarized > 0;
                 }
                 Err(auto::CompactError::CircuitBroken { .. }) => {
                     // Already tripped; logged at circuit-breaker level

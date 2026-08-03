@@ -42,23 +42,23 @@ mod tests {
 
     #[test]
     fn below_limit_returns_false() {
-        // limit = 200k - 3k = 197k; 190k < 197k
+        // limit = 128k - 3k = 125k; 120k < 125k
         let config = default_config();
-        assert!(!is_at_emergency_limit(190_000, &config));
+        assert!(!is_at_emergency_limit(120_000, &config));
     }
 
     #[test]
     fn above_limit_returns_true() {
-        // 198k >= 197k
+        // 126k >= 125k
         let config = default_config();
-        assert!(is_at_emergency_limit(198_000, &config));
+        assert!(is_at_emergency_limit(126_000, &config));
     }
 
     #[test]
     fn at_exact_limit_returns_true() {
-        // 197k >= 197k
+        // 125k >= 125k
         let config = default_config();
-        assert!(is_at_emergency_limit(197_000, &config));
+        assert!(is_at_emergency_limit(125_000, &config));
     }
 
     #[test]
@@ -98,7 +98,7 @@ mod tests {
             ..default_config()
         };
         // Emergency check ignores the enabled flag
-        assert!(is_at_emergency_limit(198_000, &config));
+        assert!(is_at_emergency_limit(126_000, &config));
     }
 
     #[test]

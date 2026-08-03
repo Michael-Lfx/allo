@@ -681,21 +681,21 @@ mod tests {
 
     #[test]
     fn above_threshold_triggers() {
-        // threshold = 200k - 20k - 13k = 167k
+        // threshold = 128k - 20k - 13k = 95k
         let config = default_config();
-        assert!(should_autocompact(170_000, &config));
+        assert!(should_autocompact(100_000, &config));
     }
 
     #[test]
     fn below_threshold_does_not_trigger() {
         let config = default_config();
-        assert!(!should_autocompact(160_000, &config));
+        assert!(!should_autocompact(90_000, &config));
     }
 
     #[test]
     fn at_exact_threshold_triggers() {
         let config = default_config();
-        assert!(should_autocompact(167_000, &config));
+        assert!(should_autocompact(95_000, &config));
     }
 
     #[test]
@@ -769,9 +769,9 @@ mod tests {
             autocompact_threshold_pct: None,
             ..default_config()
         };
-        // Same as default: threshold = 200k - 20k - 13k = 167k
-        assert!(!should_autocompact(166_999, &config));
-        assert!(should_autocompact(167_000, &config));
+        // Same as default: threshold = 128k - 20k - 13k = 95k
+        assert!(!should_autocompact(94_999, &config));
+        assert!(should_autocompact(95_000, &config));
     }
 
     // ── truncate_for_retry ──────────────────────────────────────────────

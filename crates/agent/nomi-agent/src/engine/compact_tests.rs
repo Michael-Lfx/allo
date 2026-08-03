@@ -467,9 +467,13 @@ async fn emergency_fires_when_at_limit() {
 
 #[tokio::test]
 async fn emergency_silent_below_limit() {
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 200_000,
+        emergency_buffer: 3_000,
+        ..Default::default()
+    };
     let mut state = CompactState::new();
-    state.last_input_tokens = 190_000; // below 197k
+    state.last_input_tokens = 190_000; // below 197k limit
 
     let mut engine = make_compact_engine(config, state, vec![]);
     assert!(engine.run_compaction().await.is_ok());
