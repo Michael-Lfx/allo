@@ -1367,13 +1367,29 @@ impl AgentEngine {
                 self.drain_system_resource_notices(),
             );
 
+            // Standing-goal awareness rides the turn tail so the model knows
+            // from its first turn that an external judge audits each natural
+            // termination and auto-continues. Paused/terminal goals render
+            // nothing, keeping the request byte-identical to a goal-less
+            // session (and preserving the system-prompt cache prefix).
+            let mut turn_tail_extras = Vec::new();
+            if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
+                turn_tail_extras.push(ctx);
+            }
+            let turn_tail =
+                crate::context_contributor::build_turn_tail_context(turn_tail_extras);
+            let messages = crate::context_contributor::inject_turn_tail_context(
+                self.messages.clone(),
+                turn_tail,
+            );
+
             // Record prompt state for cache diagnostics
             self.cache_detector.record_request(&system, &tools);
 
             let request = LlmRequest {
                 model: self.model.clone(),
                 system,
-                messages: self.messages.clone(),
+                messages,
                 tools,
                 max_tokens: self.max_tokens,
                 thinking: self.thinking.clone(),
@@ -1832,13 +1848,30 @@ impl AgentEngine {
                 }
 
                 // Goal-driven continuation hook (only fires for opt-in goal
-                // sessions). Compute the continuation first so the immutable
-                // borrow of `self.goal` ends before we mutate `self.messages`.
-                let continuation = self.goal.as_ref().and_then(|g| g.maybe_continuation());
+                // sessions). The temporary borrow of `self.goal` ends with the
+                // match arm, before we mutate `self.messages`.
+                let continuation = match self.goal.as_ref() {
+                    Some(g) => {
+                        let judge = crate::goal::judge::ProviderJudgeClient::new(
+                            Arc::clone(&self.provider),
+                            self.model.clone(),
+                        );
+                        g.evaluate_and_continue(&assistant_text, &judge).await
+                    }
+                    None => None,
+                };
                 if let Some(cont) = continuation {
                     self.messages.push(cont);
                     self.save_session();
-                    turn += 1;
+                    // Each goal round gets a fresh internal-iteration budget:
+                    // the continuation opens a new logical turn. Carrying the
+                    // previous round's tool-loop count forward would let a
+                    // thorough first round starve every later round into the
+                    // MaxTurns exit — which returns without consulting the
+                    // judge. Total work stays bounded: rounds are capped by
+                    // the goal's auto-continuation limit, iterations per
+                    // round by `limit`.
+                    turn = 0;
                     continue; // don't return — run another turn toward the goal
                 }
                 self.save_session();

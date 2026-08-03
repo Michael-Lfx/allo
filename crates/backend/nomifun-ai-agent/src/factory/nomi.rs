@@ -862,6 +862,12 @@ pub(super) async fn build(
     if let Some(goal_repo) = deps.goal_repo.clone() {
         agent.register_goal_persistence(goal_repo);
     }
+    // A restored fresh goal (contract-less, no turns burned — typically set
+    // through the DB fallback while no runtime existed, e.g. the guid-page
+    // goal switch) gets its completion contract auto-drafted in the
+    // background. Runs after the repo wiring above so the drafted contract
+    // is persisted; a no-op for contract-carrying or mid-flight goals.
+    agent.spawn_goal_contract_autodraft();
     // Native cron tools persist background work and can recursively create
     // model traffic. They are host-control capabilities, not part of the
     // secondary principal's model-only ceiling. Register them only for the

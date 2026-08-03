@@ -18,6 +18,11 @@ const CONTINUATION_SUBGOALS_TEMPLATE: &str = include_str!("templates/continuatio
 /// Takes priority over the subgoals variant — with both present the subgoals
 /// fold into the contract block itself (hermes: single source of truth).
 const CONTINUATION_CONTRACT_TEMPLATE: &str = include_str!("templates/continuation_contract.md");
+/// Per-turn goal-awareness block for the engine's turn tail. Without it the
+/// model has no idea a judge audits each natural termination and
+/// auto-continues — so it optimizes for a one-shot final answer and the goal
+/// dies after one round. Rendered every turn while the goal can still run.
+const GOAL_CONTEXT_TEMPLATE: &str = include_str!("templates/goal_context.md");
 
 /// What a caller supplies to start a goal-driven session.
 #[derive(Debug, Clone)]
@@ -123,6 +128,25 @@ impl GoalRuntime {
         Some(Message::now(
             Role::User,
             vec![ContentBlock::Text { text: prompt }],
+        ))
+    }
+
+    /// Per-turn goal-awareness block the engine rides on the turn tail so
+    /// the model knows — from its very first turn — that a standing goal
+    /// exists, an external judge audits every natural termination, and the
+    /// loop auto-continues. `None` once the goal can no longer continue
+    /// (paused/terminal), which keeps the request byte-identical to a
+    /// goal-less session. Deterministic: same objective/subgoals/contract →
+    /// byte-identical output (prompt-cache stability within one session).
+    pub fn turn_context(&self) -> Option<String> {
+        let g = self.state.lock().unwrap();
+        if !matches!(g.status, GoalStatus::Active | GoalStatus::Waiting) {
+            return None;
+        }
+        Some(render_goal_context(
+            &g.objective,
+            &g.subgoals,
+            g.contract.as_ref(),
         ))
     }
 
@@ -433,6 +457,35 @@ fn render_continuation(
         .replace("{{subgoals}}", &render_subgoals_block(subgoals))
         .replace("{{contract}}", &contract_block)
         .replace("{{blocked_threshold}}", &blocked_threshold.to_string())
+}
+
+/// Render the per-turn goal-awareness block (see [`GoalRuntime::turn_context`]).
+/// Criteria priority mirrors the continuation/judge prompts: contract >
+/// subgoals > nothing, with subgoals folding into the contract block when
+/// both are present. An absent criteria block leaves the output byte-identical
+/// to the plain shape.
+fn render_goal_context(
+    objective: &str,
+    subgoals: &[String],
+    contract: Option<&GoalContract>,
+) -> String {
+    let contract = contract.filter(|c| !c.is_empty());
+    let criteria = if let Some(c) = contract {
+        format!(
+            "\n目标完成契约（判定完成的权威标准，附加准则已并入）：\n<contract>\n{}\n</contract>\n",
+            render_contract_block(c, subgoals)
+        )
+    } else if !subgoals.is_empty() {
+        format!(
+            "\n用户附加的完成准则（全部满足才算完成）：\n<subgoals>\n{}\n</subgoals>\n",
+            render_subgoals_block(subgoals)
+        )
+    } else {
+        String::new()
+    };
+    GOAL_CONTEXT_TEMPLATE
+        .replace("{{objective}}", objective)
+        .replace("{{criteria}}", &criteria)
 }
 
 #[cfg(test)]
@@ -1019,5 +1072,66 @@ mod tests {
         assert_eq!(s.status, GoalStatus::Cleared);
         assert!(s.subgoals.is_empty());
         assert!(s.contract.is_none());
+    }
+
+    // ── per-turn goal-awareness context ─────────────────────────
+
+    #[test]
+    fn turn_context_renders_for_active_and_waiting_only() {
+        let rt = GoalRuntime::new("ship the feature".into(), 8);
+        let ctx = rt.turn_context().expect("active goal renders context");
+        assert!(ctx.contains("ship the feature"));
+        assert!(ctx.contains("update_goal"));
+        assert!(!ctx.contains("{{")); // all placeholders substituted
+
+        // Waiting still renders — the goal can resume.
+        rt.shared_state().lock().unwrap().status = GoalStatus::Waiting;
+        assert!(rt.turn_context().is_some());
+
+        // Paused/terminal states render nothing.
+        for status in [
+            GoalStatus::Paused,
+            GoalStatus::Complete,
+            GoalStatus::Blocked,
+            GoalStatus::Cleared,
+        ] {
+            rt.shared_state().lock().unwrap().status = status;
+            assert!(rt.turn_context().is_none(), "{status:?} must not render");
+        }
+    }
+
+    #[test]
+    fn turn_context_is_byte_stable_and_varies_by_criteria() {
+        let subgoals = vec!["tests added".to_string()];
+        let contract = GoalContract {
+            outcome: "shipped".into(),
+            verification: "tests pass".into(),
+            ..Default::default()
+        };
+        // Same inputs → byte-identical output, for all criteria shapes.
+        assert_eq!(
+            render_goal_context("ship it", &[], None),
+            render_goal_context("ship it", &[], None),
+        );
+        assert_eq!(
+            render_goal_context("ship it", &subgoals, Some(&contract)),
+            render_goal_context("ship it", &subgoals, Some(&contract)),
+        );
+        // Criteria priority mirrors the continuation prompt: contract >
+        // subgoals > nothing; empty contract degrades byte-identically.
+        let plain = render_goal_context("ship it", &[], None);
+        assert!(!plain.contains("<subgoals>"));
+        assert!(!plain.contains("<contract>"));
+        let with_subgoals = render_goal_context("ship it", &subgoals, None);
+        assert!(with_subgoals.contains("<subgoals>"));
+        assert!(with_subgoals.contains("- 1. tests added"));
+        let with_contract = render_goal_context("ship it", &subgoals, Some(&contract));
+        assert!(with_contract.contains("<contract>"));
+        assert!(with_contract.contains("- Verification: tests pass"));
+        assert!(!with_contract.contains("<subgoals>")); // folded into contract
+        assert_eq!(
+            render_goal_context("ship it", &[], Some(&GoalContract::default())),
+            plain,
+        );
     }
 }
