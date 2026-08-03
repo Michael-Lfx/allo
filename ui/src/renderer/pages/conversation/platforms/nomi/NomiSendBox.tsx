@@ -6,6 +6,7 @@ import { ipcBridge } from '@/common';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
+import GoalModeChip from '@/renderer/components/chat/GoalModeChip';
 import MobileActionSheet, {
   type MobileActionSheetEntry,
   type MobileActionSheetOption,
@@ -1048,11 +1049,14 @@ const NomiSendBox: React.FC<{
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
-          <FileAttachButton
-            openFileSelector={openFileSelector}
-            onLocalFilesAdded={handleFilesAdded}
-            loadedMcpStatuses={loadedMcpStatuses}
-          />
+          <>
+            <FileAttachButton
+              openFileSelector={openFileSelector}
+              onLocalFilesAdded={handleFilesAdded}
+              loadedMcpStatuses={loadedMcpStatuses}
+            />
+            <GoalModeChip conversation_id={conversation_id} />
+          </>
         }
         rightTools={
           hasContextUsage || !hideModeSelector ? (

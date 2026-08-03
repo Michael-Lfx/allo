@@ -1,0 +1,93 @@
+.chip:global(.arco-btn) {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 6px !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  color: var(--color-text-3) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  vertical-align: middle;
+}
+
+.chip:global(.arco-btn:hover),
+.chip:global(.arco-btn:focus-visible) {
+  color: var(--color-text-3) !important;
+  background: var(--color-fill-2) !important;
+  border-color: transparent !important;
+}
+
+.chip :global(.arco-btn-content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.chipContent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 14px;
+  min-height: 14px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chipIcon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  line-height: 0;
+}
+
+.chipMark,
+.chipClose {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 120ms ease;
+}
+
+.chipMark {
+  opacity: 1;
+  color: var(--color-text-3);
+}
+
+.chipClose {
+  opacity: 0;
+  border-radius: 50%;
+  color: var(--color-bg-1);
+  background: var(--color-text-3);
+  pointer-events: none;
+}
+
+.chip:global(.arco-btn:hover) .chipMark,
+.chip:global(.arco-btn:focus-visible) .chipMark {
+  opacity: 0;
+}
+
+.chip:global(.arco-btn:hover) .chipClose,
+.chip:global(.arco-btn:focus-visible) .chipClose {
+  opacity: 1;
+}
+
+.chipMark :global(svg),
+.chipClose :global(svg) {
+  display: block;
+}
+
+.chipLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

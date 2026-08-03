@@ -507,6 +507,10 @@
       "contractToggle": "完成合约",
       "subgoalsToggle": "子目标 {{count}} 项"
     },
+    "chip": {
+      "label": "目标",
+      "clearAria": "取消目标模式"
+    },
     "contract": {
       "outcome": "结果",
       "verification": "验证",

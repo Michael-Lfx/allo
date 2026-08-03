@@ -1000,6 +1000,8 @@ export type I18nKey =
   | 'conversation.firstWinOutcome.statusAnswer'
   | 'conversation.firstWinOutcome.statusWithChanges'
   | 'conversation.firstWinOutcome.title'
+  | 'conversation.goal.chip.clearAria'
+  | 'conversation.goal.chip.label'
   | 'conversation.goal.contract.boundaries'
   | 'conversation.goal.contract.constraints'
   | 'conversation.goal.contract.outcome'
