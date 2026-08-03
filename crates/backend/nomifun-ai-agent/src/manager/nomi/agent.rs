@@ -2267,6 +2267,77 @@ impl NomiAgentManager {
         });
     }
 
+    /// Background completion-contract auto-draft for a fresh goal (fail-soft).
+    /// A contract gives the judge a concrete Verification criterion — without
+    /// one, the loose plain-shape prompt lets a fluent first answer pass as
+    /// DONE. Fresh goals enter through `goal_action("set")` or through the DB
+    /// fallback (`goal_action_on_db`, e.g. the guid-page goal switch) where
+    /// nothing drafts; this drafts in a spawned task so the first turn is
+    /// never delayed, applies through the shared runtime handle (picked up at
+    /// the next natural-termination point), and merely logs on any failure —
+    /// the goal keeps running without a contract.
+    pub(crate) fn spawn_goal_contract_autodraft(&self) {
+        use nomi_agent::goal::state::GoalStatus;
+        let Some(rt) = self.goal_runtime_handle() else {
+            return;
+        };
+        let snapshot = rt.snapshot();
+        // Fresh goals only: an existing contract is user-visible state we
+        // must not overwrite, and a mid-flight goal (turns already burned)
+        // keeps the judging shape it started with.
+        if snapshot.contract.is_some()
+            || snapshot.turns_used > 0
+            || snapshot.status != GoalStatus::Active
+        {
+            return;
+        }
+        let objective = snapshot.objective;
+        let cfg = self.distill_cfg.clone();
+        let repo = self.goal_repo_handle();
+        let session_id = self.runtime.conversation_id().to_string();
+        tokio::spawn(async move {
+            // Same resolved provider/model the engine runs on, WITHOUT the
+            // engine mutex (mirrors the explicit "draft" action).
+            let provider = nomi_providers::create_provider(&cfg);
+            let client =
+                nomi_agent::goal::judge::ProviderJudgeClient::new(provider, cfg.model.clone());
+            let contract = match nomi_agent::goal::judge::draft_contract(&objective, &client).await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Goal contract auto-draft failed — goal continues without a contract"
+                    );
+                    return;
+                }
+            };
+            // Re-check before applying: the user may have set a contract,
+            // replaced the goal, or ended it while the draft was in flight.
+            let current = rt.snapshot();
+            if current.contract.is_some()
+                || current.objective != objective
+                || current.status != GoalStatus::Active
+            {
+                return;
+            }
+            rt.set_contract(contract);
+            let state = rt.snapshot();
+            tracing::info!(session_id = %session_id, "Goal contract auto-drafted");
+            if let Some(repo) = repo {
+                let params = crate::goal_bridge::goal_state_to_upsert(&session_id, &state);
+                if let Err(e) = repo.upsert(&params).await {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to persist auto-drafted goal contract"
+                    );
+                }
+            }
+        });
+    }
+
     /// Execute a user `/goal` action (set / pause / resume / clear / status /
     /// the subgoal family / draft / set_contract / wait / unwait).
     ///
@@ -2311,6 +2382,10 @@ impl NomiAgentManager {
                     "Goal set"
                 );
                 self.spawn_goal_persist(state.clone());
+                // Fresh goal → draft its completion contract in the
+                // background so the judge gets a concrete Verification
+                // criterion (fail-soft; never delays this response).
+                self.spawn_goal_contract_autodraft();
                 Ok(crate::goal_bridge::goal_state_to_response(&state))
             }
             "pause" => {

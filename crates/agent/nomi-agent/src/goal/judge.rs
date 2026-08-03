@@ -43,10 +43,17 @@ user's stated goal. You receive the goal text, the agent's most recent \
 response, and — when present — a list of background processes the agent has \
 running. Decide one of three verdicts.\n\n\
 DONE — the goal is fully satisfied:\n\
-- The response explicitly confirms the goal was completed, OR\n\
-- The response clearly shows the final deliverable was produced, OR\n\
+- The response explicitly confirms the goal was completed AND shows how \
+that was verified, OR\n\
+- The response clearly shows the final deliverable was produced AND \
+contains concrete evidence it is real and checked (a command result, file \
+contents excerpt, test output — not just a fluent description of it), OR\n\
 - The response explains the goal is unachievable / blocked / needs user \
-input (treat this as DONE with reason describing the block).\n\n\
+input (treat this as DONE with reason describing the block).\n\
+Do NOT pick DONE merely because the response reads like a complete, \
+well-formed final answer. A first-pass answer that has not verified its \
+own claims against the real workspace or system state is CONTINUE, not \
+DONE. When the evidence is missing, weak, or indirect, prefer CONTINUE.\n\n\
 WAIT — the goal is NOT done, but the next step is to wait for async work to \
 finish rather than act again. Choose this ONLY when the agent's progress is \
 genuinely gated on something running on its own:\n\
@@ -218,6 +225,14 @@ fn render_judge_user_prompt(
             "Goal:\n{goal}\n\nAgent's most recent response:\n{response}\n\n\
              {background_block}\
              Current time: {now}\n\n\
+             Decision rules:\n\
+             - DONE requires concrete evidence in the response that the \
+             goal's end state is real and verified (a command result, file \
+             contents excerpt, test or build output) — a fluent, \
+             complete-looking answer alone is NOT enough.\n\
+             - If the response is a first attempt that has not verified its \
+             own claims, or any part of the goal's scope is unaddressed, \
+             the goal is NOT done — CONTINUE.\n\n\
              Is the goal satisfied — done, continue, or wait?",
         )
     } else {
