@@ -10,7 +10,8 @@ use url::Url;
 
 use crate::provider::article::{ArticleExtractor, DomSmoothieExtractor};
 use crate::provider::extract_policy::{
-    LocalExtractDiagnostics, LocalExtractOutcome, failed_outcome, successful_outcome,
+    LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
+    failed_outcome, successful_outcome,
 };
 use crate::provider::html_md::{html_to_markdown, truncate_chars};
 use crate::provider::ssrf::{check_scheme, resolve_extract_url, resolve_validated};
@@ -147,6 +148,22 @@ impl HttpExtractProvider {
                     ));
                     return failed_outcome(requested_url, error, diagnostics);
                 }
+                if let Some(kind) = deferred_document_kind(
+                    resource.content_type.as_deref(),
+                    &resource.body,
+                ) {
+                    return LocalExtractOutcome {
+                        requested_url,
+                        result: Err(LocalExtractFailure {
+                            kind,
+                            error: WebError::Provider(
+                                "local extract defers binary document parsing to managed fetch"
+                                    .to_owned(),
+                            ),
+                        }),
+                        diagnostics,
+                    };
+                }
                 match self.page_from_resource(&resource) {
                     Ok(page) => successful_outcome(requested_url, &resource, page),
                     Err(error) => failed_outcome(requested_url, error, diagnostics),
@@ -156,6 +173,11 @@ impl HttpExtractProvider {
     }
 
     fn page_from_resource(&self, resource: &FetchedResource) -> Result<ExtractedPage, WebError> {
+        if deferred_document_kind(resource.content_type.as_deref(), &resource.body).is_some() {
+            return Err(WebError::Provider(
+                "local extract defers binary document parsing to managed fetch".to_owned(),
+            ));
+        }
         let html = String::from_utf8_lossy(&resource.body).into_owned();
         let final_url = resource.final_url.clone();
         let url_str = final_url.as_str();
@@ -240,6 +262,34 @@ impl HttpExtractProvider {
             body.extend_from_slice(&chunk);
         }
         Ok((body, false))
+    }
+}
+
+fn deferred_document_kind(
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Option<LocalExtractFailureKind> {
+    if body.starts_with(b"%PDF-") {
+        return Some(LocalExtractFailureKind::Pdf);
+    }
+    match content_type {
+        Some("application/pdf") | Some("application/x-pdf") | Some("application/acrobat") => {
+            Some(LocalExtractFailureKind::Pdf)
+        }
+        Some(content_type)
+            if content_type.starts_with("application/")
+                && !matches!(
+                    content_type,
+                    "application/xhtml+xml"
+                        | "application/json"
+                        | "application/xml"
+                        | "application/x-javascript"
+                        | "application/javascript"
+                ) =>
+        {
+            Some(LocalExtractFailureKind::UnsupportedDocument)
+        }
+        _ => None,
     }
 }
 
@@ -447,6 +497,30 @@ mod tests {
         let resource = provider.fetch_resource(&server.uri()).await.unwrap();
         assert_eq!(resource.content_type.as_deref(), Some("application/pdf"));
         assert_eq!(resource.body, pdf);
+    }
+
+    #[tokio::test]
+    async fn extract_defers_pdf_before_html_parser() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/pdf")
+                    .set_body_bytes(b"%PDF-1.7\nlarge binary body"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HttpExtractProvider::new().allow_private_for_tests();
+        let outcome = provider
+            .extract_with_metadata(ExtractRequest {
+                url: server.uri(),
+            })
+            .await;
+        assert_eq!(
+            outcome.result.unwrap_err().kind,
+            LocalExtractFailureKind::Pdf
+        );
     }
 
     #[tokio::test]

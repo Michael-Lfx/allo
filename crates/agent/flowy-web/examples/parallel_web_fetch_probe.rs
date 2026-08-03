@@ -60,6 +60,14 @@ const CASES: &[ProbeCase] = &[
         urls: &["https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"],
     },
     ProbeCase {
+        name: "ecma_262",
+        urls: &["https://ecma-international.org/wp-content/uploads/ECMA-262.pdf"],
+    },
+    ProbeCase {
+        name: "runkit_home",
+        urls: &["https://runkit.com/"],
+    },
+    ProbeCase {
         name: "chinese_article",
         urls: &["https://zh.wikipedia.org/wiki/%E4%B8%AD%E5%8D%8E%E4%BA%BA%E6%B0%91%E5%85%B1%E5%92%8C%E5%9B%BD"],
     },
@@ -107,6 +115,7 @@ const CASES: &[ProbeCase] = &[
 
 struct Args {
     raw: bool,
+    diagnostic_shape: bool,
     cases: Option<Vec<String>>,
 }
 
@@ -148,7 +157,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await;
         match response {
-            Ok(response) => print_call(case.name, &response, args.raw),
+            Ok(response) => {
+                let safety_violation = args.diagnostic_shape
+                    && has_source_mismatch(&response, case.urls);
+                print_call(case.name, &response, args.raw, args.diagnostic_shape);
+                if response.status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || safety_violation
+                {
+                    println!(
+                        "case={} stop_reason={}",
+                        case.name,
+                        if response.status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                            "rate_limited"
+                        } else {
+                            "source_mismatch"
+                        }
+                    );
+                    break;
+                }
+            }
             Err(error) => {
                 println!("case={} outcome=failed error={error}", case.name);
             }
@@ -160,11 +187,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut raw = std::env::var("ALLO_WEB_FETCH_PROBE_RAW").as_deref() == Ok("1");
+    let mut diagnostic_shape = false;
     let mut cases = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--raw" => raw = true,
+            "--diagnostic-shape" => diagnostic_shape = true,
             "--case" => {
                 let value = args
                     .next()
@@ -180,7 +209,11 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
-    Ok(Args { raw, cases })
+    Ok(Args {
+        raw,
+        diagnostic_shape,
+        cases,
+    })
 }
 
 async fn discover(client: &reqwest::Client) -> Result<Discovery, Box<dyn Error>> {
@@ -351,7 +384,7 @@ async fn call_tool(
     }
 }
 
-fn print_call(case: &str, response: &WireResponse, raw: bool) {
+fn print_call(case: &str, response: &WireResponse, raw: bool, diagnostic_shape: bool) {
     let error_code = response
         .json
         .as_ref()
@@ -377,6 +410,12 @@ fn print_call(case: &str, response: &WireResponse, raw: bool) {
             .map(|code| code.to_string())
             .unwrap_or_else(|| "none".into())
     );
+    if diagnostic_shape {
+        println!(
+            "case={case} diagnostic_shape={}",
+            result_mapping_shape(result)
+        );
+    }
     if raw {
         let raw_value = response
             .json
@@ -385,6 +424,111 @@ fn print_call(case: &str, response: &WireResponse, raw: bool) {
             .unwrap_or_else(|| format!("<non-json {} bytes>", response.byte_len));
         println!("case={case} raw_response={raw_value}");
     }
+}
+
+fn has_source_mismatch(response: &WireResponse, requested_urls: &[&str]) -> bool {
+    let result = response
+        .json
+        .as_ref()
+        .and_then(|value| value.get("result"));
+    result_mappings(result).iter().any(|(url, final_url, _)| {
+        !requested_urls.iter().any(|requested| {
+            canonical_url(url) == canonical_url(requested)
+                || final_url
+                    .as_deref()
+                    .is_some_and(|value| canonical_url(value) == canonical_url(requested))
+        })
+    })
+}
+
+fn result_mapping_shape(result: Option<&Value>) -> String {
+    let mappings = result_mappings(result);
+    if mappings.is_empty() {
+        return "items=0".to_owned();
+    }
+    let items = mappings
+        .iter()
+        .map(|(url, final_url, content_chars)| {
+            format!(
+                "url={} final_url={} content_chars={content_chars}",
+                redact_url(url),
+                final_url
+                    .as_deref()
+                    .map(redact_url)
+                    .unwrap_or_else(|| "none".to_owned())
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("items={} {}", items.len(), items.join(" | "))
+}
+
+fn result_mappings(result: Option<&Value>) -> Vec<(String, Option<String>, usize)> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    let structured = result
+        .get("structuredContent")
+        .and_then(|value| value.get("results"))
+        .and_then(Value::as_array)
+        .cloned();
+    let text = result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find_map(|item| item.get("text").and_then(Value::as_str))
+        })
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .and_then(|value| value.get("results").and_then(Value::as_array).cloned());
+    structured
+        .or(text)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| {
+            let url = item.get("url")?.as_str()?.to_owned();
+            let final_url = item
+                .get("final_url")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let content_chars = item
+                .get("full_content")
+                .and_then(Value::as_str)
+                .map(|value| value.chars().count())
+                .or_else(|| {
+                    item.get("excerpts")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(|value| value.chars().count())
+                                .sum()
+                        })
+                })
+                .unwrap_or(0);
+            Some((url, final_url, content_chars))
+        })
+        .collect()
+}
+
+fn canonical_url(value: &str) -> String {
+    url::Url::parse(value)
+        .map(|mut parsed| {
+            parsed.set_fragment(None);
+            parsed.to_string().trim_end_matches('/').to_owned()
+        })
+        .unwrap_or_else(|_| value.trim_end_matches('/').to_owned())
+}
+
+fn redact_url(value: &str) -> String {
+    url::Url::parse(value)
+        .map(|mut parsed| {
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.to_string()
+        })
+        .unwrap_or_else(|_| "<invalid-url>".to_owned())
 }
 
 fn summarize_result(result: Option<&Value>) -> SummarizedResult {

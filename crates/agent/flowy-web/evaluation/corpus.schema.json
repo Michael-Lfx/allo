@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowy.local/schemas/managed-fetch-corpus.v1.json",
+  "title": "Allo managed fetch evaluation corpus",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "corpus_version", "cases"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "corpus_version": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "minimum_content_chars",
+        "minimum_marker_hits",
+        "verified_at",
+        "stale_after_days",
+        "enabled"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "category": {
+          "enum": [
+            "public_pdf_text",
+            "public_pdf_scan",
+            "javascript_shell",
+            "static_html_control",
+            "real_pdf_private"
+          ]
+        },
+        "url": { "type": "string", "format": "uri" },
+        "url_env": { "type": "string", "minLength": 1 },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "expected_markers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "minimum_content_chars": { "type": "integer", "minimum": 1 },
+        "minimum_marker_hits": { "type": "integer", "minimum": 1 },
+        "verified_at": { "type": "string", "format": "date" },
+        "stale_after_days": { "type": "integer", "minimum": 1 },
+        "enabled": { "type": "boolean" },
+        "notes": { "type": ["string", "null"] }
+      },
+      "oneOf": [
+        { "required": ["url"], "not": { "required": ["url_env"] } },
+        { "required": ["url_env"], "not": { "required": ["url"] } }
+      ]
+    }
+  }
+}

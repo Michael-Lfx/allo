@@ -969,6 +969,16 @@ where
     D: FnOnce() -> Result<nomifun_ai_agent::ManagedWebHandle, String>,
 {
     if !enabled {
+        if managed_extract {
+            tracing::warn!(
+                target: "managed_search",
+                managed_extract_requested = true,
+                managed_search_enabled = false,
+                resolution = "local_default",
+                reason = "unsupported_capability_combination",
+                "managed extract requested without managed search; using local extraction"
+            );
+        }
         return (
             None,
             nomifun_ai_agent::SearchProviderBinding::DefaultDdg,
@@ -4442,6 +4452,22 @@ mod tests {
             false,
             |_| panic!("disabled capability must not construct managed search"),
             || panic!("disabled capability must not construct ddg fallback"),
+        );
+        assert!(handle.is_none());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::DefaultDdg
+        ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault
+        ));
+
+        let (handle, binding, extract) = resolve_managed_web_binding(
+            false,
+            true,
+            |_| panic!("unsupported extract-only capability must not construct managed search"),
+            || panic!("unsupported extract-only capability must not construct ddg fallback"),
         );
         assert!(handle.is_none());
         assert!(matches!(

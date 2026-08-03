@@ -166,14 +166,69 @@ pub(crate) struct ParallelMcpClient {
     endpoint_health: Mutex<EndpointHealth>,
     fetch_tool_health: Mutex<FetchToolHealth>,
     remote_fetch_semaphore: Semaphore,
+    call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedMcpTool {
+    Fetch,
+    Search,
+}
+
+#[derive(Debug)]
+pub(crate) enum ManagedMcpCallError {
+    QuotaExhausted,
+    UnsafeArguments,
+    RetryLimitExceeded,
+    LedgerFailure,
+    Peer(McpPeerError),
+}
+
+#[derive(Debug)]
+enum ManagedSearchCallError {
+    Peer(McpPeerError),
+    QuotaExhausted,
+    UnsafeArguments,
+    RetryLimitExceeded,
+    LedgerFailure,
+}
+
+#[async_trait]
+pub(crate) trait ManagedMcpCallGate: Send + Sync {
+    async fn before_call(
+        &self,
+        tool: ManagedMcpTool,
+        arguments: &Value,
+        attempt: u8,
+    ) -> Result<(), ManagedMcpCallError>;
+
+    fn observe(
+        &self,
+        tool: ManagedMcpTool,
+        attempt: u8,
+        result: &Result<McpToolResult, McpPeerError>,
+    );
 }
 
 impl ParallelMcpClient {
-    pub(super) fn new() -> Result<Self, WebError> {
-        Self::new_at_endpoint("https://search.parallel.ai/mcp")
+    pub(crate) fn new() -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_gate("https://search.parallel.ai/mcp", None)
     }
 
     pub(super) fn new_at_endpoint(endpoint: impl Into<String>) -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_gate(endpoint, None)
+    }
+
+    pub(crate) fn new_with_call_gate(
+        gate: Arc<dyn ManagedMcpCallGate>,
+    ) -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_gate("https://search.parallel.ai/mcp", Some(gate))
+    }
+
+    fn new_at_endpoint_with_gate(
+        endpoint: impl Into<String>,
+        call_gate: Option<Arc<dyn ManagedMcpCallGate>>,
+    ) -> Result<Self, WebError> {
         Ok(Self {
             peer: Arc::new(RemoteMcpPeer::new(endpoint).map_err(|_| {
                 WebError::Provider("could not initialize managed Parallel MCP".to_owned())
@@ -182,6 +237,7 @@ impl ParallelMcpClient {
             fetch_tool_health: Mutex::new(FetchToolHealth::default()),
             // Limits Parallel web_fetch concurrency across conversations.
             remote_fetch_semaphore: Semaphore::new(1),
+            call_gate,
         })
     }
 
@@ -240,8 +296,21 @@ impl ParallelMcpClient {
         name: &str,
         arguments: Value,
         deadline: Instant,
-    ) -> Result<McpToolResult, McpPeerError> {
-        self.peer.call_tool(name, arguments, deadline).await
+        attempt: u8,
+    ) -> Result<McpToolResult, ManagedMcpCallError> {
+        let tool = match name {
+            "web_fetch" => ManagedMcpTool::Fetch,
+            "web_search" => ManagedMcpTool::Search,
+            _ => return Err(ManagedMcpCallError::UnsafeArguments),
+        };
+        if let Some(gate) = &self.call_gate {
+            gate.before_call(tool, &arguments, attempt).await?;
+        }
+        let result = self.peer.call_tool(name, arguments, deadline).await;
+        if let Some(gate) = &self.call_gate {
+            gate.observe(tool, attempt, &result);
+        }
+        result.map_err(ManagedMcpCallError::Peer)
     }
 }
 
@@ -405,6 +474,7 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
     ) -> Result<SearchAttemptOutput, SearchAttemptError> {
         let mut session_retried = false;
         let mut tool_rediscovered = false;
+        let mut tool_attempt = 0_u8;
         loop {
             match self.ensure_compatible(deadline).await {
                 Ok(()) => {}
@@ -433,11 +503,24 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
             {
                 return Err(SearchAttemptError::Upstream);
             }
-            match self
-                .peer
-                .call_tool(self.tool_name, (self.argument_builder)(query), deadline)
-                .await
-            {
+            tool_attempt = tool_attempt.saturating_add(1);
+            let call = if let Some(client) = self.shared_client.as_ref() {
+                client
+                    .call_tool(
+                        self.tool_name,
+                        (self.argument_builder)(query),
+                        deadline,
+                        tool_attempt,
+                    )
+                    .await
+                    .map_err(map_managed_call_error_for_search)
+            } else {
+                self.peer
+                    .call_tool(self.tool_name, (self.argument_builder)(query), deadline)
+                    .await
+                    .map_err(ManagedSearchCallError::Peer)
+            };
+            match call {
                 Ok(result) => {
                     if result.is_error && is_explicit_unknown_tool(&result) {
                         if !tool_rediscovered {
@@ -452,11 +535,13 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                     }
                     return self.decode_result(&result, query.count as usize);
                 }
-                Err(McpPeerError::SessionExpired) if !session_retried => {
+                Err(ManagedSearchCallError::Peer(McpPeerError::SessionExpired))
+                    if !session_retried =>
+                {
                     self.clear_compatibility().await;
                     session_retried = true;
                 }
-                Err(error) => {
+                Err(ManagedSearchCallError::Peer(error)) => {
                     if !tool_rediscovered && is_explicit_unknown_tool_rpc(&error) {
                         self.clear_compatibility().await;
                         tool_rediscovered = true;
@@ -472,6 +557,18 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                     }
                     return Err(mapped);
                 }
+                Err(ManagedSearchCallError::QuotaExhausted) => {
+                    return Err(SearchAttemptError::QuotaExhausted);
+                }
+                Err(ManagedSearchCallError::UnsafeArguments) => {
+                    return Err(SearchAttemptError::InvalidRequest);
+                }
+                Err(ManagedSearchCallError::RetryLimitExceeded) => {
+                    return Err(SearchAttemptError::Upstream);
+                }
+                Err(ManagedSearchCallError::LedgerFailure) => {
+                    return Err(SearchAttemptError::Upstream);
+                }
             }
         }
     }
@@ -480,6 +577,16 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         if self.shared_client.is_none() {
             let _ = self.peer.shutdown(deadline).await;
         }
+    }
+}
+
+fn map_managed_call_error_for_search(error: ManagedMcpCallError) -> ManagedSearchCallError {
+    match error {
+        ManagedMcpCallError::Peer(error) => ManagedSearchCallError::Peer(error),
+        ManagedMcpCallError::QuotaExhausted => ManagedSearchCallError::QuotaExhausted,
+        ManagedMcpCallError::UnsafeArguments => ManagedSearchCallError::UnsafeArguments,
+        ManagedMcpCallError::RetryLimitExceeded => ManagedSearchCallError::RetryLimitExceeded,
+        ManagedMcpCallError::LedgerFailure => ManagedSearchCallError::LedgerFailure,
     }
 }
 
@@ -499,6 +606,7 @@ fn search_endpoint_failure_kind(error: &SearchAttemptError) -> Option<EndpointFa
         | SearchAttemptError::RpcMethodUnavailable
         | SearchAttemptError::SessionExpired
         | SearchAttemptError::InvalidRequest
+        | SearchAttemptError::QuotaExhausted
         | SearchAttemptError::Upstream => None,
     }
 }

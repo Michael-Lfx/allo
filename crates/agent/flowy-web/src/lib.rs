@@ -1,4 +1,6 @@
 pub mod coordinator;
+#[cfg(feature = "fetch-eval")]
+pub mod evaluation;
 pub mod managed;
 pub mod provider;
 pub mod tools;

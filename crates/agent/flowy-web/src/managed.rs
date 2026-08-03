@@ -29,7 +29,10 @@ pub use fetch::{
     RemoteExtractFallback, RemoteExtractItem, RemoteExtractRequest, RemoteExtractRequestItem,
     RemoteTimeoutKind,
 };
-use remote::{ParallelMcpClient, RemoteSearchAdapter};
+pub(crate) use remote::ParallelMcpClient;
+#[cfg(feature = "fetch-eval")]
+pub(crate) use remote::{ManagedMcpCallError, ManagedMcpCallGate, ManagedMcpTool};
+use remote::RemoteSearchAdapter;
 
 const TOTAL_BUDGET: Duration = Duration::from_secs(10);
 const MAX_TITLE_CHARS: usize = 300;
@@ -68,6 +71,7 @@ enum SearchAttemptError {
     RpcMethodUnavailable,
     SessionExpired,
     InvalidRequest,
+    QuotaExhausted,
     MalformedResponse,
     Upstream,
 }
@@ -213,6 +217,7 @@ impl SearchProviderHealth {
                 self.cooldown_until = Some(now + Duration::from_secs(seconds));
             }
             SearchAttemptError::InvalidRequest => {}
+            SearchAttemptError::QuotaExhausted => {}
             SearchAttemptError::QueueBusy => {}
         }
     }
@@ -685,6 +690,7 @@ fn error_class(error: &SearchAttemptError) -> &'static str {
         SearchAttemptError::RpcMethodUnavailable => "rpc_method_unavailable",
         SearchAttemptError::SessionExpired => "session_expired",
         SearchAttemptError::InvalidRequest => "invalid_request",
+        SearchAttemptError::QuotaExhausted => "quota_exhausted",
         SearchAttemptError::MalformedResponse => "malformed_response",
         SearchAttemptError::Upstream => "upstream",
     }

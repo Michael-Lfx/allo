@@ -95,6 +95,8 @@ pub struct ExtractBatchDiagnostics {
     pub remote_budget_skipped_count: usize,
     pub remote_queue_ms: Option<u128>,
     pub remote_call_ms: Option<u128>,
+    pub remote_unmatched_count: usize,
+    pub remote_dropped_count: usize,
     pub total_elapsed_ms: u128,
     pub timeout_counts: ExtractTimeoutCounts,
     pub fallback_reason_counts: BTreeMap<RemoteFallbackReason, usize>,
@@ -110,6 +112,23 @@ pub trait ExtractCoordinator: Send + Sync {
         requests: Vec<ExtractRequest>,
         budget: ExtractBudget,
     ) -> ExtractBatchOutcome;
+}
+
+/// Local extraction seam used by the managed coordinator.
+///
+/// The production adapter is [`HttpExtractProvider`]. Evaluation and tests can
+/// inject a deterministic adapter without changing the remote fallback
+/// contract or pretending that an injected failure is provider evidence.
+#[async_trait]
+pub(crate) trait LocalExtractAdapter: Send + Sync {
+    async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome;
+}
+
+#[async_trait]
+impl LocalExtractAdapter for HttpExtractProvider {
+    async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
+        HttpExtractProvider::extract_with_metadata(self, req).await
+    }
 }
 
 pub struct LocalExtractCoordinator {
@@ -251,6 +270,8 @@ impl ExtractCoordinator for LocalExtractCoordinator {
                 remote_budget_skipped_count: 0,
                 remote_queue_ms: None,
                 remote_call_ms: None,
+                remote_unmatched_count: 0,
+                remote_dropped_count: 0,
                 total_elapsed_ms: started_at.elapsed().as_millis(),
                 timeout_counts,
                 fallback_reason_counts: BTreeMap::new(),
@@ -304,7 +325,7 @@ struct EligibleItem {
 }
 
 pub struct ManagedExtractCoordinator {
-    local: Arc<HttpExtractProvider>,
+    local: Arc<dyn LocalExtractAdapter>,
     remote: Arc<dyn RemoteExtractFallback>,
     budget_policy: RemoteBudgetPolicy,
     allow_private_for_tests: bool,
@@ -313,6 +334,13 @@ pub struct ManagedExtractCoordinator {
 impl ManagedExtractCoordinator {
     pub fn new(
         local: Arc<HttpExtractProvider>,
+        remote: Arc<dyn RemoteExtractFallback>,
+    ) -> Self {
+        Self::from_local_adapter(local, remote)
+    }
+
+    pub(crate) fn from_local_adapter(
+        local: Arc<dyn LocalExtractAdapter>,
         remote: Arc<dyn RemoteExtractFallback>,
     ) -> Self {
         Self {
@@ -507,6 +535,8 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         let mut remote_failure_count = 0usize;
         let mut remote_queue_ms = None;
         let mut remote_call_ms = None;
+        let mut remote_unmatched_count = 0usize;
+        let mut remote_dropped_count = 0usize;
         if !eligible.is_empty() {
             let readiness = self.remote.fetch_readiness().await;
             let remaining = budget
@@ -523,6 +553,8 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                     Ok(remote_batch) => {
                         remote_queue_ms = remote_batch.diagnostics.queue_ms;
                         remote_call_ms = remote_batch.diagnostics.call_ms;
+                        remote_unmatched_count = remote_batch.diagnostics.unmatched_item_count;
+                        remote_dropped_count = remote_batch.diagnostics.dropped_item_count;
                         let remote_by_url = remote_batch
                             .items
                             .iter()
@@ -657,6 +689,8 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 remote_budget_skipped_count,
                 remote_queue_ms,
                 remote_call_ms,
+                remote_unmatched_count,
+                remote_dropped_count,
                 total_elapsed_ms: started_at.elapsed().as_millis(),
                 timeout_counts,
                 fallback_reason_counts,
@@ -670,7 +704,7 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
 }
 
 async fn run_managed_local(
-    provider: Arc<HttpExtractProvider>,
+    provider: Arc<dyn LocalExtractAdapter>,
     index: usize,
     request: ExtractRequest,
     budget: ExtractBudget,

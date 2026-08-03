@@ -18,8 +18,8 @@ use crate::provider::extract_policy::{
 };
 
 use super::remote::{
-    EndpointFailureKind, FetchToolFailureKind, ParallelMcpClient, is_explicit_unknown_tool,
-    is_explicit_unknown_tool_rpc, is_unknown_tool_message,
+    EndpointFailureKind, FetchToolFailureKind, ManagedMcpCallError, ParallelMcpClient,
+    is_explicit_unknown_tool, is_explicit_unknown_tool_rpc, is_unknown_tool_message,
 };
 
 const FETCH_TOOL: &str = "web_fetch";
@@ -96,6 +96,10 @@ pub enum RemoteExtractError {
     RpcMethodUnavailable,
     SessionExpired,
     InvalidRequest,
+    /// Evaluation-only admission failure. Production adapters never emit this
+    /// variant; the feature-gated runner uses it to stop before a remote call
+    /// when its local quota ledger is exhausted.
+    QuotaExhausted,
     MalformedResponse,
     Upstream,
 }
@@ -125,6 +129,13 @@ pub trait RemoteExtractFallback: Send + Sync {
 
     async fn fetch_readiness(&self) -> FetchReadiness {
         FetchReadiness::ColdTransport
+    }
+
+    /// Prepare the transport and fetch-tool compatibility cache without
+    /// issuing a `web_fetch` call. This is the boundary used to define a warm
+    /// evaluation attempt.
+    async fn warm_fetch(&self, _deadline: Instant) -> Result<(), RemoteExtractError> {
+        Ok(())
     }
 }
 
@@ -207,6 +218,10 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
         }
     }
 
+    async fn warm_fetch(&self, deadline: Instant) -> Result<(), RemoteExtractError> {
+        self.ensure_compatible(deadline).await
+    }
+
     async fn extract_batch(
         &self,
         request: RemoteExtractRequest,
@@ -214,6 +229,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
     ) -> Result<RemoteExtractBatch, RemoteExtractError> {
         let mut session_retried = false;
         let mut tool_rediscovered = false;
+        let mut tool_attempt = 0_u8;
         loop {
             match self.ensure_compatible(deadline).await {
                 Ok(()) => {}
@@ -278,9 +294,10 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
             };
             let queue_ms = Some(attempt_started.elapsed().as_millis());
             let call_started = Instant::now();
+            tool_attempt = tool_attempt.saturating_add(1);
             let result = self
                 .client
-                .call_tool(FETCH_TOOL, arguments, deadline)
+                .call_tool(FETCH_TOOL, arguments, deadline, tool_attempt)
                 .await;
             let call_ms = Some(call_started.elapsed().as_millis());
             drop(permit);
@@ -323,11 +340,13 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         }
                     }
                 }
-                Err(McpPeerError::SessionExpired) if !session_retried => {
+                Err(ManagedMcpCallError::Peer(McpPeerError::SessionExpired))
+                    if !session_retried =>
+                {
                     self.clear_compatibility().await;
                     session_retried = true;
                 }
-                Err(error) => {
+                Err(ManagedMcpCallError::Peer(error)) => {
                     if !tool_rediscovered && is_explicit_unknown_tool_rpc(&error) {
                         self.clear_compatibility().await;
                         tool_rediscovered = true;
@@ -336,6 +355,18 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                     let mapped = map_peer_error(error);
                     self.record_extract_error(&mapped).await;
                     return Err(mapped);
+                }
+                Err(ManagedMcpCallError::QuotaExhausted) => {
+                    return Err(RemoteExtractError::QuotaExhausted);
+                }
+                Err(ManagedMcpCallError::UnsafeArguments) => {
+                    return Err(RemoteExtractError::InvalidRequest);
+                }
+                Err(ManagedMcpCallError::RetryLimitExceeded) => {
+                    return Err(RemoteExtractError::Upstream);
+                }
+                Err(ManagedMcpCallError::LedgerFailure) => {
+                    return Err(RemoteExtractError::Upstream);
                 }
             }
         }
@@ -390,7 +421,8 @@ impl ParallelFetchAdapter {
             | RemoteExtractError::SchemaMismatch
             | RemoteExtractError::RpcMethodUnavailable
             | RemoteExtractError::SessionExpired
-            | RemoteExtractError::InvalidRequest => {}
+            | RemoteExtractError::InvalidRequest
+            | RemoteExtractError::QuotaExhausted => {}
         }
     }
 }
