@@ -1,0 +1,60 @@
+.root {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+  outline: none;
+  color: var(--color-text-1);
+  font: inherit;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  cursor: text;
+}
+
+.root[data-empty='true']::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: var(--composer-placeholder-inset, 2px);
+  pointer-events: none;
+  color: var(--color-text-3);
+}
+
+.singleLine {
+  min-height: 20px;
+  max-height: 20px;
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+
+.skill {
+  display: inline-flex;
+  max-width: min(48vw, 240px);
+  height: auto;
+  margin: 0 2px;
+  align-items: center;
+  gap: 3px;
+  vertical-align: middle;
+  color: #2e82d2;
+  font: inherit;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.skillIcon {
+  display: flex;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.skillName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

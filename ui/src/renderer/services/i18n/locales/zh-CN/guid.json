@@ -53,8 +53,9 @@
     "runSettingsHide": "收起方案"
   },
   "goalMode": {
-    "label": "Goal 模式",
-    "labelOn": "Goal 模式 · 开",
+    "label": "目标",
+    "enableAria": "启用目标模式",
+    "clearAria": "取消目标模式",
     "tooltip": "开启后，首条输入将被设为会话目标（等价 /goal），回合结束后自动评估并续作",
     "applyFailed": "目标设定失败，已作为普通消息发送"
   },

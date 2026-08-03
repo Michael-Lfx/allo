@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   filterSlashLauncherItems,
+  getActiveSlashTokenRange,
   groupSlashLauncherItems,
   mergeSkillLoadIds,
   replaceActiveSlashToken,
@@ -52,6 +53,16 @@ describe('slash launcher', () => {
     expect(replaceActiveSlashToken('/pdf')).toBe('');
     expect(replaceActiveSlashToken('Please use /pdf')).toBe('Please use ');
     expect(replaceActiveSlashToken('https://example.com')).toBe('https://example.com');
+  });
+
+  test('finds and replaces the slash token at the current caret position', () => {
+    expect(getActiveSlashTokenRange('你好/office 后续', 9)).toEqual({ start: 2, end: 9, query: 'office' });
+    expect(replaceActiveSlashToken('你好/office 后续', '', 9)).toBe('你好 后续');
+  });
+
+  test('does not mistake URLs and paths for a slash command at the caret', () => {
+    expect(getActiveSlashTokenRange('https://example.com', 19)).toBeNull();
+    expect(getActiveSlashTokenRange('C:/work/project', 15)).toBeNull();
   });
 
   test('keeps explicit Skill selection order while deduplicating preset overlap', () => {

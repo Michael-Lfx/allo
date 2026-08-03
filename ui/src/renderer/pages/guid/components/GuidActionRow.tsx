@@ -15,7 +15,7 @@ import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { Button, Checkbox, Dropdown, Menu, Message, Tooltip } from '@arco-design/web-react';
-import { Aiming, Plus, Shield, UploadOne } from '@icon-park/react';
+import { Aiming, CloseSmall, Plus, Shield, UploadOne } from '@icon-park/react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
@@ -56,11 +56,6 @@ type GuidActionRowProps = {
   selectedMcpServerIds: McpServerId[];
   onToggleMcpServer: (serverId: McpServerId) => void;
 
-  // Goal 模式开关（仅 nomi 运行时可用：后端 goal 端点只支持 nomi）
-  goalModeAvailable?: boolean;
-  goalMode?: boolean;
-  onToggleGoalMode?: () => void;
-
   // Send button
   loading: boolean;
   hasDraft: boolean;
@@ -68,6 +63,9 @@ type GuidActionRowProps = {
   onSpeechTranscript: (text: string) => void;
   autoWorkDraft?: AutoWorkDraftValue;
   onSend: () => void;
+  /** Arms the first message as a `/goal` objective. */
+  goalMode?: boolean;
+  onGoalModeChange?: (enabled: boolean) => void;
   /** When true the primary button starts an AutoWork session (no chat send):
    * it shows a robot icon + "Start AutoWork" tooltip. Disabled/onClick are
    * still driven by the parent. */
@@ -94,9 +92,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   mcpServers,
   selectedMcpServerIds,
   onToggleMcpServer,
-  goalModeAvailable = false,
-  goalMode = false,
-  onToggleGoalMode,
   hidePresetTag = false,
   loading,
   hasDraft,
@@ -104,6 +99,8 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onSpeechTranscript,
   autoWorkDraft,
   onSend,
+  goalMode = false,
+  onGoalModeChange,
   autoWorkMode = false,
 }) => {
   const { t } = useTranslation();
@@ -114,8 +111,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const configOptionCount =
     (modelSelectorNode ? 1 : 0) +
     (collaboratorSelectorNode ? 1 : 0) +
-    (showModeSwitch ? 1 : 0) +
-    (goalModeAvailable ? 1 : 0);
+    (showModeSwitch ? 1 : 0);
 
   // Browser file picker ref (WebUI only)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -272,6 +268,31 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             />
           )}
         </div>
+        {goalMode && onGoalModeChange && (
+          <Button
+            type='text'
+            shape='round'
+            size='small'
+            className={styles.actionGoalButton}
+            onClick={() => onGoalModeChange(false)}
+            aria-label={t('guid.goalMode.clearAria', { defaultValue: '取消目标模式' })}
+            data-testid='guid-goal-chip'
+          >
+            <span className={styles.actionGoalButtonContent}>
+              <span className={styles.actionGoalChipIcon} aria-hidden='true'>
+                <span className={styles.actionGoalChipMark}>
+                  <Aiming theme='outline' size='14' strokeWidth={3} fill='currentColor' />
+                </span>
+                <span className={styles.actionGoalChipClose}>
+                  <CloseSmall theme='outline' size='12' strokeWidth={5} fill='currentColor' />
+                </span>
+              </span>
+              <span className={styles.actionGoalChipLabel}>
+                {t('guid.goalMode.label', { defaultValue: '目标' })}
+              </span>
+            </span>
+          </Button>
+        )}
       </div>
       <div className={`${styles.actionSubmit} ${!isMobile ? styles.actionSubmitResponsive : ''}`}>
         {configOptionCount > 0 && (
@@ -291,34 +312,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
                 compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
                 modeLabelFormatter={getModeDisplayLabel}
               />
-            )}
-
-            {goalModeAvailable && (
-              <Tooltip content={t('guid.goalMode.tooltip')} position='top'>
-                <Button
-                  className={'sendbox-model-btn guid-config-btn'}
-                  shape='round'
-                  size='small'
-                  onClick={onToggleGoalMode}
-                  aria-pressed={goalMode}
-                  data-testid='guid-goal-mode-toggle'
-                >
-                  <span
-                    className='flex items-center gap-6px min-w-0'
-                    style={goalMode ? { color: iconColors.brand } : undefined}
-                  >
-                    <Aiming
-                      theme='outline'
-                      size='14'
-                      fill={goalMode ? iconColors.brand : iconColors.secondary}
-                      className='shrink-0'
-                    />
-                    <span className='truncate'>
-                      {goalMode ? t('guid.goalMode.labelOn') : t('guid.goalMode.label')}
-                    </span>
-                  </span>
-                </Button>
-              </Tooltip>
             )}
           </div>
         )}

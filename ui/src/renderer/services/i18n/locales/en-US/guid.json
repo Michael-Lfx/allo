@@ -53,8 +53,9 @@
     "runSettingsHide": "Hide plan"
   },
   "goalMode": {
-    "label": "Goal mode",
-    "labelOn": "Goal mode · On",
+    "label": "Goal",
+    "enableAria": "Enable goal mode",
+    "clearAria": "Clear goal mode",
     "tooltip": "When on, your first input becomes the conversation goal (same as /goal) — progress is judged and continued automatically after each turn",
     "applyFailed": "Failed to set the goal — sent as a normal message instead"
   },

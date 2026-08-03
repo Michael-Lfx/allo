@@ -48,12 +48,19 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
 
   return (
     <div
-      className='rounded-14px border border-solid shadow-[0_8px_24px_rgba(0,0,0,0.12)] overflow-hidden'
+      className={compact ? 'rounded-20px border border-solid overflow-hidden' : 'rounded-14px border border-solid overflow-hidden'}
       style={{
-        borderColor: 'var(--color-border-2)',
-        background: 'color-mix(in srgb, var(--color-bg-1) 78%, transparent)',
-        backdropFilter: 'blur(14px) saturate(1.1)',
-        WebkitBackdropFilter: 'blur(14px) saturate(1.1)',
+        borderColor: compact
+          ? 'color-mix(in srgb, var(--color-border-2) 68%, var(--color-bg-1))'
+          : 'var(--color-border-2)',
+        background: compact
+          ? 'color-mix(in srgb, var(--color-bg-1) 96%, var(--color-fill-1))'
+          : 'color-mix(in srgb, var(--color-bg-1) 78%, transparent)',
+        boxShadow: compact
+          ? '0 8px 24px color-mix(in srgb, var(--color-text-1) 6%, transparent)'
+          : '0 8px 24px rgba(0,0,0,0.12)',
+        backdropFilter: compact ? undefined : 'blur(14px) saturate(1.1)',
+        WebkitBackdropFilter: compact ? undefined : 'blur(14px) saturate(1.1)',
       }}
     >
       {!compact && (
@@ -71,7 +78,7 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
       <div
         role='listbox'
         aria-busy={loading}
-        className={compact ? 'overflow-y-auto px-2px py-2px' : 'overflow-y-auto p-6px'}
+        className={compact ? 'overflow-y-auto px-8px py-4px' : 'overflow-y-auto p-6px'}
         style={{ maxHeight: compact ? 'min(32vh, 232px)' : 'min(34vh, 260px)' }}
       >
         {loading && (
@@ -101,16 +108,19 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                 }}
                 className={classNames(
                   compact
-                    ? 'w-full text-left px-8px py-4px rounded-6px transition-colors border border-solid outline-none cursor-pointer mb-1px last:mb-0'
+                    ? 'w-full text-left px-10px py-2px rounded-10px transition-colors border border-solid outline-none cursor-pointer mb-1px last:mb-0'
                     : 'w-full text-left px-10px py-6px rounded-8px transition-all border border-solid outline-none cursor-pointer mb-2px last:mb-0',
                   {
-                    'border-[var(--color-border-2)]': index === activeIndex,
-                    'border-transparent hover:bg-[var(--color-fill-1)]': index !== activeIndex,
+                    'border-transparent': true,
+                    'hover:bg-[var(--color-fill-1)]': index !== activeIndex,
                   }
                 )}
                 style={{
-                  minHeight: compact ? '34px' : '38px',
-                  background: index === activeIndex ? 'color-mix(in srgb, var(--aou-2) 88%, transparent)' : 'transparent',
+                  minHeight: compact ? '28px' : '38px',
+                  background:
+                    index === activeIndex
+                      ? 'color-mix(in srgb, var(--color-fill-2) 76%, var(--color-bg-1))'
+                      : 'transparent',
                   boxShadow: undefined,
                 }}
                 onMouseEnter={() => onHoverItem(index)}
@@ -135,10 +145,14 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                   {item.badge && (
                     <span
                       className={classNames(
-                        compact ? 'text-10px rounded-999px px-5px py-0 shrink-0' : 'text-10px rounded-999px px-6px py-1px shrink-0',
-                        index === activeIndex
-                          ? 'text-t-secondary bg-[var(--color-bg-1)]'
-                          : 'text-t-tertiary bg-[var(--color-bg-1)]'
+                        compact
+                          ? 'text-12px leading-20px shrink-0'
+                          : 'text-10px rounded-999px px-6px py-1px shrink-0',
+                        compact
+                          ? 'text-t-tertiary'
+                          : index === activeIndex
+                            ? 'text-t-secondary bg-[var(--color-bg-1)]'
+                            : 'text-t-tertiary bg-[var(--color-bg-1)]'
                       )}
                     >
                       {item.badge}

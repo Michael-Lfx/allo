@@ -1,14 +1,10 @@
 import type { SlashCommandItem } from '@/common/chat/slash/types';
+import { getActiveSlashTokenRange } from '@/common/chat/slash/launcher';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
-// Match slash followed by command name (alphanumeric, underscore, hyphen only)
-// 匹配斜杠后跟命令名（仅允许字母数字、下划线、连字符）
-const SLASH_QUERY_RE = /(?:^|\s)\/([a-zA-Z0-9_-]*)$/;
-
-export function matchSlashQuery(input: string): string | null {
-  const match = input.match(SLASH_QUERY_RE);
-  return match ? match[1] : null;
+export function matchSlashQuery(input: string, caret?: number): string | null {
+  return getActiveSlashTokenRange(input, caret)?.query ?? null;
 }
 
 function getSelectionBehavior(command: SlashCommandItem): 'execute' | 'insert' {

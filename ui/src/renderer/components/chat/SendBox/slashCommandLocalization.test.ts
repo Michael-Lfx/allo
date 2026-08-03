@@ -27,4 +27,11 @@ describe('SendBox slash command localization', () => {
     expect(source.includes("id: `${command.source === 'builtin' ? 'system' : 'agent'}:${command.source}:${command.name}`")).toBe(true);
     expect(source.includes('const goalInvocation = parseGoalSlashCommand')).toBe(true);
   });
+
+  test('aligns an open command menu with the composer and keeps its border neutral', () => {
+    expect(source.includes('const isComposerMenuOpen = isCommandMenuOpen || isAtFileMenuOpen')).toBe(true);
+    expect(source.includes("left-0 right-0 bottom-[calc(100%+10px)] z-70")).toBe(true);
+    expect(source.includes('borderColor: isComposerMenuOpen')).toBe(true);
+    expect(source.includes('boxShadow: isInputActive && !isComposerMenuOpen ? activeShadow : \'none\'')).toBe(true);
+  });
 });

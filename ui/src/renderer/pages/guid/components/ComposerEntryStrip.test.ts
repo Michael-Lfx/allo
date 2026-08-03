@@ -22,4 +22,11 @@ describe('Guid composer entry strip', () => {
     expect(source.includes('aria-label={t(\'guid.entry.backToFree\'')).toBe(true);
     expect(source.includes('entryDismiss}>')).toBe(false);
   });
+
+  test('keeps the entry controls compact', () => {
+    const styles = readSource(new URL('../index.module.css', import.meta.url));
+
+    expect(styles.includes('min-height: 32px')).toBe(true);
+    expect(styles.includes('height: 28px')).toBe(true);
+  });
 });

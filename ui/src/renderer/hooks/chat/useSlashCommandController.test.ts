@@ -16,4 +16,9 @@ describe('matchSlashQuery', () => {
     expect(matchSlashQuery('C:/work/project')).toBeNull();
     expect(matchSlashQuery('Please use /skills now')).toBeNull();
   });
+
+  test('uses the current caret instead of requiring the token at the end of the draft', () => {
+    expect(matchSlashQuery('你好/skills 后续', 9)).toBe('skills');
+    expect(matchSlashQuery('你好/skills 后续')).toBeNull();
+  });
 });

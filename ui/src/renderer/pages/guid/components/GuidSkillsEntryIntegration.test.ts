@@ -7,8 +7,9 @@ describe('Guid Skill launcher integration', () => {
   test('keeps explicit Skill selections in the input body rather than the preset entry strip', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
 
-    expect(source.includes('<ComposerSkillChips')).toBe(true);
+    expect(source.includes('ComposerSkillTokenInput')).toBe(true);
     expect(source.includes('skillChips={')).toBe(true);
+    expect(source.includes('tokenInputRef={homeTokenInputRef}')).toBe(true);
     expect(source.includes('activeSkills={')).toBe(false);
     expect(source.includes('onAdjustSkills=')).toBe(false);
   });

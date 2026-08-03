@@ -759,7 +759,7 @@ button.guidResourceCard:focus-visible {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 38px;
+  min-height: 32px;
   margin-bottom: 8px;
   padding: 0 4px 0 2px;
   background: transparent;
@@ -852,7 +852,7 @@ button.guidResourceCard:focus-visible {
 
 .entryButton {
   min-width: 0;
-  height: 34px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -1834,6 +1834,103 @@ button.guidResourceCard:focus-visible {
 
 .actionFileAttachBtn:global(.arco-btn) :global(.arco-icon) {
   font-size: 14px !important;
+}
+
+.actionGoalButton:global(.arco-btn) {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 6px !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  color: var(--color-text-3) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  transform: translateY(0);
+  vertical-align: middle;
+}
+
+.actionGoalButton:global(.arco-btn:hover),
+.actionGoalButton:global(.arco-btn:focus-visible),
+.actionGoalButton[aria-pressed='true'] {
+  color: var(--color-text-3) !important;
+  background: var(--color-fill-2) !important;
+  border-color: transparent !important;
+  transform: translateY(0);
+}
+
+.actionGoalButton :global(.arco-btn-content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.actionGoalButtonContent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 14px;
+  min-height: 14px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.actionGoalChipIcon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  line-height: 0;
+}
+
+.actionGoalChipMark,
+.actionGoalChipClose {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 120ms ease;
+}
+
+.actionGoalChipMark {
+  opacity: 1;
+  color: var(--color-text-3);
+}
+
+.actionGoalChipClose {
+  opacity: 0;
+  border-radius: 50%;
+  color: var(--color-bg-1);
+  background: var(--color-text-3);
+  pointer-events: none;
+}
+
+.actionGoalButton:global(.arco-btn:hover) .actionGoalChipMark,
+.actionGoalButton:global(.arco-btn:focus-visible) .actionGoalChipMark {
+  opacity: 0;
+}
+
+.actionGoalButton:global(.arco-btn:hover) .actionGoalChipClose,
+.actionGoalButton:global(.arco-btn:focus-visible) .actionGoalChipClose {
+  opacity: 1;
+}
+
+.actionGoalChipMark :global(svg),
+.actionGoalChipClose :global(svg) {
+  display: block;
+}
+
+.actionGoalChipLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 方案E：模型 + 权限各自独立 tb-btn，中间有竖线分隔 */

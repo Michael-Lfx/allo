@@ -18,15 +18,19 @@ describe('Guid homepage slash launcher', () => {
     expect(pageSource.includes("setDrawerMode('skills')")).toBe(false);
   });
 
-  test('keeps selected Skills as removable source-qualified composer chips', () => {
+  test('keeps selected Skills as source-qualified atomic tokens in the shared editor', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const cardSource = readSource(new URL('./components/GuidInputCard.tsx', import.meta.url));
 
-    expect(pageSource.includes('ComposerSkillChips')).toBe(true);
     expect(pageSource.includes('skillId: skill.skillId')).toBe(true);
     expect(pageSource.includes('homeSkillChips.map((skill) => skill.skillId)')).toBe(true);
-    expect(cardSource.includes('skillChips?: React.ReactNode')).toBe(true);
-    expect(cardSource.includes('{skillChips}')).toBe(true);
+    expect(pageSource.includes('homeTokenInputRef.current?.insertSkillAtActiveSlash')).toBe(true);
+    expect(pageSource.includes('shouldRemoveLastComposerSkill(')).toBe(false);
+    expect(pageSource.includes('ComposerSkillChips')).toBe(false);
+    expect(cardSource.includes('ComposerSkillTokenInput')).toBe(true);
+    expect(cardSource.includes('skillChips?: ComposerSkillChip[]')).toBe(true);
+    expect(cardSource.includes('tokenInputRef?: React.Ref<ComposerSkillTokenInputHandle>')).toBe(true);
+    expect(cardSource.includes('ComposerInlineInputRow')).toBe(false);
   });
 
   test('treats a selected Skill as a sendable first-turn payload even without prose', () => {
@@ -49,14 +53,36 @@ describe('Guid homepage slash launcher', () => {
 
     expect(cardSource.includes('slashMenuOpen?: boolean')).toBe(true);
     expect(cardSource.includes('mentionOpen || slashMenuOpen')).toBe(true);
-    expect(cardSource.includes("bottom-[calc(100%+8px)] z-70")).toBe(true);
+    expect(cardSource.includes("left-0 right-0 bottom-[calc(100%+10px)] z-70")).toBe(true);
   });
 
-  test('hides the home preset chooser and inline preset-details link', () => {
+  test('keeps the home preset chooser while leaving Skills to the slash launcher', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const editorHostSource = readSource(new URL('./components/GuidPresetEditorHost.tsx', import.meta.url));
 
-    expect(pageSource.includes('<ComposerEntryStrip')).toBe(false);
+    expect(pageSource.includes("import ComposerEntryStrip from './components/ComposerEntryStrip'")).toBe(true);
+    expect(pageSource.includes('<ComposerEntryStrip')).toBe(true);
+    expect(pageSource.includes('onChoosePreset={() => {')).toBe(true);
+    expect(pageSource.includes('setDrawerOpen(true)')).toBe(true);
     expect(editorHostSource.includes('onClick={openPresetDetails}')).toBe(false);
+  });
+
+  test('keeps goal creation in the slash command instead of the action row toggle', () => {
+    const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
+    const actionRowSource = readSource(new URL('./components/GuidActionRow.tsx', import.meta.url));
+
+    expect(pageSource.includes("id: 'system:goal'")).toBe(true);
+    expect(pageSource.includes('setGoalMode(true)')).toBe(true);
+    expect(pageSource.includes('goalModeAvailable=')).toBe(false);
+    expect(actionRowSource.includes('guid-goal-mode-toggle')).toBe(false);
+    expect(actionRowSource.includes('onToggleGoalMode')).toBe(false);
+  });
+
+  test('renders the goal chip only to clear goal mode after /goal enables it', () => {
+    const actionRowSource = readSource(new URL('./components/GuidActionRow.tsx', import.meta.url));
+
+    expect(actionRowSource.includes('goalMode && onGoalModeChange')).toBe(true);
+    expect(actionRowSource.includes('onGoalModeChange(false)')).toBe(true);
+    expect(actionRowSource.includes('onGoalModeChange(!goalMode)')).toBe(false);
   });
 });

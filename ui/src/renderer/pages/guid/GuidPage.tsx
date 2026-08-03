@@ -16,7 +16,6 @@ import { resolveLocaleKey } from '@/common/utils';
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
 import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
-import { appendComposerSkillChip } from '@/renderer/hooks/chat/useComposerSkillChips';
 import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
@@ -27,7 +26,11 @@ import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
-import ComposerSkillChips, { type ComposerSkillChip } from '@/renderer/components/chat/ComposerSkillChips';
+import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
+import type {
+  ComposerSkillTokenInputHandle,
+  ComposerTokenInputState,
+} from '@/renderer/components/chat/ComposerSkillTokenInput';
 import PoiStarterChips from './components/PoiStarterChips';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
@@ -108,8 +111,8 @@ const GuidPage: React.FC = () => {
   const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
     useState<AppliedCollaborationTemplate | null>(null);
   const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
-  // Goal 模式：开启后首条输入会被设为会话目标（等价 /goal <text>），
-  // 仅 nomi 入口展示开关；实际设定在 useGuidSend 的 nomi 分支里执行。
+  // `/goal` arms the first message as the conversation goal. The state is
+  // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
   const pendingAutoSendRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
@@ -118,6 +121,12 @@ const GuidPage: React.FC = () => {
   // Explicit Skill selections are scoped to this draft. Preset bindings are
   // resolved separately by the backend when the conversation is created.
   const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>([]);
+  const homeTokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
+  const [homeTokenInputState, setHomeTokenInputState] = useState<ComposerTokenInputState>({
+    projection: '',
+    selection: { start: 0, end: 0 },
+    textSelection: { start: 0, end: 0 },
+  });
   const [availableMcpServers, setAvailableMcpServers] = useState<IMcpServer[]>([]);
   const [guidSelectedMcpServerIds, setGuidSelectedMcpServerIds] = useState<McpServerId[] | undefined>(undefined);
 
@@ -215,6 +224,11 @@ const GuidPage: React.FC = () => {
   );
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
   const { skills: catalogSkills } = useSkillCatalog(supportsHomeSkillLoading);
+  useEffect(() => {
+    if (!supportsHomeGoalCommand) {
+      setGoalMode(false);
+    }
+  }, [supportsHomeGoalCommand]);
   const homeLauncherItems = useMemo<SlashLauncherItem[]>(
     () =>
       supportsHomeSkillLoading
@@ -239,12 +253,21 @@ const GuidPage: React.FC = () => {
     [catalogSkills, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
   );
   const homeSlashController = useSlashLauncherController({
-    input: guidInput.input,
+    input: homeTokenInputState.projection,
+    caretPosition: homeTokenInputState.selection.end,
     items: homeLauncherItems,
     onExecuteSystem: (item) => {
       if (item.name === 'goal') {
         setGoalMode(true);
-        guidInput.setInput(replaceActiveSlashToken(guidInput.input));
+        if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
+          guidInput.setInput(
+            replaceActiveSlashToken(
+              guidInput.input,
+              '',
+              homeTokenInputState.textSelection.end,
+            ),
+          );
+        }
       }
     },
     onSelectSkill: (item) => {
@@ -252,17 +275,22 @@ const GuidPage: React.FC = () => {
       if (!skill) {
         return;
       }
-      setHomeSkillChips((current) =>
-        appendComposerSkillChip(current, {
+      homeTokenInputRef.current?.insertSkillAtActiveSlash({
           skillId: skill.skillId,
           name: skill.name,
           source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
-        }),
-      );
-      guidInput.setInput(replaceActiveSlashToken(guidInput.input));
+      });
     },
     onSelectAgent: (item) => {
-      guidInput.setInput(replaceActiveSlashToken(guidInput.input, `/${item.name} `));
+      if (!homeTokenInputRef.current?.replaceActiveSlashToken(`/${item.name} `)) {
+        guidInput.setInput(
+          replaceActiveSlashToken(
+            guidInput.input,
+            `/${item.name} `,
+            homeTokenInputState.textSelection.end,
+          ),
+        );
+      }
     },
   });
   const homeSlashMenuItems = useMemo<SlashCommandMenuItem[]>(
@@ -535,7 +563,14 @@ const GuidPage: React.FC = () => {
         send.sendMessageHandler();
       }
     },
-    [homeInitialSkillIds, homeSlashController, mention, guidInput.input, send.sendMessageHandler, sendKey],
+    [
+      homeInitialSkillIds,
+      homeSlashController,
+      mention,
+      guidInput.input,
+      send.sendMessageHandler,
+      sendKey,
+    ],
   );
 
   const handleSelectPresetKey = useCallback(
@@ -568,6 +603,7 @@ const GuidPage: React.FC = () => {
     if (i18nName) return i18nName;
     return mention.selectedAgentLabel || t('conversation.welcome.title');
   }, [agentSelection.is_presetAgent, selectedPresetRecord, localeKey, mention.selectedAgentLabel, t]);
+
   const selectedPresetAvatar = useMemo(() => {
     if (!agentSelection.is_presetAgent) return null;
     const selectedPreset = agentSelection.presets.find(
@@ -839,13 +875,12 @@ const GuidPage: React.FC = () => {
       mcpServers={availableMcpServers}
       selectedMcpServerIds={guidSelectedMcpServerIds ?? []}
       onToggleMcpServer={handleToggleMcpServer}
-      goalModeAvailable={effectiveAgentType === 'nomi'}
-      goalMode={goalMode}
-      onToggleGoalMode={() => setGoalMode((prev) => !prev)}
       hidePresetTag
       loading={guidInput.loading}
       autoWorkMode={isAutoWorkMode}
       autoWorkDraft={advancedConfig.autoWork}
+      goalMode={supportsHomeGoalCommand && goalMode}
+      onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
       hasDraft={hasDraft}
       speechLocale={i18n.language}
       onSpeechTranscript={(transcript) => {
@@ -977,17 +1012,10 @@ const GuidPage: React.FC = () => {
                   emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
                 />
               }
-              skillChips={
-                supportsHomeSkillLoading ? (
-                  <ComposerSkillChips
-                    skills={homeSkillChips}
-                    disabled={guidInput.loading}
-                    onRemove={(skillId) => {
-                      setHomeSkillChips((current) => current.filter((skill) => skill.skillId !== skillId));
-                    }}
-                  />
-                ) : undefined
-              }
+              skillChips={supportsHomeSkillLoading ? homeSkillChips : []}
+              onSkillChipsChange={supportsHomeSkillLoading ? setHomeSkillChips : undefined}
+              onTokenInputStateChange={setHomeTokenInputState}
+              tokenInputRef={homeTokenInputRef}
               files={guidInput.files}
               onRemoveFile={guidInput.handleRemoveFile}
               actionRow={actionRowNode}

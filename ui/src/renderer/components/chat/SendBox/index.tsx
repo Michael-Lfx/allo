@@ -29,7 +29,6 @@ import { CloseSmall, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import type { TFunction } from 'i18next';
-import { theme } from '@/platform';
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCompositionInput } from '@renderer/hooks/chat/useCompositionInput';
@@ -45,10 +44,14 @@ import { useAbortUploadsOnConversationChange } from '@renderer/hooks/file/useAbo
 import UploadProgressBar from '@renderer/components/media/UploadProgressBar';
 import { allSupportedExts } from '@renderer/services/FileService';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
-import ComposerSkillChips, { type ComposerSkillChip } from '@/renderer/components/chat/ComposerSkillChips';
-import { appendComposerSkillChip } from '@/renderer/hooks/chat/useComposerSkillChips';
+import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
+import ComposerSkillTokenInput, {
+  type ComposerSkillTokenInputHandle,
+  type ComposerTokenInputState,
+} from '@/renderer/components/chat/ComposerSkillTokenInput';
+import type { ComposerDraft } from '@/renderer/components/chat/composerDraft';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
-import { getConversationInputHistory, isCaretOnFirstLine } from '@/renderer/utils/chat/messageHistory';
+import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistory';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
@@ -59,7 +62,7 @@ const constVoid = (): void => undefined;
 // Threshold: switch to multi-line mode directly when character count exceeds this value to avoid heavy layout work
 const MAX_SINGLE_LINE_CHARACTERS = 800;
 const BTW_COMMAND_RE = /^\/btw(?:\s+([\s\S]*))?$/i;
-const AT_FILE_HIGHLIGHT_COLOR = theme.Color.PrimaryColor;
+const COMPOSER_MENU_BORDER_COLOR = 'color-mix(in srgb, var(--color-border-2) 68%, var(--color-bg-1))';
 
 const getSelectedItemMatchKeys = (item: FileSelectionItem): string[] => {
   if (typeof item === 'string') {
@@ -283,7 +286,14 @@ const SendBox: React.FC<{
   // by the workspace catch-all. `containerRef` (the panel) stays anchored to
   // BtwOverlay / textarea queries; this ref is drag-drop only.
   const dropzoneRef = useRef<HTMLDivElement>(null);
-  const singleLineWidthRef = useRef<number>(0);
+  const tokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
+  const lastSubmittedDraftRef = useRef<ComposerDraft | null>(null);
+  const [tokenInputState, setTokenInputState] = useState<ComposerTokenInputState>({
+    projection: input,
+    selection: { start: input.length, end: input.length },
+    textSelection: { start: input.length, end: input.length },
+  });
+  const [singleLineWidth, setSingleLineWidth] = useState(0);
   const measurementCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const mobileUserFocusIntentUntilRef = useRef(0);
   const warmedConversationRef = useRef<ConversationId | undefined>(undefined);
@@ -310,7 +320,6 @@ const SendBox: React.FC<{
   const selectedItemByPathRef = useRef<Map<string, FileSelectionItem>>(new Map());
   const suppressedExternalAppendPathsRef = useRef<Set<string>>(new Set());
   const fetchedAtFileSessionKeyRef = useRef<string | null>(null);
-  const highlightScrollRef = useRef<HTMLDivElement>(null);
 
   // Listen for reply events from message actions
   useAddEventListener('sendbox.reply', (quote) => setReplyQuote(quote), []);
@@ -325,17 +334,13 @@ const SendBox: React.FC<{
       editingCreatedAtRef.current = payload.createdAt;
       setEditingMsgId(payload.msgId);
       setReplyQuote(null);
+      onSkillChipsChange?.([]);
       setInputRef.current(payload.content);
       requestAnimationFrame(() => {
-        const textarea = containerRef.current?.querySelector('textarea');
-        if (textarea instanceof HTMLTextAreaElement) {
-          textarea.focus();
-          const caret = textarea.value.length;
-          textarea.setSelectionRange(caret, caret);
-        }
+        tokenInputRef.current?.focusAtTextOffset(payload.content.length);
       });
     },
-    [onEditResubmit]
+    [onEditResubmit, onSkillChipsChange]
   );
 
   useAddEventListener(
@@ -373,8 +378,13 @@ const SendBox: React.FC<{
   useEffect(() => {
     const handler = (text: string) => {
       const base = latestInputRef.current;
-      const newValue = base ? `${base}\n\n${text}` : text;
-      setInputRef.current(newValue);
+      const insertion = base ? `\n\n${text}` : text;
+      if (tokenInputRef.current) {
+        tokenInputRef.current.focusAtTextOffset(base.length);
+        tokenInputRef.current.insertTextAtSelection(insertion);
+      } else {
+        setInputRef.current(`${base}${insertion}`);
+      }
     };
     setSendBoxHandler(handler);
     return () => {
@@ -382,21 +392,34 @@ const SendBox: React.FC<{
     };
   }, [setSendBoxHandler]);
 
-  // 初始化时获取单行输入框的可用宽度
-  // Initialize and get the available width of single-line input
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (containerRef.current && singleLineWidthRef.current === 0) {
-        const textarea = containerRef.current.querySelector('textarea');
-        if (textarea) {
-          // 保存单行模式下的可用宽度作为固定基准
-          // Save the available width in single-line mode as a fixed baseline
-          singleLineWidthRef.current = textarea.offsetWidth;
-        }
+  // Track the single-line input width. Inline Skill chips can change this
+  // without changing the draft, so a mount-only measurement is insufficient.
+  useLayoutEffect(() => {
+    if (!isSingleLine) {
+      return;
+    }
+
+    const inputElement = containerRef.current?.querySelector<HTMLElement>('[data-testid="sendbox-input"]');
+    if (!inputElement) {
+      return;
+    }
+
+    const updateWidth = () => {
+      const width = Math.floor(inputElement.getBoundingClientRect().width);
+      if (width > 0) {
+        setSingleLineWidth((currentWidth) => (currentWidth === width ? currentWidth : width));
       }
-    }, 100);
-    return () => clearTimeout(timer);
-  }, []);
+    };
+
+    updateWidth();
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(inputElement);
+    return () => observer.disconnect();
+  }, [isSingleLine, skillChips.length]);
 
   // 移动端挂载后主动清除焦点，拦截路由切换导致的非用户触发聚焦
   useEffect(() => {
@@ -419,7 +442,7 @@ const SendBox: React.FC<{
 
     // 还没获取到基准宽度时不做判断
     // Skip detection if baseline width is not yet obtained
-    if (singleLineWidthRef.current === 0) {
+    if (singleLineWidth === 0) {
       return;
     }
 
@@ -433,8 +456,8 @@ const SendBox: React.FC<{
     // 检测内容宽度
     // Detect content width
     const frame = requestAnimationFrame(() => {
-      const textarea = containerRef.current?.querySelector('textarea');
-      if (!textarea) {
+      const inputElement = containerRef.current?.querySelector<HTMLElement>('[data-testid="sendbox-input"]');
+      if (!inputElement) {
         return;
       }
 
@@ -449,16 +472,16 @@ const SendBox: React.FC<{
         return;
       }
 
-      const textareaStyle = getComputedStyle(textarea);
-      const fallbackFontSize = textareaStyle.fontSize || '14px';
-      const fallbackFontFamily = textareaStyle.fontFamily || 'sans-serif';
-      context.font = textareaStyle.font || `${fallbackFontSize} ${fallbackFontFamily}`.trim();
+      const inputStyle = getComputedStyle(inputElement);
+      const fallbackFontSize = inputStyle.fontSize || '14px';
+      const fallbackFontFamily = inputStyle.fontFamily || 'sans-serif';
+      context.font = inputStyle.font || `${fallbackFontSize} ${fallbackFontFamily}`.trim();
 
-      const textWidth = context.measureText(input || '').width;
+      const textWidth = Math.max(context.measureText(input || '').width, inputElement.scrollWidth);
 
       // 使用初始化时保存的固定宽度作为判断基准
       // Use the fixed baseline width saved during initialization
-      const baseWidth = singleLineWidthRef.current;
+      const baseWidth = singleLineWidth;
 
       // 文本宽度超过基准宽度时切换到多行
       // Switch to multi-line when text width exceeds baseline width
@@ -476,7 +499,7 @@ const SendBox: React.FC<{
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [input, effectiveLockMultiLine]);
+  }, [effectiveLockMultiLine, input, singleLineWidth]);
 
   // 使用拖拽 hook
   const { isFileDragging, dragHandlers } = useDragUpload({
@@ -617,13 +640,16 @@ const SendBox: React.FC<{
   );
 
   const slashController = useSlashLauncherController({
-    input,
+    input: tokenInputState.projection,
+    caretPosition: tokenInputState.selection.end,
     items: launcherItems,
     onExecuteSystem: (item) => {
       const goalInvocation = parseGoalSlashCommand(`/${item.name}`);
       if (goalInvocation) {
         if (!goalCommand.enabled) {
-          setInput(replaceActiveSlashToken(input, `/${item.name} `));
+          if (!tokenInputRef.current?.replaceActiveSlashToken(`/${item.name} `)) {
+            setInput(replaceActiveSlashToken(input, `/${item.name} `, tokenInputState.textSelection.end));
+          }
           return;
         }
         setInput('');
@@ -631,7 +657,9 @@ const SendBox: React.FC<{
         return;
       }
       if (item.name === 'btw') {
-        setInput(replaceActiveSlashToken(input, '/btw '));
+        if (!tokenInputRef.current?.replaceActiveSlashToken('/btw ')) {
+          setInput(replaceActiveSlashToken(input, '/btw ', tokenInputState.textSelection.end));
+        }
         return;
       }
       if (item.name === 'copy') {
@@ -654,24 +682,23 @@ const SendBox: React.FC<{
       } else {
         onSlashBuiltinCommand?.(item.name);
       }
-      setInput('');
+      tokenInputRef.current?.replaceActiveSlashToken();
     },
     onSelectSkill: (item) => {
       const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
       if (!skill || !onSkillChipsChange) {
         return;
       }
-      onSkillChipsChange(
-        appendComposerSkillChip(skillChips, {
-          skillId: skill.skillId,
-          name: skill.name,
-          source: getSkillSourceLabel(skill.source, t),
-        }),
-      );
-      setInput(replaceActiveSlashToken(input));
+      tokenInputRef.current?.insertSkillAtActiveSlash({
+        skillId: skill.skillId,
+        name: skill.name,
+        source: getSkillSourceLabel(skill.source, t),
+      });
     },
     onSelectAgent: (item) => {
-      setInput(replaceActiveSlashToken(input, `/${item.name} `));
+      if (!tokenInputRef.current?.replaceActiveSlashToken(`/${item.name} `)) {
+        setInput(replaceActiveSlashToken(input, `/${item.name} `, tokenInputState.textSelection.end));
+      }
     },
   });
 
@@ -698,74 +725,14 @@ const SendBox: React.FC<{
     Boolean(activeAtFileQuery) &&
     activeAtFileTokenKey !== dismissedAtFileToken &&
     !isCommandMenuOpen;
+  const isComposerMenuOpen = isCommandMenuOpen || isAtFileMenuOpen;
   const visibleAtFileMenuItems = useMemo(
     () => filterWorkspaceMentionItems(workspaceMentionItems, deferredAtFileQuery),
     [deferredAtFileQuery, workspaceMentionItems]
   );
   const isOverlayOpen = isCommandMenuOpen || btwCommand.isOpen || isAtFileMenuOpen;
 
-  const getTextareaElement = useCallback((): HTMLTextAreaElement | null => {
-    const textarea = containerRef.current?.querySelector('textarea');
-    return textarea instanceof HTMLTextAreaElement ? textarea : null;
-  }, []);
-
-  const syncCaretPosition = useCallback(
-    (target?: EventTarget | null) => {
-      const textarea = target instanceof HTMLTextAreaElement ? target : getTextareaElement();
-      if (!textarea) {
-        return;
-      }
-      setCaretPosition(textarea.selectionStart ?? textarea.value.length);
-    },
-    [getTextareaElement]
-  );
-
-  const syncHighlightScroll = useCallback(
-    (target?: EventTarget | null) => {
-      const textarea = target instanceof HTMLTextAreaElement ? target : getTextareaElement();
-      if (!textarea || !highlightScrollRef.current) {
-        return;
-      }
-      highlightScrollRef.current.scrollTop = textarea.scrollTop;
-      highlightScrollRef.current.scrollLeft = textarea.scrollLeft;
-    },
-    [getTextareaElement]
-  );
-
-  const syncHighlightTextMetrics = useCallback(
-    (target?: EventTarget | null) => {
-      const textarea = target instanceof HTMLTextAreaElement ? target : getTextareaElement();
-      const highlightLayer = highlightScrollRef.current;
-      if (!textarea || !highlightLayer) {
-        return;
-      }
-
-      const textareaStyle = getComputedStyle(textarea);
-      highlightLayer.style.direction = textareaStyle.direction;
-      highlightLayer.style.fontFamily = textareaStyle.fontFamily;
-      highlightLayer.style.fontSize = textareaStyle.fontSize;
-      highlightLayer.style.fontStyle = textareaStyle.fontStyle;
-      highlightLayer.style.fontWeight = textareaStyle.fontWeight;
-      highlightLayer.style.letterSpacing = textareaStyle.letterSpacing;
-      highlightLayer.style.lineHeight = textareaStyle.lineHeight;
-      highlightLayer.style.paddingTop = textareaStyle.paddingTop;
-      highlightLayer.style.paddingRight = textareaStyle.paddingRight;
-      highlightLayer.style.paddingBottom = textareaStyle.paddingBottom;
-      highlightLayer.style.paddingLeft = textareaStyle.paddingLeft;
-      highlightLayer.style.tabSize = textareaStyle.tabSize;
-      highlightLayer.style.textAlign = textareaStyle.textAlign;
-      highlightLayer.style.textIndent = textareaStyle.textIndent;
-      highlightLayer.style.textTransform = textareaStyle.textTransform;
-      highlightLayer.style.wordSpacing = textareaStyle.wordSpacing;
-    },
-    [getTextareaElement]
-  );
-
-  useLayoutEffect(() => {
-    syncHighlightTextMetrics();
-  }, [input, isInputFocused, isMobile, isSingleLine, syncHighlightTextMetrics]);
-
-  const handleTextAreaChange = (value: string) => {
+  const handleTokenInputChange = (value: string) => {
     if (historyNavigationIndex !== null) {
       historyDraftRef.current = null;
       setHistoryNavigationIndex(null);
@@ -774,10 +741,6 @@ const SendBox: React.FC<{
       conversationExport.closeExportFlow();
     }
     setInput(value);
-    requestAnimationFrame(() => {
-      syncCaretPosition();
-      syncHighlightScroll();
-    });
   };
 
   const handleOverlayKeyDown = (event: React.KeyboardEvent) => {
@@ -1073,13 +1036,12 @@ const SendBox: React.FC<{
       if (!nextInsertion) {
         return;
       }
-      const nextValue = input.slice(0, activeAtFileQuery.start) + nextInsertion + input.slice(activeAtFileQuery.end);
       const nextCaret = activeAtFileQuery.start + nextInsertion.length;
       const insertedTokenKey = `${activeAtFileQuery.start}:${nextInsertion.slice(1)}`;
       const path = getSelectedItemPath(item);
 
       setDismissedAtFileToken(insertedTokenKey);
-      setInput(nextValue);
+      tokenInputRef.current?.replaceTextRange(activeAtFileQuery, nextInsertion);
       if (path) {
         rememberSelectedItem(selectedItemByPathRef.current, item);
         mentionOwnedPathsRef.current.add(path);
@@ -1099,28 +1061,20 @@ const SendBox: React.FC<{
       emitSelectedFileAppend(item);
 
       requestAnimationFrame(() => {
-        const textarea = getTextareaElement();
-        if (!textarea) {
-          return;
-        }
-        textarea.focus();
-        textarea.setSelectionRange(nextCaret, nextCaret);
+        tokenInputRef.current?.focusAtTextOffset(nextCaret);
         setCaretPosition(nextCaret);
       });
     },
     [
       activeAtFileQuery,
       emitSelectedFileAppend,
-      getTextareaElement,
-      input,
       onSelectedWorkspaceItemsChange,
       selectedWorkspaceItems,
-      setInput,
     ]
   );
 
   // 使用共享的输入法合成处理
-  const { compositionHandlers, isComposingState, createKeyDownHandler } = useCompositionInput();
+  const { compositionHandlers, createKeyDownHandler } = useCompositionInput();
   const [sendKeyPref] = useConfig('chat.sendKey');
   const sendKey = sendKeyPref ?? 'enter';
 
@@ -1131,23 +1085,7 @@ const SendBox: React.FC<{
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
     onTextPaste: (text: string) => {
-      // 处理清理后的文本粘贴，在当前光标位置插入文本而不是替换整个内容
-      const textarea = document.activeElement as HTMLTextAreaElement;
-      if (textarea && textarea.tagName === 'TEXTAREA') {
-        const cursorPosition = textarea.selectionStart;
-        const current_value = textarea.value;
-        const start = textarea.selectionStart ?? textarea.value.length;
-        const end = textarea.selectionEnd ?? start;
-        const newValue = current_value.slice(0, start) + text + current_value.slice(end);
-        setInput(newValue);
-        // 设置光标到插入文本后的位置
-        setTimeout(() => {
-          textarea.setSelectionRange(cursorPosition + text.length, cursorPosition + text.length);
-        }, 0);
-      } else {
-        // 如果无法获取光标位置，回退到追加到末尾的行为
-        setInput(text);
-      }
+      tokenInputRef.current?.insertTextAtSelection(text);
     },
   });
   const markMobileFocusIntent = useCallback(() => {
@@ -1206,12 +1144,7 @@ const SendBox: React.FC<{
     (value: string) => {
       setInputRef.current(value);
       requestAnimationFrame(() => {
-        const textarea = containerRef.current?.querySelector('textarea');
-        if (!(textarea instanceof HTMLTextAreaElement)) {
-          return;
-        }
-        const caret = textarea.value.length;
-        textarea.setSelectionRange(caret, caret);
+        tokenInputRef.current?.focusAtTextOffset(value.length);
       });
     },
     [setInputRef]
@@ -1235,7 +1168,7 @@ const SendBox: React.FC<{
         return false;
       }
 
-      if (!(event.currentTarget instanceof HTMLTextAreaElement)) {
+      if (!(event.currentTarget instanceof HTMLElement)) {
         return false;
       }
 
@@ -1250,7 +1183,7 @@ const SendBox: React.FC<{
       }
 
       if (event.key === 'ArrowUp') {
-        if (historyNavigationIndex === null && !isCaretOnFirstLine(event.currentTarget)) {
+        if (historyNavigationIndex === null && input.slice(0, tokenInputState.textSelection.start).includes('\n')) {
           return false;
         }
 
@@ -1292,7 +1225,7 @@ const SendBox: React.FC<{
 
       return false;
     },
-    [applyHistoryInput, exitHistoryNavigation, historyNavigationIndex, inputHistory, latestInputRef]
+    [applyHistoryInput, exitHistoryNavigation, historyNavigationIndex, input, inputHistory, latestInputRef, tokenInputState.textSelection.start]
   );
 
   const handleAtFileMenuKeyDown = useCallback(
@@ -1367,9 +1300,14 @@ const SendBox: React.FC<{
       finalMessage = input + snippetsHtml;
     }
 
-    // 立即清空输入框，避免异步 onSend 完成后覆盖用户新输入
-    // Clear input immediately to prevent async onSend completion from overwriting new user input
-    setInput('');
+    // Clear the complete token document so a failed send can restore the exact
+    // Skill positions instead of rebuilding the old prefix layout.
+    lastSubmittedDraftRef.current = tokenInputRef.current?.getDraft() ?? null;
+    if (tokenInputRef.current) {
+      tokenInputRef.current.clear();
+    } else {
+      setInput('');
+    }
     clearDomSnippets();
     setReplyQuote(null);
 
@@ -1512,9 +1450,14 @@ const SendBox: React.FC<{
         }
       })
       .catch(() => {
-        setInput(finalMessage);
-        if (hasSkillLoadPlan) {
-          onSkillChipsChange?.(submittedSkills);
+        const submittedDraft = lastSubmittedDraftRef.current;
+        if (submittedDraft) {
+          tokenInputRef.current?.restoreDraft(submittedDraft);
+        } else {
+          setInput(finalMessage);
+          if (hasSkillLoadPlan) {
+            onSkillChipsChange?.(submittedSkills);
+          }
         }
       })
       .finally(() => {
@@ -1529,7 +1472,12 @@ const SendBox: React.FC<{
     setIsLoading(true);
     onSteer(finalMessage)
       .catch(() => {
-        setInput(finalMessage);
+        const submittedDraft = lastSubmittedDraftRef.current;
+        if (submittedDraft) {
+          tokenInputRef.current?.restoreDraft(submittedDraft);
+        } else {
+          setInput(finalMessage);
+        }
       })
       .finally(() => {
         setIsLoading(false);
@@ -1552,13 +1500,21 @@ const SendBox: React.FC<{
   const handleSpeechTranscript = useCallback(
     (transcript: string) => {
       const current_value = latestInputRef.current;
-      setInputRef.current(appendSpeechTranscript(current_value, transcript));
+      const nextValue = appendSpeechTranscript(current_value, transcript);
+      const insertion = nextValue.slice(current_value.length);
+      if (tokenInputRef.current) {
+        tokenInputRef.current.focusAtTextOffset(current_value.length);
+        tokenInputRef.current.insertTextAtSelection(insertion);
+      } else {
+        setInputRef.current(nextValue);
+      }
     },
     [latestInputRef, setInputRef]
   );
   const speechLocale = i18n?.language || 'en-US';
 
-  const hasDraftToSend = input.trim().length > 0 || domSnippets.length > 0 || skillChips.length > 0;
+  const hasInlineSkillChips = skillChips.length > 0;
+  const hasDraftToSend = input.trim().length > 0 || domSnippets.length > 0 || hasInlineSkillChips;
 
   const isProcessing = isLoading || loading;
   const showStopOnly =
@@ -1584,8 +1540,6 @@ const SendBox: React.FC<{
     />
   );
 
-  const shouldUseHighlightOverlay = !isComposingState && allAtFileQueries.length > 0;
-
   const mobilePlusButton = isMobileCompact ? (
     <Button
       shape='circle'
@@ -1602,46 +1556,6 @@ const SendBox: React.FC<{
   // tools/rightTools into the `+` launcher and skip the inline speech button.
   const renderedTools = isMobileCompact ? mobilePlusButton : tools;
   const renderedRightTools = isMobileCompact ? null : rightTools;
-
-  const renderHighlightedInputValue = useCallback(() => {
-    if (!input) {
-      return <span className='sendbox-highlight-text'>{'\u200b'}</span>;
-    }
-
-    const segments: React.ReactNode[] = [];
-    let cursor = 0;
-
-    allAtFileQueries.forEach((match, index) => {
-      if (cursor < match.start) {
-        segments.push(
-          <span className='sendbox-highlight-text' key={`text-${cursor}`}>
-            {input.slice(cursor, match.start)}
-          </span>
-        );
-      }
-
-      segments.push(
-        <span
-          className='sendbox-highlight-mention'
-          key={`mention-${match.start}-${index}`}
-          style={{ color: AT_FILE_HIGHLIGHT_COLOR }}
-        >
-          {input.slice(match.start, match.end)}
-        </span>
-      );
-      cursor = match.end;
-    });
-
-    if (cursor < input.length) {
-      segments.push(
-        <span className='sendbox-highlight-text' key={`text-${cursor}`}>
-          {input.slice(cursor)}
-        </span>
-      );
-    }
-
-    return segments;
-  }, [allAtFileQueries, input]);
 
   return (
     <div ref={dropzoneRef} className={`relative ${className ?? ''}`}>
@@ -1666,8 +1580,12 @@ const SendBox: React.FC<{
               }
             : {
                 borderWidth: '1px',
-                borderColor: isInputActive ? activeBorderColor : inactiveBorderColor,
-                boxShadow: isInputActive ? activeShadow : 'none',
+                borderColor: isComposerMenuOpen
+                  ? COMPOSER_MENU_BORDER_COLOR
+                  : isInputActive
+                    ? activeBorderColor
+                    : inactiveBorderColor,
+                boxShadow: isInputActive && !isComposerMenuOpen ? activeShadow : 'none',
               }),
         }}
         {...dragHandlers}
@@ -1682,7 +1600,7 @@ const SendBox: React.FC<{
           question={btwCommand.question}
         />
         {isAtFileMenuOpen && (
-          <div className='absolute left-12px right-12px bottom-[calc(100%+8px)] z-70'>
+          <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
             <AtFileMenu
               activeIndex={atFileMenuActiveIndex}
               emptyText={
@@ -1700,7 +1618,7 @@ const SendBox: React.FC<{
           </div>
         )}
         {isCommandMenuOpen && (
-          <div className='absolute left-12px right-12px bottom-[calc(100%+8px)] z-70'>
+          <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
             {conversationExport.step === 'menu' ? (
               <SlashCommandMenu
                 title={t('messages.export.menuTitle')}
@@ -1784,13 +1702,6 @@ const SendBox: React.FC<{
               </div>
             </div>
           )}
-          <ComposerSkillChips
-            skills={skillChips}
-            disabled={Boolean(disabled || isLoading || loading)}
-            onRemove={(skillId) => {
-              onSkillChipsChange?.(skillChips.filter((skill) => skill.skillId !== skillId));
-            }}
-          />
           {/* DOM 片段标签 / DOM snippet tags */}
           {domSnippets.length > 0 && (
             <div className='flex flex-wrap gap-6px mb-8px'>
@@ -1838,7 +1749,11 @@ const SendBox: React.FC<{
         </div>
         <UploadProgressBar source='sendbox' />
         <div
-          className={isSingleLine ? 'flex items-center gap-2 w-full min-w-0 overflow-hidden' : 'w-full overflow-hidden'}
+          className={
+            isSingleLine
+              ? 'flex items-center gap-2 w-full min-w-0 overflow-hidden'
+              : 'w-full overflow-hidden'
+          }
         >
           {isSingleLine && (
             <div
@@ -1853,31 +1768,19 @@ const SendBox: React.FC<{
               {renderedTools}
             </div>
           )}
-          <div
-            className={`sendbox-highlight-container ${isSingleLine ? 'sendbox-highlight-container--single' : ''}`}
-            style={{
-              width: isSingleLine ? 'auto' : '100%',
-              flex: isSingleLine ? 1 : 'none',
-              minWidth: 0,
-              maxWidth: '100%',
-              marginBottom: isSingleLine ? 0 : '8px',
-              minHeight: isSingleLine ? '20px' : '40px',
-            }}
-          >
-            <div
-              ref={highlightScrollRef}
-              aria-hidden='true'
-              className={`sendbox-highlight-layer text-14px ${isMobile ? 'sendbox-input--mobile' : ''} ${isSingleLine ? 'sendbox-highlight-layer--single' : ''}`}
-              data-testid='sendbox-highlight-layer'
-              style={!shouldUseHighlightOverlay ? { visibility: 'hidden' } : undefined}
-            >
-              {renderHighlightedInputValue()}
-            </div>
-            <Input.TextArea
+          <div className={isSingleLine ? 'flex-1 min-w-0' : 'w-full'}>
+            <ComposerSkillTokenInput
+              ref={tokenInputRef}
               autoFocus={!isMobile}
               disabled={disabled}
-              spellCheck={false}
               value={input}
+              skills={skillChips}
+              onChange={handleTokenInputChange}
+              onSkillsChange={onSkillChipsChange}
+              onDraftStateChange={(state) => {
+                setTokenInputState(state);
+                setCaretPosition(state.textSelection.end);
+              }}
               placeholder={
                 isMobileCompact
                   ? (placeholder ??
@@ -1888,45 +1791,20 @@ const SendBox: React.FC<{
                     : ((bottomHint as string | undefined) ??
                       t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }))
               }
-              className={`${shouldUseHighlightOverlay ? 'sendbox-highlight-textarea ' : ''}pl-0 pr-0 !b-none focus:shadow-none m-0 !bg-transparent !focus:bg-transparent !hover:bg-transparent lh-[20px] !resize-none text-14px ${isMobile ? 'sendbox-input--mobile' : ''}`}
-              data-testid='sendbox-input'
+              className={`pl-0 pr-0 focus:shadow-none m-0 !bg-transparent lh-[20px] text-14px ${isMobile ? 'sendbox-input--mobile' : ''}`}
+              dataTestId='sendbox-input'
+              singleLine={isSingleLine}
               style={{
-                width: '100%',
-                flex: isSingleLine ? 1 : 'none',
-                minWidth: 0,
-                maxWidth: '100%',
-                marginLeft: 0,
-                marginRight: 0,
-                marginBottom: 0,
-                height: isSingleLine ? (isMobile ? '22px' : '20px') : 'auto',
                 minHeight: isSingleLine ? (isMobile ? '22px' : '20px') : '40px',
+                maxHeight: isSingleLine ? (isMobile ? '22px' : '20px') : '200px',
                 overflowY: isSingleLine ? 'hidden' : 'auto',
-                overflowX: 'hidden',
-                whiteSpace: isSingleLine ? 'nowrap' : 'pre-wrap',
-                textOverflow: isSingleLine ? 'ellipsis' : 'clip',
-                wordBreak: isSingleLine ? 'normal' : 'break-word',
-                overflowWrap: 'break-word',
+                marginBottom: isSingleLine ? 0 : '8px',
               }}
-              onChange={handleTextAreaChange}
               onPaste={onPaste}
-              onTouchStart={markMobileFocusIntent}
               onMouseDown={markMobileFocusIntent}
-              onClick={(event) => {
-                syncCaretPosition(event.target);
-              }}
               onFocus={handleInputFocus}
               onBlur={handleInputBlur}
-              onKeyUp={(event) => {
-                syncCaretPosition(event.currentTarget);
-              }}
-              onSelect={(event) => {
-                syncCaretPosition(event.currentTarget);
-              }}
-              onScroll={(event) => {
-                syncHighlightScroll(event.currentTarget);
-              }}
               {...compositionHandlers}
-              autoSize={isSingleLine ? false : { minRows: 1, maxRows: 10 }}
               onKeyDown={createKeyDownHandler(
                 sendMessageHandler,
                 (event) => {
@@ -1952,7 +1830,7 @@ const SendBox: React.FC<{
                 },
                 sendKey
               )}
-            ></Input.TextArea>
+            />
           </div>
           {isSingleLine && (
             <div className='flex items-center gap-2'>

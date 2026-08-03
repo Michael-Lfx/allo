@@ -8,6 +8,7 @@ import { matchSlashQuery } from './useSlashCommandController';
 
 interface UseSlashLauncherControllerOptions {
   input: string;
+  caretPosition?: number;
   items: SlashLauncherItem[];
   onExecuteSystem: (item: SlashLauncherItem) => void;
   onSelectSkill: (item: SlashLauncherItem) => void;
@@ -15,8 +16,8 @@ interface UseSlashLauncherControllerOptions {
 }
 
 export function useSlashLauncherController(options: UseSlashLauncherControllerOptions) {
-  const { input, items, onExecuteSystem, onSelectSkill, onSelectAgent } = options;
-  const query = useMemo(() => matchSlashQuery(input), [input]);
+  const { input, caretPosition, items, onExecuteSystem, onSelectSkill, onSelectAgent } = options;
+  const query = useMemo(() => matchSlashQuery(input, caretPosition), [caretPosition, input]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [dismissedQuery, setDismissedQuery] = useState<string | null>(null);
   const previousQuery = useRef(query);
