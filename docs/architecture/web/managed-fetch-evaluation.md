@@ -89,9 +89,12 @@ late request or result, and evidence remains incomplete and recoverable. Rust
 
 Pure scoring and schema tests run offline. Wiremock tests prove the real MCP
 client, Search/Fetch recovery, quota ordering, cancellation, and zero-egress
-rejections. The bounded six-call canary proves normal PDF/JavaScript fallback
-and an HTML zero-remote control. It is not formal Admission and cannot by
-itself widen the production category allow-list.
+rejections. The bounded six-call canary must include one production-shaped
+`mode=e2e, peer_mode=cold` attempt per category; `Compare` is provider
+diagnostic evidence and cannot stand in for cold production reachability.
+Warm E2E attempts may explicitly complete Fetch compatibility before timing.
+The canary also includes an HTML zero-remote control. It is not formal
+Admission and cannot by itself widen the production category allow-list.
 
 The emergency rollback remains:
 

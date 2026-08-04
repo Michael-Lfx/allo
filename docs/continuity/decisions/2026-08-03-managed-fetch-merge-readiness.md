@@ -1,8 +1,14 @@
 # Managed Fetch rebase and merge-readiness decision
 
+> Superseded snapshot notice (2026-08-04): the historical local-main fast-forward
+> described below is not the current delivery state. The live work remains on
+> `feat/fetch-optimization`, which has been rebased onto `origin/main=81b199fbc8fa`.
+> The cold-start budget and endpoint-health fixes are pending validation; this ADR
+> cannot be used as the final merge approval until a new Cold E2E Canary is recorded.
+
 Date: 2026-08-03
-Branch: `main` (local fast-forward destination)
-Latest main: `origin/main=796fa2bf07f9f97a74bb93b5b3586c759b6101a2`
+Branch: `feat/fetch-optimization` (PR source branch)
+Latest main at current rebase: `origin/main=81b199fbc8fa`
 Canary code checkpoint before the final documentation amendment: `d11b012ff02e0e846ab5744210fd417bc353bfc3`
 Final documentation tip: query with `git rev-parse HEAD` after this record is committed.
 
@@ -122,11 +128,11 @@ follow-up owner is the `flowy-web` Evaluation maintainer; it must add an injecte
 failure test and surface `quota_ledger_failed` before any future multi-day Admission run.
 This does not affect the production MCP path or the bounded Canary decision.
 
-Current decision: `local_main_fast_forward_complete`. Local `main` is ahead 5 and behind 0
-relative to refreshed `origin/main`; the fast-forward was verified and
-`feat/fetch-optimization` was deleted. Both recovery branches remain local. No push, PR,
-GitHub Actions workflow, private URL, Browser-to-MCP loop, or formal Admission Campaign was
-run.
+Historical decision: `local_main_fast_forward_complete` (not current). Current decision is
+`pending_cold_start_fix`: the feature branch is ahead 5 and behind 0 relative to
+`origin/main=81b199fbc8fa`, remains local, and has not been merged into `main`. A new
+Cold E2E Canary is required after the budget and health fixes. No push, PR, GitHub Actions
+workflow, private URL, Browser-to-MCP loop, or formal Admission Campaign was run.
 
 Formal 15+ URL Admission, private PDF validation, unsupported/network category expansion,
 and any further rollout policy change remain separate future work.

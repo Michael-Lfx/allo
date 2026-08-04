@@ -65,6 +65,10 @@ notes at a high level rather than a complete historical log.
   evaluation, policy-gated PDF/JavaScript/Empty fallback, safe MCP egress,
   resumable evidence, and a Local-only rollback via
   `NOMIFUN_MANAGED_FETCH_MODE=off`.
+- Managed Fetch cold-start admission now uses readiness-specific remaining-time
+  thresholds, so eligible PDF/JavaScript fallback can reach Parallel within the
+  existing 12-second `web_extract` deadline. Parallel endpoint health also
+  ignores stale successes after newer 401/429/network failures.
 
 ## v0.3.3 - 2026-07-30
 

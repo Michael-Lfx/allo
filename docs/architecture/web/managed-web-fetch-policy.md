@@ -154,6 +154,30 @@ network failure, and MCP protocol/transport malformed responses. Fetch
 tool-level upstream errors, decoder malformed responses, and tool timeouts use
 a separate Fetch-only cooldown and do not disable Parallel Search.
 
+### Remote start budget
+
+Readiness is an input to a start decision, not proof that a network call has
+already happened. With the existing 12-second `web_extract` deadline, the
+Parallel production policy requires the following remaining time after Local
+classification:
+
+```text
+Ready                     >= 4 seconds
+WarmTransportToolUnknown  >= 6 seconds
+ColdTransport             >= 8 seconds
+```
+
+The provider receives the original absolute deadline, so these values only
+prevent starting a call that cannot finish safely; they do not extend the
+deadline. No background Fetch discovery is performed for ordinary HTML. If a
+qualified PDF/JavaScript/Empty failure has less remaining time than its
+threshold, the Local error is returned with a budget-deferred diagnostic.
+
+Endpoint health uses an attempt epoch. A success that started before a newer
+401/429/network failure cannot clear the newer disable or cooldown. An
+`Unauthorized` state is cleared only after a new MCP session generation has
+successfully reinitialized; an ordinary late tool success is insufficient.
+
 ## Context Budget
 
 The existing budgets remain unchanged:
@@ -217,6 +241,7 @@ Logs record counts and timing only:
 - source-contract, safety rejection, recovery, provider-unavailable and
   provider-init-failure counts
 - remote queue/call time and total elapsed
+- readiness, remaining budget, minimum start budget, and budget decision
 
 Logs never record URLs, query parameters, page titles, bodies, user questions,
 conversation IDs, or raw MCP payloads. `url_index` may be recorded.

@@ -1,15 +1,20 @@
 # Managed Fetch 当前状态与后续交接
 
 ```yaml
-status: COMPLETE_LOCAL_MAIN_MERGED
-date: 2026-08-03
-branch: main
-canary_code_checkpoint: d11b012ff02e0e846ab5744210fd417bc353bfc3
+status: COLD_START_FIX_IN_PROGRESS
+date: 2026-08-04
+branch: feat/fetch-optimization
+pre_budget_fix_canary_checkpoint: d11b012ff02e0e846ab5744210fd417bc353bfc3
 final_tip: query with `git rev-parse HEAD`
-main_merge_base: 796fa2bf07f9f97a74bb93b5b3586c759b6101a2
-worktree_at_snapshot: clean_after_local_main_merge
+main_merge_base: 81b199fbc8fa
+worktree_at_snapshot: task_changes_in_progress
 remote_delivery: local_commits_only
 ```
+
+> Current correction (2026-08-04): this document is maintained on the feature
+> branch. The local `main` was not merged and `feat/fetch-optimization` was not
+> deleted. The branch is rebased onto `origin/main=81b199fbc8fa`; the cold-start
+> budget and endpoint-health fixes are still being validated.
 
 历史重写说明：原始 70 个提交已压缩为 5 个连续主题提交，并 rebase 到最新
 `origin/main`。备份分支 `backup/feat-fetch-optimization-pre-compact-aeb9a285`，并保留
@@ -74,7 +79,7 @@ Payload 或原始 Provider Response。
 
 ## 自动化证据
 
-代码基线完成过以下验证：
+Rebase 前代码基线完成过以下验证（这些计数不包含本轮冷启动修复）：
 
 - `cargo test -p flowy-web`：173 项通过（基础套件）；
 - `cargo test -p flowy-web --features fetch-eval --all-targets`：226 项库测试和 4 项集成
@@ -89,7 +94,7 @@ Payload 或原始 Provider Response。
 `bun run check` 在受限进程中报告环境级 `Operation not permitted`；使用批准的提升进程
 重跑完整通过。三条本分支新增退休词汇注释已改为当前术语，没有修改 UI 或无关基线文件。
 
-## 真实 Provider 与 Desktop 证据
+## 真实 Provider 与 Desktop 证据（修复前基线）
 
 脱敏 post-enable Canary 位于 ignored 目录 `fetch-evaluation-raw/post-enable-v8/`，作为历史
 人工验收证据保留；最终代码的 post-rebase Canary 位于
@@ -110,17 +115,18 @@ JavaScript Shell 三项 `web_extract` 验收，并正常关闭应用。该开发
 stdout 持久化到历史日志文件，因此不补写或推断逐请求计数；最终人工验收与自动
 Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
 
-## Git 与交付状态
+## Git 与交付状态（本轮快照）
 
-- 当前 rebase 后代码基线：`d11b012ff02e0e846ab5744210fd417bc353bfc3`；
-- 5 个压缩提交相对最新 `origin/main=796fa2bf0` 为 ahead 5、behind 0；
+- 当前 rebase 后代码基线：查询 `git rev-parse HEAD`；本轮修改前 tip 为
+  `2ca3b0bf11fd`；
+- 5 个压缩提交相对 `origin/main=81b199fbc8fa` 为 ahead 5、behind 0；
 - 压缩前后的跟踪文件 tree 均为 `e4175ed4feb09308c7e62bed120f9d160dbe51b5`；
-- 本地 main 没有新增 upstream，五个提交仍仅在本地；
+- 本地 `main` 未被功能分支合并；五个提交仍仅在功能分支本地；
 - 未 Push、未建 PR、未创建或修改 GitHub Actions；
-- 任务路径已提交；ignored 评测证据仍未删除、未暂存；
+- 本轮冷启动修复尚未提交；ignored 评测证据仍未删除、未暂存；
 - ignored 评测证据保留在本地，未删除、未暂存。
 
-当前 main 包含的五个压缩提交：
+当前功能分支包含的五个压缩提交：
 
 - `53a69d3e` `test(web): establish managed fetch evaluation foundation`
 - `f2c19111` `test(web): qualify managed fetch admission evidence`
@@ -152,17 +158,16 @@ Canary 与 post-fix 六调用 Canary 均有效。以下事项必须
 5. UI/数据库 Provider 选择器或运行时用户开关；
 6. 额外 Fetch Provider 的产品接入。
 
-本轮维护收口、主分支刷新后的最终冻结 Round 3 和本地 main 快进均已完成：
+此前维护收口和本地 main 快进属于历史误操作快照，不代表当前状态：
 
 7. 已修正权威架构文档的过期验收条目、启动失败时吞掉 Managed Search shutdown 错误，
    并将 CHANGELOG 收敛为高层条目；
 8. 保留 `NOMIFUN_MANAGED_FETCH_MODE=off` 作为即时回滚。
 
-本地 `main` 已以 `--ff-only` 快进到最终五提交 tip；`feat/fetch-optimization` 已删除，
-恢复点 `backup/feat-fetch-optimization-pre-compact-aeb9a285` 和
-`backup/feat-fetch-optimization-pre-final-rebase-24a8cf4` 均保留。未 Push、未建 PR。
+当前 `feat/fetch-optimization` 仍保留，并新增恢复点
+`backup/feat-fetch-optimization-pre-budget-fix-e7cdca529`。未 Push、未建 PR。
 
-已完成的 post-fix bounded Canary（证据目录为
+此前 post-refactor bounded Canary（仍为本轮预算/健康状态修复前证据，目录为
 `fetch-evaluation-raw/post-refactor-55f17bda/`）：
 
 - W3C PDF：1 Cold Compare + 2 Warm E2E，3 次 Fetch，3/3 Q3；

@@ -26,6 +26,13 @@ the transport and endpoint/tool health. `ParallelMcpCallPolicy` is mandatory
 for every Parallel `tools/call`; a quota or evaluation Control can reserve a
 call but cannot authorize unsafe arguments.
 
+The production Coordinator keeps the 12-second `web_extract` deadline and
+uses a provider-injected start policy of 8 seconds for ColdTransport, 6 seconds
+for WarmTransportToolUnknown, and 4 seconds for Ready. These are admission
+thresholds only; the provider still receives the original absolute deadline.
+Do not add startup prewarming for ordinary HTML. Endpoint health is epoch
+guarded so a late success cannot clear a newer cooldown or unauthorized state.
+
 ## Adding or replacing a provider
 
 1. Implement the crate-private `RemoteExtractProvider` contract with readiness
