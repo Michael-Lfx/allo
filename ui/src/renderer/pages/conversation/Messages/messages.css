@@ -22,6 +22,14 @@
     0 10px 24px rgba(15, 23, 42, 0.035);
 }
 
+/* Motion curves for the conversation surface. Both are critically damped (no
+   overshoot): nothing here is thrown by a gesture, so a bounce would read as
+   noise. `settle` is for content arriving, `press` for direct touch feedback. */
+.message-list-root {
+  --conversation-ease-settle: cubic-bezier(0.32, 0.72, 0, 1);
+  --conversation-ease-press: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
 .message-item {
   --conversation-message-font-size: 14px;
   --conversation-message-line-height: 22px;
@@ -30,6 +38,48 @@
 .message-text-body {
   font-size: var(--conversation-message-font-size);
   line-height: var(--conversation-message-line-height);
+}
+
+.message-item p,
+.message-text-body {
+  text-wrap: pretty;
+}
+
+/* Tracking is size-specific: headings read too loose as they grow. */
+.message-item h1,
+.message-item h2,
+.message-item h3 {
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.message-bubble {
+  --conversation-bubble-radius: 14px;
+  --conversation-bubble-tail-radius: 5px;
+
+  border-radius: var(--conversation-bubble-radius);
+}
+
+.message-bubble--user {
+  border-top-right-radius: var(--conversation-bubble-tail-radius);
+  color: var(--text-primary);
+}
+
+.message-bubble--agent {
+  border-top-left-radius: var(--conversation-bubble-tail-radius);
+}
+
+.message-text-actions [data-testid='message-copy-action'],
+.message-text-actions button {
+  transition:
+    opacity 0.2s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
+    color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1));
+}
+
+/* Keeps the clock from reflowing as the digits change. */
+.message-text-actions__time {
+  font-variant-numeric: tabular-nums;
 }
 
 .message-error-note--user_llm_provider {
@@ -444,7 +494,21 @@
 }
 
 .message-bubble-enter {
-  animation: message-bubble-enter 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: message-bubble-enter 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)) both;
+}
+
+/* A bubble grows out of its tail corner — the side it came from — so the
+   arrival stays spatially tied to its sender instead of appearing from nowhere. */
+.message-bubble.message-bubble-enter {
+  animation-name: message-bubble-pop;
+}
+
+.message-bubble--user.message-bubble-enter {
+  transform-origin: 100% 0;
+}
+
+.message-bubble--agent.message-bubble-enter {
+  transform-origin: 0 0;
 }
 
 @keyframes turn-process-running-label {
@@ -504,11 +568,22 @@
 @keyframes message-bubble-enter {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translate3d(0, 6px, 0);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
+  }
+}
+
+@keyframes message-bubble-pop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -1038,6 +1113,118 @@ button.turn-process-trace__row:focus-visible {
   white-space: nowrap;
 }
 
+/* ── Floating chrome over the transcript ── */
+
+/* Translucent so the transcript stays visible underneath instead of being
+   punched out by an opaque disc. */
+.message-list-scroll-button {
+  box-sizing: border-box;
+  display: flex;
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  z-index: 100;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-base);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-base) 72%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 8px 24px rgba(15, 23, 42, 0.12);
+  color: var(--text-secondary);
+  cursor: pointer;
+  line-height: 0;
+  padding: 0;
+
+  opacity: 0;
+  transform: translate(-50%, 8px) scale(0.86);
+  transform-origin: 50% 100%;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.22s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    transform 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
+    visibility 0s linear 0.3s;
+}
+
+/* Enter and exit run the same path, so grabbing it mid-transition reverses
+   cleanly rather than jumping. */
+.message-list-scroll-button[data-visible='true'] {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.22s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    transform 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)),
+    background-color 0.16s var(--conversation-ease-press, cubic-bezier(0.25, 1, 0.5, 1)),
+    visibility 0s;
+}
+
+.message-list-scroll-button[data-visible='true']:hover {
+  background: color-mix(in srgb, var(--bg-base) 88%, transparent);
+  transform: translate(-50%, 0) scale(1.04);
+}
+
+/* Feedback lands on press, not on release. */
+.message-list-scroll-button[data-visible='true']:active {
+  transform: translate(-50%, 0) scale(0.93);
+  transition-duration: 0.1s;
+}
+
+.message-list-scroll-button:focus-visible {
+  box-shadow:
+    0 0 0 3px var(--color-primary-light-3, #bedaff),
+    0 8px 24px rgba(15, 23, 42, 0.12);
+  outline: none;
+}
+
+.message-list-scroll-button svg {
+  display: block;
+}
+
+[data-theme='dark'] .message-list-scroll-button {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.message-list-loading-older {
+  background: color-mix(in srgb, var(--bg-base) 76%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
+}
+
+.message-copy-toast {
+  animation: message-copy-toast-enter 0.3s var(--conversation-ease-settle, cubic-bezier(0.32, 0.72, 0, 1)) both;
+}
+
+@keyframes message-copy-toast-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .message-list-scroll-button,
+  .message-list-loading-older {
+    background: var(--bg-base);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .turn-process-disclosure__arrow,
   .turn-process-receipt__arrow,
@@ -1049,8 +1236,18 @@ button.turn-process-trace__row:focus-visible {
   .turn-process-receipt--completed .turn-process-receipt__icon,
   .turn-process-disclosure--running .turn-process-disclosure__label,
   .turn-process-trace__row--running .turn-process-trace__row-icon,
-  .message-bubble-enter {
+  .message-bubble-enter,
+  .message-copy-toast {
     transition: none;
     animation: none;
+  }
+
+  /* No travel, no scale — the button just is or isn't there. */
+  .message-list-scroll-button,
+  .message-list-scroll-button[data-visible='true'],
+  .message-list-scroll-button[data-visible='true']:hover,
+  .message-list-scroll-button[data-visible='true']:active {
+    transform: translate(-50%, 0);
+    transition: none;
   }
 }

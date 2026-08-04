@@ -30,6 +30,8 @@ import { parseMessageFileMarker } from './messageFileMarker';
 import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 
+const BUBBLE_ENTER_FRESH_MS = 1500;
+
 /**
  * Format a timestamp for message display.
  * Today: "HH:mm", older: "MM-DD HH:mm".
@@ -340,6 +342,15 @@ const MessageText: React.FC<{
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const shouldShowActions = !hideActions;
+  // The list is virtualized, so off-screen rows unmount and remount on
+  // scroll-back. Gating on arrival time keeps the entry animation to genuinely
+  // new messages instead of replaying the whole history on every scroll.
+  const enterAnimationRef = useRef<boolean | null>(null);
+  if (enterAnimationRef.current === null) {
+    enterAnimationRef.current =
+      message.created_at != null && Date.now() - message.created_at < BUBBLE_ENTER_FRESH_MS;
+  }
+  const shouldPlayEnterAnimation = enterAnimationRef.current;
   const resolvedFiles = useMemo(
     () => files.map((file_path) => resolveMessageFilePath(file_path, conversationContext?.workspace)),
     [conversationContext?.workspace, files]
@@ -383,7 +394,7 @@ const MessageText: React.FC<{
     <Tooltip content={t('common.copy', { defaultValue: 'Copy' })}>
       <div
         data-testid='message-copy-action'
-        className='flex h-24px w-24px shrink-0 items-center justify-center rd-4px cursor-pointer text-t-secondary hover:bg-3 transition-colors'
+        className='flex h-24px w-24px shrink-0 items-center justify-center rd-6px cursor-pointer text-t-secondary hover:bg-3'
         onClick={handleCopy}
         style={{ lineHeight: 0 }}
         aria-label={t('common.copy', { defaultValue: 'Copy' })}
@@ -415,7 +426,7 @@ const MessageText: React.FC<{
       <button
         type='button'
         className={classNames(
-          'p-4px rd-4px cursor-pointer hover:bg-3 transition-colors border-0 bg-transparent',
+          'p-4px rd-6px cursor-pointer hover:bg-3 border-0 bg-transparent',
           isMobile
             ? 'opacity-100'
             : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
@@ -430,6 +441,7 @@ const MessageText: React.FC<{
   ) : null;
 
   const cronMeta = message.content.cronMeta;
+  const bubbleVariant = isUserMessage || cronMeta ? 'user' : isAgentMessage ? 'agent' : null;
   const senderName = message.content.senderName;
   const senderAgentType = message.content.senderAgentType;
   const senderConversationId = message.content.senderConversationId;
@@ -444,7 +456,7 @@ const MessageText: React.FC<{
       {copyButton}
       {editButton}
       {message.created_at && (
-        <span className='text-12px leading-20px text-inherit select-none'>
+        <span className='message-text-actions__time text-12px leading-20px text-inherit select-none'>
           {formatMessageTime(message.created_at)}
         </span>
       )}
@@ -455,7 +467,7 @@ const MessageText: React.FC<{
       type='success'
       content={t('messages.copySuccess')}
       showIcon
-      className='fixed top-20px left-50% transform -translate-x-50% z-9999 w-max max-w-[80%]'
+      className='message-copy-toast fixed top-20px left-50% transform -translate-x-50% z-9999 w-max max-w-[80%]'
       style={{ boxShadow: '0px 2px 12px rgba(0,0,0,0.12)' }}
       closable={false}
     />
@@ -503,20 +515,15 @@ const MessageText: React.FC<{
           <div
             className={classNames(
               'min-w-0 [&>p:first-child]:mt-0px [&>p:last-child]:mb-0px md:max-w-780px',
+              bubbleVariant
+                ? 'message-bubble px-10px py-7px md:px-12px md:py-9px'
+                : 'w-full',
               {
-                'bg-aou-2 p-6px md:p-8px': isUserMessage || cronMeta,
-                'bg-3 p-6px md:p-8px': isAgentMessage,
-                'w-full': !(isUserMessage || cronMeta || isAgentMessage),
-                'message-bubble-enter': !isUserMessage,
+                'message-bubble--user bg-aou-2': bubbleVariant === 'user',
+                'message-bubble--agent bg-3': bubbleVariant === 'agent',
+                'message-bubble-enter': shouldPlayEnterAnimation,
               }
             )}
-            style={{
-              ...(isUserMessage || cronMeta
-                ? { borderRadius: '8px 0 8px 8px', color: 'var(--text-primary)' }
-                : isAgentMessage
-                  ? { borderRadius: '0 8px 8px 8px' }
-                  : undefined),
-            }}
           >
             {/* JSON 内容使用折叠组件 Use CollapsibleContent for JSON content */}
             {shouldRenderPlainText ? (

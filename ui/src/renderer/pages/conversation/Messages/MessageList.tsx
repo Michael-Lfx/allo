@@ -10,7 +10,6 @@ import type {
 } from '@/common/chat/chatLib';
 import { normalizeToolMessages } from '@/common/chat/normalizeToolCall';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { iconColors } from '@/renderer/styles/colors';
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
 import { Image } from '@arco-design/web-react';
 import { Down } from '@icon-park/react';
@@ -1665,7 +1664,7 @@ const MessageList: React.FC<{
   }
 
   return (
-    <div className='relative flex-1 h-full'>
+    <div className='message-list-root relative flex-1 h-full'>
       <ConversationQuestionLocator
         conversation_id={conversationContext?.conversation_id}
         rangeRef={virtuosoRangeRef}
@@ -1687,7 +1686,7 @@ const MessageList: React.FC<{
             <div ref={handleContentRef} data-testid='message-list-content' style={{ overflowAnchor: 'none' }}>
               {loadingOlder ? (
                 <div
-                  className='sticky top-0 z-10 py-8px text-center text-12px text-t-secondary bg-base/90'
+                  className='message-list-loading-older sticky top-0 z-10 py-8px text-center text-12px text-t-secondary'
                   role='status'
                   aria-live='polite'
                   data-testid='message-list-loading-older'
@@ -1731,23 +1730,20 @@ const MessageList: React.FC<{
         </ImagePreviewContext.Provider>
       </Image.PreviewGroup>
 
-      {showScrollButton && (
-        <>
-          {/* Gradient mask */}
-          <div className='absolute bottom-0 left-0 right-0 h-100px pointer-events-none' />
-          {/* Scroll button */}
-          <div className='absolute bottom-20px left-50% transform -translate-x-50% z-100'>
-            <div
-              className='flex items-center justify-center w-40px h-40px rd-full bg-base shadow-lg cursor-pointer hover:bg-1 transition-all hover:scale-110 border-1 border-solid border-3'
-              onClick={handleScrollButtonClick}
-              title={t('messages.scrollToBottom')}
-              style={{ lineHeight: 0 }}
-            >
-              <Down theme='filled' size='20' fill={iconColors.secondary} style={{ display: 'block' }} />
-            </div>
-          </div>
-        </>
-      )}
+      {/* Kept mounted so showing and hiding travel the same path and a
+          mid-transition click reverses cleanly. */}
+      <button
+        type='button'
+        className='message-list-scroll-button'
+        data-visible={showScrollButton ? 'true' : 'false'}
+        onClick={handleScrollButtonClick}
+        title={t('messages.scrollToBottom')}
+        aria-label={t('messages.scrollToBottom')}
+        aria-hidden={!showScrollButton}
+        tabIndex={showScrollButton ? 0 : -1}
+      >
+        <Down theme='filled' size='20' fill='currentColor' />
+      </button>
 
       <SelectionReplyButton messages={list} />
     </div>
