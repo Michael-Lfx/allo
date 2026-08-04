@@ -15,7 +15,9 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::{
-    coordinator::{ExtractCoordinator, ManagedExtractCoordinator},
+    coordinator::{
+        ExtractCoordinator, ManagedExtractCoordinator, RemoteAttemptPolicy,
+    },
     provider::{
         DuckDuckGoSearchProvider, HttpExtractProvider, RemoteExtractCapabilities,
         RemoteFallbackPolicy, SearchProvider,
@@ -497,12 +499,15 @@ impl ManagedProviderFactory for KeylessManagedProviderFactory {
         let extract = if mode.is_enabled() {
             parallel_client.as_ref().map(|parallel_client| {
                 let fetch = Arc::new(ParallelFetchAdapter::new(Arc::clone(parallel_client)));
-                Arc::new(ManagedExtractCoordinator::with_profile_and_capabilities(
-                    Arc::new(HttpExtractProvider::new()),
-                    fetch,
-                    RemoteFallbackPolicy::evidence_backed(),
-                    RemoteExtractCapabilities::evidence_backed(),
-                )) as Arc<dyn ExtractCoordinator>
+                Arc::new(
+                    ManagedExtractCoordinator::with_profile_and_capabilities_and_attempt_policy(
+                        Arc::new(HttpExtractProvider::new()),
+                        fetch,
+                        RemoteFallbackPolicy::evidence_backed(),
+                        RemoteExtractCapabilities::evidence_backed(),
+                        RemoteAttemptPolicy::default(),
+                    ),
+                ) as Arc<dyn ExtractCoordinator>
             })
         } else {
             None

@@ -238,15 +238,22 @@ impl RemoteExtractProvider for ParallelFetchAdapter {
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError> {
         let mut session_retried = false;
+        let mut session_recovered = false;
         let mut tool_rediscovered = false;
         let mut tool_attempt = 0_u8;
         let mut recovery_call_count = 0usize;
         loop {
             match self.ensure_compatible(deadline).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if session_recovered {
+                        self.client.record_endpoint_reinitialized().await;
+                        session_recovered = false;
+                    }
+                }
                 Err(RemoteExtractError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    session_recovered = true;
                     recovery_call_count += 1;
                     continue;
                 }
@@ -339,7 +346,6 @@ impl RemoteExtractProvider for ParallelFetchAdapter {
                             batch.diagnostics.queue_ms = queue_ms;
                             batch.diagnostics.call_ms = call_ms;
                             batch.diagnostics.recovery_call_count = recovery_call_count;
-                            self.client.record_endpoint_success().await;
                             self.client.record_fetch_tool_success().await;
                             return Ok(batch);
                         }
@@ -382,6 +388,9 @@ impl RemoteExtractProvider for ParallelFetchAdapter {
                     return Err(RemoteExtractError::Upstream);
                 }
                 Err(ManagedMcpCallError::LedgerFailure) => {
+                    return Err(RemoteExtractError::Upstream);
+                }
+                Err(ManagedMcpCallError::EndpointUnavailable) => {
                     return Err(RemoteExtractError::Upstream);
                 }
             }

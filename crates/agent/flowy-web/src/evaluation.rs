@@ -786,8 +786,8 @@ impl FetchEvaluationHarness {
                 let coordinator = ManagedExtractCoordinator::with_profile_and_capabilities(
                     backend.local(),
                     backend.remote(),
-                    RemoteFallbackPolicy::all_eligible(),
-                    RemoteExtractCapabilities::all_eligible(),
+                    RemoteFallbackPolicy::evidence_backed(),
+                    RemoteExtractCapabilities::evidence_backed(),
                 );
                 let batch = coordinator
                     .extract_many(
