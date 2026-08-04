@@ -182,7 +182,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
   return (
-    <div className='size-full flex flex-col'>
+    <div className={`${styles.sider} size-full flex flex-col`}>
       {/* Main content area */}
       {isSettings ? (
         <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>

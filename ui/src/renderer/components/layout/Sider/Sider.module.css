@@ -1,3 +1,18 @@
+/* Keep the navigation rail quieter than the main content in the light theme.
+   These overrides stay local to the sider so the shared text tokens keep their
+   normal contrast everywhere else. */
+.sider {
+  --text-primary: #454b55;
+  --text-secondary: #6f7680;
+  --bg-6: #9298a1;
+}
+
+:global([data-theme='dark']) .sider {
+  --text-primary: #ffffff;
+  --text-secondary: #ced3da;
+  --bg-6: #5a5a5a;
+}
+
 /* GPU-friendly: transform applies to the + SVG only (see Sider.tsx), not the padded row or icon frame */
 
 .newChatTrigger {

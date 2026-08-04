@@ -906,14 +906,14 @@ const KnowledgeDetailPage: React.FC = () => {
             </Button>
             <Dropdown
               droplist={
-                <Menu>
+                <Menu className='knowledge-detail-actions-menu'>
                   <Menu.Item key='export' onClick={() => setTab('set')}>
                     {t('knowledge.detail.export', { defaultValue: '导出' })}
                   </Menu.Item>
                   <Menu.Item key='openFolder' onClick={() => void handleOpenFolder()}>
                     {t('knowledge.actions.openFolder', { defaultValue: '打开文件夹' })}
                   </Menu.Item>
-                  <Menu.Item key='delete' className='!text-[rgb(var(--danger-6))]' onClick={() => setTab('set')}>
+                  <Menu.Item key='delete' className='knowledge-detail-danger-menu-item' onClick={() => setTab('set')}>
                     {t('knowledge.detail.delete', { defaultValue: '删除知识库' })}
                   </Menu.Item>
                 </Menu>
@@ -1065,7 +1065,10 @@ const KnowledgeDetailPage: React.FC = () => {
                                 <Dropdown
                                   trigger='click'
                                   droplist={
-                                    <Menu onClickMenuItem={(key) => handleTreeNodeMenuClick(String(key), item)}>
+                                    <Menu
+                                      className='knowledge-detail-actions-menu'
+                                      onClickMenuItem={(key) => handleTreeNodeMenuClick(String(key), item)}
+                                    >
                                       {item.is_dir && (
                                         <>
                                           <Menu.Item key='new-file'>
@@ -1088,7 +1091,7 @@ const KnowledgeDetailPage: React.FC = () => {
                                           {t('knowledge.actions.rename', { defaultValue: '重命名' })}
                                         </span>
                                       </Menu.Item>
-                                      <Menu.Item key='delete' className='!text-[rgb(var(--danger-6))]'>
+                                      <Menu.Item key='delete' className='knowledge-detail-danger-menu-item'>
                                         <span className='inline-flex items-center gap-6px'>
                                           <Delete theme='outline' size='13' />
                                           {t('knowledge.actions.delete', { defaultValue: '删除' })}
