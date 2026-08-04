@@ -57,6 +57,7 @@
   "sourceLoadFailed": "Failed to load source",
   "openInKnowledge": "Open in knowledge base",
   "activities": "Retrieval practice",
+  "enrollToPractice": "Enroll in the course (button at the top right) before submitting exercise answers.",
   "trueLabel": "True",
   "falseLabel": "False",
   "submit": "Submit",

@@ -457,6 +457,7 @@ function LessonBlock({
       {lesson.activities.length > 0 && (
         <div className='flex flex-col gap-10px'>
           <div className='text-13px font-600 text-t-secondary'>{t('learning.activities')}</div>
+          {!enrolled && <Alert type='warning' content={t('learning.enrollToPractice')} />}
           {lesson.activities.map((activity) => (
             <ActivityBlock
               key={activity.id}

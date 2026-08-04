@@ -2301,6 +2301,7 @@ export type I18nKey =
   | 'learning.domain'
   | 'learning.domainPlaceholder'
   | 'learning.enroll'
+  | 'learning.enrollToPractice'
   | 'learning.falseLabel'
   | 'learning.files'
   | 'learning.generate'
