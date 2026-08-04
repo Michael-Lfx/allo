@@ -34,7 +34,9 @@ pub(crate) fn classify_document(
                         | "application/xml"
                         | "application/x-javascript"
                         | "application/javascript"
-                ) =>
+                )
+                && !value.ends_with("+json")
+                && !value.ends_with("+xml") =>
         {
             Some(DeferredDocumentKind::UnsupportedDocument)
         }
@@ -65,7 +67,9 @@ mod tests {
             Some("text/html"),
             Some("application/xhtml+xml"),
             Some("application/json"),
+            Some("application/ld+json"),
             Some("application/xml"),
+            Some("application/atom+xml"),
             Some("application/javascript"),
         ] {
             assert_eq!(classify_document(content_type, b"<html>"), None);
