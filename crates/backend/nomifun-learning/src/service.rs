@@ -676,9 +676,11 @@ impl LearningService {
                 parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
             let concept_id: String = row.try_get("concept_id").map_err(internal)?;
             let review_count: i64 = row.try_get("review_count").map_err(internal)?;
-            // Reviews are question-based: items whose concept has no objective
-            // activity are skipped instead of shown without a prompt.
-            let questions = self.concept_objective_questions(&concept_id).await?;
+            // Reviews are question-based: items whose concept has no studied
+            // objective activity are skipped instead of shown without a prompt.
+            let questions = self
+                .concept_objective_questions(&concept_id, &enrollment_id)
+                .await?;
             let Some(question) = pick_review_question(&questions, review_count) else {
                 continue;
             };
@@ -708,20 +710,34 @@ impl LearningService {
         Ok(reviews)
     }
 
-    /// Objective activities bound to a concept, ordered deterministically so
+    /// Objective activities bound to a concept that the learner has actually
+    /// studied: the owning lesson must be completed in this enrollment and the
+    /// activity must already have an attempt. Ordered deterministically so
     /// `pick_review_question` rotates through them as reviews accumulate.
     async fn concept_objective_questions(
         &self,
         concept_id: &str,
+        enrollment_id: &LearningEnrollmentId,
     ) -> Result<Vec<ObjectiveQuestion>, AppError> {
         let rows = sqlx::query(
             "SELECT a.activity_id, a.lesson_id, a.kind, a.prompt, a.config_json \
              FROM learning_activity_concepts ac \
              JOIN learning_activities a ON a.activity_id = ac.activity_id \
              WHERE ac.concept_id = ? AND a.kind IN ('single_choice', 'true_false') \
+             AND EXISTS ( \
+                 SELECT 1 FROM learning_lesson_progress p \
+                 WHERE p.lesson_id = a.lesson_id \
+                 AND p.enrollment_id = ? AND p.status = 'completed' \
+             ) \
+             AND EXISTS ( \
+                 SELECT 1 FROM learning_attempts t \
+                 WHERE t.activity_id = a.activity_id AND t.enrollment_id = ? \
+             ) \
              ORDER BY a.position, a.activity_id",
         )
         .bind(concept_id)
+        .bind(enrollment_id.as_str())
+        .bind(enrollment_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -858,7 +874,9 @@ impl LearningService {
         let review_count: i64 = row.try_get("review_count").map_err(internal)?;
         // Same rotation as `due_reviews` so the answered question matches the
         // one the client displayed.
-        let questions = self.concept_objective_questions(&concept_id).await?;
+        let questions = self
+            .concept_objective_questions(&concept_id, &enrollment_id)
+            .await?;
         let question = pick_review_question(&questions, review_count)
             .ok_or_else(|| AppError::NotFound(format!("objective question for concept {concept_id}")))?;
         // `forgot` skips grading entirely: learners must never be forced to
