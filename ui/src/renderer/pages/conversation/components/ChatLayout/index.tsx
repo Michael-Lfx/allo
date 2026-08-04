@@ -7,8 +7,6 @@ import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
-import AutoWorkControl from '@/renderer/pages/conversation/components/AutoWorkControl';
-import IdmmControl from '@/renderer/pages/conversation/components/IdmmControl';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { SummonHeaderBadge } from '@/renderer/pages/conversation/components/SummonPanel';
 import MobileWorkspaceOverlay from './MobileWorkspaceOverlay';
@@ -59,7 +57,7 @@ export interface ChatLayoutProps {
   headerExtra?: React.ReactNode;
   /**
    * Hide the session-capability controls baked into the header
-   * (AutoWork / IDMM / Knowledge).
+   * (Knowledge).
    * Used by surfaces that deliberately offer a reduced feature set — e.g. the
    * desktop companion chat tab. Defaults to false (full conversation page).
    */
@@ -331,8 +329,6 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           <>
             {/* 召唤伙伴徽标（设计 B5）：仅已召唤会话渲染，被动展示伙伴名。 */}
             <SummonHeaderBadge conversationId={conversation_id} />
-            <AutoWorkControl target={{ kind: 'conversation', id: conversation_id }} />
-            <IdmmControl target={{ kind: 'conversation', id: conversation_id }} />
             <KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />
           </>
         )}

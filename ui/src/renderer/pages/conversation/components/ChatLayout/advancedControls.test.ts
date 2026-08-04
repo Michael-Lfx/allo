@@ -14,11 +14,11 @@ describe('ChatLayout advanced controls', () => {
     expect(source.includes('props.headerLeading ??')).toBe(true);
   });
 
-  test('hides AutoWork and keeps the remaining header controls', () => {
+  test('keeps only the remaining header controls', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(source.includes('AutoWorkControl')).toBe(false);
-    expect(source.includes("<IdmmControl target={{ kind: 'conversation', id: conversation_id }} />")).toBe(true);
+    expect(source.includes('IdmmControl')).toBe(false);
     expect(source.includes("<KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />")).toBe(true);
   });
 

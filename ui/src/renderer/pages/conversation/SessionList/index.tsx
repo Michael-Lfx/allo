@@ -2,13 +2,12 @@
 
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import type { ConversationId, TerminalId } from '@/common/types/ids';
+import type { ConversationId } from '@/common/types/ids';
 import BatchActionBar from '@/renderer/components/base/BatchActionBar';
 import DirectorySelectionModal from '@/renderer/components/settings/DirectorySelectionModal';
 import { getRecentWorkspaces } from '@/renderer/components/workspace/recentWorkspaces';
 import { useConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
 import { useCronJobsMap } from '@/renderer/pages/cron';
-import { useTerminalSessions } from '@/renderer/pages/terminal/useTerminalSessions';
 import { emitter } from '@/renderer/utils/emitter';
 import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { scrollSidebarItemIntoView } from '@/renderer/utils/ui/scrollIntoView';
@@ -27,10 +26,9 @@ import { useExport } from './hooks/useExport';
 import { capabilityKey, useSessionCapabilities } from './hooks/useSessionCapabilities';
 import { useWorkpathBranches } from './hooks/useWorkpathBranches';
 import type { ConversationRowProps } from './types';
-import TerminalRow from './TerminalRow';
 import WorkpathDrawer from './WorkpathDrawer';
 import { useWorkpathUiState } from './hooks/useWorkpathUiState';
-import { toggleBatchSelectionScope, type BatchSelectableScope } from './utils/batchSelectionScopes';
+import { toggleBatchSelectionScope, type BatchSelectableScope, type BatchSelectionState } from './utils/batchSelectionScopes';
 import { DEFAULT_WORKPATH_KEY } from './utils/workpathKey';
 import { buildWorkpathTree } from './utils/workpathTree';
 import {
@@ -42,7 +40,7 @@ import {
   DEFAULT_SIDEBAR_DISPLAY_PREFERENCES,
   type SidebarDisplayPreferences,
 } from './utils/sidebarDisplayPreferences';
-import type { SessionEntry, SessionKind, WorkpathNode } from './utils/workpathTree';
+import type { SessionEntry, WorkpathNode } from './utils/workpathTree';
 
 export type WorkpathSessionListProps = {
   onSessionClick?: () => void;
@@ -54,10 +52,9 @@ export type WorkpathSessionListProps = {
 };
 
 /**
- * Unified workpath session list: first level groups every session (interactive
- * conversations + terminals) under its workpath drawer; second level splits by
- * session kind. Replaced GroupedHistory's 对话/置顶/项目 three-段式 plus the
- * standalone terminal section (mounted from the Sider scroll area).
+ * Workpath session list: each workpath directly contains its interactive
+ * conversations. Terminal sessions remain available through their dedicated
+ * routes and entry points, outside this conversation hierarchy.
  */
 const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   onSessionClick,
@@ -94,7 +91,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     clearCompletionUnread,
     setActiveConversation,
   } = useConversationHistoryContext();
-  const { sessions: terminals } = useTerminalSessions();
   const ui = useWorkpathUiState();
   const [emptyProjectWorkpaths, setEmptyProjectWorkpaths] = useState<string[]>(() => getProjectWorkpaths());
 
@@ -103,8 +99,8 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   }, []);
 
   const tree = useMemo(
-    () => buildWorkpathTree(conversations, terminals, ui.pinnedKeys, emptyProjectWorkpaths),
-    [conversations, terminals, ui.pinnedKeys, emptyProjectWorkpaths]
+    () => buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths),
+    [conversations, ui.pinnedKeys, emptyProjectWorkpaths]
   );
 
   const projectWorkpathKeys = useMemo(() => new Set(emptyProjectWorkpaths), [emptyProjectWorkpaths]);
@@ -117,8 +113,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   // Active session from the route — used for row selected state and drawer expansion.
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
   const activeConversationId = activeRoute?.kind === 'conversation' ? activeRoute.id : null;
-  const activeTerminalId = activeRoute?.kind === 'terminal' ? activeRoute.id : null;
-  const activeSessionId: ConversationId | TerminalId | null = activeConversationId ?? activeTerminalId;
 
   // Sync active-conversation bookkeeping + scroll it into view on route change
   // (carried over from GroupedHistory / useConversations).
@@ -143,54 +137,27 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     toggleSelectedConversation,
   } = useBatchSelection(batchMode, conversations);
 
-  // Terminal selection — same semantics, kept locally (useTerminalBatchSelection
-  // owns its own batchMode flag, which must stay unified with the prop here).
-  const [selectedTerminalIds, setSelectedTerminalIds] = useState<Set<TerminalId>>(new Set());
-  useEffect(() => {
-    if (!batchMode) setSelectedTerminalIds(new Set());
-  }, [batchMode]);
-  useEffect(() => {
-    if (!batchMode || selectedTerminalIds.size === 0) return;
-    const existing = new Set(terminals.map((session) => session.terminal_id));
-    setSelectedTerminalIds((prev) => {
-      const next = new Set(Array.from(prev).filter((id) => existing.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [batchMode, terminals, selectedTerminalIds.size]);
-
-  const toggleSelectedTerminal = useCallback((id: TerminalId) => {
-    setSelectedTerminalIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const totalSelected = selectedConversationIds.size + selectedTerminalIds.size;
-  const totalSelectable = conversations.length + terminals.length;
+  const totalSelected = selectedConversationIds.size;
+  const totalSelectable = conversations.length;
   const allSelected = totalSelectable > 0 && totalSelected === totalSelectable;
-  const batchSelectionState = useMemo(
+  const batchSelectionState = useMemo<BatchSelectionState>(
     () => ({
       conversationIds: selectedConversationIds,
-      terminalIds: selectedTerminalIds,
+      terminalIds: new Set(),
     }),
-    [selectedConversationIds, selectedTerminalIds]
+    [selectedConversationIds]
   );
   const handleToggleSelectAll = useCallback(() => {
     if (allSelected) {
       setSelectedConversationIds(new Set());
-      setSelectedTerminalIds(new Set());
     } else {
       setSelectedConversationIds(new Set(conversations.map((conversation) => conversation.id)));
-      setSelectedTerminalIds(new Set(terminals.map((session) => session.terminal_id)));
     }
-  }, [allSelected, conversations, terminals, setSelectedConversationIds]);
+  }, [allSelected, conversations, setSelectedConversationIds]);
   const handleToggleBatchSelectionScope = useCallback(
     (scope: BatchSelectableScope) => {
       const next = toggleBatchSelectionScope(scope, batchSelectionState);
       setSelectedConversationIds(next.conversationIds);
-      setSelectedTerminalIds(next.terminalIds);
     },
     [batchSelectionState, setSelectedConversationIds]
   );
@@ -242,14 +209,10 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     onBatchModeChange,
   });
 
-  // Combined batch delete spanning both kinds. Conversation removal mirrors
-  // useConversationActions.removeConversation (event emit + navigate-away);
-  // terminal removal was carried over from the since-removed TerminalSiderSection /
-  // useTerminalBatchSelection (best-effort per id).
+  // Batch deletion is scoped to the interactive conversations rendered here.
   const handleBatchDeleteAll = useCallback(() => {
     const convIds = Array.from(selectedConversationIds);
-    const termIds = Array.from(selectedTerminalIds);
-    const total = convIds.length + termIds.length;
+    const total = convIds.length;
     if (total === 0) {
       Message.warning(t('conversation.history.batchNoSelection'));
       return;
@@ -276,15 +239,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
             })
           );
           successCount += convResults.filter(Boolean).length;
-          for (const terminal_id of termIds) {
-            try {
-              await ipcBridge.terminal.remove.invoke({ terminal_id: terminal_id });
-              if (activeTerminalId === terminal_id) void navigate('/guid');
-              successCount += 1;
-            } catch {
-              /* best-effort; continue */
-            }
-          }
           emitter.emit('chat.history.refresh');
           if (successCount > 0) {
             Message.success(t('conversation.history.batchDeleteSuccess', { count: successCount }));
@@ -293,7 +247,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           }
         } finally {
           setSelectedConversationIds(new Set());
-          setSelectedTerminalIds(new Set());
           onBatchModeChange?.(false);
         }
       },
@@ -303,9 +256,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     });
   }, [
     selectedConversationIds,
-    selectedTerminalIds,
     activeConversationId,
-    activeTerminalId,
     navigate,
     onBatchModeChange,
     setSelectedConversationIds,
@@ -327,22 +278,10 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     [navigate, onSessionClick]
   );
 
-  const handleCreateTerminal = useCallback(
-    (node: WorkpathNode) => {
-      if (node.key === DEFAULT_WORKPATH_KEY) {
-        void navigate('/terminal-new');
-      } else {
-        void navigate('/terminal-new', { state: { cwd: node.key } });
-      }
-      onSessionClick?.();
-    },
-    [navigate, onSessionClick]
-  );
-
   const handleRemoveProjectWorkpath = useCallback(
     (node: WorkpathNode) => {
       if (node.key === DEFAULT_WORKPATH_KEY) return;
-      const sessionCount = node.interactive.length + node.terminal.length;
+      const sessionCount = node.interactive.length;
       Modal.confirm({
         title: t('sessionList.removeWorkpathTitle'),
         content: t(
@@ -370,21 +309,17 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
 
   /* ------------------------------- reveal on create ------------------------------- */
 
-  // Auto-expand the owning drawer + kind subgroup and scroll a newly created
-  // session into view (adapted from Sider/useRevealOnCreate: event-driven, never
+  // Auto-expand the owning drawer and scroll a newly created conversation into
+  // view (adapted from Sider/useRevealOnCreate: event-driven, never
   // fires on initial load; reveal waits until the row lands in the tree because
   // the workpath is only known after aggregation). Last-one-wins on bursts.
-  const pendingRevealRef = useRef<{ kind: SessionKind; id: ConversationId | TerminalId } | null>(null);
+  const pendingRevealRef = useRef<ConversationId | null>(null);
   const [revealTick, setRevealTick] = useState(0);
 
   useEffect(() => {
     const offConversationCreated = ipcBridge.conversation.listChanged.on((event) => {
       if (event.action !== 'created') return;
-      pendingRevealRef.current = { kind: 'interactive', id: event.conversation_id };
-      setRevealTick((tick) => tick + 1);
-    });
-    const offTerminalCreated = ipcBridge.terminal.onCreated.on((session) => {
-      pendingRevealRef.current = { kind: 'terminal', id: session.terminal_id };
+      pendingRevealRef.current = event.conversation_id;
       setRevealTick((tick) => tick + 1);
     });
     // TODO(cron): cron.job-created creates a *job*, not a session — its derived
@@ -393,25 +328,19 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     // EXISTING conversation/terminal is deferred to the cron-integration task.
     return () => {
       offConversationCreated();
-      offTerminalCreated();
     };
   }, []);
 
-  const { expand: expandWorkpathDrawer, expandSubgroup: expandWorkpathSubgroup } = ui;
+  const { expand: expandWorkpathDrawer } = ui;
   useEffect(() => {
     const pending = pendingRevealRef.current;
     if (!pending) return;
-    const node = tree.find((candidate) =>
-      pending.kind === 'interactive'
-        ? candidate.interactive.some((entry) => entry.id === pending.id)
-        : candidate.terminal.some((entry) => entry.id === pending.id)
-    );
+    const node = tree.find((candidate) => candidate.interactive.some((entry) => entry.id === pending));
     if (!node) return; // not aggregated yet (async list refresh) — retry on next data change
     pendingRevealRef.current = null;
     expandWorkpathDrawer(node.key);
-    expandWorkpathSubgroup(node.key, pending.kind);
-    scrollSidebarItemIntoView(pending.kind === 'interactive' ? 'c-' + pending.id : 'terminal-' + pending.id);
-  }, [tree, revealTick, expandWorkpathDrawer, expandWorkpathSubgroup]);
+    scrollSidebarItemIntoView('c-' + pending);
+  }, [tree, revealTick, expandWorkpathDrawer]);
 
   /* ------------------------- workspace dropdown UI ------------------------- */
 
@@ -518,49 +447,14 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     ]
   );
 
-  const handleTerminalClick = useCallback(
-    (terminal_id: TerminalId) => {
-      cleanupSiderTooltips();
-      void navigate(`/terminal/${terminal_id}`);
-      onSessionClick?.();
-    },
-    [navigate, onSessionClick]
-  );
-
   const renderEntry = useCallback(
     (entry: SessionEntry): React.ReactNode => {
       if (entry.kind === 'interactive' && entry.conversation) {
         return <ConversationRow key={entry.id} {...getConversationRowProps(entry.conversation)} dimIcon />;
       }
-      if (entry.kind === 'terminal' && entry.terminal) {
-        return (
-          <TerminalRow
-            key={entry.id}
-            session={entry.terminal}
-            active={activeTerminalId === entry.id}
-            onClick={() => handleTerminalClick(entry.id)}
-            selectionMode={batchMode}
-            selected={selectedTerminalIds.has(entry.id)}
-            onToggleSelect={() => toggleSelectedTerminal(entry.id)}
-            indent
-            autoworkState={capabilities.autowork.get(capabilityKey('terminal', entry.id))}
-            idmmState={capabilities.idmm.get(capabilityKey('terminal', entry.id))}
-            showSessionAge={displayPreferences.sessionMetaMode === 'age'}
-          />
-        );
-      }
       return null;
     },
-    [
-      getConversationRowProps,
-      activeTerminalId,
-      handleTerminalClick,
-      batchMode,
-      selectedTerminalIds,
-      toggleSelectedTerminal,
-      capabilities,
-      displayPreferences.sessionMetaMode,
-    ]
+    [getConversationRowProps]
   );
 
   /* ------------------------------------ render ------------------------------------ */
@@ -808,8 +702,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     </>
   );
 
-  // Collapsed sider: flat icon-only conversation rows (terminals were never
-  // shown in the collapsed sider — same as the old TerminalSiderSection gating).
+  // Collapsed sider: flat icon-only interactive conversation rows.
   if (collapsed) {
     return (
       <>
@@ -908,9 +801,8 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
             key={node.key}
             node={node}
             ui={ui}
-            activeSessionId={activeSessionId}
+            activeConversationId={activeConversationId}
             onCreateInteractive={handleCreateInteractive}
-            onCreateTerminal={handleCreateTerminal}
             onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
             isProjectWorkpath={projectWorkpathKeys.has(node.key)}
             batchMode={batchMode}

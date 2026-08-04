@@ -1,7 +1,7 @@
 
 
-import { Checkbox, Dropdown, Menu, Tooltip } from '@arco-design/web-react';
-import { BookOne, BranchOne, DeleteOne, FolderClose, FolderOpen, Home, MessageOne, Plus, Pushpin, Terminal } from '@icon-park/react';
+import { Checkbox, Tooltip } from '@arco-design/web-react';
+import { BookOne, BranchOne, DeleteOne, FolderClose, FolderOpen, Home, Plus, Pushpin } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -9,9 +9,8 @@ import { useTranslation } from 'react-i18next';
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
 import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import PathText from '@/renderer/components/base/PathText';
-import type { ConversationId, TerminalId } from '@/common/types/ids';
+import type { ConversationId } from '@/common/types/ids';
 
-import SessionKindGroup from './SessionKindGroup';
 import type { WorkpathUiState } from './hooks/useWorkpathUiState';
 import { useWorkpathKnowledgeLit } from './hooks/useWorkpathKnowledge';
 import {
@@ -32,20 +31,18 @@ import {
   formatWorkpathDisplay,
   type SidebarDisplayPreferences,
 } from './utils/sidebarDisplayPreferences';
-import type { SessionEntry, SessionKind, WorkpathNode } from './utils/workpathTree';
+import type { SessionEntry, WorkpathNode } from './utils/workpathTree';
 
 export interface WorkpathDrawerProps {
   node: WorkpathNode;
   ui: WorkpathUiState;
   /**
-   * The canonical session id currently open via `/conversation/:id` or
-   * `/terminal/:id`. When it belongs to this node, the drawer (and the
-   * containing subgroup) is forced open — visually only, never written back to
-   * localStorage.
+   * The interactive conversation currently open via `/conversation/:id`. When
+   * it belongs to this node, the drawer is forced open — visually only, never
+   * written back to localStorage.
    */
-  activeSessionId: ConversationId | TerminalId | null;
+  activeConversationId: ConversationId | null;
   onCreateInteractive: (node: WorkpathNode) => void;
-  onCreateTerminal: (node: WorkpathNode) => void;
   onRemoveProjectWorkpath?: (node: WorkpathNode) => void;
   isProjectWorkpath?: boolean;
   batchMode?: boolean;
@@ -58,17 +55,16 @@ export interface WorkpathDrawerProps {
 
 /**
  * First-level workpath drawer: header row (expand arrow + folder/home icon +
- * display name + session-count badge + hover ops) and, when expanded, up to two
- * SessionKindGroup sub-drawers (interactive first; empty groups not rendered).
+ * display name + conversation-count badge + hover ops) and, when expanded,
+ * directly renders its interactive conversation rows.
  * Collapse interaction follows the WorkspaceCollapse paradigm (conditional
  * render, h-34px header, hover bg, trailing ops revealed on hover).
  */
 const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   node,
   ui,
-  activeSessionId,
+  activeConversationId,
   onCreateInteractive,
-  onCreateTerminal,
   onRemoveProjectWorkpath,
   isProjectWorkpath = false,
   batchMode = false,
@@ -79,40 +75,26 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   gitBranch,
 }) => {
   const { t } = useTranslation();
-  const [createMenuVisible, setCreateMenuVisible] = useState(false);
   const syncedActiveDrawerRouteRef = useRef<string | null>(null);
-  const syncedActiveSubgroupRouteRef = useRef<string | null>(null);
-  const [showAllSessionsByKind, setShowAllSessionsByKind] = useState<Record<SessionKind, boolean>>({
-    interactive: false,
-    terminal: false,
-  });
+  const [showAllConversations, setShowAllConversations] = useState(false);
 
   const isDefault = node.key === DEFAULT_WORKPATH_KEY;
   const displayName = isDefault ? t('sessionList.defaultWorkpath') : node.displayName;
   const workpathDisplay = isDefault ? null : formatWorkpathDisplay(node.key, node.displayName, displayPreferences.workpathNameMode);
   const twoLineWorkpath = workpathDisplay?.kind === 'twoLine';
-  const sessionCount = node.interactive.length + node.terminal.length;
+  const sessionCount = node.interactive.length;
 
-  const activeEntry: SessionEntry | null =
-    activeSessionId === null
-      ? null
-      : (node.interactive.find((entry) => entry.id === activeSessionId) ??
-        node.terminal.find((entry) => entry.id === activeSessionId) ??
-        null);
-  const activeKind: SessionKind | null = activeEntry?.kind ?? null;
+  const activeEntry =
+    activeConversationId === null ? null : (node.interactive.find((entry) => entry.id === activeConversationId) ?? null);
   const activeDisplayIndex = activeEntry ? getWorkpathEntryDisplayIndex(node, activeEntry) : null;
-  const forceShowAllForActiveKind: Record<SessionKind, boolean> = {
-    interactive: activeKind === 'interactive' && activeDisplayIndex !== null && activeDisplayIndex >= WORKPATH_COLLAPSED_SESSION_LIMIT,
-    terminal: activeKind === 'terminal' && activeDisplayIndex !== null && activeDisplayIndex >= WORKPATH_COLLAPSED_SESSION_LIMIT,
-  };
+  const forceShowAllForActiveConversation = activeDisplayIndex !== null && activeDisplayIndex >= WORKPATH_COLLAPSED_SESSION_LIMIT;
   const visibleEntries = getVisibleWorkpathEntries(node, {
-    interactive: showAllSessionsByKind.interactive || forceShowAllForActiveKind.interactive,
-    terminal: showAllSessionsByKind.terminal || forceShowAllForActiveKind.terminal,
+    interactive: showAllConversations || forceShowAllForActiveConversation,
+    terminal: false,
   });
-  const activeRouteKey =
-    activeKind !== null && activeSessionId !== null ? `${node.key}:${activeKind}:${activeSessionId}` : null;
+  const activeRouteKey = activeEntry ? `${node.key}:${activeEntry.id}` : null;
   const drawerExpansion = getRenderedExpansionState({
-    active: activeKind !== null,
+    active: activeEntry !== null,
     persistedExpanded: ui.isExpanded(node.key),
     activeRouteSynced: syncedActiveDrawerRouteRef.current === activeRouteKey,
   });
@@ -121,31 +103,20 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   // Workpath-level capability: knowledge base. P2 临时点亮规则（组内任一成员
   // binding enabled）— Task 11 / P3 切到 workpath 级单次查询后由 hook 内部替换。
   const knowledgeLit = useWorkpathKnowledgeLit(node, expanded);
-  const selectedState = batchSelectionState ?? {
+  const selectedState: BatchSelectionState = batchSelectionState ?? {
     conversationIds: new Set<ConversationId>(),
-    terminalIds: new Set<TerminalId>(),
+    terminalIds: new Set(),
   };
-  const workpathSelectionScope = getWorkpathBatchSelectionScope(node);
+  const workpathSelectionScope = getWorkpathBatchSelectionScope(node, 'interactive');
   const workpathSelectionState = getBatchSelectionScopeState(workpathSelectionScope, selectedState);
 
   useEffect(() => {
-    if (!activeRouteKey || activeKind === null) return;
-    const subgroupExpansion = getRenderedExpansionState({
-      active: true,
-      persistedExpanded: ui.isSubgroupExpanded(node.key, activeKind),
-      activeRouteSynced: syncedActiveSubgroupRouteRef.current === activeRouteKey,
-    });
-
+    if (!activeRouteKey) return;
     if (drawerExpansion.shouldSyncExpanded) {
       syncedActiveDrawerRouteRef.current = activeRouteKey;
       ui.expand(node.key);
     }
-    if (subgroupExpansion.shouldSyncExpanded) {
-      syncedActiveSubgroupRouteRef.current = activeRouteKey;
-      ui.expandSubgroup(node.key, activeKind);
-    }
   }, [
-    activeKind,
     activeRouteKey,
     drawerExpansion.shouldSyncExpanded,
     node.key,
@@ -154,45 +125,6 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
 
   const toggleDrawer = () => {
     ui.toggleExpanded(node.key);
-  };
-
-  const toggleShowAllSessionsForKind = (kind: SessionKind) => {
-    setShowAllSessionsByKind((value) => ({
-      ...value,
-      [kind]: !value[kind],
-    }));
-  };
-
-  const renderKindGroup = (kind: SessionKind, entries: SessionEntry[], totalCount = entries.length) => {
-    if (entries.length === 0) return null;
-    const kindSelectionScope = getWorkpathBatchSelectionScope(node, kind);
-    const kindSelectionState = getBatchSelectionScopeState(kindSelectionScope, selectedState);
-    const kindMeta = visibleEntries.kindMeta[kind];
-    const kindExpansion = getRenderedExpansionState({
-      active: activeKind === kind,
-      persistedExpanded: ui.isSubgroupExpanded(node.key, kind),
-      activeRouteSynced: syncedActiveSubgroupRouteRef.current === activeRouteKey,
-    });
-    return (
-      <SessionKindGroup
-        kind={kind}
-        entries={entries}
-        totalCount={totalCount}
-        expanded={kindExpansion.expanded}
-        onToggle={() => ui.toggleSubgroup(node.key, kind)}
-        onCreate={() => (kind === 'interactive' ? onCreateInteractive(node) : onCreateTerminal(node))}
-        batchMode={batchMode}
-        selectionChecked={kindSelectionState.checked}
-        selectionIndeterminate={kindSelectionState.indeterminate}
-        selectionDisabled={kindSelectionState.disabled}
-        onToggleSelection={() => onToggleBatchSelectionScope?.(kindSelectionScope)}
-        hasOverflow={kindMeta.hasOverflow && !forceShowAllForActiveKind[kind]}
-        hiddenCount={kindMeta.hiddenCount}
-        showAll={showAllSessionsByKind[kind]}
-        onToggleShowAll={() => toggleShowAllSessionsForKind(kind)}
-        renderEntry={renderEntry}
-      />
-    );
   };
 
   const headerIcon = isDefault ? (
@@ -311,68 +243,37 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         </div>
 
         {/* Pinned dot indicator (rest state; hidden once hover ops appear) */}
-        {!batchMode && node.pinned && (
-          <span className={classNames('size-6px rd-full shrink-0 bg-aou-1', { 'group-hover:hidden': !createMenuVisible })} />
-        )}
+        {!batchMode && node.pinned && <span className='size-6px rd-full shrink-0 bg-aou-1 group-hover:hidden' />}
 
-        {/* Hover ops: copy path + "+" create menu + pin toggle. */}
+        {/* Hover ops: copy path + direct interactive-session create + pin toggle. */}
         {!batchMode && (
           <span
-            className={classNames('shrink-0 items-center gap-6px', {
-              flex: createMenuVisible,
-              'hidden group-hover:flex': !createMenuVisible,
-            })}
+            className='hidden group-hover:flex shrink-0 items-center gap-6px'
             onClick={(e) => e.stopPropagation()}
           >
             {!isDefault && (
               <CopyIconButton text={node.key} tooltip={t('common.copyPath')} className='shrink-0 size-20px sider-action-btn' />
             )}
-            <Dropdown
-              droplist={
-                <Menu
-                  onClickMenuItem={(menuKey) => {
-                    setCreateMenuVisible(false);
-                    if (menuKey === 'new-interactive') {
-                      onCreateInteractive(node);
-                    } else if (menuKey === 'new-terminal') {
-                      onCreateTerminal(node);
-                    }
-                  }}
-                >
-                  <Menu.Item key='new-interactive'>
-                    <div className='flex items-center gap-8px'>
-                      <MessageOne theme='outline' size='14' />
-                      <span>{t('sessionList.newInteractive')}</span>
-                    </div>
-                  </Menu.Item>
-                  <Menu.Item key='new-terminal'>
-                    <div className='flex items-center gap-8px'>
-                      <Terminal theme='outline' size='14' />
-                      <span>{t('sessionList.newTerminal')}</span>
-                    </div>
-                  </Menu.Item>
-                </Menu>
-              }
-              trigger='click'
-              position='br'
-              popupVisible={createMenuVisible}
-              onVisibleChange={setCreateMenuVisible}
-              getPopupContainer={() => document.body}
-              unmountOnExit={false}
-            >
-              <span
-                role='button'
-                tabIndex={0}
-                aria-label={t('sessionList.create')}
-                className='flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-20px rd-4px sider-action-btn'
-                onClick={(e) => {
+            <span
+              data-testid='workpath-create-interactive-btn'
+              role='button'
+              tabIndex={0}
+              aria-label={t('sessionList.newInteractive')}
+              className='flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-20px rd-4px sider-action-btn'
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreateInteractive(node);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
                   e.stopPropagation();
-                  setCreateMenuVisible((v) => !v);
-                }}
-              >
-                <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
-              </span>
-            </Dropdown>
+                  onCreateInteractive(node);
+                }
+              }}
+            >
+              <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
+            </span>
             <Tooltip content={node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')} position='top'>
               <span
                 role='button'
@@ -424,11 +325,25 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
         )}
       </div>
 
-      {/* Drawer content: interactive subgroup first, then terminal; empty groups skipped. */}
+      {/* Drawer content: workpaths expose interactive conversations directly. */}
       {expanded && (
-        <div className='workpath-drawer-content min-w-0 flex flex-col'>
-          {renderKindGroup('interactive', visibleEntries.interactive, node.interactive.length)}
-          {renderKindGroup('terminal', visibleEntries.terminal, node.terminal.length)}
+        <div data-testid='workpath-conversation-list' className='workpath-drawer-content min-w-0 flex flex-col'>
+          {visibleEntries.interactive.map((entry) => renderEntry(entry))}
+          {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
+            <button
+              type='button'
+              aria-expanded={showAllConversations}
+              className='ml-42px mt-1px mb-2px inline-flex h-20px w-fit max-w-full appearance-none items-center border-none bg-transparent p-0 text-left text-12px leading-20px text-t-secondary transition-colors cursor-pointer select-none hover:text-t-primary focus:outline-none focus-visible:text-t-primary'
+              onClick={(event) => {
+                event.stopPropagation();
+                setShowAllConversations((value) => !value);
+              }}
+            >
+              {showAllConversations
+                ? t('sessionList.collapseDisplay')
+                : t('sessionList.expandDisplay', { count: visibleEntries.kindMeta.interactive.hiddenCount })}
+            </button>
+          )}
         </div>
       )}
     </div>

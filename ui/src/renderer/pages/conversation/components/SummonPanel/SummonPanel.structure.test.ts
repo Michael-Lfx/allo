@@ -79,12 +79,13 @@ describe('SummonPanel structure', () => {
 });
 
 describe('summon surface integration', () => {
-  test('NomiSendBox renders the summon control inside the config group', () => {
+  test('NomiSendBox does not render a summon control', () => {
     const sendbox = readFileSync(
       new URL('../../platforms/nomi/NomiSendBox.tsx', import.meta.url),
       'utf8'
     );
-    expect(sendbox.includes('<SummonControl conversationId={conversation_id} />')).toBe(true);
+    expect(sendbox.includes('<SummonControl conversationId={conversation_id} />')).toBe(false);
+    expect(sendbox.includes("components/SummonPanel")).toBe(false);
   });
 
   test('header + sidebar carry the summon badge', () => {

@@ -122,12 +122,6 @@ const ConversationShell: React.FC = () => {
     void navigate('/guid', { state: { resetPreset: true } });
   }, [isMobile, navigate]);
 
-  const handleNewTerminal = useCallback(() => {
-    setBatchMode(false);
-    if (isMobile) setMobileOpen(false);
-    void navigate('/terminal-new');
-  }, [isMobile, navigate]);
-
   const handleCreateProject = useCallback(async () => {
     setBatchMode(false);
     try {
@@ -154,7 +148,6 @@ const ConversationShell: React.FC = () => {
       batchMode={batchMode}
       onToggleBatchMode={() => setBatchMode((prev) => !prev)}
       onNewChat={handleNewChat}
-      onNewTerminal={handleNewTerminal}
       onCreateProject={handleCreateProject}
       displayPreferences={displayPreferences}
       onDisplayPresetChange={applyDisplayPreset}

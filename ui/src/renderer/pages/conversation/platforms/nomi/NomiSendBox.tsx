@@ -16,7 +16,6 @@ import SendBox from '@/renderer/components/chat/SendBox';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
-import SummonControl from '@/renderer/pages/conversation/components/SummonPanel';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
@@ -1075,7 +1074,6 @@ const NomiSendBox: React.FC<{
               {!hideModeSelector && (
                 <>
                   <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
-                  <SummonControl conversationId={conversation_id} />
                   {collaboratorSelectorNode}
                   {extraRightTools}
                   <AgentModeSelector

@@ -98,7 +98,9 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           !collapsed && (dimIcon ? 'pl-42px' : 'pl-18px'),
           {
             'hover:bg-fill-3': !batchMode && !selected,
-            '!bg-primary-1 !text-primary-6': selected,
+            // Keep the active conversation visually lifted like a hovered row;
+            // batch selection retains its own state color below.
+            '!bg-fill-3 !text-t-primary': selected && !batchMode,
             'bg-[rgba(var(--primary-6),0.08)]': batchMode && checked,
           }
         )}

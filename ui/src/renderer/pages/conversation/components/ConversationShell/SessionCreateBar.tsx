@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderPlus, ListCheckbox, Plus, Terminal } from '@icon-park/react';
+import { FolderPlus, ListCheckbox, Plus } from '@icon-park/react';
 import classNames from 'classnames';
 import ConversationSearchPopover from '@renderer/pages/conversation/SessionList/ConversationSearchPopover';
 import type { SidebarDisplayPreferences, SidebarDisplayPreset } from '@renderer/pages/conversation/SessionList/utils/sidebarDisplayPreferences';
@@ -12,7 +12,6 @@ export interface SessionCreateBarProps {
   batchMode: boolean;
   onToggleBatchMode: () => void;
   onNewChat: () => void;
-  onNewTerminal: () => void;
   onCreateProject: () => void;
   displayPreferences: SidebarDisplayPreferences;
   onDisplayPresetChange: (preset: Exclude<SidebarDisplayPreset, 'custom'>) => void;
@@ -25,10 +24,11 @@ export interface SessionCreateBarProps {
 
 /**
  * SessionCreateBar — the toolbar at the top of the session secondary sidebar
- * ({@link ContentSider}). Carries the primary create CTAs (new conversation /
- * new terminal), project creation, batch selection, and search.
+ * ({@link ContentSider}). Carries the primary create CTA (new conversation),
+ * project creation, batch selection, and search.
  *
- * The four session actions share one compact 2x2 grid. Search is deliberately
+ * The three session actions share one compact two-column grid, with batch
+ * selection spanning its second row. Search is deliberately
  * below the action group so creation/selection controls read as one coherent
  * command group before the user scans existing sessions.
  */
@@ -36,7 +36,6 @@ const SessionCreateBar: React.FC<SessionCreateBarProps> = ({
   batchMode,
   onToggleBatchMode,
   onNewChat,
-  onNewTerminal,
   onCreateProject,
   displayPreferences,
   onDisplayPresetChange,
@@ -82,21 +81,6 @@ const SessionCreateBar: React.FC<SessionCreateBarProps> = ({
         </button>
         <button
           type='button'
-          data-testid='session-new-terminal-entry'
-          className={classNames(actionButtonClassName, restingButtonClassName)}
-          onClick={onNewTerminal}
-        >
-          <Terminal
-            theme='outline'
-            size='15'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
-          <span className='truncate min-w-0'>{t('terminal.newTerminal')}</span>
-        </button>
-        <button
-          type='button'
           data-testid='workpath-create-project-btn'
           className={classNames(actionButtonClassName, restingButtonClassName)}
           onClick={onCreateProject}
@@ -109,6 +93,7 @@ const SessionCreateBar: React.FC<SessionCreateBarProps> = ({
           data-testid='workpath-batch-select-btn'
           className={classNames(
             actionButtonClassName,
+            'col-span-2',
             batchMode
               ? 'cursor-pointer bg-[rgba(var(--primary-6),0.1)] border-[rgba(var(--primary-6),0.28)] text-primary hover:bg-[rgba(var(--primary-6),0.14)]'
               : restingButtonClassName
