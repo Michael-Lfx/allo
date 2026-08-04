@@ -2344,6 +2344,8 @@ export type I18nKey =
   | 'learning.reviewCorrectAnswer'
   | 'learning.reviewCourseLabel'
   | 'learning.reviewEasy'
+  | 'learning.reviewForgot'
+  | 'learning.reviewForgotMarked'
   | 'learning.reviewGood'
   | 'learning.reviewHard'
   | 'learning.reviewLessonLabel'

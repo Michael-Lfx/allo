@@ -75,6 +75,8 @@
   "reviewLessonLabel": "课时",
   "reviewConceptLabel": "概念",
   "reviewSubmitAnswer": "提交答案",
+  "reviewForgot": "忘记了",
+  "reviewForgotMarked": "已标记为「忘记」，稍后会再次出现。",
   "reviewRatePrompt": "回答正确，请评价回忆难度：",
   "reviewWrongMarkedAgain": "回答错误，已标记为「忘记」，稍后会再次出现。",
   "reviewCorrectAnswer": "正确答案",

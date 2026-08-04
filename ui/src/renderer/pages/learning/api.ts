@@ -35,9 +35,10 @@ export const learningApi = {
     }),
   listDueReviews: (limit = 30) =>
     httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?limit=${limit}`),
-  answerReview: (id: string, response: unknown) =>
+  answerReview: (id: string, response: unknown, forgot = false) =>
     httpRequest<ReviewAnswerResult>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/answer`, {
       response,
+      forgot,
     }),
   rateReview: (id: string, rating: ReviewRating) =>
     httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/rate`, { rating }),

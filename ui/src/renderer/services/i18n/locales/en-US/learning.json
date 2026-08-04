@@ -75,6 +75,8 @@
   "reviewLessonLabel": "Lesson",
   "reviewConceptLabel": "Concept",
   "reviewSubmitAnswer": "Submit answer",
+  "reviewForgot": "Forgot it",
+  "reviewForgotMarked": "Marked as \"forgot\"; it will return shortly.",
   "reviewRatePrompt": "Correct. Rate how hard it was to recall:",
   "reviewWrongMarkedAgain": "Incorrect. Marked as \"forgot\"; it will return shortly.",
   "reviewCorrectAnswer": "Correct answer",

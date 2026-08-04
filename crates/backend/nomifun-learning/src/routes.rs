@@ -195,7 +195,7 @@ async fn answer_review(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .answer_review(&id, &user.id, request.response)
+            .answer_review(&id, &user.id, request.response, request.forgot)
             .await?,
     )))
 }

@@ -317,7 +317,12 @@ pub struct ReviewQuestion {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnswerReviewRequest {
+    #[serde(default)]
     pub response: Value,
+    /// The learner admits they cannot recall the answer. Skips guessing:
+    /// the item is rated `again` and the correct answer is returned.
+    #[serde(default)]
+    pub forgot: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

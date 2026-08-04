@@ -829,15 +829,16 @@ impl LearningService {
         })
     }
 
-    /// Answers the question attached to a due review. A wrong answer is
-    /// immediately rated `again` (scheduling + mastery updated); a correct
-    /// answer only records the attempt and waits for a self-rating via
-    /// `rate_review`.
+    /// Answers the question attached to a due review. A wrong answer (or an
+    /// admitted lapse via `forgot`) is immediately rated `again` (scheduling +
+    /// mastery updated); a correct answer only records the attempt and waits
+    /// for a self-rating via `rate_review`.
     pub async fn answer_review(
         &self,
         review_id: &LearningReviewItemId,
         user_id: &UserId,
         response: Value,
+        forgot: bool,
     ) -> Result<ReviewAnswerResult, AppError> {
         let row = sqlx::query(
             "SELECT r.enrollment_id, r.concept_id, r.review_count \
@@ -860,8 +861,19 @@ impl LearningService {
         let questions = self.concept_objective_questions(&concept_id).await?;
         let question = pick_review_question(&questions, review_count)
             .ok_or_else(|| AppError::NotFound(format!("objective question for concept {concept_id}")))?;
-        let (score, feedback) = evaluate(question.kind, &question.config, &response)?;
-        let correct = score >= 0.6;
+        // `forgot` skips grading entirely: learners must never be forced to
+        // guess, so the lapse is recorded with the revealed answer instead.
+        let (score, feedback, correct) = if forgot {
+            let feedback = if question.config.explanation.is_empty() {
+                "Review the source material before retrieving this concept again.".to_string()
+            } else {
+                question.config.explanation.clone()
+            };
+            (0.0, feedback, false)
+        } else {
+            let (score, feedback) = evaluate(question.kind, &question.config, &response)?;
+            (score, feedback, score >= 0.6)
+        };
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
@@ -873,7 +885,7 @@ impl LearningService {
         .bind(attempt_id.as_str())
         .bind(enrollment_id.as_str())
         .bind(question.activity_id.as_str())
-        .bind(serde_json::to_string(&response).map_err(internal)?)
+        .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
         .bind(score)
         .bind(correct)
         .bind(&feedback)

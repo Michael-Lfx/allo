@@ -136,6 +136,7 @@ function ReviewCard({
   busy,
   locked,
   onAnswer,
+  onForget,
   onRate,
   onDismiss,
 }: {
@@ -143,12 +144,14 @@ function ReviewCard({
   busy: boolean;
   locked: boolean;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
+  onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (reviewId: string, rating: ReviewRating) => void;
   onDismiss: (reviewId: string) => void;
 }) {
   const { t } = useTranslation();
   const [response, setResponse] = useState<unknown>();
   const [result, setResult] = useState<ReviewAnswerResult | null>(null);
+  const [wasForgot, setWasForgot] = useState(false);
   const question = review.question;
   const hasResponse =
     typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
@@ -203,7 +206,7 @@ function ReviewCard({
         </Radio.Group>
       )}
       {result === null && (
-        <div className='mt-12px'>
+        <div className='mt-12px flex items-center gap-8px'>
           <Button
             type='primary'
             size='small'
@@ -218,6 +221,21 @@ function ReviewCard({
             }
           >
             {t('learning.reviewSubmitAnswer')}
+          </Button>
+          <Button
+            size='small'
+            disabled={locked}
+            loading={busy}
+            onClick={() =>
+              void onForget(review).then((answerResult) => {
+                if (answerResult) {
+                  setWasForgot(true);
+                  setResult(answerResult);
+                }
+              })
+            }
+          >
+            {t('learning.reviewForgot')}
           </Button>
         </div>
       )}
@@ -249,7 +267,9 @@ function ReviewCard({
       )}
       {result !== null && !result.correct && (
         <div className='mt-12px flex flex-col gap-8px'>
-          <Text type='error'>{t('learning.reviewWrongMarkedAgain')}</Text>
+          <Text type='error'>
+            {wasForgot ? t('learning.reviewForgotMarked') : t('learning.reviewWrongMarkedAgain')}
+          </Text>
           {result.correct_answer !== null && (
             <Text type='secondary'>
               {t('learning.reviewCorrectAnswer')}: {answerText(result.correct_answer)}
@@ -271,11 +291,13 @@ function ReviewQueue({
   reviews,
   busyId,
   onAnswer,
+  onForget,
   onRate,
 }: {
   reviews: DueReview[];
   busyId: string | null;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
+  onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (reviewId: string, rating: ReviewRating) => void;
 }) {
   const { t } = useTranslation();
@@ -293,6 +315,7 @@ function ReviewQueue({
           busy={busyId === review.id}
           locked={busyId !== null && busyId !== review.id}
           onAnswer={onAnswer}
+          onForget={onForget}
           onRate={onRate}
           onDismiss={(reviewId) => setDismissed((current) => [...current, reviewId])}
         />
@@ -1019,6 +1042,21 @@ const LearningPage: React.FC = () => {
     [t]
   );
 
+  const forgetReview = useCallback(
+    async (review: DueReview): Promise<ReviewAnswerResult | undefined> => {
+      setBusyId(review.id);
+      try {
+        return await learningApi.answerReview(review.id, null, true);
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return undefined;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [t]
+  );
+
   const courseGrid = useMemo(
     () =>
       courses.map((course) => (
@@ -1100,7 +1138,13 @@ const LearningPage: React.FC = () => {
 
       <section>
         <Title heading={5}>{t('learning.reviews')}</Title>
-        <ReviewQueue reviews={reviews} busyId={busyId} onAnswer={answerReview} onRate={rateReview} />
+        <ReviewQueue
+          reviews={reviews}
+          busyId={busyId}
+          onAnswer={answerReview}
+          onForget={forgetReview}
+          onRate={rateReview}
+        />
       </section>
 
         <Modal
