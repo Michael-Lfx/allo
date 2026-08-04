@@ -293,13 +293,42 @@ pub struct DueReview {
     pub enrollment_id: LearningEnrollmentId,
     pub course_id: LearningCourseId,
     pub course_title: String,
+    pub module_title: String,
+    pub lesson_title: String,
     pub concept_id: LearningConceptId,
     pub concept_title: String,
+    pub question: ReviewQuestion,
     pub due_at: TimestampMs,
     pub stability_days: f64,
     pub difficulty: f64,
     pub review_count: i64,
     pub lapse_count: i64,
+}
+
+/// Objective question attached to a due review. Never includes the stored
+/// answer; correctness is judged server-side by `answer_review`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewQuestion {
+    pub activity_id: LearningActivityId,
+    pub kind: ActivityKind,
+    pub prompt: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnswerReviewRequest {
+    pub response: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewAnswerResult {
+    pub correct: bool,
+    pub feedback: String,
+    /// Correct answer, only populated when the response was wrong.
+    pub correct_answer: Option<Value>,
+    /// Present when the answer was wrong and the item was automatically
+    /// rated `again`; otherwise the caller rates after a correct answer.
+    pub rated: Option<ReviewResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]

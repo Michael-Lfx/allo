@@ -12,8 +12,8 @@ use nomifun_common::{
 use serde::Deserialize;
 
 use crate::models::{
-    CoursePack, GenerateCourseRequest, RateReviewRequest, SubmitAttemptRequest,
-    UpdateLessonProgressRequest,
+    AnswerReviewRequest, CoursePack, GenerateCourseRequest, RateReviewRequest,
+    SubmitAttemptRequest, UpdateLessonProgressRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -39,6 +39,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(submit_attempt),
         )
         .route("/api/learning/reviews/due", get(due_reviews))
+        .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
         .with_state(state)
 }
@@ -180,6 +181,21 @@ async fn rate_review(
         state
             .service
             .rate_review(&id, &user.id, request.rating)
+            .await?,
+    )))
+}
+
+async fn answer_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<AnswerReviewRequest>,
+) -> Result<Json<ApiResponse<crate::models::ReviewAnswerResult>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .answer_review(&id, &user.id, request.response)
             .await?,
     )))
 }

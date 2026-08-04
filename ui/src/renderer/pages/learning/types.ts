@@ -90,16 +90,42 @@ export interface AttemptResult {
   feedback: string;
 }
 
+export interface ReviewQuestion {
+  activity_id: string;
+  kind: ActivityKind;
+  prompt: string;
+  options: string[];
+}
+
 export interface DueReview {
   id: string;
   enrollment_id: string;
   course_id: string;
   course_title: string;
+  module_title: string;
+  lesson_title: string;
   concept_id: string;
   concept_title: string;
+  question: ReviewQuestion;
   due_at: number;
   stability_days: number;
   difficulty: number;
   review_count: number;
   lapse_count: number;
+}
+
+export interface ReviewResult {
+  id: string;
+  due_at: number;
+  stability_days: number;
+  difficulty: number;
+  review_count: number;
+  lapse_count: number;
+}
+
+export interface ReviewAnswerResult {
+  correct: boolean;
+  feedback: string;
+  correct_answer: unknown | null;
+  rated: ReviewResult | null;
 }

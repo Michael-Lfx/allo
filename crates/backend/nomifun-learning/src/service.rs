@@ -15,7 +15,8 @@ use sqlx::{Row, Sqlite, Transaction};
 use crate::models::{
     ActivityKind, ActivityView, AttemptResult, ConceptView, CourseDetail, CoursePack, CourseSummary,
     DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest, LessonStatus, LessonView,
-    ModuleView, ReviewRating, ReviewResult, SourceSpan, StoredActivityConfig,
+    ModuleView, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, SourceSpan,
+    StoredActivityConfig,
 };
 use crate::scheduler::schedule_review;
 
@@ -667,25 +668,99 @@ impl LearningService {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
+        let mut reviews = Vec::new();
+        for row in rows {
+            let review_id: LearningReviewItemId =
+                parse_id(row.try_get("review_item_id").map_err(internal)?)?;
+            let enrollment_id: LearningEnrollmentId =
+                parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
+            let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+            let review_count: i64 = row.try_get("review_count").map_err(internal)?;
+            // Reviews are question-based: items whose concept has no objective
+            // activity are skipped instead of shown without a prompt.
+            let questions = self.concept_objective_questions(&concept_id).await?;
+            let Some(question) = pick_review_question(&questions, review_count) else {
+                continue;
+            };
+            let hierarchy = self.activity_hierarchy(&question.lesson_id).await?;
+            reviews.push(DueReview {
+                id: review_id,
+                enrollment_id,
+                course_id: parse_id(row.try_get("course_id").map_err(internal)?)?,
+                course_title: row.try_get("course_title").map_err(internal)?,
+                module_title: hierarchy.module_title,
+                lesson_title: hierarchy.lesson_title,
+                concept_id: parse_id(concept_id.clone())?,
+                concept_title: row.try_get("concept_title").map_err(internal)?,
+                question: ReviewQuestion {
+                    activity_id: question.activity_id.clone(),
+                    kind: question.kind,
+                    prompt: question.prompt.clone(),
+                    options: question.config.options.clone(),
+                },
+                due_at: row.try_get("due_at").map_err(internal)?,
+                stability_days: row.try_get("stability_days").map_err(internal)?,
+                difficulty: row.try_get("difficulty").map_err(internal)?,
+                review_count,
+                lapse_count: row.try_get("lapse_count").map_err(internal)?,
+            });
+        }
+        Ok(reviews)
+    }
+
+    /// Objective activities bound to a concept, ordered deterministically so
+    /// `pick_review_question` rotates through them as reviews accumulate.
+    async fn concept_objective_questions(
+        &self,
+        concept_id: &str,
+    ) -> Result<Vec<ObjectiveQuestion>, AppError> {
+        let rows = sqlx::query(
+            "SELECT a.activity_id, a.lesson_id, a.kind, a.prompt, a.config_json \
+             FROM learning_activity_concepts ac \
+             JOIN learning_activities a ON a.activity_id = ac.activity_id \
+             WHERE ac.concept_id = ? AND a.kind IN ('single_choice', 'true_false') \
+             ORDER BY a.position, a.activity_id",
+        )
+        .bind(concept_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
         rows.into_iter()
             .map(|row| {
-                Ok(DueReview {
-                    id: parse_id(row.try_get("review_item_id").map_err(internal)?)?,
-                    enrollment_id: parse_id(
-                        row.try_get("enrollment_id").map_err(internal)?,
-                    )?,
-                    course_id: parse_id(row.try_get("course_id").map_err(internal)?)?,
-                    course_title: row.try_get("course_title").map_err(internal)?,
-                    concept_id: parse_id(row.try_get("concept_id").map_err(internal)?)?,
-                    concept_title: row.try_get("concept_title").map_err(internal)?,
-                    due_at: row.try_get("due_at").map_err(internal)?,
-                    stability_days: row.try_get("stability_days").map_err(internal)?,
-                    difficulty: row.try_get("difficulty").map_err(internal)?,
-                    review_count: row.try_get("review_count").map_err(internal)?,
-                    lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                let kind_text: String = row.try_get("kind").map_err(internal)?;
+                Ok(ObjectiveQuestion {
+                    activity_id: parse_id(row.try_get("activity_id").map_err(internal)?)?,
+                    lesson_id: parse_id(row.try_get("lesson_id").map_err(internal)?)?,
+                    kind: ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?,
+                    prompt: row.try_get("prompt").map_err(internal)?,
+                    config: serde_json::from_str(
+                        &row.try_get::<String, _>("config_json").map_err(internal)?,
+                    )
+                    .map_err(internal)?,
                 })
             })
             .collect()
+    }
+
+    async fn activity_hierarchy(
+        &self,
+        lesson_id: &LearningLessonId,
+    ) -> Result<ActivityHierarchy, AppError> {
+        let row = sqlx::query(
+            "SELECT l.title AS lesson_title, m.title AS module_title \
+             FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("lesson {lesson_id}")))?;
+        Ok(ActivityHierarchy {
+            module_title: row.try_get("module_title").map_err(internal)?,
+            lesson_title: row.try_get("lesson_title").map_err(internal)?,
+        })
     }
 
     pub async fn rate_review(
@@ -751,6 +826,100 @@ impl LearningService {
             difficulty: next.difficulty,
             review_count: next.review_count,
             lapse_count: next.lapse_count,
+        })
+    }
+
+    /// Answers the question attached to a due review. A wrong answer is
+    /// immediately rated `again` (scheduling + mastery updated); a correct
+    /// answer only records the attempt and waits for a self-rating via
+    /// `rate_review`.
+    pub async fn answer_review(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+        response: Value,
+    ) -> Result<ReviewAnswerResult, AppError> {
+        let row = sqlx::query(
+            "SELECT r.enrollment_id, r.concept_id, r.review_count \
+             FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE r.review_item_id = ? AND e.user_id = ?",
+        )
+        .bind(review_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("review item {review_id}")))?;
+        let enrollment_id: LearningEnrollmentId =
+            parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
+        let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+        let review_count: i64 = row.try_get("review_count").map_err(internal)?;
+        // Same rotation as `due_reviews` so the answered question matches the
+        // one the client displayed.
+        let questions = self.concept_objective_questions(&concept_id).await?;
+        let question = pick_review_question(&questions, review_count)
+            .ok_or_else(|| AppError::NotFound(format!("objective question for concept {concept_id}")))?;
+        let (score, feedback) = evaluate(question.kind, &question.config, &response)?;
+        let correct = score >= 0.6;
+        let attempt_id = LearningAttemptId::new();
+        let now = now_ms();
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        sqlx::query(
+            "INSERT INTO learning_attempts \
+             (attempt_id, enrollment_id, activity_id, response_json, score, passed, feedback, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(attempt_id.as_str())
+        .bind(enrollment_id.as_str())
+        .bind(question.activity_id.as_str())
+        .bind(serde_json::to_string(&response).map_err(internal)?)
+        .bind(score)
+        .bind(correct)
+        .bind(&feedback)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        let rated = if correct {
+            None
+        } else {
+            update_mastery_and_review(
+                &mut transaction,
+                &enrollment_id,
+                &concept_id,
+                score,
+                ReviewRating::Again,
+                now,
+            )
+            .await?;
+            let updated = sqlx::query(
+                "SELECT due_at, stability_days, difficulty, review_count, lapse_count \
+                 FROM learning_review_items WHERE review_item_id = ?",
+            )
+            .bind(review_id.as_str())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(internal)?;
+            Some(ReviewResult {
+                id: review_id.clone(),
+                due_at: updated.try_get("due_at").map_err(internal)?,
+                stability_days: updated.try_get("stability_days").map_err(internal)?,
+                difficulty: updated.try_get("difficulty").map_err(internal)?,
+                review_count: updated.try_get("review_count").map_err(internal)?,
+                lapse_count: updated.try_get("lapse_count").map_err(internal)?,
+            })
+        };
+        transaction.commit().await.map_err(internal)?;
+        Ok(ReviewAnswerResult {
+            correct,
+            feedback,
+            correct_answer: if correct {
+                None
+            } else {
+                Some(question.config.answer.clone())
+            },
+            rated,
         })
     }
 
@@ -1120,6 +1289,34 @@ fn require_concept(concepts: &HashSet<&str>, key: &str) -> Result<(), AppError> 
             "unknown concept key: {key}"
         )))
     }
+}
+
+/// Objective activity used as a review question, including the stored config
+/// so answers can be judged server-side.
+struct ObjectiveQuestion {
+    activity_id: LearningActivityId,
+    lesson_id: LearningLessonId,
+    kind: ActivityKind,
+    prompt: String,
+    config: StoredActivityConfig,
+}
+
+struct ActivityHierarchy {
+    module_title: String,
+    lesson_title: String,
+}
+
+/// Rotates through a concept's objective questions so repeated reviews do not
+/// always ask the same one.
+fn pick_review_question(
+    questions: &[ObjectiveQuestion],
+    review_count: i64,
+) -> Option<&ObjectiveQuestion> {
+    if questions.is_empty() {
+        return None;
+    }
+    let index = review_count.max(0) as usize % questions.len();
+    questions.get(index)
 }
 
 fn evaluate(

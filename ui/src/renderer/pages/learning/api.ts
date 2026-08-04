@@ -7,6 +7,7 @@ import type {
   DueReview,
   GenerateCourseRequest,
   LessonStatus,
+  ReviewAnswerResult,
   ReviewRating,
 } from './types';
 
@@ -34,6 +35,10 @@ export const learningApi = {
     }),
   listDueReviews: (limit = 30) =>
     httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?limit=${limit}`),
+  answerReview: (id: string, response: unknown) =>
+    httpRequest<ReviewAnswerResult>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/answer`, {
+      response,
+    }),
   rateReview: (id: string, rating: ReviewRating) =>
     httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/rate`, { rating }),
 };

@@ -35,6 +35,7 @@ import type {
   DueReview,
   Lesson,
   LessonStatus,
+  ReviewAnswerResult,
   ReviewRating,
 } from './types';
 
@@ -130,53 +131,171 @@ function CourseCard({
   );
 }
 
+function ReviewCard({
+  review,
+  busy,
+  locked,
+  onAnswer,
+  onRate,
+  onDismiss,
+}: {
+  review: DueReview;
+  busy: boolean;
+  locked: boolean;
+  onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
+  onRate: (reviewId: string, rating: ReviewRating) => void;
+  onDismiss: (reviewId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [response, setResponse] = useState<unknown>();
+  const [result, setResult] = useState<ReviewAnswerResult | null>(null);
+  const question = review.question;
+  const hasResponse =
+    typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
+  const answerText = (value: unknown): string => {
+    if (typeof value === 'boolean') {
+      return value ? t('learning.trueLabel') : t('learning.falseLabel');
+    }
+    return typeof value === 'string' ? value : '';
+  };
+  return (
+    <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
+      <div className='mb-10px flex flex-wrap items-center gap-x-4px gap-y-2px text-12px text-t-tertiary'>
+        <span>
+          {t('learning.reviewCourseLabel')}: {review.course_title}
+        </span>
+        <span>›</span>
+        <span>
+          {t('learning.reviewModuleLabel')}: {review.module_title}
+        </span>
+        <span>›</span>
+        <span>
+          {t('learning.reviewLessonLabel')}: {review.lesson_title}
+        </span>
+        <span>›</span>
+        <Tag size='small' color='arcoblue'>
+          {t('learning.reviewConceptLabel')}: {review.concept_title}
+        </Tag>
+      </div>
+      <div className='mb-10px font-500 text-t-primary'>{question.prompt}</div>
+      {question.kind === 'single_choice' && (
+        <Radio.Group
+          direction='vertical'
+          disabled={result !== null || locked}
+          value={response as string | undefined}
+          onChange={(value) => setResponse(value)}
+        >
+          {question.options.map((option) => (
+            <Radio key={option} value={option}>
+              {option}
+            </Radio>
+          ))}
+        </Radio.Group>
+      )}
+      {question.kind === 'true_false' && (
+        <Radio.Group
+          disabled={result !== null || locked}
+          value={response === undefined ? undefined : String(response)}
+          onChange={(value) => setResponse(value === 'true')}
+        >
+          <Radio value='true'>{t('learning.trueLabel')}</Radio>
+          <Radio value='false'>{t('learning.falseLabel')}</Radio>
+        </Radio.Group>
+      )}
+      {result === null && (
+        <div className='mt-12px'>
+          <Button
+            type='primary'
+            size='small'
+            disabled={!hasResponse || locked}
+            loading={busy}
+            onClick={() =>
+              void onAnswer(review, response).then((answerResult) => {
+                if (answerResult) {
+                  setResult(answerResult);
+                }
+              })
+            }
+          >
+            {t('learning.reviewSubmitAnswer')}
+          </Button>
+        </div>
+      )}
+      {result !== null && result.correct && (
+        <div className='mt-12px flex flex-col gap-8px'>
+          <Text type='success'>
+            {t('learning.correct')}
+            {result.feedback ? ` · ${result.feedback}` : ''}
+          </Text>
+          <div className='flex flex-wrap items-center gap-6px'>
+            <Text type='secondary'>{t('learning.reviewRatePrompt')}</Text>
+            {(['hard', 'good', 'easy'] as ReviewRating[]).map((rating) => (
+              <Button
+                key={rating}
+                size='mini'
+                loading={busy}
+                disabled={locked && !busy}
+                onClick={() => onRate(review.id, rating)}
+              >
+                {rating === 'hard'
+                  ? t('learning.reviewHard')
+                  : rating === 'good'
+                    ? t('learning.reviewGood')
+                    : t('learning.reviewEasy')}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+      {result !== null && !result.correct && (
+        <div className='mt-12px flex flex-col gap-8px'>
+          <Text type='error'>{t('learning.reviewWrongMarkedAgain')}</Text>
+          {result.correct_answer !== null && (
+            <Text type='secondary'>
+              {t('learning.reviewCorrectAnswer')}: {answerText(result.correct_answer)}
+            </Text>
+          )}
+          {result.feedback && <Text type='secondary'>{result.feedback}</Text>}
+          <div>
+            <Button size='small' disabled={locked} onClick={() => onDismiss(review.id)}>
+              {t('learning.reviewNext')}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReviewQueue({
   reviews,
   busyId,
+  onAnswer,
   onRate,
 }: {
   reviews: DueReview[];
   busyId: string | null;
-  onRate: (id: string, rating: ReviewRating) => void;
+  onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
+  onRate: (reviewId: string, rating: ReviewRating) => void;
 }) {
   const { t } = useTranslation();
-  const labels: Record<ReviewRating, string> = {
-    again: t('learning.reviewAgain'),
-    hard: t('learning.reviewHard'),
-    good: t('learning.reviewGood'),
-    easy: t('learning.reviewEasy'),
-  };
-  const ratings: ReviewRating[] = ['again', 'hard', 'good', 'easy'];
-  if (reviews.length === 0) {
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const visible = reviews.filter((review) => !dismissed.includes(review.id));
+  if (visible.length === 0) {
     return <Empty description={t('learning.noReviews')} />;
   }
   return (
     <div className='flex flex-col gap-10px'>
-      {reviews.map((review) => (
-        <div
+      {visible.map((review) => (
+        <ReviewCard
           key={review.id}
-          className='rounded-10px border border-solid border-[var(--color-border-2)] p-12px'
-        >
-          <div className='flex flex-wrap items-center justify-between gap-8px'>
-            <div>
-              <div className='font-600 text-t-primary'>{review.concept_title}</div>
-              <div className='mt-2px text-12px text-t-tertiary'>{review.course_title}</div>
-            </div>
-            <div className='flex flex-wrap gap-6px'>
-              {ratings.map((rating) => (
-                <Button
-                  key={rating}
-                  size='mini'
-                  loading={busyId === review.id}
-                  disabled={busyId !== null && busyId !== review.id}
-                  onClick={() => onRate(review.id, rating)}
-                >
-                  {labels[rating]}
-                </Button>
-              ))}
-            </div>
-          </div>
-        </div>
+          review={review}
+          busy={busyId === review.id}
+          locked={busyId !== null && busyId !== review.id}
+          onAnswer={onAnswer}
+          onRate={onRate}
+          onDismiss={(reviewId) => setDismissed((current) => [...current, reviewId])}
+        />
       ))}
     </div>
   );
@@ -885,6 +1004,21 @@ const LearningPage: React.FC = () => {
     [load, t]
   );
 
+  const answerReview = useCallback(
+    async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
+      setBusyId(review.id);
+      try {
+        return await learningApi.answerReview(review.id, response);
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return undefined;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [t]
+  );
+
   const courseGrid = useMemo(
     () =>
       courses.map((course) => (
@@ -966,7 +1100,7 @@ const LearningPage: React.FC = () => {
 
       <section>
         <Title heading={5}>{t('learning.reviews')}</Title>
-        <ReviewQueue reviews={reviews} busyId={busyId} onRate={rateReview} />
+        <ReviewQueue reviews={reviews} busyId={busyId} onAnswer={answerReview} onRate={rateReview} />
       </section>
 
         <Modal
