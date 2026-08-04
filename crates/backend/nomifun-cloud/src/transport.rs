@@ -275,6 +275,7 @@ mod tests {
         let transport = HttpTransport {
             client: Client::new(),
             base_url: "https://server.flowyaipc.cn/claw".to_string(),
+            timeout: Duration::from_secs(30),
             user_agent: "test".to_string(),
         };
         assert_eq!(

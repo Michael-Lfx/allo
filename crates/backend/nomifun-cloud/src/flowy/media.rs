@@ -111,6 +111,20 @@ fn uses_openai_style_image_body(model: &str) -> bool {
         || m.contains("dalle")
 }
 
+/// Whether Volcengine Seedream accepts `sequential_image_generation`.
+///
+/// Supported on 4.0 / 4.5 / 5.0-lite. Seedream 5.0 Pro is single-image only and
+/// returns 400 if the field is present at all (including `"disabled"`).
+fn seedream_supports_sequential_image_generation(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    if !m.contains("seedream") {
+        return false;
+    }
+    let is_v5 = m.contains("5-0") || m.contains("5.0") || m.contains("5_0");
+    let is_pro = m.contains("pro");
+    !(is_v5 && is_pro)
+}
+
 fn build_openai_style_image_body(req: &ImageGenerationRequest) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
@@ -136,11 +150,20 @@ fn build_openai_style_image_body(req: &ImageGenerationRequest) -> Value {
     body.insert("watermark".into(), json!(false));
     // Resolution tier — works across Seedream 4.x/5.x (incl. lite); avoid `*` DashScope sizes.
     body.insert("size".into(), json!("2K"));
-    body.insert("sequential_image_generation".into(), json!("disabled"));
+    // Omit on Seedream 5.0 Pro — upstream rejects the parameter entirely.
+    if seedream_supports_sequential_image_generation(&req.model) {
+        body.insert("sequential_image_generation".into(), json!("disabled"));
+    }
 
     if let Value::Object(extra) = &req.extra {
         for (k, v) in extra {
             if k == "model" || k == "input" || k == "prompt" || k == "image_url" || k == "image_urls"
+            {
+                continue;
+            }
+            // Pro rejects this even when callers put it in `extra`.
+            if k == "sequential_image_generation"
+                && !seedream_supports_sequential_image_generation(&req.model)
             {
                 continue;
             }
@@ -670,6 +693,24 @@ mod tests {
         assert!(body.get("input").is_none(), "Seedream must not use DashScope input.messages");
         assert_eq!(body["size"], json!("2K"));
         assert_eq!(body["response_format"], json!("url"));
+        assert_eq!(body["sequential_image_generation"], json!("disabled"));
+    }
+
+    #[test]
+    fn build_flowy_image_body_seedream_pro_omits_sequential_image_generation() {
+        let body = build_flowy_image_body(&ImageGenerationRequest {
+            model: "AIPC-doubao-seedream-5-0-pro-260628".into(),
+            prompt: "a red fox in snow".into(),
+            image_url: None,
+            image_urls: vec![],
+            extra: json!({ "sequential_image_generation": "disabled" }),
+        });
+        assert_eq!(body["prompt"], json!("a red fox in snow"));
+        assert_eq!(body["size"], json!("2K"));
+        assert!(
+            body.get("sequential_image_generation").is_none(),
+            "Seedream 5.0 Pro rejects sequential_image_generation entirely"
+        );
     }
 
     #[test]
