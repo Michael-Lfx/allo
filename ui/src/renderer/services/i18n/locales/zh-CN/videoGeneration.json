@@ -246,6 +246,7 @@
     "source": {
       "durationLabel": "目标成片时长（秒）",
       "durationHint": "每个镜头视频至少 5 秒；规划会据此控制镜头数量。",
+      "durationCreditsHint": "预估约 {{credits}} 积分（约 {{rate}}/秒）",
       "aspectLabel": "视频比例",
       "aspectHint": "同时作用于 Seedance 成片与海报封面",
       "aspectLockedHint": "规划后画幅已锁定，同时作用于成片与海报封面",

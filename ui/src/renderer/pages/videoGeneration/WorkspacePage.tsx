@@ -67,6 +67,10 @@ import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
 } from './aspectRatios';
+import {
+  CREDITS_PER_SECOND,
+  formatDurationCredits,
+} from './durationCredits';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import styles from './index.module.css';
 
@@ -1016,6 +1020,13 @@ const WorkspacePage: React.FC = () => {
                   suffix='s'
                   style={{ width: '100%' }}
                 />
+                <span className='text-11px text-[var(--color-text-4)]'>
+                  {t('videoGeneration.workspace.source.durationCreditsHint', {
+                    credits: formatDurationCredits(targetDurationSecs),
+                    rate: CREDITS_PER_SECOND,
+                    defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
+                  })}
+                </span>
               </label>
               <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 <span>
@@ -1108,6 +1119,13 @@ const WorkspacePage: React.FC = () => {
                     suffix='s'
                     style={{ width: '100%' }}
                   />
+                  <span className='text-11px text-[var(--color-text-4)]'>
+                    {t('videoGeneration.workspace.source.durationCreditsHint', {
+                      credits: formatDurationCredits(targetDurationSecs),
+                      rate: CREDITS_PER_SECOND,
+                      defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
+                    })}
+                  </span>
                 </label>
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>

@@ -246,6 +246,7 @@
     "source": {
       "durationLabel": "Target duration (seconds)",
       "durationHint": "Each shot clip is at least 5 seconds; planning uses this to control shot count.",
+      "durationCreditsHint": "Est. ~{{credits}} credits (~{{rate}}/sec)",
       "aspectLabel": "Aspect ratio",
       "aspectHint": "Applies to Seedance output and poster cover",
       "aspectLockedHint": "Aspect ratio is locked after planning; applies to the film and poster cover",
