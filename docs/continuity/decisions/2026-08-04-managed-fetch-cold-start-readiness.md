@@ -4,7 +4,7 @@ Date: 2026-08-04
 Branch: `feat/fetch-optimization`
 Code SHA: `f70a81416586f0abb923836e251b3550e41970d7`
 Base: `origin/main=81b199fbc8fa`
-Decision: `cold_start_canary_passed_pending_desktop_acceptance`
+Decision at the code checkpoint: `cold_start_canary_passed_pending_desktop_acceptance`
 
 ## Finding
 
@@ -77,17 +77,25 @@ is not a 15+ URL Admission result.
    a newer Unauthorized epoch. It was fixed with recovery tokens and a health
    check before discovery; the focused and full suites passed again.
 3. Frozen rebase/spec review: performed against the final feature diff and
-   latest `origin/main`; no P0/P1 remains. Final status is waiting only for
-   the owner’s fresh Desktop cold-session acceptance.
+   then-current `origin/main`; no P0/P1 remained at that snapshot. Subsequent
+   main movement is handled by a fresh rebase and revalidation, not by changing
+   this historical review result.
 
-## Remaining boundary
+## Follow-up closure (2026-08-04)
 
-Before calling the branch merge-ready, run one new Desktop process without
-`NOMIFUN_MANAGED_FETCH_MODE` set: first a PDF, then a JavaScript Shell, then
-ordinary HTML through `web_extract`. The expected evidence is cold PDF/JS
-`remote_attempted=true` with Remote success and HTML `remote_attempted=false`.
-If that check passes, the owner may push the feature branch and open the PR.
-`NOMIFUN_MANAGED_FETCH_MODE=off` remains the immediate Local-only rollback.
+The required fresh Desktop session has since passed, without setting
+`NOMIFUN_MANAGED_FETCH_MODE`. Natural user-facing requests produced
+`web_extract` as the first and only content-reading action for PDF, JavaScript
+Shell, and ordinary HTML. PDF/JS logged `remote_attempted=true` and
+`remote_success_count=1`; HTML logged Local success with
+`remote_attempted=false`. No Browser/Bash/Python/`exec_command` detour appeared
+in those windows, and Desktop shut down normally.
+
+This closes the product acceptance condition for the cold-start change. It does
+not make the historical branch snapshot merge-ready: the feature branch must
+first be rebased onto the live `origin/main`, then rerun the affected gates and
+Canary if production code changes. `NOMIFUN_MANAGED_FETCH_MODE=off` remains the
+immediate Local-only rollback.
 
 Formal 15+ URL Admission, private PDFs, Browser→MCP, and expansion beyond
 PDF/JavaScript/Empty remain separate future work.

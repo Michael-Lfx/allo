@@ -1,6 +1,7 @@
 # Local-first Managed Extract Policy
 
 Date: 2026-08-02
+Last updated: 2026-08-04
 
 This policy governs the private Parallel `web_fetch` fallback behind the
 existing `web_extract` tool. Desktop now starts in the evidence-backed profile
@@ -23,6 +24,26 @@ web_extract
 No `parallel_web_fetch`, MCP tool, provider, extractor, or fallback name is
 exposed to the model. `final_url` and provider diagnostics stay outside model
 context.
+
+### Model routing contract
+
+`web_extract` is the sole model-visible reader for a known public HTTP(S) URL.
+Its tool description and the generic agent guidance explicitly cover HTML,
+direct PDF text, JavaScript-shell pages, and short or empty pages. A URL ending
+in `.pdf` is therefore an instruction to try `web_extract` first, not a reason
+to create a download or parsing script.
+
+`web_search` is for discovery: when the user or current context already gives a
+public direct URL, the model should skip search and call `web_extract`. Browser
+is reserved for interaction (clicking, login, or a browser-only rendering
+workflow); Bash, Python, and `exec_command` remain appropriate for local
+artifacts or a genuine `web_extract` failure. An explicit request to download
+or save an original file is an artifact/file workflow, not content extraction.
+
+This is a routing aid, not an authorization rule. It never promises that every
+URL reaches Remote: Local-first routing, the evidence-backed category profile,
+budget, URL safety, and source contract still decide whether a private fallback
+is attempted.
 
 ## Routing
 
@@ -245,6 +266,16 @@ Logs record counts and timing only:
 
 Logs never record URLs, query parameters, page titles, bodies, user questions,
 conversation IDs, or raw MCP payloads. `url_index` may be recorded.
+
+### Acceptance evidence interpretation
+
+For a PDF or JavaScript-shell Local failure, `remote_attempted=true` and a
+positive `remote_success_count` are the evidence that the managed Remote stage
+was actually used. `remote_attempted=false` with `remote_budget_skipped_count`
+means no Remote call occurred, even if a later Browser or script succeeds. For
+ordinary HTML, `local_success_count>0` with `remote_attempted=false` is the
+expected Local-only outcome. Tool-registration log lines are not tool calls;
+inspect the actual tool-use record and the managed-extract completion counters.
 
 ## Limits
 

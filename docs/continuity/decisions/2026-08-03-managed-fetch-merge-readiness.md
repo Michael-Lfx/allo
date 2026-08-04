@@ -2,9 +2,10 @@
 
 > Superseded snapshot notice (2026-08-04): the historical local-main fast-forward
 > described below is not the current delivery state. The live work remains on
-> `feat/fetch-optimization`, which has been rebased onto `origin/main=81b199fbc8fa`.
-> The cold-start budget and endpoint-health fixes were subsequently validated in
-> the 2026-08-04 addendum below. This historical snapshot is not itself the final
+> `feat/fetch-optimization`. Its `origin/main=81b199fbc8fa` base is historical:
+> the live branch state must be queried before delivery. The cold-start budget,
+> endpoint-health, and Desktop model-routing acceptance are recorded in the
+> 2026-08-04 follow-ups below. This historical snapshot is not itself the final
 > merge approval.
 
 Date: 2026-08-03
@@ -130,9 +131,11 @@ failure test and surface `quota_ledger_failed` before any future multi-day Admis
 This does not affect the production MCP path or the bounded Canary decision.
 
 Historical decision: `local_main_fast_forward_complete` (not current). The 2026-08-04
-addendum records the live decision `cold_start_canary_passed_pending_desktop_acceptance`;
-the feature branch remains local and has not been merged into `main`. No push, PR, GitHub
-Actions workflow, private URL, Browser-to-MCP loop, or formal Admission Campaign was run.
+follow-up closed the requested cold Desktop acceptance and separately recorded the model
+tool-routing acceptance. The feature branch remains local and has not been merged into
+`main`. A subsequent advance of `origin/main` requires a rebase and revalidation before
+any PR. No push, GitHub Actions workflow, private URL, Browser-to-MCP loop, or formal
+Admission Campaign was run.
 
 Formal 15+ URL Admission, private PDF validation, unsupported/network category expansion,
 and any further rollout policy change remain separate future work.
@@ -155,4 +158,5 @@ complete with all five zero gates; the Summary is explicitly `preflight_never_ca
 
 Review status: budget/readiness review found no P0/P1; the Safety/Lifecycle review found
 and fixed stale Session recovery clearing a newer Unauthorized epoch, then passed at the
-live tip; the final rebase/spec review is pending one fresh Desktop cold-session check.
+then-live tip. The fresh Desktop cold-session check subsequently passed. This does not
+replace a new frozen review after rebasing to a newer `origin/main`.

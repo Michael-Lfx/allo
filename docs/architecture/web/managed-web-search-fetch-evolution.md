@@ -187,6 +187,17 @@ Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构�
 - 抓包确认只发送经过准入的 URL
 - 性能 P50/P95 达到内部目标
 
+### 2026-08-04：模型工具路由收口
+
+- 新增模型可见的 `web_extract` 能力说明：公开 HTML、直链 PDF、JavaScript Shell、
+  短页/空页均先交给现有读取工具；不暴露 Parallel、MCP 或 Provider。
+- 已知公开直链 URL 不应先搜索；`web_search` 只用于发现 URL。
+- Browser 保持交互用途；Bash/Python/`exec_command` 只用于本地 artifact 或
+  `web_extract` 明确失败后的补救。用户不需要知道内部工具名称。
+- 验收不能只看模型文本或工具注册日志：PDF/JS 需要首个实际读取动作为
+  `web_extract`，再由 `remote_attempted=true` 与正的成功计数证明受控 Remote
+  fallback；HTML 则应 Local 成功且零 Remote。
+
 ## 关键决策记录
 
 ### Search Provider
@@ -277,6 +288,11 @@ Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构�
   `ManagedWebHandle` 负责 exactly-once shutdown；重复 shutdown 幂等。
 - **日志不能记录 URL、Query、标题、正文、Conversation ID 或 raw MCP payload。**
   只能记录 index、计数、耗时、错误分类和 fallback reason。
+- **不要把模型路由提示当成出站权限。** `web_extract` 被选择后仍必须经过
+  Local-first、profile/capability、预算、URL 安全和来源契约；提示不能让 Deferred
+  或 Forbidden 类别出站。
+- **不要要求真实用户在提示词中点名内部工具。** 维护验收应使用自然的“读取/概括
+  此 URL”请求，再检查首个实际 tool use 和脱敏 counters。
 
 ### 仓库与门禁
 
@@ -298,6 +314,8 @@ Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构�
 | `docs/superpowers/plans/2026-07-30-managed-web-search-you-rollout.md` | You.com 替换 Exa 的 rollout 与 MCP Peer 不变量 |
 | `docs/continuity/decisions/2026-07-31-parallel-web-fetch-admission.md` | Parallel `web_fetch` 真实 Probe 结论 |
 | `docs/architecture/web/managed-web-fetch-policy.md` | Local-first Managed Extract 生产策略 |
+| `docs/architecture/web/managed-web-fetch-provider-maintenance.md` | Provider seam、模型工具契约与维护验收 |
+| `docs/architecture/web/managed-fetch-evaluation.md` | 评测证据边界与可恢复实验操作 |
 | 本文档 | 演变时间线、实现现状、避坑清单、文档入口 |
 
 ### 历史研究 / 规划文档
@@ -316,5 +334,7 @@ Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构�
   不扩大 Remote 范围。
 - 如 Parallel 返回 SSE，重新评估 `MAX_SSE_EVENT_BYTES`。
 - 维护 `bun run check` 的仓库级基线（若环境导致失败，须与本功能结果分开记录）。
-- 继续按 `managed-web-fetch-policy.md` 维护回滚和降级策略；当前 Desktop 验收已于
-  2026-08-02 完成，`NOMIFUN_MANAGED_FETCH_MODE=off` 仍可立即回滚到 Local-only。
+- 继续按 `managed-web-fetch-policy.md` 维护回滚和降级策略；Desktop 已完成 2026-08-02
+  的限定验收和 2026-08-04 的冷启动/模型工具路由验收。提交 PR 前仍要以实时
+  `origin/main` 为基线 rebase 并重跑受影响门禁；
+  `NOMIFUN_MANAGED_FETCH_MODE=off` 仍可立即回滚到 Local-only。

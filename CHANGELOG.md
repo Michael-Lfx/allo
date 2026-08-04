@@ -69,6 +69,9 @@ notes at a high level rather than a complete historical log.
   thresholds, so eligible PDF/JavaScript fallback can reach Parallel within the
   existing 12-second `web_extract` deadline. Parallel endpoint health also
   ignores stale successes after newer 401/429/network failures.
+- `web_extract` now explicitly advertises public direct-PDF and JavaScript-shell
+  reading to the agent, so a known URL is read before Browser or script
+  fallback. Downloading an original file remains a separate artifact workflow.
 
 ## v0.3.3 - 2026-07-30
 

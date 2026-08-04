@@ -1,6 +1,7 @@
 # Managed Fetch Evaluation Maintenance Contract
 
 Date: 2026-08-03
+Last updated: 2026-08-04
 
 This document is the durable maintenance contract for the opt-in
 `fetch-eval` evaluation capability. It describes how evidence is produced and
@@ -17,6 +18,13 @@ Evaluation does not choose Desktop rollout modes, expose MCP tools to the
 model, bypass production URL safety, store URLs or bodies, or authorize a
 category for production. Formal 15+ case Admission remains a separate
 approval step.
+
+Evaluation also does not prove model tool selection. The question "did the
+agent choose `web_extract` for a known public PDF/JavaScript URL?" is a
+separate Desktop acceptance lane: use a natural user request, inspect the
+first actual tool use, and correlate it with sanitized managed-extract
+counters. A Browser or script succeeding after extraction fails is not
+evaluation or Remote-fallback success evidence.
 
 ## Stable Interface and internal Modules
 
@@ -117,3 +125,14 @@ refactor and should not be reintroduced:
 
 Any future provider must preserve these interfaces and add contract tests at
 the deep module seam before changing production policy.
+
+## Deferred evaluation-only follow-up
+
+`FileQuotaControl::record_rate_limit` currently stops the in-memory run even if
+persisting its cooldown ledger fails. This preserves the immediate safety stop,
+but a process crash can lose the durable cooldown. Before starting a multi-day
+Admission campaign, make that persistence failure surface
+`quota_ledger_failed` and add an injected rate-limit-ledger failure test. This
+does not affect the production `web_extract` egress path or bounded canaries;
+it is deliberately documented so a future campaign does not assume durable
+cooldown evidence that was not written.

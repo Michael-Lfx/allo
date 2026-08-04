@@ -1,22 +1,25 @@
 # Managed Fetch 当前状态与后续交接
 
 ```yaml
-status: COLD_START_CANARY_PASSED_AWAITING_DESKTOP_ACCEPTANCE
+status: DESKTOP_MODEL_ROUTING_ACCEPTED_REBASE_REQUIRED
 date: 2026-08-04
 branch: feat/fetch-optimization
 pre_budget_fix_canary_checkpoint: d11b012ff02e0e846ab5744210fd417bc353bfc3
 final_canary_code_checkpoint: f70a81416586f0abb923836e251b3550e41970d7
-final_tip: f70a81416586f0abb923836e251b3550e41970d7
-main_merge_base: 81b199fbc8fa
-worktree_at_snapshot: clean_after_final_canary
+final_tip_at_refresh: 1c99d497c42c612deb52c8d14a7a4618e58760f0
+origin_main_at_refresh: 9f334626a4807f1f87249264147f1d0077a5d74e
+worktree_at_snapshot: clean_before_document_refresh
 remote_delivery: local_commits_only
 ```
 
 > Current correction (2026-08-04): this document is maintained on the feature
 > branch. The local `main` was not merged and `feat/fetch-optimization` was not
-> deleted. The branch is rebased onto `origin/main=81b199fbc8fa`; the cold-start
-> budget and endpoint-health fixes are validated by the final bounded Canary. One
-> fresh Desktop cold-session acceptance remains before merge-readiness can be closed.
+> deleted. The cold-start budget and endpoint-health fixes are validated by the
+> bounded Canary, and the fresh Desktop cold-session/model-routing acceptance is
+> complete. At this refresh the feature branch is **behind the current
+> `origin/main` by four commits**, so it must be rebased and reverified before a
+> PR is created. Do not treat this historical document as a live Git dashboard;
+> query `git rev-list --left-right --count origin/main...HEAD` instead.
 
 历史重写说明：原始 70 个提交已压缩为 5 个连续主题提交，并 rebase 到最新
 `origin/main`。备份分支 `backup/feat-fetch-optimization-pre-compact-aeb9a285`，并保留
@@ -30,6 +33,11 @@ remote_delivery: local_commits_only
 Managed Fetch 已作为 Desktop 的默认 `EvidenceBacked` 能力落地。模型和宿主仍只看到
 现有 `web_extract`；Parallel、MCP Fetch 工具、Provider 名称、Payload 和 `final_url`
 均留在 `flowy-web` 深模块内部。
+
+2026-08-04 的新 Desktop 自然语言验收同时确认模型会把已知公开 PDF、JavaScript
+Shell 和普通 HTML URL 交给 `web_extract`，而不是仅因 URL 类型绕到 Browser、Bash、
+Python 或 `exec_command`。该行为的稳定维护契约见
+[Managed Fetch model tool routing](./2026-08-04-managed-fetch-model-tool-routing.md)。
 
 当前默认远程回退范围只有：
 
@@ -81,11 +89,13 @@ Payload 或原始 Provider Response。
 
 ## 自动化证据
 
-Rebase 前代码基线完成过以下验证（这些计数不包含本轮冷启动修复）：
+截至 `1c99d497c` 的最新定向验证（测试计数是当时快照，不应替代后续 rebase 后重跑）：
 
-- `cargo test -p flowy-web`：173 项通过（基础套件）；
-- `cargo test -p flowy-web --features fetch-eval --all-targets`：230 项库测试和 4 项集成
+- `cargo test -p flowy-web`：178 项通过（基础套件）；
+- `cargo test -p flowy-web --features fetch-eval --all-targets`：231 项库测试和 4 项集成
   测试通过（最终代码）；
+- `cargo test -p nomi-agent context`：73 项通过；启用 Browser preset 的 context 定向测试
+  76 项通过；
 - `cargo test -p nomifun-app --features managed-search --lib managed_web`：3 项定向测试通过；
 - `cargo check -p flowy-web --no-default-features`：通过；
 - `cargo check -p flowy-web --features fetch-eval`：通过；
@@ -93,8 +103,9 @@ Rebase 前代码基线完成过以下验证（这些计数不包含本轮冷启�
 - `cargo fmt --all -- --check`、`git diff --check`：通过；
 - `.github/workflows` 下 `.yml`/`.yaml` 数量为 0。
 
-`bun run check` 在受限进程中报告环境级 `Operation not permitted`；使用批准的提升进程
-重跑完整通过。三条本分支新增退休词汇注释已改为当前术语，没有修改 UI 或无关基线文件。
+`bun run check` 在受限进程中报告环境级 `Operation not permitted`；提升进程完成其余
+检查，但 `check:i18n` 仍报告 main 同样存在的 28 个 `videoGeneration.*` 声明基线问题。
+该 UI 基线与 Managed Fetch 无关，不能通过修改无关文件掩盖。
 
 ## 真实 Provider 与 Desktop 证据（修复前基线）
 
@@ -133,12 +144,11 @@ Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
   cancellation-late result 全部为 0；5 份 Safety report 均 `complete=true, all_zero=true`；
 - Summary 明确为 `preflight_never_candidate`，不产生正式 Admission 或启用结论。
 
-## Git 与交付状态（最终 Canary 快照）
+## Git 与交付状态（历史 Canary 快照）
 
-- 当前 rebase 后代码基线：查询 `git rev-parse HEAD`；本轮修改前 tip 为
-  `2ca3b0bf11fd`；
-- 10 个本地主题提交相对 `origin/main=81b199fbc8fa` 为 ahead 10、behind 0（实时状态请查询
-  `git rev-list --left-right --count origin/main...HEAD`）；
+- 此处 `origin/main=81b199fbc8fa`、ahead/behind 和 SHA 均为当时的历史快照；实时状态请
+  查询 `git rev-parse HEAD`、`git fetch origin main` 与
+  `git rev-list --left-right --count origin/main...HEAD`；
 - 压缩前后的跟踪文件 tree 均为 `e4175ed4feb09308c7e62bed120f9d160dbe51b5`；
 - 本地 `main` 未被功能分支合并；五个提交仍仅在功能分支本地；
 - 未 Push、未建 PR、未创建或修改 GitHub Actions；
@@ -170,6 +180,9 @@ Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
 Canary 与 post-fix 六调用 Canary 均有效。以下事项必须
 另开分支、重新审批，不能从当前结论自动推导：
 
+在任何 PR 前，先将当前功能分支 rebase 到最新 `origin/main` 并重跑受影响门禁；如果
+生产代码的冲突解决改变了 Managed Fetch，再执行新的 Canary 与冻结审查。
+
 1. 每类 15–20 个独立 URL 的正式公开 Admission；
 2. Unsupported Document、DNS/TLS/Network/Timeout 的扩面；
 3. 私有业务 PDF 或 Browser 最终 URL；
@@ -185,6 +198,24 @@ Canary 与 post-fix 六调用 Canary 均有效。以下事项必须
 
 当前 `feat/fetch-optimization` 仍保留，并新增恢复点
 `backup/feat-fetch-optimization-pre-budget-fix-e7cdca529`。未 Push、未建 PR。
+
+## 2026-08-04 Desktop 模型路由验收
+
+在最新模型工具描述提交 `1c99d497c` 的全新 Desktop 会话中，Owner 使用不点名内部
+工具的自然请求，依次让 Agent 读取公开 PDF、JavaScript Shell 和普通 HTML。脱敏日志位于
+`D:\tmp\flowy-dev\logs\2026-08-04.nomi.log` 与
+`D:\tmp\flowy-dev\logs\2026-08-04.nomicore.log`：
+
+- PDF 和 JavaScript Shell 的首个且唯一内容读取动作均为 `web_extract`；每次
+  `tool_calls_total=1`、`exec_command_script_calls=0`，核心 completion 都显示
+  `remote_attempted=true`、`remote_success_count=1`；
+- HTML 的首个且唯一读取动作也是 `web_extract`，但 completion 显示 Local success 和
+  `remote_attempted=false`，符合 Local-first；
+- 三个会话窗口内没有 Browser、Bash、Python 或 `exec_command` 作为补救，应用正常关闭；
+- 日志只提供工具名、计数、分类与耗时，未出现 URL、正文、Query、Cookie、Header 或用户问题。
+
+这证明模型工具选择和窄范围产品行为，不把 Desktop 日志计入 formal 15+ URL Admission，
+也不把它替代 rebase 后的门禁、Canary 或 PR 审查。
 
 此前 post-refactor bounded Canary（仍为本轮预算/健康状态修复前证据，目录为
 `fetch-evaluation-raw/post-refactor-55f17bda/`）：
