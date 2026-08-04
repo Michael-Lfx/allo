@@ -1,10 +1,11 @@
 use axum::Router;
 use axum::extract::{Json, Query, State};
-use axum::routing::{get, patch};
+use axum::routing::{get, post};
 
 use nomifun_api_types::{
-    ApiResponse, MediaCreditsResponse, MediaModelListResponse, MediaSettingsResponse,
-    MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
+    ApiResponse, MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
+    MediaModelListResponse, MediaSettingsResponse, MediaWorkflowHistoryResponse,
+    UpdateMediaSettingsRequest,
 };
 use nomifun_common::AppError;
 use serde::Deserialize;
@@ -25,6 +26,7 @@ pub fn media_routes(state: MediaRouterState) -> Router {
     Router::new()
         .route("/api/media/settings", get(get_settings).patch(update_settings))
         .route("/api/media/credits", get(get_credits))
+        .route("/api/media/credits/checkin", post(checkin))
         .route("/api/media/models", get(list_models))
         .route("/api/media/workflows/history", get(workflow_history))
         .with_state(state)
@@ -47,6 +49,13 @@ async fn get_credits(
     State(state): State<MediaRouterState>,
 ) -> Result<Json<ApiResponse<MediaCreditsResponse>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.credits().await?)))
+}
+
+async fn checkin(
+    State(state): State<MediaRouterState>,
+    Json(req): Json<MediaCreditsCheckinRequest>,
+) -> Result<Json<ApiResponse<MediaCreditsCheckinResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.checkin(req.time_zone).await?)))
 }
 
 async fn list_models(

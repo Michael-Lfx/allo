@@ -43,6 +43,7 @@
     "diff": "^8.0.3",
     "diff2html": "^3.4.55",
     "eventemitter3": "^5.0.1",
+    "framer-motion": "^12.43.0",
     "i18next": "^23.7.16",
     "katex": "^0.16.22",
     "mermaid": "^11.13.0",

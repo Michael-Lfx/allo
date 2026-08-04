@@ -14,6 +14,7 @@ import { createRoot } from 'react-dom/client';
 // Context providers
 import { AuthProvider } from './hooks/context/AuthContext';
 import { CloudAuthProvider } from './hooks/context/CloudAuthContext';
+import { CreditsProvider } from './hooks/context/CreditsContext';
 import { FeedbackProvider } from './hooks/context/FeedbackContext';
 import { ThemeProvider } from './hooks/context/ThemeContext';
 import { SupportChatProvider } from './features/supportChat/SupportChatProvider';
@@ -82,9 +83,13 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
       CloudAuthProvider,
       null,
       React.createElement(
-        SupportChatProvider,
+        CreditsProvider,
+        null,
+        React.createElement(
+          SupportChatProvider,
         null,
         React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+        )
       )
     )
   );

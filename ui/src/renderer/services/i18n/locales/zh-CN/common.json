@@ -130,7 +130,8 @@
     "contactSupportWithUnread": "联系客服，{{count}} 条未读回复",
     "logout": "退出登录",
     "loadingCredits": "加载中…",
-    "creditsUnavailable": "—"
+    "creditsUnavailable": "—",
+    "refreshCredits": "刷新积分余额"
   },
   "supportChat": {
     "title": "联系客服",
