@@ -76,4 +76,10 @@ describe('MessageTips structured error presentation', () => {
     expect(cssSource.includes('.message-error-note__feedback .pt-4px')).toBe(true);
     expect(cssSource.includes('padding-top: 0 !important')).toBe(true);
   });
+
+  test('routes conversation error feedback through Support IM with correlation context', () => {
+    expect(source.includes("import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';")).toBe(true);
+    expect(source.includes('const conversationErrorReport = useMemo<ConversationErrorReportContext | undefined>')).toBe(true);
+    expect(source.match(/conversationErrorReport=\{conversationErrorReport\}/g)).toHaveLength(3);
+  });
 });

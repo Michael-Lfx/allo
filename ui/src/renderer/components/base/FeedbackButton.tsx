@@ -1,33 +1,36 @@
 
 
 import { useFeedback } from '@/renderer/hooks/context/FeedbackContext';
+import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 import { Comment } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 type FeedbackButtonProps = {
+  /** Sends this conversation error and recent logs through Support IM. */
+  conversationErrorReport?: ConversationErrorReportContext;
   /** Additional classes appended to the default pill styling. */
   className?: string;
 };
 
 /**
  * Inline feedback chip shown near error messages — styled as a compact pill
- * consistent with Nomi's existing Mention/Agent pill patterns. Click opens
- * the contact panel with the official feedback channels.
+ * consistent with Nomi's existing Mention/Agent pill patterns. Conversation
+ * errors open Support IM with correlated diagnostic context.
  */
-const FeedbackButton: React.FC<FeedbackButtonProps> = ({ className }) => {
+const FeedbackButton: React.FC<FeedbackButtonProps> = ({ conversationErrorReport, className }) => {
   const { t } = useTranslation();
   const { openFeedback } = useFeedback();
 
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       event.stopPropagation();
-      openFeedback().catch((err) => {
+      openFeedback({ conversationErrorReport }).catch((err) => {
         console.error('[FeedbackButton] Failed to open feedback:', err);
       });
     },
-    [openFeedback]
+    [conversationErrorReport, openFeedback]
   );
 
   return (

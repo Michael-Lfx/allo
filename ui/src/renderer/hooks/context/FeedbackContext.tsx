@@ -2,19 +2,33 @@
 
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import FeedbackReportModal from '@/renderer/components/settings/SettingsModal/contents/FeedbackReportModal';
+import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
+import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
+
+type OpenFeedbackOptions = {
+  conversationErrorReport?: ConversationErrorReportContext;
+};
 
 type FeedbackContextValue = {
-  openFeedback: () => Promise<void>;
+  openFeedback: (options?: OpenFeedbackOptions) => Promise<void>;
 };
 
 const FeedbackContext = createContext<FeedbackContextValue | null>(null);
 
 export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { reportConversationError } = useSupportChat();
   const [visible, setVisible] = useState(false);
 
-  const openFeedback = useCallback(async () => {
-    setVisible(true);
-  }, []);
+  const openFeedback = useCallback(
+    async (options?: OpenFeedbackOptions) => {
+      if (options?.conversationErrorReport) {
+        reportConversationError(options.conversationErrorReport);
+        return;
+      }
+      setVisible(true);
+    },
+    [reportConversationError]
+  );
 
   const handleCancel = useCallback(() => {
     setVisible(false);

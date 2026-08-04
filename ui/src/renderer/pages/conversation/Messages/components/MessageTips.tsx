@@ -18,6 +18,7 @@ import { parseMessageFileMarker } from './messageFileMarker';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { useNavigate } from 'react-router-dom';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
 
 const MODEL_RECOVERY_KINDS = new Set([
   'change_model',
@@ -114,6 +115,25 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
 
   const displayContent = json ? '' : content;
   const shouldShowFeedback = type === 'error';
+  const conversationErrorReport = useMemo<ConversationErrorReportContext | undefined>(() => {
+    if (type !== 'error') return undefined;
+    return {
+      error: structuredError ?? { message: content },
+      conversationId: message.conversation_id,
+      ...(message.message_id || message.msg_id ? { messageId: message.message_id ?? message.msg_id } : {}),
+      ...(message.turn_id ? { turnId: message.turn_id } : {}),
+      occurredAt: new Date(message.created_at ?? Date.now()).toISOString(),
+    };
+  }, [
+    content,
+    message.conversation_id,
+    message.created_at,
+    message.message_id,
+    message.msg_id,
+    message.turn_id,
+    structuredError,
+    type,
+  ]);
 
   const retryPayload = useMemo(() => {
     if (type !== 'error') return null;
@@ -276,7 +296,10 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                         </Button>
                       )}
                       {editButton}
-                      <FeedbackButton className='message-error-note__feedback' />
+                      <FeedbackButton
+                        conversationErrorReport={conversationErrorReport}
+                        className='message-error-note__feedback'
+                      />
                     </div>
                   )}
                 </div>
@@ -335,7 +358,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 </Button>
               )}
               {editButton}
-              <FeedbackButton />
+              <FeedbackButton conversationErrorReport={conversationErrorReport} />
             </div>
           )}
         </div>
@@ -387,7 +410,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
               </Button>
             )}
             {editButton}
-            <FeedbackButton />
+            <FeedbackButton conversationErrorReport={conversationErrorReport} />
           </div>
         )}
       </div>
