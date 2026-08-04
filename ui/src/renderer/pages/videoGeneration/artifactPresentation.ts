@@ -16,6 +16,8 @@ export interface StoryboardScene {
   imagePath?: string;
   videoPath?: string;
   revisionPath?: string;
+  /** Owning `storyboard.json` path used for direct visual-direction edits. */
+  storyboardPath?: string;
   /** Pipeline scene root (e.g. `idea2video/scene_1`); empty for single-scene runs. */
   sceneRoot?: string;
   /** Shot index within its pipeline scene. */
@@ -132,6 +134,7 @@ export function buildStoryboardScenesFromStoryboards(
         videoPath: bestShotFile(videoFiles, sceneRoot, shot.index),
         revisionPath:
           bestShotFile(revisionFiles, sceneRoot, shot.index) ?? board.path,
+        storyboardPath: board.path,
         sceneRoot,
         shotIndex: shot.index,
       });
@@ -166,12 +169,135 @@ export function buildStoryboardScenesFromStoryboards(
       videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
       revisionPath:
         bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
+      storyboardPath: fallbackBoard,
       sceneRoot: loc.sceneRoot,
       shotIndex: loc.shotIndex,
     });
   }
 
   return scenes;
+}
+
+/**
+ * Patch `visual_desc` / `audio_desc` (and common aliases) for a shot inside a
+ * storyboard / shot_description JSON document. Returns pretty-printed JSON.
+ */
+export function patchShotDescriptionsInArtifact(
+  rawText: string | undefined,
+  scene: Pick<StoryboardScene, 'shotIndex' | 'revisionPath' | 'storyboardPath'>,
+  descriptions: { visualDescription: string; audioDescription?: string }
+): string {
+  const visual = descriptions.visualDescription.trim();
+  if (!visual) {
+    throw new Error('visual description must not be empty');
+  }
+  const audio =
+    descriptions.audioDescription == null
+      ? undefined
+      : descriptions.audioDescription.trim();
+
+  const parsed = rawText?.trim() ? (JSON.parse(rawText) as unknown) : null;
+  const targetPath = (scene.storyboardPath || scene.revisionPath || '')
+    .replace(/\\/g, '/')
+    .toLowerCase();
+
+  if (targetPath.endsWith('shot_description.json')) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('shot_description.json must be a JSON object');
+    }
+    const obj = parsed as Record<string, unknown>;
+    setDescriptionFields(obj, visual, audio);
+    return JSON.stringify(obj, null, 2);
+  }
+
+  // storyboard.json — array or wrapped object with shots/storyboard arrays
+  if (Array.isArray(parsed)) {
+    patchShotRowInList(parsed, scene.shotIndex, visual, audio);
+    return JSON.stringify(parsed, null, 2);
+  }
+  if (parsed && typeof parsed === 'object') {
+    const record = parsed as Record<string, unknown>;
+    for (const key of ['storyboard', 'shots', 'shot_descriptions'] as const) {
+      if (Array.isArray(record[key])) {
+        patchShotRowInList(record[key] as unknown[], scene.shotIndex, visual, audio);
+        return JSON.stringify(record, null, 2);
+      }
+    }
+  }
+  throw new Error('unsupported storyboard JSON shape');
+}
+
+/** @deprecated Prefer {@link patchShotDescriptionsInArtifact}. */
+export function patchVisualDescriptionInArtifact(
+  rawText: string | undefined,
+  scene: Pick<StoryboardScene, 'shotIndex' | 'revisionPath' | 'storyboardPath'>,
+  visualDescription: string
+): string {
+  return patchShotDescriptionsInArtifact(rawText, scene, { visualDescription });
+}
+
+function setDescriptionFields(
+  obj: Record<string, unknown>,
+  visual: string,
+  audio: string | undefined
+): void {
+  if ('visual_desc' in obj || !('visualDescription' in obj)) {
+    obj.visual_desc = visual;
+  }
+  if ('visualDescription' in obj) {
+    obj.visualDescription = visual;
+  }
+  if ('description' in obj && typeof obj.description === 'string') {
+    obj.description = visual;
+  }
+  if (audio !== undefined) {
+    if ('audio_desc' in obj || !('audioDescription' in obj)) {
+      obj.audio_desc = audio;
+    }
+    if ('audioDescription' in obj) {
+      obj.audioDescription = audio;
+    }
+    if ('audio' in obj && typeof obj.audio === 'string') {
+      obj.audio = audio;
+    }
+    // Always keep the canonical snake_case field for pipeline consumers.
+    obj.audio_desc = audio;
+  }
+}
+
+function patchShotRowInList(
+  rows: unknown[],
+  shotIndex: number | undefined,
+  visual: string,
+  audio: string | undefined
+): void {
+  let target: Record<string, unknown> | null = null;
+  if (typeof shotIndex === 'number') {
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const value = row as Record<string, unknown>;
+      const rawIndex = value.idx ?? value.index ?? value.shot_index;
+      if (typeof rawIndex === 'number' && rawIndex === shotIndex) {
+        target = value;
+        break;
+      }
+    }
+    if (!target && shotIndex >= 0 && shotIndex < rows.length) {
+      const row = rows[shotIndex];
+      if (row && typeof row === 'object') target = row as Record<string, unknown>;
+    }
+  }
+  if (!target && rows.length === 1 && rows[0] && typeof rows[0] === 'object') {
+    target = rows[0] as Record<string, unknown>;
+  }
+  if (!target) {
+    throw new Error(
+      typeof shotIndex === 'number'
+        ? `shot index ${shotIndex} not found in storyboard`
+        : 'shot index missing for storyboard patch'
+    );
+  }
+  setDescriptionFields(target, visual, audio);
 }
 
 function storyboardRows(value: unknown): unknown[] {

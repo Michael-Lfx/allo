@@ -1,8 +1,7 @@
 
-
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Spin } from '@arco-design/web-react';
+import { Button, Input, Spin } from '@arco-design/web-react';
 import { Edit, Music, VideoOne } from '@icon-park/react';
 import { getArtifact, loadArtifactMediaUrl } from '../api';
 import {
@@ -15,11 +14,18 @@ import {
 import type { ArtifactNode } from '../types';
 import styles from '../index.module.css';
 
+const TextArea = Input.TextArea;
+
 interface StoryboardBoardProps {
   sessionId: string;
   artifacts: ArtifactNode[];
   disabled?: boolean;
-  onReviseScene: (scene: StoryboardScene) => void;
+  revising?: boolean;
+  /** Persist edited Visual / audio direction for the active shot. */
+  onSaveSceneDescriptions: (
+    scene: StoryboardScene,
+    descriptions: { visualDescription: string; audioDescription: string }
+  ) => Promise<void> | void;
 }
 
 interface SceneMediaProps {
@@ -122,7 +128,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   sessionId,
   artifacts,
   disabled,
-  onReviseScene,
+  revising,
+  onSaveSceneDescriptions,
 }) => {
   const { t } = useTranslation();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
@@ -130,6 +137,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
   const [activeSceneId, setActiveSceneId] = useState<string>();
+  const [editMode, setEditMode] = useState(false);
+  const [visualDraft, setVisualDraft] = useState('');
+  const [audioDraft, setAudioDraft] = useState('');
 
   useEffect(() => {
     if (!storyboardPaths.length) {
@@ -162,6 +172,59 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     scenes.find((scene) => scene.id === activeSceneId) ??
     scenes[0];
 
+  useEffect(() => {
+    setEditMode(false);
+    setVisualDraft(activeScene?.visualDescription ?? '');
+    setAudioDraft(activeScene?.audioDescription ?? '');
+  }, [activeScene?.id, activeScene?.visualDescription, activeScene?.audioDescription]);
+
+  const canEdit = Boolean(activeScene?.storyboardPath || activeScene?.revisionPath);
+
+  const startEdit = useCallback(() => {
+    if (!activeScene) return;
+    setVisualDraft(activeScene.visualDescription || '');
+    setAudioDraft(activeScene.audioDescription || '');
+    setEditMode(true);
+  }, [activeScene]);
+
+  const cancelEdit = useCallback(() => {
+    setVisualDraft(activeScene?.visualDescription ?? '');
+    setAudioDraft(activeScene?.audioDescription ?? '');
+    setEditMode(false);
+  }, [activeScene?.audioDescription, activeScene?.visualDescription]);
+
+  const handleSave = useCallback(async () => {
+    if (!activeScene || !visualDraft.trim()) return;
+    const nextVisual = visualDraft.trim();
+    const nextAudio = audioDraft.trim();
+    try {
+      await onSaveSceneDescriptions(activeScene, {
+        visualDescription: nextVisual,
+        audioDescription: nextAudio,
+      });
+      setStoryboardEntries((previous) =>
+        previous.map((entry) => {
+          if (entry.path !== activeScene.storyboardPath) return entry;
+          return {
+            ...entry,
+            shots: entry.shots.map((shot) =>
+              shot.index === activeScene.shotIndex
+                ? {
+                    ...shot,
+                    visualDescription: nextVisual,
+                    audioDescription: nextAudio || undefined,
+                  }
+                : shot
+            ),
+          };
+        })
+      );
+      setEditMode(false);
+    } catch {
+      // Parent already surfaces the error toast; keep the editor open.
+    }
+  }, [activeScene, audioDraft, onSaveSceneDescriptions, visualDraft]);
+
   if (!activeScene) {
     return (
       <div className='flex min-h-240px flex-col items-center justify-center gap-8px rd-14px border border-dashed border-[var(--color-border-2)] text-center'>
@@ -180,7 +243,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     );
   }
 
-  const mainPath = activeScene.videoPath;
+  const mainPath = activeScene.videoPath ?? activeScene.imagePath;
+  const mainIsVideo = Boolean(activeScene.videoPath);
   const sceneNumber = activeScene.index + 1;
 
   return (
@@ -190,7 +254,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           <SceneMedia
             sessionId={sessionId}
             path={mainPath}
-            video
+            video={mainIsVideo}
             alt={t('videoGeneration.studio.storyboard.shotAlt', {
               number: sceneNumber,
               defaultValue: '镜头 {{number}}',
@@ -209,30 +273,102 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               defaultValue: '画面描述',
             })}
           </div>
-          <p className='m-0 text-14px leading-23px text-white/90'>
-            {activeScene.visualDescription ||
-              t('videoGeneration.studio.storyboard.visualPending', {
-                defaultValue: '画面生成后将在这里展示。',
-              })}
-          </p>
-          {activeScene.audioDescription ? (
-            <div className='mt-14px flex items-start gap-7px border-t border-white/10 pt-12px text-12px leading-18px text-white/58'>
-              <Music theme='outline' size={14} className='mt-2px shrink-0' />
-              {activeScene.audioDescription}
-            </div>
-          ) : null}
-          <Button
-            className='!mt-18px !border-white/15 !bg-white/8 !text-white hover:!bg-white/14'
-            disabled={disabled || !activeScene.revisionPath}
-            onClick={() => onReviseScene(activeScene)}
-          >
-            <span className='inline-flex items-center gap-6px'>
-              <Edit theme='outline' size={14} />
-              {t('videoGeneration.studio.storyboard.reviseShot', {
-                defaultValue: '修改这个镜头',
-              })}
-            </span>
-          </Button>
+
+          {editMode ? (
+            <>
+              <TextArea
+                value={visualDraft}
+                onChange={setVisualDraft}
+                disabled={disabled || revising}
+                autoSize={{ minRows: 4, maxRows: 8 }}
+                className={styles.reviseInlineInput}
+                style={{
+                  color: 'rgba(255,255,255,0.92)',
+                  WebkitTextFillColor: 'rgba(255,255,255,0.92)',
+                  caretColor: 'rgba(255,255,255,0.92)',
+                  background: 'rgba(255,255,255,0.08)',
+                }}
+                placeholder={t('videoGeneration.studio.storyboard.visualEditPlaceholder', {
+                  defaultValue: '描述这个镜头的画面…',
+                })}
+              />
+              <div className='mb-6px mt-14px text-10px font-700 uppercase tracking-[0.14em] text-white/45'>
+                {t('videoGeneration.studio.storyboard.audioDirection', {
+                  defaultValue: '音频 / 台词',
+                })}
+              </div>
+              <TextArea
+                value={audioDraft}
+                onChange={setAudioDraft}
+                disabled={disabled || revising}
+                autoSize={{ minRows: 2, maxRows: 6 }}
+                className={styles.reviseInlineInput}
+                style={{
+                  color: 'rgba(255,255,255,0.92)',
+                  WebkitTextFillColor: 'rgba(255,255,255,0.92)',
+                  caretColor: 'rgba(255,255,255,0.92)',
+                  background: 'rgba(255,255,255,0.08)',
+                }}
+                placeholder={t('videoGeneration.studio.storyboard.audioEditPlaceholder', {
+                  defaultValue: '背景音乐、环境音或台词…',
+                })}
+              />
+              <div className='mt-10px flex flex-wrap items-center gap-8px'>
+                <Button
+                  size='small'
+                  className='!border-white/15 !bg-transparent !text-white/80 hover:!bg-white/10'
+                  disabled={revising}
+                  onClick={cancelEdit}
+                >
+                  {t('common.cancel', { defaultValue: '取消' })}
+                </Button>
+                <Button
+                  type='primary'
+                  size='small'
+                  loading={revising}
+                  disabled={disabled || !visualDraft.trim()}
+                  onClick={() => void handleSave()}
+                >
+                  {t('videoGeneration.artifacts.save', { defaultValue: '保存' })}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className='m-0 text-14px leading-23px text-white/90'>
+                {activeScene.visualDescription ||
+                  t('videoGeneration.studio.storyboard.visualPending', {
+                    defaultValue: '画面生成后将在这里展示。',
+                  })}
+              </p>
+              <div className='mt-14px border-t border-white/10 pt-12px'>
+                <div className='mb-6px text-10px font-700 uppercase tracking-[0.14em] text-white/45'>
+                  {t('videoGeneration.studio.storyboard.audioDirection', {
+                    defaultValue: '音频 / 台词',
+                  })}
+                </div>
+                <div className='flex items-start gap-7px text-12px leading-18px text-white/58'>
+                  <Music theme='outline' size={14} className='mt-2px shrink-0' />
+                  {activeScene.audioDescription ||
+                    t('videoGeneration.studio.storyboard.audioPending', {
+                      defaultValue: '暂无音频或台词描述',
+                    })}
+                </div>
+              </div>
+              <Button
+                className='!mt-18px !border-white/15 !bg-white/8 !text-white hover:!bg-white/14'
+                disabled={disabled || !canEdit}
+                onClick={startEdit}
+              >
+                <span className='inline-flex items-center gap-6px'>
+                  <Edit theme='outline' size={14} />
+                  {t('videoGeneration.studio.storyboard.reviseShot', {
+                    defaultValue: '修改这个镜头',
+                  })}
+                </span>
+              </Button>
+            </>
+          )}
         </aside>
       </div>
 
@@ -240,6 +376,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
         {scenes.map((scene) => {
           const number = scene.index + 1;
           const active = scene.id === activeScene.id;
+          const thumbPath = scene.videoPath ?? scene.imagePath;
           return (
             <button
               key={scene.id}
@@ -251,8 +388,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               <span className={styles.shotThumb}>
                 <SceneMedia
                   sessionId={sessionId}
-                  path={scene.videoPath}
-                  video
+                  path={thumbPath}
+                  video={Boolean(scene.videoPath)}
                   compact
                   alt={t('videoGeneration.studio.storyboard.shotAlt', {
                     number,

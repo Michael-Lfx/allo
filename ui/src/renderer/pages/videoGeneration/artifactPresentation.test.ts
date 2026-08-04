@@ -6,6 +6,8 @@ import {
   findStoryboardPath,
   findStoryboardPaths,
   parseStoryboard,
+  patchShotDescriptionsInArtifact,
+  patchVisualDescriptionInArtifact,
 } from './artifactPresentation';
 import type { ArtifactNode } from './types';
 
@@ -173,6 +175,7 @@ describe('video artifact presentation', () => {
       imagePath: 'script2video/shots/0/first_frame.png',
       videoPath: 'script2video/shots/0/video.mp4',
       revisionPath: 'script2video/shots/0/shot_description.json',
+      storyboardPath: 'script2video/storyboard.json',
       sceneRoot: 'script2video',
       shotIndex: 0,
     });
@@ -240,5 +243,43 @@ describe('video artifact presentation', () => {
       'idea2video/scene_1/shot-0',
       'idea2video/scene_1/shot-1',
     ]);
+  });
+});
+
+describe('patchShotDescriptionsInArtifact', () => {
+  test('updates visual_desc on the matching storyboard shot', () => {
+    const patched = patchShotDescriptionsInArtifact(
+      JSON.stringify([
+        { idx: 0, visual_desc: 'old A', audio_desc: 'rain' },
+        { idx: 1, visual_desc: 'old B' },
+      ]),
+      { shotIndex: 1, storyboardPath: 'script2video/storyboard.json' },
+      { visualDescription: 'new storm push-in' }
+    );
+    const rows = JSON.parse(patched) as Array<Record<string, unknown>>;
+    expect(rows[0]?.visual_desc).toBe('old A');
+    expect(rows[1]?.visual_desc).toBe('new storm push-in');
+  });
+
+  test('updates audio_desc alongside visual_desc', () => {
+    const patched = patchShotDescriptionsInArtifact(
+      JSON.stringify([{ idx: 0, visual_desc: 'old', audio_desc: 'soft rain' }]),
+      { shotIndex: 0, storyboardPath: 'script2video/storyboard.json' },
+      { visualDescription: 'wide shot', audioDescription: 'heavy thunder' }
+    );
+    const rows = JSON.parse(patched) as Array<Record<string, unknown>>;
+    expect(rows[0]?.visual_desc).toBe('wide shot');
+    expect(rows[0]?.audio_desc).toBe('heavy thunder');
+  });
+
+  test('updates shot_description.json visual fields', () => {
+    const patched = patchVisualDescriptionInArtifact(
+      JSON.stringify({ visual_desc: 'old', ff_desc: 'frame' }),
+      { shotIndex: 0, revisionPath: 'script2video/shots/0/shot_description.json' },
+      'revised visual'
+    );
+    const obj = JSON.parse(patched) as Record<string, unknown>;
+    expect(obj.visual_desc).toBe('revised visual');
+    expect(obj.ff_desc).toBe('frame');
   });
 });

@@ -1,6 +1,7 @@
 //! ViMax-faithful video generation pipelines (Flowy LLM / image / video only).
 
 pub mod agents;
+pub mod artifact_edit;
 pub mod aspect;
 pub mod backends;
 pub mod domain;
@@ -22,10 +23,12 @@ pub use aspect::{
     normalize_aspect_ratio,
 };
 
+pub use artifact_edit::ImagePromptInfo;
 pub use backends::{FlowyChat, FlowyImage, FlowyVideo, FlowyVimaxServices, VimaxChat, VimaxImage, VimaxVideo};
 pub use domain::WorkflowKind;
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{ProgressCallback, ProgressEvent, RenderStatus, RunStatus};
+pub use revise::ReviseResult;
 pub use service::VimaxService;
 pub use session::{
     ARCHIVE_EXTENSION, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate, SessionIndex,

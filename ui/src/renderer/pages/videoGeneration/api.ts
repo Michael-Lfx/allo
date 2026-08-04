@@ -23,6 +23,8 @@ import type {
   TvShowPublishResult,
   TvShowVideo,
   VimaxSession,
+  ArtifactEditResult,
+  ImagePromptInfo,
 } from './types';
 
 const BASE = '/api/vimax';
@@ -67,6 +69,98 @@ export async function planSession(id: string, body: PlanBody): Promise<void> {
 
 export async function reviseSession(id: string, body: ReviseBody): Promise<void> {
   await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/revise`, body);
+}
+
+/** Overwrite a text/JSON artifact in place. */
+export async function writeArtifactText(
+  sessionId: string,
+  artifactPath: string,
+  content: string
+): Promise<ArtifactEditResult> {
+  const encoded = artifactPath
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+  return httpRequest<ArtifactEditResult>(
+    'PUT',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/artifacts/${encoded}`,
+    { content }
+  );
+}
+
+/** Replace an image artifact with a local file upload. */
+export function replaceArtifactFile(
+  sessionId: string,
+  artifactPath: string,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<ArtifactEditResult> {
+  const formData = new FormData();
+  formData.append('path', artifactPath);
+  formData.append('file', file);
+
+  return new Promise<ArtifactEditResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(
+      'POST',
+      `${getBaseUrl()}${BASE}/sessions/${encodeURIComponent(sessionId)}/artifact-replace`
+    );
+    for (const [name, value] of Object.entries(buildBackendAuthHeaders('POST'))) {
+      xhr.setRequestHeader(name, value);
+    }
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+    }
+    xhr.addEventListener('load', () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`Artifact replace failed: ${xhr.status} ${xhr.statusText}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(xhr.responseText) as unknown;
+        const payload =
+          parsed && typeof parsed === 'object' && 'data' in parsed
+            ? (parsed as { data: ArtifactEditResult }).data
+            : (parsed as ArtifactEditResult);
+        if (!payload || typeof payload.revised_path !== 'string') {
+          reject(new Error('Artifact replace failed: unexpected response'));
+        } else {
+          resolve(payload);
+        }
+      } catch {
+        reject(new Error('Artifact replace failed: invalid server response'));
+      }
+    });
+    xhr.addEventListener('error', () => reject(new Error('Artifact replace failed: network error')));
+    xhr.send(formData);
+  });
+}
+
+/** Load the editable image-generation prompt for a frame image. */
+export async function getArtifactImagePrompt(
+  sessionId: string,
+  imagePath: string
+): Promise<ImagePromptInfo> {
+  const qs = new URLSearchParams({ path: imagePath });
+  return httpRequest<ImagePromptInfo>(
+    'GET',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/artifact-prompt?${qs.toString()}`
+  );
+}
+
+/** Update frame prompt and invalidate the image for regeneration on next render. */
+export async function updateArtifactImagePrompt(
+  sessionId: string,
+  imagePath: string,
+  prompt: string
+): Promise<ArtifactEditResult> {
+  return httpRequest<ArtifactEditResult>(
+    'PUT',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/artifact-prompt`,
+    { path: imagePath, prompt }
+  );
 }
 
 export async function renderSession(id: string, body?: RenderBody): Promise<void> {

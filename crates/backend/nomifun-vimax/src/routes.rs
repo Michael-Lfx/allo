@@ -22,12 +22,23 @@ use crate::state::VimaxRouterState;
 
 /// Cameo upload body limit (matches nomi-vimax `CAMEO_MAX_BYTES` + multipart overhead).
 const CAMEO_UPLOAD_BODY_LIMIT: usize = 11 * 1024 * 1024;
+/// Artifact binary replace body limit (matches nomi-vimax `MAX_BINARY_BYTES` + overhead).
+const ARTIFACT_UPLOAD_BODY_LIMIT: usize = 11 * 1024 * 1024;
 
 pub fn vimax_routes(state: VimaxRouterState) -> Router {
     let cameo_upload = Router::new()
         .route("/api/vimax/sessions/{id}/cameos", post(upload_cameo))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(CAMEO_UPLOAD_BODY_LIMIT))
+        .with_state(state.clone());
+
+    let artifact_upload = Router::new()
+        .route(
+            "/api/vimax/sessions/{id}/artifact-replace",
+            post(replace_artifact),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(ARTIFACT_UPLOAD_BODY_LIMIT))
         .with_state(state.clone());
 
     Router::new()
@@ -46,7 +57,11 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/sessions/{id}/artifacts", get(list_artifacts))
         .route(
             "/api/vimax/sessions/{id}/artifacts/{*path}",
-            get(get_artifact),
+            get(get_artifact).put(put_artifact_text),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/artifact-prompt",
+            get(get_artifact_prompt).put(put_artifact_prompt),
         )
         .route("/api/vimax/sessions/{id}/cameos", get(list_cameos))
         .route(
@@ -74,6 +89,7 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/tv-show/{id}/import", post(import_tv_show))
         .with_state(state)
         .merge(cameo_upload)
+        .merge(artifact_upload)
 }
 
 async fn list_sessions(
@@ -261,6 +277,142 @@ async fn get_artifact(
         .header(header::CACHE_CONTROL, "private, max-age=60")
         .body(Body::from(bytes))
         .map_err(|e| AppError::Internal(e.to_string()))?)
+}
+
+#[derive(Deserialize)]
+struct WriteArtifactBody {
+    content: String,
+}
+
+/// PUT JSON `{ content }` to overwrite a text/JSON artifact in place.
+async fn put_artifact_text(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path((id, path)): Path<(String, String)>,
+    body: Result<Json<WriteArtifactBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let result = state
+        .service
+        .write_artifact_text(&id, &path, &body.content)
+        .await?;
+    Ok(Json(ApiResponse::ok(json!({
+        "revised_path": result.revised_path,
+        "stale_keys": result.stale_keys,
+        "invalidated": result.invalidated,
+    }))))
+}
+
+/// Multipart upload that replaces an image artifact (`path` + `file` fields).
+async fn replace_artifact(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let fields = extract_artifact_replace_fields(multipart).await?;
+    let result = state
+        .service
+        .replace_artifact_file(&id, &fields.path, fields.bytes)
+        .await?;
+    Ok(Json(ApiResponse::ok(json!({
+        "revised_path": result.revised_path,
+        "stale_keys": result.stale_keys,
+        "invalidated": result.invalidated,
+    }))))
+}
+
+struct ArtifactReplaceFields {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+async fn extract_artifact_replace_fields(
+    mut multipart: Multipart,
+) -> Result<ArtifactReplaceFields, AppError> {
+    let mut path: Option<String> = None;
+    let mut bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "path" => {
+                path = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError::BadRequest(format!("read path: {e}")))?,
+                );
+            }
+            "file" | "content" => {
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("read file field: {e}")))?;
+                bytes = Some(data.to_vec());
+            }
+            _ => {}
+        }
+    }
+    let path = path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| AppError::BadRequest("missing 'path' field".into()))?;
+    let bytes = bytes.ok_or_else(|| AppError::BadRequest("missing 'file' field".into()))?;
+    if bytes.is_empty() {
+        return Err(AppError::BadRequest("uploaded file is empty".into()));
+    }
+    Ok(ArtifactReplaceFields { path, bytes })
+}
+
+#[derive(Deserialize)]
+struct ArtifactPromptQuery {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ArtifactPromptBody {
+    path: String,
+    prompt: String,
+}
+
+async fn get_artifact_prompt(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ArtifactPromptQuery>,
+) -> Result<Json<ApiResponse<nomi_vimax::ImagePromptInfo>>, AppError> {
+    let path = query.path.trim();
+    if path.is_empty() {
+        return Err(AppError::BadRequest("path is required".into()));
+    }
+    let info = state.service.get_artifact_image_prompt(&id, path).await?;
+    Ok(Json(ApiResponse::ok(info)))
+}
+
+async fn put_artifact_prompt(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<ArtifactPromptBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let path = body.path.trim();
+    if path.is_empty() {
+        return Err(AppError::BadRequest("path is required".into()));
+    }
+    let result = state
+        .service
+        .update_artifact_image_prompt(&id, path, &body.prompt)
+        .await?;
+    Ok(Json(ApiResponse::ok(json!({
+        "revised_path": result.revised_path,
+        "stale_keys": result.stale_keys,
+        "invalidated": result.invalidated,
+    }))))
 }
 
 #[derive(Deserialize)]

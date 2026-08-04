@@ -170,6 +170,21 @@ export interface ReviseBody {
   revision_instruction: string;
 }
 
+/** Result of a direct artifact write / replace / prompt update. */
+export interface ArtifactEditResult {
+  revised_path: string;
+  stale_keys: string[];
+  invalidated: string[];
+}
+
+/** Editable image-generation prompt companion for a frame image. */
+export interface ImagePromptInfo {
+  image_path: string;
+  prompt_path: string;
+  prompt: string;
+  exists: boolean;
+}
+
 export interface SessionStatus {
   stage: string;
   message: string;

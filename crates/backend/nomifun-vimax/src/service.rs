@@ -109,6 +109,53 @@ impl VimaxApiService {
             .map_err(map_vimax_err)
     }
 
+    pub async fn write_artifact_text(
+        &self,
+        id: &str,
+        relative_path: &str,
+        content: &str,
+    ) -> Result<nomi_vimax::ReviseResult, AppError> {
+        self.inner
+            .write_artifact_text(id, relative_path, content)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn replace_artifact_file(
+        &self,
+        id: &str,
+        relative_path: &str,
+        bytes: Vec<u8>,
+    ) -> Result<nomi_vimax::ReviseResult, AppError> {
+        self.inner
+            .replace_artifact_file(id, relative_path, bytes)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn get_artifact_image_prompt(
+        &self,
+        id: &str,
+        image_path: &str,
+    ) -> Result<nomi_vimax::ImagePromptInfo, AppError> {
+        self.inner
+            .get_artifact_image_prompt(id, image_path)
+            .await
+            .map_err(map_vimax_err)
+    }
+
+    pub async fn update_artifact_image_prompt(
+        &self,
+        id: &str,
+        image_path: &str,
+        prompt: &str,
+    ) -> Result<nomi_vimax::ReviseResult, AppError> {
+        self.inner
+            .update_artifact_image_prompt(id, image_path, prompt)
+            .await
+            .map_err(map_vimax_err)
+    }
+
     pub async fn render(
         &self,
         id: &str,

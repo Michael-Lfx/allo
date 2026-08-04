@@ -175,9 +175,6 @@ impl WorldAssetsPlanner {
             } else {
                 env.slugline.trim().to_string()
             };
-            if env_map.contains_key(&key) {
-                continue;
-            }
             let dir = env_root.join(format!("{}_{}", env.idx, safe_component(&key)));
             tokio::fs::create_dir_all(&dir).await?;
             let plate_name = format!("{}_environment_plate.png", safe_component(&key));
@@ -198,6 +195,21 @@ impl WorldAssetsPlanner {
                 .replace("{style}", &style_clause);
                 self.generate_empty_plate_resilient(&prompt, &style_ref_paths, &out)
                     .await?;
+                let _ = write_generation_prompt_sidecar(&out, &prompt).await;
+            } else {
+                let _ = ensure_world_prompt_sidecar(
+                    &out,
+                    &theme,
+                    &style,
+                    WorldPromptKind::Environment {
+                        slugline: &env.slugline,
+                        description: &env.description,
+                    },
+                )
+                .await;
+            }
+            if env_map.contains_key(&key) {
+                continue;
             }
             let detail: String = strip_people_mentions(&env.description)
                 .chars()
@@ -225,7 +237,7 @@ impl WorldAssetsPlanner {
 
         for prop in &spec.props {
             let key = prop.name.trim().to_string();
-            if key.is_empty() || prop_map.contains_key(&key) {
+            if key.is_empty() {
                 continue;
             }
             let dir = prop_root.join(format!("{}_{}", prop.idx, safe_component(&key)));
@@ -246,6 +258,21 @@ impl WorldAssetsPlanner {
                     .replace("{style}", &style_clause);
                 self.generate_empty_plate_resilient(&prompt, &style_ref_paths, &out)
                     .await?;
+                let _ = write_generation_prompt_sidecar(&out, &prompt).await;
+            } else {
+                let _ = ensure_world_prompt_sidecar(
+                    &out,
+                    &theme,
+                    &style,
+                    WorldPromptKind::Prop {
+                        name: &prop.name,
+                        description: &prop.description,
+                    },
+                )
+                .await;
+            }
+            if prop_map.contains_key(&key) {
+                continue;
             }
             let detail: String = strip_people_mentions(&prop.description)
                 .chars()
@@ -462,6 +489,57 @@ fn asset_item(path: &Path, description: &str) -> HashMap<String, String> {
     item.insert("path".into(), path.to_string_lossy().to_string());
     item.insert("description".into(), description.to_string());
     item
+}
+
+enum WorldPromptKind<'a> {
+    Environment { slugline: &'a str, description: &'a str },
+    Prop { name: &'a str, description: &'a str },
+}
+
+async fn write_generation_prompt_sidecar(image_path: &Path, prompt: &str) -> VimaxResult<()> {
+    let stem = image_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("asset");
+    let parent = image_path.parent().unwrap_or_else(|| Path::new("."));
+    let path = parent.join(format!("{stem}_generation_prompt.txt"));
+    crate::session::write_text_artifact(&path, prompt).await
+}
+
+async fn ensure_world_prompt_sidecar(
+    image_path: &Path,
+    theme: &str,
+    style: &str,
+    kind: WorldPromptKind<'_>,
+) -> VimaxResult<()> {
+    let stem = image_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("asset");
+    let parent = image_path.parent().unwrap_or_else(|| Path::new("."));
+    let path = parent.join(format!("{stem}_generation_prompt.txt"));
+    if path.is_file() {
+        return Ok(());
+    }
+    let style_clause = crate::planning::style_prompt_clause(style);
+    let prompt = match kind {
+        WorldPromptKind::Environment {
+            slugline,
+            description,
+        } => include_str!("../../prompts/world_assets__prompt_template_environment_plate.txt")
+            .replace("{theme}", theme)
+            .replace("{slugline}", slugline)
+            .replace("{description}", &strip_people_mentions(description))
+            .replace("{style}", &style_clause),
+        WorldPromptKind::Prop { name, description } => {
+            include_str!("../../prompts/world_assets__prompt_template_prop.txt")
+                .replace("{theme}", theme)
+                .replace("{name}", name)
+                .replace("{description}", &strip_people_mentions(description))
+                .replace("{style}", &style_clause)
+        }
+    };
+    write_generation_prompt_sidecar(image_path, &prompt).await
 }
 
 fn theme_excerpt(script_or_story: &str) -> String {
