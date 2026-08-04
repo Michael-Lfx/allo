@@ -3,7 +3,7 @@
 // context/ThemeContext.tsx - Unified Theme Management Context 统一主题管理上下文
 import type { PropsWithChildren } from 'react';
 import React, { createContext, useContext, useEffect } from 'react';
-import type { Theme } from '@renderer/hooks/system/useTheme';
+import type { Theme, ThemePreference } from '@renderer/hooks/system/useTheme';
 import useTheme from '@renderer/hooks/system/useTheme';
 import type { ColorScheme } from '@renderer/hooks/ui/useColorScheme';
 import useColorScheme from '@renderer/hooks/ui/useColorScheme';
@@ -16,9 +16,15 @@ import { application } from '@/common/adapter/ipcBridge';
  * Separates light/dark mode from color schemes 分离明暗模式和配色方案
  */
 interface ThemeContextValue {
-  // Light/Dark mode 明暗模式
+  // Resolved light/dark mode, already applied to the DOM. Components that only
+  // need to style for the current scheme read this and are unaffected by the
+  // 'system' preference. 明暗模式（已解析并应用到 DOM）
   theme: Theme;
-  setTheme: (theme: Theme) => Promise<void>;
+
+  // The user's chosen preference — may be 'system'. Only the theme switcher
+  // needs this (to know which of the three options to highlight). 用户偏好（可为 system）
+  themePreference: ThemePreference;
+  setThemePreference: (preference: ThemePreference) => Promise<void>;
 
   // Color scheme 配色方案
   colorScheme: ColorScheme;
@@ -36,7 +42,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
  * Manages both light/dark mode and color schemes 同时管理明暗模式和配色方案
  */
 export const ThemeProvider: React.FC<PropsWithChildren> = ({ children }) => {
-  const [theme, setTheme] = useTheme();
+  const [theme, themePreference, setThemePreference] = useTheme();
   const [colorScheme, setColorScheme] = useColorScheme();
   const [fontScale, setFontScale] = useFontScale();
 
@@ -54,7 +60,9 @@ export const ThemeProvider: React.FC<PropsWithChildren> = ({ children }) => {
   }, []);
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, colorScheme, setColorScheme, fontScale, setFontScale }}>
+    <ThemeContext.Provider
+      value={{ theme, themePreference, setThemePreference, colorScheme, setColorScheme, fontScale, setFontScale }}
+    >
       {children}
     </ThemeContext.Provider>
   );

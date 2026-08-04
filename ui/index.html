@@ -25,11 +25,21 @@
       window.process = window.process || { env: {} };
     </script>
     <script>
-      // Synchronously restore theme from localStorage to prevent theme flash
+      // Synchronously restore theme from localStorage to prevent theme flash.
+      // A stored 'system' preference is resolved here (prefers-color-scheme)
+      // because data-theme only ever carries a concrete light/dark value.
+      // A missing/invalid value is normalized to 'system' (the fresh-install
+      // default) so it resolves to the OS scheme instead of leaving the
+      // hardcoded data-theme="light" in place and flashing for dark-OS users.
       (function () {
         try {
           var theme = localStorage.getItem('__nomifun_theme');
           var colorScheme = localStorage.getItem('__nomifun_colorScheme');
+          if (theme !== 'light' && theme !== 'dark' && theme !== 'system') theme = 'system';
+          if (theme === 'system') {
+            theme =
+              window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          }
           if (theme) {
             document.documentElement.setAttribute('data-theme', theme);
           }
@@ -53,9 +63,14 @@
   </head>
   <body>
     <script>
-      // Set arco-theme on body synchronously
+      // Set arco-theme on body synchronously (resolving a 'system' preference;
+      // missing/invalid values default to 'system' like the head script above)
       try {
         var t = localStorage.getItem('__nomifun_theme');
+        if (t !== 'light' && t !== 'dark' && t !== 'system') t = 'system';
+        if (t === 'system') {
+          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
         if (t) document.body.setAttribute('arco-theme', t);
       } catch (e) {}
     </script>
