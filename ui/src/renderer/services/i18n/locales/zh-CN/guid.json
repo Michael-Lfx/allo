@@ -48,9 +48,7 @@
     "applyFailed": "「{{feature}}」设置应用失败，可进入会话后重新开启",
     "draftOn": "已预设 · 创建后启用",
     "draftOff": "未预设",
-    "willMount": "将挂载 {{count}} 个知识库",
-    "runSettings": "执行方案",
-    "runSettingsHide": "收起方案"
+    "willMount": "将挂载 {{count}} 个知识库"
   },
   "goalMode": {
     "label": "目标",

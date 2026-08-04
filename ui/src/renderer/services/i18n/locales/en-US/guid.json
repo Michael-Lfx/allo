@@ -48,9 +48,7 @@
     "applyFailed": "Failed to apply {{feature}} — you can re-enable it inside the conversation.",
     "draftOn": "Preset · enabled after creation",
     "draftOff": "Not preset",
-    "willMount": "{{count}} base(s) will be mounted",
-    "runSettings": "Execution plan",
-    "runSettingsHide": "Hide plan"
+    "willMount": "{{count}} base(s) will be mounted"
   },
   "goalMode": {
     "label": "Goal",

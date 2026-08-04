@@ -5,13 +5,13 @@ import { describe, expect, test } from 'bun:test';
 
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
-describe('GuidPage advanced controls', () => {
-  test('hides AutoWork and intelligent decision controls while keeping knowledge', () => {
+describe('GuidPage homepage controls', () => {
+  test('does not render an execution-plan toggle', () => {
     const source = readSource(new URL('./GuidPage.tsx', import.meta.url));
 
-    expect(source.includes('<AutoWorkControl')).toBe(false);
-    expect(source.includes('<IdmmControl')).toBe(false);
-    expect(source.includes('<KnowledgeControl')).toBe(true);
+    expect(source.includes("data-testid='guid-run-settings-toggle'")).toBe(false);
+    expect(source.includes("data-testid='guid-run-settings-panel'")).toBe(false);
+    expect(source.includes('<PoiStarterChips')).toBe(false);
   });
 
   test('auto-sends knowledge activation suggest prompts after consume', () => {

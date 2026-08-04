@@ -549,18 +549,6 @@
   -webkit-box-orient: vertical;
 }
 
-.guidRunSettingsPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 14px;
-  border: 1px solid var(--flowy-border, var(--color-border-2));
-  border-radius: var(--flowy-radius-lg, 12px);
-  background: var(--flowy-surface-1, var(--color-bg-2));
-  animation: flowy-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, ease-out) both;
-}
-
 .guidReadinessStrip {
   width: 100%;
   min-height: 34px;
@@ -2552,53 +2540,6 @@ button.guidResourceCard:focus-visible {
   margin: 0 auto;
   padding: 22px 26px calc(132px + env(safe-area-inset-bottom, 0px));
   box-sizing: border-box;
-}
-
-/* 高级控件悬挂在内容区右上角 —— 与正常会话 ChatLayout header 右侧一致
-   （flex + gap:12px）。仅桌面端显示，移动端隐藏（与会话一致）。 */
-.guidAdvancedControls {
-  position: absolute;
-  top: 14px;
-  right: 16px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.guidRunSettingsToggle {
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--color-border-2);
-  border-radius: 999px;
-  background: var(--color-bg-2, var(--bg-2));
-  color: var(--color-text-2);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease;
-}
-
-.guidRunSettingsToggle:hover {
-  color: var(--color-text-1);
-  border-color: var(--color-border-3);
-  background: var(--color-fill-2);
-}
-
-.guidRunSettingsToggle[aria-expanded='true'] {
-  color: rgb(var(--primary-6));
-  border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
-  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, transparent);
-}
-
-@media (max-width: 768px) {
-  .guidAdvancedControls {
-    display: none;
-  }
 }
 
 /* Agent 选中时：先放大再回落至略大（pop 动效） */

@@ -31,7 +31,6 @@ import type {
   ComposerSkillTokenInputHandle,
   ComposerTokenInputState,
 } from '@/renderer/components/chat/ComposerSkillTokenInput';
-import PoiStarterChips from './components/PoiStarterChips';
 import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
 import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
 import GuidModelSelector from './components/GuidModelSelector';
@@ -40,7 +39,6 @@ import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
-import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
@@ -100,7 +98,6 @@ const GuidPage: React.FC = () => {
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [delegationPolicy, setDelegationPolicy] = useState<TDelegationPolicy>('automatic');
   const [decisionPolicy, setDecisionPolicy] = useState<TDecisionPolicy>('automatic');
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
@@ -629,7 +626,6 @@ const GuidPage: React.FC = () => {
       guidInput.setDir('');
     }
     advancedConfig.reset();
-    setAdvancedOpen(false);
   }, [
     guidInput.setDir,
     guidInput.setFiles,
@@ -801,25 +797,6 @@ const GuidPage: React.FC = () => {
     />
   );
 
-  // Homepage advanced controls are collected locally and applied right after
-  // the conversation is created. AutoWork remains available in its dedicated
-  // session and terminal surfaces, rather than the homepage toolbar.
-  // Keyed by location.key so same-route navigations (which reset the drafts in
-  // the layout effect above) also remount the controls and re-run their
-  // mount-time seeding (e.g. IDMM's global default steering prompt).
-  const advancedControlsNode = (
-    <>
-      <KnowledgeControl
-        key={`knowledge-${location.key}`}
-        draft={{
-          value: advancedConfig.knowledge,
-          onChange: advancedConfig.setKnowledge,
-        }}
-        applyNote={t('guid.advanced.applyNote')}
-      />
-    </>
-  );
-
   // Build the action row
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
@@ -830,9 +807,9 @@ const GuidPage: React.FC = () => {
     <GuidActionRow
       files={guidInput.files}
       onFilesUploaded={guidInput.handleFilesUploaded}
-      modelSelectorNode={advancedOpen ? modelSelectorNode : undefined}
+      modelSelectorNode={modelSelectorNode}
       collaboratorSelectorNode={
-        advancedOpen && effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled'
+        effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled'
           ? collaboratorSelectorNode
           : undefined
       }
@@ -873,25 +850,6 @@ const GuidPage: React.FC = () => {
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
       <div ref={guidContainerRef} className={styles.guidContainer}>
-        {/* Advanced controls (Knowledge / MultiAgent) hang in
-            the content area's top-right corner — mirroring the active-session
-            ChatLayout header placement, and freeing the input box's bottom row.
-            Desktop only (hidden on mobile via CSS), matching the session header. */}
-        <div className={styles.guidAdvancedControls}>
-          <button
-            type='button'
-            data-button-shape='pill'
-            className={styles.guidRunSettingsToggle}
-            aria-expanded={advancedOpen}
-            data-testid='guid-run-settings-toggle'
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            {advancedOpen
-              ? t('guid.advanced.runSettingsHide', { defaultValue: 'Hide settings' })
-              : t('guid.advanced.runSettings', { defaultValue: 'Run settings' })}
-          </button>
-          {advancedOpen ? advancedControlsNode : null}
-        </div>
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
@@ -931,15 +889,6 @@ const GuidPage: React.FC = () => {
                 guidInput.setInput(text);
               }}
             />
-
-            {advancedOpen ? (
-              <div className={styles.guidRunSettingsPanel} data-testid='guid-run-settings-panel'>
-                <PoiStarterChips
-                  onSetInput={guidInput.setInput}
-                  onFocusInput={guidInput.handleTextareaFocus}
-                />
-              </div>
-            ) : null}
 
             <GuidInputCard
               containerRef={guidInputCardRef}
@@ -999,20 +948,18 @@ const GuidPage: React.FC = () => {
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
               entryStrip={
-                advancedOpen ? (
-                  <ComposerEntryStrip
-                    isPresetAgent={agentSelection.is_presetAgent}
-                    presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                    presetAvatar={selectedPresetAvatar ?? undefined}
-                    onChoosePreset={() => {
-                      setDrawerOpen(true);
-                    }}
-                    onFree={() => {
-                      agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                    }}
-                    collaborationPolicyNode={collaborationPolicyNode}
-                  />
-                ) : undefined
+                <ComposerEntryStrip
+                  isPresetAgent={agentSelection.is_presetAgent}
+                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
+                  presetAvatar={selectedPresetAvatar ?? undefined}
+                  onChoosePreset={() => {
+                    setDrawerOpen(true);
+                  }}
+                  onFree={() => {
+                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+                  }}
+                  collaborationPolicyNode={collaborationPolicyNode}
+                />
               }
             />
 

@@ -1608,8 +1608,6 @@ export type I18nKey =
   | 'guid.advanced.applyNote'
   | 'guid.advanced.draftOff'
   | 'guid.advanced.draftOn'
-  | 'guid.advanced.runSettings'
-  | 'guid.advanced.runSettingsHide'
   | 'guid.advanced.willMount'
   | 'guid.agentFallbackNotice'
   | 'guid.agentSwitcherLabel'
