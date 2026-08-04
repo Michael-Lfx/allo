@@ -30,4 +30,12 @@ describe('GuidActionRow MCP checkbox selection treatment', () => {
     expect(guidCss.includes(':global(.guid-config-btn:hover)')).toBe(true);
     expect(guidCss.includes('@media (hover: hover) and (pointer: fine)')).toBe(true);
   });
+
+  test('places the mode selector immediately after the add button', () => {
+    const addButtonIndex = actionRowSource.indexOf("data-testid='file-upload-btn'");
+    const modeSelectorIndex = actionRowSource.indexOf('<AgentModeSelector');
+
+    expect(addButtonIndex).toBeGreaterThan(-1);
+    expect(modeSelectorIndex).toBeGreaterThan(addButtonIndex);
+  });
 });

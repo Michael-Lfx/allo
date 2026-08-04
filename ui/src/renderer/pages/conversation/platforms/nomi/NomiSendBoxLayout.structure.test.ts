@@ -60,11 +60,14 @@ describe('Nomi sendbox control layout', () => {
     const rightToolsIndex = sendBoxSource.indexOf('rightTools={');
     const contextRingIndex = sendBoxSource.indexOf('<ContextUsageRing', rightToolsIndex);
     const modelIndex = sendBoxSource.indexOf('<NomiModelSelector', rightToolsIndex);
-    const permissionIndex = sendBoxSource.indexOf('<AgentModeSelector', rightToolsIndex);
 
     expect(contextRingIndex).toBeGreaterThan(rightToolsIndex);
     expect(modelIndex).toBeGreaterThan(contextRingIndex);
-    expect(permissionIndex).toBeGreaterThan(modelIndex);
+    const toolsIndex = sendBoxSource.indexOf('tools={');
+    const modeIndex = sendBoxSource.indexOf('<AgentModeSelector', toolsIndex);
+    const fileAttachIndex = sendBoxSource.indexOf('<FileAttachButton', toolsIndex);
+    expect(fileAttachIndex).toBeGreaterThan(toolsIndex);
+    expect(modeIndex).toBeGreaterThan(fileAttachIndex);
     expect(chatSource.includes('GuidCollaboratorSelector')).toBe(false);
     expect(chatSource.includes('CollaborationPolicyControl')).toBe(false);
     expect(sendBoxSource.includes('collaboratorSelectorNode')).toBe(false);

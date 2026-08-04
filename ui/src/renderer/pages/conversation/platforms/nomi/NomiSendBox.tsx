@@ -1038,14 +1038,27 @@ const NomiSendBox: React.FC<{
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
-          <>
+          <div className='flex items-center gap-6px min-w-0'>
             <FileAttachButton
               openFileSelector={openFileSelector}
               onLocalFilesAdded={handleFilesAdded}
               loadedMcpStatuses={loadedMcpStatuses}
             />
+            {!hideModeSelector && (
+              <AgentModeSelector
+                backend='nomi'
+                conversation_id={conversation_id}
+                compact
+                initialMode={session_mode}
+                dynamicModes={dynamicModes}
+                compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
+                modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
+                beforeRuntimeSync={prepareRuntimeForRead}
+                beforeRuntimeMutation={prepareRuntimeSync}
+              />
+            )}
             <GoalModeChip conversation_id={conversation_id} />
-          </>
+          </div>
         }
         rightTools={
           hasContextUsage || !hideModeSelector ? (
@@ -1061,24 +1074,7 @@ const NomiSendBox: React.FC<{
                   breakdown={tokenUsage?.context_breakdown}
                 />
               )}
-              {!hideModeSelector && (
-                <>
-                  <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
-                  <AgentModeSelector
-                    backend='nomi'
-                    conversation_id={conversation_id}
-                    compact
-                    initialMode={session_mode}
-                    dynamicModes={dynamicModes}
-                    compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
-                    modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
-                    compactLabelPrefix={t('agentMode.permission')}
-                    hideCompactLabelPrefixOnMobile
-                    beforeRuntimeSync={prepareRuntimeForRead}
-                    beforeRuntimeMutation={prepareRuntimeSync}
-                  />
-                </>
-              )}
+              {!hideModeSelector && <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />}
             </div>
           ) : undefined
         }

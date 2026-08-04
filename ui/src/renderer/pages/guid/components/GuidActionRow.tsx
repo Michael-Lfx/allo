@@ -106,7 +106,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const isMobile = layout?.isMobile ?? false;
   const modeBackend = effectiveModeAgent || selectedAgent;
   const showModeSwitch = supportsModeSwitch(modeBackend);
-  const configOptionCount = (modelSelectorNode ? 1 : 0) + (showModeSwitch ? 1 : 0);
+  const hasModelSelector = Boolean(modelSelectorNode);
 
   // Browser file picker ref (WebUI only)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -263,6 +263,16 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             />
           )}
         </div>
+        {showModeSwitch && (
+          <AgentModeSelector
+            backend={modeBackend}
+            compact
+            initialMode={selectedMode}
+            onModeSelect={onModeSelect}
+            compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
+            modeLabelFormatter={getModeDisplayLabel}
+          />
+        )}
         {goalMode && onGoalModeChange && (
           <Button
             type='text'
@@ -290,23 +300,12 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         )}
       </div>
       <div className={`${styles.actionSubmit} ${!isMobile ? styles.actionSubmitResponsive : ''}`}>
-        {configOptionCount > 0 && (
+        {hasModelSelector && (
           <div
             className={`${styles.actionConfigGroup} ${!isMobile ? styles.actionConfigGroupResponsive : ''}`}
             data-mobile={isMobile ? 'true' : undefined}
           >
             {modelSelectorNode}
-
-            {showModeSwitch && (
-              <AgentModeSelector
-                backend={modeBackend}
-                compact
-                initialMode={selectedMode}
-                onModeSelect={onModeSelect}
-                compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
-                modeLabelFormatter={getModeDisplayLabel}
-              />
-            )}
           </div>
         )}
 

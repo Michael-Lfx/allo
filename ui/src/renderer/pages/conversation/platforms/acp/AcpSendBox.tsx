@@ -702,11 +702,25 @@ Please check your local CLI tool authentication status`,
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
-          <FileAttachButton
-            openFileSelector={openFileSelector}
-            onLocalFilesAdded={handleFilesAdded}
-            loadedMcpStatuses={loadedMcpStatuses}
-          />
+          <div className='flex items-center gap-6px min-w-0'>
+            <FileAttachButton
+              openFileSelector={openFileSelector}
+              onLocalFilesAdded={handleFilesAdded}
+              loadedMcpStatuses={loadedMcpStatuses}
+            />
+            {showModeSelector && (
+              <AgentModeSelector
+                backend={backend}
+                conversation_id={conversation_id}
+                compact
+                initialMode={session_mode}
+                compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
+                modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
+                beforeRuntimeSync={prepareRuntimeForRead}
+                beforeRuntimeMutation={prepareRuntimeSync}
+              />
+            )}
+          </div>
         }
         rightTools={
           <div className='flex items-center gap-2 min-w-0' data-testid='acp-sendbox-config-group'>
@@ -723,20 +737,6 @@ Please check your local CLI tool authentication status`,
               initialModelId={initialModelId}
               waitForWarmup
             />
-            {showModeSelector && (
-              <AgentModeSelector
-                backend={backend}
-                conversation_id={conversation_id}
-                compact
-                initialMode={session_mode}
-                compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
-                modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
-                compactLabelPrefix={t('agentMode.permission')}
-                hideCompactLabelPrefixOnMobile
-                beforeRuntimeSync={prepareRuntimeForRead}
-                beforeRuntimeMutation={prepareRuntimeSync}
-              />
-            )}
           </div>
         }
         prefix={
