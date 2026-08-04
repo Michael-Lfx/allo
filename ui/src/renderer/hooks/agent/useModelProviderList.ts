@@ -1,5 +1,6 @@
 import { ipcBridge } from '@/common';
 import type { IProvider } from '@/common/config/storage';
+import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { useCallback, useMemo } from 'react';
 import useSWR, { mutate, type SWRConfiguration } from 'swr';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
@@ -14,7 +15,10 @@ export interface ModelProviderListResult {
   /** Enabled models on a provider row (no capability heuristics). Prefer
    * `useModelsForTask` for task-filtered pickers. */
   getAvailableModels: (provider: IProvider) => string[];
-  formatModelLabel: (provider: { platform?: string } | undefined, modelName?: string) => string;
+  formatModelLabel: (
+    provider: { model_descriptions?: Record<string, string> } | undefined,
+    modelName?: string
+  ) => string;
 }
 
 export const PROVIDERS_SWR_KEY = 'providers';
@@ -75,10 +79,11 @@ export const useModelProviderList = (): ModelProviderListResult => {
     return (provider.models || []).filter((modelName) => provider.model_enabled?.[modelName] !== false);
   }, []);
 
-  const formatModelLabel = useCallback((_provider: { platform?: string } | undefined, modelName?: string) => {
-    if (!modelName) return '';
-    return modelName;
-  }, []);
+  const formatModelLabel = useCallback(
+    (provider: { model_descriptions?: Record<string, string> } | undefined, modelName?: string) =>
+      formatModelLabelForProvider(provider, modelName),
+    []
+  );
 
   return {
     providers,
