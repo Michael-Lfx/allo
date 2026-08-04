@@ -47,7 +47,7 @@ linker = "rust-lld.exe"
 [build]
 build-dir = "{workspace-root}/build.noindex"
 incremental = true
-rustc-wrapper = "sccache.exe"
+# rustc-wrapper = "sccache.exe"  # disabled locally: sccache not installed (pre-existing main regression 1fd21f41c; see config.local.toml.example for the intended opt-in)
 
 
 # Profile settings are managed in the workspace Cargo.toml to keep a single
