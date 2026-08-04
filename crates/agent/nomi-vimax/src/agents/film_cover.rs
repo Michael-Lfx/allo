@@ -121,7 +121,22 @@ async fn generate_cover(
     ));
 
     let ref_paths: Vec<&Path> = refs.iter().map(|p| p.as_path()).collect();
-    image.generate(&prompt, &ref_paths, out).await
+    image.generate(&prompt, &ref_paths, out).await?;
+    let _ = crate::session::write_text_artifact(
+        &film_dir.join("cover_generation_prompt.txt"),
+        &prompt,
+    )
+    .await;
+    let _ = crate::session::write_json_artifact(
+        &film_dir.join("cover_brief.json"),
+        &serde_json::json!({
+            "include_cast": brief.include_cast,
+            "title_text": brief.title_text,
+            "prompt": prompt,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 async fn load_aspect_ratio(film_dir: &Path) -> String {

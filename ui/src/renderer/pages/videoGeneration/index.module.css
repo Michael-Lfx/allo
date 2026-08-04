@@ -278,6 +278,42 @@
   background: linear-gradient(160deg, #171c29, #0e1119);
 }
 
+.reviseInline {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  animation: reviseInlineIn 180ms ease;
+}
+
+.reviseInlineInput,
+.reviseInlineInput textarea,
+.reviseInlineInput :global(textarea),
+.reviseInlineInput:global(textarea) {
+  color: rgba(255, 255, 255, 0.92) !important;
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.92) !important;
+  caret-color: rgba(255, 255, 255, 0.92) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+.reviseInlineInput textarea::placeholder,
+.reviseInlineInput :global(textarea)::placeholder,
+.reviseInlineInput:global(textarea)::placeholder {
+  color: rgba(255, 255, 255, 0.38) !important;
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.38) !important;
+}
+
+@keyframes reviseInlineIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .filmstrip {
   display: grid;
   grid-auto-columns: minmax(156px, 190px);

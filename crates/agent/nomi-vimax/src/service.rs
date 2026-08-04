@@ -379,6 +379,7 @@ impl VimaxService {
         revision_target: String,
         revision_instruction: String,
     ) -> VimaxResult<()> {
+        self.ensure_artifacts_mutable(id).await?;
         let working = self.index.working_dir(id)?;
         let record = self.index.get(id)?;
         let backends = self.backends_for(&record, None).await?;
@@ -389,18 +390,101 @@ impl VimaxService {
             &revision_instruction,
         )
         .await?;
+        self.apply_revise_result(id, &result, "revised")?;
+        Ok(())
+    }
+
+    /// Direct text/JSON overwrite of a session artifact (no LLM).
+    pub async fn write_artifact_text(
+        &self,
+        id: &str,
+        relative_path: &str,
+        content: &str,
+    ) -> VimaxResult<crate::revise::ReviseResult> {
+        self.ensure_artifacts_mutable(id).await?;
+        let working = self.index.working_dir(id)?;
+        let result =
+            crate::artifact_edit::write_text_artifact(&working, relative_path, content).await?;
+        self.apply_revise_result(id, &result, "artifact_edited")?;
+        Ok(result)
+    }
+
+    /// Replace an image artifact with uploaded bytes.
+    pub async fn replace_artifact_file(
+        &self,
+        id: &str,
+        relative_path: &str,
+        bytes: Vec<u8>,
+    ) -> VimaxResult<crate::revise::ReviseResult> {
+        self.ensure_artifacts_mutable(id).await?;
+        let working = self.index.working_dir(id)?;
+        let result =
+            crate::artifact_edit::replace_binary_artifact(&working, relative_path, &bytes).await?;
+        self.apply_revise_result(id, &result, "artifact_replaced")?;
+        Ok(result)
+    }
+
+    /// Load the editable image-generation prompt companion for a frame image.
+    pub async fn get_artifact_image_prompt(
+        &self,
+        id: &str,
+        image_path: &str,
+    ) -> VimaxResult<crate::artifact_edit::ImagePromptInfo> {
+        let working = self.index.working_dir(id)?;
+        crate::artifact_edit::get_image_prompt(&working, image_path).await
+    }
+
+    /// Update frame prompt and drop the image so the next render regenerates it.
+    pub async fn update_artifact_image_prompt(
+        &self,
+        id: &str,
+        image_path: &str,
+        prompt: &str,
+    ) -> VimaxResult<crate::revise::ReviseResult> {
+        self.ensure_artifacts_mutable(id).await?;
+        let working = self.index.working_dir(id)?;
+        let result =
+            crate::artifact_edit::update_image_prompt(&working, image_path, prompt).await?;
+        self.apply_revise_result(id, &result, "image_prompt_updated")?;
+        Ok(result)
+    }
+
+    fn apply_revise_result(
+        &self,
+        id: &str,
+        result: &crate::revise::ReviseResult,
+        stage: &str,
+    ) -> VimaxResult<()> {
         let summary = format!(
-            "Revised {}; invalidated {} artifacts",
+            "Updated {}; invalidated {} artifacts",
             result.revised_path,
             result.invalidated.len()
         );
         self.index.update_fields(id, |r| {
-            r.stage = "revised".into();
+            r.stage = stage.into();
             r.summary = summary.clone();
             for key in &result.stale_keys {
                 r.stale.insert(key.clone(), true);
             }
         })?;
+        Ok(())
+    }
+
+    async fn ensure_artifacts_mutable(&self, id: &str) -> VimaxResult<()> {
+        let record = self.index.get(id)?;
+        if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
+            return Err(VimaxError::InvalidParams(
+                "cannot edit artifacts while the project is planning or rendering".into(),
+            ));
+        }
+        let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = map.get(id)
+            && matches!(s.status, RunStatus::Planning | RunStatus::Rendering)
+        {
+            return Err(VimaxError::InvalidParams(
+                "cannot edit artifacts while the project is planning or rendering".into(),
+            ));
+        }
         Ok(())
     }
 

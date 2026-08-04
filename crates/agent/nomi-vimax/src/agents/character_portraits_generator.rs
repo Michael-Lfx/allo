@@ -93,12 +93,30 @@ impl CharacterPortraitsGenerator {
 
         if !sheet.exists() {
             let prompt = Self::build_three_view_prompt(character, style);
+            let _ = crate::session::write_text_artifact(
+                &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
+                &prompt,
+            )
+            .await;
             self.image.generate(&prompt, &[], &sheet).await?;
         } else if !crate::media_local::is_usable_image_file(&sheet) {
             // e.g. JPEG bytes saved as .png without decode support — regenerate.
             let _ = tokio::fs::remove_file(&sheet).await;
             let prompt = Self::build_three_view_prompt(character, style);
+            let _ = crate::session::write_text_artifact(
+                &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
+                &prompt,
+            )
+            .await;
             self.image.generate(&prompt, &[], &sheet).await?;
+        } else {
+            // Backfill editable prompt for sheets generated before sidecar support.
+            let sidecar =
+                character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt"));
+            if !sidecar.is_file() {
+                let prompt = Self::build_three_view_prompt(character, style);
+                let _ = crate::session::write_text_artifact(&sidecar, &prompt).await;
+            }
         }
 
         let id = &character.identifier_in_scene;

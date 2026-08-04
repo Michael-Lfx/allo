@@ -6,9 +6,9 @@
  * Sections (one job each):
  * 1. Header — title + locked workflow badge + status
  * 2. Source input — idea / script / novel + Plan
- * 3. Artifacts — tree (left) + preview (right)
- * 4. Revise — target path + instruction
- * 5. Render + progress polling (2s while planning/rendering)
+ * 3. Storyboard — inline shot revise + filmstrip
+ * 4. Technical artifacts — tree + editable preview
+ * 5. Render + progress polling (1s while planning/rendering)
  * 6. Final video player when done
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -46,10 +46,11 @@ import {
   planSession,
   publishSessionToTvShow,
   renderSession,
-  reviseSession,
+  writeArtifactText,
 } from './api';
 import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
+import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
@@ -60,7 +61,7 @@ import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
 import type { VideoCreateDraft } from './components/VideoCreateComposer';
 import type { StoryboardScene } from './artifactPresentation';
-import { findStoryboardPath } from './artifactPresentation';
+import { findStoryboardPath, patchShotDescriptionsInArtifact } from './artifactPresentation';
 import { progressStatusText } from './stageI18n';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
@@ -80,10 +81,6 @@ function sourceFieldForWorkflow(workflow: VimaxWorkflow | string): 'idea' | 'scr
     default:
       return 'idea';
   }
-}
-
-function isVideoPath(path: string): boolean {
-  return /\.(mp4|webm|mov|avi|mkv)$/i.test(path);
 }
 
 const WorkspacePage: React.FC = () => {
@@ -127,9 +124,7 @@ const WorkspacePage: React.FC = () => {
   const [finalBlobUrl, setFinalBlobUrl] = useState<string | null>(null);
   const [coverBlobUrl, setCoverBlobUrl] = useState<string | null>(null);
 
-  const [reviseTarget, setReviseTarget] = useState('');
-  const [reviseInstruction, setReviseInstruction] = useState('');
-  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
 
   const launchDraft = (
@@ -297,7 +292,7 @@ const WorkspacePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, selectedPath]);
+  }, [sessionId, selectedPath, previewEpoch]);
 
   // Final video via authenticated blob URL (relative path is not a public HTTP URL).
   useEffect(() => {
@@ -358,10 +353,6 @@ const WorkspacePage: React.FC = () => {
       cancelled = true;
     };
   }, [sessionId, runStatus?.cover, session?.cover]);
-
-  useEffect(() => {
-    if (selectedPath) setReviseTarget(selectedPath);
-  }, [selectedPath]);
 
   const handlePlan = useCallback(async () => {
     if (!sessionId || !session) return;
@@ -429,51 +420,54 @@ const WorkspacePage: React.FC = () => {
     refreshArtifacts,
   ]);
 
-  const handleRevise = useCallback(async () => {
-    if (!sessionId) return;
-    const target = reviseTarget.trim();
-    const instruction = reviseInstruction.trim();
-    if (!target || !instruction) {
-      message.warning(
-        t('videoGeneration.workspace.revise.required', {
-          defaultValue: '请填写修订目标路径与说明',
-        })
-      );
-      return;
-    }
-    setRevising(true);
-    try {
-      await reviseSession(sessionId, {
-        revision_target: target,
-        revision_instruction: instruction,
-      });
-      message.success(t('videoGeneration.workspace.revise.ok', { defaultValue: '已提交修订' }));
-      confirmFirstValue({
-        feature: 'video_generation',
-        source: 'storyboard_revision',
-        session_id: sessionId,
-      });
-      setReviseInstruction('');
-      setRevisionOpen(false);
-      const st = await refreshStatus();
-      if (!st || !isActiveStatus(st.status)) {
-        setRunStatus((prev) =>
-          prev
-            ? { ...prev, status: 'planning' }
-            : { stage: 'revise', message: '', progress: 0, status: 'planning' }
+  const handleSaveSceneDescriptions = useCallback(
+    async (
+      scene: StoryboardScene,
+      descriptions: { visualDescription: string; audioDescription: string }
+    ) => {
+      if (!sessionId) return;
+      const targetPath =
+        scene.storyboardPath ||
+        (scene.sceneRoot ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json` : '') ||
+        scene.revisionPath;
+      if (!targetPath) {
+        message.warning(
+          t('videoGeneration.studio.storyboard.visualSaveMissing', {
+            defaultValue: '找不到可保存的分镜文件',
+          })
         );
+        return;
       }
-      void refreshArtifacts();
-    } catch (e) {
-      message.error(
-        `${t('videoGeneration.workspace.revise.failed', { defaultValue: '修订失败' })}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
-      );
-    } finally {
-      setRevising(false);
-    }
-  }, [sessionId, reviseTarget, reviseInstruction, message, t, refreshStatus, refreshArtifacts]);
+      setRevising(true);
+      try {
+        const current = await getArtifact(sessionId, targetPath);
+        const patched = patchShotDescriptionsInArtifact(current.text, scene, descriptions);
+        await writeArtifactText(sessionId, targetPath, patched);
+        message.success(
+          t('videoGeneration.studio.storyboard.visualSaveOk', {
+            defaultValue: '画面描述已保存',
+          })
+        );
+        confirmFirstValue({
+          feature: 'video_generation',
+          source: 'storyboard_revision',
+          session_id: sessionId,
+        });
+        void refreshArtifacts();
+        setPreviewEpoch((n) => n + 1);
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.studio.storyboard.visualSaveFailed', {
+            defaultValue: '保存画面描述失败',
+          })}: ${e instanceof Error ? e.message : String(e)}`
+        );
+        throw e;
+      } finally {
+        setRevising(false);
+      }
+    },
+    [sessionId, message, t, refreshArtifacts]
+  );
 
   const handleRender = useCallback(async () => {
     if (!sessionId) return;
@@ -582,12 +576,13 @@ const WorkspacePage: React.FC = () => {
     }
   }, [continueAsRender, handleRender, handlePlan]);
 
-  const handleReviseScene = useCallback((scene: StoryboardScene) => {
-    if (!scene.revisionPath) return;
-    setReviseTarget(scene.revisionPath);
-    setReviseInstruction('');
-    setRevisionOpen(true);
-  }, []);
+  const handleArtifactsChanged = useCallback(() => {
+    void refreshArtifacts();
+    setPreviewEpoch((n) => n + 1);
+    message.success(
+      t('videoGeneration.artifacts.saved', { defaultValue: '产物已更新' })
+    );
+  }, [message, refreshArtifacts, t]);
 
   const handleExportProject = useCallback(async () => {
     if (exporting || !sessionId) return;
@@ -1099,6 +1094,35 @@ const WorkspacePage: React.FC = () => {
                 autoSize={{ minRows: 3, maxRows: 10 }}
                 disabled={busy}
               />
+              <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.workspace.source.durationLabel', {
+                    defaultValue: '目标成片时长（秒）',
+                  })}
+                  <InputNumber
+                    value={targetDurationSecs}
+                    min={5}
+                    max={180}
+                    step={5}
+                    disabled
+                    suffix='s'
+                    style={{ width: '100%' }}
+                  />
+                </label>
+                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                  <span>
+                    {t('videoGeneration.workspace.source.aspectLabel', {
+                      defaultValue: '视频比例',
+                    })}
+                  </span>
+                  <AspectRatioPicker value={aspectRatio} onChange={setAspectRatio} disabled />
+                  <span className='text-11px text-[var(--color-text-4)]'>
+                    {t('videoGeneration.workspace.source.aspectLockedHint', {
+                      defaultValue: '规划后画幅已锁定，同时作用于成片与海报封面',
+                    })}
+                  </span>
+                </div>
+              </div>
               <ModelSelectors
                 value={models}
                 onChange={setModels}
@@ -1147,48 +1171,9 @@ const WorkspacePage: React.FC = () => {
               sessionId={sessionId}
               artifacts={artifacts}
               disabled={busy}
-              onReviseScene={handleReviseScene}
+              revising={revising}
+              onSaveSceneDescriptions={handleSaveSceneDescriptions}
             />
-          </section>
-        ) : null}
-
-        {revisionOpen ? (
-          <section className={`${styles.studioPanel} p-16px`}>
-            <div className='flex flex-wrap items-center justify-between gap-8px'>
-              <div>
-                <h3 className='m-0 text-14px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.reviseTitle', { defaultValue: '想怎样修改这个镜头？' })}
-                </h3>
-                <p className='m-0 mt-3px text-11px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.reviseHint', {
-                    defaultValue: '直接描述结果，不需要填写技术文件路径。',
-                  })}
-                </p>
-              </div>
-              <Button type='text' size='small' onClick={() => setRevisionOpen(false)}>
-                {t('common.cancel', { defaultValue: '取消' })}
-              </Button>
-            </div>
-            <div className='mt-12px flex flex-col gap-9px md:flex-row'>
-              <Input
-                value={reviseInstruction}
-                onChange={setReviseInstruction}
-                disabled={busy}
-                className='flex-1'
-                placeholder={t('videoGeneration.studio.revisePlaceholder', {
-                  defaultValue: '例如：让镜头更紧张，加入快速推镜和更强的雨势',
-                })}
-                onPressEnter={() => void handleRevise()}
-              />
-              <Button
-                type='primary'
-                loading={revising}
-                disabled={busy || !reviseInstruction.trim()}
-                onClick={() => void handleRevise()}
-              >
-                {t('videoGeneration.workspace.revise.submit', { defaultValue: '更新分镜' })}
-              </Button>
-            </div>
           </section>
         ) : null}
 
@@ -1253,41 +1238,15 @@ const WorkspacePage: React.FC = () => {
                   onSelect={setSelectedPath}
                 />
               </div>
-              <div className='flex min-h-200px max-h-420px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
-                <div className='truncate border-b border-l-0 border-r-0 border-t-0 border-solid border-[var(--color-border-2)] px-10px py-8px text-11px text-[var(--color-text-3)]'>
-                  {selectedPath ??
-                    t('videoGeneration.workspace.artifacts.selectHint', {
-                      defaultValue: '选择左侧文件以预览',
-                    })}
-                </div>
-                <div className='flex-1 overflow-auto p-12px'>
-                  {previewLoading ? (
-                    <div className='flex justify-center py-40px'>
-                      <Spin />
-                    </div>
-                  ) : preview?.kind === 'url' && preview.url && selectedPath ? (
-                    isVideoPath(selectedPath) || preview.mime?.startsWith('video/') ? (
-                      <video src={preview.url} controls className='max-h-360px max-w-full rd-8px' />
-                    ) : (
-                      <img
-                        src={preview.url}
-                        alt={selectedPath}
-                        className='max-h-360px max-w-full rd-8px object-contain'
-                      />
-                    )
-                  ) : preview?.text != null ? (
-                    <pre className='m-0 whitespace-pre-wrap break-words font-mono text-12px leading-18px text-[var(--color-text-1)]'>
-                      {preview.text}
-                    </pre>
-                  ) : (
-                    <div className='text-12px text-[var(--color-text-3)]'>
-                      {t('videoGeneration.workspace.artifacts.selectHint', {
-                        defaultValue: '选择左侧文件以预览',
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <ArtifactPreviewPanel
+                sessionId={sessionId}
+                selectedPath={selectedPath}
+                preview={preview}
+                previewLoading={previewLoading}
+                disabled={busy}
+                onChanged={handleArtifactsChanged}
+                onRequestRegenerate={() => void handleRender()}
+              />
             </div>
           </details>
         ) : null}

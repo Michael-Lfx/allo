@@ -1123,13 +1123,60 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         let selector_path = shot_dir.join(format!("{frame_type}_selector_output.json"));
-        let (mut pairs, prompt) = if selector_path.exists() {
-            #[derive(serde::Deserialize)]
-            struct Saved {
-                reference_image_path_and_text_pairs: Vec<(String, String)>,
-                text_prompt: String,
+        #[derive(serde::Deserialize)]
+        struct SavedSelector {
+            #[serde(default)]
+            reference_image_path_and_text_pairs: Vec<(String, String)>,
+            #[serde(default)]
+            text_prompt: String,
+            #[serde(default)]
+            full_prompt: Option<String>,
+            #[serde(default)]
+            prompt_override: bool,
+        }
+
+        let saved_override = if selector_path.exists() {
+            read_json_artifact::<SavedSelector>(&selector_path)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        // User-edited full prompt: regenerate with the override text as-is.
+        if let Some(saved) = &saved_override {
+            if saved.prompt_override {
+                if let Some(full_prompt) = saved
+                    .full_prompt
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                {
+                    let mut pairs: Vec<(PathBuf, String)> = saved
+                        .reference_image_path_and_text_pairs
+                        .iter()
+                        .map(|(p, t)| (PathBuf::from(p), t.clone()))
+                        .collect();
+                    ensure_frame_refs(&mut pairs, available, characters, vis_char_idxs);
+                    let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
+                    self.backends
+                        .image
+                        .generate(full_prompt, &refs, out_path)
+                        .await?;
+                    emit(
+                        progress,
+                        "frame_done",
+                        &format!(
+                            "Generated {frame_type} (prompt override) at {}",
+                            out_path.display()
+                        ),
+                    );
+                    return Ok(());
+                }
             }
-            let saved: Saved = read_json_artifact(&selector_path).await?;
+        }
+
+        let (mut pairs, prompt) = if let Some(saved) = saved_override {
             (
                 saved
                     .reference_image_path_and_text_pairs
@@ -1241,6 +1288,25 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         let full_prompt = format!(
             "{style_clause} PLOT LOCK (must depict): {plot_lock}. {identity}{set_clause}{prop_clause}{multi_ref_hint}{continuity_hint}{prefix}Scene: {prompt}"
         );
+
+        // Persist the exact prompt used for generation so creators can fine-tune it later.
+        let saved_pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(p, t)| (p.to_string_lossy().to_string(), t.clone()))
+            .collect();
+        let _ = write_json_artifact(
+            &selector_path,
+            &serde_json::json!({
+                "reference_image_path_and_text_pairs": saved_pairs,
+                "text_prompt": prompt,
+                "full_prompt": full_prompt,
+                "prompt_override": false,
+            }),
+        )
+        .await;
+        let prompt_txt = shot_dir.join(format!("{frame_type}_generation_prompt.txt"));
+        let _ = crate::session::write_text_artifact(&prompt_txt, &full_prompt).await;
+
         let refs: Vec<&Path> = pairs.iter().map(|(p, _)| p.as_path()).collect();
         self.backends
             .image

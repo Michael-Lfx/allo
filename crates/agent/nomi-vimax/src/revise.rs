@@ -81,24 +81,50 @@ pub struct ReviseResult {
     pub invalidated: Vec<String>,
 }
 
-fn resolve_artifact_path(working_dir: &Path, revision_target: &str) -> VimaxResult<PathBuf> {
+pub(crate) fn resolve_artifact_path(working_dir: &Path, revision_target: &str) -> VimaxResult<PathBuf> {
     let cleaned = revision_target.replace('\\', "/");
     if cleaned.starts_with('/') || cleaned.contains("..") {
         return Err(VimaxError::InvalidParams(format!(
             "revision_target must be relative to session working_dir: {revision_target}"
         )));
     }
-    let path = working_dir.join(&cleaned);
+    // Join component-wise so Unicode / mixed separators stay nested paths on Windows.
+    let mut path = working_dir.to_path_buf();
+    for part in cleaned.split('/').filter(|p| !p.is_empty()) {
+        path.push(part);
+    }
     let canon_root = working_dir
         .canonicalize()
         .unwrap_or_else(|_| working_dir.to_path_buf());
     let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-    if canon != canon_root && !canon.starts_with(&canon_root) {
+    if !path_is_within(&canon, &canon_root) {
         return Err(VimaxError::InvalidParams(format!(
             "revision_target escapes session working_dir: {revision_target}"
         )));
     }
     Ok(path)
+}
+
+/// Windows `canonicalize` may yield `\\?\C:\...` while the root stays `C:\...`.
+/// Compare after stripping the verbatim prefix so Unicode artifact paths resolve.
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    if path == root || path.starts_with(root) {
+        return true;
+    }
+    let path_n = strip_windows_verbatim(path);
+    let root_n = strip_windows_verbatim(root);
+    path_n == root_n || path_n.starts_with(&root_n)
+}
+
+fn strip_windows_verbatim(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn strip_markdown_fences(text: &str) -> String {
@@ -116,7 +142,7 @@ fn strip_markdown_fences(text: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-fn stale_keys_for_revision(target: &str) -> Vec<&'static str> {
+pub(crate) fn stale_keys_for_revision(target: &str) -> Vec<&'static str> {
     if target.contains("storyboard.json") {
         return vec![
             "shot_descriptions",
@@ -155,7 +181,7 @@ fn stale_keys_for_revision(target: &str) -> Vec<&'static str> {
     vec!["frames", "clips", "final_video"]
 }
 
-async fn invalidate_stale(
+pub(crate) async fn invalidate_stale(
     working_dir: &Path,
     revised_rel: &str,
     stale: &[&str],
