@@ -13,6 +13,10 @@ import {
   normalizeSeedanceAspectRatio,
   type SeedanceAspectRatio,
 } from '../aspectRatios';
+import {
+  CREDITS_PER_SECOND,
+  formatDurationCredits,
+} from '../durationCredits';
 import AspectRatioPicker from './AspectRatioPicker';
 import CameoCastEditor from './CameoCastEditor';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
@@ -308,6 +312,13 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                     suffix='s'
                     disabled={loading}
                   />
+                  <span className='text-11px text-[var(--color-text-4)]'>
+                    {t('videoGeneration.workspace.source.durationCreditsHint', {
+                      credits: formatDurationCredits(draft.targetDurationSecs),
+                      rate: CREDITS_PER_SECOND,
+                      defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
+                    })}
+                  </span>
                 </label>
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>
