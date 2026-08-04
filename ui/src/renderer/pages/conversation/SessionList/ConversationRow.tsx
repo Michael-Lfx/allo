@@ -92,15 +92,15 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
       <div
         id={'c-' + conversation.id}
         className={classNames(
-          'chat-history__item h-34px rd-8px flex items-center group cursor-pointer relative overflow-hidden shrink-0 conversation-item [&.conversation-item+&.conversation-item]:mt-2px min-w-0 transition-colors',
+          'chat-history__item h-34px rd-10px flex items-center group cursor-pointer relative overflow-hidden shrink-0 conversation-item [&.conversation-item+&.conversation-item]:mt-2px min-w-0 transition-colors',
           collapsed ? 'justify-center px-0' : 'justify-start gap-8px pr-16px',
           // dimIcon means this row sits inside a project/cron parent — visually indent the row content while keeping the bg full-width
           !collapsed && (dimIcon ? 'pl-42px' : 'pl-18px'),
           {
-            'hover:bg-fill-3': !batchMode && !selected,
+            'hover:bg-fill-2': !batchMode && !selected,
             // Keep the active conversation visually lifted like a hovered row;
             // batch selection retains its own state color below.
-            '!bg-fill-3 !text-t-primary': selected && !batchMode,
+            'session-list-active-row !text-t-primary': selected && !batchMode,
             'bg-[rgba(var(--primary-6),0.08)]': batchMode && checked,
           }
         )}
@@ -242,7 +242,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             >
               <span
                 className={classNames(
-                  'flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-20px rd-4px sider-action-btn',
+                  'flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-20px rd-4px sider-action-btn session-action-icon-btn',
                   {
                     flex: isMobile || menuVisible,
                     'hidden group-hover:flex': !isMobile && !menuVisible,

@@ -110,7 +110,7 @@ const SessionKindGroup: React.FC<SessionKindGroupProps> = ({
                 role='button'
                 tabIndex={0}
                 aria-label={createLabel}
-                className='hidden group-hover/kind:flex flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-18px rd-4px sider-action-btn'
+                className='hidden group-hover/kind:flex flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-18px rd-4px sider-action-btn session-action-icon-btn'
                 onClick={(e) => {
                   e.stopPropagation();
                   onCreate();

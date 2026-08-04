@@ -30,7 +30,7 @@ describe('ConversationRow structure', () => {
   });
 
   test('keeps the active conversation in the hovered visual state outside batch mode', () => {
-    expect(source.includes("'!bg-fill-3 !text-t-primary': selected && !batchMode")).toBe(true);
+    expect(source.includes("'session-list-active-row !text-t-primary': selected && !batchMode")).toBe(true);
     expect(source.includes("'!bg-primary-1 !text-primary-6': selected")).toBe(false);
   });
 });

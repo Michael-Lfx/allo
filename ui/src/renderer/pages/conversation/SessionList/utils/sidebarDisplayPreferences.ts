@@ -43,8 +43,8 @@ const PRESET_PREFERENCES: Record<Exclude<SidebarDisplayPreset, 'custom'>, Sideba
   },
   detailed: {
     preset: 'detailed',
-    workpathNameMode: 'folderWithPath',
-    showGitBranch: true,
+    workpathNameMode: 'folder',
+    showGitBranch: false,
     sessionMetaMode: 'age',
   },
 };

@@ -26,6 +26,31 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes('createMenuVisible')).toBe(false);
   });
 
+  test('shows workspace details in a hover card', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+    const cardSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../components/WorkpathHoverCard.tsx'),
+      'utf8'
+    );
+
+    expect(source.includes("trigger='hover'")).toBe(true);
+    expect(source.includes('<WorkpathHoverCard')).toBe(true);
+    expect(source.includes('conversationCount={sessionCount}')).toBe(true);
+    expect(source.includes('getPopupContainer={() => document.body}')).toBe(true);
+    expect(source.includes('popupStyle: { padding: 0 }')).toBe(true);
+    expect(cardSource.includes("t('sessionList.workpathConversationCount'")).toBe(true);
+    expect(cardSource.includes('{workspacePath}')).toBe(true);
+  });
+
+  test('uses a light hover fill and a 2px workpath row rhythm', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+    const conversationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'ConversationRow.tsx'), 'utf8');
+
+    expect(source.includes('hover:bg-fill-2')).toBe(true);
+    expect(source.includes('hasInteractiveContent && \'gap-2px pt-2px\'')).toBe(true);
+    expect(conversationSource.includes("'hover:bg-fill-2': !batchMode && !selected")).toBe(true);
+  });
+
   test('renders interactive conversations directly without session-kind subgroups', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
     const sessionListSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.tsx'), 'utf8');

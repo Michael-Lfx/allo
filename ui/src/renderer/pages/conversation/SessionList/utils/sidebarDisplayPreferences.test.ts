@@ -10,11 +10,11 @@ import {
 } from './sidebarDisplayPreferences';
 
 describe('sidebarDisplayPreferences', () => {
-  test('defaults to the detailed preset with parent path, branch badges, and age metadata', () => {
+  test('defaults to the detailed preset with folder names and age metadata', () => {
     expect(DEFAULT_SIDEBAR_DISPLAY_PREFERENCES).toEqual({
       preset: 'detailed',
-      workpathNameMode: 'folderWithPath',
-      showGitBranch: true,
+      workpathNameMode: 'folder',
+      showGitBranch: false,
       sessionMetaMode: 'age',
     });
   });
@@ -31,8 +31,8 @@ describe('sidebarDisplayPreferences', () => {
       sessionMetaMode: 'age',
     });
     expect(getPresetSidebarDisplayPreferences('detailed')).toMatchObject({
-      workpathNameMode: 'folderWithPath',
-      showGitBranch: true,
+      workpathNameMode: 'folder',
+      showGitBranch: false,
       sessionMetaMode: 'age',
     });
   });

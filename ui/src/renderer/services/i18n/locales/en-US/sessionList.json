@@ -30,6 +30,7 @@
   "workpathNameFull": "Full path",
   "showGitBranch": "Show Git branch",
   "currentGitBranch": "Current branch: {{branch}}",
+  "workpathConversationCount": "{{count}} chats",
   "showSessionAge": "Show session age",
   "expandDisplay": "Show more",
   "collapseDisplay": "Show less",

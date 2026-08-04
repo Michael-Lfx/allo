@@ -3431,6 +3431,7 @@ export type I18nKey =
   | 'sessionList.terminalGroup'
   | 'sessionList.title'
   | 'sessionList.unpinWorkpath'
+  | 'sessionList.workpathConversationCount'
   | 'sessionList.workpathNameCompressed'
   | 'sessionList.workpathNameFolder'
   | 'sessionList.workpathNameFolderWithPath'

@@ -30,6 +30,7 @@
   "workpathNameFull": "完整路径",
   "showGitBranch": "显示 Git 分支",
   "currentGitBranch": "当前分支：{{branch}}",
+  "workpathConversationCount": "{{count}} 个对话",
   "showSessionAge": "显示会话时间",
   "expandDisplay": "展开显示",
   "collapseDisplay": "收起",

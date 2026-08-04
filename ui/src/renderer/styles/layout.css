@@ -15,11 +15,25 @@
 .sider-action-btn:hover {
   background-color: var(--bg-1);
 }
+.workpath-action-btn.sider-action-btn,
+.workpath-action-btn.sider-action-btn:hover {
+  background-color: transparent;
+}
+.session-action-icon-btn.sider-action-btn,
+.session-action-icon-btn.sider-action-btn:hover {
+  background-color: transparent;
+}
 [data-theme='dark'] .sider-action-btn {
   background-color: var(--bg-5);
 }
 [data-theme='dark'] .sider-action-btn:hover {
   background-color: var(--bg-6);
+}
+[data-theme='dark'] .workpath-action-btn.sider-action-btn,
+[data-theme='dark'] .workpath-action-btn.sider-action-btn:hover,
+[data-theme='dark'] .session-action-icon-btn.sider-action-btn,
+[data-theme='dark'] .session-action-icon-btn.sider-action-btn:hover {
+  background-color: transparent;
 }
 
 /* Section titles use a single theme token in both color modes. Presets may
