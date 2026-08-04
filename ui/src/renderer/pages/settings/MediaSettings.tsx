@@ -168,6 +168,8 @@ const MediaSettings: React.FC = () => {
                       label: value,
                       value,
                     }))}
+                    getPopupContainer={() => document.body}
+                    triggerProps={{ autoAlignPopupWidth: true }}
                   />
                 </PreferenceRow>
                 <PreferenceRow label={t('media.settings.imageSaveLocally')}>

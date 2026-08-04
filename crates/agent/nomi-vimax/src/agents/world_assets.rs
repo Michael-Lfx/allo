@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 
 use crate::backends::{VimaxChat, VimaxImage};
-use crate::error::VimaxResult;
+use crate::error::{VimaxError, VimaxResult};
 use crate::json_util::parse_llm_json;
 use crate::session::{read_json_artifact, write_json_artifact};
 
@@ -167,6 +168,7 @@ impl WorldAssetsPlanner {
         tokio::fs::create_dir_all(&prop_root).await?;
 
         let mut env_map = registry.remove("environments").unwrap_or_default();
+        let mut prop_map = registry.remove("props").unwrap_or_default();
         for env in &spec.environments {
             let key = if env.slugline.trim().is_empty() {
                 format!("env_{}", env.idx)
@@ -194,7 +196,7 @@ impl WorldAssetsPlanner {
                 .replace("{slugline}", &env.slugline)
                 .replace("{description}", &desc)
                 .replace("{style}", &style_clause);
-                self.generate_empty_plate(&prompt, &style_ref_paths, &out)
+                self.generate_empty_plate_resilient(&prompt, &style_ref_paths, &out)
                     .await?;
             }
             let detail: String = strip_people_mentions(&env.description)
@@ -215,9 +217,12 @@ impl WorldAssetsPlanner {
                     ),
                 ),
             );
+            // Checkpoint so resume keeps completed plates even if a later one fails.
+            registry.insert("environments".into(), env_map.clone());
+            registry.insert("props".into(), prop_map.clone());
+            let _ = write_json_artifact(&registry_path, &registry).await;
         }
 
-        let mut prop_map = registry.remove("props").unwrap_or_default();
         for prop in &spec.props {
             let key = prop.name.trim().to_string();
             if key.is_empty() || prop_map.contains_key(&key) {
@@ -239,7 +244,7 @@ impl WorldAssetsPlanner {
                     .replace("{name}", &prop.name)
                     .replace("{description}", &desc)
                     .replace("{style}", &style_clause);
-                self.generate_empty_plate(&prompt, &style_ref_paths, &out)
+                self.generate_empty_plate_resilient(&prompt, &style_ref_paths, &out)
                     .await?;
             }
             let detail: String = strip_people_mentions(&prop.description)
@@ -260,6 +265,9 @@ impl WorldAssetsPlanner {
                     ),
                 ),
             );
+            registry.insert("environments".into(), env_map.clone());
+            registry.insert("props".into(), prop_map.clone());
+            let _ = write_json_artifact(&registry_path, &registry).await;
         }
 
         registry.insert("environments".into(), env_map);
@@ -269,6 +277,25 @@ impl WorldAssetsPlanner {
             crate::session::write_text_artifact(&lock_path, style_lock_token).await?;
         }
         Ok(registry)
+    }
+
+    /// Catch panics from image/vision stacks so planning returns a real error, not a silent unwind.
+    async fn generate_empty_plate_resilient(
+        &self,
+        prompt: &str,
+        style_refs: &[&Path],
+        out: &Path,
+    ) -> VimaxResult<()> {
+        match std::panic::AssertUnwindSafe(self.generate_empty_plate(prompt, style_refs, out))
+            .catch_unwind()
+            .await
+        {
+            Ok(r) => r,
+            Err(payload) => {
+                let _ = tokio::fs::remove_file(out).await;
+                Err(VimaxError::from_panic_payload("world asset plate", payload))
+            }
+        }
     }
 
     /// Generate vacant plate; optional Cameo style refs; fall back to text-only if people leak.
@@ -351,12 +378,20 @@ from the references. Output must remain a completely unoccupied empty-set plate.
     }
 
     async fn plate_has_people(&self, path: &Path) -> bool {
+        // Vision check only needs a thumbnail — full 2K plates bloat multimodal payloads.
+        let vision_path = match downsample_for_vision(path).await {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(error = %err, path = %path.display(), "world-asset vision downsample failed; using original");
+                path.to_path_buf()
+            }
+        };
         let raw = match self
             .chat
             .complete_vision(
                 "You are a strict image inspector. Reply with exactly YES or NO.",
                 "Does this image contain any human, person, face, crowd, silhouette of a person, hand, or body part? YES or NO only.",
-                &[path],
+                &[vision_path.as_path()],
             )
             .await
         {
@@ -366,6 +401,9 @@ from the references. Output must remain a completely unoccupied empty-set plate.
                 return false;
             }
         };
+        if vision_path != path {
+            let _ = tokio::fs::remove_file(&vision_path).await;
+        }
         let upper = raw.trim().to_ascii_uppercase();
         let trimmed = raw.trim();
         if upper.starts_with("NO")
@@ -379,6 +417,24 @@ from the references. Output must remain a completely unoccupied empty-set plate.
             || trimmed.starts_with('是')
             || trimmed.starts_with("有人")
     }
+}
+
+async fn downsample_for_vision(path: &Path) -> VimaxResult<PathBuf> {
+    let bytes = tokio::fs::read(path).await?;
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        VimaxError::Media(format!("decode plate for vision {}: {e}", path.display()))
+    })?;
+    let thumb = img.thumbnail(768, 768);
+    let out = path.with_extension("vision_thumb.jpg");
+    let thumb_path = out.clone();
+    tokio::task::spawn_blocking(move || {
+        thumb
+            .save_with_format(&out, image::ImageFormat::Jpeg)
+            .map_err(|e| VimaxError::Media(format!("save vision thumb: {e}")))
+    })
+    .await
+    .map_err(|e| VimaxError::Media(format!("vision thumb join: {e}")))??;
+    Ok(thumb_path)
 }
 
 async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
@@ -438,15 +494,33 @@ fn strip_people_mentions(text: &str) -> String {
 }
 
 fn safe_component(s: &str) -> String {
-    s.chars()
+    let mut out: String = s
+        .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || is_path_safe_ideograph(c) {
                 c
             } else {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    let out = out.trim_matches('_').chars().take(80).collect::<String>();
+    if out.is_empty() {
+        "asset".into()
+    } else {
+        out
+    }
+}
+
+fn is_path_safe_ideograph(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u) // CJK Unified
+        || (0x3400..=0x4DBF).contains(&u) // CJK Ext A
+        || (0x3040..=0x30FF).contains(&u) // Hiragana / Katakana
+        || (0xAC00..=0xD7AF).contains(&u) // Hangul
 }
 
 /// Flatten registry into (path, description) pairs for frame reference selection.

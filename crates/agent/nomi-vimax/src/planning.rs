@@ -93,16 +93,13 @@ pub fn wants_stylized_non_photoreal(user_style: &str) -> bool {
 fn positive_style_needle(lower: &str, needle: &str) -> bool {
     let needle = needle.to_ascii_lowercase();
     let mut start = 0;
-    while let Some(rel) = lower[start..].find(&needle) {
+    while let Some(rel) = lower.get(start..).and_then(|s| s.find(&needle)) {
         let abs = start + rel;
         let before = &lower[..abs];
         // Use the current clause (after last . ; ! ? or newline) so "FORBIDDEN: a, b, c"
         // still negates later list items.
-        let clause_start = before
-            .rfind(['.', ';', '!', '?', '\n'])
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let clause = before[clause_start..].trim_start();
+        let clause_start = after_last_clause_delim(before);
+        let clause = before.get(clause_start..).unwrap_or("").trim_start();
         let negated = clause.contains("not ")
             || clause.contains("no ")
             || clause.contains("never ")
@@ -123,14 +120,13 @@ fn positive_style_needle(lower: &str, needle: &str) -> bool {
 
 fn positive_style_needle_zh(raw: &str, needle: &str) -> bool {
     let mut start = 0;
-    while let Some(rel) = raw[start..].find(needle) {
+    while let Some(rel) = raw.get(start..).and_then(|s| s.find(needle)) {
         let abs = start + rel;
         let before = &raw[..abs];
-        let clause_start = before
-            .rfind(['。', '；', '！', '？', '.', ';', '\n'])
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let clause = before[clause_start..].trim_start();
+        // CRITICAL: `rfind` returns a byte index; multi-byte delimiters like '。'
+        // must advance by `len_utf8()`, not `+ 1` (that panics mid-char).
+        let clause_start = after_last_clause_delim(before);
+        let clause = before.get(clause_start..).unwrap_or("").trim_start();
         let negated = clause.contains('不')
             || clause.contains('非')
             || clause.contains('无')
@@ -145,6 +141,16 @@ fn positive_style_needle_zh(raw: &str, needle: &str) -> bool {
         start = abs + needle.len();
     }
     false
+}
+
+/// Byte index just after the last clause delimiter in `before` (UTF-8 safe).
+fn after_last_clause_delim(before: &str) -> usize {
+    const DELIMS: &[char] = &['。', '；', '！', '？', '.', ';', '!', '?', '\n'];
+    let Some(i) = before.rfind(DELIMS) else {
+        return 0;
+    };
+    let ch = before[i..].chars().next().expect("rfind lands on char start");
+    i + ch.len_utf8()
 }
 
 /// Short style clause for image prompts (survives 800-char Z-Image truncate).
@@ -1006,6 +1012,16 @@ mod tests {
         assert!(!wants_stylized_non_photoreal(
             "LIVE-ACTION continuity photos. FORBIDDEN: anime, manga, cartoon, cel shading"
         ));
+    }
+
+    #[test]
+    fn chinese_ideographic_period_does_not_panic_in_style_detect() {
+        // Regression: `rfind('。') + 1` used to slice mid-char and panic.
+        let style = "写实电影感光影。日式动画风格，清晰体积与赛璐璐边缘";
+        assert!(wants_stylized_non_photoreal(style));
+        let _ = style_prompt_clause(style);
+        let negated = "写实电影感。禁止动画、禁止动漫、不要卡通";
+        assert!(!wants_stylized_non_photoreal(negated));
     }
 
     #[test]

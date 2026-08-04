@@ -125,16 +125,7 @@ async fn generate_cover(
 }
 
 async fn load_aspect_ratio(film_dir: &Path) -> String {
-    for dir in [film_dir, film_dir.parent().unwrap_or(film_dir)] {
-        let p = dir.join("aspect_ratio.txt");
-        if let Ok(text) = tokio::fs::read_to_string(&p).await {
-            let n = crate::aspect::normalize_aspect_ratio(&text);
-            if !n.is_empty() {
-                return n;
-            }
-        }
-    }
-    crate::aspect::DEFAULT_ASPECT_RATIO.to_string()
+    crate::aspect::load_aspect_from_dir(film_dir).await
 }
 
 async fn ask_cover_brief(

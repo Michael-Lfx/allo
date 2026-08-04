@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, InputNumber, Select } from '@arco-design/web-react';
+import { Button, Input, InputNumber } from '@arco-design/web-react';
 import { BookOpen, FileText, Lightning, SettingTwo, VideoOne } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import type { CameoDraftItem, VimaxWorkflow } from '../types';
@@ -11,9 +11,9 @@ import { DEFAULT_VISUAL_STYLE_PROMPT } from '../visualStylePresets';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
-  seedanceAspectSelectOptions,
   type SeedanceAspectRatio,
 } from '../aspectRatios';
+import AspectRatioPicker from './AspectRatioPicker';
 import CameoCastEditor from './CameoCastEditor';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
 import VisualStyleSelect from './VisualStyleSelect';
@@ -309,22 +309,20 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                     disabled={loading}
                   />
                 </label>
-                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.workspace.source.aspectLabel', {
-                    defaultValue: '视频比例',
-                  })}
-                  <Select
+                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                  <span>
+                    {t('videoGeneration.workspace.source.aspectLabel', {
+                      defaultValue: '视频比例',
+                    })}
+                  </span>
+                  <AspectRatioPicker
                     value={draft.aspectRatio}
-                    onChange={(value) =>
-                      setDraft((current) => ({
-                        ...current,
-                        aspectRatio: normalizeSeedanceAspectRatio(String(value)),
-                      }))
+                    onChange={(aspectRatio) =>
+                      setDraft((current) => ({ ...current, aspectRatio }))
                     }
-                    options={seedanceAspectSelectOptions()}
                     disabled={loading}
                   />
-                </label>
+                </div>
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
                   <span>
                     {t('videoGeneration.workspace.source.styleLabel', { defaultValue: '视觉风格' })}

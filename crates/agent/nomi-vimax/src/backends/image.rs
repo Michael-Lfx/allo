@@ -99,12 +99,20 @@ impl FlowyImage {
         image_urls: &[String],
         out_path: &Path,
     ) -> Result<(), nomifun_cloud::ServerClientError> {
+        // Only poster/cover paths set `aspect_ratio`. Portraits / world plates must
+        // keep the default Seedream `2K` canvas — forcing video aspect (e.g. 1280x720)
+        // fails Seedream 5.0's ≥3.6M pixel floor and warps three-view sheets.
+        let extra = if self.aspect_ratio.is_some() {
+            crate::aspect::image_request_extra_for_aspect(&self.resolved_aspect())
+        } else {
+            Value::Null
+        };
         let req = ImageGenerationRequest {
             model: model.to_string(),
             prompt: prompt.to_string(),
             image_url: None,
             image_urls: image_urls.to_vec(),
-            extra: crate::aspect::image_request_extra_for_aspect(&self.resolved_aspect()),
+            extra,
         };
         let upstream = self
             .services
