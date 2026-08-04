@@ -79,6 +79,12 @@ allows the user to better understand and review your work:
    - Read files: Read (not cat, head, or tail)
    - Edit files: Edit (not sed or awk)
    - Write files: Write (not echo redirection or cat with heredoc)
+ - Public URL reading: when `web_extract` is available and the user gives a public HTTP(S) URL \
+and asks for its content, use `web_extract` directly, including direct PDF and JavaScript-shell \
+URLs. Do not use Browser or Bash/Python/exec_command merely to read or parse that public URL. \
+Use Browser for interactive or rendered actions, and shell/Python for local files or after \
+`web_extract` genuinely fails. For an explicit request to download or save the original file, \
+follow the appropriate file or artifact workflow instead of using `web_extract`.
  - You can call multiple tools in a single response. If there are no \
 dependencies between them, make all independent, concurrency-safe calls in parallel. \
 This reduces model round trips and latency, but it does not reduce the number of tool calls. \
@@ -153,7 +159,9 @@ title and pops a blocking \"Windows cannot find\" dialog that hangs the command.
 /// `config.tools.browser.enabled` is true (threaded in as `browser_enabled`).
 #[cfg(feature = "browser-use")]
 fn browser_preset() -> &'static str {
-    "[Browsing the web] Prefer `web_search` then `web_extract` for public information. \
+    "[Browsing the web] When `web_search` is available, use it to discover URLs; when \
+`web_extract` is available, use it directly for known public URLs, including PDF and \
+JavaScript-shell pages. \
 Use the `Browser` tool when a page must be opened, rendered, inspected, or operated \
 interactively. Do not ask the user for permission to browse. After each Browser \
 navigation or interaction run `observe` for fresh refs before acting again."
@@ -958,6 +966,40 @@ mod tests {
     }
 
     #[test]
+    fn tool_guidance_routes_public_pdf_urls_to_web_extract() {
+        let result = build_system_prompt(
+            &mut SystemPromptCache::new(),
+            None,
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(result.contains("Public URL reading"));
+        assert!(result.contains("direct PDF and JavaScript-shell URLs"));
+        assert!(result.contains("Do not use Browser or"));
+        assert!(result.contains("web_extract` directly"));
+        assert!(result.contains("download or save the original file"));
+        let routing_start = result
+            .find(" - Public URL reading:")
+            .expect("public URL routing guidance must be present");
+        let routing_end = result[routing_start..]
+            .find(" - You can call")
+            .map(|offset| routing_start + offset)
+            .expect("public URL routing guidance must have a following section");
+        let routing_guidance = &result[routing_start..routing_end];
+        for internal_name in ["MCP", "Provider", "web_fetch", "final_url"] {
+            assert!(
+                !routing_guidance.contains(internal_name),
+                "generic tool guidance must not expose {internal_name}"
+            );
+        }
+    }
+
+    #[test]
     fn tool_guidance_contains_parallel_call_rules() {
         let result = build_system_prompt(
             &mut SystemPromptCache::new(),
@@ -1306,6 +1348,11 @@ mod tests {
     #[cfg(feature = "browser-use")]
     #[test]
     fn browser_enabled_injects_preset() {
+        let preset = browser_preset();
+        assert!(preset.contains("including PDF and JavaScript-shell pages"));
+        assert!(preset.contains("When `web_search` is available, use it to discover URLs"));
+        assert!(preset.contains("when `web_extract` is available"));
+
         let result = build_system_prompt(
             &mut SystemPromptCache::new(),
             None,
@@ -1337,6 +1384,19 @@ mod tests {
             result.contains("observe"),
             "preset should mention the observe step of the loop"
         );
+        assert!(
+            result.contains("direct PDF and JavaScript-shell URLs"),
+            "preset should make PDF and JavaScript extraction explicit"
+        );
+        assert!(
+            result.contains("When `web_search` is available, use it to discover URLs"),
+            "preset should distinguish URL discovery from known direct URLs"
+        );
+        assert!(
+            result.contains("When `web_search` is available")
+                && result.contains("when `web_extract` is available"),
+            "preset should not route to unavailable web tools"
+        );
     }
 
     #[cfg(feature = "browser-use")]
@@ -1367,7 +1427,7 @@ mod tests {
         // against copying the long `[Controlling the desktop]` computer nudge.
         let preset = browser_preset();
         assert!(
-            preset.len() < 400,
+            preset.len() < 500,
             "browser preset should stay a concise nudge (got {} chars)",
             preset.len()
         );

@@ -39,7 +39,8 @@ impl Tool for WebSearchTool {
          information. Start with one focused query (the default count is 5); do not run \
          equivalent searches in parallel. Consume the current results before deciding whether \
          another search is needed. If snippets answer the question, do not call web_extract; \
-         only extract when the page body is required."
+         only extract when the page body is required. If the user or current context already has \
+         a public direct URL—especially a PDF—skip search and call web_extract with that URL."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -338,5 +339,7 @@ mod tests {
         assert_eq!(properties["count"]["default"], json!(5));
         assert!(tool.description().contains("one focused query"));
         assert!(tool.description().contains("do not run equivalent searches in parallel"));
+        assert!(tool.description().contains("current context"));
+        assert!(tool.description().contains("especially a PDF"));
     }
 }
