@@ -9,7 +9,10 @@ import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/componen
 import { useBtwCommand } from '@/renderer/components/chat/BtwOverlay/useBtwCommand';
 import { parseGoalSlashCommand } from '@/common/chat/slash/goalCommand';
 import { useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
-import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
+import {
+  useSlashLauncherController,
+  type SlashLauncherSelectionContext,
+} from '@/renderer/hooks/chat/useSlashLauncherController';
 import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -25,7 +28,7 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import { blurActiveElement, shouldBlockMobileInputFocus } from '@/renderer/utils/ui/focus';
 import { Button, Input, Message, Tag } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import { CloseSmall, Plus, Quote } from '@icon-park/react';
+import { Aiming, CloseSmall, Paperclip, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import type { TFunction } from 'i18next';
@@ -210,6 +213,8 @@ const SendBox: React.FC<{
   sendButtonPrefix?: React.ReactNode;
   slash_commands?: SlashCommandItem[];
   onSlashBuiltinCommand?: (name: string) => void;
+  onAddFiles?: () => void;
+  enableGoalMenu?: boolean;
   hasPendingAttachments?: boolean;
   enableBtw?: boolean;
   allowSendWhileLoading?: boolean;
@@ -252,6 +257,8 @@ const SendBox: React.FC<{
   sendButtonPrefix,
   slash_commands = [],
   onSlashBuiltinCommand,
+  onAddFiles,
+  enableGoalMenu = false,
   hasPendingAttachments = false,
   enableBtw = false,
   allowSendWhileLoading = false,
@@ -276,6 +283,8 @@ const SendBox: React.FC<{
   const isStoppingRef = useRef(false);
   const [isSingleLine, setIsSingleLine] = useState(!effectiveDefaultMultiLine);
   const [isInputFocused, setIsInputFocused] = useState(false);
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const [addMenuActiveIndex, setAddMenuActiveIndex] = useState(0);
   const isInputActive = isInputFocused;
   const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -324,6 +333,14 @@ const SendBox: React.FC<{
   // Listen for reply events from message actions
   useAddEventListener('sendbox.reply', (quote) => setReplyQuote(quote), []);
   useAddEventListener('sendbox.reply.clear', () => setReplyQuote(null), []);
+  useAddEventListener(
+    'sendbox.open-add',
+    () => {
+      setAddMenuActiveIndex(0);
+      setIsAddMenuOpen(true);
+    },
+    []
+  );
 
   // 编辑已发送消息：把原文回填输入框，进入"编辑模式"，提交即截断重跑（仅 Nomi 提供 onEditResubmit）
   useAddEventListener(
@@ -639,13 +656,32 @@ const SendBox: React.FC<{
     [builtinSlashCommands, catalogSkills, slash_commands, t],
   );
 
+  const goalLauncherItem = useMemo(
+    () => launcherItems.find((item) => item.kind === 'system' && item.name === 'goal'),
+    [launcherItems]
+  );
+
+  const insertSlashCommandAtSelection = useCallback(
+    (name: string) => {
+      const beforeCaret = tokenInputState.projection.slice(0, tokenInputState.selection.end);
+      const separator = beforeCaret.length > 0 && /[a-zA-Z0-9_./:-]$/.test(beforeCaret) ? ' ' : '';
+      tokenInputRef.current?.focus();
+      tokenInputRef.current?.insertTextAtSelection(`${separator}/${name} `);
+    },
+    [tokenInputState.projection, tokenInputState.selection.end]
+  );
+
   const slashController = useSlashLauncherController({
     input: tokenInputState.projection,
     caretPosition: tokenInputState.selection.end,
     items: launcherItems,
-    onExecuteSystem: (item) => {
+    onExecuteSystem: (item, context: SlashLauncherSelectionContext) => {
       const goalInvocation = parseGoalSlashCommand(`/${item.name}`);
       if (goalInvocation) {
+        if (context.manual) {
+          insertSlashCommandAtSelection(item.name);
+          return;
+        }
         if (!goalCommand.enabled) {
           if (!tokenInputRef.current?.replaceActiveSlashToken(`/${item.name} `)) {
             setInput(replaceActiveSlashToken(input, `/${item.name} `, tokenInputState.textSelection.end));
@@ -657,6 +693,10 @@ const SendBox: React.FC<{
         return;
       }
       if (item.name === 'btw') {
+        if (context.manual) {
+          insertSlashCommandAtSelection(item.name);
+          return;
+        }
         if (!tokenInputRef.current?.replaceActiveSlashToken('/btw ')) {
           setInput(replaceActiveSlashToken(input, '/btw ', tokenInputState.textSelection.end));
         }
@@ -682,7 +722,9 @@ const SendBox: React.FC<{
       } else {
         onSlashBuiltinCommand?.(item.name);
       }
-      tokenInputRef.current?.replaceActiveSlashToken();
+      if (!context.manual) {
+        tokenInputRef.current?.replaceActiveSlashToken();
+      }
     },
     onSelectSkill: (item) => {
       const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
@@ -695,7 +737,11 @@ const SendBox: React.FC<{
         source: getSkillSourceLabel(skill.source, t),
       });
     },
-    onSelectAgent: (item) => {
+    onSelectAgent: (item, context) => {
+      if (context.manual) {
+        insertSlashCommandAtSelection(item.name);
+        return;
+      }
       if (!tokenInputRef.current?.replaceActiveSlashToken(`/${item.name} `)) {
         setInput(replaceActiveSlashToken(input, `/${item.name} `, tokenInputState.textSelection.end));
       }
@@ -719,18 +765,97 @@ const SendBox: React.FC<{
     [slashController.filteredItems, t]
   );
 
+  const addMenuItems = useMemo<SlashCommandMenuItem[]>(
+    () => [
+      {
+        key: 'files',
+        label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
+        section: t('common.add'),
+        icon: <Paperclip theme='outline' size='17' />,
+      },
+      ...(enableGoalMenu
+        ? [
+            {
+              key: 'goal',
+              label: t('conversation.goal.chip.label', { defaultValue: 'Goal' }),
+              description:
+                goalLauncherItem?.description ??
+                t('conversation.goal.menu.description', {
+                  defaultValue: 'Set a goal to keep pursuing',
+                }),
+              icon: <Aiming theme='outline' size='17' />,
+            },
+          ]
+        : []),
+    ],
+    [enableGoalMenu, goalLauncherItem, t]
+  );
+
+  const handleAddMenuSelect = useCallback(
+    (item: SlashCommandMenuItem) => {
+      setIsAddMenuOpen(false);
+      if (item.key === 'files') {
+        onAddFiles?.();
+      } else if (item.key === 'goal') {
+        const goalItem =
+          goalLauncherItem ??
+          ({
+            id: 'system:goal',
+            kind: 'system' as const,
+            name: 'goal',
+            description: '',
+          } satisfies SlashLauncherItem);
+        slashController.onSelectItem(goalItem);
+      }
+    },
+    [goalLauncherItem, onAddFiles, slashController]
+  );
+
+  const handleAddMenuKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (!isAddMenuOpen || addMenuItems.length === 0) {
+        return false;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsAddMenuOpen(false);
+        return true;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setAddMenuActiveIndex((current) => (current + 1) % addMenuItems.length);
+        return true;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setAddMenuActiveIndex((current) => (current - 1 + addMenuItems.length) % addMenuItems.length);
+        return true;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        const activeItem = addMenuItems[addMenuActiveIndex];
+        if (activeItem) {
+          handleAddMenuSelect(activeItem);
+        }
+        return true;
+      }
+      return false;
+    },
+    [addMenuActiveIndex, addMenuItems, handleAddMenuSelect, isAddMenuOpen]
+  );
+
   const isCommandMenuOpen = conversationExport.isOpen || slashController.isOpen;
   const isAtFileMenuOpen =
     Boolean(conversationContext?.workspace) &&
     Boolean(activeAtFileQuery) &&
     activeAtFileTokenKey !== dismissedAtFileToken &&
     !isCommandMenuOpen;
-  const isComposerMenuOpen = isCommandMenuOpen || isAtFileMenuOpen;
+  const isComposerMenuOpen = isCommandMenuOpen || isAddMenuOpen || isAtFileMenuOpen;
   const visibleAtFileMenuItems = useMemo(
     () => filterWorkspaceMentionItems(workspaceMentionItems, deferredAtFileQuery),
     [deferredAtFileQuery, workspaceMentionItems]
   );
-  const isOverlayOpen = isCommandMenuOpen || btwCommand.isOpen || isAtFileMenuOpen;
+  const isOverlayOpen = isCommandMenuOpen || isAddMenuOpen || btwCommand.isOpen || isAtFileMenuOpen;
 
   const handleTokenInputChange = (value: string) => {
     if (historyNavigationIndex !== null) {
@@ -744,7 +869,7 @@ const SendBox: React.FC<{
   };
 
   const handleOverlayKeyDown = (event: React.KeyboardEvent) => {
-    return conversationExport.handleKeyDown(event) || slashController.onKeyDown(event);
+    return handleAddMenuKeyDown(event) || conversationExport.handleKeyDown(event) || slashController.onKeyDown(event);
   };
 
   const renderExportFileNamePanel = () => {
@@ -1617,9 +1742,19 @@ const SendBox: React.FC<{
             />
           </div>
         )}
-        {isCommandMenuOpen && (
+        {(isAddMenuOpen || isCommandMenuOpen) && (
           <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
-            {conversationExport.step === 'menu' ? (
+            {isAddMenuOpen ? (
+              <SlashCommandMenu
+                title={t('common.add')}
+                compact
+                items={addMenuItems}
+                activeIndex={addMenuActiveIndex}
+                onHoverItem={setAddMenuActiveIndex}
+                onSelectItem={handleAddMenuSelect}
+                emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+              />
+            ) : conversationExport.step === 'menu' ? (
               <SlashCommandMenu
                 title={t('messages.export.menuTitle')}
                 hint={t('messages.export.menuHint')}

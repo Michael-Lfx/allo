@@ -66,7 +66,7 @@ import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { Message, Tag } from '@arco-design/web-react';
-import { Brain, MagicHat, Shield } from '@icon-park/react';
+import { Brain, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
@@ -151,7 +151,6 @@ const NomiSendBox: React.FC<{
   const layout = useLayoutContext();
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
-  const loadedSkills = conversationContext?.loadedSkills ?? [];
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
   const { t } = useTranslation();
   const providerLabel = useModelSelectorProviderLabel();
@@ -872,27 +871,6 @@ const NomiSendBox: React.FC<{
       ...attachEntries,
     ];
 
-    if (loadedSkills.length > 0) {
-      const skillOptions: MobileActionSheetOption[] = loadedSkills.map((name) => ({
-        key: name,
-        label: `/${name}`,
-      }));
-      entries.push({
-        key: 'skills',
-        icon: <MagicHat theme='outline' size='16' />,
-        label: t('common.skills', { defaultValue: 'Skills' }),
-        variant: 'muted',
-        submenu: {
-          title: t('common.skills', { defaultValue: 'Skills' }),
-          selectable: false,
-          options: skillOptions,
-          onSelect: (name) => {
-            setContent(`/${name} `);
-          },
-        },
-      });
-    }
-
     if (loadedMcpStatuses.length > 0) {
       const mcpOptions: MobileActionSheetOption[] = loadedMcpStatuses.map((item) => ({
         key: item.name,
@@ -928,7 +906,6 @@ const NomiSendBox: React.FC<{
     hideModeSelector,
     isMobile,
     loadedMcpStatuses,
-    loadedSkills,
     modelSelection,
     providerLabel,
     setContent,
@@ -1130,6 +1107,8 @@ const NomiSendBox: React.FC<{
         onEditResubmit={handleEditResubmit}
         slash_commands={slash_commands}
         onSlashBuiltinCommand={onSlashBuiltinCommand}
+        onAddFiles={openFileSelector}
+        enableGoalMenu
         allowSendWhileLoading
       />
       {isMobile && (

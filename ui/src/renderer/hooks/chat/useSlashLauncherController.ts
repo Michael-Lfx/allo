@@ -6,13 +6,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { matchSlashQuery } from './useSlashCommandController';
 
+export interface SlashLauncherSelectionContext {
+  manual: boolean;
+}
+
 interface UseSlashLauncherControllerOptions {
   input: string;
   caretPosition?: number;
   items: SlashLauncherItem[];
-  onExecuteSystem: (item: SlashLauncherItem) => void;
-  onSelectSkill: (item: SlashLauncherItem) => void;
-  onSelectAgent: (item: SlashLauncherItem) => void;
+  onExecuteSystem: (item: SlashLauncherItem, context: SlashLauncherSelectionContext) => void;
+  onSelectSkill: (item: SlashLauncherItem, context: SlashLauncherSelectionContext) => void;
+  onSelectAgent: (item: SlashLauncherItem, context: SlashLauncherSelectionContext) => void;
 }
 
 export function useSlashLauncherController(options: UseSlashLauncherControllerOptions) {
@@ -40,23 +44,34 @@ export function useSlashLauncherController(options: UseSlashLauncherControllerOp
   );
   const isOpen = query !== null && dismissedQuery !== query && filteredItems.length > 0;
 
+  const selectItem = useCallback(
+    (item: SlashLauncherItem, manual: boolean) => {
+      const context = { manual };
+      if (!item) {
+        return false;
+      }
+      if (item.kind === 'system') {
+        onExecuteSystem(item, context);
+      } else if (item.kind === 'skill') {
+        onSelectSkill(item, context);
+      } else {
+        onSelectAgent(item, context);
+      }
+      setDismissedQuery(query);
+      return true;
+    },
+    [onExecuteSystem, onSelectAgent, onSelectSkill, query],
+  );
+
   const selectByIndex = useCallback(
     (index: number) => {
       const item = filteredItems[index];
       if (!item) {
         return false;
       }
-      if (item.kind === 'system') {
-        onExecuteSystem(item);
-      } else if (item.kind === 'skill') {
-        onSelectSkill(item);
-      } else {
-        onSelectAgent(item);
-      }
-      setDismissedQuery(query);
-      return true;
+      return selectItem(item, false);
     },
-    [filteredItems, onExecuteSystem, onSelectAgent, onSelectSkill, query],
+    [filteredItems, selectItem],
   );
 
   const onKeyDown = useCallback(
@@ -94,6 +109,7 @@ export function useSlashLauncherController(options: UseSlashLauncherControllerOp
     isOpen,
     onKeyDown,
     onSelectByIndex: selectByIndex,
+    onSelectItem: (item: SlashLauncherItem) => selectItem(item, true),
     setActiveIndex,
   };
 }

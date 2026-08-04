@@ -486,6 +486,9 @@
     "error": "顺便提问失败。"
   },
   "goal": {
+    "menu": {
+      "description": "设置要持续追求的目标"
+    },
     "notice": {
       "active": "目标进行中：{{objective}}",
       "waiting": "目标等待中：{{objective}}",

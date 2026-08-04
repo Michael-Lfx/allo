@@ -844,6 +844,7 @@ const BasicRuntimeSendBox: React.FC<{
         onSend={onSendHandler}
         slash_commands={slash_commands}
         onSlashBuiltinCommand={config.useSlashCommandList ? onSlashBuiltinCommand : undefined}
+        onAddFiles={openFileSelector}
         allowSendWhileLoading
       ></SendBox>
     </div>

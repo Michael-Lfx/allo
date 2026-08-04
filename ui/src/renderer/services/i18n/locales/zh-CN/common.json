@@ -101,6 +101,7 @@
     }
   },
   "fileAttach.addFiles": "添加文件",
+  "fileAttach.filesAndFolders": "文件和文件夹",
   "fileAttach.myDevice": "从设备上传",
   "fileAttach.failed": "上传失败",
   "fileAttach.uploading": "上传中...",

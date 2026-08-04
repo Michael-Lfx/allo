@@ -101,6 +101,7 @@
     }
   },
   "fileAttach.addFiles": "Add files",
+  "fileAttach.filesAndFolders": "Files and folders",
   "fileAttach.myDevice": "Upload from device",
   "fileAttach.failed": "Upload failed",
   "fileAttach.uploading": "Uploading...",

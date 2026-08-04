@@ -486,6 +486,9 @@
     "error": "Failed to answer the side question."
   },
   "goal": {
+    "menu": {
+      "description": "Set a goal to keep pursuing"
+    },
     "notice": {
       "active": "Goal in progress: {{objective}}",
       "waiting": "Goal waiting: {{objective}}",

@@ -62,6 +62,8 @@ interface EventTypes {
   ];
   // 填充输入框事件 / Fill sendbox input event
   'sendbox.fill': [string]; // prompt text to fill
+  // 打开添加面板 / Open the composer add panel
+  'sendbox.open-add': void;
   'sendbox.reply': [ReplyQuote]; // reply/quote a message
   'sendbox.reply.clear': void; // clear reply quote
   'sendbox.edit': [{ msgId: MessageId; createdAt: number; content: string }]; // edit a sent user message (recall into composer)

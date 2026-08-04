@@ -9,6 +9,7 @@ export interface SlashCommandMenuItem {
   description?: string;
   badge?: string;
   section?: string;
+  icon?: React.ReactNode;
 }
 
 interface SlashCommandMenuProps {
@@ -127,7 +128,20 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                 onClick={() => onSelectItem(item)}
               >
                 <div className={compact ? 'flex items-center justify-between gap-6px' : 'flex items-center justify-between gap-8px'}>
-                  <div className={compact ? 'min-w-0 flex items-baseline gap-8px' : 'min-w-0 flex items-baseline gap-10px'}>
+                  <div
+                    className={
+                      item.icon
+                        ? 'min-w-0 flex flex-1 items-center gap-8px'
+                        : compact
+                          ? 'min-w-0 flex items-baseline gap-8px'
+                          : 'min-w-0 flex items-baseline gap-10px'
+                    }
+                  >
+                    {item.icon && <span className='flex h-18px w-18px flex-shrink-0 items-center justify-center'>{item.icon}</span>}
+                    <div
+                      style={item.icon ? undefined : { display: 'contents' }}
+                      className={compact ? 'min-w-0 flex items-baseline gap-8px' : 'min-w-0 flex items-baseline gap-10px'}
+                    >
                     <div
                       className={classNames(
                         compact ? 'text-13px whitespace-nowrap' : 'text-14px whitespace-nowrap',
@@ -141,6 +155,7 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                         {item.description}
                       </div>
                     )}
+                    </div>
                   </div>
                   {item.badge && (
                     <span
