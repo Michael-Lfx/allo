@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +12,8 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::Instant;
 
-use crate::types::{SearchQuery, SearchResult, WebError};
+use crate::provider::extract_policy::prepare_remote_url;
+use crate::types::{MAX_EXTRACT_URLS, SearchQuery, SearchResult, WebError};
 
 use super::{
     ManagedSearchProvider, SearchAttemptError, SearchAttemptOutput, SearchDecodeDiagnostics,
@@ -68,6 +70,12 @@ impl CooldownTracker {
 struct EndpointHealth {
     cooldown: CooldownTracker,
     disable_reason: Option<EndpointDisableReason>,
+    epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EndpointAttemptToken {
+    epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,12 +142,30 @@ impl EndpointHealth {
             && self.cooldown.is_available(now)
     }
 
-    fn record_success(&mut self) {
-        self.cooldown.record_success();
-        self.disable_reason = None;
+    fn begin_attempt(&self, now: Instant) -> Option<EndpointAttemptToken> {
+        self.is_available(now).then_some(EndpointAttemptToken { epoch: self.epoch })
+    }
+
+    fn record_success(&mut self, token: EndpointAttemptToken) {
+        // A response from an attempt that started before a newer failure must
+        // not erase that newer cooldown/disable state.
+        if token.epoch == self.epoch {
+            self.cooldown.record_success();
+        }
+    }
+
+    fn record_reinitialized(&mut self, token: EndpointAttemptToken) {
+        // A recovery that began before a newer endpoint failure must not clear
+        // that newer disable.  A fresh session generation may clear only the
+        // Unauthorized marker; cooldown state remains independently guarded.
+        if token.epoch == self.epoch {
+            self.epoch = self.epoch.saturating_add(1);
+            self.disable_reason = None;
+        }
     }
 
     fn record_error(&mut self, kind: EndpointFailureKind, now: Instant) {
+        self.epoch = self.epoch.saturating_add(1);
         match kind {
             EndpointFailureKind::Unauthorized => {
                 self.disable_reason = Some(EndpointDisableReason::Unauthorized);
@@ -166,14 +192,241 @@ pub(crate) struct ParallelMcpClient {
     endpoint_health: Mutex<EndpointHealth>,
     fetch_tool_health: Mutex<FetchToolHealth>,
     remote_fetch_semaphore: Semaphore,
+    call_control: Arc<dyn ManagedMcpCallControl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedMcpTool {
+    Fetch,
+    Search,
+}
+
+impl ManagedMcpTool {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fetch => "web_fetch",
+            Self::Search => "web_search",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ManagedMcpCallError {
+    #[cfg_attr(not(any(test, feature = "fetch-eval")), allow(dead_code))]
+    QuotaExhausted,
+    UnsafeArguments,
+    RetryLimitExceeded,
+    #[cfg_attr(not(any(test, feature = "fetch-eval")), allow(dead_code))]
+    LedgerFailure,
+    EndpointUnavailable,
+    Peer(McpPeerError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParallelCallRejection {
+    UnsafeArguments,
+    RetryLimitExceeded,
+}
+
+#[allow(dead_code)] // Evaluation-only controls construct these variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedMcpControlError {
+    #[cfg(any(test, feature = "fetch-eval"))]
+    QuotaExhausted,
+    #[cfg(any(test, feature = "fetch-eval"))]
+    LedgerFailure,
+}
+
+#[derive(Debug)]
+pub(crate) struct AuthorizedParallelCall {
+    tool: ManagedMcpTool,
+    arguments: Value,
+    #[cfg(any(test, feature = "fetch-eval"))]
+    attempt: u8,
+}
+
+impl AuthorizedParallelCall {
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub(crate) fn tool(&self) -> ManagedMcpTool {
+        self.tool
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arguments(&self) -> &Value {
+        &self.arguments
+    }
+
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub(crate) fn attempt(&self) -> u8 {
+        self.attempt
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ParallelMcpCallPolicy;
+
+impl ParallelMcpCallPolicy {
+    pub(crate) fn authorize(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        attempt: u8,
+    ) -> Result<AuthorizedParallelCall, ParallelCallRejection> {
+        if attempt == 0 || attempt > 3 {
+            return Err(ParallelCallRejection::RetryLimitExceeded);
+        }
+        let tool = match tool_name {
+            "web_fetch" => ManagedMcpTool::Fetch,
+            "web_search" => ManagedMcpTool::Search,
+            _ => return Err(ParallelCallRejection::UnsafeArguments),
+        };
+        let safe = match tool {
+            ManagedMcpTool::Fetch => safe_fetch_arguments(&arguments),
+            ManagedMcpTool::Search => safe_search_arguments(&arguments),
+        };
+        if !safe {
+            return Err(ParallelCallRejection::UnsafeArguments);
+        }
+        Ok(AuthorizedParallelCall {
+            tool,
+            arguments,
+            #[cfg(any(test, feature = "fetch-eval"))]
+            attempt,
+        })
+    }
+}
+
+#[async_trait]
+pub(crate) trait ManagedMcpCallControl: Send + Sync {
+    async fn reserve(
+        &self,
+        call: &AuthorizedParallelCall,
+    ) -> Result<(), ManagedMcpControlError>;
+
+    fn observe_rejection(&self, _rejection: ParallelCallRejection) {}
+
+    fn observe_result(
+        &self,
+        _call: &AuthorizedParallelCall,
+        _result: &Result<McpToolResult, McpPeerError>,
+    ) {
+    }
+}
+
+#[derive(Debug, Default)]
+struct NoopManagedMcpCallControl;
+
+#[async_trait]
+impl ManagedMcpCallControl for NoopManagedMcpCallControl {
+    async fn reserve(
+        &self,
+        _call: &AuthorizedParallelCall,
+    ) -> Result<(), ManagedMcpControlError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum ManagedSearchCallError {
+    Peer(McpPeerError),
+    Upstream,
+    QuotaExhausted,
+    UnsafeArguments,
+    RetryLimitExceeded,
+    LedgerFailure,
+}
+
+pub(crate) fn safe_fetch_arguments(arguments: &Value) -> bool {
+    let Some(object) = arguments.as_object() else {
+        return false;
+    };
+    let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if keys != BTreeSet::from(["full_content", "urls"]) {
+        return false;
+    }
+    if arguments.get("full_content").and_then(Value::as_bool) != Some(false) {
+        return false;
+    }
+    let Some(urls) = arguments.get("urls").and_then(Value::as_array) else {
+        return false;
+    };
+    !urls.is_empty()
+        && urls.len() <= MAX_EXTRACT_URLS
+        && urls.iter().all(|value| {
+            let Some(raw) = value.as_str() else {
+                return false;
+            };
+            let Ok(prepared) = prepare_remote_url(raw, false) else {
+                return false;
+            };
+            prepared.outbound_url == raw
+        })
+}
+
+pub(crate) fn safe_search_arguments(arguments: &Value) -> bool {
+    let Some(object) = arguments.as_object() else {
+        return false;
+    };
+    let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if keys != BTreeSet::from(["objective", "search_queries"]) {
+        return false;
+    }
+    let objective_ok = arguments
+        .get("objective")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let queries_ok = arguments
+        .get("search_queries")
+        .and_then(Value::as_array)
+        .is_some_and(|queries| {
+            !queries.is_empty()
+                && queries.iter().all(|query| {
+                    query
+                        .as_str()
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+        });
+    objective_ok && queries_ok
 }
 
 impl ParallelMcpClient {
-    pub(super) fn new() -> Result<Self, WebError> {
+    pub(crate) fn new() -> Result<Self, WebError> {
         Self::new_at_endpoint("https://search.parallel.ai/mcp")
     }
 
+    #[allow(dead_code)]
     pub(super) fn new_at_endpoint(endpoint: impl Into<String>) -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_control(endpoint, Arc::new(NoopManagedMcpCallControl))
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    pub(crate) fn new_with_call_control(
+        control: Arc<dyn ManagedMcpCallControl>,
+    ) -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_control("https://search.parallel.ai/mcp", control)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_endpoint(
+        endpoint: impl Into<String>,
+        control: Option<Arc<dyn ManagedMcpCallControl>>,
+    ) -> Result<Self, WebError> {
+        let control = control.unwrap_or_else(|| Arc::new(NoopManagedMcpCallControl));
+        Self::new_at_endpoint_with_control(endpoint, control)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_endpoint_with_control(
+        endpoint: impl Into<String>,
+        control: Arc<dyn ManagedMcpCallControl>,
+    ) -> Result<Self, WebError> {
+        Self::new_at_endpoint_with_control(endpoint, control)
+    }
+
+    fn new_at_endpoint_with_control(
+        endpoint: impl Into<String>,
+        call_control: Arc<dyn ManagedMcpCallControl>,
+    ) -> Result<Self, WebError> {
         Ok(Self {
             peer: Arc::new(RemoteMcpPeer::new(endpoint).map_err(|_| {
                 WebError::Provider("could not initialize managed Parallel MCP".to_owned())
@@ -182,6 +435,7 @@ impl ParallelMcpClient {
             fetch_tool_health: Mutex::new(FetchToolHealth::default()),
             // Limits Parallel web_fetch concurrency across conversations.
             remote_fetch_semaphore: Semaphore::new(1),
+            call_control,
         })
     }
 
@@ -198,8 +452,25 @@ impl ParallelMcpClient {
         self.endpoint_health.lock().await.is_available(now)
     }
 
-    pub(crate) async fn record_endpoint_success(&self) {
-        self.endpoint_health.lock().await.record_success();
+    async fn begin_endpoint_attempt(&self, now: Instant) -> Result<EndpointAttemptToken, ManagedMcpCallError> {
+        self.endpoint_health
+            .lock()
+            .await
+            .begin_attempt(now)
+            .ok_or(ManagedMcpCallError::EndpointUnavailable)
+    }
+
+    async fn record_endpoint_success_for(&self, token: EndpointAttemptToken) {
+        self.endpoint_health.lock().await.record_success(token);
+    }
+
+    pub(super) async fn begin_endpoint_reinitialization(&self) -> EndpointAttemptToken {
+        let health = self.endpoint_health.lock().await;
+        EndpointAttemptToken { epoch: health.epoch }
+    }
+
+    pub(super) async fn record_endpoint_reinitialized(&self, token: EndpointAttemptToken) {
+        self.endpoint_health.lock().await.record_reinitialized(token);
     }
 
     pub(crate) async fn record_fetch_error(
@@ -225,8 +496,11 @@ impl ParallelMcpClient {
         self.fetch_tool_health.lock().await.record_success();
     }
 
-    pub(super) async fn shutdown(&self, deadline: Instant) {
-        let _ = self.peer.shutdown(deadline).await;
+    pub(super) async fn shutdown(&self, deadline: Instant) -> Result<(), WebError> {
+        self.peer
+            .shutdown(deadline)
+            .await
+            .map_err(|error| WebError::Provider(format!("managed Parallel shutdown failed: {error}")))
     }
 
     #[allow(dead_code)] // Used by endpoint health and fetch adapter phases.
@@ -240,8 +514,53 @@ impl ParallelMcpClient {
         name: &str,
         arguments: Value,
         deadline: Instant,
-    ) -> Result<McpToolResult, McpPeerError> {
-        self.peer.call_tool(name, arguments, deadline).await
+        attempt: u8,
+    ) -> Result<McpToolResult, ManagedMcpCallError> {
+        let authorized = match ParallelMcpCallPolicy.authorize(name, arguments, attempt) {
+            Ok(call) => call,
+            Err(rejection) => {
+                self.call_control.observe_rejection(rejection);
+                return Err(match rejection {
+                    ParallelCallRejection::UnsafeArguments => {
+                        ManagedMcpCallError::UnsafeArguments
+                    }
+                    ParallelCallRejection::RetryLimitExceeded => {
+                        ManagedMcpCallError::RetryLimitExceeded
+                    }
+                });
+            }
+        };
+        self.call_authorized(authorized, deadline).await
+    }
+
+    /// The transport boundary accepts only a call that has already crossed
+    /// the production argument/retry policy. Keeping the peer invocation here
+    /// prevents future adapters from accidentally sending an un-authorized
+    /// tool payload directly to the MCP transport.
+    async fn call_authorized(
+        &self,
+        authorized: AuthorizedParallelCall,
+        deadline: Instant,
+    ) -> Result<McpToolResult, ManagedMcpCallError> {
+        let endpoint_attempt = self.begin_endpoint_attempt(Instant::now()).await?;
+        self.call_control
+            .reserve(&authorized)
+            .await
+            .map_err(|error| match error {
+                #[cfg(any(test, feature = "fetch-eval"))]
+                ManagedMcpControlError::QuotaExhausted => ManagedMcpCallError::QuotaExhausted,
+                #[cfg(any(test, feature = "fetch-eval"))]
+                ManagedMcpControlError::LedgerFailure => ManagedMcpCallError::LedgerFailure,
+            })?;
+        let result = self
+            .peer
+            .call_tool(authorized.tool.as_str(), authorized.arguments.clone(), deadline)
+            .await;
+        if result.is_ok() {
+            self.record_endpoint_success_for(endpoint_attempt).await;
+        }
+        self.call_control.observe_result(&authorized, &result);
+        result.map_err(ManagedMcpCallError::Peer)
     }
 }
 
@@ -404,13 +723,31 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         deadline: Instant,
     ) -> Result<SearchAttemptOutput, SearchAttemptError> {
         let mut session_retried = false;
+        let mut session_recovery_token = None;
         let mut tool_rediscovered = false;
+        let mut tool_attempt = 0_u8;
         loop {
+            if let Some(client) = self.shared_client.as_ref()
+                && !client.endpoint_available(Instant::now()).await
+            {
+                return Err(SearchAttemptError::Upstream);
+            }
             match self.ensure_compatible(deadline).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if let (Some(client), Some(token)) = (
+                        self.shared_client.as_ref(),
+                        session_recovery_token.take(),
+                    ) {
+                        client.record_endpoint_reinitialized(token).await;
+                    }
+                }
                 Err(SearchAttemptError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    if let Some(client) = self.shared_client.as_ref() {
+                        session_recovery_token =
+                            Some(client.begin_endpoint_reinitialization().await);
+                    }
                     continue;
                 }
                 Err(error) => {
@@ -428,16 +765,24 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                 }
             }
 
-            if let Some(client) = self.shared_client.as_ref()
-                && !client.endpoint_available(Instant::now()).await
-            {
-                return Err(SearchAttemptError::Upstream);
-            }
-            match self
-                .peer
-                .call_tool(self.tool_name, (self.argument_builder)(query), deadline)
-                .await
-            {
+            tool_attempt = tool_attempt.saturating_add(1);
+            let call = if let Some(client) = self.shared_client.as_ref() {
+                client
+                    .call_tool(
+                        self.tool_name,
+                        (self.argument_builder)(query),
+                        deadline,
+                        tool_attempt,
+                    )
+                    .await
+                    .map_err(map_managed_call_error_for_search)
+            } else {
+                self.peer
+                    .call_tool(self.tool_name, (self.argument_builder)(query), deadline)
+                    .await
+                    .map_err(ManagedSearchCallError::Peer)
+            };
+            match call {
                 Ok(result) => {
                     if result.is_error && is_explicit_unknown_tool(&result) {
                         if !tool_rediscovered {
@@ -447,16 +792,15 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                         }
                         return Err(SearchAttemptError::ToolMissing);
                     }
-                    if let Some(client) = self.shared_client.as_ref() {
-                        client.record_endpoint_success().await;
-                    }
                     return self.decode_result(&result, query.count as usize);
                 }
-                Err(McpPeerError::SessionExpired) if !session_retried => {
+                Err(ManagedSearchCallError::Peer(McpPeerError::SessionExpired))
+                    if !session_retried =>
+                {
                     self.clear_compatibility().await;
                     session_retried = true;
                 }
-                Err(error) => {
+                Err(ManagedSearchCallError::Peer(error)) => {
                     if !tool_rediscovered && is_explicit_unknown_tool_rpc(&error) {
                         self.clear_compatibility().await;
                         tool_rediscovered = true;
@@ -472,14 +816,43 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                     }
                     return Err(mapped);
                 }
+                Err(ManagedSearchCallError::QuotaExhausted) => {
+                    return Err(SearchAttemptError::QuotaExhausted);
+                }
+                Err(ManagedSearchCallError::Upstream) => {
+                    return Err(SearchAttemptError::Upstream);
+                }
+                Err(ManagedSearchCallError::UnsafeArguments) => {
+                    return Err(SearchAttemptError::InvalidRequest);
+                }
+                Err(ManagedSearchCallError::RetryLimitExceeded) => {
+                    return Err(SearchAttemptError::Upstream);
+                }
+                Err(ManagedSearchCallError::LedgerFailure) => {
+                    return Err(SearchAttemptError::Upstream);
+                }
             }
         }
     }
 
-    async fn shutdown(&self, deadline: Instant) {
+    async fn shutdown(&self, deadline: Instant) -> Result<(), WebError> {
         if self.shared_client.is_none() {
-            let _ = self.peer.shutdown(deadline).await;
+            self.peer.shutdown(deadline).await.map_err(|error| {
+                WebError::Provider(format!("managed Parallel search shutdown failed: {error}"))
+            })?;
         }
+        Ok(())
+    }
+}
+
+fn map_managed_call_error_for_search(error: ManagedMcpCallError) -> ManagedSearchCallError {
+    match error {
+        ManagedMcpCallError::Peer(error) => ManagedSearchCallError::Peer(error),
+        ManagedMcpCallError::EndpointUnavailable => ManagedSearchCallError::Upstream,
+        ManagedMcpCallError::QuotaExhausted => ManagedSearchCallError::QuotaExhausted,
+        ManagedMcpCallError::UnsafeArguments => ManagedSearchCallError::UnsafeArguments,
+        ManagedMcpCallError::RetryLimitExceeded => ManagedSearchCallError::RetryLimitExceeded,
+        ManagedMcpCallError::LedgerFailure => ManagedSearchCallError::LedgerFailure,
     }
 }
 
@@ -499,6 +872,7 @@ fn search_endpoint_failure_kind(error: &SearchAttemptError) -> Option<EndpointFa
         | SearchAttemptError::RpcMethodUnavailable
         | SearchAttemptError::SessionExpired
         | SearchAttemptError::InvalidRequest
+        | SearchAttemptError::QuotaExhausted
         | SearchAttemptError::Upstream => None,
     }
 }
@@ -667,9 +1041,9 @@ pub(super) fn is_unknown_tool_message(message: &str, data: Option<&Value>) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managed::fetch::{
-        FetchReadiness, ParallelFetchAdapter, RemoteExtractFallback,
-    };
+    use crate::managed::fetch::{FetchReadiness, ParallelFetchAdapter};
+    #[cfg(feature = "fetch-eval")]
+    use crate::managed::fetch::RemoteExtractProvider;
     use nomi_mcp::protocol::McpToolDef;
     use serde_json::json;
     use wiremock::{
@@ -740,6 +1114,144 @@ mod tests {
     fn parallel_client_construction_is_offline() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let _ = client.peer();
+        assert!(Arc::strong_count(&client.call_control) >= 1);
+    }
+
+    #[test]
+    fn test_endpoint_requires_an_explicit_call_control() {
+        let client = ParallelMcpClient::new_for_test_endpoint_with_control(
+            "http://127.0.0.1:9",
+            Arc::new(NoopManagedMcpCallControl),
+        )
+        .expect("test endpoint construction is offline");
+        assert!(Arc::strong_count(&client.call_control) >= 1);
+    }
+
+    #[test]
+    fn production_fetch_gate_accepts_only_safe_arguments() {
+        assert!(safe_fetch_arguments(&json!({
+            "urls": ["https://example.com/"],
+            "full_content": false
+        })));
+        assert!(!safe_fetch_arguments(&json!({
+            "urls": ["https://example.com/"],
+            "full_content": true
+        })));
+        assert!(!safe_fetch_arguments(&json!({
+            "urls": ["https://example.com/"],
+            "full_content": false,
+            "objective": "leak"
+        })));
+        assert!(!safe_fetch_arguments(&json!({
+            "urls": ["https://example.com/?token=secret"],
+            "full_content": false
+        })));
+        assert!(!safe_fetch_arguments(&json!({
+            "urls": ["http://127.0.0.1/"],
+            "full_content": false
+        })));
+    }
+
+    #[test]
+    fn parallel_call_policy_is_the_non_bypassable_authorization_seam() {
+        let policy = ParallelMcpCallPolicy;
+        let authorized = policy
+            .authorize(
+                "web_fetch",
+                json!({
+                    "urls": ["https://example.com/"],
+                    "full_content": false
+                }),
+                1,
+            )
+            .expect("safe fetch is authorized");
+        assert_eq!(authorized.tool(), ManagedMcpTool::Fetch);
+        assert_eq!(authorized.attempt(), 1);
+        assert!(matches!(
+            policy.authorize(
+                "web_fetch",
+                json!({
+                    "urls": ["https://example.com/?token=secret"],
+                    "full_content": false
+                }),
+                1,
+            ),
+            Err(ParallelCallRejection::UnsafeArguments)
+        ));
+        assert!(matches!(
+            policy.authorize(
+                "web_fetch",
+                json!({
+                    "urls": ["https://example.com/"],
+                    "full_content": false
+                }),
+                4,
+            ),
+            Err(ParallelCallRejection::RetryLimitExceeded)
+        ));
+    }
+
+    #[test]
+    fn production_search_gate_accepts_only_parallel_shape() {
+        assert!(safe_search_arguments(&json!({
+            "objective": "find docs",
+            "search_queries": ["docs"]
+        })));
+        assert!(!safe_search_arguments(&json!({
+            "objective": "find docs",
+            "search_queries": ["docs"],
+            "session_id": "secret"
+        })));
+        assert!(!safe_search_arguments(&json!({
+            "objective": "",
+            "search_queries": ["docs"]
+        })));
+    }
+
+    #[tokio::test]
+    async fn production_gate_blocks_fourth_attempt_before_network() {
+        let policy = ParallelMcpCallPolicy;
+        let arguments = json!({
+            "urls": ["https://example.com/"],
+            "full_content": false
+        });
+        for attempt in 1..=3 {
+            policy
+                .authorize("web_fetch", arguments.clone(), attempt)
+                .expect("first three attempts are allowed");
+        }
+        assert!(matches!(
+            policy.authorize("web_fetch", arguments, 4),
+            Err(ParallelCallRejection::RetryLimitExceeded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn production_gate_blocks_sensitive_fetch_before_wiremock_call() {
+        let server = MockServer::start().await;
+        let client = ParallelMcpClient::new_for_test_endpoint(server.uri(), None)
+        .expect("offline construction");
+        for url in [
+            "https://example.com/?token=secret",
+            "https://example.com/?code=oauth-code",
+            "https://example.com/?clientSecret=secret",
+            "https://localhost./file.pdf",
+            "https://foo.localhost/file.pdf",
+        ] {
+            let result = client
+                .call_tool(
+                    "web_fetch",
+                    json!({
+                        "urls": [url],
+                        "full_content": false
+                    }),
+                    Instant::now() + Duration::from_secs(1),
+                    1,
+                )
+                .await;
+            assert!(matches!(result, Err(ManagedMcpCallError::UnsafeArguments)), "{url}");
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -809,6 +1321,271 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_search_call_crosses_gate_and_counts_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "serverInfo": {"name": "mock", "version": "1"}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "notifications/initialized"})))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [{
+                        "name": "web_search",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "objective": {"type": "string"},
+                                "search_queries": {"type": "array"}
+                            },
+                            "required": ["objective", "search_queries"]
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {"results": {"type": "array"}}
+                        }
+                    }]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "structuredContent": {
+                        "results": [{
+                            "title": "Example",
+                            "url": "https://example.com/",
+                            "excerpts": ["example result"]
+                        }]
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-search-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let search = RemoteSearchAdapter::parallel(client);
+        let result = search
+            .search_attempt_with_diagnostics(
+                &SearchQuery {
+                    query: "managed fetch gate".to_owned(),
+                    count: 1,
+                },
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("remote search");
+
+        assert_eq!(result.result.hits.len(), 1);
+        assert_eq!(gate.actual_calls(), 1);
+        assert_eq!(gate.search_calls(), 1);
+        assert_eq!(gate.fetch_calls(), 0);
+        assert_eq!(gate.recovery_calls(), 0);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_search_warmup_and_fetch_share_one_gate_and_peer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "serverInfo": {"name": "mock", "version": "1"}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "notifications/initialized"})))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [
+                        {
+                            "name": "web_search",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "objective": {"type": "string"},
+                                    "search_queries": {"type": "array"}
+                                },
+                                "required": ["objective", "search_queries"]
+                            },
+                            "outputSchema": {
+                                "type": "object",
+                                "properties": {"results": {"type": "array"}}
+                            }
+                        },
+                        {
+                            "name": "web_fetch",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"urls": {"type": "array"}},
+                                "required": ["urls"]
+                            },
+                            "outputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "results": {"type": "array"},
+                                    "errors": {"type": "array"}
+                                }
+                            }
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({
+                "method": "tools/call",
+                "params": {"name": "web_search"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "structuredContent": {
+                        "results": [{
+                            "title": "Example",
+                            "url": "https://example.com/",
+                            "excerpts": ["example result"]
+                        }]
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({
+                "method": "tools/call",
+                "params": {"name": "web_fetch"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {
+                    "structuredContent": {
+                        "results": [{
+                            "url": "https://example.com/",
+                            "title": "Example",
+                            "full_content": "# Example\n\nManaged fetch gate"
+                        }],
+                        "errors": []
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-search-warm-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let search = RemoteSearchAdapter::parallel(Arc::clone(&client));
+        search
+            .search_attempt_with_diagnostics(
+                &SearchQuery {
+                    query: "managed fetch gate".to_owned(),
+                    count: 1,
+                },
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("search warmup");
+        let fetch = ParallelFetchAdapter::new(client);
+        let request = crate::managed::fetch::RemoteExtractRequest {
+            items: vec![
+                crate::managed::fetch::RemoteExtractRequestItem::new(
+                    "https://example.com/".to_owned(),
+                    false,
+                )
+                .expect("public fetch request"),
+            ],
+        };
+        let batch = fetch
+            .extract_batch(request, Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("fetch after search warmup");
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(gate.actual_calls(), 2);
+        assert_eq!(gate.search_calls(), 1);
+        assert_eq!(gate.fetch_calls(), 1);
+        assert_eq!(gate.recovery_calls(), 0);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
     #[tokio::test]
     async fn parallel_fetch_semaphore_has_one_permit() {
         let client = ParallelMcpClient::new().expect("offline construction");
@@ -825,15 +1602,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_endpoint_health_disables_unauthorized_and_recovers_on_success() {
+    async fn fetch_endpoint_health_does_not_let_stale_success_clear_unauthorized() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let now = Instant::now();
         assert!(client.endpoint_available(now).await);
+        let token = client
+            .begin_endpoint_attempt(now)
+            .await
+            .expect("attempt token");
         client
             .record_fetch_error(EndpointFailureKind::Unauthorized, now)
             .await;
         assert!(!client.endpoint_available(now).await);
-        client.record_endpoint_success().await;
+        client.record_endpoint_success_for(token).await;
+        assert!(!client.endpoint_available(now).await);
+        let recovery = client.begin_endpoint_reinitialization().await;
+        client.record_endpoint_reinitialized(recovery).await;
+        assert!(client.endpoint_available(now).await);
+    }
+
+    #[tokio::test]
+    async fn stale_session_recovery_does_not_clear_new_unauthorized_state() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let now = Instant::now();
+        let stale_recovery = client.begin_endpoint_reinitialization().await;
+        client
+            .record_fetch_error(EndpointFailureKind::Unauthorized, now)
+            .await;
+        client.record_endpoint_reinitialized(stale_recovery).await;
+        assert!(!client.endpoint_available(now).await);
+
+        let fresh_recovery = client.begin_endpoint_reinitialization().await;
+        client.record_endpoint_reinitialized(fresh_recovery).await;
         assert!(client.endpoint_available(now).await);
     }
 
@@ -841,6 +1641,10 @@ mod tests {
     async fn fetch_endpoint_health_bounds_rate_limit_cooldown() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let now = Instant::now();
+        let stale_token = client
+            .begin_endpoint_attempt(now)
+            .await
+            .expect("stale attempt token");
         client
             .record_fetch_error(
                 EndpointFailureKind::RateLimited(Some(Duration::from_secs(5))),
@@ -848,7 +1652,16 @@ mod tests {
             )
             .await;
         assert!(!client.endpoint_available(now).await);
-        assert!(client.endpoint_available(now + Duration::from_secs(30)).await);
+        client.record_endpoint_success_for(stale_token).await;
+        assert!(!client.endpoint_available(now).await);
+        let later = now + Duration::from_secs(30);
+        assert!(client.endpoint_available(later).await);
+        let fresh_token = client
+            .begin_endpoint_attempt(later)
+            .await
+            .expect("fresh attempt token");
+        client.record_endpoint_success_for(fresh_token).await;
+        assert!(client.endpoint_available(later).await);
     }
 
     #[tokio::test]

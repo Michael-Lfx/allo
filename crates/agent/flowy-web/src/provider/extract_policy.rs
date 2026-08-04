@@ -1,9 +1,11 @@
-use std::net::IpAddr;
-
-use url::{Host, Url};
-
 use crate::provider::http_extract::FetchedResource;
+use crate::provider::document_kind::{DeferredDocumentKind, classify_document};
 use crate::types::{ExtractedPage, WebError};
+
+pub use crate::provider::url_safety::{
+    CanonicalRequestedUrl, PreparedRemoteUrl, RemoteForbiddenReason, canonical_requested_url,
+    prepare_remote_url,
+};
 
 #[derive(Debug)]
 pub struct LocalExtractOutcome {
@@ -51,11 +53,13 @@ pub enum RemoteFallbackDecision {
     Eligible {
         reason: RemoteFallbackReason,
     },
+    /// The Local failure is safe to classify, but the active rollout profile
+    /// deliberately does not send this category to the remote provider yet.
+    Deferred {
+        reason: RemoteDeferredReason,
+    },
     Forbidden {
         reason: RemoteForbiddenReason,
-    },
-    BudgetInsufficient {
-        reason: RemoteFallbackReason,
     },
 }
 
@@ -70,57 +74,121 @@ pub enum RemoteFallbackReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RemoteForbiddenReason {
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    Gone,
-    RateLimited,
-    CaptchaOrWaf,
-    LoginRequired,
-    Paywall,
-    SensitiveQuery,
-    SensitiveFragment,
-    CredentialsInUrl,
-    PrivateOrLocalAddress,
-    UnsupportedScheme,
+pub enum RemoteDeferredReason {
+    ProfileNotEnabled(RemoteFallbackReason),
+    ProviderUnsupported(RemoteFallbackReason),
+    BudgetInsufficient(RemoteFallbackReason),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CanonicalRequestedUrl(String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteExtractCapabilities {
+    supported: &'static [RemoteFallbackReason],
+}
 
-impl CanonicalRequestedUrl {
-    pub fn as_str(&self) -> &str {
-        &self.0
+impl RemoteExtractCapabilities {
+    pub const fn evidence_backed() -> Self {
+        Self {
+            supported: &[
+                RemoteFallbackReason::Pdf,
+                RemoteFallbackReason::JavascriptShell,
+                RemoteFallbackReason::EmptyContent,
+            ],
+        }
+    }
+
+    #[allow(dead_code)]
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub const fn all_eligible() -> Self {
+        Self {
+            supported: &[
+                RemoteFallbackReason::Pdf,
+                RemoteFallbackReason::UnsupportedDocument,
+                RemoteFallbackReason::JavascriptShell,
+                RemoteFallbackReason::EmptyContent,
+                RemoteFallbackReason::TransientNetwork,
+                RemoteFallbackReason::Timeout,
+            ],
+        }
+    }
+
+    pub fn supports(self, reason: RemoteFallbackReason) -> bool {
+        self.supported.contains(&reason)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PreparedRemoteUrl {
-    pub requested_url: String,
-    pub outbound_url: String,
-    pub canonical_url: CanonicalRequestedUrl,
+/// Remote fallback profile owned by the extraction policy module.
+///
+/// `AllEligible` preserves the broad policy used by evaluation and internal
+/// tests. Production Desktop uses `EvidenceBacked`, whose small allow-list is
+/// based on the completed PDF and JavaScript Provider evidence.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteFallbackProfile {
+    EvidenceBacked,
+    #[cfg(any(test, feature = "fetch-eval"))]
+    AllEligible,
 }
 
-pub fn canonical_requested_url(value: &str) -> CanonicalRequestedUrl {
-    let value = value.trim();
-    let canonical = Url::parse(value).ok().map(|mut parsed| {
-        parsed.set_fragment(None);
-        let mut text = parsed.to_string();
-        if parsed.path() == "/" && parsed.query().is_none() {
-            text = text.trim_end_matches('/').to_owned();
+impl RemoteFallbackProfile {
+    #[allow(dead_code)]
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub const fn all_eligible() -> Self {
+        Self::AllEligible
+    }
+
+    pub const fn evidence_backed() -> Self {
+        Self::EvidenceBacked
+    }
+
+    pub const fn allows(self, reason: RemoteFallbackReason) -> bool {
+        match self {
+            Self::EvidenceBacked => matches!(
+                reason,
+                RemoteFallbackReason::Pdf
+                    | RemoteFallbackReason::JavascriptShell
+                    | RemoteFallbackReason::EmptyContent
+            ),
+            #[cfg(any(test, feature = "fetch-eval"))]
+            Self::AllEligible => true,
         }
-        text
-    });
-    CanonicalRequestedUrl(canonical.unwrap_or_else(|| {
-        value
-            .split('#')
-            .next()
-            .unwrap_or(value)
-            .trim_end_matches('/')
-            .to_owned()
-    }))
+    }
+
+    #[cfg(test)]
+    pub fn decide(
+        self,
+        outcome: &LocalExtractOutcome,
+        allow_private: bool,
+    ) -> RemoteFallbackDecision {
+        self.decide_with_capabilities(
+            outcome,
+            allow_private,
+            RemoteExtractCapabilities::evidence_backed(),
+        )
+    }
+
+    pub fn decide_with_capabilities(
+        self,
+        outcome: &LocalExtractOutcome,
+        allow_private: bool,
+        capabilities: RemoteExtractCapabilities,
+    ) -> RemoteFallbackDecision {
+        match decide_remote_fallback_with_private(outcome, allow_private) {
+            RemoteFallbackDecision::Eligible { reason } if !self.allows(reason) => {
+                RemoteFallbackDecision::Deferred {
+                    reason: RemoteDeferredReason::ProfileNotEnabled(reason),
+                }
+            }
+            RemoteFallbackDecision::Eligible { reason } if !capabilities.supports(reason) => {
+                RemoteFallbackDecision::Deferred {
+                    reason: RemoteDeferredReason::ProviderUnsupported(reason),
+                }
+            }
+            decision => decision,
+        }
+    }
 }
+
+pub(crate) type RemoteFallbackPolicy = RemoteFallbackProfile;
 
 pub fn successful_outcome(
     requested_url: String,
@@ -256,11 +324,13 @@ fn classify_success(
     resource: &FetchedResource,
     page: &ExtractedPage,
 ) -> Option<LocalExtractFailureKind> {
-    if is_pdf(resource.content_type.as_deref()) {
-        return Some(LocalExtractFailureKind::Pdf);
-    }
-    if is_unsupported_document(resource.content_type.as_deref()) {
-        return Some(LocalExtractFailureKind::UnsupportedDocument);
+    if let Some(kind) = classify_document(resource.content_type.as_deref(), &resource.body) {
+        return Some(match kind {
+            DeferredDocumentKind::Pdf => LocalExtractFailureKind::Pdf,
+            DeferredDocumentKind::UnsupportedDocument => {
+                LocalExtractFailureKind::UnsupportedDocument
+            }
+        });
     }
     if let Some(kind) = classify_access_challenge(resource, page) {
         return Some(kind);
@@ -366,32 +436,6 @@ fn classify_access_challenge(
     None
 }
 
-fn is_pdf(content_type: Option<&str>) -> bool {
-    matches!(
-        content_type,
-        Some("application/pdf") | Some("application/x-pdf") | Some("application/acrobat")
-    )
-}
-
-fn is_unsupported_document(content_type: Option<&str>) -> bool {
-    let Some(content_type) = content_type else {
-        return false;
-    };
-    if content_type.starts_with("text/")
-        || matches!(
-            content_type,
-            "application/xhtml+xml"
-                | "application/json"
-                | "application/xml"
-                | "application/x-javascript"
-                | "application/javascript"
-        )
-    {
-        return false;
-    }
-    !is_pdf(Some(content_type))
-}
-
 fn is_javascript_shell(resource: &FetchedResource, page: &ExtractedPage) -> bool {
     let visible = page.markdown.trim();
     if visible.chars().count() >= 400 {
@@ -472,119 +516,11 @@ fn forbidden_url_reason_with_private(
     prepare_remote_url(raw, allow_private).err()
 }
 
-fn forbidden_host(host: Option<Host<&str>>) -> bool {
-    match host {
-        Some(Host::Ipv4(address)) => forbidden_ip(&IpAddr::V4(address)),
-        Some(Host::Ipv6(address)) => forbidden_ip(&IpAddr::V6(address)),
-        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        None => true,
-    }
-}
-
-fn forbidden_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-        }
-        IpAddr::V6(v6) => {
-            let segment = v6.segments()[0];
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (segment & 0xfe00) == 0xfc00
-                || (segment & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some_and(|v4| forbidden_ip(&IpAddr::V4(v4)))
-        }
-    }
-}
-
-fn has_sensitive_query(url: &Url) -> bool {
-    const SENSITIVE_NAMES: &[&str] = &[
-        "token",
-        "access_token",
-        "api_key",
-        "apikey",
-        "key",
-        "sig",
-        "signature",
-        "credential",
-        "authorization",
-        "auth",
-        "session",
-        "session_id",
-        "expires",
-    ];
-    url.query_pairs().any(|(key, _)| {
-        let key = key.to_ascii_lowercase();
-        SENSITIVE_NAMES
-            .iter()
-            .any(|name| key == *name || key.starts_with("x-amz-") || key.starts_with("x-goog-"))
-    })
-}
-
-fn has_sensitive_fragment(url: &Url) -> bool {
-    const SENSITIVE_FRAGMENT_NAMES: &[&str] = &[
-        "access_token",
-        "id_token",
-        "token",
-        "code",
-        "api_key",
-        "signature",
-        "sig",
-        "credential",
-        "session",
-        "auth",
-    ];
-    let Some(fragment) = url.fragment() else {
-        return false;
-    };
-    fragment.split('&').any(|pair| {
-        let key = pair.split('=').next().unwrap_or(pair).to_ascii_lowercase();
-        SENSITIVE_FRAGMENT_NAMES
-            .iter()
-            .any(|name| key == *name)
-    })
-}
-
-pub fn prepare_remote_url(
-    raw: &str,
-    allow_private: bool,
-) -> Result<PreparedRemoteUrl, RemoteForbiddenReason> {
-    let raw = raw.trim();
-    let url = Url::parse(raw).map_err(|_| RemoteForbiddenReason::UnsupportedScheme)?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(RemoteForbiddenReason::UnsupportedScheme);
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(RemoteForbiddenReason::CredentialsInUrl);
-    }
-    if !allow_private && forbidden_host(url.host()) {
-        return Err(RemoteForbiddenReason::PrivateOrLocalAddress);
-    }
-    if has_sensitive_query(&url) {
-        return Err(RemoteForbiddenReason::SensitiveQuery);
-    }
-    if has_sensitive_fragment(&url) {
-        return Err(RemoteForbiddenReason::SensitiveFragment);
-    }
-    let mut outbound = url;
-    outbound.set_fragment(None);
-    Ok(PreparedRemoteUrl {
-        requested_url: raw.to_owned(),
-        outbound_url: outbound.to_string(),
-        canonical_url: canonical_requested_url(raw),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::EXTRACTOR_FULLPAGE;
+    use url::Url;
 
     fn page(markdown: &str) -> ExtractedPage {
         ExtractedPage {
@@ -672,6 +608,62 @@ mod tests {
                 reason: RemoteFallbackReason::EmptyContent
             }
         ));
+    }
+
+    #[test]
+    fn evidence_backed_policy_allows_only_qualified_categories() {
+        let policy = RemoteFallbackPolicy::evidence_backed();
+        for (url, kind, reason) in [
+            (
+                "https://example.com/a.pdf",
+                LocalExtractFailureKind::Pdf,
+                RemoteFallbackReason::Pdf,
+            ),
+            (
+                "https://example.com/app",
+                LocalExtractFailureKind::JavascriptShell,
+                RemoteFallbackReason::JavascriptShell,
+            ),
+            (
+                "https://example.com/empty",
+                LocalExtractFailureKind::EmptyContent,
+                RemoteFallbackReason::EmptyContent,
+            ),
+        ] {
+            assert_eq!(
+                policy.decide(&failure(url, kind), false),
+                RemoteFallbackDecision::Eligible { reason }
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_backed_policy_defers_unqualified_transient_failures() {
+        let policy = RemoteFallbackPolicy::evidence_backed();
+        for kind in [
+            LocalExtractFailureKind::Dns,
+            LocalExtractFailureKind::Tls,
+            LocalExtractFailureKind::Network,
+            LocalExtractFailureKind::Timeout,
+            LocalExtractFailureKind::UnsupportedDocument,
+        ] {
+            let reason = match kind {
+                LocalExtractFailureKind::Dns
+                | LocalExtractFailureKind::Tls
+                | LocalExtractFailureKind::Network => RemoteFallbackReason::TransientNetwork,
+                LocalExtractFailureKind::Timeout => RemoteFallbackReason::Timeout,
+                LocalExtractFailureKind::UnsupportedDocument => {
+                    RemoteFallbackReason::UnsupportedDocument
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                policy.decide(&failure("https://example.com/", kind), false),
+                RemoteFallbackDecision::Deferred {
+                    reason: RemoteDeferredReason::ProfileNotEnabled(reason),
+                }
+            );
+        }
     }
 
     #[test]

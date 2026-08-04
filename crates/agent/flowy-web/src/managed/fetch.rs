@@ -1,5 +1,4 @@
-#![allow(dead_code)] // Wired into the managed extract coordinator in Phase 7.
-
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,9 +17,12 @@ use crate::provider::extract_policy::{
 };
 
 use super::remote::{
-    EndpointFailureKind, FetchToolFailureKind, ParallelMcpClient, is_explicit_unknown_tool,
-    is_explicit_unknown_tool_rpc, is_unknown_tool_message,
+    EndpointFailureKind, FetchToolFailureKind, ManagedMcpCallError, ParallelMcpClient,
+    is_explicit_unknown_tool, is_explicit_unknown_tool_rpc, is_unknown_tool_message,
 };
+
+#[cfg(test)]
+use super::remote::{AuthorizedParallelCall, ManagedMcpCallControl, ManagedMcpTool};
 
 const FETCH_TOOL: &str = "web_fetch";
 
@@ -31,22 +33,20 @@ pub struct RemoteExtractRequest {
 
 #[derive(Debug, Clone)]
 pub struct RemoteExtractRequestItem {
-    pub index: usize,
     pub prepared: PreparedRemoteUrl,
 }
 
 impl RemoteExtractRequestItem {
     pub fn new(
-        index: usize,
         requested_url: String,
         allow_private: bool,
     ) -> Result<Self, crate::provider::extract_policy::RemoteForbiddenReason> {
         Ok(Self {
-            index,
             prepared: prepare_remote_url(&requested_url, allow_private)?,
         })
     }
 
+    #[cfg(feature = "fetch-eval")]
     pub fn requested_url(&self) -> &str {
         &self.prepared.requested_url
     }
@@ -58,9 +58,7 @@ impl RemoteExtractRequestItem {
 
 #[derive(Debug, Clone)]
 pub struct RemoteExtractItem {
-    pub index: usize,
     pub requested_url: String,
-    pub final_url: Option<String>,
     pub title: Option<String>,
     pub markdown: String,
     pub source_truncated: bool,
@@ -76,10 +74,15 @@ pub struct RemoteExtractBatch {
 pub struct RemoteFetchDiagnostics {
     pub dropped_item_count: usize,
     pub unmatched_item_count: usize,
+    #[cfg(test)]
     pub source_truncated_count: usize,
+    #[cfg(test)]
     pub used_text_fallback: bool,
     pub queue_ms: Option<u128>,
     pub call_ms: Option<u128>,
+    /// Additional `web_fetch` calls caused by session recovery or tool
+    /// rediscovery. Discovery/list calls are not included.
+    pub recovery_call_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +100,10 @@ pub enum RemoteExtractError {
     SessionExpired,
     InvalidRequest,
     MalformedResponse,
+    SourceContractViolation {
+        unmatched_items: usize,
+        dropped_items: usize,
+    },
     Upstream,
 }
 
@@ -107,7 +114,7 @@ pub enum RemoteTimeoutKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FetchReadiness {
+pub enum RemoteExtractReadiness {
     ColdTransport,
     WarmTransportToolUnknown,
     Ready {
@@ -116,17 +123,25 @@ pub enum FetchReadiness {
 }
 
 #[async_trait]
-pub trait RemoteExtractFallback: Send + Sync {
+pub(crate) trait RemoteExtractProvider: Send + Sync {
     async fn extract_batch(
         &self,
         request: RemoteExtractRequest,
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError>;
 
-    async fn fetch_readiness(&self) -> FetchReadiness {
-        FetchReadiness::ColdTransport
+    async fn readiness(&self) -> RemoteExtractReadiness {
+        RemoteExtractReadiness::ColdTransport
     }
 }
+
+// Transitional crate-private aliases keep the feature-gated evaluation and
+// legacy adapter tests source-compatible while the provider seam is migrated.
+// They are intentionally not exported from the crate root.
+#[cfg(any(test, feature = "fetch-eval"))]
+pub(crate) use RemoteExtractProvider as RemoteExtractFallback;
+#[cfg(any(test, feature = "fetch-eval"))]
+pub(crate) type FetchReadiness = RemoteExtractReadiness;
 
 pub struct ParallelFetchAdapter {
     client: Arc<ParallelMcpClient>,
@@ -186,14 +201,24 @@ impl ParallelFetchAdapter {
         *self.discovery.lock().await = None;
         self.client.invalidate_tools_cache().await;
     }
+
+    #[cfg(test)]
+    pub(crate) async fn fetch_readiness(&self) -> RemoteExtractReadiness {
+        self.readiness().await
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    pub(crate) async fn warm_compatibility(&self, deadline: Instant) -> Result<(), RemoteExtractError> {
+        self.ensure_compatible(deadline).await
+    }
 }
 
 #[async_trait]
-impl RemoteExtractFallback for ParallelFetchAdapter {
-    async fn fetch_readiness(&self) -> FetchReadiness {
+impl RemoteExtractProvider for ParallelFetchAdapter {
+    async fn readiness(&self) -> RemoteExtractReadiness {
         let peer_readiness = self.client.peer().readiness().await;
         if !peer_readiness.initialized {
-            return FetchReadiness::ColdTransport;
+            return RemoteExtractReadiness::ColdTransport;
         }
         let cache = self.discovery.lock().await;
         match (peer_readiness.generation, cache.as_ref()) {
@@ -201,9 +226,9 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                 Some(generation),
                 Some(cached),
             ) if cached.generation == Some(generation) && cached.result.is_ok() => {
-                FetchReadiness::Ready { generation }
+                RemoteExtractReadiness::Ready { generation }
             }
-            _ => FetchReadiness::WarmTransportToolUnknown,
+            _ => RemoteExtractReadiness::WarmTransportToolUnknown,
         }
     }
 
@@ -213,13 +238,26 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError> {
         let mut session_retried = false;
+        let mut session_recovery_token = None;
         let mut tool_rediscovered = false;
+        let mut tool_attempt = 0_u8;
+        let mut recovery_call_count = 0usize;
         loop {
+            if !self.client.endpoint_available(Instant::now()).await {
+                return Err(RemoteExtractError::Upstream);
+            }
             match self.ensure_compatible(deadline).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if let Some(token) = session_recovery_token.take() {
+                        self.client.record_endpoint_reinitialized(token).await;
+                    }
+                }
                 Err(RemoteExtractError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    session_recovery_token =
+                        Some(self.client.begin_endpoint_reinitialization().await);
+                    recovery_call_count += 1;
                     continue;
                 }
                 Err(error) => {
@@ -278,9 +316,10 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
             };
             let queue_ms = Some(attempt_started.elapsed().as_millis());
             let call_started = Instant::now();
+            tool_attempt = tool_attempt.saturating_add(1);
             let result = self
                 .client
-                .call_tool(FETCH_TOOL, arguments, deadline)
+                .call_tool(FETCH_TOOL, arguments, deadline, tool_attempt)
                 .await;
             let call_ms = Some(call_started.elapsed().as_millis());
             drop(permit);
@@ -291,6 +330,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         if !tool_rediscovered {
                             self.clear_compatibility().await;
                             tool_rediscovered = true;
+                            recovery_call_count += 1;
                             continue;
                         }
                         return Err(RemoteExtractError::ToolMissing);
@@ -308,7 +348,7 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         Ok(mut batch) => {
                             batch.diagnostics.queue_ms = queue_ms;
                             batch.diagnostics.call_ms = call_ms;
-                            self.client.record_endpoint_success().await;
+                            batch.diagnostics.recovery_call_count = recovery_call_count;
                             self.client.record_fetch_tool_success().await;
                             return Ok(batch);
                         }
@@ -323,19 +363,38 @@ impl RemoteExtractFallback for ParallelFetchAdapter {
                         }
                     }
                 }
-                Err(McpPeerError::SessionExpired) if !session_retried => {
+                Err(ManagedMcpCallError::Peer(McpPeerError::SessionExpired))
+                    if !session_retried =>
+                {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    recovery_call_count += 1;
                 }
-                Err(error) => {
+                Err(ManagedMcpCallError::Peer(error)) => {
                     if !tool_rediscovered && is_explicit_unknown_tool_rpc(&error) {
                         self.clear_compatibility().await;
                         tool_rediscovered = true;
+                        recovery_call_count += 1;
                         continue;
                     }
                     let mapped = map_peer_error(error);
                     self.record_extract_error(&mapped).await;
                     return Err(mapped);
+                }
+                Err(ManagedMcpCallError::QuotaExhausted) => {
+                    return Err(RemoteExtractError::Upstream);
+                }
+                Err(ManagedMcpCallError::UnsafeArguments) => {
+                    return Err(RemoteExtractError::InvalidRequest);
+                }
+                Err(ManagedMcpCallError::RetryLimitExceeded) => {
+                    return Err(RemoteExtractError::Upstream);
+                }
+                Err(ManagedMcpCallError::LedgerFailure) => {
+                    return Err(RemoteExtractError::Upstream);
+                }
+                Err(ManagedMcpCallError::EndpointUnavailable) => {
+                    return Err(RemoteExtractError::Upstream);
                 }
             }
         }
@@ -369,6 +428,14 @@ impl ParallelFetchAdapter {
                     .await;
             }
             RemoteExtractError::MalformedResponse => {
+                self.client
+                    .record_fetch_error(
+                        FetchToolFailureKind::MalformedResponse,
+                        Instant::now(),
+                    )
+                    .await;
+            }
+            RemoteExtractError::SourceContractViolation { .. } => {
                 self.client
                     .record_fetch_error(
                         FetchToolFailureKind::MalformedResponse,
@@ -461,26 +528,18 @@ struct DecodedPayload {
     results: Vec<DecodedResult>,
     errors: Vec<DecodedError>,
     malformed_result_count: usize,
+    malformed_error_count: usize,
 }
 
 struct DecodedResult {
     url: String,
-    final_url: Option<String>,
     title: Option<String>,
     markdown: String,
-    body_source: RemoteBodySource,
     source_truncated: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemoteBodySource {
-    Excerpts,
-    FullContent,
 }
 
 struct DecodedError {
     url: String,
-    http_status: Option<u16>,
 }
 
 fn decode_payload(value: &Value) -> Result<DecodedPayload, ()> {
@@ -506,11 +565,20 @@ fn decode_payload(value: &Value) -> Result<DecodedPayload, ()> {
             malformed_result_count += 1;
         }
     }
-    let decoded_errors = errors.iter().filter_map(decode_error_item).collect();
+    let mut decoded_errors = Vec::new();
+    let mut malformed_error_count = 0usize;
+    for item in errors {
+        if let Some(decoded) = decode_error_item(item) {
+            decoded_errors.push(decoded);
+        } else {
+            malformed_error_count += 1;
+        }
+    }
     Ok(DecodedPayload {
         results: decoded_results,
         errors: decoded_errors,
         malformed_result_count,
+        malformed_error_count,
     })
 }
 
@@ -518,10 +586,6 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
     let url = item.get("url")?.as_str()?.to_owned();
     let title = item
         .get("title")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    let final_url = item
-        .get("final_url")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
     let full_content = item
@@ -546,11 +610,6 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
     } else {
         return None;
     };
-    let body_source = if excerpts.is_empty() {
-        RemoteBodySource::FullContent
-    } else {
-        RemoteBodySource::Excerpts
-    };
     let explicit_truncated = item
         .get("truncated")
         .and_then(Value::as_bool)
@@ -560,22 +619,14 @@ fn decode_result_item(item: &Value) -> Option<DecodedResult> {
     }
     Some(DecodedResult {
         url,
-        final_url,
         title,
         markdown,
-        body_source,
-        source_truncated: body_source == RemoteBodySource::Excerpts || explicit_truncated,
+        source_truncated: !excerpts.is_empty() || explicit_truncated,
     })
 }
 
 fn decode_error_item(item: &Value) -> Option<DecodedError> {
-    Some(DecodedError {
-        url: item.get("url")?.as_str()?.to_owned(),
-        http_status: item
-            .get("http_status_code")
-            .and_then(Value::as_u64)
-            .and_then(|status| u16::try_from(status).ok()),
-    })
+    Some(DecodedError { url: item.get("url")?.as_str()?.to_owned() })
 }
 
 fn build_batch(
@@ -583,6 +634,8 @@ fn build_batch(
     request: &RemoteExtractRequest,
     used_text_fallback: bool,
 ) -> Result<RemoteExtractBatch, RemoteExtractError> {
+    #[cfg(not(test))]
+    let _ = used_text_fallback;
     let mut assignments: Vec<Option<usize>> = vec![None; request.items.len()];
     let mut assignment_counts = vec![0usize; payload.results.len()];
     for (request_index, request_item) in request.items.iter().enumerate() {
@@ -616,35 +669,63 @@ fn build_batch(
         };
         let result = &payload.results[result_index];
         items.push(RemoteExtractItem {
-            index: request_item.index,
             requested_url: request_item.prepared.requested_url.clone(),
-            final_url: result.final_url.clone(),
             title: result.title.clone(),
             markdown: result.markdown.clone(),
             source_truncated: result.source_truncated,
         });
     }
 
+    let requested_urls = request
+        .items
+        .iter()
+        .map(|item| item.canonical_url().clone())
+        .collect::<HashSet<_>>();
+    let result_urls = payload
+        .results
+        .iter()
+        .map(|result| canonical_requested_url(&result.url))
+        .collect::<HashSet<_>>();
+    let dropped_error_count = payload
+        .errors
+        .iter()
+        .filter(|error| {
+            let error_url = canonical_requested_url(&error.url);
+            !requested_urls.contains(&error_url) || result_urls.contains(&error_url)
+        })
+        .count();
     let dropped_item_count = payload
         .results
         .iter()
         .enumerate()
         .filter(|(result_index, _)| assignment_counts[*result_index] == 0)
         .count()
-        + payload.malformed_result_count;
+        + payload.malformed_result_count
+        + payload.malformed_error_count;
+    let dropped_item_count = dropped_item_count + dropped_error_count;
+    #[cfg(test)]
     let source_truncated_count = items
         .iter()
         .filter(|item| item.source_truncated)
         .count();
+    if unmatched_item_count > 0 || dropped_item_count > 0 {
+        return Err(RemoteExtractError::SourceContractViolation {
+            unmatched_items: unmatched_item_count,
+            dropped_items: dropped_item_count,
+        });
+    }
     Ok(RemoteExtractBatch {
         items,
         diagnostics: RemoteFetchDiagnostics {
             dropped_item_count,
             unmatched_item_count,
+            #[cfg(test)]
             source_truncated_count,
+            #[cfg(test)]
             used_text_fallback,
             queue_ms: None,
             call_ms: None,
+            recovery_call_count: 0,
         },
     })
 }
@@ -716,9 +797,8 @@ mod tests {
         RemoteExtractRequest {
             items: urls
                 .iter()
-                .enumerate()
-                .map(|(index, url)| {
-                    RemoteExtractRequestItem::new(index, (*url).to_owned(), false)
+                .map(|url| {
+                    RemoteExtractRequestItem::new((*url).to_owned(), false)
                         .expect("test URLs must be remote eligible")
                 })
                 .collect(),
@@ -736,6 +816,25 @@ mod tests {
                 .unwrap_or_default(),
             structured_content: Some(structured),
             is_error: false,
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingGate {
+        calls: Mutex<Vec<(ManagedMcpTool, Value, u8)>>,
+    }
+
+    #[async_trait]
+    impl ManagedMcpCallControl for RecordingGate {
+        async fn reserve(
+            &self,
+            call: &AuthorizedParallelCall,
+        ) -> Result<(), super::super::remote::ManagedMcpControlError> {
+            self.calls
+                .lock()
+                .await
+                .push((call.tool(), call.arguments().clone(), call.attempt()));
+            Ok(())
         }
     }
 
@@ -816,10 +915,16 @@ mod tests {
             }),
             None,
         );
-        let batch = decode_fetch(&remote, &request(&["https://example.com/a", "https://example.com/missing"])).unwrap();
-        assert_eq!(batch.items.len(), 1);
-        assert_eq!(batch.diagnostics.dropped_item_count, 1);
-        assert_eq!(batch.diagnostics.unmatched_item_count, 1);
+        assert!(matches!(
+            decode_fetch(
+                &remote,
+                &request(&["https://example.com/a", "https://example.com/missing"])
+            ),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 1,
+                dropped_items: 1,
+            })
+        ));
     }
 
     #[test]
@@ -833,10 +938,49 @@ mod tests {
             }),
             None,
         );
-        let batch = decode_fetch(&remote, &request(&["https://example.com/a"])).unwrap();
-        assert!(batch.items.is_empty());
-        assert_eq!(batch.diagnostics.dropped_item_count, 1);
-        assert_eq!(batch.diagnostics.unmatched_item_count, 1);
+        assert!(matches!(
+            decode_fetch(&remote, &request(&["https://example.com/a"])),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 1,
+                dropped_items: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_error_item_is_a_source_contract_violation() {
+        let remote = result(
+            json!({
+                "results": [{"url": "https://example.com/a", "excerpts": ["A"]}],
+                "errors": [{"url": 42}]
+            }),
+            None,
+        );
+        assert!(matches!(
+            decode_fetch(&remote, &request(&["https://example.com/a"])),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 0,
+                dropped_items: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn extra_error_item_is_a_source_contract_violation() {
+        let remote = result(
+            json!({
+                "results": [{"url": "https://example.com/a", "excerpts": ["A"]}],
+                "errors": [{"url": "https://example.com/extra", "http_status_code": 404}]
+            }),
+            None,
+        );
+        assert!(matches!(
+            decode_fetch(&remote, &request(&["https://example.com/a"])),
+            Err(RemoteExtractError::SourceContractViolation {
+                unmatched_items: 0,
+                dropped_items: 1,
+            })
+        ));
     }
 
     #[test]
@@ -1059,6 +1203,66 @@ mod tests {
             .await;
     }
 
+    #[cfg(feature = "fetch-eval")]
+    async fn mount_repeating_peer(server: &MockServer, stateful: bool) {
+        mount_repeating_peer_with_lists(server, stateful, 2).await;
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    async fn mount_repeating_peer_with_lists(
+        server: &MockServer,
+        stateful: bool,
+        tool_list_count: usize,
+    ) {
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(move |request: &Request| {
+                let id = serde_json::from_slice::<Value>(&request.body)
+                    .ok()
+                    .and_then(|value| value.get("id").and_then(Value::as_u64))
+                    .unwrap_or(0);
+                let response = ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "serverInfo": {"name": "mock", "version": "1"}
+                    }
+                }));
+                if stateful {
+                    response.insert_header("Mcp-Session-Id", "session-1")
+                } else {
+                    response
+                }
+            })
+            .expect(if stateful { 2 } else { 1 })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(if stateful { 2 } else { 1 })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(|request: &Request| {
+                let id = serde_json::from_slice::<Value>(&request.body)
+                    .ok()
+                    .and_then(|value| value.get("id").and_then(Value::as_u64))
+                    .unwrap_or(0);
+                let mut response = tools_list_response();
+                response["id"] = json!(id);
+                ResponseTemplate::new(200).set_body_json(response)
+            })
+            .expect(tool_list_count as u64)
+            .mount(server)
+            .await;
+    }
+
     fn fetch_success_response(id: u64, url: &str) -> Value {
         json!({
             "jsonrpc": "2.0",
@@ -1148,6 +1352,341 @@ mod tests {
             adapter.fetch_readiness().await,
             FetchReadiness::Ready { generation: 1 }
         ));
+    }
+
+    #[tokio::test]
+    async fn real_parallel_fetch_call_crosses_gate_with_exact_arguments() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fetch_success_response(
+                3,
+                "https://example.com/a",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let gate = Arc::new(RecordingGate::default());
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("remote batch");
+        let calls = gate.calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, ManagedMcpTool::Fetch);
+        assert_eq!(calls[0].2, 1);
+        assert_eq!(
+            calls[0].1.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["full_content", "urls"]
+        );
+        assert_eq!(calls[0].1["full_content"], false);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_session_recovery_crosses_gate_and_counts_recovery() {
+        let server = MockServer::start().await;
+        mount_repeating_peer(&server, true).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-session-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let result = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        let batch = result.expect("session recovery");
+
+        assert_eq!(batch.items[0].markdown, "# Hello");
+        assert_eq!(gate.actual_calls(), 2);
+        assert_eq!(gate.fetch_calls(), 2);
+        assert_eq!(gate.recovery_calls(), 1);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_unknown_tool_recovery_crosses_gate() {
+        let server = MockServer::start().await;
+        mount_repeating_peer(&server, false).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "content": [{"type": "text", "text": "unknown tool: web_fetch"}],
+                    "isError": true
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 5})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-tool-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let batch = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("unknown tool recovery");
+
+        assert_eq!(batch.items[0].markdown, "# Hello");
+        assert_eq!(gate.actual_calls(), 2);
+        assert_eq!(gate.fetch_calls(), 2);
+        assert_eq!(gate.recovery_calls(), 1);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_session_and_tool_recovery_use_only_three_calls() {
+        let server = MockServer::start().await;
+        mount_repeating_peer_with_lists(&server, true, 3).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 3})))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 6})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "result": {
+                    "content": [{"type": "text", "text": "unknown tool: web_fetch"}],
+                    "isError": true
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call", "id": 8})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-combined-recovery-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let batch = ParallelFetchAdapter::new(client)
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .expect("combined recovery");
+
+        assert_eq!(batch.items[0].markdown, "# Hello");
+        assert_eq!(gate.actual_calls(), 3);
+        assert_eq!(gate.fetch_calls(), 3);
+        assert_eq!(gate.recovery_calls(), 2);
+        assert_eq!(gate.retry_limit_violations(), 0);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_fourth_call_is_blocked_before_wiremock() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(fetch_success_responder("https://example.com/a"))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-fourth-call-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = ParallelMcpClient::new_for_test_endpoint(
+            server.uri(),
+            Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+        )
+        .expect("offline construction");
+        client
+            .peer()
+            .discover_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("tool discovery");
+        let arguments = json!({
+            "urls": ["https://example.com/a"],
+            "full_content": false,
+        });
+        for attempt in 1..=3 {
+            client
+                .call_tool(
+                    FETCH_TOOL,
+                    arguments.clone(),
+                    Instant::now() + Duration::from_secs(5),
+                    attempt,
+                )
+                .await
+                .expect("allowed call");
+        }
+        assert!(matches!(
+            client
+                .call_tool(
+                    FETCH_TOOL,
+                    arguments,
+                    Instant::now() + Duration::from_secs(5),
+                    4,
+                )
+                .await,
+            Err(ManagedMcpCallError::RetryLimitExceeded)
+        ));
+        assert_eq!(gate.actual_calls(), 3);
+        assert_eq!(gate.retry_limit_violations(), 1);
+        let _ = std::fs::remove_file(quota_path);
+    }
+
+    #[cfg(feature = "fetch-eval")]
+    #[tokio::test]
+    async fn real_parallel_fetch_429_persists_cooldown_and_blocks_later_call() {
+        let server = MockServer::start().await;
+        mount_peer(&server).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "2")
+                    .set_body_string("rate limited"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quota_path = std::env::temp_dir().join(format!(
+            "allo-fetch-eval-rate-gate-{}.json",
+            uuid::Uuid::now_v7()
+        ));
+        let gate = Arc::new(crate::evaluation::runner::FileQuotaControl::new(
+            quota_path.clone(),
+            60,
+            10,
+        ));
+        let client = Arc::new(
+            ParallelMcpClient::new_for_test_endpoint(
+                server.uri(),
+                Some(Arc::clone(&gate) as Arc<dyn ManagedMcpCallControl>),
+            )
+            .expect("offline construction"),
+        );
+        let adapter = ParallelFetchAdapter::new(client);
+        let first = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(matches!(
+            first,
+            Err(RemoteExtractError::RateLimited(Some(_)))
+        ));
+        let second = adapter
+            .extract_batch(
+                request(&["https://example.com/a"]),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(second.is_err());
+        assert_eq!(gate.actual_calls(), 1);
+        assert_eq!(gate.state().0.as_deref(), Some("rate_limited"));
+        assert!(gate.state().1.is_some());
+        assert!(gate.state().2.is_some());
+        let ledger: Value = serde_json::from_slice(
+            &std::fs::read(&quota_path).expect("quota ledger"),
+        )
+        .expect("valid quota ledger");
+        assert!(ledger["cooldown_until_unix"].as_i64().is_some());
+        let _ = std::fs::remove_file(quota_path);
     }
 
     #[tokio::test]

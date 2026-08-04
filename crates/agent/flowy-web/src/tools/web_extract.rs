@@ -89,12 +89,17 @@ impl Tool for WebExtractTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch public URLs and return readable markdown of the main article body (boilerplate \
-         stripped when possible, truncated for context). Use when you already have URLs and \
-         snippets from web_search are not enough. Extract one URL for ordinary follow-up, two \
-         for a comparison, and at most three for explicit multi-source research. Do not \
-         mechanically extract every remaining URL; consume the current evidence first. Do not \
-         use Browser just to read public pages."
+        "Read public HTTP(S) URLs and return readable extracted content as markdown. Accepts \
+         ordinary HTML, direct PDF documents (including PDF text), JavaScript-shell pages, \
+         and short or empty pages. When the user provides a public URL \
+         and asks you to read, summarize, or extract its content, pass that URL directly to \
+         web_extract first—even for a .pdf URL; do not create a Bash/Python/exec_command \
+         script merely to read or parse it, and do not open Browser just to read the file. Use Browser \
+         only for interactive or rendered actions, and use shell/Python for local files or after \
+         this tool genuinely fails. If the user explicitly asks to download or save the original \
+         file, use the appropriate file or artifact workflow instead. Extract one URL for ordinary follow-up, two for a \
+         comparison, and at most three for explicit multi-source research. Do not mechanically \
+         extract every remaining URL; consume the current evidence first."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -106,7 +111,7 @@ impl Tool for WebExtractTool {
                     "items": { "type": "string" },
                     "minItems": 1,
                     "maxItems": 3,
-                    "description": "URLs to extract (1–3)"
+                    "description": "Public HTTP(S) URLs to read (HTML, direct PDF, JavaScript shell, or short/empty page); pass the original URL directly (1–3)"
                 }
             },
             "required": ["urls"]
@@ -465,7 +470,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
 
-    use nomi_tools::Tool;
+    use nomi_tools::{Tool, ToolRegistry};
 
     use crate::provider::ExtractProvider;
     use crate::types::{
@@ -644,6 +649,36 @@ mod tests {
         assert_eq!(schema["properties"]["urls"]["maxItems"], json!(3));
         assert!(tool.description().contains("one URL for ordinary follow-up"));
         assert!(tool.description().contains("Do not mechanically extract every remaining URL"));
+        assert!(tool.description().contains("public HTTP(S) URLs"));
+        assert!(tool.description().contains("ordinary HTML"));
+        assert!(tool.description().contains("direct PDF documents"));
+        assert!(tool.description().contains("JavaScript-shell pages"));
+        assert!(tool.description().contains("short or empty pages"));
+        assert!(tool.description().contains("web_extract first"));
+        assert!(tool.description().contains(".pdf URL"));
+        assert!(tool.description().contains("script merely to read or parse"));
+        assert!(schema["properties"]["urls"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("direct PDF")));
+    }
+
+    #[test]
+    fn web_extract_tool_definition_preserves_document_guidance() {
+        let mut registry = ToolRegistry::new();
+        assert!(registry.register(Box::new(WebExtractTool::new(
+            Arc::new(MockExtract::default()),
+        ))));
+
+        let definitions = registry.to_tool_defs();
+        let definition = definitions
+            .iter()
+            .find(|definition| definition.name == "web_extract")
+            .expect("web_extract definition must be registered");
+        assert!(definition.description.contains("direct PDF documents"));
+        assert!(definition.description.contains("JavaScript-shell pages"));
+        assert!(definition.input_schema["properties"]["urls"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("direct PDF")));
     }
 
     #[test]

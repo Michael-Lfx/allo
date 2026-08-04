@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+fetch-eval = ["dep:fs2", "dep:tempfile"]
+
 [dependencies]
 nomi-types.workspace = true
 nomi-protocol.workspace = true
@@ -24,8 +27,15 @@ futures-util.workspace = true
 htmd.workspace = true
 url.workspace = true
 uuid.workspace = true
+fs2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 dom_smoothie = "0.18"
 
 [dev-dependencies]
+clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 wiremock.workspace = true
+
+[[example]]
+name = "fetch_eval"
+required-features = ["fetch-eval"]

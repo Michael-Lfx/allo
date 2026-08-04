@@ -87,14 +87,16 @@ Parallel -> You.com Free -> DuckDuckGo
   5. Typed Parallel Fetch Adapter
   6. Local-first ManagedExtractCoordinator
   7. AgentBootstrap Host Binding
-  8. Desktop Host Composition，但 `managed_extract=false`
+  8. Desktop Host Composition；2026-08-02 起 unset 默认进入 EvidenceBacked，
+     `NOMIFUN_MANAGED_FETCH_MODE=off` 保留 Local-only 回滚
   9. 唯一 shutdown owner
   10. Fetch 诊断与 endpoint health
   11. 策略文档
   12. 启用前 Review 修复：URL 归属、fragment 出站、结构化失败分类、
       access challenge、source completeness、Peer generation readiness、
       共享 endpoint health / 独立 fetch tool health、timeout 与 local/final 指标
-- 当前分支已 rebase 到最新 `main`，开发分支为 `feat/managed-web-fetch`。
+- 历史实现最初来自 `feat/managed-web-fetch`；当前收口分支为
+  `feat/fetch-optimization`，以 EvidenceBacked Desktop 验收为准。
 
 ## 当前 Search 实现结果
 
@@ -136,7 +138,10 @@ Parallel -> You.com Free -> DuckDuckGo
 ### Managed fallback 路径
 
 - 仅 Desktop 的 `ManagedWebHandle` 可能注入 `ManagedExtractCoordinator`。
-- 当前 `AppHostCapabilities::managed_extract = false`，默认不启用。
+- 当前 Desktop `AppHostCapabilities` 通过显式 `ManagedExtractMode` 选择模式；
+  unset 默认是 EvidenceBacked，`off` 或非法值 fail-closed 为 Disabled。
+- Web Host 与 Nomi CLI 仍不构造 Managed Extract；本节的默认启用只适用于
+  Desktop Host。
 - 执行原则：
 
 ```text
@@ -168,9 +173,10 @@ Local-first
 - 取消边界覆盖：等待 fetch semaphore 时取消不发出 `tools/call`，在途 MCP call
   取消不残留 detached task；两个并发 adapter 共享同一个全局 Fetch permit。
 
-### 当前不启用原因
+### 已完成限定验收与后续边界
 
-Desktop `managed_extract` 保持关闭，直到完成真实验收：
+Desktop 已完成一次限定的 EvidenceBacked 真实验收；以下条件构成持续门禁，
+而不是关闭默认能力的当前状态：
 
 - 普通 HTML 只走本地
 - PDF / JS 远程有实际增益
@@ -180,6 +186,17 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 - ToolResult ≤ 8,000 字符
 - 抓包确认只发送经过准入的 URL
 - 性能 P50/P95 达到内部目标
+
+### 2026-08-04：模型工具路由收口
+
+- 新增模型可见的 `web_extract` 能力说明：公开 HTML、直链 PDF、JavaScript Shell、
+  短页/空页均先交给现有读取工具；不暴露 Parallel、MCP 或 Provider。
+- 已知公开直链 URL 不应先搜索；`web_search` 只用于发现 URL。
+- Browser 保持交互用途；Bash/Python/`exec_command` 只用于本地 artifact 或
+  `web_extract` 明确失败后的补救。用户不需要知道内部工具名称。
+- 验收不能只看模型文本或工具注册日志：PDF/JS 需要首个实际读取动作为
+  `web_extract`，再由 `remote_attempted=true` 与正的成功计数证明受控 Remote
+  fallback；HTML 则应 Local 成功且零 Remote。
 
 ## 关键决策记录
 
@@ -203,7 +220,8 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 7. 敏感 URL 只禁止远程发送，不禁止本地读取；fragment 中的敏感键同样禁止。
 8. Parse 和 200 access challenge 页面不进入远程。
 9. 远程内容若来自 excerpts，则标记 source_truncated。
-10. Desktop 默认不启用，直到真实验收通过。
+10. Desktop unset 默认使用 EvidenceBacked；`off` 或非法值 fail-closed 为
+    Local-only。正式 15+ URL Admission 与更多类别仍需单独批准。
 
 ## 避坑清单
 
@@ -270,6 +288,11 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
   `ManagedWebHandle` 负责 exactly-once shutdown；重复 shutdown 幂等。
 - **日志不能记录 URL、Query、标题、正文、Conversation ID 或 raw MCP payload。**
   只能记录 index、计数、耗时、错误分类和 fallback reason。
+- **不要把模型路由提示当成出站权限。** `web_extract` 被选择后仍必须经过
+  Local-first、profile/capability、预算、URL 安全和来源契约；提示不能让 Deferred
+  或 Forbidden 类别出站。
+- **不要要求真实用户在提示词中点名内部工具。** 维护验收应使用自然的“读取/概括
+  此 URL”请求，再检查首个实际 tool use 和脱敏 counters。
 
 ### 仓库与门禁
 
@@ -291,6 +314,8 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 | `docs/superpowers/plans/2026-07-30-managed-web-search-you-rollout.md` | You.com 替换 Exa 的 rollout 与 MCP Peer 不变量 |
 | `docs/continuity/decisions/2026-07-31-parallel-web-fetch-admission.md` | Parallel `web_fetch` 真实 Probe 结论 |
 | `docs/architecture/web/managed-web-fetch-policy.md` | Local-first Managed Extract 生产策略 |
+| `docs/architecture/web/managed-web-fetch-provider-maintenance.md` | Provider seam、模型工具契约与维护验收 |
+| `docs/architecture/web/managed-fetch-evaluation.md` | 评测证据边界与可恢复实验操作 |
 | 本文档 | 演变时间线、实现现状、避坑清单、文档入口 |
 
 ### 历史研究 / 规划文档
@@ -304,8 +329,12 @@ Desktop `managed_extract` 保持关闭，直到完成真实验收：
 
 ## 后续待完成
 
-- Desktop `managed_extract` 真实验收。
-- `managed_extract=true` 单独提交。
+- 正式 15+ URL Admission，以及在更多真实语料上复核当前有限的公开 Canary 证据。
+- 将 Network、Timeout、Unsupported Document 等 Deferred 类别纳入新的准入评审；本分支
+  不扩大 Remote 范围。
 - 如 Parallel 返回 SSE，重新评估 `MAX_SSE_EVENT_BYTES`。
-- 修复基线 `bun run check` 的 i18n / agent-vocabulary 问题（独立于本功能）。
-- 真实验收通过后，按 `managed-web-fetch-policy.md` 回滚和降级策略执行。
+- 维护 `bun run check` 的仓库级基线（若环境导致失败，须与本功能结果分开记录）。
+- 继续按 `managed-web-fetch-policy.md` 维护回滚和降级策略；Desktop 已完成 2026-08-02
+  的限定验收和 2026-08-04 的冷启动/模型工具路由验收。提交 PR 前仍要以实时
+  `origin/main` 为基线 rebase 并重跑受影响门禁；
+  `NOMIFUN_MANAGED_FETCH_MODE=off` 仍可立即回滚到 Local-only。

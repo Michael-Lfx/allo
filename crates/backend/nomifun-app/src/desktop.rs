@@ -494,11 +494,15 @@ impl DesktopKeepAlive {
     pub async fn shutdown_after_startup_failure(&self) -> anyhow::Result<()> {
         match &self.inner.cleanup {
             DesktopStartupCleanupAuthority::Services(services) => {
+                let mut errors = Vec::new();
                 #[cfg(feature = "managed-search")]
-                services.shutdown_managed_search().await;
-                services.shutdown_browser_platform().await?;
-                services.database.close().await;
-                Ok(())
+                if let Err(error) = services.shutdown_managed_search().await {
+                    errors.push(format!("managed search cleanup failed: {error:#}"));
+                }
+                if let Err(error) = services.shutdown_browser_platform().await {
+                    errors.push(format!("browser platform cleanup failed: {error:#}"));
+                }
+                close_database_after_cleanup(errors, || services.database.close()).await
             }
             DesktopStartupCleanupAuthority::Startup(authority) => authority.cleanup().await,
         }
@@ -635,7 +639,7 @@ impl DesktopServer {
         let services = match AppServices::try_from_config_with_capabilities(
             database,
             &config,
-            AppHostCapabilities::desktop(),
+            AppHostCapabilities::desktop_runtime(),
         )
         .await
         {
@@ -976,7 +980,10 @@ impl DesktopServer {
             )
             .await
             {
-                Ok(()) => {}
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => errors.push(format!(
+                    "managed search shutdown failed: {error}"
+                )),
                 Err(_) => errors.push(
                     "managed search shutdown timed out after 3 seconds".to_owned(),
                 ),

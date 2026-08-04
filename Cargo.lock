@@ -2985,7 +2985,9 @@ version = "0.3.7"
 dependencies = [
  "async-trait",
  "chrono",
+ "clap",
  "dom_smoothie",
+ "fs2",
  "futures-util",
  "htmd",
  "nomi-mcp",
@@ -2995,6 +2997,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

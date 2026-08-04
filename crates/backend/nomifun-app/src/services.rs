@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use nomifun_ai_agent::{
     AcpSessionSyncService, AcpSkillManager, AgentFactoryDeps, AgentRegistry, AgentRuntimeRegistry,
-    InMemoryAgentRuntimeRegistry, build_agent_factory,
+    InMemoryAgentRuntimeRegistry, ManagedExtractMode, build_agent_factory,
 };
 use nomifun_api_types::{GatewayMcpConfig, RequirementMcpConfig};
 use nomifun_auth::{
@@ -941,22 +941,72 @@ async fn forward_browser_inventory_events(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AppHostCapabilities {
     pub managed_search: bool,
-    pub managed_extract: bool,
+    pub managed_extract: ManagedExtractMode,
 }
 
 impl AppHostCapabilities {
     pub const fn desktop() -> Self {
         Self {
             managed_search: true,
-            managed_extract: false,
+            managed_extract: ManagedExtractMode::EvidenceBacked,
         }
+    }
+
+    /// Resolve the Desktop rollout override. The evidence-backed profile is
+    /// enabled by default after the completed Desktop acceptance; malformed
+    /// values fail closed and `off` remains the emergency rollback.
+    pub fn desktop_runtime() -> Self {
+        let raw = std::env::var("NOMIFUN_MANAGED_FETCH_MODE").ok();
+        let managed_extract = managed_extract_mode_from_override(raw.as_deref());
+        match raw.as_deref().map(str::trim) {
+            Some(value) if value.is_empty() => {
+                tracing::warn!(
+                    target: "managed_search",
+                    resolution = "disabled",
+                    reason = "blank_managed_fetch_mode",
+                    "blank managed fetch mode; keeping Desktop extraction disabled"
+                );
+            }
+            Some(value)
+                if !value.eq_ignore_ascii_case("off")
+                    && !value.eq_ignore_ascii_case("evidence-backed") =>
+            {
+                tracing::warn!(
+                    target: "managed_search",
+                    resolution = "disabled",
+                    reason = "invalid_managed_fetch_mode",
+                    "invalid managed fetch mode; keeping Desktop extraction disabled"
+                );
+            }
+            _ => {}
+        }
+        tracing::info!(
+            target: "managed_search",
+            managed_extract_mode = ?managed_extract,
+            "resolved Desktop managed fetch mode"
+        );
+        Self {
+            managed_search: true,
+            managed_extract,
+        }
+    }
+}
+
+fn managed_extract_mode_from_override(raw: Option<&str>) -> ManagedExtractMode {
+    match raw.map(str::trim) {
+        None => ManagedExtractMode::EvidenceBacked,
+        Some(value) if value.eq_ignore_ascii_case("evidence-backed") => {
+            ManagedExtractMode::EvidenceBacked
+        }
+        Some(value) if value.eq_ignore_ascii_case("off") => ManagedExtractMode::Disabled,
+        _ => ManagedExtractMode::Disabled,
     }
 }
 
 #[cfg(feature = "managed-search")]
 fn resolve_managed_web_binding<M, D>(
     enabled: bool,
-    managed_extract: bool,
+    managed_extract: ManagedExtractMode,
     managed_factory: M,
     ddg_factory: D,
 ) -> (
@@ -965,10 +1015,20 @@ fn resolve_managed_web_binding<M, D>(
     nomifun_ai_agent::ExtractCoordinatorBinding,
 )
 where
-    M: FnOnce(bool) -> Result<nomifun_ai_agent::ManagedWebHandle, String>,
+    M: FnOnce(ManagedExtractMode) -> Result<nomifun_ai_agent::ManagedWebHandle, String>,
     D: FnOnce() -> Result<nomifun_ai_agent::ManagedWebHandle, String>,
 {
     if !enabled {
+        if managed_extract != ManagedExtractMode::Disabled {
+            tracing::warn!(
+                target: "managed_search",
+                managed_extract_requested = true,
+                managed_search_enabled = false,
+                resolution = "local_default",
+                reason = "unsupported_capability_combination",
+                "managed extract requested without managed search; using local extraction"
+            );
+        }
         return (
             None,
             nomifun_ai_agent::SearchProviderBinding::DefaultDdg,
@@ -1568,10 +1628,14 @@ impl AppServices {
     /// Conversation runtime teardown must not call this; only Host shutdown
     /// owns the process-level Search lifecycle.
     #[cfg(feature = "managed-search")]
-    pub(crate) async fn shutdown_managed_search(&self) {
+    pub(crate) async fn shutdown_managed_search(&self) -> anyhow::Result<()> {
         if let Some(managed_web) = self.managed_web.as_ref() {
-            managed_web.shutdown().await;
+            managed_web
+                .shutdown()
+                .await
+                .map_err(|error| anyhow::anyhow!("managed search shutdown failed: {error}"))?;
         }
+        Ok(())
     }
 
     /// Close browser resources and the database after a startup-stage failure,
@@ -4426,11 +4490,42 @@ mod tests {
     #[test]
     fn managed_web_is_an_explicit_desktop_capability() {
         assert!(!AppHostCapabilities::default().managed_search);
-        assert!(!AppHostCapabilities::default().managed_extract);
+        assert_eq!(
+            AppHostCapabilities::default().managed_extract,
+            ManagedExtractMode::Disabled
+        );
         assert!(AppHostCapabilities::desktop().managed_search);
         assert!(
-            !AppHostCapabilities::desktop().managed_extract,
-            "remote extract must stay disabled until real acceptance"
+            AppHostCapabilities::desktop().managed_extract == ManagedExtractMode::EvidenceBacked,
+            "desktop default must use the evidence-backed remote extract profile"
+        );
+    }
+
+    #[test]
+    fn managed_fetch_mode_override_is_fail_closed() {
+        assert_eq!(
+            managed_extract_mode_from_override(Some("evidence-backed")),
+            ManagedExtractMode::EvidenceBacked
+        );
+        assert_eq!(
+            managed_extract_mode_from_override(Some(" EVIDENCE-BACKED ")),
+            ManagedExtractMode::EvidenceBacked
+        );
+        assert_eq!(
+            managed_extract_mode_from_override(Some("off")),
+            ManagedExtractMode::Disabled
+        );
+        assert_eq!(
+            managed_extract_mode_from_override(Some("")),
+            ManagedExtractMode::Disabled
+        );
+        assert_eq!(
+            managed_extract_mode_from_override(Some("unexpected")),
+            ManagedExtractMode::Disabled
+        );
+        assert_eq!(
+            managed_extract_mode_from_override(None),
+            ManagedExtractMode::EvidenceBacked
         );
     }
 
@@ -4439,7 +4534,7 @@ mod tests {
     fn managed_web_binding_degrades_managed_to_ddg_then_disabled() {
         let (handle, binding, extract) = resolve_managed_web_binding(
             false,
-            false,
+            ManagedExtractMode::Disabled,
             |_| panic!("disabled capability must not construct managed search"),
             || panic!("disabled capability must not construct ddg fallback"),
         );
@@ -4454,8 +4549,24 @@ mod tests {
         ));
 
         let (handle, binding, extract) = resolve_managed_web_binding(
-            true,
             false,
+            ManagedExtractMode::EvidenceBacked,
+            |_| panic!("unsupported extract-only capability must not construct managed search"),
+            || panic!("unsupported extract-only capability must not construct ddg fallback"),
+        );
+        assert!(handle.is_none());
+        assert!(matches!(
+            binding,
+            nomifun_ai_agent::SearchProviderBinding::DefaultDdg
+        ));
+        assert!(matches!(
+            extract,
+            nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault
+        ));
+
+        let (handle, binding, extract) = resolve_managed_web_binding(
+            true,
+            ManagedExtractMode::Disabled,
             |managed_extract| {
                 nomifun_ai_agent::ManagedWebHandle::keyless_default(managed_extract)
                     .map_err(|error| error.to_string())
@@ -4474,7 +4585,7 @@ mod tests {
 
         let (handle, binding, extract) = resolve_managed_web_binding(
             true,
-            true,
+            ManagedExtractMode::EvidenceBacked,
             |managed_extract| {
                 nomifun_ai_agent::ManagedWebHandle::keyless_default(managed_extract)
                     .map_err(|error| error.to_string())
@@ -4493,7 +4604,7 @@ mod tests {
 
         let (handle, binding, extract) = resolve_managed_web_binding(
             true,
-            false,
+            ManagedExtractMode::Disabled,
             |_| Err("managed unavailable".to_owned()),
             || nomifun_ai_agent::ManagedWebHandle::ddg_only().map_err(|error| error.to_string()),
         );
@@ -4509,7 +4620,7 @@ mod tests {
 
         let (handle, binding, extract) = resolve_managed_web_binding(
             true,
-            false,
+            ManagedExtractMode::Disabled,
             |_| Err("managed unavailable".to_owned()),
             || Err("ddg unavailable".to_owned()),
         );
@@ -4541,7 +4652,7 @@ mod tests {
             services.managed_web.is_some(),
             "desktop capability must construct a ManagedWebHandle"
         );
-        services.shutdown_managed_search().await;
+        services.shutdown_managed_search().await.unwrap();
         services.database.close().await;
     }
 

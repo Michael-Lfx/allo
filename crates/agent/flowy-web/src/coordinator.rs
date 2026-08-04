@@ -7,13 +7,14 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::time::{Instant, timeout_at};
 
 use crate::managed::fetch::{
-    FetchReadiness, RemoteExtractError, RemoteExtractFallback, RemoteExtractItem,
+    RemoteExtractError, RemoteExtractItem, RemoteExtractProvider, RemoteExtractReadiness,
     RemoteExtractRequest, RemoteExtractRequestItem, RemoteTimeoutKind,
 };
 use crate::provider::extract_policy::{
     LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
-    RemoteFallbackDecision, RemoteFallbackReason, RemoteForbiddenReason,
-    canonical_requested_url, classify_web_error, decide_remote_fallback_with_private,
+    RemoteDeferredReason, RemoteExtractCapabilities, RemoteFallbackDecision,
+    RemoteFallbackPolicy, RemoteFallbackReason, RemoteForbiddenReason, canonical_requested_url,
+    classify_web_error,
 };
 use crate::provider::{ExtractProvider, HttpExtractProvider};
 use crate::types::{
@@ -86,6 +87,11 @@ pub struct ExtractBatchDiagnostics {
     pub local_failure_count: usize,
     pub final_success_count: usize,
     pub final_failure_count: usize,
+    /// Items that the base safety policy considers remote-capable before the
+    /// active rollout profile is applied.
+    pub remote_policy_candidate_count: usize,
+    /// Safe Local failures intentionally held back by the active profile.
+    pub remote_policy_deferred_count: usize,
     pub remote_eligible_count: usize,
     pub remote_stage_count: usize,
     pub remote_attempted: bool,
@@ -95,9 +101,26 @@ pub struct ExtractBatchDiagnostics {
     pub remote_budget_skipped_count: usize,
     pub remote_queue_ms: Option<u128>,
     pub remote_call_ms: Option<u128>,
+    pub remote_unmatched_count: usize,
+    pub remote_dropped_count: usize,
+    pub remote_source_contract_violation_count: usize,
+    pub remote_safety_rejected_count: usize,
+    pub remote_recovery_call_count: usize,
+    pub remote_provider_init_failure_count: usize,
+    pub remote_provider_unavailable_count: usize,
+    pub remote_provider_cooldown_reason: Option<&'static str>,
+    /// Readiness observed immediately before the remote stage decision.
+    pub remote_readiness: Option<RemoteExtractReadiness>,
+    /// Remaining tool budget at the remote stage decision.
+    pub remote_remaining_ms: Option<u128>,
+    /// Minimum remaining budget required by the observed readiness.
+    pub remote_min_start_ms: Option<u128>,
+    /// `attempt` or `defer_budget` when an eligible item reached the policy.
+    pub remote_budget_decision: Option<&'static str>,
     pub total_elapsed_ms: u128,
     pub timeout_counts: ExtractTimeoutCounts,
     pub fallback_reason_counts: BTreeMap<RemoteFallbackReason, usize>,
+    pub remote_policy_deferred_reason_counts: BTreeMap<RemoteDeferredReason, usize>,
     pub remote_forbidden_reason_counts: BTreeMap<RemoteForbiddenReason, usize>,
     pub source_truncated_count: usize,
     pub context_truncated_count: usize,
@@ -110,6 +133,23 @@ pub trait ExtractCoordinator: Send + Sync {
         requests: Vec<ExtractRequest>,
         budget: ExtractBudget,
     ) -> ExtractBatchOutcome;
+}
+
+/// Local extraction seam used by the managed coordinator.
+///
+/// The production adapter is [`HttpExtractProvider`]. Evaluation and tests can
+/// inject a deterministic adapter without changing the remote fallback
+/// contract or pretending that an injected failure is provider evidence.
+#[async_trait]
+pub(crate) trait LocalExtractAdapter: Send + Sync {
+    async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome;
+}
+
+#[async_trait]
+impl LocalExtractAdapter for HttpExtractProvider {
+    async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
+        HttpExtractProvider::extract_with_metadata(self, req).await
+    }
 }
 
 pub struct LocalExtractCoordinator {
@@ -242,6 +282,8 @@ impl ExtractCoordinator for LocalExtractCoordinator {
                 local_failure_count: failure_count,
                 final_success_count: success_count,
                 final_failure_count: failure_count,
+                remote_policy_candidate_count: 0,
+                remote_policy_deferred_count: 0,
                 remote_eligible_count: 0,
                 remote_stage_count: 0,
                 remote_attempted: false,
@@ -251,9 +293,22 @@ impl ExtractCoordinator for LocalExtractCoordinator {
                 remote_budget_skipped_count: 0,
                 remote_queue_ms: None,
                 remote_call_ms: None,
+                remote_unmatched_count: 0,
+                remote_dropped_count: 0,
+                remote_source_contract_violation_count: 0,
+                remote_safety_rejected_count: 0,
+                remote_recovery_call_count: 0,
+                remote_provider_init_failure_count: 0,
+                remote_provider_unavailable_count: 0,
+                remote_provider_cooldown_reason: None,
+                remote_readiness: None,
+                remote_remaining_ms: None,
+                remote_min_start_ms: None,
+                remote_budget_decision: None,
                 total_elapsed_ms: started_at.elapsed().as_millis(),
                 timeout_counts,
                 fallback_reason_counts: BTreeMap::new(),
+                remote_policy_deferred_reason_counts: BTreeMap::new(),
                 remote_forbidden_reason_counts: BTreeMap::new(),
                 source_truncated_count,
                 context_truncated_count,
@@ -269,31 +324,38 @@ struct LocalExtractItemOutcome {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct RemoteBudgetPolicy {
-    pub warm_fetch_budget: Duration,
-    pub cold_fetch_budget: Duration,
-    pub safety_margin: Duration,
+pub(crate) struct RemoteAttemptPolicy {
+    pub ready_min_remaining: Duration,
+    pub tool_unknown_min_remaining: Duration,
+    pub cold_min_remaining: Duration,
 }
 
-impl Default for RemoteBudgetPolicy {
+impl Default for RemoteAttemptPolicy {
     fn default() -> Self {
         Self {
-            warm_fetch_budget: Duration::from_secs(6),
-            cold_fetch_budget: Duration::from_secs(10),
-            safety_margin: Duration::from_secs(1),
+            // The production web_extract tool has a 12 second absolute
+            // deadline.  These thresholds reserve enough time for the
+            // observed Parallel initialize/discovery/fetch path while still
+            // allowing the normal 1-2 second PDF/JS classification phase to
+            // reach the remote stage.
+            ready_min_remaining: Duration::from_secs(4),
+            tool_unknown_min_remaining: Duration::from_secs(6),
+            cold_min_remaining: Duration::from_secs(8),
         }
     }
 }
 
-impl RemoteBudgetPolicy {
-    fn allows(&self, readiness: FetchReadiness, remaining: Duration) -> bool {
-        let required = match readiness {
-            FetchReadiness::ColdTransport | FetchReadiness::WarmTransportToolUnknown => {
-                self.cold_fetch_budget
-            }
-            FetchReadiness::Ready { .. } => self.warm_fetch_budget,
-        };
-        remaining >= required + self.safety_margin
+impl RemoteAttemptPolicy {
+    fn minimum_remaining(&self, readiness: RemoteExtractReadiness) -> Duration {
+        match readiness {
+            RemoteExtractReadiness::ColdTransport => self.cold_min_remaining,
+            RemoteExtractReadiness::WarmTransportToolUnknown => self.tool_unknown_min_remaining,
+            RemoteExtractReadiness::Ready { .. } => self.ready_min_remaining,
+        }
+    }
+
+    fn allows(&self, readiness: RemoteExtractReadiness, remaining: Duration) -> bool {
+        remaining >= self.minimum_remaining(readiness)
     }
 }
 
@@ -301,30 +363,76 @@ struct EligibleItem {
     index: usize,
     requested_url: String,
     local_failure: LocalExtractFailure,
+    reason: RemoteFallbackReason,
 }
 
-pub struct ManagedExtractCoordinator {
-    local: Arc<HttpExtractProvider>,
-    remote: Arc<dyn RemoteExtractFallback>,
-    budget_policy: RemoteBudgetPolicy,
+pub(crate) struct ManagedExtractCoordinator {
+    local: Arc<dyn LocalExtractAdapter>,
+    remote: Arc<dyn RemoteExtractProvider>,
+    remote_attempt_policy: RemoteAttemptPolicy,
+    fallback_policy: RemoteFallbackPolicy,
+    remote_capabilities: RemoteExtractCapabilities,
     allow_private_for_tests: bool,
 }
 
 impl ManagedExtractCoordinator {
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         local: Arc<HttpExtractProvider>,
-        remote: Arc<dyn RemoteExtractFallback>,
+        remote: Arc<dyn RemoteExtractProvider>,
+    ) -> Self {
+        Self::from_local_adapter(local, remote)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_local_adapter(
+        local: Arc<dyn LocalExtractAdapter>,
+        remote: Arc<dyn RemoteExtractProvider>,
+    ) -> Self {
+        Self::with_profile_and_capabilities(
+            local,
+            remote,
+            RemoteFallbackPolicy::evidence_backed(),
+            RemoteExtractCapabilities::evidence_backed(),
+        )
+    }
+
+    #[cfg(any(test, feature = "fetch-eval"))]
+    pub(crate) fn with_profile_and_capabilities(
+        local: Arc<dyn LocalExtractAdapter>,
+        remote: Arc<dyn RemoteExtractProvider>,
+        fallback_policy: RemoteFallbackPolicy,
+        remote_capabilities: RemoteExtractCapabilities,
+    ) -> Self {
+        Self::with_profile_and_capabilities_and_attempt_policy(
+            local,
+            remote,
+            fallback_policy,
+            remote_capabilities,
+            RemoteAttemptPolicy::default(),
+        )
+    }
+
+    pub(crate) fn with_profile_and_capabilities_and_attempt_policy(
+        local: Arc<dyn LocalExtractAdapter>,
+        remote: Arc<dyn RemoteExtractProvider>,
+        fallback_policy: RemoteFallbackPolicy,
+        remote_capabilities: RemoteExtractCapabilities,
+        remote_attempt_policy: RemoteAttemptPolicy,
     ) -> Self {
         Self {
             local,
             remote,
-            budget_policy: RemoteBudgetPolicy::default(),
+            remote_attempt_policy,
+            fallback_policy,
+            remote_capabilities,
             allow_private_for_tests: false,
         }
     }
 
-    pub fn with_remote_budget(mut self, budget_policy: RemoteBudgetPolicy) -> Self {
-        self.budget_policy = budget_policy;
+    #[cfg(test)]
+    pub(crate) fn with_remote_attempt_policy(mut self, policy: RemoteAttemptPolicy) -> Self {
+        self.remote_attempt_policy = policy;
         self
     }
 
@@ -370,11 +478,14 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         }
         let mut eligible = Vec::new();
         let mut remote_forbidden_count = 0usize;
+        let mut remote_policy_candidate_count = 0usize;
+        let mut remote_policy_deferred_count = 0usize;
         let mut remote_budget_skipped_count = 0usize;
         let mut local_success_count = 0usize;
         let mut local_failure_count = 0usize;
         let mut timeout_counts = ExtractTimeoutCounts::default();
         let mut fallback_reason_counts = BTreeMap::new();
+        let mut remote_policy_deferred_reason_counts = BTreeMap::new();
         let mut remote_forbidden_reason_counts = BTreeMap::new();
         let mut source_truncated_count = 0usize;
         let mut context_truncated_count = 0usize;
@@ -461,16 +572,38 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 }
                 Err(local_failure) => {
                     local_failure_count += 1;
-                    let decision =
-                        decide_remote_fallback_with_private(&outcome, self.allow_private_for_tests);
+                    let decision = self
+                        .fallback_policy
+                        .decide_with_capabilities(
+                            &outcome,
+                            self.allow_private_for_tests,
+                            self.remote_capabilities,
+                        );
                     let local_failure = local_failure.clone();
                     match decision {
                         RemoteFallbackDecision::Eligible { reason } => {
+                            remote_policy_candidate_count += 1;
                             record_fallback_reason(&mut fallback_reason_counts, reason);
                             eligible.push(EligibleItem {
                                 index,
                                 requested_url: outcome.requested_url.clone(),
                                 local_failure,
+                                reason,
+                            });
+                        }
+                        RemoteFallbackDecision::Deferred { reason } => {
+                            remote_policy_candidate_count += 1;
+                            remote_policy_deferred_count += 1;
+                            record_deferred_reason(
+                                &mut remote_policy_deferred_reason_counts,
+                                reason,
+                            );
+                            item_outcomes[index] = Some(ExtractItemOutcome {
+                                index,
+                                requested_url: outcome.requested_url.clone(),
+                                page: None,
+                                local_failure: Some(local_failure.clone()),
+                                final_error: Some(local_failure.error),
                             });
                         }
                         RemoteFallbackDecision::Forbidden { reason } => {
@@ -485,16 +618,6 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                             });
                         }
                         RemoteFallbackDecision::NotNeeded => {}
-                        RemoteFallbackDecision::BudgetInsufficient { reason } => {
-                            record_fallback_reason(&mut fallback_reason_counts, reason);
-                            item_outcomes[index] = Some(ExtractItemOutcome {
-                                index,
-                                requested_url: outcome.requested_url.clone(),
-                                page: None,
-                                local_failure: Some(local_failure.clone()),
-                                final_error: Some(local_failure.error),
-                            });
-                        }
                     }
                 }
             }
@@ -507,13 +630,29 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
         let mut remote_failure_count = 0usize;
         let mut remote_queue_ms = None;
         let mut remote_call_ms = None;
+        let mut remote_unmatched_count = 0usize;
+        let mut remote_dropped_count = 0usize;
+        let mut remote_source_contract_violation_count = 0usize;
+        let mut remote_safety_rejected_count = 0usize;
+        let mut remote_recovery_call_count = 0usize;
+        let mut remote_provider_unavailable_count = 0usize;
+        let mut remote_provider_cooldown_reason = None;
+        let mut remote_readiness = None;
+        let mut remote_remaining_ms = None;
+        let mut remote_min_start_ms = None;
+        let mut remote_budget_decision = None;
         if !eligible.is_empty() {
-            let readiness = self.remote.fetch_readiness().await;
+            let readiness = self.remote.readiness().await;
             let remaining = budget
                 .absolute_deadline
                 .checked_duration_since(Instant::now())
                 .unwrap_or_default();
-            if self.budget_policy.allows(readiness, remaining) {
+            let minimum_remaining = self.remote_attempt_policy.minimum_remaining(readiness);
+            remote_readiness = Some(readiness);
+            remote_remaining_ms = Some(remaining.as_millis());
+            remote_min_start_ms = Some(minimum_remaining.as_millis());
+            if self.remote_attempt_policy.allows(readiness, remaining) {
+                remote_budget_decision = Some("attempt");
                 remote_stage_count = 1;
                 remote_attempted = true;
                 let request = RemoteExtractRequest {
@@ -523,16 +662,28 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                     Ok(remote_batch) => {
                         remote_queue_ms = remote_batch.diagnostics.queue_ms;
                         remote_call_ms = remote_batch.diagnostics.call_ms;
-                        let remote_by_url = remote_batch
+                        remote_recovery_call_count = remote_batch.diagnostics.recovery_call_count;
+                        remote_unmatched_count = remote_batch.diagnostics.unmatched_item_count;
+                        remote_dropped_count = remote_batch.diagnostics.dropped_item_count;
+                        let requested_urls = eligible
+                            .iter()
+                            .map(|item| canonical_requested_url(&item.requested_url))
+                            .collect::<HashSet<_>>();
+                        let response_urls = remote_batch
                             .items
                             .iter()
-                            .map(|item| (canonical_requested_url(&item.requested_url), item))
-                            .collect::<HashMap<_, _>>();
-                        for item in eligible {
-                            let remote_item = remote_by_url
-                                .get(&canonical_requested_url(&item.requested_url))
-                                .copied();
-                            let Some(remote_item) = remote_item else {
+                            .map(|item| canonical_requested_url(&item.requested_url))
+                            .collect::<HashSet<_>>();
+                        remote_unmatched_count = remote_unmatched_count.max(
+                            requested_urls.difference(&response_urls).count(),
+                        );
+                        remote_dropped_count = remote_dropped_count.max(
+                            response_urls.difference(&requested_urls).count(),
+                        );
+                        if remote_unmatched_count > 0 || remote_dropped_count > 0 {
+                            remote_source_contract_violation_count = 1;
+                            remote_failure_count = eligible.len();
+                            for item in eligible {
                                 item_outcomes[item.index] = Some(ExtractItemOutcome {
                                     index: item.index,
                                     requested_url: item.requested_url.clone(),
@@ -540,27 +691,63 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                                     local_failure: Some(item.local_failure.clone()),
                                     final_error: Some(item.local_failure.error),
                                 });
-                                remote_failure_count += 1;
-                                continue;
-                            };
-                            let page = remote_page(&item, remote_item);
-                            if remote_item.source_truncated {
-                                source_truncated_count += 1;
                             }
-                            if remote_item.markdown.chars().count() > EXTRACT_CHAR_LIMIT {
-                                context_truncated_count += 1;
+                        } else {
+                            let remote_by_url = remote_batch
+                                .items
+                                .iter()
+                                .map(|item| (canonical_requested_url(&item.requested_url), item))
+                                .collect::<HashMap<_, _>>();
+                            for item in eligible {
+                                let remote_item = remote_by_url
+                                    .get(&canonical_requested_url(&item.requested_url))
+                                    .copied();
+                                let Some(remote_item) = remote_item else {
+                                    item_outcomes[item.index] = Some(ExtractItemOutcome {
+                                        index: item.index,
+                                        requested_url: item.requested_url.clone(),
+                                        page: None,
+                                        local_failure: Some(item.local_failure.clone()),
+                                        final_error: Some(item.local_failure.error),
+                                    });
+                                    remote_failure_count += 1;
+                                    continue;
+                                };
+                                let page = remote_page(&item, remote_item);
+                                if remote_item.source_truncated {
+                                    source_truncated_count += 1;
+                                }
+                                if remote_item.markdown.chars().count() > EXTRACT_CHAR_LIMIT {
+                                    context_truncated_count += 1;
+                                }
+                                item_outcomes[item.index] = Some(ExtractItemOutcome {
+                                    index: item.index,
+                                    requested_url: item.requested_url.clone(),
+                                    page: Some(page),
+                                    local_failure: Some(item.local_failure),
+                                    final_error: None,
+                                });
+                                remote_success_count += 1;
                             }
-                            item_outcomes[item.index] = Some(ExtractItemOutcome {
-                                index: item.index,
-                                requested_url: item.requested_url.clone(),
-                                page: Some(page),
-                                local_failure: Some(item.local_failure),
-                                final_error: None,
-                            });
-                            remote_success_count += 1;
                         }
                     }
                     Err(error) => {
+                        if let RemoteExtractError::SourceContractViolation {
+                            unmatched_items,
+                            dropped_items,
+                        } = &error
+                        {
+                            remote_unmatched_count = *unmatched_items;
+                            remote_dropped_count = *dropped_items;
+                            remote_source_contract_violation_count = 1;
+                        }
+                        if matches!(error, RemoteExtractError::InvalidRequest) {
+                            remote_safety_rejected_count += 1;
+                        }
+                        if matches!(error, RemoteExtractError::Upstream) {
+                            remote_provider_unavailable_count += 1;
+                            remote_provider_cooldown_reason = Some("upstream");
+                        }
                         if let RemoteExtractError::Timeout { kind } = error {
                             timeout_counts.record(match kind {
                                 RemoteTimeoutKind::QueueDeadline => {
@@ -584,14 +771,20 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                     }
                 }
             } else {
+                remote_budget_decision = Some("defer_budget");
                 remote_budget_skipped_count = eligible.len();
-                for item in eligible {
+                remote_policy_deferred_count += eligible.len();
+                for item in &eligible {
+                    record_deferred_reason(
+                        &mut remote_policy_deferred_reason_counts,
+                        RemoteDeferredReason::BudgetInsufficient(item.reason),
+                    );
                     item_outcomes[item.index] = Some(ExtractItemOutcome {
                         index: item.index,
                         requested_url: item.requested_url.clone(),
                         page: None,
                         local_failure: Some(item.local_failure.clone()),
-                        final_error: Some(item.local_failure.error),
+                        final_error: Some(item.local_failure.error.clone()),
                     });
                 }
             }
@@ -619,6 +812,8 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
             local_failure_count,
             final_success_count,
             final_failure_count,
+            remote_policy_candidate_count,
+            remote_policy_deferred_count,
             remote_eligible_count,
             remote_forbidden_count,
             remote_budget_skipped_count,
@@ -627,6 +822,18 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
             remote_failure_count,
             remote_queue_ms = remote_queue_ms.unwrap_or(0),
             remote_call_ms = remote_call_ms.unwrap_or(0),
+            remote_unmatched_count,
+            remote_dropped_count,
+            remote_source_contract_violation_count,
+            remote_safety_rejected_count,
+            remote_recovery_call_count,
+            remote_provider_init_failure_count = 0usize,
+            remote_provider_unavailable_count,
+            remote_provider_cooldown_reason,
+            remote_readiness = ?remote_readiness,
+            remote_remaining_ms,
+            remote_min_start_ms,
+            remote_budget_decision,
             total_elapsed_ms = started_at.elapsed().as_millis(),
             per_url_deadline = timeout_counts.per_url_deadline,
             tool_deadline_before_start = timeout_counts.tool_deadline_before_start,
@@ -634,6 +841,7 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
             remote_queue_deadline = timeout_counts.remote_queue_deadline,
             remote_call_deadline = timeout_counts.remote_call_deadline,
             fallback_reason_counts = ?fallback_reason_counts,
+            remote_policy_deferred_reason_counts = ?remote_policy_deferred_reason_counts,
             remote_forbidden_reason_counts = ?remote_forbidden_reason_counts,
             source_truncated_count,
             context_truncated_count,
@@ -648,6 +856,8 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 local_failure_count,
                 final_success_count,
                 final_failure_count,
+                remote_policy_candidate_count,
+                remote_policy_deferred_count,
                 remote_eligible_count,
                 remote_stage_count,
                 remote_attempted,
@@ -657,9 +867,22 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
                 remote_budget_skipped_count,
                 remote_queue_ms,
                 remote_call_ms,
+                remote_unmatched_count,
+                remote_dropped_count,
+                remote_source_contract_violation_count,
+                remote_safety_rejected_count,
+                remote_recovery_call_count,
+                remote_provider_init_failure_count: 0,
+                remote_provider_unavailable_count,
+                remote_provider_cooldown_reason,
+                remote_readiness,
+                remote_remaining_ms,
+                remote_min_start_ms,
+                remote_budget_decision,
                 total_elapsed_ms: started_at.elapsed().as_millis(),
                 timeout_counts,
                 fallback_reason_counts,
+                remote_policy_deferred_reason_counts,
                 remote_forbidden_reason_counts,
                 source_truncated_count,
                 context_truncated_count,
@@ -670,7 +893,7 @@ impl ExtractCoordinator for ManagedExtractCoordinator {
 }
 
 async fn run_managed_local(
-    provider: Arc<HttpExtractProvider>,
+    provider: Arc<dyn LocalExtractAdapter>,
     index: usize,
     request: ExtractRequest,
     budget: ExtractBudget,
@@ -744,6 +967,13 @@ fn record_fallback_reason(
     *counts.entry(reason).or_default() += 1;
 }
 
+fn record_deferred_reason(
+    counts: &mut BTreeMap<RemoteDeferredReason, usize>,
+    reason: RemoteDeferredReason,
+) {
+    *counts.entry(reason).or_default() += 1;
+}
+
 fn record_forbidden_reason(
     counts: &mut BTreeMap<RemoteForbiddenReason, usize>,
     reason: RemoteForbiddenReason,
@@ -760,7 +990,7 @@ fn dedupe_eligible(
         .iter()
         .filter(|item| seen.insert(canonical_requested_url(&item.requested_url)))
         .filter_map(|item| {
-            RemoteExtractRequestItem::new(item.index, item.requested_url.clone(), allow_private)
+            RemoteExtractRequestItem::new(item.requested_url.clone(), allow_private)
                 .ok()
         })
         .collect()
@@ -893,8 +1123,8 @@ mod tests {
     };
 
     use crate::managed::fetch::{
-        RemoteExtractBatch, RemoteExtractError, RemoteExtractFallback, RemoteExtractItem,
-        RemoteExtractRequest, RemoteTimeoutKind,
+        RemoteExtractBatch, RemoteExtractError, RemoteExtractItem, RemoteExtractProvider,
+        RemoteExtractReadiness, RemoteExtractRequest, RemoteTimeoutKind,
     };
     use crate::provider::ExtractProvider;
     use crate::provider::HttpExtractProvider;
@@ -903,13 +1133,54 @@ mod tests {
     };
 
     use super::{
-        ExtractBudget, ExtractCoordinator, LocalExtractCoordinator, ManagedExtractCoordinator,
-        RemoteBudgetPolicy, invalid_url_index,
+        ExtractBudget, ExtractCoordinator, LocalExtractAdapter, LocalExtractCoordinator,
+        ManagedExtractCoordinator, RemoteAttemptPolicy, invalid_url_index,
     };
-    use crate::provider::extract_policy::{RemoteFallbackReason, RemoteForbiddenReason};
+    use crate::provider::extract_policy::{
+        LocalExtractDiagnostics, LocalExtractFailure, LocalExtractFailureKind, LocalExtractOutcome,
+        RemoteDeferredReason, RemoteFallbackReason, RemoteForbiddenReason,
+    };
 
     struct MockProvider {
         fail_urls: Vec<String>,
+    }
+
+    struct FixedLocalFailure {
+        kind: LocalExtractFailureKind,
+    }
+
+    struct DelayedLocalFailure {
+        kind: LocalExtractFailureKind,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl LocalExtractAdapter for FixedLocalFailure {
+        async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
+            LocalExtractOutcome {
+                requested_url: req.url,
+                result: Err(LocalExtractFailure {
+                    kind: self.kind,
+                    error: WebError::Provider("injected local failure".to_owned()),
+                }),
+                diagnostics: LocalExtractDiagnostics::default(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LocalExtractAdapter for DelayedLocalFailure {
+        async fn extract_with_metadata(&self, req: ExtractRequest) -> LocalExtractOutcome {
+            tokio::time::sleep(self.delay).await;
+            LocalExtractOutcome {
+                requested_url: req.url,
+                result: Err(LocalExtractFailure {
+                    kind: self.kind,
+                    error: WebError::Provider("injected delayed local failure".to_owned()),
+                }),
+                diagnostics: LocalExtractDiagnostics::default(),
+            }
+        }
     }
 
     #[async_trait]
@@ -944,6 +1215,7 @@ mod tests {
         calls: Arc<AtomicUsize>,
         request_items: Mutex<Vec<crate::managed::fetch::RemoteExtractRequestItem>>,
         fail: bool,
+        readiness: RemoteExtractReadiness,
         unmapped: bool,
         timeout: Option<RemoteTimeoutKind>,
         source_truncated: bool,
@@ -951,7 +1223,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl RemoteExtractFallback for FakeRemote {
+    impl RemoteExtractProvider for FakeRemote {
         async fn extract_batch(
             &self,
             request: RemoteExtractRequest,
@@ -975,9 +1247,7 @@ mod tests {
                         item.prepared.requested_url.clone()
                     };
                     RemoteExtractItem {
-                        index: item.index,
                         requested_url,
-                        final_url: None,
                         title: Some("Remote".to_owned()),
                         markdown: if self.long_markdown {
                             "x".repeat(EXTRACT_CHAR_LIMIT + 1)
@@ -993,6 +1263,10 @@ mod tests {
                 diagnostics: Default::default(),
             })
         }
+
+        async fn readiness(&self) -> RemoteExtractReadiness {
+            self.readiness
+        }
     }
 
     impl FakeRemote {
@@ -1001,11 +1275,17 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
                 request_items: Mutex::new(Vec::new()),
                 fail,
+                readiness: RemoteExtractReadiness::ColdTransport,
                 unmapped: false,
                 timeout: None,
                 source_truncated: false,
                 long_markdown: false,
             }
+        }
+
+        fn with_readiness(mut self, readiness: RemoteExtractReadiness) -> Self {
+            self.readiness = readiness;
+            self
         }
 
         fn unmapped(mut self) -> Self {
@@ -1063,12 +1343,117 @@ mod tests {
         }
     }
 
-    fn managed_budget_policy() -> RemoteBudgetPolicy {
-        RemoteBudgetPolicy {
-            warm_fetch_budget: Duration::from_millis(1),
-            cold_fetch_budget: Duration::from_millis(1),
-            safety_margin: Duration::from_millis(1),
+    fn managed_attempt_policy() -> RemoteAttemptPolicy {
+        RemoteAttemptPolicy {
+            ready_min_remaining: Duration::from_millis(1),
+            tool_unknown_min_remaining: Duration::from_millis(1),
+            cold_min_remaining: Duration::from_millis(1),
         }
+    }
+
+    #[test]
+    fn remote_attempt_policy_uses_readiness_specific_thresholds() {
+        let policy = RemoteAttemptPolicy::default();
+        assert_eq!(
+            policy.minimum_remaining(RemoteExtractReadiness::ColdTransport),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            policy.minimum_remaining(RemoteExtractReadiness::WarmTransportToolUnknown),
+            Duration::from_secs(6)
+        );
+        assert_eq!(
+            policy.minimum_remaining(RemoteExtractReadiness::Ready { generation: 1 }),
+            Duration::from_secs(4)
+        );
+        assert!(!policy.allows(RemoteExtractReadiness::ColdTransport, Duration::from_millis(7_999)));
+        assert!(policy.allows(RemoteExtractReadiness::ColdTransport, Duration::from_secs(8)));
+        assert!(!policy.allows(
+            RemoteExtractReadiness::WarmTransportToolUnknown,
+            Duration::from_millis(5_999),
+        ));
+        assert!(policy.allows(
+            RemoteExtractReadiness::WarmTransportToolUnknown,
+            Duration::from_secs(6),
+        ));
+        assert!(!policy.allows(
+            RemoteExtractReadiness::Ready { generation: 1 },
+            Duration::from_millis(3_999),
+        ));
+        assert!(policy.allows(
+            RemoteExtractReadiness::Ready { generation: 1 },
+            Duration::from_secs(4),
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn managed_coordinator_reaches_cold_remote_after_local_pdf_failure() {
+        let remote = Arc::new(FakeRemote::new(false));
+        let coordinator = ManagedExtractCoordinator::from_local_adapter(
+            Arc::new(DelayedLocalFailure {
+                kind: LocalExtractFailureKind::Pdf,
+                delay: Duration::from_secs(2),
+            }),
+            remote.clone(),
+        );
+        let task = tokio::spawn(async move {
+            coordinator
+                .extract_many(
+                    vec![request("https://example.com/document.pdf")],
+                    ExtractBudget {
+                        absolute_deadline: tokio::time::Instant::now() + Duration::from_secs(12),
+                        local_per_url_timeout: Duration::from_secs(8),
+                    },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let outcome = task.await.expect("coordinator task");
+        assert_eq!(remote.calls.load(Ordering::SeqCst), 1);
+        assert!(outcome.diagnostics.remote_attempted);
+        assert_eq!(outcome.diagnostics.remote_budget_decision, Some("attempt"));
+        assert_eq!(
+            outcome.diagnostics.remote_readiness,
+            Some(RemoteExtractReadiness::ColdTransport)
+        );
+        assert!(outcome.items[0].page.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn managed_coordinator_reaches_tool_unknown_remote_after_local_js_failure() {
+        let remote = Arc::new(
+            FakeRemote::new(false)
+                .with_readiness(RemoteExtractReadiness::WarmTransportToolUnknown),
+        );
+        let coordinator = ManagedExtractCoordinator::from_local_adapter(
+            Arc::new(DelayedLocalFailure {
+                kind: LocalExtractFailureKind::JavascriptShell,
+                delay: Duration::from_secs(2),
+            }),
+            remote.clone(),
+        );
+        let task = tokio::spawn(async move {
+            coordinator
+                .extract_many(
+                    vec![request("https://example.com/playground")],
+                    ExtractBudget {
+                        absolute_deadline: tokio::time::Instant::now() + Duration::from_secs(12),
+                        local_per_url_timeout: Duration::from_secs(8),
+                    },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let outcome = task.await.expect("coordinator task");
+        assert_eq!(remote.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcome.diagnostics.remote_readiness,
+            Some(RemoteExtractReadiness::WarmTransportToolUnknown)
+        );
+        assert!(outcome.diagnostics.remote_attempted);
+        assert!(outcome.items[0].page.is_some());
     }
 
     async fn mount_pdf(server: &MockServer, url_path: &str) {
@@ -1222,7 +1607,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let outcome = coordinator
             .extract_many(vec![request(&server.uri())], budget())
@@ -1231,6 +1616,27 @@ mod tests {
         assert_eq!(outcome.diagnostics.remote_stage_count, 0);
         assert!(!outcome.diagnostics.remote_attempted);
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn evidence_backed_coordinator_defers_unqualified_local_failure() {
+        let remote = Arc::new(FakeRemote::new(false));
+        let coordinator = ManagedExtractCoordinator::from_local_adapter(
+            Arc::new(FixedLocalFailure {
+                kind: LocalExtractFailureKind::Network,
+            }),
+            remote.clone(),
+        );
+
+        let outcome = coordinator
+            .extract_many(vec![request("https://example.com/network")], budget())
+            .await;
+        assert_eq!(outcome.diagnostics.remote_policy_candidate_count, 1);
+        assert_eq!(outcome.diagnostics.remote_policy_deferred_count, 1);
+        assert_eq!(outcome.diagnostics.remote_eligible_count, 0);
+        assert!(!outcome.diagnostics.remote_attempted);
+        assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(outcome.items[0].final_error.is_some(), true);
     }
 
     #[tokio::test]
@@ -1243,7 +1649,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1272,23 +1678,25 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
-        let url = format!("{}/pdf?token=secret", server.uri());
-        let outcome = coordinator
-            .extract_many(vec![request(&url)], budget())
-            .await;
-        assert!(outcome.items[0].page.is_none());
-        assert!(outcome.items[0].final_error.is_some());
-        assert_eq!(outcome.diagnostics.remote_stage_count, 0);
-        assert_eq!(outcome.diagnostics.remote_forbidden_count, 1);
-        assert_eq!(
-            outcome
-                .diagnostics
-                .remote_forbidden_reason_counts
-                .get(&RemoteForbiddenReason::SensitiveQuery),
-            Some(&1)
-        );
+        for query in ["token=secret", "code=oauth-code", "clientSecret=secret"] {
+            let url = format!("{}/pdf?{query}", server.uri());
+            let outcome = coordinator
+                .extract_many(vec![request(&url)], budget())
+                .await;
+            assert!(outcome.items[0].page.is_none());
+            assert!(outcome.items[0].final_error.is_some());
+            assert_eq!(outcome.diagnostics.remote_stage_count, 0);
+            assert_eq!(outcome.diagnostics.remote_forbidden_count, 1);
+            assert_eq!(
+                outcome
+                    .diagnostics
+                    .remote_forbidden_reason_counts
+                    .get(&RemoteForbiddenReason::SensitiveQuery),
+                Some(&1)
+            );
+        }
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -1302,7 +1710,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf#access_token=secret", server.uri());
         let outcome = coordinator
@@ -1325,7 +1733,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1347,7 +1755,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1377,10 +1785,10 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(RemoteBudgetPolicy {
-            warm_fetch_budget: Duration::from_secs(60),
-            cold_fetch_budget: Duration::from_secs(60),
-            safety_margin: Duration::from_secs(60),
+        .with_remote_attempt_policy(RemoteAttemptPolicy {
+            ready_min_remaining: Duration::from_secs(60),
+            tool_unknown_min_remaining: Duration::from_secs(60),
+            cold_min_remaining: Duration::from_secs(60),
         });
 
         let url = format!("{}/pdf", server.uri());
@@ -1390,6 +1798,16 @@ mod tests {
         assert!(outcome.items[0].page.is_none());
         assert_eq!(outcome.diagnostics.remote_stage_count, 0);
         assert_eq!(outcome.diagnostics.remote_budget_skipped_count, 1);
+        assert_eq!(outcome.diagnostics.remote_policy_deferred_count, 1);
+        assert_eq!(
+            outcome
+                .diagnostics
+                .remote_policy_deferred_reason_counts
+                .get(&RemoteDeferredReason::BudgetInsufficient(
+                    RemoteFallbackReason::Pdf
+                )),
+            Some(&1)
+        );
         assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -1402,7 +1820,7 @@ mod tests {
             Arc::new(HttpExtractProvider::new().allow_private_for_tests()),
             remote.clone(),
         )
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1440,7 +1858,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1450,6 +1868,8 @@ mod tests {
         assert!(outcome.items[0].final_error.is_some());
         assert_eq!(outcome.diagnostics.remote_success_count, 0);
         assert_eq!(outcome.diagnostics.remote_failure_count, 1);
+        assert_eq!(outcome.diagnostics.remote_unmatched_count, 1);
+        assert_eq!(outcome.diagnostics.remote_dropped_count, 1);
     }
 
     #[tokio::test]
@@ -1462,7 +1882,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf#section-2", server.uri());
         let outcome = coordinator
@@ -1488,7 +1908,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1515,7 +1935,7 @@ mod tests {
             remote.clone(),
         )
         .allow_private_for_tests()
-        .with_remote_budget(managed_budget_policy());
+        .with_remote_attempt_policy(managed_attempt_policy());
 
         let url = format!("{}/pdf", server.uri());
         let outcome = coordinator
@@ -1539,7 +1959,7 @@ mod tests {
                 remote.clone(),
             )
             .allow_private_for_tests()
-            .with_remote_budget(managed_budget_policy());
+            .with_remote_attempt_policy(managed_attempt_policy());
 
             let url = format!("{}/pdf", server.uri());
             let outcome = coordinator

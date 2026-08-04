@@ -61,6 +61,18 @@ notes at a high level rather than a complete historical log.
   service notes) — dangerous capabilities are never registered, replacing the
   retired runtime `ExposureMode::PublicService` clamp.
 
+- Added and enabled evidence-backed Managed Fetch for Desktop, with fail-closed
+  evaluation, policy-gated PDF/JavaScript/Empty fallback, safe MCP egress,
+  resumable evidence, and a Local-only rollback via
+  `NOMIFUN_MANAGED_FETCH_MODE=off`.
+- Managed Fetch cold-start admission now uses readiness-specific remaining-time
+  thresholds, so eligible PDF/JavaScript fallback can reach Parallel within the
+  existing 12-second `web_extract` deadline. Parallel endpoint health also
+  ignores stale successes after newer 401/429/network failures.
+- `web_extract` now explicitly advertises public direct-PDF and JavaScript-shell
+  reading to the agent, so a known URL is read before Browser or script
+  fallback. Downloading an original file remains a separate artifact workflow.
+
 ## v0.3.3 - 2026-07-30
 
 - Hardened the managed browser platform across lane/host lifecycle, startup,
