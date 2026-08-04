@@ -7,9 +7,10 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { Logout, Message, Refresh, Right, Theme, User } from '@icon-park/react';
+import { Logout, Message, Right, Theme, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
+import CreditsRefreshButton from '@/renderer/components/base/CreditsRefreshButton';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import SiderThemePanel from './SiderThemePanel';
@@ -42,15 +43,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   const planText = planLabel?.trim() || '';
   const [menuVisible, setMenuVisible] = useState(false);
   const [skinVisible, setSkinVisible] = useState(false);
-  const {
-    balance,
-    authenticated,
-    isFetchingBalance,
-    lastRefreshAt,
-    cooldownSeconds,
-    canRefresh,
-    manualRefresh,
-  } = useCredits();
+  const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
 
   const handleMenuVisibleChange = (visible: boolean) => {
     setMenuVisible(visible);
@@ -92,26 +85,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         <span className='flex items-center gap-4px'>
           <span className='font-600 text-t-primary tabular-nums'>{creditsText}</span>
           {authenticated && (
-            <Tooltip content={t('common.userMenu.refreshCredits', { defaultValue: '刷新积分余额' })} position='lt'>
-              <button
-                type='button'
-                disabled={!canRefresh}
-                onClick={manualRefresh}
-                aria-label={t('common.userMenu.refreshCredits', { defaultValue: '刷新积分余额' })}
-                className='flex items-center justify-center size-18px rd-4px border-none bg-transparent text-t-tertiary transition-colors hover:bg-fill-2 hover:text-t-secondary disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer'
-              >
-                {cooldownSeconds > 0 ? (
-                  <span className='text-10px leading-none tabular-nums'>{cooldownSeconds}s</span>
-                ) : (
-                  <Refresh
-                    theme='outline'
-                    size='12'
-                    fill='currentColor'
-                    className={isFetchingBalance ? 'animate-spin' : ''}
-                  />
-                )}
-              </button>
-            </Tooltip>
+            <CreditsRefreshButton size='xs' />
           )}
         </span>
       </div>

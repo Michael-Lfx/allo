@@ -10,11 +10,10 @@ import {
   Spin,
   Switch,
   Table,
-  Tag,
 } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import type { IMediaSettings, IMediaWorkflowHistoryItem } from '@/common/adapter/ipcBridge';
-import { Refresh } from '@icon-park/react';
+import CreditsRefreshButton from '@/renderer/components/base/CreditsRefreshButton';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
@@ -30,14 +29,7 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 const MediaSettings: React.FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<IMediaSettings | null>(null);
-  const {
-    balance,
-    authenticated,
-    isFetchingBalance,
-    cooldownSeconds,
-    canRefresh,
-    manualRefresh,
-  } = useCredits();
+  const { balance, authenticated } = useCredits();
   const [history, setHistory] = useState<IMediaWorkflowHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -124,28 +116,28 @@ const MediaSettings: React.FC = () => {
           }
           action={
             <div className='flex items-center gap-8px'>
-              <Tag color={authenticated ? 'green' : 'gray'}>
-                {authenticated ? t('media.credits.authenticated') : t('media.credits.notAuthenticated')}
-              </Tag>
-              <Button
-                size='mini'
-                type='text'
-                disabled={!canRefresh}
-                onClick={manualRefresh}
-                aria-label={t('common.userMenu.refreshCredits', { defaultValue: '刷新积分余额' })}
-                className='flex items-center justify-center text-t-tertiary'
+              <span
+                className={`inline-flex items-center gap-5px rounded-full px-8px text-11px font-500 leading-16px ${
+                  authenticated ? '' : 'bg-fill-2 text-t-tertiary'
+                }`}
+                style={
+                  authenticated
+                    ? {
+                        backgroundColor: 'color-mix(in srgb, rgb(var(--primary-6)) 14%, transparent)',
+                        color: 'rgb(var(--primary-6))',
+                      }
+                    : undefined
+                }
               >
-                {cooldownSeconds > 0 ? (
-                  <span className='text-12px tabular-nums'>{cooldownSeconds}s</span>
-                ) : (
-                  <Refresh
-                    theme='outline'
-                    size='14'
-                    fill='currentColor'
-                    className={isFetchingBalance ? 'animate-spin' : ''}
+                {authenticated && (
+                  <span
+                    className='inline-block w-5px h-5px rounded-full'
+                    style={{ backgroundColor: 'rgb(var(--primary-6))' }}
                   />
                 )}
-              </Button>
+                {authenticated ? t('media.credits.authenticated') : t('media.credits.notAuthenticated')}
+              </span>
+              <CreditsRefreshButton size='sm' />
             </div>
           }
         />
