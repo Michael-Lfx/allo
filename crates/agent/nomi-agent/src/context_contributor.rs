@@ -31,8 +31,9 @@ pub trait ContextContributor: Send + Sync {
 
 /// Append non-empty contributor contributions to `system`, each under a blank
 /// line, in registration order. Empty / all-empty → `system` returned
-/// unchanged. Kept for the engine's pre-turn system-prompt path; turn-tail
-/// injection uses [`build_turn_tail_context`] instead.
+/// unchanged. NOT used by the engine's turn path — dynamic content must ride
+/// the turn tail via [`build_turn_tail_context`] to keep the system prompt
+/// byte-stable for prefix caching; kept as a helper for static augmentation.
 pub fn merge_pre_turn_context(system: String, contributions: Vec<String>) -> String {
     let mut out = system;
     for c in contributions {
