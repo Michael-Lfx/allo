@@ -1669,8 +1669,9 @@ const SendBox: React.FC<{
     <Button
       shape='circle'
       type='secondary'
+      size='small'
       className='sendbox-composer-plus-btn sendbox-mobile-plus-btn'
-      icon={<Plus theme='outline' size='16' />}
+      icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
       onClick={onMobilePlusClick}
       data-testid='sendbox-mobile-plus-btn'
       aria-label={t('common.more', { defaultValue: 'More' })}

@@ -46,7 +46,7 @@ const GoalModeChip: React.FC<{ conversation_id: ConversationId }> = ({ conversat
         <span className={styles.chipContent}>
           <span className={styles.chipIcon} aria-hidden='true'>
             <span className={styles.chipMark}>
-              <Aiming theme='outline' size='14' strokeWidth={3} fill='currentColor' />
+              <Aiming theme='outline' size='16' strokeWidth={3} fill='currentColor' />
             </span>
             <span className={styles.chipClose}>
               <CloseSmall theme='outline' size='12' strokeWidth={5} fill='currentColor' />

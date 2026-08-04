@@ -4,7 +4,6 @@ import type { IConversationMcpStatus, IConversationMcpStatusKind } from '@/commo
 import { Button, Message, Trigger } from '@arco-design/web-react';
 import { FolderOpen, Paperclip, Plus, Right, Shield } from '@icon-park/react';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { iconColors } from '@/renderer/styles/colors';
 import { isDesktopShell } from '@/renderer/utils/platform';
 import { FileService } from '@/renderer/services/FileService';
 import type { FileMetadata } from '@/renderer/services/FileService';
@@ -93,7 +92,7 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
 
   const isDesktop = isDesktopShell();
   const hasMcpServers = mcpStatuses.length > 0;
-  const plusIcon = <Plus theme='outline' size='14' strokeWidth={2} fill={iconColors.primary} />;
+  const plusIcon = <Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />;
 
   const cardStyle: React.CSSProperties = {
     backgroundColor: 'var(--color-bg-2, #fff)',
@@ -110,7 +109,8 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
       <Button
         type='secondary'
         shape='circle'
-        className='sendbox-composer-plus-btn'
+        size='small'
+        className='sendbox-composer-plus-btn conversation-attach-plus-btn'
         icon={plusIcon}
         loading={uploading}
         disabled={uploading}
@@ -238,7 +238,8 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
         <Button
           type='secondary'
           shape='circle'
-          className='sendbox-composer-plus-btn'
+          size='small'
+          className='sendbox-composer-plus-btn conversation-attach-plus-btn'
           icon={plusIcon}
           loading={uploading}
           disabled={uploading}

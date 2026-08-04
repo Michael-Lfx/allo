@@ -1,6 +1,6 @@
 /* Sendbox component styles */
 
-/* Composer send button — 26×26 circle (6px smaller than the 32px + pole). */
+/* Composer send button — 26×26 circle. */
 .send-button-custom.arco-btn.arco-btn-shape-circle {
   width: 26px !important;
   height: 26px !important;
@@ -51,15 +51,44 @@
   line-height: 1 !important;
 }
 
-.sendbox-composer-plus-btn:hover,
-.sendbox-composer-plus-btn:active,
-.sendbox-composer-plus-btn:focus,
-.sendbox-composer-plus-btn:focus-visible,
+.conversation-attach-plus-btn,
+.conversation-attach-plus-btn.arco-btn,
+.conversation-attach-plus-btn.arco-btn-secondary,
+.sendbox-mobile-plus-btn,
+.sendbox-mobile-plus-btn.arco-btn,
+.sendbox-mobile-plus-btn.arco-btn-secondary {
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  transition: background-color 160ms ease !important;
+}
+
+.conversation-attach-plus-btn:hover,
+.conversation-attach-plus-btn:active,
+.conversation-attach-plus-btn:focus-visible,
 .sendbox-mobile-plus-btn:hover,
 .sendbox-mobile-plus-btn:active,
-.sendbox-mobile-plus-btn:focus,
 .sendbox-mobile-plus-btn:focus-visible {
   background: var(--color-fill-3) !important;
+  color: var(--text-primary) !important;
+}
+
+.conversation-attach-plus-btn .arco-btn-icon,
+.sendbox-mobile-plus-btn .arco-btn-icon {
+  width: 16px !important;
+  height: 16px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 0 !important;
+}
+
+.conversation-attach-plus-btn .arco-btn-icon svg,
+.sendbox-mobile-plus-btn .arco-btn-icon svg {
+  display: block !important;
+  vertical-align: 0 !important;
 }
 
 /* Send button disabled state - override Arco Design default disabled styles.
@@ -622,6 +651,29 @@
   overflow: hidden !important;
 }
 
+/* Keep the conversation toolbar compact and use one neutral color for its
+ * attachment, mode, and goal controls. */
+.nomi-sendbox-tools {
+  gap: 2px !important;
+  margin-left: -4px;
+}
+
+.nomi-sendbox-tools .agent-mode-compact-pill {
+  padding: 0 6px !important;
+}
+
+.nomi-sendbox-tools .agent-mode-compact-pill .arco-btn-content {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 100% !important;
+  line-height: 1 !important;
+}
+
+.nomi-sendbox-tools .agent-mode-compact-pill .sendbox-responsive-chevron {
+  color: inherit !important;
+}
+
 /* Pill marquee animation for overflowing text */
 @keyframes pill-marquee {
   0% {
@@ -688,8 +740,8 @@
   -webkit-text-fill-color: #a1a2aa !important;
 }
 
-/* Mobile compact: `+` launcher button replaces inline tools when the
- * action sheet pattern is active. Shares `.sendbox-composer-plus-btn` sizing. */
+/* Mobile compact: the `+` launcher replaces inline tools and matches the
+ * 28px conversation toolbar controls. */
 .sendbox-mobile-plus-btn,
 .sendbox-mobile-plus-btn.arco-btn,
 .sendbox-mobile-plus-btn.arco-btn-secondary {

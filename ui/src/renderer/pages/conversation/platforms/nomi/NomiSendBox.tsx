@@ -60,7 +60,6 @@ import {
 } from '@/renderer/pages/conversation/utils/warmupConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
-import { iconColors } from '@/renderer/styles/colors';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
@@ -1015,7 +1014,7 @@ const NomiSendBox: React.FC<{
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
-          <div className='flex items-center gap-6px min-w-0'>
+          <div className='nomi-sendbox-tools flex items-center gap-2px min-w-0'>
             <FileAttachButton
               openFileSelector={openFileSelector}
               onLocalFilesAdded={handleFilesAdded}
@@ -1028,7 +1027,7 @@ const NomiSendBox: React.FC<{
                 compact
                 initialMode={session_mode}
                 dynamicModes={dynamicModes}
-                compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
+                compactLeadingIcon={<Shield theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
                 modeLabelFormatter={(mode) => t(`agentMode.${mode.value}`, { defaultValue: mode.label })}
                 beforeRuntimeSync={prepareRuntimeForRead}
                 beforeRuntimeMutation={prepareRuntimeSync}

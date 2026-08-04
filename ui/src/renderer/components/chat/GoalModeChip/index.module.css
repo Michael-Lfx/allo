@@ -6,7 +6,7 @@
   padding: 0 6px !important;
   border-width: 1px !important;
   border-style: solid !important;
-  color: var(--color-text-3) !important;
+  color: var(--text-secondary) !important;
   background: transparent !important;
   border-color: transparent !important;
   vertical-align: middle;
@@ -14,7 +14,7 @@
 
 .chip:global(.arco-btn:hover),
 .chip:global(.arco-btn:focus-visible) {
-  color: var(--color-text-3) !important;
+  color: var(--text-primary) !important;
   background: var(--color-fill-2) !important;
   border-color: transparent !important;
 }
@@ -30,21 +30,22 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  height: 14px;
-  min-height: 14px;
+  transform: translateY(2px);
+  gap: 6px;
+  height: 16px;
+  min-height: 16px;
   line-height: 1;
   white-space: nowrap;
 }
 
 .chipIcon {
   position: relative;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 14px;
+  flex: 0 0 16px;
   line-height: 0;
 }
 
@@ -60,14 +61,14 @@
 
 .chipMark {
   opacity: 1;
-  color: var(--color-text-3);
+  color: currentColor;
 }
 
 .chipClose {
   opacity: 0;
   border-radius: 50%;
   color: var(--color-bg-1);
-  background: var(--color-text-3);
+  background: var(--text-secondary);
   pointer-events: none;
 }
 
