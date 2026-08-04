@@ -3,8 +3,9 @@
 > Superseded snapshot notice (2026-08-04): the historical local-main fast-forward
 > described below is not the current delivery state. The live work remains on
 > `feat/fetch-optimization`, which has been rebased onto `origin/main=81b199fbc8fa`.
-> The cold-start budget and endpoint-health fixes are pending validation; this ADR
-> cannot be used as the final merge approval until a new Cold E2E Canary is recorded.
+> The cold-start budget and endpoint-health fixes were subsequently validated in
+> the 2026-08-04 addendum below. This historical snapshot is not itself the final
+> merge approval.
 
 Date: 2026-08-03
 Branch: `feat/fetch-optimization` (PR source branch)
@@ -128,11 +129,30 @@ follow-up owner is the `flowy-web` Evaluation maintainer; it must add an injecte
 failure test and surface `quota_ledger_failed` before any future multi-day Admission run.
 This does not affect the production MCP path or the bounded Canary decision.
 
-Historical decision: `local_main_fast_forward_complete` (not current). Current decision is
-`pending_cold_start_fix`: the feature branch is ahead 5 and behind 0 relative to
-`origin/main=81b199fbc8fa`, remains local, and has not been merged into `main`. A new
-Cold E2E Canary is required after the budget and health fixes. No push, PR, GitHub Actions
-workflow, private URL, Browser-to-MCP loop, or formal Admission Campaign was run.
+Historical decision: `local_main_fast_forward_complete` (not current). The 2026-08-04
+addendum records the live decision `cold_start_canary_passed_pending_desktop_acceptance`;
+the feature branch remains local and has not been merged into `main`. No push, PR, GitHub
+Actions workflow, private URL, Browser-to-MCP loop, or formal Admission Campaign was run.
 
 Formal 15+ URL Admission, private PDF validation, unsupported/network category expansion,
 and any further rollout policy change remain separate future work.
+
+## 2026-08-04 cold-start fix addendum
+
+The live feature tip is `f70a81416586f0abb923836e251b3550e41970d7`, rebased onto
+`origin/main=81b199fbc8fa` with ahead/behind `10/0` at the snapshot. The fix replaces
+the shared 10-second cold/tool-unknown gate with readiness-specific thresholds of
+8/6/4 seconds (Cold/ToolUnknown/Ready) without changing the 12-second absolute
+deadline, and protects endpoint recovery with epoch tokens. `application/*+json` and
+`application/*+xml` remain Local structured content instead of being misclassified as
+Unsupported Document.
+
+Final bounded preflight evidence is in the ignored directory
+`fetch-evaluation-raw/post-budget-fix-f70a8141/`: one Cold E2E plus two Warm E2E for
+each of the PDF and JavaScript cases, and one Local HTML control. All six Fetch calls
+were attempted and successful; HTML made zero Remote calls. Five Safety reports are
+complete with all five zero gates; the Summary is explicitly `preflight_never_candidate`.
+
+Review status: budget/readiness review found no P0/P1; the Safety/Lifecycle review found
+and fixed stale Session recovery clearing a newer Unauthorized epoch, then passed at the
+live tip; the final rebase/spec review is pending one fresh Desktop cold-session check.

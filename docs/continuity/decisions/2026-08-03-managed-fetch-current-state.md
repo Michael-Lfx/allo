@@ -1,20 +1,22 @@
 # Managed Fetch 当前状态与后续交接
 
 ```yaml
-status: COLD_START_FIX_IN_PROGRESS
+status: COLD_START_CANARY_PASSED_AWAITING_DESKTOP_ACCEPTANCE
 date: 2026-08-04
 branch: feat/fetch-optimization
 pre_budget_fix_canary_checkpoint: d11b012ff02e0e846ab5744210fd417bc353bfc3
-final_tip: query with `git rev-parse HEAD`
+final_canary_code_checkpoint: f70a81416586f0abb923836e251b3550e41970d7
+final_tip: f70a81416586f0abb923836e251b3550e41970d7
 main_merge_base: 81b199fbc8fa
-worktree_at_snapshot: task_changes_in_progress
+worktree_at_snapshot: clean_after_final_canary
 remote_delivery: local_commits_only
 ```
 
 > Current correction (2026-08-04): this document is maintained on the feature
 > branch. The local `main` was not merged and `feat/fetch-optimization` was not
 > deleted. The branch is rebased onto `origin/main=81b199fbc8fa`; the cold-start
-> budget and endpoint-health fixes are still being validated.
+> budget and endpoint-health fixes are validated by the final bounded Canary. One
+> fresh Desktop cold-session acceptance remains before merge-readiness can be closed.
 
 历史重写说明：原始 70 个提交已压缩为 5 个连续主题提交，并 rebase 到最新
 `origin/main`。备份分支 `backup/feat-fetch-optimization-pre-compact-aeb9a285`，并保留
@@ -82,8 +84,8 @@ Payload 或原始 Provider Response。
 Rebase 前代码基线完成过以下验证（这些计数不包含本轮冷启动修复）：
 
 - `cargo test -p flowy-web`：173 项通过（基础套件）；
-- `cargo test -p flowy-web --features fetch-eval --all-targets`：226 项库测试和 4 项集成
-  测试通过；
+- `cargo test -p flowy-web --features fetch-eval --all-targets`：230 项库测试和 4 项集成
+  测试通过（最终代码）；
 - `cargo test -p nomifun-app --features managed-search --lib managed_web`：3 项定向测试通过；
 - `cargo check -p flowy-web --no-default-features`：通过；
 - `cargo check -p flowy-web --features fetch-eval`：通过；
@@ -115,15 +117,32 @@ JavaScript Shell 三项 `web_extract` 验收，并正常关闭应用。该开发
 stdout 持久化到历史日志文件，因此不补写或推断逐请求计数；最终人工验收与自动
 Canary 证据保持分层，不把人工结果计入正式 Admission 统计。
 
-## Git 与交付状态（本轮快照）
+## 本轮冷启动修复后的最终 Canary
+
+最终证据位于 ignored 目录 `fetch-evaluation-raw/post-budget-fix-f70a8141/`，只保留
+脱敏 JSONL/status/safety 及 quota ledger：
+
+- 代码 SHA：`f70a81416586f0abb923836e251b3550e41970d7`；
+- W3C PDF：1 次 Cold E2E + 2 次 Warm E2E，3/3 Remote 有效成功，Q3；
+- ESLint JavaScript Shell：1 次 Cold E2E + 2 次 Warm E2E，3/3 Remote 有效成功，Q3；
+- Static HTML：Local success，Remote 0；
+- 实际调用：6 次 Fetch、0 次 Search、0 次 recovery，quota `used_calls=6`；
+- Cold PDF/JS 均 `remote_attempted=true`，总耗时分别为 1.943s/2.170s；
+- Warm E2E P95 为 1.105s；每条 E2E 均在 12 秒总 deadline 内完成；
+- source mismatch、dropped item、sensitive egress、retry-limit violation、
+  cancellation-late result 全部为 0；5 份 Safety report 均 `complete=true, all_zero=true`；
+- Summary 明确为 `preflight_never_candidate`，不产生正式 Admission 或启用结论。
+
+## Git 与交付状态（最终 Canary 快照）
 
 - 当前 rebase 后代码基线：查询 `git rev-parse HEAD`；本轮修改前 tip 为
   `2ca3b0bf11fd`；
-- 5 个压缩提交相对 `origin/main=81b199fbc8fa` 为 ahead 5、behind 0；
+- 10 个本地主题提交相对 `origin/main=81b199fbc8fa` 为 ahead 10、behind 0（实时状态请查询
+  `git rev-list --left-right --count origin/main...HEAD`）；
 - 压缩前后的跟踪文件 tree 均为 `e4175ed4feb09308c7e62bed120f9d160dbe51b5`；
 - 本地 `main` 未被功能分支合并；五个提交仍仅在功能分支本地；
 - 未 Push、未建 PR、未创建或修改 GitHub Actions；
-- 本轮冷启动修复尚未提交；ignored 评测证据仍未删除、未暂存；
+- 冷启动预算、Endpoint Health epoch、文档分类修复均已提交；ignored 评测证据仍未删除、未暂存；
 - ignored 评测证据保留在本地，未删除、未暂存。
 
 当前功能分支包含的五个压缩提交：
@@ -179,6 +198,14 @@ Canary 与 post-fix 六调用 Canary 均有效。以下事项必须
 - Run IDs（PDF/JS/HTML）：`019fc67d-e2cb-71f2-99b0-dcddc58be3fb`、
   `019fc67e-3a4f-7603-9462-f21536386360`、
   `019fc67e-8ae3-7361-be02-5fa600a6f184`。
+
+本轮最终 Canary 的 Run IDs（预算/健康修复后）：
+
+- PDF Cold：`019fcaa5-1019-77d3-93ec-03a6a6372b02`；
+- PDF Warm：`019fcaa5-570f-7c20-8941-c453e334d1d7`；
+- JS Cold：`019fcaa5-8b3b-7aa2-b1d5-3bedf11a9c08`；
+- JS Warm：`019fcaa5-af26-72a1-bfd7-a904013ecdbb`；
+- HTML Local：`019fcaa5-f0ba-7e11-9ae5-b0577d7d4d92`。
 
 一个可维护性缺口仍然存在：Desktop `bun run dev` 的 stdout 没有形成可恢复的脱敏
 运行证据。若未来需要把人工验收升级为可审计发布门禁，应另行设计只保存计数和
