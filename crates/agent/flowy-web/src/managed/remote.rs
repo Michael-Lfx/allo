@@ -70,6 +70,12 @@ impl CooldownTracker {
 struct EndpointHealth {
     cooldown: CooldownTracker,
     disable_reason: Option<EndpointDisableReason>,
+    epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EndpointAttemptToken {
+    epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,12 +142,27 @@ impl EndpointHealth {
             && self.cooldown.is_available(now)
     }
 
-    fn record_success(&mut self) {
-        self.cooldown.record_success();
+    fn begin_attempt(&self, now: Instant) -> Option<EndpointAttemptToken> {
+        self.is_available(now).then_some(EndpointAttemptToken { epoch: self.epoch })
+    }
+
+    fn record_success(&mut self, token: EndpointAttemptToken) {
+        // A response from an attempt that started before a newer failure must
+        // not erase that newer cooldown/disable state.
+        if token.epoch == self.epoch {
+            self.cooldown.record_success();
+        }
+    }
+
+    fn record_reinitialized(&mut self) {
+        self.epoch = self.epoch.saturating_add(1);
+        // Session recovery may clear an Unauthorized disable, but it must not
+        // bypass an active 403/429/network cooldown.
         self.disable_reason = None;
     }
 
     fn record_error(&mut self, kind: EndpointFailureKind, now: Instant) {
+        self.epoch = self.epoch.saturating_add(1);
         match kind {
             EndpointFailureKind::Unauthorized => {
                 self.disable_reason = Some(EndpointDisableReason::Unauthorized);
@@ -194,6 +215,7 @@ pub(crate) enum ManagedMcpCallError {
     RetryLimitExceeded,
     #[cfg_attr(not(any(test, feature = "fetch-eval")), allow(dead_code))]
     LedgerFailure,
+    EndpointUnavailable,
     Peer(McpPeerError),
 }
 
@@ -304,6 +326,7 @@ impl ManagedMcpCallControl for NoopManagedMcpCallControl {
 #[derive(Debug)]
 enum ManagedSearchCallError {
     Peer(McpPeerError),
+    Upstream,
     QuotaExhausted,
     UnsafeArguments,
     RetryLimitExceeded,
@@ -426,8 +449,20 @@ impl ParallelMcpClient {
         self.endpoint_health.lock().await.is_available(now)
     }
 
-    pub(crate) async fn record_endpoint_success(&self) {
-        self.endpoint_health.lock().await.record_success();
+    async fn begin_endpoint_attempt(&self, now: Instant) -> Result<EndpointAttemptToken, ManagedMcpCallError> {
+        self.endpoint_health
+            .lock()
+            .await
+            .begin_attempt(now)
+            .ok_or(ManagedMcpCallError::EndpointUnavailable)
+    }
+
+    async fn record_endpoint_success_for(&self, token: EndpointAttemptToken) {
+        self.endpoint_health.lock().await.record_success(token);
+    }
+
+    pub(crate) async fn record_endpoint_reinitialized(&self) {
+        self.endpoint_health.lock().await.record_reinitialized();
     }
 
     pub(crate) async fn record_fetch_error(
@@ -499,6 +534,7 @@ impl ParallelMcpClient {
         authorized: AuthorizedParallelCall,
         deadline: Instant,
     ) -> Result<McpToolResult, ManagedMcpCallError> {
+        let endpoint_attempt = self.begin_endpoint_attempt(Instant::now()).await?;
         self.call_control
             .reserve(&authorized)
             .await
@@ -512,6 +548,9 @@ impl ParallelMcpClient {
             .peer
             .call_tool(authorized.tool.as_str(), authorized.arguments.clone(), deadline)
             .await;
+        if result.is_ok() {
+            self.record_endpoint_success_for(endpoint_attempt).await;
+        }
         self.call_control.observe_result(&authorized, &result);
         result.map_err(ManagedMcpCallError::Peer)
     }
@@ -676,14 +715,23 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         deadline: Instant,
     ) -> Result<SearchAttemptOutput, SearchAttemptError> {
         let mut session_retried = false;
+        let mut session_recovered = false;
         let mut tool_rediscovered = false;
         let mut tool_attempt = 0_u8;
         loop {
             match self.ensure_compatible(deadline).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if session_recovered {
+                        if let Some(client) = self.shared_client.as_ref() {
+                            client.record_endpoint_reinitialized().await;
+                        }
+                        session_recovered = false;
+                    }
+                }
                 Err(SearchAttemptError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
+                    session_recovered = true;
                     continue;
                 }
                 Err(error) => {
@@ -733,9 +781,6 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                         }
                         return Err(SearchAttemptError::ToolMissing);
                     }
-                    if let Some(client) = self.shared_client.as_ref() {
-                        client.record_endpoint_success().await;
-                    }
                     return self.decode_result(&result, query.count as usize);
                 }
                 Err(ManagedSearchCallError::Peer(McpPeerError::SessionExpired))
@@ -763,6 +808,9 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                 Err(ManagedSearchCallError::QuotaExhausted) => {
                     return Err(SearchAttemptError::QuotaExhausted);
                 }
+                Err(ManagedSearchCallError::Upstream) => {
+                    return Err(SearchAttemptError::Upstream);
+                }
                 Err(ManagedSearchCallError::UnsafeArguments) => {
                     return Err(SearchAttemptError::InvalidRequest);
                 }
@@ -789,6 +837,7 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
 fn map_managed_call_error_for_search(error: ManagedMcpCallError) -> ManagedSearchCallError {
     match error {
         ManagedMcpCallError::Peer(error) => ManagedSearchCallError::Peer(error),
+        ManagedMcpCallError::EndpointUnavailable => ManagedSearchCallError::Upstream,
         ManagedMcpCallError::QuotaExhausted => ManagedSearchCallError::QuotaExhausted,
         ManagedMcpCallError::UnsafeArguments => ManagedSearchCallError::UnsafeArguments,
         ManagedMcpCallError::RetryLimitExceeded => ManagedSearchCallError::RetryLimitExceeded,
@@ -1542,15 +1591,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_endpoint_health_disables_unauthorized_and_recovers_on_success() {
+    async fn fetch_endpoint_health_does_not_let_stale_success_clear_unauthorized() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let now = Instant::now();
         assert!(client.endpoint_available(now).await);
+        let token = client
+            .begin_endpoint_attempt(now)
+            .await
+            .expect("attempt token");
         client
             .record_fetch_error(EndpointFailureKind::Unauthorized, now)
             .await;
         assert!(!client.endpoint_available(now).await);
-        client.record_endpoint_success().await;
+        client.record_endpoint_success_for(token).await;
+        assert!(!client.endpoint_available(now).await);
+        client.record_endpoint_reinitialized().await;
         assert!(client.endpoint_available(now).await);
     }
 
@@ -1558,6 +1613,10 @@ mod tests {
     async fn fetch_endpoint_health_bounds_rate_limit_cooldown() {
         let client = ParallelMcpClient::new().expect("offline construction");
         let now = Instant::now();
+        let stale_token = client
+            .begin_endpoint_attempt(now)
+            .await
+            .expect("stale attempt token");
         client
             .record_fetch_error(
                 EndpointFailureKind::RateLimited(Some(Duration::from_secs(5))),
@@ -1565,7 +1624,16 @@ mod tests {
             )
             .await;
         assert!(!client.endpoint_available(now).await);
-        assert!(client.endpoint_available(now + Duration::from_secs(30)).await);
+        client.record_endpoint_success_for(stale_token).await;
+        assert!(!client.endpoint_available(now).await);
+        let later = now + Duration::from_secs(30);
+        assert!(client.endpoint_available(later).await);
+        let fresh_token = client
+            .begin_endpoint_attempt(later)
+            .await
+            .expect("fresh attempt token");
+        client.record_endpoint_success_for(fresh_token).await;
+        assert!(client.endpoint_available(later).await);
     }
 
     #[tokio::test]
