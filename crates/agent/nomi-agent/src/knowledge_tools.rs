@@ -350,7 +350,10 @@ impl KnowledgeWriteTool {
 /// model omits `requested` and exactly one base is bound, that base is used.
 /// Matching is case-insensitive and whitespace-trimmed. `Err` carries a
 /// ready-to-return, model-actionable message.
-fn resolve_write_base<'a>(
+///
+/// Shared crate-internally with `learning_tools` so the course-generation tool
+/// resolves its `base` argument identically.
+pub(crate) fn resolve_write_base<'a>(
     bases: &'a [(KnowledgeBaseId, String)],
     requested: Option<&str>,
 ) -> Result<&'a (KnowledgeBaseId, String), String> {

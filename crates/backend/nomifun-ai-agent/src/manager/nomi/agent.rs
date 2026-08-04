@@ -12,6 +12,7 @@ use nomi_agent::summon_tools::{
 };
 use nomi_agent::engine::AgentEngine;
 use nomi_agent::knowledge_tools::{KnowledgeReadTool, KnowledgeSearchTool, KnowledgeWriteTool};
+use nomi_agent::learning_tools::{LEARNING_GENERATE_COURSE_TOOL_NAME, LearningGenerateCourseTool};
 use nomi_agent::output::OutputSink;
 use nomi_agent::requirement_tools::{RequirementCompleteTool, RequirementSink, RequirementUpdateStatusTool};
 use nomi_agent::cron_tools::{CronCreateTool, CronDeleteTool, CronListTool, CronSink};
@@ -228,6 +229,17 @@ pub(crate) fn should_register_knowledge_search(
 /// to. The factory only passes a sink when write-back is enabled on the
 /// binding, so this also gates on the user's opt-in.
 pub(crate) fn should_register_knowledge_write(
+    has_sink: bool,
+    bases: &[(nomifun_common::KnowledgeBaseId, String)],
+) -> bool {
+    has_sink && !bases.is_empty()
+}
+
+/// Whether the native learning_generate_course tool should be registered: a
+/// course-generation sink was wired AND the session actually has mounted bases
+/// to generate from. The factory only passes a sink for owner-authority
+/// sessions, mirroring the knowledge retrieval tools.
+pub(crate) fn should_register_learning_generate_course(
     has_sink: bool,
     bases: &[(nomifun_common::KnowledgeBaseId, String)],
 ) -> bool {
@@ -497,6 +509,10 @@ impl NomiAgentManager {
             knowledge_writeback_sink,
             knowledge_write_bases,
             knowledge_writeback_staged,
+            // The course-generation tool is only wired through the factory
+            // path (new_with_search_provider); host-wiring/legacy constructors
+            // leave it unregistered.
+            None,
             companion_skill_sink,
             nomi_agent::SearchProviderBinding::DefaultDdg,
             nomi_agent::ExtractCoordinatorBinding::LocalDefault,
@@ -520,6 +536,7 @@ impl NomiAgentManager {
         knowledge_writeback_sink: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>>,
         knowledge_write_bases: Vec<(nomifun_common::KnowledgeBaseId, String)>,
         knowledge_writeback_staged: bool,
+        learning_course_sink: Option<Arc<dyn nomi_agent::learning_tools::LearningCourseSink>>,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         search_provider: nomi_agent::SearchProviderBinding,
         extract_coordinator: nomi_agent::ExtractCoordinatorBinding,
@@ -709,6 +726,25 @@ impl NomiAgentManager {
             should_register_knowledge_write(knowledge_writeback_sink.is_some(), &knowledge_write_bases);
         if register_knowledge_write {
             config.tools.allow_list.push(KNOWLEDGE_WRITE_TOOL_NAME.to_owned());
+        }
+
+        // The native learning_generate_course tool turns a mounted knowledge
+        // base into a learning course through the backend learning service
+        // (app DB rows + one model call — never user files). Allow-list it
+        // past the approval gate like knowledge_write: under SessionMode::
+        // Default nothing is auto-approved, which would park generation on a
+        // confirmation many surfaces (channel / companion) cannot show. Must
+        // be set BEFORE bootstrap so it reaches the engine's allow_list;
+        // registration of the tool itself happens after build().
+        let register_learning_generate_course = should_register_learning_generate_course(
+            learning_course_sink.is_some(),
+            &knowledge_write_bases,
+        );
+        if register_learning_generate_course {
+            config
+                .tools
+                .allow_list
+                .push(LEARNING_GENERATE_COURSE_TOOL_NAME.to_owned());
         }
 
         let is_resume = resume_session.is_some();
@@ -924,6 +960,23 @@ impl NomiAgentManager {
                     .registry_mut()
                     .register(Box::new(KnowledgeReadTool::new(sink, knowledge_kb_ids)));
                 debug!(conversation_id = %conversation_id, "Registered knowledge_search + knowledge_read tools");
+            }
+        }
+        // Native learning_generate_course: registered when a course-generation
+        // sink is wired (factory gates on owner authority) AND bases are
+        // mounted. Resolves the model-named base within the mounted set and
+        // generates through the learning service. Already allow-listed above
+        // so it bypasses the approval gate, same posture as knowledge_write.
+        if let Some(sink) = learning_course_sink {
+            if register_learning_generate_course {
+                engine.registry_mut().register(Box::new(LearningGenerateCourseTool::new(
+                    sink,
+                    knowledge_write_bases.clone(),
+                )));
+                debug!(
+                    conversation_id = %conversation_id,
+                    "Registered learning_generate_course tool"
+                );
             }
         }
         // Native knowledge_write (回血): registered only when the binding has

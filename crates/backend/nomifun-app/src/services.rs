@@ -2854,6 +2854,14 @@ impl AppServices {
             knowledge_writeback: Some(Arc::new(nomifun_ai_agent::LiveKnowledgeWritebackSink {
                 service: knowledge_service.clone(),
             })),
+            // Live learning-course sink: registers the native
+            // learning_generate_course tool over the shared LearningService so
+            // the agent can write markdown into a mounted base (knowledge_write)
+            // and then turn that base into a course. Gated downstream on
+            // owner authority + mounted bases.
+            learning_course: Some(Arc::new(nomifun_ai_agent::LiveLearningCourseSink {
+                service: learning_service.clone(),
+            })),
             companion_prompt: Some(
                 companion_service.clone() as Arc<dyn nomifun_ai_agent::CompanionPromptProvider>
             ),

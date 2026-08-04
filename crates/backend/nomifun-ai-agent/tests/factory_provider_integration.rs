@@ -125,6 +125,7 @@ fn make_factory_with_summon(
         companion_sink: None,
         knowledge_retrieval: None,
         knowledge_writeback: None,
+        learning_course: None,
         poi_service: None,
         goal_repo: None,
     })

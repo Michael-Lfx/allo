@@ -19,6 +19,7 @@ pub mod extraction_scanner;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
+pub mod learning_course;
 #[cfg(feature = "managed-search")]
 pub mod managed_search;
 #[cfg(feature = "managed-search")]
@@ -105,6 +106,7 @@ pub use knowledge_completer::LiveKnowledgeCompleter;
 pub use knowledge_completer::resolve_default_model;
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;
 pub use knowledge_writeback::LiveKnowledgeWritebackSink;
+pub use learning_course::LiveLearningCourseSink;
 #[cfg(feature = "managed-search")]
 pub use managed_search::ManagedSearchHandle;
 #[cfg(feature = "managed-search")]

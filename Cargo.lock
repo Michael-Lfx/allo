@@ -5830,6 +5830,7 @@ dependencies = [
  "nomifun-extension",
  "nomifun-insights",
  "nomifun-knowledge",
+ "nomifun-learning",
  "nomifun-mcp",
  "nomifun-model-invoke",
  "nomifun-models-dev",
