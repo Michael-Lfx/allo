@@ -162,12 +162,39 @@ pub fn compose_reference_strip(paths: &[&Path], out_path: &Path) -> VimaxResult<
     Ok(())
 }
 
-fn require_ffmpeg() -> VimaxResult<PathBuf> {
-    nomi_config::resolve_ffmpeg_executable().ok_or_else(|| {
-        VimaxError::Media(
-            "ffmpeg not found — Allo will auto-install on first use; retry shortly".into(),
-        )
-    })
+fn ffmpeg_missing_error(detail: Option<String>) -> VimaxError {
+    match detail {
+        Some(d) => VimaxError::Media(format!(
+            "ffmpeg not found and auto-install failed: {d}. \
+             Install ffmpeg on PATH or retry when network mirrors are reachable."
+        )),
+        None => VimaxError::Media(
+            "ffmpeg not found — enable NOMIFUN_AUTO_ENSURE_DEPS (default: on) \
+             or install ffmpeg on PATH"
+                .into(),
+        ),
+    }
+}
+
+/// Resolve ffmpeg, downloading into Allo's managed `bin/` when missing.
+///
+/// Unlike a bare PATH check, this actually awaits [`nomi_config::ensure_ffmpeg`]
+/// so ViMax scene render / last-frame extract do not fail with a misleading
+/// "retry shortly" while nothing is installing.
+async fn ensure_ffmpeg_ready() -> VimaxResult<PathBuf> {
+    if let Some(path) = nomi_config::resolve_ffmpeg_executable() {
+        return Ok(path);
+    }
+
+    if !nomi_config::auto_ensure_enabled() {
+        return Err(ffmpeg_missing_error(None));
+    }
+
+    tracing::info!("ffmpeg missing; Allo is installing it into the managed bin directory");
+    match nomi_config::ensure_ffmpeg(false).await {
+        Ok(path) => Ok(path),
+        Err(e) => Err(ffmpeg_missing_error(Some(e.to_string()))),
+    }
 }
 
 fn ffprobe_executable(ffmpeg: &Path) -> PathBuf {
@@ -255,7 +282,7 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     if clip_paths.is_empty() {
         return Err(VimaxError::Media("no clips to concatenate".into()));
     }
-    let ffmpeg = require_ffmpeg()?;
+    let ffmpeg = ensure_ffmpeg_ready().await?;
     if let Some(parent) = out_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -491,7 +518,7 @@ async fn run_ffmpeg_owned(
 
 /// Extract the last frame of `video_path` to PNG at `out_path`.
 pub async fn extract_last_frame(video_path: &Path, out_path: &Path) -> VimaxResult<()> {
-    let ffmpeg = require_ffmpeg()?;
+    let ffmpeg = ensure_ffmpeg_ready().await?;
     if !video_path.is_file() {
         return Err(VimaxError::Media(format!(
             "video missing: {}",
@@ -538,7 +565,7 @@ pub async fn extract_frame_at_ratio(
     out_path: &Path,
     ratio: f64,
 ) -> VimaxResult<()> {
-    let ffmpeg = require_ffmpeg()?;
+    let ffmpeg = ensure_ffmpeg_ready().await?;
     if !video_path.is_file() {
         return Err(VimaxError::Media(format!(
             "video missing: {}",
@@ -597,7 +624,7 @@ pub async fn extract_frame_at_ratio(
 /// Mirrors ViMax `get_new_camera_image`: ContentDetector → Scene-002 first frame,
 /// else last frame of the whole clip.
 pub async fn extract_new_camera_frame(video_path: &Path, out_path: &Path) -> VimaxResult<()> {
-    let ffmpeg = require_ffmpeg()?;
+    let ffmpeg = ensure_ffmpeg_ready().await?;
     if !video_path.is_file() {
         return Err(VimaxError::Media(format!(
             "video missing: {}",
@@ -840,7 +867,7 @@ mod tests {
     /// that shape of inputs and assert the final segment still has energy.
     #[tokio::test]
     async fn concat_keeps_audio_on_last_shot_when_early_audio_is_short() {
-        let Ok(ffmpeg) = require_ffmpeg() else {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
             eprintln!("skip: ffmpeg not available");
             return;
         };
