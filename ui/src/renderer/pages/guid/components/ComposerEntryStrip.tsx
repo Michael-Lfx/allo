@@ -9,7 +9,6 @@ export interface ComposerEntryStripProps {
   presetAvatar?: { kind: 'image' | 'emoji' | 'icon'; value?: string };
   onChoosePreset: () => void;
   onFree: () => void;
-  collaborationPolicyNode?: React.ReactNode;
 }
 
 /**
@@ -23,7 +22,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   presetAvatar,
   onChoosePreset,
   onFree,
-  collaborationPolicyNode,
 }) => {
   const { t } = useTranslation();
 
@@ -43,7 +41,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   if (isPresetAgent) {
     return (
       <div className={styles.entryStrip}>
-        {collaborationPolicyNode}
         <span className={`${styles.entryButton} ${styles.entryButtonActive} ${styles.entryPersonaButton}`}>
           <span className={styles.entryAvatar}>{renderAvatar()}</span>
           <span className={styles.entryButtonText}>
@@ -65,7 +62,6 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
 
   return (
     <div className={styles.entryStrip}>
-      {collaborationPolicyNode}
       <button
         type='button'
         data-button-shape='pill'

@@ -31,14 +31,6 @@ import { isConversationProcessing } from '@/renderer/pages/conversation/utils/co
 import NomiChat from '../platforms/nomi/NomiChat';
 import { useNomiModelSelection } from '../platforms/nomi/useNomiModelSelection';
 import CompanionChatPanel from '@/renderer/pages/nomi/companion/CompanionChatPanel';
-import GuidCollaboratorSelector from '@/renderer/pages/guid/components/GuidCollaboratorSelector';
-import {
-  toAppliedCollaborationTemplate,
-  type AppliedCollaborationTemplate,
-} from '@/renderer/components/collaboration/collaborationTemplateModel';
-import CollaborationPolicyControl, {
-  type CollaborationPolicyValue,
-} from '@/renderer/components/collaboration/CollaborationPolicyControl';
 import type { TExecutionModelPool, TExecutionModelRef } from '@/common/types/agentExecution/agentExecutionTypes';
 import { ExecutionProvider } from '../execution/ExecutionContext';
 import ExecutionConversationLayout from '../execution/ExecutionConversationLayout';
@@ -187,15 +179,11 @@ const NomiConversationLayout: React.FC<{
   conversation: NomiConversation;
   chatLayoutProps: Omit<ChatLayoutProps, 'children' | 'workspaceCollaboration' | 'workspaceExtraTabs'>;
   modelSelection: React.ComponentProps<typeof NomiChat>['modelSelection'];
-  collaboratorSelectorNode: React.ReactNode;
-  collaborationPolicyNode: React.ReactNode;
   presetPresetName?: string;
 }> = ({
   conversation,
   chatLayoutProps,
   modelSelection,
-  collaboratorSelectorNode,
-  collaborationPolicyNode,
   presetPresetName,
 }) => {
   const { t } = useTranslation();
@@ -235,8 +223,6 @@ const NomiConversationLayout: React.FC<{
           (conversation.extra as { mcp_statuses?: IConversationMcpStatus[] } | undefined)?.mcp_statuses
         }
         agent_name={presetPresetName}
-        collaboratorSelectorNode={collaboratorSelectorNode}
-        extraRightTools={collaborationPolicyNode}
         isProcessing={isConversationProcessing(conversation)}
       />
     </ExecutionConversationLayout>
@@ -251,41 +237,6 @@ const NomiConversationPanel: React.FC<{
     const pool = conversation.execution_model_pool;
     return pool?.mode === 'range' ? pool.models.slice(1) : [];
   });
-  const [collaborationPolicy, setCollaborationPolicy] = useState<CollaborationPolicyValue>({
-    delegationPolicy: conversation.delegation_policy ?? 'automatic',
-    decisionPolicy: conversation.decision_policy ?? 'automatic',
-  });
-  const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
-    useState<AppliedCollaborationTemplate | null>(null);
-  useEffect(() => {
-    setCollaborationPolicy({
-      delegationPolicy: conversation.delegation_policy ?? 'automatic',
-      decisionPolicy: conversation.decision_policy ?? 'automatic',
-    });
-  }, [conversation.decision_policy, conversation.delegation_policy]);
-
-  const storedExecutionTemplateId = conversation.execution_template_id ?? null;
-  useEffect(() => {
-    if (!storedExecutionTemplateId) {
-      setSelectedCollaborationTemplate(null);
-      return;
-    }
-    let cancelled = false;
-    void ipcBridge.agentExecutionTemplate.get
-      .invoke({ execution_template_id: storedExecutionTemplateId })
-      .then((template) => {
-        if (!cancelled) {
-          setSelectedCollaborationTemplate(toAppliedCollaborationTemplate(template));
-        }
-      })
-      .catch((error) => {
-        console.error('[ChatConversation] Failed to resolve collaboration template:', error);
-        if (!cancelled) setSelectedCollaborationTemplate(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storedExecutionTemplateId]);
   const { configuredPairs, allPairs, isLoading: isModelCatalogLoading } = useExecutionModelPool();
   const collaboratorReconciliation = useMemo(
     () => (isModelCatalogLoading ? null : reconcileModelRefs(collaborators, configuredPairs, allPairs)),
@@ -334,7 +285,6 @@ const NomiConversationPanel: React.FC<{
         updates: { model: selected, execution_model_pool, execution_template_id: null },
       });
       if (ok) {
-        setSelectedCollaborationTemplate(null);
         void saveNomiDefaultModel(_provider.id, modelName);
       }
       return Boolean(ok);
@@ -359,82 +309,12 @@ const NomiConversationPanel: React.FC<{
     [modelSelection.current_model?.id, modelSelection.current_model?.use_model],
   );
 
-  const onCollaboratorsChange = useCallback(
-    (next: TExecutionModelRef[]) => {
-      setCollaboratorsState(next);
-      void persistModelPool(mainModelRef, next);
-    },
-    [mainModelRef, persistModelPool],
-  );
-
-  const persistCollaborationTemplate = useCallback(
-    async (next: AppliedCollaborationTemplate | null) => {
-      const previous = selectedCollaborationTemplate;
-      setSelectedCollaborationTemplate(next);
-      try {
-        await ipcBridge.conversation.update.invoke({
-          conversation_id: conversation.id,
-          updates: {
-            execution_template_id: next?.execution_template_id ?? null,
-          },
-        });
-      } catch (error) {
-        setSelectedCollaborationTemplate(previous);
-        console.error('[ChatConversation] Failed to persist collaboration template:', error);
-        Message.error(t('common.failed', { defaultValue: '保存协作方案失败' }));
-      }
-    },
-    [conversation.id, selectedCollaborationTemplate, t],
-  );
-
   useEffect(() => {
     if (!collaboratorReconciliation || collaboratorReconciliation.removed.length === 0) return;
     if (sameModelRefs(collaborators, collaboratorReconciliation.retained)) return;
     setCollaboratorsState(collaboratorReconciliation.retained);
     void persistModelPool(mainModelRef, collaboratorReconciliation.retained);
   }, [collaboratorReconciliation, collaborators, mainModelRef, persistModelPool]);
-
-  // Collaboration selector stays adjacent to the main model selector.
-  const collaboratorSelectorNode = (
-    <GuidCollaboratorSelector
-      value={activeCollaborators}
-      onChange={onCollaboratorsChange}
-      mainModel={mainModelRef}
-      selectedTemplate={selectedCollaborationTemplate}
-      workDir={conversation.extra?.workspace}
-      onTemplateApply={(template) => void persistCollaborationTemplate(template)}
-      onTemplateClear={() => void persistCollaborationTemplate(null)}
-      className='nomi-sendbox-model-btn'
-    />
-  );
-
-  const onCollaborationPolicyChange = useCallback(
-    async (next: CollaborationPolicyValue) => {
-      setCollaborationPolicy(next);
-      try {
-        await ipcBridge.conversation.update.invoke({
-          conversation_id: conversation.id,
-          updates: {
-            delegation_policy: next.delegationPolicy,
-            decision_policy: next.decisionPolicy,
-          },
-        });
-      } catch (error) {
-        console.error('[ChatConversation] Failed to persist collaboration policy:', error);
-      }
-    },
-    [conversation.id],
-  );
-
-  const collaborationPolicyNode = (
-    <CollaborationPolicyControl
-      runtimeType={conversation.type}
-      delegationPolicy={collaborationPolicy.delegationPolicy}
-      decisionPolicy={collaborationPolicy.decisionPolicy}
-      onChange={onCollaborationPolicyChange}
-      compact
-    />
-  );
 
   // Heal against the unified chat catalog (backend resolve, no heuristics).
   // On resolve failure/loading `chatGroups` is empty ⇒ resolveHealModel is a
@@ -474,7 +354,6 @@ const NomiConversationPanel: React.FC<{
         updates: { model: selected, execution_model_pool, execution_template_id: null },
       });
       if (ok) {
-        setSelectedCollaborationTemplate(null);
         void saveNomiDefaultModel(heal.provider.id, heal.use_model);
         // Silent for first-time default; only notify when replacing a stale binding.
         if (heal.reason === 'stale') {
@@ -528,8 +407,6 @@ const NomiConversationPanel: React.FC<{
       conversation={conversation}
       chatLayoutProps={chatLayoutProps}
       modelSelection={modelSelection}
-      collaboratorSelectorNode={collaboratorSelectorNode}
-      collaborationPolicyNode={collaborationPolicyNode}
       presetPresetName={presetPresetInfo?.name}
     />
   );

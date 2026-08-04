@@ -4,10 +4,10 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('Guid composer entry strip', () => {
-  test('keeps creation configuration focused on preset and collaboration controls', () => {
+  test('keeps creation configuration focused on preset controls', () => {
     const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
 
-    expect(source.includes('collaborationPolicyNode?: React.ReactNode')).toBe(true);
+    expect(source.includes('collaborationPolicyNode')).toBe(false);
     expect(source.includes('onChoosePreset')).toBe(true);
     expect(source.includes('onFree')).toBe(true);
     expect(source.includes('ComposerSkill')).toBe(false);

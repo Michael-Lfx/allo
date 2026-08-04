@@ -10,14 +10,14 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('Guid collaboration policy', () => {
-  test('shares one Nomi-only policy control between home and conversation', () => {
+  test('does not render collaboration policy controls in home or conversation', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const chatSource = readSource(new URL('../conversation/components/ChatConversation.tsx', import.meta.url));
     const controlSource = readSource(new URL('../../components/collaboration/CollaborationPolicyControl.tsx', import.meta.url));
     const controlCss = readSource(new URL('../../components/collaboration/CollaborationPolicyControl.module.css', import.meta.url));
 
-    expect(pageSource.includes('<CollaborationPolicyControl')).toBe(true);
-    expect(chatSource.includes('<CollaborationPolicyControl')).toBe(true);
+    expect(pageSource.includes('<CollaborationPolicyControl')).toBe(false);
+    expect(chatSource.includes('<CollaborationPolicyControl')).toBe(false);
     expect(controlSource.includes("if (runtimeType !== 'nomi') return null")).toBe(true);
     expect(controlSource.includes("const DELEGATION_OPTIONS: TDelegationPolicy[] = ['disabled', 'automatic', 'prefer_parallel']"))
       .toBe(true);
@@ -26,7 +26,6 @@ describe('Guid collaboration policy', () => {
     expect(controlSource.includes("role='radio'")).toBe(true);
     expect(controlSource.includes('aria-checked={active}')).toBe(true);
     expect(controlSource.includes('getPopupContainer={() => document.body}')).toBe(true);
-    expect(controlSource.includes("data-compact={compact ? 'true' : 'false'}")).toBe(true);
     expect(controlCss.includes(".trigger[data-compact='false']")).toBe(true);
     expect(controlCss.includes('height: 28px !important')).toBe(true);
     expect(controlCss.includes('min-height: 28px')).toBe(true);
@@ -56,7 +55,7 @@ describe('Guid collaboration policy', () => {
     expect(pageSource.includes('import { reconcileModelRefs, sameModelRefs }')).toBe(true);
     expect(pageSource.includes('const activeCollaborators = collaboratorReconciliation?.active ?? []')).toBe(true);
     expect(pageSource.includes('...activeCollaborators.filter(')).toBe(true);
-    expect(pageSource.includes('value={activeCollaborators}')).toBe(true);
+    expect(pageSource.includes('value={activeCollaborators}')).toBe(false);
     expect(pageSource.includes('sameModelRefs(collaborationModels, collaboratorReconciliation.retained)')).toBe(true);
     expect(selectorSource.includes('const availableKeys = useMemo(')).toBe(true);
     expect(selectorSource.includes('disabled={isLoading}')).toBe(true);

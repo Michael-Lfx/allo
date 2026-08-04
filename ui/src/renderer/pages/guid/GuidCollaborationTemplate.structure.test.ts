@@ -10,7 +10,7 @@ describe('Guid collaboration templates', () => {
     expect(bridge.includes('/create-execution')).toBe(true);
   });
 
-  test('passes only the selected template input into a normal Nomi conversation', () => {
+  test('keeps template APIs available without exposing template controls in chat entry points', () => {
     const page = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const send = readSource(new URL('./hooks/useGuidSend.ts', import.meta.url));
     const picker = readSource(new URL('./components/GuidCollaborationTemplatePicker.tsx', import.meta.url));
@@ -19,7 +19,7 @@ describe('Guid collaboration templates', () => {
     const searchMapper = readSource(new URL('../../../common/adapter/searchMapper.ts', import.meta.url));
     const conversation = readSource(new URL('../conversation/components/ChatConversation.tsx', import.meta.url));
 
-    expect(page.includes('selectedCollaborationTemplate?.execution_template_id')).toBe(true);
+    expect(page.includes('GuidCollaborationTemplatePicker')).toBe(false);
     expect(send.includes('execution_template_id: executionTemplateId')).toBe(true);
     expect(
       /decision_policy: decisionPolicy,\s*execution_template_id: executionTemplateId,\s*extra: \{/.test(send),
@@ -28,12 +28,12 @@ describe('Guid collaboration templates', () => {
     expect(picker.includes('agentExecutionTemplate.create.invoke')).toBe(true);
     expect(picker.includes('agentExecutionTemplate.remove.invoke')).toBe(true);
     expect(picker.includes('!templateContainsModel(detail, mainModel)')).toBe(true);
-    expect(page.includes('selectedCollaborationTemplate.models.some')).toBe(true);
+    expect(page.includes('GuidCollaboratorSelector')).toBe(false);
     expect(bridge.includes('body.execution_template_id = p.execution_template_id')).toBe(true);
     expect(storage.includes('execution_template_id?: ExecutionTemplateId | null')).toBe(true);
     expect(searchMapper.includes('execution_template_id?: string | null')).toBe(true);
-    expect(conversation.includes('conversation.execution_template_id ?? null')).toBe(true);
-    expect(conversation.includes('execution_template_id: next?.execution_template_id ?? null')).toBe(true);
+    expect(conversation.includes('GuidCollaboratorSelector')).toBe(false);
+    expect(conversation.includes('CollaborationPolicyControl')).toBe(false);
 
     const legacyExtraRead = /extra(?:\?\.|\.)execution_template_id|extra\[['"]execution_template_id['"]\]/;
     for (const source of [bridge, storage, searchMapper, send, conversation]) {

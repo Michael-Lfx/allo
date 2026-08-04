@@ -31,8 +31,6 @@ import type {
   ComposerSkillTokenInputHandle,
   ComposerTokenInputState,
 } from '@/renderer/components/chat/ComposerSkillTokenInput';
-import GuidCollaboratorSelector from './components/GuidCollaboratorSelector';
-import type { AppliedCollaborationTemplate } from '@/renderer/components/collaboration/collaborationTemplateModel';
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
@@ -49,7 +47,6 @@ import { useGuidModelSelection } from './hooks/useGuidModelSelection';
 import { useGuidSend } from './hooks/useGuidSend';
 import { useExecutionModelPool } from '@/renderer/pages/conversation/execution/useExecutionModelPool';
 import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/conversation/execution/executionModelRefs';
-import CollaborationPolicyControl from '@/renderer/components/collaboration/CollaborationPolicyControl';
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
@@ -98,13 +95,11 @@ const GuidPage: React.FC = () => {
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [delegationPolicy, setDelegationPolicy] = useState<TDelegationPolicy>('automatic');
-  const [decisionPolicy, setDecisionPolicy] = useState<TDecisionPolicy>('automatic');
+  const delegationPolicy: TDelegationPolicy = 'automatic';
+  const decisionPolicy: TDecisionPolicy = 'automatic';
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
     () => configService.get('nomi.collaborationModels') ?? [],
   );
-  const [selectedCollaborationTemplate, setSelectedCollaborationTemplate] =
-    useState<AppliedCollaborationTemplate | null>(null);
   const [activeIntentId, setActiveIntentId] = useState<GuidTaskIntentId>('freeform');
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
@@ -165,13 +160,6 @@ const GuidPage: React.FC = () => {
         : null,
     [modelSelection.current_model?.id, modelSelection.current_model?.use_model],
   );
-  useEffect(() => {
-    if (!selectedCollaborationTemplate || !mainModelRef) return;
-    const containsLead = selectedCollaborationTemplate.models.some(
-      (model) => model.provider_id === mainModelRef.provider_id && model.model === mainModelRef.model,
-    );
-    if (!containsLead) setSelectedCollaborationTemplate(null);
-  }, [mainModelRef, selectedCollaborationTemplate]);
   const persistCollaborationModels = useCallback((next: TExecutionModelRef[]) => {
     setCollaborationModels(next);
     void configService.set('nomi.collaborationModels', next).catch((error) => {
@@ -181,7 +169,6 @@ const GuidPage: React.FC = () => {
   useEffect(() => {
     if (!collaboratorReconciliation || collaboratorReconciliation.removed.length === 0) return;
     if (sameModelRefs(collaborationModels, collaboratorReconciliation.retained)) return;
-    setSelectedCollaborationTemplate(null);
     persistCollaborationModels(collaboratorReconciliation.retained);
   }, [collaborationModels, collaboratorReconciliation, persistCollaborationModels]);
   const executionModelPool = useMemo<TExecutionModelPool | undefined>(() => {
@@ -413,7 +400,6 @@ const GuidPage: React.FC = () => {
     delegationPolicy,
     executionModelPool,
     decisionPolicy,
-    executionTemplateId: selectedCollaborationTemplate?.execution_template_id,
 
     // Mention state reset
     setMentionOpen: mention.setMentionOpen,
@@ -762,41 +748,6 @@ const GuidPage: React.FC = () => {
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
     />
   );
-  const collaboratorSelectorNode = (
-    <GuidCollaboratorSelector
-      value={activeCollaborators}
-      onChange={(next) => {
-        setSelectedCollaborationTemplate(null);
-        persistCollaborationModels(next);
-      }}
-      mainModel={mainModelRef}
-      selectedTemplate={selectedCollaborationTemplate}
-      workDir={guidInput.dir}
-      onTemplateApply={(template) => {
-        setSelectedCollaborationTemplate({
-          execution_template_id: template.execution_template_id,
-          name: template.name,
-          participantCount: template.participantCount,
-          models: template.models,
-        });
-      }}
-      onTemplateClear={() => setSelectedCollaborationTemplate(null)}
-      className='nomi-sendbox-model-btn'
-    />
-  );
-  const collaborationPolicyNode = (
-    <CollaborationPolicyControl
-      runtimeType={effectiveAgentType}
-      delegationPolicy={delegationPolicy}
-      decisionPolicy={decisionPolicy}
-      className='guid-entry-policy-btn'
-      onChange={(next) => {
-        setDelegationPolicy(next.delegationPolicy);
-        setDecisionPolicy(next.decisionPolicy);
-      }}
-    />
-  );
-
   // Build the action row
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
@@ -808,11 +759,6 @@ const GuidPage: React.FC = () => {
       files={guidInput.files}
       onFilesUploaded={guidInput.handleFilesUploaded}
       modelSelectorNode={modelSelectorNode}
-      collaboratorSelectorNode={
-        effectiveAgentType === 'nomi' && delegationPolicy !== 'disabled'
-          ? collaboratorSelectorNode
-          : undefined
-      }
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}
@@ -958,7 +904,6 @@ const GuidPage: React.FC = () => {
                   onFree={() => {
                     agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
                   }}
-                  collaborationPolicyNode={collaborationPolicyNode}
                 />
               }
             />

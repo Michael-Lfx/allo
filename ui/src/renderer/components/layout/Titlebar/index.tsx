@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import classNames from 'classnames';
-import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandLeft, ExpandRight, Plus, Terminal } from '@icon-park/react';
+import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandLeft, ExpandRight, Plus } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -338,12 +338,6 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
               className: 'app-titlebar__button app-titlebar__button--nav',
               onClick: () => navigate('/guid', { state: { resetPreset: true } }),
               children: <Plus theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />,
-            })}
-            {renderIconButton({
-              tooltip: t('terminal.newTerminal'),
-              className: 'app-titlebar__button app-titlebar__button--nav',
-              onClick: () => navigate('/terminal-new'),
-              children: <Terminal theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />,
             })}
           </>
         )}

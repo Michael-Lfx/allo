@@ -136,14 +136,6 @@ const NomiSendBox: React.FC<{
    * companion chat, which runs in a fixed yolo mode with a locked model.
    */
   hideModeSelector?: boolean;
-  /** Conversation collaborator-model control, rendered after the main model. */
-  collaboratorSelectorNode?: React.ReactNode;
-  /**
-   * Extra node(s) rendered in the right-tools group, after the collaborator
-   * selector and before the permission selector. A projected task uses this to
-   * surface its task-requirement control inside the participant conversation.
-   */
-  extraRightTools?: React.ReactNode;
 }> = ({
   conversation_id,
   modelSelection,
@@ -152,8 +144,6 @@ const NomiSendBox: React.FC<{
   dynamicModes,
   turnActivity,
   hideModeSelector,
-  collaboratorSelectorNode,
-  extraRightTools,
 }) => {
   const [workspacePath, setWorkspacePath] = useState('');
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
@@ -1074,8 +1064,6 @@ const NomiSendBox: React.FC<{
               {!hideModeSelector && (
                 <>
                   <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />
-                  {collaboratorSelectorNode}
-                  {extraRightTools}
                   <AgentModeSelector
                     backend='nomi'
                     conversation_id={conversation_id}

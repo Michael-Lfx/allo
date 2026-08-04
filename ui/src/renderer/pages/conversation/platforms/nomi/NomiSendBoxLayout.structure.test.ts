@@ -18,13 +18,12 @@ describe('Nomi sendbox control layout', () => {
     const rightToolsIndex = source.indexOf('rightTools={');
     const modelIndex = source.indexOf('<NomiModelSelector', rightToolsIndex);
     const contextRingIndex = source.indexOf('<ContextUsageRing', rightToolsIndex);
-    const collaboratorIndex = source.indexOf('{collaboratorSelectorNode}', rightToolsIndex);
 
     expect(sendBoxIndex).toBeGreaterThan(-1);
     expect(rightToolsIndex).toBeGreaterThan(sendBoxIndex);
     expect(contextRingIndex).toBeGreaterThan(rightToolsIndex);
     expect(modelIndex).toBeGreaterThan(contextRingIndex);
-    expect(collaboratorIndex).toBeGreaterThan(modelIndex);
+    expect(source.includes('collaboratorSelectorNode')).toBe(false);
     expect(source.includes('topRightTools={')).toBe(false);
     expect(source.includes('ContextUsagePill')).toBe(false);
     expect(source.includes("data-testid='nomi-context-usage-slot'")).toBe(false);
@@ -54,30 +53,22 @@ describe('Nomi sendbox control layout', () => {
     expect(source.includes('breakdown={tokenUsage?.context_breakdown}')).toBe(true);
   });
 
-  test('keeps collaborator models next to the main model and collaboration policy next to permission', () => {
+  test('does not render collaborator model or collaboration policy controls', () => {
     const chatSource = readSource(new URL('../../components/ChatConversation.tsx', import.meta.url));
     const sendBoxSource = readSource(new URL('./NomiSendBox.tsx', import.meta.url));
-
-    const collaboratorBlock = chatSource.slice(
-      chatSource.indexOf('const collaboratorSelectorNode'),
-      chatSource.indexOf('const { providers: healProviders'),
-    );
-    expect(collaboratorBlock.includes('<GuidCollaboratorSelector')).toBe(true);
-    expect(chatSource.includes('<CollaborationPolicyControl')).toBe(true);
-    expect(chatSource.includes('extraRightTools={collaborationPolicyNode}')).toBe(true);
 
     const rightToolsIndex = sendBoxSource.indexOf('rightTools={');
     const contextRingIndex = sendBoxSource.indexOf('<ContextUsageRing', rightToolsIndex);
     const modelIndex = sendBoxSource.indexOf('<NomiModelSelector', rightToolsIndex);
-    const collaboratorIndex = sendBoxSource.indexOf('{collaboratorSelectorNode}', rightToolsIndex);
-    const policyIndex = sendBoxSource.indexOf('{extraRightTools}', rightToolsIndex);
     const permissionIndex = sendBoxSource.indexOf('<AgentModeSelector', rightToolsIndex);
 
     expect(contextRingIndex).toBeGreaterThan(rightToolsIndex);
     expect(modelIndex).toBeGreaterThan(contextRingIndex);
-    expect(collaboratorIndex).toBeGreaterThan(modelIndex);
-    expect(policyIndex).toBeGreaterThan(collaboratorIndex);
-    expect(permissionIndex).toBeGreaterThan(policyIndex);
+    expect(permissionIndex).toBeGreaterThan(modelIndex);
+    expect(chatSource.includes('GuidCollaboratorSelector')).toBe(false);
+    expect(chatSource.includes('CollaborationPolicyControl')).toBe(false);
+    expect(sendBoxSource.includes('collaboratorSelectorNode')).toBe(false);
+    expect(sendBoxSource.includes('extraRightTools')).toBe(false);
   });
 
   test('reconciles conversation collaborators before rendering or persisting executable ranges', () => {
@@ -85,7 +76,6 @@ describe('Nomi sendbox control layout', () => {
 
     expect(chatSource.includes('import { reconcileModelRefs, sameModelRefs }')).toBe(true);
     expect(chatSource.includes('const activeCollaborators = collaboratorReconciliation?.active ?? []')).toBe(true);
-    expect(chatSource.includes('value={activeCollaborators}')).toBe(true);
     expect(
       /buildConversationModelPool\(\s*\{ provider_id: _provider\.id, model: modelName \},\s*activeCollaborators,\s*\)/.test(
         chatSource,
