@@ -238,22 +238,25 @@ impl RemoteExtractProvider for ParallelFetchAdapter {
         deadline: Instant,
     ) -> Result<RemoteExtractBatch, RemoteExtractError> {
         let mut session_retried = false;
-        let mut session_recovered = false;
+        let mut session_recovery_token = None;
         let mut tool_rediscovered = false;
         let mut tool_attempt = 0_u8;
         let mut recovery_call_count = 0usize;
         loop {
+            if !self.client.endpoint_available(Instant::now()).await {
+                return Err(RemoteExtractError::Upstream);
+            }
             match self.ensure_compatible(deadline).await {
                 Ok(()) => {
-                    if session_recovered {
-                        self.client.record_endpoint_reinitialized().await;
-                        session_recovered = false;
+                    if let Some(token) = session_recovery_token.take() {
+                        self.client.record_endpoint_reinitialized(token).await;
                     }
                 }
                 Err(RemoteExtractError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
-                    session_recovered = true;
+                    session_recovery_token =
+                        Some(self.client.begin_endpoint_reinitialization().await);
                     recovery_call_count += 1;
                     continue;
                 }

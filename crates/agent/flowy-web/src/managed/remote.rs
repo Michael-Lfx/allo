@@ -74,7 +74,7 @@ struct EndpointHealth {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct EndpointAttemptToken {
+pub(super) struct EndpointAttemptToken {
     epoch: u64,
 }
 
@@ -154,11 +154,14 @@ impl EndpointHealth {
         }
     }
 
-    fn record_reinitialized(&mut self) {
-        self.epoch = self.epoch.saturating_add(1);
-        // Session recovery may clear an Unauthorized disable, but it must not
-        // bypass an active 403/429/network cooldown.
-        self.disable_reason = None;
+    fn record_reinitialized(&mut self, token: EndpointAttemptToken) {
+        // A recovery that began before a newer endpoint failure must not clear
+        // that newer disable.  A fresh session generation may clear only the
+        // Unauthorized marker; cooldown state remains independently guarded.
+        if token.epoch == self.epoch {
+            self.epoch = self.epoch.saturating_add(1);
+            self.disable_reason = None;
+        }
     }
 
     fn record_error(&mut self, kind: EndpointFailureKind, now: Instant) {
@@ -461,8 +464,13 @@ impl ParallelMcpClient {
         self.endpoint_health.lock().await.record_success(token);
     }
 
-    pub(crate) async fn record_endpoint_reinitialized(&self) {
-        self.endpoint_health.lock().await.record_reinitialized();
+    pub(super) async fn begin_endpoint_reinitialization(&self) -> EndpointAttemptToken {
+        let health = self.endpoint_health.lock().await;
+        EndpointAttemptToken { epoch: health.epoch }
+    }
+
+    pub(super) async fn record_endpoint_reinitialized(&self, token: EndpointAttemptToken) {
+        self.endpoint_health.lock().await.record_reinitialized(token);
     }
 
     pub(crate) async fn record_fetch_error(
@@ -715,23 +723,31 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
         deadline: Instant,
     ) -> Result<SearchAttemptOutput, SearchAttemptError> {
         let mut session_retried = false;
-        let mut session_recovered = false;
+        let mut session_recovery_token = None;
         let mut tool_rediscovered = false;
         let mut tool_attempt = 0_u8;
         loop {
+            if let Some(client) = self.shared_client.as_ref()
+                && !client.endpoint_available(Instant::now()).await
+            {
+                return Err(SearchAttemptError::Upstream);
+            }
             match self.ensure_compatible(deadline).await {
                 Ok(()) => {
-                    if session_recovered {
-                        if let Some(client) = self.shared_client.as_ref() {
-                            client.record_endpoint_reinitialized().await;
-                        }
-                        session_recovered = false;
+                    if let (Some(client), Some(token)) = (
+                        self.shared_client.as_ref(),
+                        session_recovery_token.take(),
+                    ) {
+                        client.record_endpoint_reinitialized(token).await;
                     }
                 }
                 Err(SearchAttemptError::SessionExpired) if !session_retried => {
                     self.clear_compatibility().await;
                     session_retried = true;
-                    session_recovered = true;
+                    if let Some(client) = self.shared_client.as_ref() {
+                        session_recovery_token =
+                            Some(client.begin_endpoint_reinitialization().await);
+                    }
                     continue;
                 }
                 Err(error) => {
@@ -749,11 +765,6 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                 }
             }
 
-            if let Some(client) = self.shared_client.as_ref()
-                && !client.endpoint_available(Instant::now()).await
-            {
-                return Err(SearchAttemptError::Upstream);
-            }
             tool_attempt = tool_attempt.saturating_add(1);
             let call = if let Some(client) = self.shared_client.as_ref() {
                 client
@@ -1605,7 +1616,24 @@ mod tests {
         assert!(!client.endpoint_available(now).await);
         client.record_endpoint_success_for(token).await;
         assert!(!client.endpoint_available(now).await);
-        client.record_endpoint_reinitialized().await;
+        let recovery = client.begin_endpoint_reinitialization().await;
+        client.record_endpoint_reinitialized(recovery).await;
+        assert!(client.endpoint_available(now).await);
+    }
+
+    #[tokio::test]
+    async fn stale_session_recovery_does_not_clear_new_unauthorized_state() {
+        let client = ParallelMcpClient::new().expect("offline construction");
+        let now = Instant::now();
+        let stale_recovery = client.begin_endpoint_reinitialization().await;
+        client
+            .record_fetch_error(EndpointFailureKind::Unauthorized, now)
+            .await;
+        client.record_endpoint_reinitialized(stale_recovery).await;
+        assert!(!client.endpoint_available(now).await);
+
+        let fresh_recovery = client.begin_endpoint_reinitialization().await;
+        client.record_endpoint_reinitialized(fresh_recovery).await;
         assert!(client.endpoint_available(now).await);
     }
 
