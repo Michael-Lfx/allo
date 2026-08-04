@@ -16,8 +16,8 @@ export type SlashCommandSelectionBehavior = 'execute' | 'insert';
 
 /**
  * Indicates where the slash command originates from.
- * - `acp`: Provided by the ACP agent (e.g., Claude)
- * - `builtin`: Built into the application
+ * - `acp`: Provided by an agent runtime (e.g., Claude)
+ * - `builtin`: Host/system command resolved by the application
  */
 export type SlashCommandSource = 'acp' | 'builtin';
 

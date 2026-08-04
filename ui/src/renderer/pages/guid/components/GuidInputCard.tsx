@@ -2,12 +2,18 @@
 
 import FilePreview from '@/renderer/components/media/FilePreview';
 import UploadProgressBar from '@/renderer/components/media/UploadProgressBar';
+import ComposerSkillTokenInput, {
+  type ComposerSkillTokenInputHandle,
+  type ComposerTokenInputState,
+} from '@/renderer/components/chat/ComposerSkillTokenInput';
+import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useCompositionInput } from '@/renderer/hooks/chat/useCompositionInput';
-import { Input } from '@arco-design/web-react';
 import React from 'react';
 import styles from '../index.module.css';
 import GuidWorkspaceFootnote from './GuidWorkspaceFootnote';
+
+const COMPOSER_MENU_BORDER_COLOR = 'color-mix(in srgb, var(--color-border-2) 68%, var(--color-bg-1))';
 
 type GuidInputCardProps = {
   // Input state
@@ -36,6 +42,16 @@ type GuidInputCardProps = {
   mentionOpen: boolean;
   mentionSelectorBadge: React.ReactNode;
   mentionDropdown: React.ReactNode;
+
+  // Slash command menu
+  slashMenuOpen?: boolean;
+  slashMenu?: React.ReactNode;
+
+  // Explicit Skill selections for the first conversation turn.
+  skillChips?: ComposerSkillChip[];
+  onSkillChipsChange?: (skills: ComposerSkillChip[]) => void;
+  onTokenInputStateChange?: (state: ComposerTokenInputState) => void;
+  tokenInputRef?: React.Ref<ComposerSkillTokenInputHandle>;
 
   // Files
   files: string[];
@@ -71,6 +87,12 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   mentionOpen,
   mentionSelectorBadge,
   mentionDropdown,
+  slashMenuOpen = false,
+  slashMenu,
+  skillChips = [],
+  onSkillChipsChange,
+  onTokenInputStateChange,
+  tokenInputRef,
   files,
   onRemoveFile,
   entryStrip,
@@ -82,8 +104,6 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const { compositionHandlers, isImeActive } = useCompositionInput();
-  const textareaAutoSize = isMobile ? { minRows: 2, maxRows: 8 } : { minRows: 2, maxRows: 20 };
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (isImeActive(e)) return;
     onKeyDown(e);
@@ -91,14 +111,16 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
 
   const borderColor = isFileDragging
     ? 'rgb(var(--primary-3))'
-    : isInputActive
-      ? activeBorderColor
-      : inactiveBorderColor;
+    : slashMenuOpen
+      ? COMPOSER_MENU_BORDER_COLOR
+      : isInputActive
+        ? activeBorderColor
+        : inactiveBorderColor;
 
   return (
     <div
       ref={containerRef}
-      className={`${styles.guidInputCardWrap} guid-input-card-shell relative rd-24px flex flex-col ${mentionOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all duration-200 ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
+      className={`${styles.guidInputCardWrap} guid-input-card-shell relative rd-24px flex flex-col ${mentionOpen || slashMenuOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all duration-200 ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
       style={{
         zIndex: 1,
         transition: 'box-shadow 0.25s ease',
@@ -112,35 +134,50 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
               borderWidth: '1px',
             }
           : {
-              boxShadow: isInputActive ? activeShadow : 'none',
+              boxShadow: isInputActive && !slashMenuOpen ? activeShadow : 'none',
             }),
       }}
       {...dragHandlers}
     >
+      {slashMenuOpen && (
+        <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
+          {slashMenu}
+        </div>
+      )}
       {/* inner white card — narrower than outer wrap */}
       <div
         className={`${styles.guidInputInner} p-12px flex flex-col bg-dialog-fill-0`}
         style={{
           transition: 'box-shadow 0.25s ease, border-color 0.25s ease',
           borderColor: isFileDragging ? 'rgb(var(--primary-3))' : borderColor,
-          boxShadow: isInputActive && !isFileDragging ? activeShadow : 'none',
+          boxShadow: isInputActive && !isFileDragging && !slashMenuOpen ? activeShadow : 'none',
         }}
       >
         {entryStrip}
         {mentionSelectorBadge}
-        <Input.TextArea
-          autoSize={textareaAutoSize}
+        <ComposerSkillTokenInput
+          ref={tokenInputRef}
+          autoFocus
+          className={`text-14px rounded-xl !bg-transparent ${styles.lightPlaceholder}`}
+          style={{
+            minHeight: isMobile ? '40px' : '40px',
+            maxHeight: isMobile ? '160px' : '400px',
+            overflowY: 'auto',
+            paddingLeft: '7px',
+            paddingRight: 0,
+          }}
           placeholder={placeholder}
-          spellCheck={false}
-          className={`text-14px focus:b-none rounded-xl !bg-transparent !b-none !resize-none !py-0 !pr-0 !pl-7px ${styles.lightPlaceholder}`}
           value={input}
+          skills={skillChips}
           onChange={onInputChange}
+          onSkillsChange={onSkillChipsChange}
+          onDraftStateChange={onTokenInputStateChange}
           onPaste={onPaste}
           onFocus={onFocus}
           onBlur={onBlur}
           {...compositionHandlers}
           onKeyDown={handleKeyDown}
-          data-testid='guid-input'
+          dataTestId='guid-input'
         />
         <div style={{ height: 12, flexShrink: 0 }} aria-hidden='true' />
         {mentionOpen && (

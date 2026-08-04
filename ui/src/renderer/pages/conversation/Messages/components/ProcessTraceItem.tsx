@@ -30,6 +30,7 @@ import type { MessageId } from '@/common/types/ids';
 import { getProcessItemState, mergeProcessStates } from '../turnProcessState';
 import MessageThinking from './MessageThinking';
 import MessageMoaReference from './MessageMoaReference';
+import MessageSkillLoad from './MessageSkillLoad';
 import MessageTips from './MessageTips';
 import MessagePermission from './MessagePermission';
 import {
@@ -867,6 +868,8 @@ const ProcessTraceItem: React.FC<{
       );
     case 'moa_reference':
       return <MessageMoaReference message={item} />;
+    case 'skill_load':
+      return <MessageSkillLoad message={item} />;
     case 'plan':
     case 'available_commands':
       return null;

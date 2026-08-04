@@ -158,6 +158,11 @@
     "referenceTitle": "参考建议",
     "progress": "MoA {{done}}/{{total}}"
   },
+  "skillLoad": {
+    "loaded": "已加载 {{name}}",
+    "details": "查看已加载的说明",
+    "version": "版本 {{version}}"
+  },
   "responseSentSuccessfully": "响应已成功发送",
   "confirmation": {
     "applyChange": "应用此更改？",

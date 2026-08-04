@@ -13,14 +13,16 @@ import type {
   PresetListItem,
   BuiltinAutoSkill,
   PendingSkill,
-  SkillInfo,
+  PresetSkillCatalogItem,
 } from '@/renderer/pages/settings/PresetSettings/types';
 import type { ImportedAgentSkill } from '@/renderer/pages/settings/skill/AgentSkillImportDrawer';
 import type { AgentSkillImportRow } from '@/renderer/pages/settings/skill/agentSkillImportUtils';
 import {
-  customSkillNamesForImportedAgentSkills,
-  mergeImportedSkillNames,
-} from '@/renderer/pages/settings/skill/agentSkillImportUtils';
+  mergePresetSkillIds,
+  resolvePresetSkillIdsForSave,
+  uniqueCatalogUserSkillIdForName,
+  type SelectedPresetSkill,
+} from '@/renderer/pages/settings/PresetSettings/presetSkillBindings';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -43,6 +45,11 @@ type UsePresetEditorParams = {
 };
 
 const isBuiltinPreset = (preset: Preset | null | undefined): boolean => preset?.source === 'builtin';
+
+const loadPresetSkillCatalog = async (): Promise<PresetSkillCatalogItem[]> => {
+  const catalog = await ipcBridge.fs.listSkillCatalog.invoke();
+  return catalog.skills;
+};
 
 /**
  * Manages all preset editing state and handlers:
@@ -85,12 +92,11 @@ export const usePresetEditor = ({
   const [promptViewMode, setPromptViewMode] = useState<'edit' | 'preview'>('preview');
 
   // Skills-related editing state (shared with editor)
-  const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
-  const [customSkills, setCustomSkills] = useState<string[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<PresetSkillCatalogItem[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [pendingSkills, setPendingSkills] = useState<PendingSkill[]>([]);
   const [deletePendingSkillName, setDeletePendingSkillName] = useState<string | null>(null);
-  const [deleteCustomSkillName, setDeleteCustomSkillName] = useState<string | null>(null);
+  const [deleteCustomSkill, setDeleteCustomSkill] = useState<SelectedPresetSkill | null>(null);
 
   // Builtin auto-injected skills state
   const [builtinAutoSkills, setBuiltinAutoSkills] = useState<BuiltinAutoSkill[]>([]);
@@ -120,29 +126,24 @@ export const usePresetEditor = ({
     setEditScenarioTags(preset.scenario_tag_ids ?? []);
     setPendingSkills([]);
     setDeletePendingSkillName(null);
-    setDeleteCustomSkillName(null);
+    setDeleteCustomSkill(null);
     setEditVisible(true);
 
-    // Load builtin auto skills for all presets
     try {
-      const autoSkills = await ipcBridge.fs.listBuiltinAutoSkills.invoke();
-      setBuiltinAutoSkills(autoSkills);
-    } catch {
-      setBuiltinAutoSkills([]);
-    }
-
-    try {
-      const skillsList = await ipcBridge.fs.listAvailableSkills.invoke();
+      const [skillsList, autoSkills] = await Promise.all([
+        loadPresetSkillCatalog(),
+        ipcBridge.fs.listBuiltinAutoSkills.invoke(),
+      ]);
       setAvailableSkills(skillsList);
-      const includedNames = preset.included_skills.map((item) => item.skill_name);
-      setSelectedSkills(includedNames);
-      setCustomSkills(skillsList.filter((skill) => skill.source === 'custom' && includedNames.includes(skill.name)).map((skill) => skill.name));
+      setBuiltinAutoSkills(autoSkills);
+      setSelectedSkills(preset.included_skills.map((item) => item.skill_id));
       setDisabledBuiltinSkills(preset.excluded_auto_skills);
     } catch (error) {
-      console.error('Failed to load preset content:', error);
-      setEditContext('');
+      console.error('Failed to load preset skill catalog:', error);
       setAvailableSkills([]);
+      setBuiltinAutoSkills([]);
       setSelectedSkills([]);
+      setDisabledBuiltinSkills([]);
     }
   };
 
@@ -164,7 +165,9 @@ export const usePresetEditor = ({
     setKnowledgeBaseIds([]);
     setMcpServerIds([]);
     setSelectedSkills([]);
-    setCustomSkills([]);
+    setPendingSkills([]);
+    setDeletePendingSkillName(null);
+    setDeleteCustomSkill(null);
     setDisabledBuiltinSkills([]);
     setEditAudienceTags([]);
     setEditScenarioTags([]);
@@ -174,7 +177,7 @@ export const usePresetEditor = ({
     // Load available skills list and builtin auto skills
     try {
       const [skillsList, autoSkills] = await Promise.all([
-        ipcBridge.fs.listAvailableSkills.invoke(),
+        loadPresetSkillCatalog(),
         ipcBridge.fs.listBuiltinAutoSkills.invoke(),
       ]);
       setAvailableSkills(skillsList);
@@ -210,14 +213,12 @@ export const usePresetEditor = ({
 
     try {
       const [skillsList, autoSkills] = await Promise.all([
-        ipcBridge.fs.listAvailableSkills.invoke(),
+        loadPresetSkillCatalog(),
         ipcBridge.fs.listBuiltinAutoSkills.invoke(),
       ]);
       setAvailableSkills(skillsList);
       setBuiltinAutoSkills(autoSkills);
-      const includedNames = preset.included_skills.map((item) => item.skill_name);
-      setSelectedSkills(includedNames);
-      setCustomSkills(skillsList.filter((skill) => skill.source === 'custom' && includedNames.includes(skill.name)).map((skill) => skill.name));
+      setSelectedSkills(preset.included_skills.map((item) => item.skill_id));
       setDisabledBuiltinSkills(preset.excluded_auto_skills);
     } catch (error) {
       console.error('Failed to load preset content for duplication:', error);
@@ -225,7 +226,6 @@ export const usePresetEditor = ({
       setAvailableSkills([]);
       setBuiltinAutoSkills([]);
       setSelectedSkills([]);
-      setCustomSkills([]);
       setDisabledBuiltinSkills([]);
     }
   };
@@ -242,31 +242,54 @@ export const usePresetEditor = ({
         return;
       }
 
-      // Import pending skills (skip existing ones)
+      let catalogSkills = availableSkills;
+      let pendingSkillsForSave = pendingSkills;
+
+      // Import a pending Skill unless it already carries its canonical ID or
+      // a unique user-owned catalog entry can prove the same identity. A
+      // same-name builtin or ambiguous user entry must not decide for us.
       if (pendingSkills.length > 0) {
         const skillsToImport = pendingSkills.filter(
-          (pending) => !availableSkills.some((available) => available.name === pending.name)
+          (pending) => !pending.skillId && !uniqueCatalogUserSkillIdForName(availableSkills, pending.name),
         );
 
         if (skillsToImport.length > 0) {
           for (const pendingSkill of skillsToImport) {
             try {
-              await ipcBridge.fs.importSkillWithSymlink.invoke({ skill_path: pendingSkill.path });
+              const result = await ipcBridge.fs.importSkillWithSymlink.invoke({ skill_path: pendingSkill.path });
+              const names = result.skill_names?.length
+                ? result.skill_names
+                : result.skill_name
+                  ? [result.skill_name]
+                  : [pendingSkill.name];
+              const skillId = result.skill_ids?.[names.indexOf(pendingSkill.name)];
+              if (skillId) {
+                pendingSkillsForSave = pendingSkillsForSave.map((pending) =>
+                  pending.path === pendingSkill.path && pending.name === pendingSkill.name
+                    ? { ...pending, skillId }
+                    : pending,
+                );
+              }
             } catch (error) {
               console.error(`Failed to import skill "${pendingSkill.name}":`, error);
-              message.error(`Failed to import skill "${pendingSkill.name}"`);
+              message.error(t('settings.presetSkillImportFailed', { name: pendingSkill.name }));
               return;
             }
           }
-          // Reload skills list after successful import
-          const skillsList = await ipcBridge.fs.listAvailableSkills.invoke();
-          setAvailableSkills(skillsList);
+          catalogSkills = await loadPresetSkillCatalog();
+          setAvailableSkills(catalogSkills);
         }
       }
 
-      // Calculate final customSkills: merge existing + pending
-      const pendingSkillNames = pendingSkills.map((s) => s.name);
-      const finalSelectedSkills = Array.from(new Set([...selectedSkills, ...pendingSkillNames]));
+      const selection = resolvePresetSkillIdsForSave(selectedSkills, pendingSkillsForSave, catalogSkills);
+      if (selection.unresolvedPendingSkillNames.length > 0) {
+        message.error(
+          t('settings.presetImportedSkillUnavailable', {
+            names: selection.unresolvedPendingSkillNames.join(', '),
+          }),
+        );
+        return;
+      }
 
       const content: CreatePresetRequest = {
         name: editName,
@@ -279,7 +302,7 @@ export const usePresetEditor = ({
         targets: editTargets,
         agent_preferences: editAgents.map((agent_id) => ({ agent_id, required: false })),
         model_preferences: editModels,
-        included_skills: finalSelectedSkills.map((skill_name) => ({ skill_name, required: false })),
+        included_skills: selection.skillIds.map((skill_id) => ({ skill_id, required: false })),
         excluded_auto_skills: disabledBuiltinSkills,
         knowledge_policy: knowledgePolicy,
         knowledge_bases: knowledgeBaseIds.map((knowledge_base_id) => ({
@@ -408,7 +431,7 @@ export const usePresetEditor = ({
 
       const result = await ipcBridge.fs.importSkillWithSymlink.invoke({ skill_path: row.path });
       const names = result.skill_names?.length ? result.skill_names : result.skill_name ? [result.skill_name] : [row.name];
-      for (const name of names) {
+      for (const [index, name] of names.entries()) {
         imported.push({
           name,
           description: row.description,
@@ -416,22 +439,26 @@ export const usePresetEditor = ({
           source: row.source,
           sourceName: row.sourceName,
           alreadyImported: false,
+          skillId: result.skill_ids?.[index],
         });
       }
     }
 
-    const importedNames = imported.map((skill) => skill.name);
-    if (importedNames.length > 0) {
-      const existingCustomNames = new Set(availableSkills.filter((skill) => skill.source === 'custom').map((skill) => skill.name));
-      const customSkillNames = customSkillNamesForImportedAgentSkills(imported, existingCustomNames);
-      const skillsList = await ipcBridge.fs.listAvailableSkills.invoke();
+    if (imported.length > 0) {
+      const skillsList = await loadPresetSkillCatalog();
       setAvailableSkills(skillsList);
-      setSelectedSkills((current) => mergeImportedSkillNames(current, importedNames));
-      setCustomSkills((current) => mergeImportedSkillNames(current, customSkillNames));
+      const importedSkillIds = imported.flatMap((skill) => {
+        if (skill.skillId) return [skill.skillId];
+        const skillId = uniqueCatalogUserSkillIdForName(skillsList, skill.name);
+        return skillId ? [skillId] : [];
+      });
+      setSelectedSkills((current) =>
+        mergePresetSkillIds(current, importedSkillIds),
+      );
     }
 
     return imported;
-  }, [availableSkills]);
+  }, []);
 
   return {
     // Edit drawer state
@@ -472,16 +499,14 @@ export const usePresetEditor = ({
     // Skills editing state
     availableSkills,
     setAvailableSkills,
-    customSkills,
-    setCustomSkills,
     selectedSkills,
     setSelectedSkills,
     pendingSkills,
     setPendingSkills,
     deletePendingSkillName,
     setDeletePendingSkillName,
-    deleteCustomSkillName,
-    setDeleteCustomSkillName,
+    deleteCustomSkill,
+    setDeleteCustomSkill,
 
     // Builtin auto-injected skills state
     builtinAutoSkills,

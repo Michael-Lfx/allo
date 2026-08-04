@@ -39,6 +39,7 @@ import MessageSkillSuggest from './components/MessageSkillSuggest';
 import MessageText from './components/MessageText';
 import MessageThinking from './components/MessageThinking';
 import MessageMoaReference from './components/MessageMoaReference';
+import MessageSkillLoad from './components/MessageSkillLoad';
 import MessageListSkeleton from './components/MessageListSkeleton';
 import FirstWinOutcomeCard from './components/FirstWinOutcomeCard';
 import {
@@ -809,6 +810,8 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
         return <MessageThinking message={message}></MessageThinking>;
       case 'moa_reference':
         return <MessageMoaReference message={message}></MessageMoaReference>;
+      case 'skill_load':
+        return <MessageSkillLoad message={message}></MessageSkillLoad>;
       case 'available_commands':
         return null;
       default:
@@ -949,6 +952,12 @@ const MessageList: React.FC<{
       const message = list[i];
       // Skip hidden and available_commands messages
       if (message.hidden) continue;
+      // A Skill-only load has no user prose. Its immutable skill_load event is
+      // the visible history record; rendering this empty transport row would
+      // leave a blank user bubble ahead of it.
+      if (message.type === 'text' && message.position === 'right' && message.content.content.trim().length === 0) {
+        continue;
+      }
       if (
         message.type === 'tool_call' &&
         message.content.name === 'update_plan' &&

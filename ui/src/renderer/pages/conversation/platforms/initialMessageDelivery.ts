@@ -14,6 +14,12 @@ export type PersistedInitialMessage = {
   initial_admission_epoch: 0;
   input: string;
   files: string[];
+  /**
+   * Canonical source-qualified catalog Skill IDs selected before the
+   * Conversation existed. `skill_ids` is accepted as a storage alias when
+   * reading, then normalized into this field before delivery.
+   */
+  inject_skills?: string[];
   idempotency_key: string;
 };
 
@@ -21,6 +27,7 @@ type InitialMessageStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const VISIBLE_ASCII = /^[\x21-\x7e]+$/;
+const SOURCE_QUALIFIED_SKILL_ID = /^[a-z][a-z0-9_-]*:[^\s:]+(?::[^\s:]+)?$/;
 const deliveriesInFlight = new Set<string>();
 
 const isUsableIdempotencyKey = (value: unknown): value is string =>
@@ -28,6 +35,15 @@ const isUsableIdempotencyKey = (value: unknown): value is string =>
   value.length > 0 &&
   value.length <= MAX_IDEMPOTENCY_KEY_LENGTH &&
   VISIBLE_ASCII.test(value);
+
+const normalizeInitialSkillIds = (value: unknown): string[] | null | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((skillId) => typeof skillId === 'string')) return null;
+  if (!value.every((skillId) => SOURCE_QUALIFIED_SKILL_ID.test(skillId) && skillId.trim() === skillId)) {
+    return null;
+  }
+  return Array.from(new Set(value));
+};
 
 /**
  * Read an initial-message handoff without consuming it.
@@ -52,6 +68,8 @@ export const readInitialMessageDelivery = (
     }
 
     const candidate = parsed as Record<string, unknown>;
+    const injectSkills = normalizeInitialSkillIds(candidate.inject_skills);
+    const skillIdsAlias = normalizeInitialSkillIds(candidate.skill_ids);
     if (
       typeof candidate.input !== 'string' ||
       typeof candidate.conversation_id !== 'string' ||
@@ -59,7 +77,13 @@ export const readInitialMessageDelivery = (
       (candidate.files !== undefined &&
         (!Array.isArray(candidate.files) ||
           !candidate.files.every((file) => typeof file === 'string'))) ||
-      !isUsableIdempotencyKey(candidate.idempotency_key)
+      !isUsableIdempotencyKey(candidate.idempotency_key) ||
+      injectSkills === null ||
+      skillIdsAlias === null ||
+      (injectSkills !== undefined &&
+        skillIdsAlias !== undefined &&
+        (injectSkills.length !== skillIdsAlias.length ||
+          injectSkills.some((skillId, index) => skillId !== skillIdsAlias[index])))
     ) {
       storage.removeItem(storageKey);
       return null;
@@ -70,6 +94,9 @@ export const readInitialMessageDelivery = (
       initial_admission_epoch: 0,
       input: candidate.input,
       files: candidate.files === undefined ? [] : [...candidate.files],
+      ...((injectSkills ?? skillIdsAlias)?.length
+        ? { inject_skills: injectSkills ?? skillIdsAlias }
+        : {}),
       idempotency_key: candidate.idempotency_key,
     };
   } catch {

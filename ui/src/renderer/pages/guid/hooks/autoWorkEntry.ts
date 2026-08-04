@@ -22,6 +22,11 @@ export function isAutoWorkEntry(autoWork: AutoWorkDraftValue): boolean {
   return autoWork.enabled && !!autoWork.tag;
 }
 
+/** A normal first turn can carry prose, explicit Skill loads, or both. */
+export function hasGuidInitialPayload(input: string, explicitSkillIds: readonly string[]): boolean {
+  return input.trim().length > 0 || explicitSkillIds.some((skillId) => skillId.trim().length > 0);
+}
+
 /**
  * Decide how the Guid page should enter a conversation, given the typed input
  * and the AutoWork draft. Centralizes the rule that an AutoWork entry must not

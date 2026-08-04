@@ -21,6 +21,7 @@ import { useAgentModesForBackend } from '@/renderer/hooks/agent/useAgentModesFor
 import { savePreferredMode } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
 import { normalizeCodexMode } from '@/common/types/codex/codexModes';
 import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
+import { useComposerSkillChips } from '@/renderer/hooks/chat/useComposerSkillChips';
 import { getSendBoxDraftHook, type FileOrFolderItem } from '@/renderer/hooks/chat/useSendBoxDraft';
 import { createSetUploadFile, useSendBoxFiles } from '@/renderer/hooks/chat/useSendBoxFiles';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -135,6 +136,7 @@ const AcpSendBox: React.FC<{
   const showModeSelector = true;
   const { checkAndUpdateTitle } = useAutoTitle();
   const { atPath, uploadFile, setAtPath, setUploadFile, content, setContent } = useSendBoxDraft(conversation_id);
+  const { skills: skillChips, setSkills: setSkillChips } = useComposerSkillChips();
   const layout = useLayoutContext();
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
@@ -236,6 +238,10 @@ const AcpSendBox: React.FC<{
     setIsStopping(false);
   }, [conversation_id]);
 
+  useEffect(() => {
+    setSkillChips([]);
+  }, [conversation_id, setSkillChips]);
+
   // Register handler for adding text from preview panel to sendbox
   useEffect(() => {
     const handler = (text: string) => {
@@ -262,8 +268,12 @@ const AcpSendBox: React.FC<{
         id = uuidv7(),
         input,
         files,
+        injectSkills = [],
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
-        Partial<Pick<ConversationCommandQueueItem, 'id'>>,
+        Partial<Pick<ConversationCommandQueueItem, 'id'>> & {
+          /** Source-qualified catalog Skill IDs selected for this exact turn. */
+          injectSkills?: string[];
+        },
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
@@ -285,6 +295,7 @@ const AcpSendBox: React.FC<{
           input: displayMessage,
           conversation_id,
           files,
+          inject_skills: injectSkills,
           idempotency_key: id,
         });
         if (execution && !execution.isCurrent()) return;
@@ -296,18 +307,22 @@ const AcpSendBox: React.FC<{
             void checkAndUpdateTitle(conversation_id, input);
           }
           markTurnAccepted(msg_id);
-        // Use add=false (compose mode) so composeMessageWithIndex can de-dup
-        // by msg_id — this prevents a duplicate bubble if useMessageLstCache
-        // already inserted the DB row for this same msg_id.
-        addOrUpdateMessageRef.current({
-          id: uuid(),
-          msg_id,
-          type: 'text',
-          position: 'right',
-          conversation_id,
-          content: { content: displayMessage },
-          created_at: Date.now(),
-        });
+          // A Skill-only send persists visible skill_load history but has no
+          // user text projection, so do not create an empty optimistic bubble.
+          if (displayMessage.trim().length > 0) {
+            // Use add=false (compose mode) so composeMessageWithIndex can de-dup
+            // by msg_id — this prevents a duplicate bubble if useMessageLstCache
+            // already inserted the DB row for this same msg_id.
+            addOrUpdateMessageRef.current({
+              id: uuid(),
+              msg_id,
+              type: 'text',
+              position: 'right',
+              conversation_id,
+              content: { content: displayMessage },
+              created_at: Date.now(),
+            });
+          }
         } else {
           reconcilePublicDeliveryReplay(delivery.completed);
         }
@@ -411,6 +426,32 @@ Please check your local CLI tool authentication status`,
 
     await executeCommand({ input: message, files: allFiles });
   };
+
+  const onSendWithSkillsHandler = useCallback(
+    async (message: string, injectSkills: string[]) => {
+      const atPathFiles = atPath.map((item) => (typeof item === 'string' ? item : item.path));
+      const allFiles = [...uploadFile, ...atPathFiles];
+
+      // A selected Skill is an atomic snapshot load for one turn. The durable
+      // command queue stores ordinary prompts only, so retain this draft for an
+      // explicit retry instead of silently detaching its selected Skill IDs.
+      if (
+        shouldEnqueueConversationCommand({
+          enabled: true,
+          isBusy,
+          hasPendingCommands,
+        })
+      ) {
+        Message.warning(t('messages.conversationInProgress'));
+        throw new Error('Selected Skills cannot be queued while a conversation is in progress');
+      }
+
+      await executeCommand({ input: message, files: allFiles, injectSkills });
+      clearFiles();
+      emitter.emit('acp.selected.file.clear');
+    },
+    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
+  );
 
   const handleEditQueuedCommand = useCallback(
     (item: ConversationCommandQueueItem) => {
@@ -739,6 +780,9 @@ Please check your local CLI tool authentication status`,
           </>
         }
         onSend={onSendHandler}
+        onSendWithSkills={onSendWithSkillsHandler}
+        skillChips={skillChips}
+        onSkillChipsChange={setSkillChips}
         slash_commands={slashCommands}
         onSlashBuiltinCommand={onSlashBuiltinCommand}
         allowSendWhileLoading

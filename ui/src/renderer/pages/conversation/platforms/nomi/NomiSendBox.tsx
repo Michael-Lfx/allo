@@ -6,6 +6,7 @@ import { ipcBridge } from '@/common';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
+import GoalModeChip from '@/renderer/components/chat/GoalModeChip';
 import MobileActionSheet, {
   type MobileActionSheetEntry,
   type MobileActionSheetOption,
@@ -20,6 +21,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
 import { getSendBoxDraftHook, type FileOrFolderItem } from '@/renderer/hooks/chat/useSendBoxDraft';
+import { useComposerSkillChips } from '@/renderer/hooks/chat/useComposerSkillChips';
 import { createSetUploadFile, useSendBoxFiles } from '@/renderer/hooks/chat/useSendBoxFiles';
 import { useSlashCommands } from '@/renderer/hooks/chat/useSlashCommands';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
@@ -226,6 +228,7 @@ const NomiSendBox: React.FC<{
     typeof tokenUsage?.context_tokens === 'number';
 
   const { atPath, uploadFile, setAtPath, setUploadFile, content, setContent } = useSendBoxDraft(conversation_id);
+  const { skills: skillChips, setSkills: setSkillChips } = useComposerSkillChips();
 
   const handleContentChange = useCallback(
     (val: string) => {
@@ -288,6 +291,10 @@ const NomiSendBox: React.FC<{
     setIsStopping(false);
   }, [conversation_id]);
 
+  useEffect(() => {
+    setSkillChips([]);
+  }, [conversation_id, setSkillChips]);
+
   const setContentRef = useLatestRef(setContent);
   const contentRef = useLatestRef(content);
   const atPathRef = useLatestRef(atPath);
@@ -326,9 +333,12 @@ const NomiSendBox: React.FC<{
         input,
         files,
         initialOnly = false,
+        injectSkills = [],
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
         Partial<Pick<ConversationCommandQueueItem, 'id'>> & {
           initialOnly?: boolean;
+          /** Source-qualified catalog Skill IDs selected for this exact turn. */
+          injectSkills?: string[];
         },
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
@@ -343,33 +353,37 @@ const NomiSendBox: React.FC<{
       if (!deferLocalTurnUntilFresh) setWaitingResponse(true);
 
       const displayMessage = buildDisplayMessage(input, files, workspacePath);
+      const shouldRenderUserMessage = displayMessage.trim().length > 0;
       let localMsgId: MessageId | null = null;
       if (!deferLocalTurnUntilFresh) {
         localMsgId = parseMessageId(uuidv7());
         notifyLocalSubmit(localMsgId, localMsgId);
-        addOrUpdateMessage({
-          id: localMsgId,
-          msg_id: localMsgId,
-          type: 'text',
-          position: 'right',
-          conversation_id,
-          content: {
-            content: displayMessage,
-          },
-          created_at: Date.now(),
-        });
+        if (shouldRenderUserMessage) {
+          addOrUpdateMessage({
+            id: localMsgId,
+            msg_id: localMsgId,
+            type: 'text',
+            position: 'right',
+            conversation_id,
+            content: {
+              content: displayMessage,
+            },
+            created_at: Date.now(),
+          });
+        }
         setActiveMsgId(localMsgId);
       }
 
       let msg_id: MessageId | null = null;
       try {
-        if (!deferLocalTurnUntilFresh) {
+        if (!deferLocalTurnUntilFresh && input.trim()) {
           void checkAndUpdateTitle(conversation_id, input);
         }
         const res = await ipcBridge.conversation.sendMessage.invoke({
           input: displayMessage,
           conversation_id,
           files,
+          inject_skills: injectSkills,
           idempotency_key: id,
           initial_only: initialOnly,
         });
@@ -379,7 +393,9 @@ const NomiSendBox: React.FC<{
         if (disposition === 'fresh') {
           if (deferLocalTurnUntilFresh) {
             setWaitingResponse(true);
-            void checkAndUpdateTitle(conversation_id, input);
+            if (input.trim()) {
+              void checkAndUpdateTitle(conversation_id, input);
+            }
           }
           markTurnAccepted();
           notifyAccepted(msg_id);
@@ -387,17 +403,19 @@ const NomiSendBox: React.FC<{
           if (localMsgId && msg_id !== localMsgId) {
             removeMessageByMsgId(localMsgId);
           }
-          addOrUpdateMessage({
-            id: uuid(),
-            msg_id,
-            type: 'text',
-            position: 'right',
-            conversation_id,
-            content: {
-              content: displayMessage,
-            },
-            created_at: Date.now(),
-          });
+          if (shouldRenderUserMessage) {
+            addOrUpdateMessage({
+              id: uuid(),
+              msg_id,
+              type: 'text',
+              position: 'right',
+              conversation_id,
+              content: {
+                content: displayMessage,
+              },
+              created_at: Date.now(),
+            });
+          }
         } else {
           if (localMsgId) {
             removeMessageByMsgId(localMsgId);
@@ -504,10 +522,10 @@ const NomiSendBox: React.FC<{
           releaseInitialMessageDelivery(storageKey);
           return;
         }
-        const { input, files, idempotency_key } = initialMessage;
+        const { input, files, idempotency_key, inject_skills } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
         await executeCommand(
-          { id: idempotency_key, input, files, initialOnly: true },
+          { id: idempotency_key, input, files, injectSkills: inject_skills, initialOnly: true },
           undefined,
           true
         );
@@ -552,6 +570,31 @@ const NomiSendBox: React.FC<{
       // Keep draft attachments; SendBox restores the text input on failure.
     }
   };
+
+  const onSendWithSkillsHandler = useCallback(
+    async (message: string, injectSkills: string[]) => {
+      const filesToSend = collectSelectedFiles(uploadFile, atPath);
+
+      // The queue stores plain commands only. A selected Skill is an atomic
+      // snapshot load for this turn, so reject it while a turn is busy and let
+      // SendBox restore both the draft and its chips for an explicit retry.
+      if (
+        shouldEnqueueConversationCommand({
+          enabled: true,
+          isBusy,
+          hasPendingCommands,
+        })
+      ) {
+        Message.warning(t('messages.conversationInProgress'));
+        throw new Error('Selected Skills cannot be queued while a conversation is in progress');
+      }
+
+      await executeCommand({ input: message, files: filesToSend, injectSkills });
+      clearFiles();
+      emitter.emit('nomi.selected.file.clear');
+    },
+    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
+  );
 
   // 编辑最近一条用户消息并截断重跑。请求成功前保留旧消息和附件；成功后只移除
   // 请求发出时捕获的旧本地行，避免误删 HTTP 返回前已到达的 replacement stream。
@@ -1006,11 +1049,14 @@ const NomiSendBox: React.FC<{
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
-          <FileAttachButton
-            openFileSelector={openFileSelector}
-            onLocalFilesAdded={handleFilesAdded}
-            loadedMcpStatuses={loadedMcpStatuses}
-          />
+          <>
+            <FileAttachButton
+              openFileSelector={openFileSelector}
+              onLocalFilesAdded={handleFilesAdded}
+              loadedMcpStatuses={loadedMcpStatuses}
+            />
+            <GoalModeChip conversation_id={conversation_id} />
+          </>
         }
         rightTools={
           hasContextUsage || !hideModeSelector ? (
@@ -1094,6 +1140,9 @@ const NomiSendBox: React.FC<{
           </>
         }
         onSend={onSendHandler}
+        onSendWithSkills={onSendWithSkillsHandler}
+        skillChips={skillChips}
+        onSkillChipsChange={setSkillChips}
         onSteer={onSteerHandler}
         steerAvailable
         onEditResubmit={handleEditResubmit}

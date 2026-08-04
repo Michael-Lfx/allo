@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, WorldAssetsPlanner,
-    ensure_film_cover, has_usable_portrait,
+    CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, VoiceProfileGenerator,
+    WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
 use crate::media_local;
@@ -140,13 +140,24 @@ impl Idea2VideoPipeline {
         emit_pct(&progress, "extract_characters", "正在从故事中提取角色", 25.0);
         let session_root = resolve_session_root(&self.working_dir);
         let cameo_hint = cameo_extractor_hint(&session_root);
-        let characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
+        let mut characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
             let story_for_extract = format!("{story}{cameo_hint}");
             self.character_extractor
                 .extract_characters(&story_for_extract, &style)
                 .await
         })
         .await?;
+
+        emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 28.0);
+        {
+            let voice_gen = VoiceProfileGenerator::new(Arc::clone(&self.backends.chat));
+            if voice_gen
+                .ensure_voice_profiles(&mut characters, &story, &style)
+                .await?
+            {
+                write_json_artifact(&self.working_dir.join("characters.json"), &characters).await?;
+            }
+        }
 
         emit_pct(&progress, "cameo_bind", "正在绑定用户角色参考图", 30.0);
         apply_session_cameos(&self.working_dir, &characters).await?;
@@ -310,10 +321,11 @@ impl Idea2VideoPipeline {
         }
 
         let synopsis = format!("{idea}\n{story}\n{user_requirement}");
+        let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
         let _ = ensure_film_cover(
             &self.working_dir,
             Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
+            self.backends.poster_image(&cover_aspect),
             &style,
             &synopsis,
             &progress,

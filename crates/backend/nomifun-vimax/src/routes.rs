@@ -139,6 +139,9 @@ struct PlanBody {
     /// Target finished video length in seconds (planning + clip duration).
     #[serde(default)]
     target_duration_secs: Option<u32>,
+    /// Seedance / poster aspect ratio (`16:9`, `9:16`, …).
+    #[serde(default)]
+    aspect_ratio: Option<String>,
 }
 
 async fn plan_session(
@@ -161,6 +164,7 @@ async fn plan_session(
             body.image_model,
             body.video_model,
             body.target_duration_secs,
+            body.aspect_ratio,
         )
         .await?;
     Ok(Json(ApiResponse::ok(())))

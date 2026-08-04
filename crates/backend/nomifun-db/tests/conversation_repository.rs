@@ -1,9 +1,9 @@
 use nomifun_db::{
-    ConversationFilters, ConversationRowUpdate, CreateTerminalParams, IConversationRepository,
+    ConversationFilters, ConversationRowUpdate, ConversationSkillLoadCommit, CreateTerminalParams, IConversationRepository,
     IRequirementRepository, ITerminalRepository, MessageRowUpdate,
     RequirementConversationTurnAuthority, SortOrder, SqliteConversationRepository,
     SqliteRequirementRepository, SqliteTerminalRepository, TurnArtifactMessageCommit,
-    TurnLifecycleTransition, TurnReceiptCompletion, models::ConversationRow, models::MessageRow,
+    TurnLifecycleTransition, TurnReceiptCompletion, models::{ConversationRow, MessageRow, NewConversationSkillLoad},
 };
 use nomifun_common::{ConversationId, MessageId, RequirementId, TerminalId, UserId};
 use sha2::{Digest, Sha256};
@@ -175,6 +175,43 @@ fn make_message(conv_id: &str, content: &str) -> MessageRow {
         status: Some("finish".to_string()),
         hidden: false,
         created_at: now,
+    }
+}
+
+fn make_skill_load_commit(conversation_id: &str, catalog_key: &str) -> ConversationSkillLoadCommit {
+    let created_at = nomifun_common::now_ms();
+    let message_id = MessageId::new().into_string();
+    let content = "# PDF workflow\n\nUse the PDF tools.".to_owned();
+    ConversationSkillLoadCommit {
+        load_message: MessageRow {
+            id: 0,
+            message_id: message_id.clone(),
+            conversation_id: conversation_id.to_owned(),
+            msg_id: None,
+            r#type: "skill_load".to_owned(),
+            content: serde_json::json!({
+                "skill_id": catalog_key,
+                "name": "pdf",
+                "source": "user",
+                "version_hash": "a".repeat(64),
+                "content": content,
+            })
+            .to_string(),
+            position: Some("center".to_owned()),
+            status: Some("finish".to_owned()),
+            hidden: false,
+            created_at,
+        },
+        snapshot: NewConversationSkillLoad {
+            conversation_id: conversation_id.to_owned(),
+            message_id,
+            catalog_key: catalog_key.to_owned(),
+            skill_name: "pdf".to_owned(),
+            source: "user".to_owned(),
+            version_hash: "a".repeat(64),
+            content,
+            created_at,
+        },
     }
 }
 
@@ -4493,6 +4530,135 @@ async fn artifact_message_commit_rolls_back_on_different_finished_projection() {
     let preserved = repo.get_message(&conv.conversation_id, &existing.message_id).await.unwrap().unwrap();
     assert_eq!(preserved.content, existing.content);
     assert_eq!(preserved.status.as_deref(), Some("finish"));
+}
+
+#[tokio::test]
+async fn skill_load_ledger_and_message_projection_commit_atomically() {
+    let (repo, _db) = setup().await;
+    let mut conversation = make_conversation("skill-load-ledger");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+
+    let user_message = make_message(&conversation.conversation_id, "Review this PDF");
+    let load = make_skill_load_commit(&conversation.conversation_id, "user:pdf");
+    repo.persist_skill_loads_and_user_message(
+        &conversation.conversation_id,
+        Some(&user_message),
+        std::slice::from_ref(&load),
+    )
+    .await
+    .unwrap();
+
+    let messages = repo
+        .get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc)
+        .await
+        .unwrap();
+    assert_eq!(messages.total, 2);
+    assert!(messages.items.iter().any(|message| message.message_id == user_message.message_id));
+    assert!(messages
+        .items
+        .iter()
+        .any(|message| message.message_id == load.load_message.message_id));
+
+    let snapshots = repo
+        .get_skill_loads(&conversation.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].catalog_key, "user:pdf");
+    assert_eq!(snapshots[0].message_id, load.load_message.message_id);
+    assert_eq!(snapshots[0].content, load.snapshot.content);
+
+    // The user message is inserted before the duplicate event in the
+    // implementation. A unique event identity must roll the entire batch
+    // back, rather than leave that user message detached from its skill ledger.
+    let second_user_message = make_message(&conversation.conversation_id, "must roll back");
+    let error = repo
+        .persist_skill_loads_and_user_message(
+            &conversation.conversation_id,
+            Some(&second_user_message),
+            std::slice::from_ref(&load),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("UNIQUE"));
+    assert!(repo
+        .get_message(&conversation.conversation_id, &second_user_message.message_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_skill_loads(&conversation.conversation_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn skill_load_ledger_survives_transcript_clear_and_supports_load_only_commits() {
+    let (repo, db) = setup().await;
+    let mut conversation = make_conversation("skill-load-history");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+    let load = make_skill_load_commit(&conversation.conversation_id, "user:pdf");
+
+    repo.persist_skill_loads_and_user_message(
+        &conversation.conversation_id,
+        None,
+        std::slice::from_ref(&load),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        repo.get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc)
+            .await
+            .unwrap()
+            .total,
+        1,
+        "a load-only operation projects the durable skill event without a blank user message"
+    );
+    assert_eq!(
+        repo.get_skill_loads(&conversation.conversation_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    assert_eq!(
+        repo.clear_terminal_conversation_messages(
+            USER_ID,
+            &conversation.conversation_id,
+            nomifun_common::now_ms(),
+        )
+        .await
+        .unwrap(),
+        TurnLifecycleTransition::Committed
+    );
+    assert_eq!(
+        repo.get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc)
+            .await
+            .unwrap()
+            .total,
+        0
+    );
+    let snapshots = repo
+        .get_skill_loads(&conversation.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1, "clearing projections cannot rewrite the skill-load ledger");
+    assert_eq!(snapshots[0].content, load.snapshot.content);
+
+    repo.delete(&conversation.conversation_id).await.unwrap();
+    let retained: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM conversation_skill_loads WHERE conversation_id = ?",
+    )
+    .bind(&conversation.conversation_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(retained, 0, "deleting the entire Conversation removes its owned ledger");
 }
 
 #[tokio::test]

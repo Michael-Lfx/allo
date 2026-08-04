@@ -742,7 +742,10 @@ export const conversation = {
       return fromApiSendMessageResult(result);
     },
   },
-  getSlashCommands: httpGet<Array<{ command: string; description: string }>, { conversation_id: ConversationId }>(
+  getSlashCommands: httpGet<
+    Array<{ command: string; description: string; origin?: 'system' | 'agent' }>,
+    { conversation_id: ConversationId }
+  >(
     (p) => `/api/conversations/${p.conversation_id}/slash-commands`
   ),
   /** Live goal snapshot; `active: false` when the conversation has no goal
@@ -1226,6 +1229,18 @@ export const fs = {
     }>,
     void
   >('/api/skills'),
+  listSkillCatalog: httpGet<
+    {
+      skills: Array<{
+        skill_id: string;
+        name: string;
+        description: string;
+        source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
+        source_key?: string;
+      }>;
+    },
+    void
+  >('/api/skills/catalog'),
   listBuiltinAutoSkills: httpGet<
     Array<{ name: string; description: string; name_i18n?: Record<string, string>; description_i18n?: Record<string, string>; location: string }>,
     void
@@ -1250,7 +1265,10 @@ export const fs = {
     }>,
     void
   >('/api/skills/detect-external'),
-  importSkillWithSymlink: httpPost<{ skill_name: string; skill_names?: string[] }, { skill_path: string }>(
+  importSkillWithSymlink: httpPost<
+    { skill_name: string; skill_names?: string[]; skill_ids?: string[] },
+    { skill_path: string }
+  >(
     '/api/skills/import-symlink'
   ),
   deleteSkill: httpDelete<void, { skill_name: string }>((p) => `/api/skills/${encodeURIComponent(p.skill_name)}`),
@@ -2694,6 +2712,7 @@ interface ISendMessageParams {
   idempotency_key: string;
   /** Automatic Guid/QuickStart handoff; never set for explicit user sends. */
   initial_only?: boolean;
+  /** Source-qualified catalog Skill IDs resolved atomically for this turn. */
   inject_skills?: string[];
 }
 
@@ -6379,6 +6398,7 @@ export type IUpdateMediaSettings = Partial<
     | 'image_save_locally'
     | 'video_save_locally'
     | 'video_default_duration'
+    | 'video_default_aspect_ratio'
     | 'workflows_enabled'
     | 'workflows_max_retries'
   >

@@ -171,8 +171,8 @@
 }
 
 .trigger[data-compact='false'] {
-  height: 34px !important;
-  min-height: 34px;
+  height: 28px !important;
+  min-height: 28px;
   border-radius: 999px !important;
   padding: 0 11px !important;
 }

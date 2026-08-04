@@ -2,9 +2,9 @@ import type { ConversationId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import type { GoalContractDto, GoalStatusResponse } from '@/common/adapter/ipcBridge';
 import type { GoalSlashInvocation } from '@/common/chat/slash/goalCommand';
-import { emitter } from '@/renderer/utils/emitter';
+import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { Message } from '@arco-design/web-react';
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
@@ -283,4 +283,44 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
   );
 
   return { enabled: enabled && Boolean(conversation_id), run };
+}
+
+/**
+ * Live goal snapshot for a conversation surface. Refreshes on mount and after
+ * every `/goal` / `/subgoal` action (via the `goal.status.refresh` event that
+ * carries the fresh snapshot, avoiding a redundant GET). `goal` is `null`
+ * while loading and `{ active: false }` when the conversation has no goal.
+ * Shared by GoalStatusNotice and the composer goal-mode chip.
+ */
+export function useGoalStatus(conversation_id: ConversationId) {
+  const [goal, setGoal] = useState<GoalStatusResponse | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const status = await ipcBridge.conversation.getGoalStatus.invoke({ conversation_id });
+      setGoal(status ?? null);
+    } catch (error) {
+      console.warn('[useGoalStatus] Failed to load goal status:', error);
+    }
+  }, [conversation_id]);
+
+  useEffect(() => {
+    setGoal(null);
+    void refresh();
+  }, [refresh]);
+
+  useAddEventListener(
+    'goal.status.refresh',
+    (payload) => {
+      if (payload.conversation_id !== conversation_id) return;
+      if (payload.status) {
+        setGoal(payload.status);
+      } else {
+        void refresh();
+      }
+    },
+    [conversation_id, refresh]
+  );
+
+  return { goal, refresh };
 }

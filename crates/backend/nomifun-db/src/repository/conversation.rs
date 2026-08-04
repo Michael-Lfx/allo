@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DbError;
 use crate::models::{
-    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow, MessageRow,
+    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
+    ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
 };
 
 /// Remove only runtime/session instance state that can resume work after an
@@ -49,6 +50,18 @@ pub struct ConversationMessageProjection {
     /// The canonical persisted row. Replays return the original row rather
     /// than trusting a newly constructed candidate message.
     pub message: MessageRow,
+}
+
+/// One immutable Skill snapshot together with the `skill_load` message that
+/// projects it into the visible transcript.
+///
+/// The message is deliberately separate from the snapshot ledger: transcript
+/// clear/reset may delete display projections, while the immutable captured
+/// instructions remain available for history/audit purposes.
+#[derive(Debug, Clone)]
+pub struct ConversationSkillLoadCommit {
+    pub load_message: MessageRow,
+    pub snapshot: NewConversationSkillLoad,
 }
 
 /// Outcome of a compare-and-set transition in the durable Conversation turn
@@ -893,6 +906,41 @@ pub trait IConversationRepository: Send + Sync {
 
     /// Inserts a new message row.
     async fn insert_message(&self, message: &MessageRow) -> Result<(), DbError>;
+
+    /// Atomically persists an optional user-message projection and every
+    /// explicit Skill snapshot selected for the same send.
+    ///
+    /// An empty `user_message` is valid only when at least one `skill_load`
+    /// event is present, which represents an explicit load-only action. The
+    /// `skill_load` messages are display projections; their paired ledger rows
+    /// carry the authoritative immutable `SKILL.md` bodies.
+    async fn persist_skill_loads_and_user_message(
+        &self,
+        _conversation_id: &str,
+        user_message: Option<&MessageRow>,
+        skill_loads: &[ConversationSkillLoadCommit],
+    ) -> Result<(), DbError> {
+        if skill_loads.is_empty() {
+            return match user_message {
+                Some(message) => self.insert_message(message).await,
+                None => Err(DbError::Init(
+                    "a Skill-load batch must contain a user message or at least one Skill load".to_owned(),
+                )),
+            };
+        }
+        Err(DbError::Init(
+            "conversation repository does not implement atomic Skill-load persistence".to_owned(),
+        ))
+    }
+
+    /// Returns immutable explicit Skill snapshots ordered by their original
+    /// event time and SQLite-local tie-breaker.
+    async fn get_skill_loads(
+        &self,
+        _conversation_id: &str,
+    ) -> Result<Vec<ConversationSkillLoad>, DbError> {
+        Ok(Vec::new())
+    }
 
     /// Atomically commits every artifact-producing tool message from one
     /// successfully completed turn.

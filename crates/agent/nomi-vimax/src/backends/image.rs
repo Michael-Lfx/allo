@@ -23,10 +23,16 @@ const MAX_MULTI_REF_IMAGES: usize = 8;
 pub struct FlowyImage {
     services: FlowyVimaxServices,
     model_override: Option<String>,
+    /// Session / plan aspect ratio for cover & sized image outputs.
+    aspect_ratio: Option<String>,
 }
 
 impl FlowyImage {
-    pub fn new(services: FlowyVimaxServices, model_override: Option<String>) -> Self {
+    pub fn new(
+        services: FlowyVimaxServices,
+        model_override: Option<String>,
+        aspect_ratio: Option<String>,
+    ) -> Self {
         Self {
             services,
             model_override: model_override.and_then(|s| {
@@ -37,7 +43,25 @@ impl FlowyImage {
                     Some(t)
                 }
             }),
+            aspect_ratio: aspect_ratio.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(crate::aspect::normalize_aspect_ratio(&t))
+                }
+            }),
         }
+    }
+
+    fn resolved_aspect(&self) -> String {
+        self.aspect_ratio
+            .clone()
+            .unwrap_or_else(|| {
+                crate::aspect::normalize_aspect_ratio(
+                    &self.services.media.video.default_aspect_ratio,
+                )
+            })
     }
 
     async fn resolve_model(&self) -> VimaxResult<String> {
@@ -75,12 +99,20 @@ impl FlowyImage {
         image_urls: &[String],
         out_path: &Path,
     ) -> Result<(), nomifun_cloud::ServerClientError> {
+        // Only poster/cover paths set `aspect_ratio`. Portraits / world plates must
+        // keep the default Seedream `2K` canvas — forcing video aspect (e.g. 1280x720)
+        // fails Seedream 5.0's ≥3.6M pixel floor and warps three-view sheets.
+        let extra = if self.aspect_ratio.is_some() {
+            crate::aspect::image_request_extra_for_aspect(&self.resolved_aspect())
+        } else {
+            Value::Null
+        };
         let req = ImageGenerationRequest {
             model: model.to_string(),
             prompt: prompt.to_string(),
             image_url: None,
             image_urls: image_urls.to_vec(),
-            extra: Value::Null,
+            extra,
         };
         let upstream = self
             .services

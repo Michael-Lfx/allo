@@ -169,7 +169,7 @@ fn catalog_record_matches(record: &PresetRecord, p: &PresetWriteParams) -> bool 
         .map(|row| {
             (
                 row.sort_order,
-                row.skill_name.clone(),
+                row.skill_id.clone(),
                 row.binding.clone(),
                 row.required,
             )
@@ -179,10 +179,10 @@ fn catalog_record_matches(record: &PresetRecord, p: &PresetWriteParams) -> bool 
         .skill_bindings
         .iter()
         .enumerate()
-        .map(|(sort_order, (skill_name, binding, required))| {
+        .map(|(sort_order, (skill_id, binding, required))| {
             (
                 sort_order as i64,
-                skill_name.clone(),
+                skill_id.clone(),
                 binding.clone(),
                 *required,
             )
@@ -385,9 +385,9 @@ async fn replace_bindings(
             .bind(&p.preset_id).bind(provider_id).bind(model).bind(rank as i64).bind(required)
             .execute(&mut **tx).await?;
     }
-    for (sort_order, (skill_name, binding, required)) in p.skill_bindings.iter().enumerate() {
-        sqlx::query("INSERT INTO preset_skill_bindings (preset_id,skill_name,binding,required,sort_order) VALUES (?,?,?,?,?)")
-            .bind(&p.preset_id).bind(skill_name).bind(binding).bind(required).bind(sort_order as i64)
+    for (sort_order, (skill_id, binding, required)) in p.skill_bindings.iter().enumerate() {
+        sqlx::query("INSERT INTO preset_skill_bindings (preset_id,skill_id,binding,required,sort_order) VALUES (?,?,?,?,?)")
+            .bind(&p.preset_id).bind(skill_id).bind(binding).bind(required).bind(sort_order as i64)
             .execute(&mut **tx).await?;
     }
     let (enabled, mode, writeback, eagerness, grounded) = &p.knowledge_policy;
@@ -798,7 +798,7 @@ mod tests {
             targets: vec!["conversation".into(), "execution_step".into()],
             agent_preferences: vec![(NOMI_AGENT_ID.into(), false)],
             model_preferences: vec![(Some(FIXTURE_PROVIDER_ID.into()), "model_x".into(), true)],
-            skill_bindings: vec![("web-search".into(), "include".into(), true), ("unsafe-auto".into(), "exclude_auto".into(), false)],
+            skill_bindings: vec![("builtin:web-search".into(), "include".into(), true), ("unsafe-auto".into(), "exclude_auto".into(), false)],
             knowledge_policy: (true, "staged".into(), false, Some("conservative".into()), true),
             knowledge_bases: vec![(FIXTURE_KNOWLEDGE_BASE_ID.into(), true)],
             mcp_servers: vec![],
@@ -825,6 +825,27 @@ mod tests {
         );
         let updated = repo.update(PRESET_ID, &sample(PRESET_ID)).await.unwrap().unwrap();
         assert_eq!(updated.preset.unwrap().revision, 2);
+    }
+
+    #[tokio::test]
+    async fn preset_skill_bindings_keep_same_name_catalog_sources_distinct() {
+        let db = database_with_provider().await;
+        let repo = SqlitePresetRepository::new(db.pool().clone());
+        let mut params = sample(PRESET_ID);
+        params.skill_bindings = vec![
+            ("builtin:writer".into(), "include".into(), false),
+            ("user:writer".into(), "include".into(), true),
+        ];
+
+        let created = repo.create(&params).await.unwrap();
+        assert_eq!(
+            created
+                .skill_bindings
+                .iter()
+                .map(|binding| (binding.skill_id.as_str(), binding.required))
+                .collect::<Vec<_>>(),
+            vec![("builtin:writer", false), ("user:writer", true)]
+        );
     }
 
     #[tokio::test]

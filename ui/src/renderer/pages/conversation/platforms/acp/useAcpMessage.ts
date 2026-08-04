@@ -48,13 +48,15 @@ export const normalizeAcpSlashCommands = (commands: unknown): SlashCommandItem[]
       }
       if (!name.trim()) return [];
 
+      const isSystemCommand = command.origin === 'system';
+
       return [
         {
           name,
           description: command.description != null ? toDisplayText(command.description) : '',
-          kind: 'template' as const,
-          source: 'acp' as const,
-          selectionBehavior: 'insert' as const,
+          kind: isSystemCommand ? ('builtin' as const) : ('template' as const),
+          source: isSystemCommand ? ('builtin' as const) : ('acp' as const),
+          selectionBehavior: isSystemCommand ? ('execute' as const) : ('insert' as const),
         },
       ];
     });

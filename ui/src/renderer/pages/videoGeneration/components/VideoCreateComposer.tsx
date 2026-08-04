@@ -8,6 +8,12 @@ import { BookOpen, FileText, Lightning, SettingTwo, VideoOne } from '@icon-park/
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import type { CameoDraftItem, VimaxWorkflow } from '../types';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from '../visualStylePresets';
+import {
+  DEFAULT_SEEDANCE_ASPECT_RATIO,
+  normalizeSeedanceAspectRatio,
+  type SeedanceAspectRatio,
+} from '../aspectRatios';
+import AspectRatioPicker from './AspectRatioPicker';
 import CameoCastEditor from './CameoCastEditor';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
 import VisualStyleSelect from './VisualStyleSelect';
@@ -22,6 +28,7 @@ export interface VideoCreateDraft {
   requirement: string;
   style: string;
   targetDurationSecs: number;
+  aspectRatio: SeedanceAspectRatio;
   models: VimaxModelSelection;
   /** Local Cameo drafts; `file` is memory-only and not persisted. */
   cameos: CameoDraftItem[];
@@ -45,6 +52,7 @@ function loadDraft(): VideoCreateDraft {
     requirement: '',
     style: DEFAULT_VISUAL_STYLE_PROMPT,
     targetDurationSecs: 30,
+    aspectRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
     models: EMPTY_MODELS,
     cameos: [],
   };
@@ -73,6 +81,11 @@ function loadDraft(): VideoCreateDraft {
           : DEFAULT_VISUAL_STYLE_PROMPT,
       targetDurationSecs:
         typeof parsed.targetDurationSecs === 'number' ? parsed.targetDurationSecs : 30,
+      aspectRatio: normalizeSeedanceAspectRatio(
+        typeof (parsed as { aspectRatio?: string }).aspectRatio === 'string'
+          ? (parsed as { aspectRatio?: string }).aspectRatio
+          : DEFAULT_SEEDANCE_ASPECT_RATIO
+      ),
       models: {
         llm_model: parsed.models?.llm_model ?? '',
         image_model: parsed.models?.image_model ?? '',
@@ -256,7 +269,7 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                 <SettingTwo theme='outline' size={14} />
                 {t('videoGeneration.create.advanced', { defaultValue: '风格与模型' })}
                 <span className='text-11px text-[var(--color-text-3)]'>
-                  · {draft.targetDurationSecs}s
+                  · {draft.targetDurationSecs}s · {draft.aspectRatio}
                 </span>
               </span>
             </Button>
@@ -276,7 +289,7 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
 
           {advancedOpen ? (
             <div className='mt-12px flex flex-col gap-12px rd-12px bg-[var(--color-fill-1)] p-12px'>
-              <div className='grid grid-cols-1 gap-10px md:grid-cols-[140px_1fr_1fr]'>
+              <div className='grid grid-cols-1 gap-10px md:grid-cols-2'>
                 <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.workspace.source.durationLabel', {
                     defaultValue: '目标时长（秒）',
@@ -298,6 +311,20 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                 </label>
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>
+                    {t('videoGeneration.workspace.source.aspectLabel', {
+                      defaultValue: '视频比例',
+                    })}
+                  </span>
+                  <AspectRatioPicker
+                    value={draft.aspectRatio}
+                    onChange={(aspectRatio) =>
+                      setDraft((current) => ({ ...current, aspectRatio }))
+                    }
+                    disabled={loading}
+                  />
+                </div>
+                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
+                  <span>
                     {t('videoGeneration.workspace.source.styleLabel', { defaultValue: '视觉风格' })}
                   </span>
                   <VisualStyleSelect
@@ -306,7 +333,7 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                     disabled={loading}
                   />
                 </div>
-                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
                   {t('videoGeneration.workspace.source.requirementLabel', {
                     defaultValue: '额外要求',
                   })}
@@ -316,7 +343,7 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                       setDraft((current) => ({ ...current, requirement }))
                     }
                     placeholder={t('videoGeneration.workspace.source.requirementPlaceholder', {
-                      defaultValue: '节奏、受众、画幅等',
+                      defaultValue: '节奏、受众等（画幅请在上方比例中选择）',
                     })}
                     disabled={loading}
                   />

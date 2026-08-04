@@ -23,7 +23,10 @@ use nomi_protocol::commands::SessionMode;
 use nomi_protocol::events::ToolCategory;
 use nomi_protocol::{ToolApprovalManager, ToolApprovalResult};
 use nomi_types::message::ContentBlock;
-use nomifun_api_types::{AgentModeResponse, GoalActionRequest, GoalStatusResponse, SlashCommandItem};
+use nomifun_api_types::{
+    AgentModeResponse, GoalActionRequest, GoalStatusResponse, SlashCommandItem,
+    SlashCommandOrigin,
+};
 use nomifun_common::{
     AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, ErrorChain, TimestampMs, now_ms,
 };
@@ -41,7 +44,7 @@ use crate::protocol::events::{
     AgentStreamEvent, MoaSlotStatsData, MoaTurnStatsData, TurnCompletedEventData, TurnStopReason,
 };
 use crate::protocol::send_error::AgentSendError;
-use crate::types::{NomiResolvedConfig, SendMessageData};
+use crate::types::{NomiResolvedConfig, SendMessageData, inject_loaded_skill_context};
 
 use super::image_attachments::{ImageAttachmentError, load_image_blocks};
 
@@ -275,6 +278,7 @@ pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
     .map(|(command, description)| SlashCommandItem {
         command: command.to_owned(),
         description: description.to_owned(),
+        origin: SlashCommandOrigin::System,
     })
     .collect()
 }
@@ -984,7 +988,11 @@ impl NomiAgentManager {
         let mut slash_commands: Vec<SlashCommandItem> = engine
             .slash_command_list()
             .into_iter()
-            .map(|(command, description)| SlashCommandItem { command, description })
+            .map(|(command, description)| SlashCommandItem {
+                command,
+                description,
+                origin: SlashCommandOrigin::Agent,
+            })
             .collect();
         // Host-level /goal command set: resolved by the backend goal route
         // (`POST /api/conversations/{id}/goal`), not by an engine-registered
@@ -1308,6 +1316,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 Some(hits) => prepend_knowledge_context(&hits, content),
                 None => content,
             };
+            let content = inject_loaded_skill_context(content, &data.loaded_skill_snapshots);
 
             self.backend_output_sink.begin_artifact_delivery_turn();
             engine.set_steering_inbox(Some(self.steering_inbox.clone()));
@@ -3704,6 +3713,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -3801,6 +3811,7 @@ mod tests {
                 source_message_id: None,
                 files: vec![path.to_string_lossy().into_owned()],
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -3889,6 +3900,7 @@ mod tests {
                 source_message_id: None,
                 files: vec![missing_image],
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -3935,6 +3947,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -3993,6 +4006,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await;
@@ -4059,6 +4073,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await;
@@ -4084,6 +4099,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -4126,6 +4142,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -4255,6 +4272,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -4313,6 +4331,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -4352,6 +4371,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -4417,6 +4437,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -4469,6 +4490,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -4552,6 +4574,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -4636,6 +4659,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -4994,6 +5018,7 @@ mod tests {
                 source_message_id: None,
                 files: Vec::new(),
                 inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                 origin: None,
             })
             .await
@@ -5021,6 +5046,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await
@@ -5038,6 +5064,7 @@ mod tests {
                         source_message_id: None,
                         files: Vec::new(),
                         inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
                         origin: None,
                     })
                     .await

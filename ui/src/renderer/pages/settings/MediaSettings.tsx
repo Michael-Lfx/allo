@@ -84,6 +84,7 @@ const MediaSettings: React.FC = () => {
         image_save_locally: settings.image_save_locally,
         video_save_locally: settings.video_save_locally,
         video_default_duration: settings.video_default_duration,
+        video_default_aspect_ratio: settings.video_default_aspect_ratio,
         workflows_enabled: settings.workflows_enabled,
         workflows_max_retries: settings.workflows_max_retries,
       });
@@ -152,6 +153,23 @@ const MediaSettings: React.FC = () => {
                     max={60}
                     value={settings.video_default_duration}
                     onChange={(v) => setSettings({ ...settings, video_default_duration: Number(v) })}
+                  />
+                </PreferenceRow>
+                <PreferenceRow
+                  label={t('media.settings.videoAspectRatio', { defaultValue: '默认视频比例' })}
+                >
+                  <Select
+                    className='w-full sm:w-180px'
+                    value={settings.video_default_aspect_ratio || '16:9'}
+                    onChange={(v) =>
+                      setSettings({ ...settings, video_default_aspect_ratio: String(v) })
+                    }
+                    options={['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].map((value) => ({
+                      label: value,
+                      value,
+                    }))}
+                    getPopupContainer={() => document.body}
+                    triggerProps={{ autoAlignPopupWidth: true }}
                   />
                 </PreferenceRow>
                 <PreferenceRow label={t('media.settings.imageSaveLocally')}>

@@ -11,6 +11,7 @@ mod reference_image_selector;
 mod scene_extractor;
 mod screenwriter;
 mod storyboard_artist;
+mod voice_profile_generator;
 mod world_assets;
 
 pub use camera_image_generator::CameraImageGenerator;
@@ -26,6 +27,7 @@ pub use reference_image_selector::{ReferenceImageSelector, SelectorOutput};
 pub use scene_extractor::{SceneExtractor, rank_chunks_by_keyword_overlap};
 pub use screenwriter::Screenwriter;
 pub use storyboard_artist::StoryboardArtist;
+pub use voice_profile_generator::VoiceProfileGenerator;
 pub use world_assets::{
     WorldAssetRegistry, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
 };
@@ -33,12 +35,16 @@ pub use world_assets::{
 /// Concise JSON schema strings substituted for `{format_instructions}`.
 pub mod formats {
     pub const CHARACTERS: &str = r#"Return a JSON object:
-{"characters":[{"idx":0,"identifier_in_scene":"string","is_visible":true,"static_features":"string","dynamic_features":"string|null"}]}
-Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appearance/physique), dynamic_features (clothing/accessories, optional). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
+{"characters":[{"idx":0,"identifier_in_scene":"string","is_visible":true,"static_features":"string","dynamic_features":"string|null","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string"}}]}
+Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appearance/physique), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED stable speaking voice bible reused across every shot — timbre, volume quiet|normal|loud, pitch low|mid|high, speaking_style, caption_clause one-line Seedance hint like "Alice: clear mid female voice, normal volume, calm pace"). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
+
+    pub const VOICE_PROFILES: &str = r#"Return a JSON object:
+{"voices":[{"idx":0,"identifier_in_scene":"string","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string"}}]}
+One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive. caption_clause is a compact one-line Seedance inject string. Prose MUST match the user's input language (Chinese input → 简体中文)."#;
 
     pub const STORYBOARD: &str = r#"Return a JSON object:
-{"storyboard":[{"idx":0,"is_last":false,"cam_idx":0,"visual_desc":"string","audio_desc":"string|null"}]}
-idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc is dialogue/SFX that MUST finish inside the same shot's 5–15s Seedance clip (keep spoken lines short enough; leave ~2s after the last word). Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#;
+{"storyboard":[{"idx":0,"is_last":false,"cam_idx":0,"visual_desc":"string","audio_desc":"string"}]}
+idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). Dialogue MUST finish inside the same shot's 5–15s Seedance clip: pace ~2.0 Chinese chars/sec or ~1.6 English words/sec, leave ~4s after the last word. Purely visual beats still need ambient audio_desc (room tone + soft cinematic underscore). Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#;
 
     pub const VIS_DECOMPOSE: &str = r#"Return a single JSON object. Each key MUST appear exactly once (never repeat ff_vis_char_idxs / lf_vis_char_idxs / any other field).
 {"ff_desc":"string","ff_vis_char_idxs":[0],"lf_desc":"string","lf_vis_char_idxs":[0],"motion_desc":"string","variation_type":"large|medium|small","variation_reason":"string"}

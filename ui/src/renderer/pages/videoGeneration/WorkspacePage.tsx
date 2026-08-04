@@ -50,6 +50,7 @@ import {
 } from './api';
 import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
+import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
 import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
@@ -61,6 +62,10 @@ import type { VideoCreateDraft } from './components/VideoCreateComposer';
 import type { StoryboardScene } from './artifactPresentation';
 import { findStoryboardPath } from './artifactPresentation';
 import { progressStatusText } from './stageI18n';
+import {
+  DEFAULT_SEEDANCE_ASPECT_RATIO,
+  normalizeSeedanceAspectRatio,
+} from './aspectRatios';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import styles from './index.module.css';
 
@@ -99,6 +104,7 @@ const WorkspacePage: React.FC = () => {
   const [requirement, setRequirement] = useState('');
   const [style, setStyle] = useState(DEFAULT_VISUAL_STYLE_PROMPT);
   const [targetDurationSecs, setTargetDurationSecs] = useState<number>(30);
+  const [aspectRatio, setAspectRatio] = useState(DEFAULT_SEEDANCE_ASPECT_RATIO);
   const [models, setModels] = useState<VimaxModelSelection>({
     llm_model: '',
     image_model: '',
@@ -173,6 +179,11 @@ const WorkspacePage: React.FC = () => {
         typeof s.target_duration_secs === 'number' && s.target_duration_secs > 0
           ? s.target_duration_secs
           : launchDraft?.targetDurationSecs ?? 30
+      );
+      setAspectRatio(
+        normalizeSeedanceAspectRatio(
+          s.aspect_ratio || launchDraft?.aspectRatio || DEFAULT_SEEDANCE_ASPECT_RATIO
+        )
       );
       setModels({
         llm_model: s.llm_model || launchDraft?.models.llm_model || '',
@@ -376,6 +387,7 @@ const WorkspacePage: React.FC = () => {
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
         target_duration_secs: targetDurationSecs,
+        aspect_ratio: aspectRatio,
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
@@ -409,6 +421,7 @@ const WorkspacePage: React.FC = () => {
     requirement,
     style,
     targetDurationSecs,
+    aspectRatio,
     models,
     message,
     t,
@@ -991,7 +1004,7 @@ const WorkspacePage: React.FC = () => {
             {sessionId ? (
               <WorkspaceCameoStrip sessionId={sessionId} disabled={busy} />
             ) : null}
-            <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-3'}`}>
+            <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
               <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 {t('videoGeneration.workspace.source.durationLabel', {
                   defaultValue: '目标成片时长（秒）',
@@ -1009,7 +1022,24 @@ const WorkspacePage: React.FC = () => {
                   style={{ width: '100%' }}
                 />
               </label>
-              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+              <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                <span>
+                  {t('videoGeneration.workspace.source.aspectLabel', {
+                    defaultValue: '视频比例',
+                  })}
+                </span>
+                <AspectRatioPicker
+                  value={aspectRatio}
+                  onChange={setAspectRatio}
+                  disabled={busy}
+                />
+                <span className='text-11px text-[var(--color-text-4)]'>
+                  {t('videoGeneration.workspace.source.aspectHint', {
+                    defaultValue: '同时作用于 Seedance 成片与海报封面',
+                  })}
+                </span>
+              </div>
+              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
                 {t('videoGeneration.workspace.source.requirementLabel', {
                   defaultValue: '额外要求（可选）',
                 })}
@@ -1018,13 +1048,13 @@ const WorkspacePage: React.FC = () => {
                   onChange={setRequirement}
                   disabled={busy}
                   placeholder={t('videoGeneration.workspace.source.requirementPlaceholder', {
-                    defaultValue: '节奏、受众、画幅等',
+                    defaultValue: '节奏、受众等（画幅请在上方比例中选择）',
                   })}
                 />
               </label>
               <div
                 className={`flex flex-col gap-6px text-12px text-[var(--color-text-3)] ${
-                  isMobile ? '' : 'col-span-3'
+                  isMobile ? '' : 'col-span-2'
                 }`}
               >
                 <span>

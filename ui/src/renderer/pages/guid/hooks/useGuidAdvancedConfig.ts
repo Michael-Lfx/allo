@@ -10,7 +10,6 @@ import { useTranslation } from 'react-i18next';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { defaultIdmmConfig } from '@/renderer/pages/conversation/components/IdmmControl';
 import { defaultKnowledgeBinding } from '@/renderer/pages/conversation/components/KnowledgeControl';
-import type { SummonDraft } from '@/renderer/pages/conversation/components/SummonPanel';
 import { workpathKeyForConversation } from '@/renderer/pages/conversation/SessionList/utils/sessionWorkpath';
 
 export type GuidAdvancedConfig = {
@@ -20,11 +19,6 @@ export type GuidAdvancedConfig = {
   setAutoWork: (next: AutoWorkDraftValue) => void;
   idmm: IIdmmConfig;
   setIdmm: (next: IIdmmConfig) => void;
-  /** 召唤伙伴 draft — collected before the conversation exists, applied via
-   * `conversation.setSummon` right after create (summon binds to a
-   * conversation id, so the landing page can only stage it). */
-  summon: SummonDraft | null;
-  setSummon: (next: SummonDraft | null) => void;
   /** Push the enabled drafts onto a freshly created conversation. Never
    * throws — a feature that fails to apply degrades to a warning toast so
    * the navigation into the conversation is not blocked. */
@@ -34,7 +28,7 @@ export type GuidAdvancedConfig = {
 
 /**
  * Draft state for the Guid page's advanced per-conversation features
- * (knowledge mounts / AutoWork / IDMM / summon). These are stored outside
+ * (knowledge mounts / AutoWork / IDMM). These are stored outside
  * the conversation-create payload — each has its own endpoint keyed by
  * conversation id — so the Guid page collects them up front and applies
  * them right after `conversation.create` returns, before navigating.
@@ -44,16 +38,15 @@ export const useGuidAdvancedConfig = (): GuidAdvancedConfig => {
   const [knowledge, setKnowledge] = useState<IKnowledgeBinding>(defaultKnowledgeBinding);
   const [autoWork, setAutoWork] = useState<AutoWorkDraftValue>({ enabled: false });
   const [idmm, setIdmm] = useState<IIdmmConfig>(defaultIdmmConfig);
-  const [summon, setSummon] = useState<SummonDraft | null>(null);
 
   // The apply call runs inside useGuidSend's stable callback chain — read the
   // latest drafts through a ref so send handlers never capture stale state.
-  const draftsRef = useRef({ knowledge, autoWork, idmm, summon });
-  draftsRef.current = { knowledge, autoWork, idmm, summon };
+  const draftsRef = useRef({ knowledge, autoWork, idmm });
+  draftsRef.current = { knowledge, autoWork, idmm };
 
   const applyToConversation = useCallback(
     async (conversationId: ConversationId) => {
-      const { knowledge: kb, autoWork: aw, idmm: idm, summon: sm } = draftsRef.current;
+      const { knowledge: kb, autoWork: aw, idmm: idm } = draftsRef.current;
       const tasks: Array<{ label: string; run: () => Promise<unknown> }> = [];
 
       // Persist any non-default binding (not just enabled ones) so the
@@ -88,20 +81,6 @@ export const useGuidAdvancedConfig = (): GuidAdvancedConfig => {
         tasks.push({
           label: t('idmm.label'),
           run: () => ipcBridge.idmm.set.invoke({ kind: 'conversation', target_id: conversationId, ...idm }),
-        });
-      }
-      if (sm) {
-        // The just-created conversation is idle (its first message is only
-        // consumed after navigation), so the summon's idle invariant holds.
-        tasks.push({
-          label: t('conversation.summon.button'),
-          run: () =>
-            ipcBridge.conversation.setSummon.invoke({
-              conversation_id: conversationId,
-              companion_id: sm.companion_id,
-              memory_ids: sm.memory_ids,
-              skill_exclusions: sm.skill_exclusions,
-            }),
         });
       }
 
@@ -142,7 +121,6 @@ export const useGuidAdvancedConfig = (): GuidAdvancedConfig => {
     setKnowledge(defaultKnowledgeBinding());
     setAutoWork({ enabled: false });
     setIdmm(defaultIdmmConfig());
-    setSummon(null);
   }, []);
 
   return {
@@ -152,8 +130,6 @@ export const useGuidAdvancedConfig = (): GuidAdvancedConfig => {
     setAutoWork,
     idmm,
     setIdmm,
-    summon,
-    setSummon,
     applyToConversation,
     reset,
   };

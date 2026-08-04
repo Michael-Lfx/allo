@@ -59,7 +59,7 @@ pub use acp::{
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
     OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra, SessionMcpServer,
-    SessionMcpTransport, SlashCommandItem, SummonConfig,
+    SessionMcpTransport, SlashCommandItem, SlashCommandOrigin, SummonConfig,
 };
 pub use agent_discovery::{
     AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy,
@@ -262,7 +262,8 @@ pub use skill::{
     MaterializeSkillsResponse, MaterializedSkillRef, NamedPathResponse, ReadPresetRuleRequest,
     ReadBuiltinResourceRequest, ReadSkillInfoRequest, ReadSkillInfoResponse,
     RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse, ScannedSkillResponse,
-    SetSkillTagsRequest, SkillListItemResponse, SkillMarketItemResponse, SkillMarketMcpConfigRequest,
+    SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse, SkillCatalogSource, SkillId,
+    SkillListItemResponse, SkillMarketItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallError, SkillMarketPackageInstallResponse,
     SkillMarketPackageRequest, SkillMarketPackageResponse, SkillMarketSyncRequest,
     SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse, WritePresetRuleRequest,

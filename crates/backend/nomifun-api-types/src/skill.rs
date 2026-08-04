@@ -3,8 +3,198 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// A. Skill list & info
+// A. Skill catalog, list & info
 // ---------------------------------------------------------------------------
+
+/// User-facing origin for a catalogued Skill.
+///
+/// This is deliberately separate from [`SkillSourceResponse`], whose
+/// `custom` spelling is retained for the legacy Skills Hub API. New catalog
+/// consumers use the product-facing scopes below and identify a Skill through
+/// [`SkillId`] rather than its display name.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCatalogSource {
+    Builtin,
+    User,
+    Project,
+    Extension,
+    Mcp,
+    Legacy,
+}
+
+impl SkillCatalogSource {
+    /// Stable namespace segment used by [`SkillId`].
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Extension => "extension",
+            Self::Mcp => "mcp",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+/// Opaque, source-qualified identifier for one discoverable Skill.
+///
+/// The canonical form is `<source>:<local_key>` when the source has no owner,
+/// or `<source>:<source_key>:<local_key>` when it does. Source-key and
+/// local-key components use percent encoding, so a future extension or MCP
+/// server name cannot make an identifier ambiguous.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct SkillId(String);
+
+impl SkillId {
+    pub fn new(source: SkillCatalogSource, source_key: Option<&str>, local_key: &str) -> Self {
+        let mut value = source.as_str().to_owned();
+        if let Some(source_key) = source_key.filter(|key| !key.is_empty()) {
+            value.push(':');
+            value.push_str(&encode_skill_id_component(source_key));
+        }
+        value.push(':');
+        value.push_str(&encode_skill_id_component(local_key));
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Catalog owner encoded in this canonical identity.
+    pub fn source(&self) -> SkillCatalogSource {
+        let source = self
+            .0
+            .split(':')
+            .next()
+            .expect("a SkillId always contains a source segment");
+        parse_skill_catalog_source(source)
+            .expect("a SkillId is constructed or parsed from a known source")
+    }
+
+    /// Parse an already-qualified catalog identity and reject non-canonical
+    /// encodings. Display names are deliberately not accepted here: callers
+    /// that need to preserve a legacy name must use [`Self::legacy`].
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let segments = value.split(':').collect::<Vec<_>>();
+        let (source, source_key, local_key) = match segments.as_slice() {
+            [source, local_key] => (parse_skill_catalog_source(source)?, None, *local_key),
+            [source, source_key, local_key] => {
+                (parse_skill_catalog_source(source)?, Some(*source_key), *local_key)
+            }
+            _ => {
+                return Err(
+                    "skill_id must be '<source>:<local_key>' or '<source>:<source_key>:<local_key>'"
+                        .to_owned(),
+                );
+            }
+        };
+
+        let source_key = source_key
+            .map(decode_skill_id_component)
+            .transpose()?;
+        let local_key = decode_skill_id_component(local_key)?;
+        let parsed = Self::new(source, source_key.as_deref(), &local_key);
+        if parsed.as_str() != value {
+            return Err("skill_id must use canonical percent encoding".to_owned());
+        }
+        Ok(parsed)
+    }
+
+    /// Preserve an old, name-only binding without guessing whether it referred
+    /// to the builtin or user catalog entry of the same name.
+    pub fn legacy(name: &str) -> Self {
+        Self::new(SkillCatalogSource::Legacy, None, name)
+    }
+
+    /// Recover the opaque name carried by a legacy binding. Canonical catalog
+    /// identities deliberately return `None`: they must be loaded by their
+    /// source-qualified identity rather than routed through name precedence.
+    pub fn legacy_name(&self) -> Option<String> {
+        let mut segments = self.0.split(':');
+        let source = segments.next()?;
+        let local_key = segments.next()?;
+        if source != SkillCatalogSource::Legacy.as_str() || segments.next().is_some() {
+            return None;
+        }
+        decode_skill_id_component(local_key).ok()
+    }
+}
+
+fn parse_skill_catalog_source(value: &str) -> Result<SkillCatalogSource, String> {
+    match value {
+        "builtin" => Ok(SkillCatalogSource::Builtin),
+        "user" => Ok(SkillCatalogSource::User),
+        "project" => Ok(SkillCatalogSource::Project),
+        "extension" => Ok(SkillCatalogSource::Extension),
+        "mcp" => Ok(SkillCatalogSource::Mcp),
+        "legacy" => Ok(SkillCatalogSource::Legacy),
+        _ => Err(format!("unknown skill catalog source '{value}'")),
+    }
+}
+
+fn encode_skill_id_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            write!(encoded, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    encoded
+}
+
+fn decode_skill_id_component(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err("truncated percent escape in skill_id".to_owned());
+                }
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                    .map_err(|_| "invalid percent escape in skill_id".to_owned())?;
+                let byte = u8::from_str_radix(hex, 16)
+                    .map_err(|_| "invalid percent escape in skill_id".to_owned())?;
+                decoded.push(byte);
+                index += 3;
+            }
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') => {
+                decoded.push(byte);
+                index += 1;
+            }
+            _ => return Err("skill_id contains an unescaped component character".to_owned()),
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "skill_id component is not valid UTF-8".to_owned())
+}
+
+/// One discoverable, user-facing Skill (`GET /api/skills/catalog`).
+///
+/// Catalog discovery contains only lightweight metadata. It intentionally
+/// omits filesystem locations and `SKILL.md` bodies; those are loaded through
+/// the later, policy-aware loading flow.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillCatalogItemResponse {
+    pub skill_id: SkillId,
+    pub name: String,
+    pub description: String,
+    pub source: SkillCatalogSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+}
+
+/// Response payload for the user-facing Skill catalog.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillCatalogResponse {
+    pub skills: Vec<SkillCatalogItemResponse>,
+}
 
 /// Origin of a listed skill — `builtin`, `custom`, or `extension`.
 ///
@@ -101,6 +291,11 @@ pub struct ImportSkillResponse {
     pub skill_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skill_names: Vec<String>,
+    /// Canonical catalog identities for `skill_names`, in the same order.
+    /// This lets callers retain the imported source identity without trying to
+    /// reconstruct it from a display name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_ids: Vec<String>,
 }
 
 /// Request body for `POST /api/skills/export-symlink`.
@@ -360,6 +555,32 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn catalog_skill_id_qualifies_and_escapes_source_components() {
+        let id = SkillId::new(
+            SkillCatalogSource::Extension,
+            Some("office:plugin"),
+            "pdf/export",
+        );
+
+        assert_eq!(id.as_str(), "extension:office%3Aplugin:pdf%2Fexport");
+        assert_eq!(id.source(), SkillCatalogSource::Extension);
+        assert_eq!(serde_json::to_value(id).unwrap(), json!("extension:office%3Aplugin:pdf%2Fexport"));
+    }
+
+    #[test]
+    fn legacy_skill_id_decodes_only_name_based_bindings() {
+        let legacy = SkillId::legacy("review notes");
+        assert_eq!(legacy.as_str(), "legacy:review%20notes");
+        assert_eq!(legacy.legacy_name().as_deref(), Some("review notes"));
+        assert_eq!(
+            SkillId::parse("builtin:review%20notes")
+                .unwrap()
+                .legacy_name(),
+            None,
+        );
+    }
+
     // -- Skill list --
 
     #[test]
@@ -570,10 +791,12 @@ mod tests {
         let resp = ImportSkillResponse {
             skill_name: "imported-skill".into(),
             skill_names: vec!["imported-skill".into(), "second-skill".into()],
+            skill_ids: vec!["user:imported-skill".into(), "user:second-skill".into()],
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["skill_name"], "imported-skill");
         assert_eq!(json["skill_names"], json!(["imported-skill", "second-skill"]));
+        assert_eq!(json["skill_ids"], json!(["user:imported-skill", "user:second-skill"]));
         assert!(json.get("skillName").is_none());
     }
 

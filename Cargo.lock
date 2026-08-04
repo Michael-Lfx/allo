@@ -6512,6 +6512,7 @@ dependencies = [
  "nomifun-common",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]

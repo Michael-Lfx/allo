@@ -37,7 +37,7 @@
 //! 3. Quarantine of the known `Nomi` double-append junk dataset, then a
 //!    conflict pre-scan (abort cleanly before anything moved).
 //! 4. Entry moves: ordinary entries, then DB sidecars, then the bare
-//!    `nomifun-backend.db` last — the same "sidecars before main database"
+//!    `flowy-backend.db` last — the same "sidecars before main database"
 //!    ordering the reset engine uses, so no crash can strand a database away
 //!    from its WAL.
 //! 5. Durable-marker rebinding
@@ -55,6 +55,10 @@ use std::path::{Path, PathBuf};
 use super::boot_log::{BootNoteLevel, record_boot_note};
 use super::server_lock;
 use nomifun_common::paths;
+use nomifun_common::storage_paths::{
+    DATABASE_FILE, DATABASE_MIGRATE_LOCK_FILE, DATABASE_SHM_FILE, DATABASE_WAL_FILE,
+    LEGACY_DATABASE_FILE,
+};
 
 /// Resume marker written into the LEGACY root before the first entry moves.
 /// Its presence means "a layout migration into the current default root is
@@ -94,19 +98,22 @@ const LAYOUT_MIGRATION_MARKER_VERSION: u32 = 1;
 /// main database file, so a crash can never leave an adopted database next
 /// to a stale, detached WAL.
 const DB_SIDECARS: &[&str] = &[
-    "nomifun-backend.db-wal",
-    "nomifun-backend.db-shm",
-    "nomifun-backend.db-journal",
-    "nomifun-backend.db.migrate.lock",
+    DATABASE_WAL_FILE,
+    DATABASE_SHM_FILE,
+    "flowy-backend.db-journal",
+    DATABASE_MIGRATE_LOCK_FILE,
 ];
-const DB_FILE: &str = "nomifun-backend.db";
+const DB_FILE: &str = DATABASE_FILE;
 
 /// Dataset-identity artifacts that mean "this directory holds (or held) a
 /// real dataset worth migrating". Lock files are deliberately excluded: they
 /// are ambient and are recreated by any boot (including a failed migration
-/// attempt on the destination side).
+/// attempt on the destination side). Both the current (`flowy-backend.db`)
+/// and the pre-rebrand legacy (`nomifun-backend.db`) database names count —
+/// either marks a directory as a dataset to migrate.
 const DATASET_ARTIFACTS: &[&str] = &[
-    DB_FILE,
+    DATABASE_FILE,
+    LEGACY_DATABASE_FILE,
     "storage-generation",
     "dataset-v3.json",
     ".dataset-v3.bootstrap.json",
@@ -519,7 +526,7 @@ mod tests {
     fn seed_dataset(root: &Path) {
         std::fs::create_dir_all(root).unwrap();
         std::fs::write(root.join(DB_FILE), b"db-bytes").unwrap();
-        std::fs::write(root.join("nomifun-backend.db-wal"), b"wal").unwrap();
+        std::fs::write(root.join(DATABASE_WAL_FILE), b"wal").unwrap();
         std::fs::write(root.join("storage-generation"), b"gen").unwrap();
         std::fs::write(root.join("server.lock"), b"").unwrap();
         std::fs::create_dir_all(root.join("conversations/ws-1")).unwrap();

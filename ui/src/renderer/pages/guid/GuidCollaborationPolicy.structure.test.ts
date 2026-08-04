@@ -28,7 +28,8 @@ describe('Guid collaboration policy', () => {
     expect(controlSource.includes('getPopupContainer={() => document.body}')).toBe(true);
     expect(controlSource.includes("data-compact={compact ? 'true' : 'false'}")).toBe(true);
     expect(controlCss.includes(".trigger[data-compact='false']")).toBe(true);
-    expect(controlCss.includes('height: 34px !important')).toBe(true);
+    expect(controlCss.includes('height: 28px !important')).toBe(true);
+    expect(controlCss.includes('min-height: 28px')).toBe(true);
     expect(controlCss.includes('border-radius: 999px !important')).toBe(true);
     expect(controlCss.includes('transform: translateY(-1px)')).toBe(false);
     expect(controlSource.includes('collaboration.policy.description')).toBe(false);

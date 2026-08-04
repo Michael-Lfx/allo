@@ -1,10 +1,7 @@
 import type { ConversationId } from '@/common/types/ids';
-import { ipcBridge } from '@/common';
-import type { GoalStatusResponse } from '@/common/adapter/ipcBridge';
-import { goalContractEntries, useGoalCommand } from '@/renderer/hooks/chat/useGoalCommand';
-import { useAddEventListener } from '@/renderer/utils/emitter';
+import { goalContractEntries, useGoalCommand, useGoalStatus } from '@/renderer/hooks/chat/useGoalCommand';
 import { Button, Popconfirm } from '@arco-design/web-react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 // 仅在 goal 自动续作期间低频轮询（turns_used 随每个 turn 结束而变化，且没有
@@ -43,41 +40,16 @@ function formatRemaining(ms: number): string {
  */
 const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conversation_id }) => {
   const { t } = useTranslation();
-  const [goal, setGoal] = useState<GoalStatusResponse | null>(null);
+  const { goal, refresh } = useGoalStatus(conversation_id);
   const [subgoalsExpanded, setSubgoalsExpanded] = useState(false);
   const [contractExpanded, setContractExpanded] = useState(false);
+  const [clearedDismissed, setClearedDismissed] = useState(false);
   const goalCommand = useGoalCommand(conversation_id);
 
-  const refresh = useCallback(async () => {
-    try {
-      const status = await ipcBridge.conversation.getGoalStatus.invoke({ conversation_id });
-      setGoal(status ?? null);
-    } catch (error) {
-      console.warn('[GoalStatusNotice] Failed to load goal status:', error);
-    }
-  }, [conversation_id]);
-
   useEffect(() => {
-    setGoal(null);
     setSubgoalsExpanded(false);
     setContractExpanded(false);
-    void refresh();
-  }, [refresh]);
-
-  // /goal 与 /subgoal 操作后由 useGoalCommand 发出；快照随事件携带时直接采用，
-  // 免去一次 GET。
-  useAddEventListener(
-    'goal.status.refresh',
-    (payload) => {
-      if (payload.conversation_id !== conversation_id) return;
-      if (payload.status) {
-        setGoal(payload.status);
-      } else {
-        void refresh();
-      }
-    },
-    [conversation_id, refresh]
-  );
+  }, [conversation_id]);
 
   const isRunning = goal?.active === true && (goal.status === 'active' || goal.status === 'waiting');
   useEffect(() => {
@@ -92,8 +64,11 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
   // isCleared 翻转会取消这只定时器。
   const isCleared = goal?.status === 'cleared';
   useEffect(() => {
-    if (!isCleared) return;
-    const timer = window.setTimeout(() => setGoal(null), CLEARED_AUTO_DISMISS_MS);
+    if (!isCleared) {
+      setClearedDismissed(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setClearedDismissed(true), CLEARED_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [isCleared]);
 
@@ -153,7 +128,7 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
     }
   }, [goal, t]);
 
-  if (!presentation || !goal) {
+  if (!presentation || !goal || clearedDismissed) {
     return null;
   }
 

@@ -66,3 +66,20 @@ pub fn default_gateway_config() -> GatewayConfig {
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomi_config::ServerLoginMethod;
+
+    #[test]
+    fn ensure_gateway_defaults_fills_empty_base_url() {
+        let mut cfg = GatewayConfig::default();
+        assert!(cfg.server.base_url.is_empty());
+        ensure_gateway_defaults(&mut cfg);
+        assert_eq!(cfg.server.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+        assert!(cfg.server.enabled);
+        assert_eq!(cfg.media.provider, "flowy");
+        assert_eq!(cfg.server.auth.preferred_method, ServerLoginMethod::EmailOtp);
+    }
+}

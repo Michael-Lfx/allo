@@ -15,15 +15,15 @@ const enConversation = JSON.parse(
   readFileSync(new URL('../../../../services/i18n/locales/en-US/conversation.json', import.meta.url), 'utf8')
 ) as { stop?: { failed?: string } };
 
-describe('message error retry entry', () => {
-  test('offers a retry entry that recalls the failed request into the composer', () => {
-    expect(tipsSource.includes("data-testid='message-error-retry'")).toBe(true);
+describe('message error actions', () => {
+  test('offers an edit entry that recalls the failed request into the composer', () => {
+    expect(tipsSource.includes("data-testid='message-error-edit'")).toBe(true);
     expect(tipsSource.includes("emitter.emit('sendbox.edit'")).toBe(true);
     expect(tipsSource.includes("conversationContext?.type !== 'nomi'")).toBe(true);
-    expect(tipsSource.includes('common.retry')).toBe(true);
+    expect(tipsSource.includes('common.edit')).toBe(true);
   });
 
-  test('retry hides while the conversation is still processing or read-only', () => {
+  test('edit hides while the conversation is still processing or read-only', () => {
     expect(tipsSource.includes('conversationContext.isProcessing === true')).toBe(true);
     expect(tipsSource.includes('conversationContext.readOnly === true')).toBe(true);
   });

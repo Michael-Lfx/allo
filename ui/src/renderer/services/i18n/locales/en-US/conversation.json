@@ -507,6 +507,10 @@
       "contractToggle": "Completion contract",
       "subgoalsToggle": "Subgoals ({{count}})"
     },
+    "chip": {
+      "label": "Goal",
+      "clearAria": "Clear goal mode"
+    },
     "contract": {
       "outcome": "Outcome",
       "verification": "Verification",
@@ -651,7 +655,22 @@
     "label": "Thinking..."
   },
   "skills": {
-    "loaded": "Loaded Skills"
+    "loaded": "Loaded Skills",
+    "selected": "Selected Skills",
+    "remove": "Remove {{name}}",
+    "sources": {
+      "builtin": "Built-in",
+      "user": "User",
+      "project": "Project",
+      "extension": "Extension",
+      "mcp": "MCP",
+      "legacy": "Legacy"
+    }
+  },
+  "slashLauncher": {
+    "system": "System commands",
+    "skills": "Skills",
+    "agent": "Agent commands"
   },
   "mcp": {
     "loaded": "Loaded MCP",

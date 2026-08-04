@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AddUser, Check, Down, Experiment, Right } from '@icon-park/react';
 import { ipcBridge } from '@/common';
-import type { CreatePresetRequest } from '@/common/types/agent/presetTypes';
+import type { CreatePresetRequest, SkillBindingInput } from '@/common/types/agent/presetTypes';
 import type { TAgentExecutionDetail } from '@/common/types/agentExecution/agentExecutionTypes';
 import { latestAttemptForStep } from '@/common/types/agentExecution/agentExecutionTypes';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
@@ -48,6 +48,15 @@ function collect(set: Set<string>, items: readonly string[] | undefined): void {
     const v = raw?.trim();
     if (v) set.add(v);
   }
+}
+
+const SOURCE_QUALIFIED_SKILL_ID = /^(?:builtin|user|project|extension|mcp|legacy):/;
+
+function executionSkillBinding(skill: string): SkillBindingInput {
+  if (SOURCE_QUALIFIED_SKILL_ID.test(skill)) {
+    return { skill_id: skill, required: false };
+  }
+  return { skill_name: skill, required: false };
 }
 
 /**
@@ -212,10 +221,10 @@ const ParticipantProfilePanel: React.FC<{ detail: TAgentExecutionDetail }> = ({ 
             required: false,
           })),
           model_preferences: candidate.modelPreferences,
-          included_skills: candidate.enabledSkills.map((skill_name) => ({
-            skill_name,
-            required: false,
-          })),
+          // Historical execution records contain bare names, while newer
+          // snapshots retain catalog IDs. Preserve both representations rather
+          // than guessing a source for the historical entries.
+          included_skills: candidate.enabledSkills.map(executionSkillBinding),
           excluded_auto_skills: candidate.disabledBuiltinSkills,
           fallback_allowed: true,
           knowledge_policy: {

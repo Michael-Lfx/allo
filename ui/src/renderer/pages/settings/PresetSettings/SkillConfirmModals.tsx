@@ -5,6 +5,10 @@
  */
 import type { Message } from '@arco-design/web-react';
 import type { PendingSkill } from './types';
+import {
+  pendingSkillSelectionId,
+  type SelectedPresetSkill,
+} from './presetSkillBindings';
 import { Modal } from '@arco-design/web-react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -17,12 +21,10 @@ type SkillConfirmModalsProps = {
   setPendingSkills: (v: PendingSkill[]) => void;
 
   // Delete custom skill
-  deleteCustomSkillName: string | null;
-  setDeleteCustomSkillName: (v: string | null) => void;
+  deleteCustomSkill: SelectedPresetSkill | null;
+  setDeleteCustomSkill: (v: SelectedPresetSkill | null) => void;
 
   // Shared state
-  customSkills: string[];
-  setCustomSkills: (v: string[]) => void;
   selectedSkills: string[];
   setSelectedSkills: (v: string[]) => void;
 
@@ -34,10 +36,8 @@ const SkillConfirmModals: React.FC<SkillConfirmModalsProps> = ({
   setDeletePendingSkillName,
   pendingSkills,
   setPendingSkills,
-  deleteCustomSkillName,
-  setDeleteCustomSkillName,
-  customSkills,
-  setCustomSkills,
+  deleteCustomSkill,
+  setDeleteCustomSkill,
   selectedSkills,
   setSelectedSkills,
   message,
@@ -57,8 +57,16 @@ const SkillConfirmModals: React.FC<SkillConfirmModalsProps> = ({
         onOk={() => {
           if (deletePendingSkillName) {
             setPendingSkills(pendingSkills.filter((s) => s.name !== deletePendingSkillName));
-            setCustomSkills(customSkills.filter((s) => s !== deletePendingSkillName));
-            setSelectedSkills(selectedSkills.filter((s) => s !== deletePendingSkillName));
+            setSelectedSkills(
+              selectedSkills.filter(
+                (skillId) =>
+                  !pendingSkills.some(
+                    (skill) =>
+                      skill.name === deletePendingSkillName &&
+                      pendingSkillSelectionId(skill) === skillId,
+                  ),
+              ),
+            );
             setDeletePendingSkillName(null);
             message.success(t('settings.skillDeleted', { defaultValue: 'Skill removed from pending list' }));
           }
@@ -82,17 +90,16 @@ const SkillConfirmModals: React.FC<SkillConfirmModalsProps> = ({
 
       {/* Remove Custom Skill from Preset Modal */}
       <Modal
-        visible={deleteCustomSkillName !== null}
-        onCancel={() => setDeleteCustomSkillName(null)}
+        visible={deleteCustomSkill !== null}
+        onCancel={() => setDeleteCustomSkill(null)}
         title={t('settings.removeCustomSkillTitle', { defaultValue: 'Remove Skill from Preset' })}
         okButtonProps={{ status: 'danger' }}
         okText={t('common.remove', { defaultValue: 'Remove' })}
         cancelText={t('common.cancel', { defaultValue: 'Cancel' })}
         onOk={() => {
-          if (deleteCustomSkillName) {
-            setCustomSkills(customSkills.filter((s) => s !== deleteCustomSkillName));
-            setSelectedSkills(selectedSkills.filter((s) => s !== deleteCustomSkillName));
-            setDeleteCustomSkillName(null);
+          if (deleteCustomSkill) {
+            setSelectedSkills(selectedSkills.filter((skillId) => skillId !== deleteCustomSkill.skillId));
+            setDeleteCustomSkill(null);
             message.success(
               t('settings.skillRemovedFromPreset', { defaultValue: 'Skill removed from this preset' })
             );
@@ -104,7 +111,7 @@ const SkillConfirmModals: React.FC<SkillConfirmModalsProps> = ({
       >
         <p>
           {t('settings.removeCustomSkillConfirm', {
-            defaultValue: `Are you sure you want to remove "${deleteCustomSkillName}" from this preset?`,
+            defaultValue: `Are you sure you want to remove "${deleteCustomSkill?.name ?? ''}" from this preset?`,
           })}
         </p>
         <div className='mt-12px text-12px text-t-secondary bg-fill-2 p-12px rounded-lg'>

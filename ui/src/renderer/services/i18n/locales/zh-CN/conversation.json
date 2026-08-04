@@ -507,6 +507,10 @@
       "contractToggle": "完成合约",
       "subgoalsToggle": "子目标 {{count}} 项"
     },
+    "chip": {
+      "label": "目标",
+      "clearAria": "取消目标模式"
+    },
     "contract": {
       "outcome": "结果",
       "verification": "验证",
@@ -651,7 +655,22 @@
     "label": "思考中..."
   },
   "skills": {
-    "loaded": "已加载技能"
+    "loaded": "已加载技能",
+    "selected": "已选择的技能",
+    "remove": "移除 {{name}}",
+    "sources": {
+      "builtin": "内置",
+      "user": "用户",
+      "project": "项目",
+      "extension": "扩展",
+      "mcp": "MCP",
+      "legacy": "兼容"
+    }
+  },
+  "slashLauncher": {
+    "system": "系统命令",
+    "skills": "技能",
+    "agent": "Agent 命令"
   },
   "mcp": {
     "loaded": "已加载 MCP",

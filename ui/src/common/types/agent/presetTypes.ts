@@ -72,9 +72,18 @@ export interface ModelPreference {
 }
 
 export interface SkillBinding {
+  /** Source-qualified catalog identity, for example `builtin:pdf` or `user:pdf`. */
+  skill_id: string;
+  required: boolean;
+}
+
+/** Retired request-only wire shape accepted to preserve a historical bare name. */
+export interface LegacySkillBindingInput {
   skill_name: string;
   required: boolean;
 }
+
+export type SkillBindingInput = SkillBinding | LegacySkillBindingInput;
 
 export interface KnowledgeBaseBinding {
   knowledge_base_id: KnowledgeBaseId;
@@ -137,7 +146,7 @@ export interface CreatePresetRequest {
   targets?: PresetTarget[];
   agent_preferences?: AgentPreference[];
   model_preferences?: ModelPreference[];
-  included_skills?: SkillBinding[];
+  included_skills?: SkillBindingInput[];
   excluded_auto_skills?: string[];
   knowledge_policy?: PresetKnowledgePolicy;
   knowledge_bases?: KnowledgeBaseBinding[];
@@ -193,6 +202,7 @@ export interface ResolvedPresetSnapshot {
   resolved_agent_type?: string;
   resolved_agent_backend?: string;
   resolved_model?: ModelPreference;
+  /** Source-qualified Skill IDs frozen when the preset was resolved. */
   included_skills: string[];
   excluded_auto_skills: string[];
   knowledge_policy: PresetKnowledgePolicy;

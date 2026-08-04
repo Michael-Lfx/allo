@@ -64,6 +64,36 @@ describe('stored message v3 mapper', () => {
     expect('turn_id' in mapped.content).toBe(false);
   });
 
+  test('maps immutable Skill load snapshots as distinct history entries', () => {
+    const map = createStoredMessageMapper(() => 'skill-load-render-key');
+    const mapped = map(
+      rawMessage({
+        msg_id: undefined,
+        type: 'skill_load',
+        content: {
+          skill_id: 'user:pdf',
+          name: 'pdf',
+          source: 'user',
+          version_hash: 'a'.repeat(64),
+          content: '# PDF\nRead documents safely.',
+        },
+        position: 'center',
+      })
+    );
+
+    expect(mapped.type).toBe('skill_load');
+    expect(mapped.position).toBe('center');
+    expect(mapped.msg_id).toBeUndefined();
+    if (mapped.type !== 'skill_load') throw new Error('expected skill load history entry');
+    expect(mapped.content).toEqual({
+      skill_id: 'user:pdf',
+      name: 'pdf',
+      source: 'user',
+      version_hash: 'a'.repeat(64),
+      content: '# PDF\nRead documents safely.',
+    });
+  });
+
   test('ignores an unsupported top-level turn_id instead of reading two authorities', () => {
     const map = createStoredMessageMapper(() => 'render-1');
     const mapped = map({

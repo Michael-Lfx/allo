@@ -14,7 +14,7 @@ const SPEECH_CJK_CHARS_PER_SEC: f32 = 2.0;
 /// Natural spoken English words/sec.
 const SPEECH_EN_WORDS_PER_SEC: f32 = 1.6;
 /// Tail seconds after the last spoken syllable so audio is not cut mid-breath.
-const SPEECH_TAIL_SECS: u32 = 3;
+const SPEECH_TAIL_SECS: u32 = 4;
 /// Dialogue shots should not be shorter than this even when the line is brief.
 const MIN_DIALOGUE_CLIP_SECS: u32 = 8;
 
@@ -93,16 +93,13 @@ pub fn wants_stylized_non_photoreal(user_style: &str) -> bool {
 fn positive_style_needle(lower: &str, needle: &str) -> bool {
     let needle = needle.to_ascii_lowercase();
     let mut start = 0;
-    while let Some(rel) = lower[start..].find(&needle) {
+    while let Some(rel) = lower.get(start..).and_then(|s| s.find(&needle)) {
         let abs = start + rel;
         let before = &lower[..abs];
         // Use the current clause (after last . ; ! ? or newline) so "FORBIDDEN: a, b, c"
         // still negates later list items.
-        let clause_start = before
-            .rfind(['.', ';', '!', '?', '\n'])
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let clause = before[clause_start..].trim_start();
+        let clause_start = after_last_clause_delim(before);
+        let clause = before.get(clause_start..).unwrap_or("").trim_start();
         let negated = clause.contains("not ")
             || clause.contains("no ")
             || clause.contains("never ")
@@ -123,14 +120,13 @@ fn positive_style_needle(lower: &str, needle: &str) -> bool {
 
 fn positive_style_needle_zh(raw: &str, needle: &str) -> bool {
     let mut start = 0;
-    while let Some(rel) = raw[start..].find(needle) {
+    while let Some(rel) = raw.get(start..).and_then(|s| s.find(needle)) {
         let abs = start + rel;
         let before = &raw[..abs];
-        let clause_start = before
-            .rfind(['。', '；', '！', '？', '.', ';', '\n'])
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let clause = before[clause_start..].trim_start();
+        // CRITICAL: `rfind` returns a byte index; multi-byte delimiters like '。'
+        // must advance by `len_utf8()`, not `+ 1` (that panics mid-char).
+        let clause_start = after_last_clause_delim(before);
+        let clause = before.get(clause_start..).unwrap_or("").trim_start();
         let negated = clause.contains('不')
             || clause.contains('非')
             || clause.contains('无')
@@ -145,6 +141,16 @@ fn positive_style_needle_zh(raw: &str, needle: &str) -> bool {
         start = abs + needle.len();
     }
     false
+}
+
+/// Byte index just after the last clause delimiter in `before` (UTF-8 safe).
+fn after_last_clause_delim(before: &str) -> usize {
+    const DELIMS: &[char] = &['。', '；', '！', '？', '.', ';', '!', '?', '\n'];
+    let Some(i) = before.rfind(DELIMS) else {
+        return 0;
+    };
+    let ch = before[i..].chars().next().expect("rfind lands on char start");
+    i + ch.len_utf8()
 }
 
 /// Short style clause for image prompts (survives 800-char Z-Image truncate).
@@ -615,6 +621,7 @@ pub fn enrich_requirement_for_scene(
 (Seedance max {MAX_CLIP_DURATION_SECS}s/clip — do NOT under-shoot with only 1–2 short clips when the budget is much larger).\n\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, or \"and then…\" requiring another clip.\n\
+         - EVERY shot MUST have a non-empty audio_desc (spoken lines and/or ambient SFX+BGM). Never leave audio_desc null.\n\
          - Speech budget per shot at ≈{per_shot}s: keep spoken Chinese ≲ {per_shot_cjk} chars \
 (hard max ≲ {max_cjk_chars} chars / ≲ {max_en_words} English words for a {MAX_CLIP_DURATION_SECS}s clip). \
 If a speech beat is longer, SPLIT into another shot OR shorten the line — do not cram.\n\
@@ -759,7 +766,7 @@ pub fn estimate_shot_need_secs(
     let mut speech = estimate_speech_secs(audio);
     // Only mine motion text when it looks like it carries spoken lines
     // (quotes / dialogue verbs) — never treat camera verbs like "hold/pan" as speech.
-    if speech == 0 && motion_looks_like_dialogue(motion_desc) {
+    if speech == 0 && text_looks_like_dialogue(motion_desc) {
         speech = estimate_speech_secs(motion_desc);
     }
     let speech_need = if speech == 0 {
@@ -790,8 +797,10 @@ pub fn estimate_shot_need_secs(
         .clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS)
 }
 
-fn motion_looks_like_dialogue(motion_desc: &str) -> bool {
-    let t = motion_desc.trim();
+/// True when text carries spoken lines (quotes / dialogue verbs) rather than
+/// pure camera direction like "hold/pan".
+pub fn text_looks_like_dialogue(text: &str) -> bool {
+    let t = text.trim();
     if t.is_empty() {
         return false;
     }
@@ -820,10 +829,12 @@ fn motion_looks_like_dialogue(motion_desc: &str) -> bool {
 /// Allocate per-shot durations from content needs (audio + motion), then fit the
 /// scene budget.
 ///
-/// Tries to honor dialogue floors first, but **will compress down to**
-/// [`MIN_CLIP_DURATION_SECS`] when needed so the sum stays near `target`
-/// (user-configured total duration). Unbounded speech floors previously let
-/// 40s targets render as ~60s (e.g. 4×15s).
+/// Honors dialogue floors first. When needs exceed the user target, Phase 1
+/// trims surplus above each shot's content need; Phase 2 may compress further
+/// but **never below** [`MIN_DIALOGUE_CLIP_SECS`] for dialogue-heavy shots
+/// (`needs[i] >= MIN_DIALOGUE_CLIP_SECS`) or [`MIN_CLIP_DURATION_SECS`] otherwise.
+/// That can make the rendered sum slightly exceed `target` — preferred over
+/// cutting spoken lines mid-sentence.
 pub fn allocate_clip_durations_for_content(
     target_total: Option<u32>,
     needs: &[u32],
@@ -883,8 +894,8 @@ pub fn allocate_clip_durations_for_content(
                 break;
             }
         }
-        // Phase 2: still over → honor target by compressing toward Seedance min.
-        // Prefer cutting longer (dialogue-heavy) shots last so short beats stay intact.
+        // Phase 2: still over → compress toward dialogue-safe floors (not bare Seedance min).
+        // Prefer cutting longer shots first, but never drop dialogue below MIN_DIALOGUE_CLIP_SECS.
         let sum2: u32 = durs.iter().sum();
         if sum2 > target {
             let mut excess = sum2 - target;
@@ -896,7 +907,8 @@ pub fn allocate_clip_durations_for_content(
                     if excess == 0 {
                         break;
                     }
-                    if durs[i] > MIN_CLIP_DURATION_SECS {
+                    let floor = content_compress_floor(needs[i]);
+                    if durs[i] > floor {
                         durs[i] -= 1;
                         excess -= 1;
                         progressed = true;
@@ -906,15 +918,35 @@ pub fn allocate_clip_durations_for_content(
                     break;
                 }
             }
-            tracing::info!(
-                target,
-                needs = ?needs,
-                durations = ?durs,
-                "compressed clip durations to fit target (dialogue may be tighter)"
-            );
+            let final_sum: u32 = durs.iter().sum();
+            if final_sum > target {
+                tracing::info!(
+                    target,
+                    rendered = final_sum,
+                    needs = ?needs,
+                    durations = ?durs,
+                    "kept dialogue-safe clip floors; rendered length exceeds target"
+                );
+            } else {
+                tracing::info!(
+                    target,
+                    needs = ?needs,
+                    durations = ?durs,
+                    "compressed clip durations to fit target (dialogue floors preserved)"
+                );
+            }
         }
     }
     durs
+}
+
+/// Floor used when Phase-2 budget compression must still leave room for speech.
+fn content_compress_floor(need: u32) -> u32 {
+    if need >= MIN_DIALOGUE_CLIP_SECS {
+        MIN_DIALOGUE_CLIP_SECS
+    } else {
+        MIN_CLIP_DURATION_SECS
+    }
 }
 
 /// Hard max shots for a budget (for post-LLM truncation).
@@ -980,6 +1012,16 @@ mod tests {
         assert!(!wants_stylized_non_photoreal(
             "LIVE-ACTION continuity photos. FORBIDDEN: anime, manga, cartoon, cel shading"
         ));
+    }
+
+    #[test]
+    fn chinese_ideographic_period_does_not_panic_in_style_detect() {
+        // Regression: `rfind('。') + 1` used to slice mid-char and panic.
+        let style = "写实电影感光影。日式动画风格，清晰体积与赛璐璐边缘";
+        assert!(wants_stylized_non_photoreal(style));
+        let _ = style_prompt_clause(style);
+        let negated = "写实电影感。禁止动画、禁止动漫、不要卡通";
+        assert!(!wants_stylized_non_photoreal(negated));
     }
 
     #[test]
@@ -1151,10 +1193,11 @@ eleven twelve thirteen fourteen fifteen sixteen";
 
     #[test]
     fn estimate_shot_need_includes_speech_tail() {
-        // 13 CJK → ceil(13/2.0)=7s speech + 3s tail = 10s
-        let line: String = "我今天真的很想和你聊聊心事".chars().take(15).collect();
+        // 16 CJK → ceil(16/2.0)=8s speech + 4s tail = 12s
+        let line: String = "中".chars().cycle().take(16).collect();
+        assert_eq!(line.chars().count(), 16);
         let need = estimate_shot_need_secs(Some(&line), "slow pan", "small");
-        assert_eq!(need, 10);
+        assert_eq!(need, 12);
         // No dialogue → visual floor (min + small boost)
         let silent = estimate_shot_need_secs(None, "hold", "small");
         assert_eq!(silent, MIN_CLIP_DURATION_SECS);
@@ -1182,10 +1225,11 @@ eleven twelve thirteen fourteen fifteen sixteen";
 
     #[test]
     fn allocate_for_content_fits_target_when_floors_overshoot() {
-        // Dialogue floors that exceed target must still compress to the budget.
+        // Dialogue floors that exceed target compress toward dialogue-safe floors.
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(18), &needs);
         assert_eq!(durs.iter().sum::<u32>(), 18);
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
     }
 
@@ -1194,6 +1238,15 @@ eleven twelve thirteen fourteen fifteen sixteen";
         let needs = vec![15, 15, 15, 15];
         let durs = allocate_clip_durations_for_content(Some(40), &needs);
         assert_eq!(durs.iter().sum::<u32>(), 40);
-        assert!(durs.iter().all(|&d| d >= MIN_CLIP_DURATION_SECS));
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
+    }
+
+    #[test]
+    fn allocate_for_content_never_cuts_dialogue_below_floor() {
+        // Extreme under-budget: prefer exceeding target over 5s dialogue clips.
+        let needs = vec![12, 12];
+        let durs = allocate_clip_durations_for_content(Some(12), &needs);
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
+        assert_eq!(durs.iter().sum::<u32>(), MIN_DIALOGUE_CLIP_SECS * 2);
     }
 }

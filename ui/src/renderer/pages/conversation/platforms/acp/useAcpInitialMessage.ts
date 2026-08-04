@@ -67,7 +67,7 @@ export const useAcpInitialMessage = ({
           releaseInitialMessageDelivery(storageKey);
           return;
         }
-        const { input, files, idempotency_key } = initialMessage;
+        const { input, files, idempotency_key, inject_skills } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
         const displayMessage = buildDisplayMessage(input, files, workspacePath || '');
 
@@ -81,6 +81,7 @@ export const useAcpInitialMessage = ({
           input: displayMessage,
           conversation_id: conversation_id,
           files,
+          inject_skills,
           idempotency_key,
           initial_only: true,
         });
@@ -94,18 +95,22 @@ export const useAcpInitialMessage = ({
           void checkAndUpdateTitle(conversation_id, input);
           markTurnAccepted(msg_id);
 
-        // Use add=false (compose mode) so composeMessageWithIndex can de-dup
-        // by msg_id — this prevents a duplicate bubble if useMessageLstCache
-        // already inserted the DB row for this same msg_id.
-        addOrUpdateMessage({
-          id: uuid(),
-          msg_id,
-          type: 'text',
-          position: 'right',
-          conversation_id,
-          content: { content: displayMessage },
-          created_at: Date.now(),
-        });
+          // Explicit Skill-only loads have visible immutable skill_load
+          // records, but intentionally no blank user-message projection.
+          if (displayMessage.trim().length > 0) {
+            // Use add=false (compose mode) so composeMessageWithIndex can de-dup
+            // by msg_id — this prevents a duplicate bubble if useMessageLstCache
+            // already inserted the DB row for this same msg_id.
+            addOrUpdateMessage({
+              id: uuid(),
+              msg_id,
+              type: 'text',
+              position: 'right',
+              conversation_id,
+              content: { content: displayMessage },
+              created_at: Date.now(),
+            });
+          }
         } else {
           reconcilePublicDeliveryReplay(delivery.completed);
         }

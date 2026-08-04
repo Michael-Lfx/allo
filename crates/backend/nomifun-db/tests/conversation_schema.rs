@@ -2,7 +2,7 @@ use nomifun_common::{ConversationId, MessageId};
 use nomifun_db::{
     IConversationRepository, SqliteConversationRepository, init_database_memory,
     installation_owner_id,
-    models::{ConversationRow, MessageRow},
+    models::{ConversationRow, ConversationSkillLoad, MessageRow},
 };
 use sqlx::Row;
 
@@ -72,7 +72,7 @@ fn conversation_row(user_id: &str) -> ConversationRow {
 async fn baseline_creates_conversation_and_message_tables() {
     let db = init_database_memory().await.unwrap();
 
-    for table in ["conversations", "messages"] {
+    for table in ["conversations", "messages", "conversation_skill_loads"] {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
         )
@@ -88,7 +88,7 @@ async fn baseline_creates_conversation_and_message_tables() {
 async fn product_tables_use_integer_autoincrement_primary_ids() {
     let db = init_database_memory().await.unwrap();
 
-    for table in ["conversations", "messages"] {
+    for table in ["conversations", "messages", "conversation_skill_loads"] {
         let sql: String = sqlx::query_scalar(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
         )
@@ -214,6 +214,64 @@ async fn message_defaults_and_checks_match_the_baseline() {
     .execute(db.pool())
     .await;
     assert!(invalid_position.is_err());
+}
+
+#[tokio::test]
+async fn skill_load_ledger_schema_preserves_immutable_snapshot_fields() {
+    let db = init_database_memory().await.unwrap();
+    let conversation_id = conversation_fixture(db.pool()).await;
+    let message_id = MessageId::new().into_string();
+
+    sqlx::query(
+        "INSERT INTO messages \
+         (message_id, conversation_id, type, content, position, status, created_at) \
+         VALUES (?, ?, 'skill_load', '{}', 'center', 'finish', 1000)",
+    )
+    .bind(&message_id)
+    .bind(&conversation_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO conversation_skill_loads \
+         (conversation_id, message_id, catalog_key, skill_name, source, version_hash, content, created_at) \
+         VALUES (?, ?, 'user:pdf', 'pdf', 'user', ?, '# PDF', 1000)",
+    )
+    .bind(&conversation_id)
+    .bind(&message_id)
+    .bind("a".repeat(64))
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let row: ConversationSkillLoad = sqlx::query_as(
+        "SELECT conversation_id, message_id, catalog_key, skill_name, source, \
+                version_hash, content, created_at \
+         FROM conversation_skill_loads WHERE message_id = ?",
+    )
+    .bind(&message_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.conversation_id, conversation_id);
+    assert_eq!(row.catalog_key, "user:pdf");
+    assert_eq!(row.content, "# PDF");
+    assert!(
+        serde_json::to_value(&row).unwrap().get("id").is_none(),
+        "SQLite's technical row id must not cross the serializable ledger contract"
+    );
+
+    let duplicate = sqlx::query(
+        "INSERT INTO conversation_skill_loads \
+         (conversation_id, message_id, catalog_key, skill_name, source, version_hash, content, created_at) \
+         VALUES (?, ?, 'user:pdf', 'pdf', 'user', ?, '# revised', 1001)",
+    )
+    .bind(&conversation_id)
+    .bind(&message_id)
+    .bind("b".repeat(64))
+    .execute(db.pool())
+    .await;
+    assert!(duplicate.is_err(), "one event message can project only one immutable ledger row");
 }
 
 #[tokio::test]

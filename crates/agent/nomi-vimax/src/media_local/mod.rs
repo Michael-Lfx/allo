@@ -322,6 +322,35 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     Ok(())
 }
 
+/// Soft fade at clip edges so hard cuts do not click / jump in BGM loudness.
+/// Kept short to avoid chewing the last spoken syllable.
+pub const CONCAT_AUDIO_EDGE_FADE_SECS: f64 = 0.15;
+
+/// Build the per-clip audio filter used before concat.
+///
+/// - Normalize sample rate / layout
+/// - Pad audio to the full video duration
+/// - Soft fade in/out at edges (when the clip is long enough)
+fn normalize_audio_filter(dur: f64) -> String {
+    let base = if dur > 0.05 {
+        format!(
+            "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad=whole_dur={dur:.3}"
+        )
+    } else {
+        "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad"
+            .to_string()
+    };
+    let fade = CONCAT_AUDIO_EDGE_FADE_SECS;
+    if dur > fade * 2.0 + 0.05 {
+        let out_st = dur - fade;
+        format!(
+            "{base},afade=t=in:st=0:d={fade:.3},afade=t=out:st={out_st:.3}:d={fade:.3}"
+        )
+    } else {
+        base
+    }
+}
+
 /// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length.
 async fn normalize_clip_for_concat(
     ffmpeg: &Path,
@@ -337,14 +366,8 @@ async fn normalize_clip_for_concat(
         String::new()
     };
     // whole_dur keeps AAC from ending early (dialogue often shorter than picture).
-    let af = if dur > 0.05 {
-        format!(
-            "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad=whole_dur={dur:.3}"
-        )
-    } else {
-        "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad"
-            .to_string()
-    };
+    // Edge afade softens BGM/volume jumps at shot boundaries without changing duration.
+    let af = normalize_audio_filter(dur);
 
     // Path A: clip already has an audio stream.
     let mut args: Vec<String> = vec![
@@ -923,6 +946,17 @@ mod tests {
             !mean.contains("-91.") && !mean.contains("-inf"),
             "unexpected mean_volume line: {mean}"
         );
+    }
+
+    #[test]
+    fn normalize_audio_filter_adds_edge_afade_for_long_clips() {
+        let af = normalize_audio_filter(10.0);
+        assert!(af.contains("apad=whole_dur=10.000"));
+        assert!(af.contains("afade=t=in:st=0:d=0.150"));
+        assert!(af.contains("afade=t=out:st=9.850:d=0.150"));
+
+        let short = normalize_audio_filter(0.2);
+        assert!(!short.contains("afade"), "too-short clips skip edge fade");
     }
 }
 

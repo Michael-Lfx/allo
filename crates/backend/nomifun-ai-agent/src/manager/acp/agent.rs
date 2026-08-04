@@ -17,11 +17,11 @@ use crate::protocol::send_error::AgentSendError;
 use crate::persistence::AcpSessionPersistenceBarrier;
 use crate::registry::CatalogSender;
 use crate::session::{ModeId, ModelId, SessionId as DomainSessionId};
-use crate::types::SendMessageData;
+use crate::types::{SendMessageData, inject_loaded_skill_context};
 use agent_client_protocol::schema::{
     CancelNotification, SessionId, SessionModelState, SessionNotification, UsageUpdate,
 };
-use nomifun_api_types::{AgentHandshake, SlashCommandItem};
+use nomifun_api_types::{AgentHandshake, SlashCommandItem, SlashCommandOrigin};
 use nomifun_common::{
     AgentKillReason, AgentType, AppError, ConversationStatus, ErrorChain, TimestampMs, normalize_keys_to_snake_case,
 };
@@ -723,6 +723,7 @@ impl AcpAgentManager {
                     .map(|c| SlashCommandItem {
                         command: c.name.clone(),
                         description: c.description.clone(),
+                        origin: SlashCommandOrigin::Agent,
                     })
                     .collect()
             })
@@ -822,6 +823,7 @@ impl AcpAgentManager {
             self.commit_session_changes(&mut s).await;
             transformed
         };
+        let content = inject_loaded_skill_context(content, &data.loaded_skill_snapshots);
 
         let data = SendMessageData {
             content,

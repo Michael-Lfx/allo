@@ -289,6 +289,7 @@ impl VimaxService {
         image_model: Option<String>,
         video_model: Option<String>,
         target_duration_secs: Option<u32>,
+        aspect_ratio: Option<String>,
     ) -> VimaxResult<()> {
         self.ensure_idle(id).await?;
         let token = CancellationToken::new();
@@ -313,6 +314,7 @@ impl VimaxService {
                     image_model,
                     video_model,
                     target_duration_secs,
+                    aspect_ratio,
                     token.clone(),
                 ),
             )
@@ -320,7 +322,7 @@ impl VimaxService {
             .await
             {
                 Ok(r) => r,
-                Err(_) => Err(VimaxError::msg("planning task panicked")),
+                Err(payload) => Err(VimaxError::from_panic_payload("planning task", payload)),
             };
             svc.finish_job(&id, result, &token, JobKind::Plan).await;
         });
@@ -364,7 +366,7 @@ impl VimaxService {
                 .await
             {
                 Ok(r) => r,
-                Err(_) => Err(VimaxError::msg("render task panicked")),
+                Err(payload) => Err(VimaxError::from_panic_payload("render task", payload)),
             };
             svc.finish_job(&id, result, &token, JobKind::Render).await;
         });
@@ -520,11 +522,18 @@ impl VimaxService {
         let llm = nonempty_opt(&record.llm_model);
         let image = nonempty_opt(&record.image_model);
         let video = nonempty_opt(&record.video_model);
+        let aspect = resolve_aspect_for_session(record, &flowy.media);
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
-            image: Arc::new(flowy.image_with_model(image)),
-            video: Arc::new(flowy.video_with_model_and_cancel(video, cancel.clone())),
+            // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
+            image: Arc::new(flowy.image_with_model(image.clone())),
+            video: Arc::new(flowy.video_with_model_cancel_and_aspect(
+                video,
+                cancel.clone(),
+                Some(aspect),
+            )),
             flowy: Some(flowy.clone()),
+            image_model: image,
             cancel,
         })
     }
@@ -541,6 +550,7 @@ impl VimaxService {
         image_model: Option<String>,
         video_model: Option<String>,
         target_duration_secs: Option<u32>,
+        aspect_ratio: Option<String>,
         token: CancellationToken,
     ) -> VimaxResult<()> {
         if token.is_cancelled() {
@@ -574,7 +584,31 @@ impl VimaxService {
             if let Some(secs) = target_duration_secs {
                 r.target_duration_secs = secs;
             }
+            if let Some(ar) = &aspect_ratio {
+                r.aspect_ratio = crate::aspect::normalize_aspect_ratio(ar);
+            }
         })?;
+
+        // Resolve aspect (session → media default) before building backends so
+        // video + cover image share the same Seedance ratio.
+        let aspect = {
+            let guard = self.flowy.lock().await;
+            let media_default = guard
+                .as_ref()
+                .map(|f| f.media.video.default_aspect_ratio.as_str())
+                .unwrap_or(crate::aspect::DEFAULT_ASPECT_RATIO);
+            if record.aspect_ratio.trim().is_empty() {
+                crate::aspect::normalize_aspect_ratio(media_default)
+            } else {
+                crate::aspect::normalize_aspect_ratio(&record.aspect_ratio)
+            }
+        };
+        let record = if record.aspect_ratio != aspect {
+            self.index
+                .update_fields(id, |r| r.aspect_ratio = aspect.clone())?
+        } else {
+            record
+        };
 
         let backends = self.backends_for(&record, Some(token.clone())).await?;
         let work = self
@@ -589,6 +623,18 @@ impl VimaxService {
                 target_duration_secs
             },
         );
+        // Persist so render / cover / child scenes share the same Seedance ratio.
+        let prev_aspect_path = work.join("aspect_ratio.txt");
+        let prev_aspect = tokio::fs::read_to_string(&prev_aspect_path)
+            .await
+            .ok()
+            .map(|s| crate::aspect::normalize_aspect_ratio(&s));
+        let _ = crate::session::write_text_artifact(&prev_aspect_path, &aspect).await;
+        if prev_aspect.as_deref() != Some(aspect.as_str()) {
+            // Aspect changed → force poster regenerate at the new canvas ratio.
+            let cover = work.join(crate::agents::COVER_FILENAME);
+            let _ = tokio::fs::remove_file(&cover).await;
+        }
         // Idea/Novel: film-level scene budget. Script2Video: whole target = one scene.
         // Language lock uses the user's creative source so Chinese ideas stay Chinese in planning.
         let lang_sources = [
@@ -847,6 +893,17 @@ fn nonempty_opt(s: &str) -> Option<String> {
         None
     } else {
         Some(t.to_string())
+    }
+}
+
+fn resolve_aspect_for_session(
+    record: &SessionRecord,
+    media: &nomi_config::MediaGenConfig,
+) -> String {
+    if !record.aspect_ratio.trim().is_empty() {
+        crate::aspect::normalize_aspect_ratio(&record.aspect_ratio)
+    } else {
+        crate::aspect::normalize_aspect_ratio(&media.video.default_aspect_ratio)
     }
 }
 

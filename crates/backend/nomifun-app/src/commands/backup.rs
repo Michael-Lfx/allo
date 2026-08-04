@@ -474,10 +474,13 @@ fn restore_staging_file_paths(staging: &Path) -> Result<Vec<PathBuf>> {
 
 #[cfg(windows)]
 async fn wait_for_windows_sqlite_handles(destination: &Path) -> Result<()> {
+    use nomifun_common::storage_paths::{
+        DATABASE_FILE, DATABASE_SHM_FILE, DATABASE_WAL_FILE,
+    };
     for (name, required) in [
-        ("nomifun-backend.db", true),
-        ("nomifun-backend.db-wal", false),
-        ("nomifun-backend.db-shm", false),
+        (DATABASE_FILE, true),
+        (DATABASE_WAL_FILE, false),
+        (DATABASE_SHM_FILE, false),
     ] {
         let path = destination.join(name);
         if path_exists_no_follow(&path)? {

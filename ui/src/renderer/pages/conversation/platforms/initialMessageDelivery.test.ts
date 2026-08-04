@@ -66,6 +66,53 @@ describe('initial message durable delivery identity', () => {
     expect(storage.getItem('initial')).not.toBeNull();
   });
 
+  test('normalizes source-qualified Skill IDs from both initial handoff aliases', () => {
+    const storage = createStorage();
+    const base = {
+      conversation_id: CONVERSATION_ID,
+      initial_admission_epoch: 0,
+      input: '',
+      files: [],
+      idempotency_key: 'skill-handoff-key',
+    };
+
+    storage.setItem(
+      'skill-ids',
+      JSON.stringify({ ...base, skill_ids: ['user:pdf', 'project:workspace:review'] })
+    );
+    expect(readInitialMessageDelivery(storage, 'skill-ids')).toEqual({
+      ...base,
+      inject_skills: ['user:pdf', 'project:workspace:review'],
+    });
+
+    storage.setItem(
+      'inject-skills',
+      JSON.stringify({ ...base, inject_skills: ['builtin:code-review'] })
+    );
+    expect(readInitialMessageDelivery(storage, 'inject-skills')).toEqual({
+      ...base,
+      inject_skills: ['builtin:code-review'],
+    });
+  });
+
+  test('quarantines an initial Skill handoff with a bare or malformed Skill name', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'invalid-skill-ids',
+      JSON.stringify({
+        conversation_id: CONVERSATION_ID,
+        initial_admission_epoch: 0,
+        input: '',
+        files: [],
+        inject_skills: ['pdf'],
+        idempotency_key: 'invalid-skill-handoff-key',
+      })
+    );
+
+    expect(readInitialMessageDelivery(storage, 'invalid-skill-ids')).toBeNull();
+    expect(storage.getItem('invalid-skill-ids')).toBeNull();
+  });
+
   test('quarantines a Finished persisted Guid payload before any POST can start', async () => {
     const storage = createStorage();
     storage.setItem(

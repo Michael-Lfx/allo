@@ -424,6 +424,7 @@ mod tests {
             image_model: String::new(),
             video_model: String::new(),
             target_duration_secs: 15,
+            aspect_ratio: "16:9".into(),
             stage: "succeeded".into(),
             summary: "done".into(),
             status: RunStatus::Succeeded,

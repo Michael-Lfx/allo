@@ -147,4 +147,66 @@ describe('preset wire ID contract', () => {
       globalThis.fetch = realFetch;
     }
   });
+
+  test('sends source-qualified preset Skill bindings without collapsing same-name sources', async () => {
+    try {
+      let body: unknown;
+      globalThis.fetch = (async (_input, init) => {
+        body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+        return new Response(JSON.stringify({
+          success: true,
+          data: rawPreset(USER_PRESET_ID, 'user', USER_PRESET_ID),
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      await presets.create.invoke({
+        name: 'Writer',
+        included_skills: [
+          { skill_id: 'builtin:writer', required: false },
+          { skill_id: 'user:writer', required: true },
+        ],
+      });
+
+      expect(body).toEqual({
+        name: 'Writer',
+        included_skills: [
+          { skill_id: 'builtin:writer', required: false },
+          { skill_id: 'user:writer', required: true },
+        ],
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test('preserves historical execution Skill names through the legacy request wire', async () => {
+    try {
+      let body: unknown;
+      globalThis.fetch = (async (_input, init) => {
+        body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+        return new Response(JSON.stringify({
+          success: true,
+          data: rawPreset(USER_PRESET_ID, 'user', USER_PRESET_ID),
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      await presets.create.invoke({
+        name: 'Historical role',
+        included_skills: [{ skill_name: 'pdf', required: false }],
+      });
+
+      expect(body).toEqual({
+        name: 'Historical role',
+        included_skills: [{ skill_name: 'pdf', required: false }],
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });

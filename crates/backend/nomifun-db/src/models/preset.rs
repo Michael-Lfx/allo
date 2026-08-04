@@ -54,7 +54,10 @@ pub struct PresetModelPreferenceRow {
 pub struct PresetSkillBindingRow {
     pub id: i64,
     pub preset_id: String,
-    pub skill_name: String,
+    /// Source-qualified catalog ID for `include` rows. `exclude_auto` rows
+    /// retain the auto-injected builtin Skill name because those capabilities
+    /// are system-owned and intentionally absent from the catalog.
+    pub skill_id: String,
     pub binding: String,
     pub required: bool,
     pub sort_order: i64,
@@ -164,7 +167,7 @@ pub struct PresetWriteParams {
     pub agent_preferences: Vec<(String, bool)>,
     /// provider_id, model, required
     pub model_preferences: Vec<(Option<String>, String, bool)>,
-    /// skill_name, binding, required
+    /// skill_id (or auto Skill name for exclude_auto), binding, required
     pub skill_bindings: Vec<(String, String, bool)>,
     /// enabled, mode, writeback, eagerness, grounded
     pub knowledge_policy: (bool, String, bool, Option<String>, bool),

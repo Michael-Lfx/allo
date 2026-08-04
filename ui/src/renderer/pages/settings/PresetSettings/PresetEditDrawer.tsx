@@ -2,7 +2,12 @@
  * PresetEditDrawer — Drawer for creating/editing an preset.
  * Contains name/avatar fields, agent selector, rules editor, and skills section.
  */
-import type { PresetListItem, BuiltinAutoSkill, SkillInfo } from './types';
+import type {
+  PresetListItem,
+  BuiltinAutoSkill,
+  PendingSkill,
+  PresetSkillCatalogItem,
+} from './types';
 import type { AvailableBackend } from '@/renderer/hooks/preset';
 import type {
   CreatePresetTagRequest,
@@ -22,6 +27,10 @@ import {
 } from '@/renderer/pages/settings/skill/skillDisplay';
 import PresetTagPicker, { type PresetTagPickerHandle } from './PresetTagPicker';
 import { createPresetTagDraftLifecycle } from './presetTagDraftLifecycle';
+import {
+  pendingSkillSelectionId,
+  type SelectedPresetSkill,
+} from './presetSkillBindings';
 import EmojiPicker from '@/renderer/components/chat/EmojiPicker';
 import MarkdownView from '@/renderer/components/Markdown';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
@@ -46,6 +55,15 @@ import {
 import { useMcpServers } from '@/renderer/hooks/mcp';
 
 const ANY_PROVIDER_TOKEN = '*';
+
+const catalogSourceLabelKey = {
+  builtin: 'conversation.skills.sources.builtin',
+  user: 'conversation.skills.sources.user',
+  project: 'conversation.skills.sources.project',
+  extension: 'conversation.skills.sources.extension',
+  mcp: 'conversation.skills.sources.mcp',
+  legacy: 'conversation.skills.sources.legacy',
+} as const;
 
 const LocalizedSkillContent: React.FC<{
   skill: LocalizableSkill;
@@ -106,13 +124,12 @@ type PresetEditDrawerProps = {
   setPromptViewMode: (v: 'edit' | 'preview') => void;
 
   // Skills state
-  availableSkills: SkillInfo[];
+  availableSkills: PresetSkillCatalogItem[];
   selectedSkills: string[];
   setSelectedSkills: (v: string[]) => void;
-  pendingSkills: Array<{ name: string; description: string }>;
-  customSkills: string[];
+  pendingSkills: PendingSkill[];
   setDeletePendingSkillName: (v: string | null) => void;
-  setDeleteCustomSkillName: (v: string | null) => void;
+  setDeleteCustomSkill: (v: SelectedPresetSkill | null) => void;
 
   // Builtin auto-injected skills
   builtinAutoSkills: BuiltinAutoSkill[];
@@ -185,9 +202,8 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   selectedSkills,
   setSelectedSkills,
   pendingSkills,
-  customSkills: _customSkills,
   setDeletePendingSkillName,
-  setDeleteCustomSkillName,
+  setDeleteCustomSkill,
   builtinAutoSkills,
   disabledBuiltinSkills,
   setDisabledBuiltinSkills,
@@ -289,18 +305,21 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     { value: 'cron', label: t('settings.presetTargetCron', { defaultValue: 'Scheduled task' }) },
   ];
 
-  const customSkillItems = availableSkills.filter((skill) => skill.source === 'custom');
+  const customSkillItems = availableSkills.filter((skill) => skill.source === 'user');
   const builtinSkillItems = availableSkills.filter((skill) => skill.source === 'builtin');
-  const extensionSkillItems = availableSkills.filter((skill) => skill.source === 'extension');
+  const extensionSkillItems = availableSkills.filter(
+    (skill) => skill.source !== 'builtin' && skill.source !== 'user',
+  );
   const customActiveCount = selectedSkills.filter(
-    (name) =>
-      pendingSkills.some((skill) => skill.name === name) || customSkillItems.some((skill) => skill.name === name)
+    (skillId) =>
+      pendingSkills.some((skill) => pendingSkillSelectionId(skill) === skillId) ||
+      customSkillItems.some((skill) => skill.skill_id === skillId),
   ).length;
-  const builtinActiveCount = selectedSkills.filter((name) =>
-    builtinSkillItems.some((skill) => skill.name === name)
+  const builtinActiveCount = selectedSkills.filter((skillId) =>
+    builtinSkillItems.some((skill) => skill.skill_id === skillId),
   ).length;
-  const extensionActiveCount = selectedSkills.filter((name) =>
-    extensionSkillItems.some((skill) => skill.name === name)
+  const extensionActiveCount = selectedSkills.filter((skillId) =>
+    extensionSkillItems.some((skill) => skill.skill_id === skillId),
   ).length;
   const autoInjectedActiveCount = builtinAutoSkills.filter(
     (skill) => !disabledBuiltinSkills.includes(skill.name)
@@ -317,8 +336,9 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     builtinAutoSkills.length;
   const totalActiveSkillsCount =
     selectedSkills.filter(
-      (name) =>
-        pendingSkills.some((skill) => skill.name === name) || availableSkills.some((skill) => skill.name === name)
+      (skillId) =>
+        pendingSkills.some((skill) => pendingSkillSelectionId(skill) === skillId) ||
+        availableSkills.some((skill) => skill.skill_id === skillId),
     ).length + autoInjectedActiveCount;
   const isBuiltin = activePreset?.source === 'builtin';
   const isRuleEditable = !readOnly;
@@ -890,18 +910,19 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     {/* Pending skills (not yet imported) */}
                     {pendingSkills.map((skill) => (
                       <div
-                        key={`pending-${skill.name}`}
+                        key={`pending-${skill.path}`}
                         className='flex items-start gap-8px p-8px hover:bg-fill-1 rounded-4px group'
                       >
                         <Checkbox
-                          checked={selectedSkills.includes(skill.name)}
+                          checked={selectedSkills.includes(pendingSkillSelectionId(skill))}
                           disabled={!isSkillsEditable}
                           className='preset-skill-selection-checkbox mt-2px cursor-pointer'
                           onChange={() => {
-                            if (selectedSkills.includes(skill.name)) {
-                              setSelectedSkills(selectedSkills.filter((s) => s !== skill.name));
+                            const selectionId = pendingSkillSelectionId(skill);
+                            if (selectedSkills.includes(selectionId)) {
+                              setSelectedSkills(selectedSkills.filter((id) => id !== selectionId));
                             } else {
-                              setSelectedSkills([...selectedSkills, skill.name]);
+                              setSelectedSkills([...selectedSkills, selectionId]);
                             }
                           }}
                         />
@@ -931,18 +952,18 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     {/* All imported custom skills */}
                     {customSkillItems.map((skill) => (
                       <div
-                        key={`custom-${skill.name}`}
+                        key={`custom-${skill.skill_id}`}
                         className='flex items-start gap-8px p-8px hover:bg-fill-1 rounded-4px group'
                       >
                         <Checkbox
-                          checked={selectedSkills.includes(skill.name)}
+                          checked={selectedSkills.includes(skill.skill_id)}
                           disabled={!isSkillsEditable}
                           className='preset-skill-selection-checkbox mt-2px cursor-pointer'
                           onChange={() => {
-                            if (selectedSkills.includes(skill.name)) {
-                              setSelectedSkills(selectedSkills.filter((s) => s !== skill.name));
+                            if (selectedSkills.includes(skill.skill_id)) {
+                              setSelectedSkills(selectedSkills.filter((id) => id !== skill.skill_id));
                             } else {
-                              setSelectedSkills([...selectedSkills, skill.name]);
+                              setSelectedSkills([...selectedSkills, skill.skill_id]);
                             }
                           }}
                         />
@@ -951,7 +972,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                           localeKey={localeKey}
                           badge={
                             <span className='bg-[rgba(242,156,27,0.08)] text-[rgb(242,156,27)] border border-[rgba(242,156,27,0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
-                              {t('settings.skillsHub.custom', { defaultValue: 'Custom' })}
+                              {t(catalogSourceLabelKey.user, { defaultValue: 'User' })}
                             </span>
                           }
                         />
@@ -959,7 +980,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                           className='opacity-0 group-hover:opacity-100 transition-opacity p-4px hover:bg-fill-2 rounded-4px'
                           onClick={(e) => {
                             e.stopPropagation();
-                            setDeleteCustomSkillName(skill.name);
+                            setDeleteCustomSkill({ skillId: skill.skill_id, name: skill.name });
                           }}
                           title={t('settings.removeFromPreset', { defaultValue: 'Remove from preset' })}
                         >
@@ -1001,15 +1022,15 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                   {builtinSkillItems.length > 0 ? (
                     <div className='space-y-4px'>
                       {builtinSkillItems.map((skill) => (
-                        <div key={skill.name} className='flex items-start gap-8px p-8px hover:bg-fill-1 rounded-4px'>
+                        <div key={skill.skill_id} className='flex items-start gap-8px p-8px hover:bg-fill-1 rounded-4px'>
                           <Checkbox
-                            checked={selectedSkills.includes(skill.name)}
+                            checked={selectedSkills.includes(skill.skill_id)}
                             className='preset-skill-selection-checkbox mt-2px cursor-pointer'
                             onChange={() => {
-                              if (selectedSkills.includes(skill.name)) {
-                                setSelectedSkills(selectedSkills.filter((s) => s !== skill.name));
+                              if (selectedSkills.includes(skill.skill_id)) {
+                                setSelectedSkills(selectedSkills.filter((id) => id !== skill.skill_id));
                               } else {
-                                setSelectedSkills([...selectedSkills, skill.name]);
+                                setSelectedSkills([...selectedSkills, skill.skill_id]);
                               }
                             }}
                           />
@@ -1050,15 +1071,15 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                   >
                     <div className='space-y-4px'>
                       {extensionSkillItems.map((skill) => (
-                        <div key={skill.name} className='flex items-start gap-8px p-8px hover:bg-fill-1 rounded-4px'>
+                        <div key={skill.skill_id} className='flex items-start gap-8px p-8px hover:bg-fill-1 rounded-4px'>
                           <Checkbox
-                            checked={selectedSkills.includes(skill.name)}
+                            checked={selectedSkills.includes(skill.skill_id)}
                             className='preset-skill-selection-checkbox mt-2px cursor-pointer'
                             onChange={() => {
-                              if (selectedSkills.includes(skill.name)) {
-                                setSelectedSkills(selectedSkills.filter((s) => s !== skill.name));
+                              if (selectedSkills.includes(skill.skill_id)) {
+                                setSelectedSkills(selectedSkills.filter((id) => id !== skill.skill_id));
                               } else {
-                                setSelectedSkills([...selectedSkills, skill.name]);
+                                setSelectedSkills([...selectedSkills, skill.skill_id]);
                               }
                             }}
                           />
@@ -1067,7 +1088,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                             localeKey={localeKey}
                             badge={
                               <span className='bg-[rgba(var(--primary-6),0.08)] text-primary-6 border border-[rgba(var(--primary-6),0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
-                                {t('settings.extensionSkillsBadge', { defaultValue: 'Extension' })}
+                                {t(catalogSourceLabelKey[skill.source], { defaultValue: skill.source })}
                               </span>
                             }
                           />

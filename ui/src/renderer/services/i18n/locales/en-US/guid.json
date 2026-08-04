@@ -53,8 +53,9 @@
     "runSettingsHide": "Hide plan"
   },
   "goalMode": {
-    "label": "Goal mode",
-    "labelOn": "Goal mode · On",
+    "label": "Goal",
+    "enableAria": "Enable goal mode",
+    "clearAria": "Clear goal mode",
     "tooltip": "When on, your first input becomes the conversation goal (same as /goal) — progress is judged and continued automatically after each turn",
     "applyFailed": "Failed to set the goal — sent as a normal message instead"
   },
@@ -131,32 +132,16 @@
   "entry": {
     "free": "Free-form",
     "usePreset": "Use preset",
-    "skills": "Use Skills",
-    "skillsActive": "Use Skills · Enabled",
-    "skillsAdjustAria": "Adjust the {{count}} Skills enabled for this chat",
-    "skillsActiveAria": "View {{count}} Skills enabled for this chat",
     "backToFree": "Free-form"
-  },
-  "skillsPopover": {
-    "title": "Skills used in this chat",
-    "description": "These Skills are injected into this chat. Use “Use Skills” to adjust them before sending.",
-    "enabledCount": "{{count}} enabled",
-    "overflowCount": "{{count}} more Skills",
-    "adjustHint": "Click “Use Skills” to adjust this chat."
   },
   "drawer": {
     "presetTab": "Presets",
-    "skillsTab": "Skills",
     "searchPreset": "Search presets…",
-    "searchSkill": "Search skills…",
     "usePreset": "Use",
     "keepFree": "Stay free-form",
-    "applySkills": "Apply to this chat",
-    "selectedCount": "{{count}} skill(s) selected",
     "sourceCustom": "Custom",
     "sourceBuiltin": "Built-in",
     "sourceExtension": "Extension",
-    "autoInject": "Auto-inject",
     "presetCount": "preset(s)",
     "skillCount": "skill(s)",
     "presetHint": "Choose one preset; the backend resolves and snapshots it for this conversation.",

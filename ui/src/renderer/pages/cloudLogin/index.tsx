@@ -511,16 +511,20 @@ const CloudLoginPage: React.FC = () => {
                 </form>
 
                 <div className='cloud-login-footer'>
-                  <span>{t('cloudLogin.footerPrimary')}</span>
-                  <span className='cloud-login-footer__dot'>·</span>
-                  <span className='cloud-login-legal'>
-                    <a href='https://nomifun.com/privacy' target='_blank' rel='noreferrer'>
-                      {t('cloudLogin.legal.privacy')}
-                    </a>
-                    <span>{t('cloudLogin.legal.and')}</span>
-                    <a href='https://nomifun.com/terms' target='_blank' rel='noreferrer'>
-                      {t('cloudLogin.legal.terms')}
-                    </a>
+                  <span className='cloud-login-footer__primary'>{t('cloudLogin.footerPrimary')}</span>
+                  <span className='cloud-login-footer__legal-cluster'>
+                    <span className='cloud-login-footer__dot' aria-hidden='true'>
+                      ·
+                    </span>
+                    <span className='cloud-login-legal'>
+                      <a href='https://nomifun.com/privacy' target='_blank' rel='noreferrer'>
+                        {t('cloudLogin.legal.privacy')}
+                      </a>
+                      <span>{t('cloudLogin.legal.and')}</span>
+                      <a href='https://nomifun.com/terms' target='_blank' rel='noreferrer'>
+                        {t('cloudLogin.legal.terms')}
+                      </a>
+                    </span>
                   </span>
                 </div>
               </>

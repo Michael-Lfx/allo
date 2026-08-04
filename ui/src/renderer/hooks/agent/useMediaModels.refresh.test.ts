@@ -10,20 +10,22 @@ import { describe, expect, test } from 'bun:test';
 const source = () => readFileSync(new URL('./useMediaModels.ts', import.meta.url), 'utf8');
 
 describe('useMediaModels catalog refresh wiring', () => {
-  test('revalidates on mount and shares a single SWR key', () => {
-    const text = source();
-
-    expect(text.includes('MEDIA_MODELS_SWR_KEY')).toBe(true);
-    expect(text.includes('revalidateOnMount: true')).toBe(true);
-    expect(text.includes('refreshMediaModelsCatalogIfStale')).toBe(true);
-    expect(text.includes('void refreshMediaModelsCatalogIfStale()')).toBe(true);
-  });
-
-  test('refresh hits /api/media/models and replaces SWR without revalidate race', () => {
+  test('fetches on mount without a shared client cache', () => {
     const text = source();
 
     expect(text.includes('ipcBridge.media.listModels.invoke()')).toBe(true);
-    expect(text.includes('mutate(MEDIA_MODELS_SWR_KEY, list, { revalidate: false })')).toBe(true);
-    expect(text.includes('MEDIA_AUTO_REFRESH_MIN_INTERVAL_MS')).toBe(false);
+    expect(text.includes('void revalidate()')).toBe(true);
+    // No SWR / shared mutate cache for the model list.
+    expect(text.includes('useSWR')).toBe(false);
+    expect(text.includes('MEDIA_MODELS_SWR_KEY')).toBe(false);
+    expect(text.includes('refreshMediaModelsCatalogIfStale')).toBe(false);
+  });
+
+  test('refresh always hits /api/media/models', () => {
+    const text = source();
+
+    expect(text.includes('export async function refreshMediaModelsCatalog')).toBe(true);
+    expect(text.includes('return fetchMediaModels()')).toBe(true);
+    expect(text.includes('mutate(')).toBe(false);
   });
 });

@@ -60,6 +60,9 @@ pub struct SessionRecord {
     /// User target for finished video length (seconds). `0` / missing → default in planning.
     #[serde(default)]
     pub target_duration_secs: u32,
+    /// Seedance video + poster aspect ratio (`16:9`, `9:16`, …). Empty → media default.
+    #[serde(default)]
+    pub aspect_ratio: String,
     #[serde(default = "default_stage")]
     pub stage: String,
     #[serde(default)]
@@ -192,6 +195,7 @@ impl SessionIndex {
             image_model: String::new(),
             video_model: String::new(),
             target_duration_secs: 0,
+            aspect_ratio: String::new(),
             stage: "created".into(),
             summary: String::new(),
             status: RunStatus::Idle,

@@ -12,7 +12,8 @@ use nomifun_api_types::{
     ImportSkillRequest, ImportSkillResponse, MaterializeSkillsRequest, MaterializeSkillsResponse, MaterializedSkillRef,
     NamedPathResponse, ReadPresetRuleRequest, ReadBuiltinResourceRequest, ReadSkillInfoRequest,
     ReadSkillInfoResponse, RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse,
-    ScannedSkillResponse, SetSkillTagsRequest, SkillListItemResponse, SkillMarketMcpConfigRequest,
+    ScannedSkillResponse, SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse,
+    SkillCatalogSource, SkillId, SkillListItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallResponse, SkillMarketPackageRequest,
     SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
     WritePresetRuleRequest,
@@ -30,6 +31,21 @@ fn to_source_response(source: SkillSource) -> SkillSourceResponse {
         SkillSource::Custom => SkillSourceResponse::Custom,
         SkillSource::Extension => SkillSourceResponse::Extension,
     }
+}
+
+fn to_catalog_source(source: SkillSource) -> SkillCatalogSource {
+    match source {
+        SkillSource::Builtin => SkillCatalogSource::Builtin,
+        SkillSource::Custom => SkillCatalogSource::User,
+        SkillSource::Extension => SkillCatalogSource::Extension,
+    }
+}
+
+fn imported_user_skill_ids(names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .map(|name| SkillId::new(SkillCatalogSource::User, None, name).as_str().to_owned())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +80,7 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
     Router::new()
         // Skill listing & info
         .route("/api/skills", get(list_skills))
+        .route("/api/skills/catalog", get(list_catalog_skills))
         .route("/api/skills/builtin-auto", get(list_builtin_auto_skills))
         .route("/api/skills/{name}/tags", put(set_skill_tags))
         .route("/api/skills/info", post(read_skill_info))
@@ -163,6 +180,29 @@ async fn list_skills(
     Ok(Json(ApiResponse::ok(resp)))
 }
 
+/// `GET /api/skills/catalog` — list the source-qualified, user-facing Skill
+/// discovery metadata. This does not expose system-owned auto-injected
+/// Skills, filesystem locations, or full `SKILL.md` contents.
+async fn list_catalog_skills(
+    State(state): State<SkillRouterState>,
+) -> Result<Json<ApiResponse<SkillCatalogResponse>>, AppError> {
+    let skills = skill_service::list_catalog_skills(&state.skill_paths)
+        .await?
+        .into_iter()
+        .map(|item| {
+            let source = to_catalog_source(item.source);
+            SkillCatalogItemResponse {
+                skill_id: SkillId::new(source, item.source_key.as_deref(), &item.local_key),
+                name: item.name,
+                description: item.description,
+                source,
+                source_key: item.source_key,
+            }
+        })
+        .collect();
+    Ok(Json(ApiResponse::ok(SkillCatalogResponse { skills })))
+}
+
 /// Decode a JSON-array TEXT column into a `Vec<String>`. Fail-soft on purpose
 /// (intentionally unlike `nomifun-preset`'s `decode_str_list`, which 500s on
 /// bad JSON): this is the read path for the skill list, so one corrupted sidecar
@@ -248,9 +288,11 @@ async fn import_skill(
 ) -> Result<Json<ApiResponse<ImportSkillResponse>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     let name = skill_service::import_skill(&state.skill_paths, Path::new(&req.skill_path)).await?;
+    let skill_names = vec![name.clone()];
     Ok(Json(ApiResponse::ok(ImportSkillResponse {
-        skill_name: name.clone(),
-        skill_names: vec![name],
+        skill_name: name,
+        skill_ids: imported_user_skill_ids(&skill_names),
+        skill_names,
     })))
 }
 
@@ -264,6 +306,7 @@ async fn import_skill_symlink(
     let first_name = names.first().cloned().unwrap_or_default();
     Ok(Json(ApiResponse::ok(ImportSkillResponse {
         skill_name: first_name,
+        skill_ids: imported_user_skill_ids(&names),
         skill_names: names,
     })))
 }
@@ -589,6 +632,14 @@ async fn install_skill_market_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_user_skill_ids_are_source_qualified_and_escaped() {
+        assert_eq!(
+            imported_user_skill_ids(&["review notes".to_owned(), "team/pdf".to_owned()]),
+            vec!["user:review%20notes", "user:team%2Fpdf"],
+        );
+    }
 
     #[derive(Default)]
     struct InMemorySkillTagRepo {
