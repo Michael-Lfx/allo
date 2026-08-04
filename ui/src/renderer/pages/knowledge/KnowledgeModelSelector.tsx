@@ -16,6 +16,7 @@ import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 
 /**
  * A picked provider+model pair for the knowledge AI generators, or `null` to
@@ -92,10 +93,16 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
         group.models.includes(choice.model),
     );
   const choiceUnavailable = Boolean(choice && !isLoading && !choiceAvailable);
+  const selectedProvider = choice
+    ? groups.find((group) => group.provider.id === choice.provider_id)?.provider
+    : undefined;
+  const selectedLabel = choice
+    ? formatModelLabelForProvider(selectedProvider, choice.model)
+    : '';
   const buttonLabel = choice
     ? choiceUnavailable
-      ? `${choice.model} · ${t('knowledge.form.modelUnavailable')}`
-      : choice.model
+      ? `${selectedLabel || choice.model} · ${t('knowledge.form.modelUnavailable')}`
+      : selectedLabel
     : defaultLabel;
 
   const droplist = (
@@ -134,7 +141,7 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
                         {healthStatus !== 'unknown' && (
                           <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
                         )}
-                        <span>{modelName}</span>
+                        <span>{formatModelLabelForProvider(provider, modelName)}</span>
                       </div>
                     </Menu.Item>
                   );

@@ -8,6 +8,7 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
@@ -40,7 +41,10 @@ function isPersistedDefaultModel(value: unknown): value is PersistedDefaultModel
 
 export type GuidModelSelectionResult = {
   modelList: IProvider[];
-  formatGeminiModelLabel: (provider: { platform?: string } | undefined, modelName?: string) => string;
+  formatGeminiModelLabel: (
+    provider: { model_descriptions?: Record<string, string> } | undefined,
+    modelName?: string
+  ) => string;
   current_model: TProviderWithModel | undefined;
   setCurrentModel: (model_info: TProviderWithModel) => Promise<void>;
 };
@@ -77,10 +81,11 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     [groups]
   );
 
-  const formatGeminiModelLabel = useCallback((_provider: { platform?: string } | undefined, modelName?: string) => {
-    if (!modelName) return '';
-    return modelName;
-  }, []);
+  const formatGeminiModelLabel = useCallback(
+    (provider: { model_descriptions?: Record<string, string> } | undefined, modelName?: string) =>
+      formatModelLabelForProvider(provider, modelName),
+    []
+  );
 
   const [current_model, _setCurrentModel] = useState<TProviderWithModel>();
   const selectedModelKeyRef = useRef<string | null>(null);

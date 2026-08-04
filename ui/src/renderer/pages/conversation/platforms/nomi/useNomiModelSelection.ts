@@ -14,7 +14,10 @@ export type NomiModelSelection = {
   providers: IProvider[];
   getAvailableModels: (provider: IProvider) => string[];
   handleSelectModel: (provider: IProvider, modelName: string) => Promise<void>;
-  formatModelLabel: (provider: { platform?: string } | undefined, modelName?: string) => string;
+  formatModelLabel: (
+    provider: { model_descriptions?: Record<string, string> } | undefined,
+    modelName?: string
+  ) => string;
   getDisplayModelName: (modelName?: string) => string;
 };
 

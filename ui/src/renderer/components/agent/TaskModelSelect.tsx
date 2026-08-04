@@ -16,6 +16,7 @@ import { modelHealthOf } from '@/common/utils/providerModels';
 import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 
 /** A concrete provider+model pick emitted by the unified selector. */
 export interface TaskModelSelection {
@@ -64,17 +65,24 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   // until the user explicitly re-picks — never silently dropped.
   const valueUnavailable = Boolean(value && !isLoading && !valueAvailable);
 
+  const selectedProvider = value
+    ? groups.find((group) => group.provider.id === value.providerId)?.provider
+    : undefined;
+  const selectedLabel = value
+    ? formatModelLabelForProvider(selectedProvider, value.model)
+    : '';
+
   const buttonLabel = value
     ? valueUnavailable
-      ? t('nomi.chat.modelUnavailableOption', { model: value.model })
-      : value.model
+      ? t('nomi.chat.modelUnavailableOption', { model: selectedLabel || value.model })
+      : selectedLabel
     : (placeholder ?? t('conversation.welcome.selectModel'));
 
   const droplist = (
     <Menu selectedKeys={value ? [compositeKey(value.providerId, value.model)] : []}>
       {valueUnavailable && value && (
         <Menu.Item key={compositeKey(value.providerId, value.model)} disabled>
-          {t('nomi.chat.modelUnavailableOption', { model: value.model })}
+          {t('nomi.chat.modelUnavailableOption', { model: selectedLabel || value.model })}
         </Menu.Item>
       )}
       {groups.length === 0
@@ -117,7 +125,7 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
                       {healthStatus !== 'unknown' && (
                         <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
                       )}
-                      <span>{modelName}</span>
+                      <span>{formatModelLabelForProvider(provider, modelName)}</span>
                     </div>
                   </Menu.Item>
                 );

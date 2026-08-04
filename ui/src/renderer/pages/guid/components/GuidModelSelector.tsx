@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 
 type GuidModelSelectorProps = {
   // Gemini model state
@@ -61,8 +62,8 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
 
   const geminiSelectedLabel = React.useMemo(() => {
     if (!current_model?.use_model) return '';
-    return current_model.use_model;
-  }, [current_model?.use_model]);
+    return formatModelLabelForProvider(current_model, current_model.use_model);
+  }, [current_model]);
 
   const geminiButtonLabel = React.useMemo(() => {
     return getModelDisplayLabel({
@@ -151,7 +152,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                             >
                               <div className='flex items-center gap-8px w-full'>
                                 {dot && <div className={`w-6px h-6px rounded-full shrink-0 ${dot}`} />}
-                                <span>{modelName}</span>
+                                <span>{formatModelLabelForProvider(provider, modelName)}</span>
                               </div>
                             </Menu.Item>
                           );
