@@ -130,10 +130,11 @@ impl Script2VideoPipeline {
         // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
         let film_root = resolve_film_root(&self.working_dir);
         let synopsis = format!("{script}\n{user_requirement}");
+        let cover_aspect = crate::aspect::load_aspect_from_dir(&film_root).await;
         let _ = ensure_film_cover(
             &film_root,
             Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
+            self.backends.poster_image(&cover_aspect),
             &style,
             &synopsis,
             &progress,

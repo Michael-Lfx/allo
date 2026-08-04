@@ -322,7 +322,7 @@ impl VimaxService {
             .await
             {
                 Ok(r) => r,
-                Err(_) => Err(VimaxError::msg("planning task panicked")),
+                Err(payload) => Err(VimaxError::from_panic_payload("planning task", payload)),
             };
             svc.finish_job(&id, result, &token, JobKind::Plan).await;
         });
@@ -366,7 +366,7 @@ impl VimaxService {
                 .await
             {
                 Ok(r) => r,
-                Err(_) => Err(VimaxError::msg("render task panicked")),
+                Err(payload) => Err(VimaxError::from_panic_payload("render task", payload)),
             };
             svc.finish_job(&id, result, &token, JobKind::Render).await;
         });
@@ -525,13 +525,15 @@ impl VimaxService {
         let aspect = resolve_aspect_for_session(record, &flowy.media);
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
-            image: Arc::new(flowy.image_with_model_and_aspect(image, Some(aspect.clone()))),
+            // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
+            image: Arc::new(flowy.image_with_model(image.clone())),
             video: Arc::new(flowy.video_with_model_cancel_and_aspect(
                 video,
                 cancel.clone(),
                 Some(aspect),
             )),
             flowy: Some(flowy.clone()),
+            image_model: image,
             cancel,
         })
     }

@@ -42,6 +42,23 @@ impl VimaxError {
     pub fn msg(s: impl Into<String>) -> Self {
         Self::Message(s.into())
     }
+
+    /// Turn a `catch_unwind` payload into a readable error (panics often hide the cause).
+    pub fn from_panic_payload(ctx: &str, payload: Box<dyn std::any::Any + Send>) -> Self {
+        let detail = panic_payload_message(payload);
+        tracing::error!(%ctx, %detail, "vimax task panicked");
+        Self::Message(format!("{ctx} panicked: {detail}"))
+    }
+}
+
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    "unknown panic payload".into()
 }
 
 pub type VimaxResult<T> = Result<T, VimaxError>;

@@ -344,6 +344,10 @@ fn apply_replacements(prompt: &str) -> String {
 }
 
 fn replace_ascii_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
+    // Empty needle would match every index and spin forever.
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
     let lower = haystack.to_ascii_lowercase();
     let needle_l = needle.to_ascii_lowercase();
     if !lower.contains(&needle_l) {
@@ -365,7 +369,10 @@ fn replace_ascii_case_insensitive(haystack: &str, needle: &str, replacement: &st
                 continue;
             }
         }
-        let ch = haystack[i..].chars().next().unwrap();
+        // `get` returns None on a mid-char byte index — never panic on UTF-8 edges.
+        let Some(ch) = haystack.get(i..).and_then(|s| s.chars().next()) else {
+            break;
+        };
         result.push(ch);
         i += ch.len_utf8();
     }

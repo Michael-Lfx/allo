@@ -25,8 +25,10 @@ pub struct PipelineBackends {
     pub chat: Arc<dyn VimaxChat>,
     pub image: Arc<dyn VimaxImage>,
     pub video: Arc<dyn VimaxVideo>,
-    /// Optional Flowy handle for embeddings-backed RAG.
+    /// Optional Flowy handle for embeddings-backed RAG / sized poster clients.
     pub flowy: Option<crate::backends::FlowyVimaxServices>,
+    /// Session image model id (empty → media default); used for poster sizing client.
+    pub image_model: Option<String>,
     /// When cancelled, pipelines stop before the next video API call.
     pub cancel: Option<CancellationToken>,
 }
@@ -34,6 +36,17 @@ pub struct PipelineBackends {
 impl PipelineBackends {
     pub fn is_cancelled(&self) -> bool {
         self.cancel.as_ref().is_some_and(|t| t.is_cancelled())
+    }
+
+    /// Image client with Seedream-safe canvas sized to the film aspect (posters only).
+    pub fn poster_image(&self, aspect_ratio: &str) -> Arc<dyn VimaxImage> {
+        match &self.flowy {
+            Some(flowy) => Arc::new(flowy.image_with_model_and_aspect(
+                self.image_model.clone(),
+                Some(aspect_ratio.to_string()),
+            )),
+            None => Arc::clone(&self.image),
+        }
     }
 }
 
@@ -259,15 +272,33 @@ mod sanitize_tests {
 }
 
 pub(crate) fn safe_component(s: &str) -> String {
-    s.chars()
+    let mut out: String = s
+        .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || is_path_safe_ideograph(c) {
                 c
             } else {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    let out = out.trim_matches('_').chars().take(80).collect::<String>();
+    if out.is_empty() {
+        "asset".into()
+    } else {
+        out
+    }
+}
+
+fn is_path_safe_ideograph(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u)
+        || (0x3400..=0x4DBF).contains(&u)
+        || (0x3040..=0x30FF).contains(&u)
+        || (0xAC00..=0xD7AF).contains(&u)
 }
 
 /// Workflow root that owns the shared cast + portrait registry.

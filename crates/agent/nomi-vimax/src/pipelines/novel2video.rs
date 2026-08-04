@@ -276,10 +276,11 @@ impl Novel2VideoPipeline {
 
         let style_resolved = crate::planning::resolve_visual_style(style);
         let synopsis = format!("{novel_text}\n{user_requirement}");
+        let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
         let _ = ensure_film_cover(
             &self.working_dir,
             Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
+            self.backends.poster_image(&cover_aspect),
             &style_resolved,
             &synopsis,
             &progress,

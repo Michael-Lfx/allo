@@ -321,10 +321,11 @@ impl Idea2VideoPipeline {
         }
 
         let synopsis = format!("{idea}\n{story}\n{user_requirement}");
+        let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
         let _ = ensure_film_cover(
             &self.working_dir,
             Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
+            self.backends.poster_image(&cover_aspect),
             &style,
             &synopsis,
             &progress,

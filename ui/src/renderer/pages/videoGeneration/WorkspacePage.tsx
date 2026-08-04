@@ -20,7 +20,6 @@ import {
   InputNumber,
   Popconfirm,
   Result,
-  Select,
   Spin,
   Tag,
 } from '@arco-design/web-react';
@@ -51,6 +50,7 @@ import {
 } from './api';
 import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
+import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
 import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
@@ -65,7 +65,6 @@ import { progressStatusText } from './stageI18n';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
-  seedanceAspectSelectOptions,
 } from './aspectRatios';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import styles from './index.module.css';
@@ -1023,14 +1022,15 @@ const WorkspacePage: React.FC = () => {
                   style={{ width: '100%' }}
                 />
               </label>
-              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                {t('videoGeneration.workspace.source.aspectLabel', {
-                  defaultValue: '视频比例',
-                })}
-                <Select
+              <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                <span>
+                  {t('videoGeneration.workspace.source.aspectLabel', {
+                    defaultValue: '视频比例',
+                  })}
+                </span>
+                <AspectRatioPicker
                   value={aspectRatio}
-                  onChange={(value) => setAspectRatio(normalizeSeedanceAspectRatio(String(value)))}
-                  options={seedanceAspectSelectOptions()}
+                  onChange={setAspectRatio}
                   disabled={busy}
                 />
                 <span className='text-11px text-[var(--color-text-4)]'>
@@ -1038,7 +1038,7 @@ const WorkspacePage: React.FC = () => {
                     defaultValue: '同时作用于 Seedance 成片与海报封面',
                   })}
                 </span>
-              </label>
+              </div>
               <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
                 {t('videoGeneration.workspace.source.requirementLabel', {
                   defaultValue: '额外要求（可选）',
