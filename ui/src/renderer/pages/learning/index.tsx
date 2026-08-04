@@ -567,8 +567,6 @@ function LessonBlock({
   onAttempt: (activity: Activity, response: unknown) => void;
 }) {
   const { t } = useTranslation();
-  const nextStatus: LessonStatus =
-    lesson.status === 'not_started' ? 'in_progress' : 'completed';
   return (
     <div className='flex flex-col gap-14px'>
       {lesson.summary && <Paragraph className='m-0 text-t-secondary'>{lesson.summary}</Paragraph>}
@@ -582,9 +580,9 @@ function LessonBlock({
             size='small'
             type='primary'
             loading={busyId === lesson.id}
-            onClick={() => onProgress(lesson, nextStatus)}
+            onClick={() => onProgress(lesson, 'completed')}
           >
-            {nextStatus === 'in_progress' ? t('learning.start') : t('learning.complete')}
+            {t('learning.complete')}
           </Button>
         )}
       </div>
