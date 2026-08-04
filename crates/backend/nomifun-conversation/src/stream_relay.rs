@@ -4319,48 +4319,113 @@ impl StreamRelay {
                 Ok(outcome)
             }
             Ok(None) => {
-                {
+                // Thinking/Text may claim the primary id in memory before their
+                // first durable write. Child rows (agent_status/tool/…) still
+                // need a parent, so materialize a root that matches the claim
+                // instead of fail-closing on the intentional deferred write.
+                let claimed = {
                     let owner = self
                         .primary_message_owner
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if *owner != PrimaryMessageOwner::Unclaimed {
-                        return Err(format!(
-                            "turn root '{}' is missing while owner is {:?}",
-                            self.root_turn_id, *owner
-                        ));
-                    }
-                }
-                let row = MessageRow {
-                    id: 0,
-                    message_id: self.root_turn_id.clone(),
-                    conversation_id: self.conversation_id.clone(),
-                    msg_id: Some(self.root_turn_id.clone()),
-                    r#type: "text".into(),
-                    content: json!({
-                        "content": "",
-                        "turn_id": &self.root_turn_id,
-                    })
-                    .to_string(),
-                    position: Some("left".into()),
-                    status: Some("work".into()),
-                    // Hidden until real assistant text arrives and reconciles
-                    // this same primary message id.
-                    hidden: true,
-                    created_at: now_ms(),
+                    *owner
                 };
-                if self
-                    .insert_stream_message_with_reconciliation(&row, "ensure_turn_root")
-                    .await
-                {
-                    let mut owner = self
-                        .primary_message_owner
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    *owner = PrimaryMessageOwner::RootTextPlaceholder;
-                    Ok(EnsureTurnRootOutcome::CreatedTextPlaceholder)
-                } else {
-                    Err("failed to create turn root placeholder".to_owned())
+                match claimed {
+                    PrimaryMessageOwner::RootTextPlaceholder => Err(format!(
+                        "turn root '{}' is missing while owner is {:?}",
+                        self.root_turn_id, claimed
+                    )),
+                    PrimaryMessageOwner::Unclaimed => {
+                        let row = MessageRow {
+                            id: 0,
+                            message_id: self.root_turn_id.clone(),
+                            conversation_id: self.conversation_id.clone(),
+                            msg_id: Some(self.root_turn_id.clone()),
+                            r#type: "text".into(),
+                            content: json!({
+                                "content": "",
+                                "turn_id": &self.root_turn_id,
+                            })
+                            .to_string(),
+                            position: Some("left".into()),
+                            status: Some("work".into()),
+                            // Hidden until real assistant text arrives and reconciles
+                            // this same primary message id.
+                            hidden: true,
+                            created_at: now_ms(),
+                        };
+                        if self
+                            .insert_stream_message_with_reconciliation(&row, "ensure_turn_root")
+                            .await
+                        {
+                            let mut owner = self
+                                .primary_message_owner
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            *owner = PrimaryMessageOwner::RootTextPlaceholder;
+                            Ok(EnsureTurnRootOutcome::CreatedTextPlaceholder)
+                        } else {
+                            Err("failed to create turn root placeholder".to_owned())
+                        }
+                    }
+                    PrimaryMessageOwner::Thinking => {
+                        let row = MessageRow {
+                            id: 0,
+                            message_id: self.root_turn_id.clone(),
+                            conversation_id: self.conversation_id.clone(),
+                            msg_id: Some(self.root_turn_id.clone()),
+                            r#type: "thinking".into(),
+                            content: json!({
+                                "content": "",
+                                "status": "thinking",
+                            })
+                            .to_string(),
+                            position: Some("left".into()),
+                            status: Some("work".into()),
+                            hidden: false,
+                            created_at: now_ms(),
+                        };
+                        if self
+                            .insert_stream_message_with_reconciliation(
+                                &row,
+                                "ensure_turn_root_thinking",
+                            )
+                            .await
+                        {
+                            Ok(EnsureTurnRootOutcome::ExistingThinking)
+                        } else {
+                            Err("failed to create thinking turn root".to_owned())
+                        }
+                    }
+                    PrimaryMessageOwner::Text => {
+                        let row = MessageRow {
+                            id: 0,
+                            message_id: self.root_turn_id.clone(),
+                            conversation_id: self.conversation_id.clone(),
+                            msg_id: Some(self.root_turn_id.clone()),
+                            r#type: "text".into(),
+                            content: json!({
+                                "content": "",
+                                "turn_id": &self.root_turn_id,
+                            })
+                            .to_string(),
+                            position: Some("left".into()),
+                            status: Some("work".into()),
+                            hidden: false,
+                            created_at: now_ms(),
+                        };
+                        if self
+                            .insert_stream_message_with_reconciliation(
+                                &row,
+                                "ensure_turn_root_text",
+                            )
+                            .await
+                        {
+                            Ok(EnsureTurnRootOutcome::ExistingText)
+                        } else {
+                            Err("failed to create text turn root".to_owned())
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -7546,6 +7611,79 @@ mod tests {
         assert_eq!(update.status.as_ref().map(|s| s.as_deref()), Some(Some("error")));
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().unwrap()).unwrap();
         assert_eq!(content["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn thinking_then_agent_status_materializes_thinking_turn_root() {
+        use nomifun_ai_agent::protocol::events::AgentStatusEventData;
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.reject_duplicate_message_inserts();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_TURN_A.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
+            content: "reasoning before model activity".into(),
+            subject: None,
+            duration: None,
+            status: Some("thinking".into()),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::AgentStatus(AgentStatusEventData {
+            backend: "nomi".into(),
+            status: "preparing".into(),
+            agent_name: Some("Nomi".into()),
+            session_id: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Thinking(ThinkingEventData {
+            content: String::new(),
+            subject: None,
+            duration: None,
+            status: Some("done".into()),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(
+            outcome.terminal,
+            RelayTerminal::Finish,
+            "open thinking must not fail-close when agent_status needs a parent"
+        );
+
+        let inserts = repo.take_inserts();
+        let thinking = inserts
+            .iter()
+            .find(|row| row.r#type == "thinking")
+            .expect("thinking turn root must be materialized for agent_status children");
+        assert_eq!(thinking.message_id, TEST_TURN_A);
+        assert_eq!(thinking.msg_id.as_deref(), Some(TEST_TURN_A));
+
+        let status = inserts
+            .iter()
+            .find(|row| row.r#type == "agent_status")
+            .expect("agent_status must persist under the thinking turn root");
+        assert_eq!(status.msg_id.as_deref(), Some(TEST_TURN_A));
+
+        let updates = repo.take_updates();
+        assert!(
+            updates.iter().any(|(id, update)| {
+                id == TEST_TURN_A
+                    && update.status.as_ref().and_then(|status| status.as_deref()) == Some("finish")
+            }),
+            "completed thinking must reconcile onto the materialized turn root: {updates:?}"
+        );
     }
 
     #[tokio::test]
