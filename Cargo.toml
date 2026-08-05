@@ -170,6 +170,9 @@ cron = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 
+# --- Learning / spaced repetition ---
+fsrs = "6"
+
 # --- PTY / shell ---
 portable-pty = "0.8"
 # `shellexecute-on-windows`: launch via real ShellExecuteExW on Windows instead

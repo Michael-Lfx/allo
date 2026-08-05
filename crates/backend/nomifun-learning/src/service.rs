@@ -18,7 +18,7 @@ use crate::models::{
     ModuleView, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, SourceSpan,
     StoredActivityConfig,
 };
-use crate::scheduler::schedule_review;
+use crate::scheduler::{SchedulerSettings, schedule_review};
 
 #[derive(Clone)]
 pub struct LearningService {
@@ -641,6 +641,7 @@ impl LearningService {
         .fetch_all(&mut *transaction)
         .await
         .map_err(internal)?;
+        let settings = self.scheduler_settings().await;
         for concept_id in concept_ids {
             update_mastery_and_review(
                 &mut transaction,
@@ -653,6 +654,7 @@ impl LearningService {
                     ReviewRating::Again
                 },
                 now,
+                &settings,
             )
             .await?;
         }
@@ -799,6 +801,56 @@ impl LearningService {
         })
     }
 
+    /// Loads user-tunable scheduler knobs from client preferences, falling
+    /// back to FSRS defaults for anything missing or malformed.
+    async fn scheduler_settings(&self) -> SchedulerSettings {
+        let mut settings = SchedulerSettings::default();
+        let Ok(rows) = sqlx::query(
+            "SELECT key, value FROM client_preferences \
+             WHERE key IN ('learning.desiredRetention', 'learning.fsrsParameters')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        else {
+            return settings;
+        };
+        for row in rows {
+            let (Ok(key), Ok(value)) = (
+                row.try_get::<String, _>("key"),
+                row.try_get::<String, _>("value"),
+            ) else {
+                continue;
+            };
+            let Ok(parsed) = serde_json::from_str::<Value>(&value) else {
+                continue;
+            };
+            match key.as_str() {
+                "learning.desiredRetention" => {
+                    if let Some(v) = parsed.as_f64() {
+                        settings.desired_retention = v.clamp(0.7, 0.99) as f32;
+                    }
+                }
+                "learning.fsrsParameters" => {
+                    if let Some(items) = parsed.as_array() {
+                        let params: Vec<f32> = items
+                            .iter()
+                            .filter_map(|item| item.as_f64())
+                            .map(|v| v as f32)
+                            .collect();
+                        if !params.is_empty()
+                            && params.len() == items.len()
+                            && params.iter().all(|v| v.is_finite())
+                        {
+                            settings.parameters = params;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        settings
+    }
+
     pub async fn rate_review(
         &self,
         review_id: &LearningReviewItemId,
@@ -807,7 +859,7 @@ impl LearningService {
     ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
             "SELECT r.enrollment_id, r.concept_id, r.stability_days, r.difficulty, \
-                    r.review_count, r.lapse_count \
+                    r.review_count, r.lapse_count, r.last_reviewed_at \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              WHERE r.review_item_id = ? AND e.user_id = ?",
@@ -821,15 +873,19 @@ impl LearningService {
         let enrollment_id: LearningEnrollmentId =
             parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
         let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+        let last_reviewed_at: Option<i64> = row.try_get("last_reviewed_at").map_err(internal)?;
         let now = now_ms();
+        let settings = self.scheduler_settings().await;
         let next = schedule_review(
             now,
             row.try_get("stability_days").map_err(internal)?,
             row.try_get("difficulty").map_err(internal)?,
             row.try_get("review_count").map_err(internal)?,
             row.try_get("lapse_count").map_err(internal)?,
+            last_reviewed_at,
             rating,
-        );
+            &settings,
+        )?;
         let score = match rating {
             ReviewRating::Again => 0.0,
             ReviewRating::Hard => 0.55,
@@ -914,6 +970,7 @@ impl LearningService {
         };
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
+        let settings = self.scheduler_settings().await;
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_attempts \
@@ -941,6 +998,7 @@ impl LearningService {
                 score,
                 ReviewRating::Again,
                 now,
+                &settings,
             )
             .await?;
             let updated = sqlx::query(
@@ -1404,10 +1462,11 @@ async fn update_mastery_and_review(
     score: f64,
     rating: ReviewRating,
     now: i64,
+    settings: &SchedulerSettings,
 ) -> Result<(), AppError> {
     update_mastery(transaction, enrollment_id, concept_id, score, now).await?;
     let current = sqlx::query(
-        "SELECT review_item_id, stability_days, difficulty, review_count, lapse_count \
+        "SELECT review_item_id, stability_days, difficulty, review_count, lapse_count, last_reviewed_at \
          FROM learning_review_items WHERE enrollment_id = ? AND concept_id = ?",
     )
     .bind(enrollment_id.as_str())
@@ -1415,25 +1474,37 @@ async fn update_mastery_and_review(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(internal)?;
-    let (review_id, stability, difficulty, count, lapses) = if let Some(row) = current {
-        (
-            row.try_get::<String, _>("review_item_id")
-                .map_err(internal)?,
-            row.try_get("stability_days").map_err(internal)?,
-            row.try_get("difficulty").map_err(internal)?,
-            row.try_get("review_count").map_err(internal)?,
-            row.try_get("lapse_count").map_err(internal)?,
-        )
-    } else {
-        (
-            LearningReviewItemId::new().into_string(),
-            0.0,
-            5.0,
-            0,
-            0,
-        )
-    };
-    let next = schedule_review(now, stability, difficulty, count, lapses, rating);
+    let (review_id, stability, difficulty, count, lapses, last_reviewed_at) =
+        if let Some(row) = current {
+            (
+                row.try_get::<String, _>("review_item_id")
+                    .map_err(internal)?,
+                row.try_get("stability_days").map_err(internal)?,
+                row.try_get("difficulty").map_err(internal)?,
+                row.try_get("review_count").map_err(internal)?,
+                row.try_get("lapse_count").map_err(internal)?,
+                row.try_get("last_reviewed_at").map_err(internal)?,
+            )
+        } else {
+            (
+                LearningReviewItemId::new().into_string(),
+                0.0,
+                5.0,
+                0,
+                0,
+                None,
+            )
+        };
+    let next = schedule_review(
+        now,
+        stability,
+        difficulty,
+        count,
+        lapses,
+        last_reviewed_at,
+        rating,
+        settings,
+    )?;
     sqlx::query(
         "INSERT INTO learning_review_items \
          (review_item_id, enrollment_id, concept_id, due_at, stability_days, difficulty, review_count, \
