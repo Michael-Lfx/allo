@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
+  Badge,
   Button,
   Card,
   Checkbox,
@@ -343,7 +344,7 @@ function ReviewSessionModal({
       visible={open}
       footer={null}
       style={{ width: 640 }}
-      maskClosable={busyId === null}
+      maskClosable={false}
       onCancel={() => {
         if (busyId === null) onClose();
       }}
@@ -1640,6 +1641,16 @@ const LearningPage: React.FC = () => {
           <Text type='secondary'>{t('learning.subtitle')}</Text>
         </div>
         <div className='flex flex-wrap gap-8px'>
+          <Badge count={reviews.length} offset={[12, 2]}>
+            <Button
+              type='primary'
+              size='large'
+              disabled={reviews.length === 0}
+              onClick={startReviewSession}
+            >
+              {t('learning.startReview')}
+            </Button>
+          </Badge>
           <Button onClick={() => setImportVisible(true)}>{t('learning.import')}</Button>
           <Button type='primary' onClick={() => void openGenerator()}>
             {t('learning.generate')}
@@ -1668,24 +1679,6 @@ const LearningPage: React.FC = () => {
             <QuestionManager onMutated={() => void load()} />
           </Tabs.TabPane>
         </Tabs>
-      </section>
-
-      <section>
-        <div className='mb-2px flex items-center justify-between'>
-          <Title heading={5}>{t('learning.reviews')}</Title>
-          {reviews.length > 0 && (
-            <Button type='primary' size='small' onClick={startReviewSession}>
-              {t('learning.startReview')}
-            </Button>
-          )}
-        </div>
-        {reviews.length === 0 ? (
-          <Empty description={t('learning.noReviews')} />
-        ) : (
-          <Text type='secondary'>
-            {t('learning.reviewDueCount', { count: reviews.length })}
-          </Text>
-        )}
       </section>
 
         <Modal
