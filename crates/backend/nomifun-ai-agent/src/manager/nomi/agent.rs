@@ -246,7 +246,7 @@ pub(crate) const KNOWLEDGE_WRITE_TOOL_NAME: &str = "knowledge_write";
 /// plus the subgoal family: add_subgoal/list_subgoals/remove_subgoal/
 /// clear_subgoals, and the contract/barrier family: draft/set_contract/show/
 /// wait/unwait).
-pub(crate) fn goal_slash_commands() -> Vec<SlashCommandItem> {
+pub fn goal_slash_commands() -> Vec<SlashCommandItem> {
     [
         (
             "goal",

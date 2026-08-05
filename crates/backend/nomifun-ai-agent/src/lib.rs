@@ -83,6 +83,7 @@ pub use capability::{
 pub use auxiliary_provider::AuxiliaryClientFactory;
 pub use extraction_scanner::start_session_extraction_scanner;
 pub use manager::acp::PoiPrefetchHook;
+pub use manager::nomi::agent::goal_slash_commands;
 pub use factory::provider_config::{
     one_shot_completion, resolve_provider_config, streaming_completion,
     streaming_completion_text_or_reasoning, user_message, DeltaKind,

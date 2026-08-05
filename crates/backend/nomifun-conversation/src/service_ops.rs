@@ -13,11 +13,29 @@ use nomifun_api_types::{
     SetModelRequest, SideQuestionRequest, SideQuestionResponse, SlashCommandItem,
     WorkspaceBrowseQuery, WorkspaceEntry,
 };
-use nomifun_common::AppError;
+use nomifun_common::{AgentType, AppError};
 use nomifun_file::list_workspace_level;
 use nomifun_db::models::ConversationRow;
 
 use crate::service::ConversationService;
+
+fn with_nomi_host_slash_commands(
+    agent_type: &str,
+    mut commands: Vec<SlashCommandItem>,
+) -> Vec<SlashCommandItem> {
+    if agent_type != AgentType::Nomi.serde_name() {
+        return commands;
+    }
+
+    let host_commands = nomifun_ai_agent::goal_slash_commands();
+    commands.retain(|command| {
+        !host_commands
+            .iter()
+            .any(|host_command| host_command.command == command.command)
+    });
+    commands.extend(host_commands);
+    commands
+}
 
 impl ConversationService {
     async fn require_owned_conversation(
@@ -127,12 +145,17 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
     ) -> Result<Vec<SlashCommandItem>, AppError> {
-        self.require_owned_conversation(user_id, conversation_id)
+        let conversation = self
+            .require_owned_conversation(user_id, conversation_id)
             .await?;
-        match self.optional_runtime_handle(conversation_id) {
-            Some(runtime) => runtime.get_slash_commands().await,
-            None => Ok(Vec::new()),
-        }
+        let commands = match self.optional_runtime_handle(conversation_id) {
+            Some(runtime) => runtime.get_slash_commands().await?,
+            None => Vec::new(),
+        };
+
+        // Goal commands are host-resolved and persist without a live runtime,
+        // so historic Nomi conversations must advertise them as well.
+        Ok(with_nomi_host_slash_commands(&conversation.r#type, commands))
     }
 
     // ── Side question ───────────────────────────────────────────────
@@ -395,5 +418,55 @@ impl ConversationService {
             &query.path,
             query.search.as_deref(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_nomi_host_slash_commands;
+    use nomifun_api_types::{SlashCommandItem, SlashCommandOrigin};
+    use nomifun_common::AgentType;
+
+    #[test]
+    fn nomi_commands_include_one_canonical_goal_family_without_a_runtime() {
+        let commands = with_nomi_host_slash_commands(AgentType::Nomi.serde_name(), Vec::new());
+
+        assert!(commands.iter().any(|command| {
+            command.command == "goal" && command.origin == SlashCommandOrigin::System
+        }));
+        assert!(commands.iter().any(|command| command.command == "goal status"));
+    }
+
+    #[test]
+    fn non_nomi_commands_are_not_given_goal_commands() {
+        let agent_command = SlashCommandItem {
+            command: "help".into(),
+            description: "List commands".into(),
+            origin: SlashCommandOrigin::Agent,
+        };
+
+        let commands = with_nomi_host_slash_commands(AgentType::Acp.serde_name(), vec![agent_command]);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command, "help");
+        assert_eq!(commands[0].origin, SlashCommandOrigin::Agent);
+    }
+
+    #[test]
+    fn nomi_host_goal_command_replaces_a_runtime_duplicate() {
+        let runtime_goal = SlashCommandItem {
+            command: "goal".into(),
+            description: "runtime copy".into(),
+            origin: SlashCommandOrigin::Agent,
+        };
+
+        let commands =
+            with_nomi_host_slash_commands(AgentType::Nomi.serde_name(), vec![runtime_goal]);
+        let goals = commands
+            .iter()
+            .filter(|command| command.command == "goal")
+            .collect::<Vec<_>>();
+
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].origin, SlashCommandOrigin::System);
     }
 }

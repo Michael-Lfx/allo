@@ -379,6 +379,24 @@ async fn slash_commands_no_active_task() {
     assert!(json["data"].as_array().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn slash_commands_without_nomi_runtime_include_goal_commands() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_owner(&mut app, &services).await;
+    let conv_id = create_conversation(&mut app, &token, &csrf, "Nomi Goal Commands", "nomi").await;
+
+    let req = get_with_token(&format!("/api/conversations/{conv_id}/slash-commands"), &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let commands = json["data"].as_array().expect("slash command list");
+
+    assert!(commands.iter().any(|command| {
+        command["command"] == "goal" && command["origin"] == "system"
+    }));
+    assert!(commands.iter().any(|command| command["command"] == "goal status"));
+}
+
 // ── Soft reads: mode / model / usage (no runtime → empty defaults) ─
 
 #[tokio::test]
