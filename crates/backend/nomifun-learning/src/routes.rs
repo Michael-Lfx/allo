@@ -12,8 +12,9 @@ use nomifun_common::{
 use serde::Deserialize;
 
 use crate::models::{
-    AnswerReviewRequest, CoursePack, DeleteCourseRequest, GenerateCourseRequest,
-    RateReviewRequest, SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
+    AnswerReviewRequest, CoursePack, CreateCustomQuestionRequest, DeleteCourseRequest,
+    GenerateCourseRequest, RateReviewRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
+    UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -49,6 +50,27 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/questions/{activity_id}",
             put(update_question),
         )
+        .route(
+            "/api/learning/custom-questions",
+            post(create_custom_question),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}",
+            put(update_custom_question).delete(delete_custom_question),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/answer",
+            post(answer_custom_review),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/rate",
+            post(rate_custom_review),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/skip",
+            post(skip_custom_review),
+        )
+        .route("/api/learning/concepts", get(list_concept_refs))
         .with_state(state)
 }
 
@@ -284,6 +306,99 @@ async fn delete_review_item(
     let id = parse_id::<LearningReviewItemId>(id)?;
     state.service.delete_review_item(&id, &user.id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn create_custom_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<CreateCustomQuestionRequest>,
+) -> Result<Json<ApiResponse<String>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .create_custom_question(&user.id, request)
+            .await?,
+    )))
+}
+
+async fn update_custom_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateQuestionRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .update_custom_question(id.as_str(), &user.id, request)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn delete_custom_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .delete_custom_question(id.as_str(), &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn answer_custom_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<AnswerReviewRequest>,
+) -> Result<Json<ApiResponse<crate::models::ReviewAnswerResult>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .answer_custom_review(id.as_str(), &user.id, request.response, request.forgot)
+            .await?,
+    )))
+}
+
+async fn rate_custom_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<RateReviewRequest>,
+) -> Result<Json<ApiResponse<crate::models::ReviewResult>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .rate_custom_review(id.as_str(), &user.id, request.rating)
+            .await?,
+    )))
+}
+
+async fn skip_custom_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ReviewResult>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .skip_custom_review(id.as_str(), &user.id)
+            .await?,
+    )))
+}
+
+async fn list_concept_refs(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ConceptRef>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.concept_refs(&user.id).await?,
+    )))
 }
 
 fn parse_id<T>(value: String) -> Result<T, AppError>

@@ -64,6 +64,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_concept_prerequisites",
     "learning_concepts",
     "learning_courses",
+    "learning_custom_questions",
     "learning_enrollments",
     "learning_lesson_concepts",
     "learning_lesson_progress",
@@ -143,6 +144,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_attempts", "attempt_id"),
     ("learning_concepts", "concept_id"),
     ("learning_courses", "course_id"),
+    ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
@@ -226,6 +228,7 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_attempts", "attempt_id"),
     ("learning_concepts", "concept_id"),
     ("learning_courses", "course_id"),
+    ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
@@ -762,6 +765,8 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_mastery_states", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_mastery_states_concept_id", Cascade),
     text_ref!("learning_review_items", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_review_items_enrollment_id", Cascade),
     text_ref!("learning_review_items", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_review_items_concept_id", Cascade),
+    text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
+    text_ref!("learning_custom_questions", "concept_id" => "learning_concepts", "concept_id", true, "idx_learning_custom_questions_concept_id", SetNull),
     text_ref!("message_correlations", "conversation_id" => "conversations", "conversation_id", false, "idx_message_correlations_conversation_id", Cascade),
     // `turn_message_id` is the wire-scoped owner token supplied by the
     // streaming protocol. A continuation can reserve a correlation before

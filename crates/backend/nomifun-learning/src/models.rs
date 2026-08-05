@@ -287,16 +287,26 @@ pub struct RateReviewRequest {
     pub rating: ReviewRating,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewSource {
+    /// Concept-bound review item coming from a course enrollment.
+    Course,
+    /// Learner-authored custom question with its own schedule.
+    Custom,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DueReview {
     pub id: LearningReviewItemId,
-    pub enrollment_id: LearningEnrollmentId,
+    pub source: ReviewSource,
+    pub enrollment_id: Option<LearningEnrollmentId>,
     pub course_id: Option<LearningCourseId>,
     pub course_title: Option<String>,
-    pub module_title: String,
-    pub lesson_title: String,
-    pub concept_id: LearningConceptId,
-    pub concept_title: String,
+    pub module_title: Option<String>,
+    pub lesson_title: Option<String>,
+    pub concept_id: Option<LearningConceptId>,
+    pub concept_title: Option<String>,
     pub question: ReviewQuestion,
     pub due_at: TimestampMs,
     pub stability_days: f64,
@@ -306,10 +316,11 @@ pub struct DueReview {
 }
 
 /// Objective question attached to a due review. Never includes the stored
-/// answer; correctness is judged server-side by `answer_review`.
+/// answer; correctness is judged server-side by `answer_review`. Custom
+/// questions carry no activity id.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewQuestion {
-    pub activity_id: LearningActivityId,
+    pub activity_id: Option<LearningActivityId>,
     pub kind: ActivityKind,
     pub prompt: String,
     pub options: Vec<String>,
@@ -338,7 +349,8 @@ pub struct ReviewAnswerResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewResult {
-    pub id: LearningReviewItemId,
+    /// Review item id for course reviews, custom question id otherwise.
+    pub id: String,
     pub due_at: TimestampMs,
     pub stability_days: f64,
     pub difficulty: f64,
@@ -346,24 +358,28 @@ pub struct ReviewResult {
     pub lapse_count: i64,
 }
 
-/// One row of the question management table: a review item enriched with
-/// the course/concept context and the objective activity used for review.
-/// Course and concept fields are optional because items can outlive their
-/// course after a content-only deletion.
+/// One row of the question management table. Course questions come from
+/// objective activities linked to concepts (review item optional: items
+/// only exist after the lesson is completed); custom questions are
+/// learner-authored and always carry their own schedule.
 #[derive(Debug, Clone, Serialize)]
 pub struct QuestionEntry {
-    pub review_item_id: LearningReviewItemId,
+    pub source: ReviewSource,
+    /// Activity id for course questions, custom question id otherwise.
+    pub question_id: String,
+    pub review_item_id: Option<LearningReviewItemId>,
+    /// `unlearned`, `new`, `due` or `scheduled`.
+    pub state: String,
     pub course_id: Option<LearningCourseId>,
     pub course_title: Option<String>,
-    pub concept_id: LearningConceptId,
+    pub concept_id: Option<LearningConceptId>,
     pub concept_title: Option<String>,
-    pub activity_id: Option<LearningActivityId>,
     pub question_kind: Option<ActivityKind>,
     pub prompt: Option<String>,
     pub options: Vec<String>,
     pub answer: Option<Value>,
     pub explanation: Option<String>,
-    pub due_at: TimestampMs,
+    pub due_at: Option<TimestampMs>,
     pub overdue: bool,
     pub stability_days: f64,
     pub difficulty: f64,
@@ -381,6 +397,32 @@ pub struct UpdateQuestionRequest {
     pub answer: Value,
     #[serde(default)]
     pub explanation: String,
+}
+
+/// Learner-authored question. Only objective kinds are supported; the
+/// optional concept links the question back to an existing concept
+/// (including orphaned concepts from deleted courses).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateCustomQuestionRequest {
+    pub kind: ActivityKind,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    pub answer: Value,
+    #[serde(default)]
+    pub explanation: String,
+    #[serde(default)]
+    pub concept_id: Option<LearningConceptId>,
+}
+
+/// Concept offered in the custom question form: any concept the learner
+/// has enrolled in, plus orphaned concepts still referenced by their
+/// surviving review items.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptRef {
+    pub concept_id: LearningConceptId,
+    pub title: String,
+    pub course_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
