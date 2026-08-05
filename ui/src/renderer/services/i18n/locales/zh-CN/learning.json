@@ -83,5 +83,20 @@
   "reviewNext": "下一卡",
   "loadFailed": "加载学习数据失败",
   "actionFailed": "操作失败",
-  "packContract": "课程包由 Course、Module、Lesson、Concept、Activity 和 SourceSpan 组成；领域评分器可在此内核之上扩展。"
+  "packContract": "课程包由 Course、Module、Lesson、Concept、Activity 和 SourceSpan 组成；领域评分器可在此内核之上扩展。",
+  "settings": {
+    "title": "学习设置",
+    "description": "记忆曲线调度器（FSRS）与复习队列偏好",
+    "desiredRetention": "目标记忆保持率",
+    "desiredRetentionHint": "数值越高，复习间隔越短、复习越频繁（0.7–0.99，默认 0.9）",
+    "fsrsParameters": "自定义 FSRS 参数",
+    "fsrsParametersHint": "逗号分隔的数字；留空使用 FSRS 默认参数。适合从 Anki 等应用迁移优化后的参数。",
+    "fsrsParametersApply": "应用",
+    "parametersInvalid": "FSRS 参数必须全部为有限数字",
+    "reviewSessionLimit": "复习队列长度",
+    "reviewSessionLimitHint": "单次加载的到期复习卡片上限",
+    "diagnosticLimit": "诊断题目数量",
+    "diagnosticLimitHint": "单次知识诊断抽取的题目上限",
+    "saved": "已保存"
+  }
 }

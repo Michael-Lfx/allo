@@ -83,5 +83,20 @@
   "reviewNext": "Next card",
   "loadFailed": "Failed to load learning data",
   "actionFailed": "Action failed",
-  "packContract": "A course pack contains Course, Module, Lesson, Concept, Activity, and SourceSpan. Domain evaluators extend this kernel."
+  "packContract": "A course pack contains Course, Module, Lesson, Concept, Activity, and SourceSpan. Domain evaluators extend this kernel.",
+  "settings": {
+    "title": "Learning",
+    "description": "Memory-curve scheduler (FSRS) and review queue preferences",
+    "desiredRetention": "Desired retention",
+    "desiredRetentionHint": "Higher values schedule reviews sooner and more often (0.7–0.99, default 0.9)",
+    "fsrsParameters": "Custom FSRS parameters",
+    "fsrsParametersHint": "Comma-separated numbers. Leave empty to use the FSRS defaults; useful for importing optimized parameters from Anki.",
+    "fsrsParametersApply": "Apply",
+    "parametersInvalid": "FSRS parameters must all be finite numbers",
+    "reviewSessionLimit": "Review queue size",
+    "reviewSessionLimitHint": "Maximum due review cards loaded per session",
+    "diagnosticLimit": "Diagnostic questions",
+    "diagnosticLimitHint": "Maximum questions sampled per knowledge diagnostic",
+    "saved": "Saved"
+  }
 }

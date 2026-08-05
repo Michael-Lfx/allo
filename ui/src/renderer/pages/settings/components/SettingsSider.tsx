@@ -10,6 +10,7 @@ import {
   Earth,
   Info,
   Pic,
+  BookOpen,
   Brain,
   ChartPie,
   CloudStorage,
@@ -33,6 +34,7 @@ export const BUILTIN_TAB_IDS = [
   'browser-use',
   'computer-use',
   'poi',
+  'learning',
   'insights',
   'moa',
   'media',
@@ -97,6 +99,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.poiNav'),
         icon: <Brain />,
         path: 'poi',
+      },
+      learning: {
+        id: 'learning',
+        label: t('settings.learningNav'),
+        icon: <BookOpen />,
+        path: 'learning',
       },
       insights: {
         id: 'insights',

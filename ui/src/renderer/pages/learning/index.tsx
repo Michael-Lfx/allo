@@ -21,6 +21,7 @@ import {
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import Markdown from '@renderer/components/Markdown';
 import KnowledgeModelSelector, {
   useKnowledgeAutogenModel,
@@ -820,6 +821,8 @@ const LearningPage: React.FC = () => {
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
   const [diagnosticIndex, setDiagnosticIndex] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
+  const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
+  const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -827,7 +830,7 @@ const LearningPage: React.FC = () => {
     try {
       const [nextCourses, nextReviews, nextDetail] = await Promise.all([
         learningApi.listCourses(),
-        learningApi.listDueReviews(),
+        learningApi.listDueReviews(reviewSessionLimit),
         id ? learningApi.getCourse(id) : Promise.resolve(null),
       ]);
       setCourses(nextCourses);
@@ -838,7 +841,7 @@ const LearningPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, reviewSessionLimit]);
 
   useEffect(() => {
     void load();
@@ -934,7 +937,7 @@ const LearningPage: React.FC = () => {
     if (!id) return;
     setBusyId('diagnostic');
     try {
-      const plan = await learningApi.getDiagnostic(id);
+      const plan = await learningApi.getDiagnostic(id, diagnosticLimit);
       if (plan.items.length === 0) {
         Message.warning(t('learning.noDiagnosticQuestions'));
         return;
@@ -947,7 +950,7 @@ const LearningPage: React.FC = () => {
     } finally {
       setBusyId(null);
     }
-  }, [id, t]);
+  }, [id, t, diagnosticLimit]);
 
   const submitDiagnostic = useCallback(
     async (activity: Activity, response: unknown) => {
