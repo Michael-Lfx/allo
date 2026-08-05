@@ -39,35 +39,22 @@
 .sendbox-mobile-plus-btn,
 .sendbox-mobile-plus-btn.arco-btn,
 .sendbox-mobile-plus-btn.arco-btn-secondary {
-  width: 32px !important;
-  height: 32px !important;
-  min-width: 32px !important;
-  padding: 0 !important;
-  border: none !important;
-  box-shadow: none !important;
-  background: var(--color-fill-2) !important;
-  color: var(--color-text-1) !important;
-  flex-shrink: 0 !important;
-  line-height: 1 !important;
-}
-
-.conversation-attach-plus-btn,
-.conversation-attach-plus-btn.arco-btn,
-.conversation-attach-plus-btn.arco-btn-secondary,
-.sendbox-mobile-plus-btn,
-.sendbox-mobile-plus-btn.arco-btn,
-.sendbox-mobile-plus-btn.arco-btn-secondary {
   width: 28px !important;
   height: 28px !important;
   min-width: 28px !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
   background: transparent !important;
   color: var(--text-secondary) !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
   transition: background-color 160ms ease !important;
 }
 
-.conversation-attach-plus-btn:hover,
-.conversation-attach-plus-btn:active,
-.conversation-attach-plus-btn:focus-visible,
+.sendbox-composer-plus-btn:hover,
+.sendbox-composer-plus-btn:active,
+.sendbox-composer-plus-btn:focus-visible,
 .sendbox-mobile-plus-btn:hover,
 .sendbox-mobile-plus-btn:active,
 .sendbox-mobile-plus-btn:focus-visible {
@@ -75,7 +62,7 @@
   color: var(--text-primary) !important;
 }
 
-.conversation-attach-plus-btn .arco-btn-icon,
+.sendbox-composer-plus-btn .arco-btn-icon,
 .sendbox-mobile-plus-btn .arco-btn-icon {
   width: 16px !important;
   height: 16px !important;
@@ -85,7 +72,7 @@
   line-height: 0 !important;
 }
 
-.conversation-attach-plus-btn .arco-btn-icon svg,
+.sendbox-composer-plus-btn .arco-btn-icon svg,
 .sendbox-mobile-plus-btn .arco-btn-icon svg {
   display: block !important;
   vertical-align: 0 !important;
@@ -228,12 +215,18 @@
   transform: none !important;
 }
 
-/* Conversation sendbox model/permission pills: blend into background */
+/* Composer mode controls share one neutral treatment across the conversation
+ * and home composer toolbars. */
 .sendbox-tools .sendbox-model-btn,
+.composer-toolbar-tools .sendbox-model-btn,
 .sendbox-tools .sendbox-model-btn:hover,
+.composer-toolbar-tools .sendbox-model-btn:hover,
 .sendbox-tools .sendbox-model-btn:active,
+.composer-toolbar-tools .sendbox-model-btn:active,
 .sendbox-tools .sendbox-model-btn:focus,
+.composer-toolbar-tools .sendbox-model-btn:focus,
 .sendbox-tools .sendbox-model-btn:focus-visible,
+.composer-toolbar-tools .sendbox-model-btn:focus-visible,
 .sendbox-actions .sendbox-model-btn,
 .sendbox-actions .sendbox-model-btn:hover,
 .sendbox-actions .sendbox-model-btn:active,
@@ -246,9 +239,13 @@
 }
 
 .sendbox-tools .sendbox-model-btn:hover,
+.composer-toolbar-tools .sendbox-model-btn:hover,
 .sendbox-tools .sendbox-model-btn:active,
+.composer-toolbar-tools .sendbox-model-btn:active,
 .sendbox-tools .sendbox-model-btn:focus,
+.composer-toolbar-tools .sendbox-model-btn:focus,
 .sendbox-tools .sendbox-model-btn:focus-visible,
+.composer-toolbar-tools .sendbox-model-btn:focus-visible,
 .sendbox-actions .sendbox-model-btn:hover,
 .sendbox-actions .sendbox-model-btn:active,
 .sendbox-actions .sendbox-model-btn:focus,
@@ -636,7 +633,8 @@
  * flex-basis:0 makes all pills share space equally when compressed,
  * max-width:max-content prevents short-text pills from stretching. */
 .sendbox-tools .agent-mode-compact-pill,
-.sendbox-actions .agent-mode-compact-pill {
+.sendbox-actions .agent-mode-compact-pill,
+.composer-toolbar-tools .agent-mode-compact-pill {
   min-width: 0 !important;
   overflow: hidden !important;
   flex-shrink: 1 !important;
@@ -646,23 +644,23 @@
 }
 
 .sendbox-tools .agent-mode-compact-pill .arco-btn-content,
-.sendbox-actions .agent-mode-compact-pill .arco-btn-content {
+.sendbox-actions .agent-mode-compact-pill .arco-btn-content,
+.composer-toolbar-tools .agent-mode-compact-pill .arco-btn-content {
   min-width: 0 !important;
   overflow: hidden !important;
 }
 
-/* Keep the conversation toolbar compact and use one neutral color for its
- * attachment, mode, and goal controls. */
-.nomi-sendbox-tools {
+/* Shared layout for the home and conversation composer toolbars. */
+.composer-toolbar-tools {
   gap: 2px !important;
   margin-left: -4px;
 }
 
-.nomi-sendbox-tools .agent-mode-compact-pill {
+.composer-toolbar-tools .agent-mode-compact-pill {
   padding: 0 6px !important;
 }
 
-.nomi-sendbox-tools .agent-mode-compact-pill .arco-btn-content {
+.composer-toolbar-tools .agent-mode-compact-pill .arco-btn-content {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -670,7 +668,7 @@
   line-height: 1 !important;
 }
 
-.nomi-sendbox-tools .agent-mode-compact-pill .sendbox-responsive-chevron {
+.composer-toolbar-tools .agent-mode-compact-pill .sendbox-responsive-chevron {
   color: inherit !important;
 }
 

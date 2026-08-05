@@ -230,15 +230,16 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
 
   return (
     <div className={styles.actionRow}>
-      <div className={styles.actionTools}>
+      <div className={`${styles.actionTools} composer-toolbar-tools`}>
         <div className={styles.actionEntry}>
           <Dropdown trigger='hover' droplist={menuContent}>
             <span className='flex items-center gap-4px cursor-pointer lh-[1]'>
               <Button
                 type='secondary'
                 shape='circle'
-                className={`sendbox-composer-plus-btn ${styles.actionFileAttachBtn}`}
-                icon={<Plus theme='outline' size='14' strokeWidth={3} fill={iconColors.primary} />}
+                size='small'
+                className='sendbox-composer-plus-btn'
+                icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
                 loading={uploading}
                 disabled={uploading}
                 data-testid='file-upload-btn'
@@ -269,7 +270,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             compact
             initialMode={selectedMode}
             onModeSelect={onModeSelect}
-            compactLeadingIcon={<Shield theme='outline' size='14' fill={iconColors.secondary} />}
+            compactLeadingIcon={<Shield theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
             modeLabelFormatter={getModeDisplayLabel}
           />
         )}

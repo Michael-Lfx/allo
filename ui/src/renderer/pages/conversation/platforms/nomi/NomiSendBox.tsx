@@ -1019,7 +1019,7 @@ const NomiSendBox: React.FC<{
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
-          <div className='nomi-sendbox-tools flex items-center gap-2px min-w-0'>
+          <div className='composer-toolbar-tools flex items-center min-w-0'>
             <FileAttachButton
               openFileSelector={openFileSelector}
               onLocalFilesAdded={handleFilesAdded}

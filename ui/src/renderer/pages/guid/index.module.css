@@ -1834,7 +1834,6 @@ button.guidResourceCard:focus-visible {
 .actionTools {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   flex-shrink: 1;
   min-width: 0;
 }
@@ -1851,14 +1850,6 @@ button.guidResourceCard:focus-visible {
 .actionEntry :global(.arco-btn:focus),
 .actionEntry :global(.arco-btn:focus-visible) {
   flex-shrink: 0 !important;
-}
-
-.actionFileAttachBtn:global(.arco-btn) {
-  line-height: 1 !important;
-}
-
-.actionFileAttachBtn:global(.arco-btn) :global(.arco-icon) {
-  font-size: 14px !important;
 }
 
 .actionGoalButton:global(.arco-btn) {
