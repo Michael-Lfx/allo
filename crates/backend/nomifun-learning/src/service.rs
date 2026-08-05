@@ -15,8 +15,8 @@ use sqlx::{Row, Sqlite, Transaction};
 use crate::models::{
     ActivityKind, ActivityView, AttemptResult, ConceptView, CourseDetail, CoursePack, CourseSummary,
     DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest, LessonStatus, LessonView,
-    ModuleView, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, SourceSpan,
-    StoredActivityConfig,
+    ModuleView, QuestionEntry, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
+    SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
 use crate::scheduler::{SchedulerSettings, schedule_review};
 
@@ -668,7 +668,7 @@ impl LearningService {
                     r.stability_days, r.difficulty, r.review_count, r.lapse_count \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-             JOIN learning_courses c ON c.course_id = e.course_id \
+             LEFT JOIN learning_courses c ON c.course_id = e.course_id \
              JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
              WHERE e.user_id = ? AND r.due_at <= ? \
              ORDER BY r.due_at, r.review_item_id LIMIT ?",
@@ -696,11 +696,16 @@ impl LearningService {
                 continue;
             };
             let hierarchy = self.activity_hierarchy(&question.lesson_id).await?;
+            let course_id: Option<String> = row.try_get("course_id").map_err(internal)?;
+            let course_title: Option<String> = row.try_get("course_title").map_err(internal)?;
             reviews.push(DueReview {
                 id: review_id,
                 enrollment_id,
-                course_id: parse_id(row.try_get("course_id").map_err(internal)?)?,
-                course_title: row.try_get("course_title").map_err(internal)?,
+                course_id: match course_id {
+                    Some(value) => Some(parse_id(value)?),
+                    None => None,
+                },
+                course_title,
                 module_title: hierarchy.module_title,
                 lesson_title: hierarchy.lesson_title,
                 concept_id: parse_id(concept_id.clone())?,
@@ -719,6 +724,358 @@ impl LearningService {
             });
         }
         Ok(reviews)
+    }
+
+    /// Management view over every review item of the user, enriched with
+    /// course/concept context and the objective activity used for review.
+    /// Items whose course row was deleted stay listed as orphans.
+    pub async fn question_entries(
+        &self,
+        user_id: &UserId,
+        course_id: Option<&LearningCourseId>,
+        state: Option<&str>,
+        search: Option<&str>,
+    ) -> Result<Vec<QuestionEntry>, AppError> {
+        let base = "SELECT r.review_item_id, e.course_id, c.title AS course_title, \
+                           r.concept_id, lc.title AS concept_title, r.due_at, \
+                           r.stability_days, r.difficulty, r.review_count, r.lapse_count, \
+                           r.last_reviewed_at, r.updated_at \
+                    FROM learning_review_items r \
+                    JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+                    LEFT JOIN learning_courses c ON c.course_id = e.course_id \
+                    LEFT JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
+                    WHERE e.user_id = ?";
+        let rows = match course_id {
+            Some(course_id) => {
+                sqlx::query(&format!(
+                    "{base} AND e.course_id = ? ORDER BY r.due_at DESC LIMIT 500"
+                ))
+                .bind(user_id.as_str())
+                .bind(course_id.as_str())
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query(&format!("{base} ORDER BY r.due_at DESC LIMIT 500"))
+                    .bind(user_id.as_str())
+                    .fetch_all(&self.pool)
+                    .await
+            }
+        }
+        .map_err(internal)?;
+
+        let concept_ids: Vec<String> = rows
+            .iter()
+            .map(|row| row.try_get("concept_id"))
+            .collect::<Result<_, _>>()
+            .map_err(internal)?;
+        // First objective activity per concept, used both as the review prompt
+        // and as the editable question behind this entry.
+        let mut questions_by_concept: HashMap<String, ObjectiveQuestion> = HashMap::new();
+        if !concept_ids.is_empty() {
+            let mut builder = sqlx::QueryBuilder::new(
+                "SELECT ac.concept_id, a.activity_id, a.lesson_id, a.kind, a.prompt, a.config_json \
+                 FROM learning_activity_concepts ac \
+                 JOIN learning_activities a ON a.activity_id = ac.activity_id \
+                 WHERE a.kind IN ('single_choice', 'true_false') AND ac.concept_id IN (",
+            );
+            let mut separated = builder.separated(", ");
+            for concept_id in &concept_ids {
+                separated.push_bind(concept_id.clone());
+            }
+            builder.push(") ORDER BY a.position, a.activity_id");
+            let activity_rows = builder
+                .build()
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+            for row in activity_rows {
+                let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+                if questions_by_concept.contains_key(&concept_id) {
+                    continue;
+                }
+                let kind_text: String = row.try_get("kind").map_err(internal)?;
+                questions_by_concept.insert(
+                    concept_id,
+                    ObjectiveQuestion {
+                        activity_id: parse_id(
+                            row.try_get::<String, _>("activity_id").map_err(internal)?,
+                        )?,
+                        lesson_id: parse_id(
+                            row.try_get::<String, _>("lesson_id").map_err(internal)?,
+                        )?,
+                        kind: ActivityKind::try_from(kind_text.as_str())
+                            .map_err(|message| AppError::BadRequest(message))?,
+                        prompt: row.try_get("prompt").map_err(internal)?,
+                        config: serde_json::from_str(
+                            &row.try_get::<String, _>("config_json").map_err(internal)?,
+                        )
+                        .map_err(internal)?,
+                    },
+                );
+            }
+        }
+
+        let now = now_ms();
+        let search = search.map(|value| value.trim().to_lowercase());
+        let mut entries = Vec::new();
+        for row in rows {
+            let review_count: i64 = row.try_get("review_count").map_err(internal)?;
+            let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+            let state_matches = match state {
+                Some("new") => review_count == 0,
+                Some("due") => due_at <= now,
+                Some("scheduled") => due_at > now,
+                _ => true,
+            };
+            if !state_matches {
+                continue;
+            }
+            let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+            let concept_title: Option<String> =
+                row.try_get("concept_title").map_err(internal)?;
+            let question = questions_by_concept.get(&concept_id);
+            if let Some(keyword) = &search {
+                let haystack = [
+                    concept_title.as_deref().unwrap_or_default(),
+                    question.map(|item| item.prompt.as_str()).unwrap_or_default(),
+                ]
+                .join(" ")
+                .to_lowercase();
+                if !haystack.contains(keyword) {
+                    continue;
+                }
+            }
+            let course_id: Option<String> = row.try_get("course_id").map_err(internal)?;
+            let course_title: Option<String> =
+                row.try_get("course_title").map_err(internal)?;
+            entries.push(QuestionEntry {
+                review_item_id: parse_id(
+                    row.try_get::<String, _>("review_item_id").map_err(internal)?,
+                )?,
+                course_id: match course_id {
+                    Some(value) => Some(parse_id(value)?),
+                    None => None,
+                },
+                course_title,
+                concept_id: parse_id(concept_id.clone())?,
+                concept_title,
+                activity_id: question.map(|item| item.activity_id.clone()),
+                question_kind: question.map(|item| item.kind),
+                prompt: question.map(|item| item.prompt.clone()),
+                options: question
+                    .map(|item| item.config.options.clone())
+                    .unwrap_or_default(),
+                answer: question.map(|item| item.config.answer.clone()),
+                explanation: question.map(|item| item.config.explanation.clone()),
+                due_at,
+                overdue: due_at <= now,
+                stability_days: row.try_get("stability_days").map_err(internal)?,
+                difficulty: row.try_get("difficulty").map_err(internal)?,
+                review_count,
+                lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
+                updated_at: row.try_get("updated_at").map_err(internal)?,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Edits the objective activity behind a managed question. Ownership is
+    /// checked through the course hierarchy; the answer payload is validated
+    /// against the activity kind so `evaluate` keeps working.
+    pub async fn update_question(
+        &self,
+        activity_id: &LearningActivityId,
+        user_id: &UserId,
+        request: UpdateQuestionRequest,
+    ) -> Result<(), AppError> {
+        let row = sqlx::query(
+            "SELECT a.kind \
+             FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
+             WHERE a.activity_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(activity_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("editable activity {activity_id}")))?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let kind = ActivityKind::try_from(kind_text.as_str())
+            .map_err(|message| AppError::BadRequest(message))?;
+        let prompt = request.prompt.trim();
+        if prompt.is_empty() {
+            return Err(AppError::BadRequest(
+                "question prompt must not be empty".into(),
+            ));
+        }
+        let config = match kind {
+            ActivityKind::SingleChoice => {
+                let options: Vec<String> = request
+                    .options
+                    .iter()
+                    .map(|option| option.trim().to_string())
+                    .filter(|option| !option.is_empty())
+                    .collect();
+                let unique = options.iter().collect::<std::collections::HashSet<_>>();
+                if unique.len() != options.len() || options.len() < 2 {
+                    return Err(AppError::BadRequest(
+                        "single choice questions need at least two unique options".into(),
+                    ));
+                }
+                let Some(answer) = request.answer.as_str() else {
+                    return Err(AppError::BadRequest(
+                        "single choice answer must be a string".into(),
+                    ));
+                };
+                if !options.iter().any(|option| option == answer) {
+                    return Err(AppError::BadRequest(
+                        "single choice answer must be one of the options".into(),
+                    ));
+                }
+                StoredActivityConfig {
+                    options,
+                    answer: request.answer.clone(),
+                    explanation: request.explanation.clone(),
+                }
+            }
+            ActivityKind::TrueFalse => {
+                let Some(answer) = request.answer.as_bool() else {
+                    return Err(AppError::BadRequest(
+                        "true/false answer must be a boolean".into(),
+                    ));
+                };
+                StoredActivityConfig {
+                    options: Vec::new(),
+                    answer: Value::Bool(answer),
+                    explanation: request.explanation.clone(),
+                }
+            }
+            ActivityKind::Reflection => StoredActivityConfig {
+                options: Vec::new(),
+                answer: Value::Null,
+                explanation: request.explanation.clone(),
+            },
+        };
+        sqlx::query("UPDATE learning_activities SET prompt = ?, config_json = ? WHERE activity_id = ?")
+            .bind(prompt)
+            .bind(serde_json::to_string(&config).map_err(internal)?)
+            .bind(activity_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    /// Deletes a single review item without touching mastery or attempts.
+    pub async fn delete_review_item(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+    ) -> Result<(), AppError> {
+        let result = sqlx::query(
+            "DELETE FROM learning_review_items WHERE review_item_id = ? \
+             AND enrollment_id IN (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?)",
+        )
+        .bind(review_id.as_str())
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("review item {review_id}")));
+        }
+        Ok(())
+    }
+
+    /// Deletes a course. With `delete_reviews` the learner's enrollment and
+    /// all derived data plus the course content are wiped. Otherwise only
+    /// the catalog row disappears, so orphaned concepts stay reviewable.
+    pub async fn delete_course(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+        delete_reviews: bool,
+    ) -> Result<(), AppError> {
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> =
+            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        let enrollment_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ? AND user_id = ?",
+        )
+        .bind(course_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if delete_reviews {
+            for enrollment_id in &enrollment_ids {
+                for table in [
+                    "learning_review_items",
+                    "learning_mastery_states",
+                    "learning_lesson_progress",
+                    "learning_attempts",
+                ] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE enrollment_id = ?"))
+                        .bind(enrollment_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(internal)?;
+                }
+            }
+            sqlx::query("DELETE FROM learning_enrollments WHERE course_id = ? AND user_id = ?")
+                .bind(course_id.as_str())
+                .bind(user_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            let content_sql = [
+                "DELETE FROM learning_activity_concepts WHERE activity_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_activities WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lessons WHERE module_id IN (\
+                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
+                "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
+                    SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
+                "DELETE FROM learning_concepts WHERE course_id = ?",
+                "DELETE FROM learning_modules WHERE course_id = ?",
+            ];
+            for sql in content_sql {
+                sqlx::query(sql)
+                    .bind(course_id.as_str())
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(internal)?;
+            }
+        }
+        sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(())
     }
 
     /// Objective activities bound to a concept that the learner has actually

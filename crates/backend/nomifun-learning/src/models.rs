@@ -291,8 +291,8 @@ pub struct RateReviewRequest {
 pub struct DueReview {
     pub id: LearningReviewItemId,
     pub enrollment_id: LearningEnrollmentId,
-    pub course_id: LearningCourseId,
-    pub course_title: String,
+    pub course_id: Option<LearningCourseId>,
+    pub course_title: Option<String>,
     pub module_title: String,
     pub lesson_title: String,
     pub concept_id: LearningConceptId,
@@ -344,6 +344,52 @@ pub struct ReviewResult {
     pub difficulty: f64,
     pub review_count: i64,
     pub lapse_count: i64,
+}
+
+/// One row of the question management table: a review item enriched with
+/// the course/concept context and the objective activity used for review.
+/// Course and concept fields are optional because items can outlive their
+/// course after a content-only deletion.
+#[derive(Debug, Clone, Serialize)]
+pub struct QuestionEntry {
+    pub review_item_id: LearningReviewItemId,
+    pub course_id: Option<LearningCourseId>,
+    pub course_title: Option<String>,
+    pub concept_id: LearningConceptId,
+    pub concept_title: Option<String>,
+    pub activity_id: Option<LearningActivityId>,
+    pub question_kind: Option<ActivityKind>,
+    pub prompt: Option<String>,
+    pub options: Vec<String>,
+    pub answer: Option<Value>,
+    pub explanation: Option<String>,
+    pub due_at: TimestampMs,
+    pub overdue: bool,
+    pub stability_days: f64,
+    pub difficulty: f64,
+    pub review_count: i64,
+    pub lapse_count: i64,
+    pub last_reviewed_at: Option<TimestampMs>,
+    pub updated_at: TimestampMs,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateQuestionRequest {
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    pub answer: Value,
+    #[serde(default)]
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteCourseRequest {
+    /// Also remove the learner's review items, mastery, progress, attempts
+    /// and enrollment for this course. When false the content stays in the
+    /// database so orphaned concepts remain reviewable.
+    #[serde(default)]
+    pub delete_reviews: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

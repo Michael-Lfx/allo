@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use axum::extract::{Extension, Json, Path, Query, State};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use nomifun_api_types::ApiResponse;
 use nomifun_auth::CurrentUser;
@@ -12,8 +12,8 @@ use nomifun_common::{
 use serde::Deserialize;
 
 use crate::models::{
-    AnswerReviewRequest, CoursePack, GenerateCourseRequest, RateReviewRequest,
-    SubmitAttemptRequest, UpdateLessonProgressRequest,
+    AnswerReviewRequest, CoursePack, DeleteCourseRequest, GenerateCourseRequest,
+    RateReviewRequest, SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -25,6 +25,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/courses/generate", post(generate_course))
         .route("/api/learning/courses/{id}", get(get_course))
+        .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}/enroll", post(enroll))
         .route(
             "/api/learning/courses/{id}/diagnostic",
@@ -42,6 +43,12 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
         .route("/api/learning/reviews/{id}/skip", post(skip_review))
+        .route("/api/learning/reviews/{id}", delete(delete_review_item))
+        .route("/api/learning/questions", get(list_questions))
+        .route(
+            "/api/learning/questions/{activity_id}",
+            put(update_question),
+        )
         .with_state(state)
 }
 
@@ -210,6 +217,73 @@ async fn skip_review(
     Ok(Json(ApiResponse::ok(
         state.service.skip_review(&id, &user.id).await?,
     )))
+}
+
+async fn delete_course(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<DeleteCourseRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state
+        .service
+        .delete_course(&id, &user.id, request.delete_reviews)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Debug, Deserialize)]
+struct QuestionListQuery {
+    course_id: Option<String>,
+    state: Option<String>,
+    search: Option<String>,
+}
+
+async fn list_questions(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<QuestionListQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::models::QuestionEntry>>>, AppError> {
+    let course_id = match query.course_id {
+        Some(value) => Some(parse_id::<LearningCourseId>(value)?),
+        None => None,
+    };
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .question_entries(
+                &user.id,
+                course_id.as_ref(),
+                query.state.as_deref(),
+                query.search.as_deref(),
+            )
+            .await?,
+    )))
+}
+
+async fn update_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateQuestionRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningActivityId>(id)?;
+    state
+        .service
+        .update_question(&id, &user.id, request)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn delete_review_item(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state.service.delete_review_item(&id, &user.id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 fn parse_id<T>(value: String) -> Result<T, AppError>
