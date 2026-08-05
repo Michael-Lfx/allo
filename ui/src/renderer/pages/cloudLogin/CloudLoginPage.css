@@ -535,6 +535,7 @@ body.login-page-active {
 
 .cloud-login-preview__chrome {
   display: flex;
+  justify-content: center;
   gap: 6px;
   margin-bottom: 10px;
 }
