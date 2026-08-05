@@ -299,43 +299,77 @@ function ReviewCard({
   );
 }
 
-function ReviewQueue({
-  reviews,
+function ReviewSessionModal({
+  open,
+  queue,
   busyId,
   onAnswer,
   onForget,
   onRate,
   onSkip,
+  onClose,
 }: {
-  reviews: DueReview[];
+  open: boolean;
+  queue: DueReview[];
   busyId: string | null;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
-  onRate: (reviewId: string, rating: ReviewRating) => void;
-  onSkip: (reviewId: string) => void;
+  onRate: (reviewId: string, rating: ReviewRating) => Promise<boolean>;
+  onSkip: (reviewId: string) => Promise<boolean>;
+  onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const [dismissed, setDismissed] = useState<string[]>([]);
-  const visible = reviews.filter((review) => !dismissed.includes(review.id));
-  if (visible.length === 0) {
-    return <Empty description={t('learning.noReviews')} />;
-  }
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (open) setIndex(0);
+  }, [open]);
+  const current = queue[index];
+  const advance = () => setIndex((value) => value + 1);
   return (
-    <div className='flex flex-col gap-10px'>
-      {visible.map((review) => (
-        <ReviewCard
-          key={review.id}
-          review={review}
-          busy={busyId === review.id}
-          locked={busyId !== null && busyId !== review.id}
-          onAnswer={onAnswer}
-          onForget={onForget}
-          onRate={onRate}
-          onSkip={onSkip}
-          onDismiss={(reviewId) => setDismissed((current) => [...current, reviewId])}
-        />
-      ))}
-    </div>
+    <Modal
+      title={t('learning.reviewSessionTitle')}
+      visible={open}
+      footer={null}
+      style={{ width: 640 }}
+      maskClosable={busyId === null}
+      onCancel={() => {
+        if (busyId === null) onClose();
+      }}
+    >
+      {current === undefined ? (
+        <div className='flex flex-col items-center gap-14px py-32px'>
+          <Text type='secondary'>{t('learning.reviewSessionDone')}</Text>
+          <Button type='primary' onClick={onClose}>
+            {t('learning.reviewSessionClose')}
+          </Button>
+        </div>
+      ) : (
+        <div className='flex flex-col gap-12px'>
+          <Text type='secondary'>
+            {index + 1} / {queue.length}
+          </Text>
+          <ReviewCard
+            key={current.id}
+            review={current}
+            busy={busyId === current.id}
+            locked={busyId !== null && busyId !== current.id}
+            onAnswer={onAnswer}
+            onForget={onForget}
+            onRate={(reviewId, rating) =>
+              void onRate(reviewId, rating).then((handled) => {
+                if (handled) advance();
+              })
+            }
+            onSkip={(reviewId) =>
+              void onSkip(reviewId).then((handled) => {
+                if (handled) advance();
+              })
+            }
+            onDismiss={advance}
+          />
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -820,6 +854,8 @@ const LearningPage: React.FC = () => {
   const { choice: modelChoice, setChoice: setModelChoice } = useKnowledgeAutogenModel();
   const [courses, setCourses] = useState<CourseSummary[]>([]);
   const [reviews, setReviews] = useState<DueReview[]>([]);
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const [sessionQueue, setSessionQueue] = useState<DueReview[]>([]);
   const [detail, setDetail] = useState<CourseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -1027,14 +1063,16 @@ const LearningPage: React.FC = () => {
   );
 
   const rateReview = useCallback(
-    async (reviewId: string, rating: ReviewRating) => {
+    async (reviewId: string, rating: ReviewRating): Promise<boolean> => {
       setBusyId(reviewId);
       try {
         await learningApi.rateReview(reviewId, rating);
         Message.success(t('learning.reviewRecorded'));
         await load();
+        return true;
       } catch (actionError) {
         Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return false;
       } finally {
         setBusyId(null);
       }
@@ -1043,20 +1081,27 @@ const LearningPage: React.FC = () => {
   );
 
   const skipReview = useCallback(
-    async (reviewId: string) => {
+    async (reviewId: string): Promise<boolean> => {
       setBusyId(reviewId);
       try {
         await learningApi.skipReview(reviewId);
         Message.success(t('learning.reviewSkipped'));
         await load();
+        return true;
       } catch (actionError) {
         Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return false;
       } finally {
         setBusyId(null);
       }
     },
     [load, t]
   );
+
+  const startReviewSession = useCallback(() => {
+    setSessionQueue(reviews);
+    setSessionOpen(true);
+  }, [reviews]);
 
   const answerReview = useCallback(
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
@@ -1118,6 +1163,16 @@ const LearningPage: React.FC = () => {
           onProgress={updateProgress}
           onAttempt={submitAttempt}
         />
+        <ReviewSessionModal
+          open={sessionOpen}
+          queue={sessionQueue}
+          busyId={busyId}
+          onAnswer={answerReview}
+          onForget={forgetReview}
+          onRate={rateReview}
+          onSkip={skipReview}
+          onClose={() => setSessionOpen(false)}
+        />
         <DiagnosticModal
           plan={diagnosticPlan}
           index={diagnosticIndex}
@@ -1168,15 +1223,21 @@ const LearningPage: React.FC = () => {
       </section>
 
       <section>
-        <Title heading={5}>{t('learning.reviews')}</Title>
-        <ReviewQueue
-          reviews={reviews}
-          busyId={busyId}
-          onAnswer={answerReview}
-          onForget={forgetReview}
-          onRate={rateReview}
-          onSkip={skipReview}
-        />
+        <div className='mb-2px flex items-center justify-between'>
+          <Title heading={5}>{t('learning.reviews')}</Title>
+          {reviews.length > 0 && (
+            <Button type='primary' size='small' onClick={startReviewSession}>
+              {t('learning.startReview')}
+            </Button>
+          )}
+        </div>
+        {reviews.length === 0 ? (
+          <Empty description={t('learning.noReviews')} />
+        ) : (
+          <Text type='secondary'>
+            {t('learning.reviewDueCount', { count: reviews.length })}
+          </Text>
+        )}
       </section>
 
         <Modal
