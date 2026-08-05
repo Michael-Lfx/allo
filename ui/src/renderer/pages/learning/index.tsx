@@ -1592,26 +1592,6 @@ const LearningPage: React.FC = () => {
           onProgress={updateProgress}
           onAttempt={submitAttempt}
         />
-        <ReviewSessionModal
-          open={sessionOpen}
-          queue={sessionQueue}
-          busyId={busyId}
-          onAnswer={answerReview}
-          onForget={forgetReview}
-          onRate={rateReview}
-          onSkip={skipReview}
-          onClose={() => setSessionOpen(false)}
-        />
-        {deletingCourse !== null && (
-          <CourseDeleteDialog
-            course={deletingCourse}
-            onClose={() => setDeletingCourse(null)}
-            onDeleted={() => {
-              setDeletingCourse(null);
-              void load();
-            }}
-          />
-        )}
         <DiagnosticModal
           plan={diagnosticPlan}
           index={diagnosticIndex}
@@ -1641,16 +1621,6 @@ const LearningPage: React.FC = () => {
           <Text type='secondary'>{t('learning.subtitle')}</Text>
         </div>
         <div className='flex flex-wrap gap-8px'>
-          <Badge count={reviews.length} offset={[12, 2]}>
-            <Button
-              type='primary'
-              size='large'
-              disabled={reviews.length === 0}
-              onClick={startReviewSession}
-            >
-              {t('learning.startReview')}
-            </Button>
-          </Badge>
           <Button onClick={() => setImportVisible(true)}>{t('learning.import')}</Button>
           <Button type='primary' onClick={() => void openGenerator()}>
             {t('learning.generate')}
@@ -1659,6 +1629,24 @@ const LearningPage: React.FC = () => {
       </div>
       {error && <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
       <Alert type='info' content={t('learning.packContract')} />
+
+      {reviews.length > 0 && (
+        <div className='flex flex-wrap items-center justify-between gap-12px rounded-12px border border-solid border-[var(--color-primary-6)] bg-[var(--color-primary-light-1)] px-20px py-16px'>
+          <div className='flex items-baseline gap-8px'>
+            <Title heading={5} className='!m-0'>
+              {t('learning.reviews')}
+            </Title>
+            <Text type='secondary'>
+              {t('learning.reviewDueCount', { count: reviews.length })}
+            </Text>
+          </div>
+          <Badge count={reviews.length}>
+            <Button type='primary' size='large' onClick={startReviewSession}>
+              {t('learning.startReview')}
+            </Button>
+          </Badge>
+        </div>
+      )}
 
       <section>
         <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line'>
@@ -1680,6 +1668,27 @@ const LearningPage: React.FC = () => {
           </Tabs.TabPane>
         </Tabs>
       </section>
+
+      <ReviewSessionModal
+        open={sessionOpen}
+        queue={sessionQueue}
+        busyId={busyId}
+        onAnswer={answerReview}
+        onForget={forgetReview}
+        onRate={rateReview}
+        onSkip={skipReview}
+        onClose={() => setSessionOpen(false)}
+      />
+      {deletingCourse !== null && (
+        <CourseDeleteDialog
+          course={deletingCourse}
+          onClose={() => setDeletingCourse(null)}
+          onDeleted={() => {
+            setDeletingCourse(null);
+            void load();
+          }}
+        />
+      )}
 
         <Modal
         title={t('learning.generateTitle')}
