@@ -93,16 +93,46 @@ pub(crate) fn resolve_artifact_path(working_dir: &Path, revision_target: &str) -
     for part in cleaned.split('/').filter(|p| !p.is_empty()) {
         path.push(part);
     }
-    let canon_root = working_dir
-        .canonicalize()
-        .unwrap_or_else(|_| working_dir.to_path_buf());
-    let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let canon_root = canonicalize_lenient(working_dir);
+    let canon = canonicalize_lenient(&path);
     if !path_is_within(&canon, &canon_root) {
         return Err(VimaxError::InvalidParams(format!(
             "revision_target escapes session working_dir: {revision_target}"
         )));
     }
     Ok(path)
+}
+
+/// Canonicalize the nearest existing ancestor and re-append any missing tail
+/// components.
+///
+/// `Path::canonicalize()` fails for not-yet-existing targets, and the raw
+/// fallback path can use 8.3 short names (`ADMINI~1`) or lack the `\\?\`
+/// verbatim prefix — both break `starts_with` containment checks against the
+/// canonicalized working dir.
+fn canonicalize_lenient(path: &Path) -> PathBuf {
+    let mut cur = path.to_path_buf();
+    let mut tail: Vec<PathBuf> = Vec::new();
+    loop {
+        match cur.canonicalize() {
+            Ok(canon) => {
+                let mut out = canon;
+                for part in tail.iter().rev() {
+                    out.push(part);
+                }
+                return out;
+            }
+            Err(_) => {
+                let Some(name) = cur.file_name().map(PathBuf::from) else {
+                    return path.to_path_buf();
+                };
+                tail.push(name);
+                if !cur.pop() {
+                    return path.to_path_buf();
+                }
+            }
+        }
+    }
 }
 
 /// Windows `canonicalize` may yield `\\?\C:\...` while the root stays `C:\...`.
