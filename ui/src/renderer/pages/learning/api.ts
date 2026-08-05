@@ -7,8 +7,10 @@ import type {
   DueReview,
   GenerateCourseRequest,
   LessonStatus,
+  QuestionEntry,
   ReviewAnswerResult,
   ReviewRating,
+  UpdateQuestionRequest,
 } from './types';
 
 const BASE = '/api/learning';
@@ -44,4 +46,20 @@ export const learningApi = {
     httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/rate`, { rating }),
   skipReview: (id: string) =>
     httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/skip`),
+  deleteReviewItem: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/reviews/${encodeURIComponent(id)}`),
+  listQuestions: (params: { course_id?: string; state?: string; search?: string }) => {
+    const query = new URLSearchParams();
+    if (params.course_id) query.set('course_id', params.course_id);
+    if (params.state) query.set('state', params.state);
+    if (params.search) query.set('search', params.search);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return httpRequest<QuestionEntry[]>('GET', `${BASE}/questions${suffix}`);
+  },
+  updateQuestion: (activityId: string, request: UpdateQuestionRequest) =>
+    httpRequest<void>('PUT', `${BASE}/questions/${encodeURIComponent(activityId)}`, request),
+  deleteCourse: (id: string, deleteReviews: boolean) =>
+    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
+      delete_reviews: deleteReviews,
+    }),
 };

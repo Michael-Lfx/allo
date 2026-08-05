@@ -100,8 +100,8 @@ export interface ReviewQuestion {
 export interface DueReview {
   id: string;
   enrollment_id: string;
-  course_id: string;
-  course_title: string;
+  course_id: string | null;
+  course_title: string | null;
   module_title: string;
   lesson_title: string;
   concept_id: string;
@@ -128,4 +128,33 @@ export interface ReviewAnswerResult {
   feedback: string;
   correct_answer: unknown | null;
   rated: ReviewResult | null;
+}
+
+export interface QuestionEntry {
+  review_item_id: string;
+  course_id: string | null;
+  course_title: string | null;
+  concept_id: string;
+  concept_title: string | null;
+  activity_id: string | null;
+  question_kind: ActivityKind | null;
+  prompt: string | null;
+  options: string[];
+  answer: unknown | null;
+  explanation: string | null;
+  due_at: number;
+  overdue: boolean;
+  stability_days: number;
+  difficulty: number;
+  review_count: number;
+  lapse_count: number;
+  last_reviewed_at: number | null;
+  updated_at: number;
+}
+
+export interface UpdateQuestionRequest {
+  prompt: string;
+  options?: string[];
+  answer: unknown;
+  explanation?: string;
 }

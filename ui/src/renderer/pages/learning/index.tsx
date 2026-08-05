@@ -5,6 +5,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Collapse,
   Empty,
   Input,
@@ -14,6 +15,8 @@ import {
   Radio,
   Select,
   Spin,
+  Table,
+  Tabs,
   Tag,
   Typography,
 } from '@arco-design/web-react';
@@ -36,6 +39,7 @@ import type {
   DueReview,
   Lesson,
   LessonStatus,
+  QuestionEntry,
   ReviewAnswerResult,
   ReviewRating,
 } from './types';
@@ -92,9 +96,11 @@ function statusLabel(status: LessonStatus, t: Translate): string {
 function CourseCard({
   course,
   onOpen,
+  onDelete,
 }: {
   course: CourseSummary;
   onOpen: (id: string) => void;
+  onDelete: () => void;
 }) {
   const { t } = useTranslation();
   const percent =
@@ -104,6 +110,11 @@ function CourseCard({
   return (
     <Card
       className='h-full'
+      extra={
+        <Button size='mini' type='text' status='danger' onClick={onDelete}>
+          {t('learning.deleteCourse')}
+        </Button>
+      }
       title={
         <div className='min-w-0'>
           <div className='truncate text-16px font-600'>{course.title}</div>
@@ -168,7 +179,8 @@ function ReviewCard({
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
       <div className='mb-10px flex flex-wrap items-center gap-x-4px gap-y-2px text-12px text-t-tertiary'>
         <span>
-          {t('learning.reviewCourseLabel')}: {review.course_title}
+          {t('learning.reviewCourseLabel')}:{' '}
+          {review.course_title ?? t('learning.deletedCourse')}
         </span>
         <span>›</span>
         <span>
@@ -370,6 +382,415 @@ function ReviewSessionModal({
         </div>
       )}
     </Modal>
+  );
+}
+
+function CourseDeleteDialog({
+  course,
+  onClose,
+  onDeleted,
+}: {
+  course: CourseSummary;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const { t } = useTranslation();
+  const [deleteReviews, setDeleteReviews] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal
+      title={t('learning.deleteCourseTitle')}
+      visible
+      style={{ width: 480 }}
+      confirmLoading={busy}
+      okText={t('learning.deleteCourseConfirm')}
+      okButtonProps={{ status: 'danger' }}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => {
+        setBusy(true);
+        learningApi
+          .deleteCourse(course.id, deleteReviews)
+          .then(() => {
+            Message.success(t('learning.deleteCourseDone'));
+            onDeleted();
+          })
+          .catch((actionError) => {
+            Message.error(
+              actionError instanceof Error ? actionError.message : t('learning.actionFailed')
+            );
+          })
+          .finally(() => setBusy(false));
+      }}
+    >
+      <Paragraph className='mt-0'>
+        {t('learning.deleteCourseHint', { title: course.title })}
+      </Paragraph>
+      <Checkbox checked={deleteReviews} onChange={setDeleteReviews}>
+        {t('learning.deleteCourseReviews')}
+      </Checkbox>
+      <Paragraph type='secondary' className='!mb-0 mt-6px text-12px'>
+        {deleteReviews
+          ? t('learning.deleteCourseReviewsOn')
+          : t('learning.deleteCourseReviewsOff')}
+      </Paragraph>
+    </Modal>
+  );
+}
+
+function QuestionEditDialog({
+  entry,
+  onClose,
+  onSaved,
+}: {
+  entry: QuestionEntry;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const [prompt, setPrompt] = useState(entry.prompt ?? '');
+  const [options, setOptions] = useState<string[]>(entry.options);
+  const [answer, setAnswer] = useState<unknown>(entry.answer ?? undefined);
+  const [explanation, setExplanation] = useState(entry.explanation ?? '');
+  const [busy, setBusy] = useState(false);
+  const isSingleChoice = entry.question_kind === 'single_choice';
+  const save = async () => {
+    if (entry.activity_id === null) {
+      return;
+    }
+    if (prompt.trim().length === 0) {
+      Message.error(t('learning.questionPromptRequired'));
+      return;
+    }
+    const cleanedOptions = options.map((option) => option.trim()).filter((option) => option !== '');
+    if (isSingleChoice) {
+      if (cleanedOptions.length < 2) {
+        Message.error(t('learning.questionOptionsRequired'));
+        return;
+      }
+      if (typeof answer !== 'string' || !cleanedOptions.includes(answer)) {
+        Message.error(t('learning.questionAnswerInvalid'));
+        return;
+      }
+    } else if (typeof answer !== 'boolean') {
+      Message.error(t('learning.questionAnswerInvalid'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await learningApi.updateQuestion(entry.activity_id, {
+        prompt: prompt.trim(),
+        options: isSingleChoice ? cleanedOptions : [],
+        answer,
+        explanation: explanation.trim(),
+      });
+      Message.success(t('learning.questionSaved'));
+      onSaved();
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={t('learning.questionEditTitle')}
+      visible
+      style={{ width: 560 }}
+      confirmLoading={busy}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => void save()}
+    >
+      <div className='flex flex-col gap-14px'>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionPromptLabel')}</div>
+          <Input.TextArea
+            value={prompt}
+            onChange={setPrompt}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+        {isSingleChoice ? (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionOptions')}</div>
+            <div className='flex flex-col gap-6px'>
+              {options.map((option, index) => (
+                <div key={index} className='flex items-center gap-6px'>
+                  <Radio checked={answer === option} onChange={() => setAnswer(option)} />
+                  <Input
+                    value={option}
+                    onChange={(value) =>
+                      setOptions((current) =>
+                        current.map((item, itemIndex) => (itemIndex === index ? value : item))
+                      )
+                    }
+                  />
+                  <Button
+                    size='mini'
+                    type='text'
+                    status='danger'
+                    disabled={options.length <= 2}
+                    onClick={() => {
+                      setOptions((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                      if (answer === option) {
+                        setAnswer(undefined);
+                      }
+                    }}
+                  >
+                    {t('learning.questionOptionRemove')}
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button size='small' onClick={() => setOptions((current) => [...current, ''])}>
+                  {t('learning.questionOptionAdd')}
+                </Button>
+              </div>
+            </div>
+            <Text type='secondary' className='text-12px'>
+              {t('learning.questionAnswerHint')}
+            </Text>
+          </div>
+        ) : (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
+            <Radio.Group
+              value={answer === true ? 'true' : answer === false ? 'false' : undefined}
+              onChange={(value) => setAnswer(value === 'true')}
+            >
+              <Radio value='true'>{t('learning.trueLabel')}</Radio>
+              <Radio value='false'>{t('learning.falseLabel')}</Radio>
+            </Radio.Group>
+          </div>
+        )}
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionExplanation')}</div>
+          <Input.TextArea
+            value={explanation}
+            onChange={setExplanation}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function formatReviewTime(value: number | null): string {
+  return value === null ? '—' : new Date(value).toLocaleString();
+}
+
+function QuestionManager({ onMutated }: { onMutated: () => void }) {
+  const { t } = useTranslation();
+  const [entries, setEntries] = useState<QuestionEntry[]>([]);
+  const [courses, setCourses] = useState<CourseSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [courseFilter, setCourseFilter] = useState<string | undefined>(undefined);
+  const [stateFilter, setStateFilter] = useState<string | undefined>(undefined);
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState<QuestionEntry | null>(null);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [questionRows, courseRows] = await Promise.all([
+        learningApi.listQuestions({
+          course_id: courseFilter,
+          state: stateFilter,
+          search: search.trim() === '' ? undefined : search.trim(),
+        }),
+        learningApi.listCourses(),
+      ]);
+      setEntries(questionRows);
+      setCourses(courseRows);
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [courseFilter, stateFilter, search, t]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  const stateOf = (entry: QuestionEntry): { label: string; color: string } => {
+    if (entry.review_count === 0) {
+      return { label: t('learning.questionStateNew'), color: 'gray' };
+    }
+    if (entry.overdue) {
+      return { label: t('learning.questionStateDue'), color: 'red' };
+    }
+    return { label: t('learning.questionStateScheduled'), color: 'green' };
+  };
+  const confirmDelete = (entry: QuestionEntry) => {
+    Modal.confirm({
+      title: t('learning.questionDeleteTitle'),
+      content: t('learning.questionDeleteHint'),
+      okButtonProps: { status: 'danger' },
+      onOk: async () => {
+        try {
+          await learningApi.deleteReviewItem(entry.review_item_id);
+          Message.success(t('learning.questionDeleted'));
+          await load();
+          onMutated();
+        } catch (actionError) {
+          Message.error(
+            actionError instanceof Error ? actionError.message : t('learning.actionFailed')
+          );
+        }
+      },
+    });
+  };
+  const columns = [
+    {
+      title: t('learning.questionCourse'),
+      dataIndex: 'course_title',
+      render: (value: string | null) =>
+        value ?? <Tag color='orange'>{t('learning.deletedCourse')}</Tag>,
+    },
+    {
+      title: t('learning.questionConcept'),
+      dataIndex: 'concept_title',
+      render: (value: string | null) => value ?? '—',
+    },
+    {
+      title: t('learning.questionKind'),
+      dataIndex: 'question_kind',
+      render: (kind: QuestionEntry['question_kind']) =>
+        kind === 'single_choice'
+          ? t('learning.kindSingleChoice')
+          : kind === 'true_false'
+            ? t('learning.kindTrueFalse')
+            : '—',
+    },
+    {
+      title: t('learning.questionPrompt'),
+      dataIndex: 'prompt',
+      ellipsis: true,
+      render: (value: string | null) => value ?? '—',
+    },
+    {
+      title: t('learning.questionState'),
+      render: (_value: unknown, entry: QuestionEntry) => {
+        const state = stateOf(entry);
+        return <Tag color={state.color}>{state.label}</Tag>;
+      },
+    },
+    {
+      title: t('learning.questionDueAt'),
+      dataIndex: 'due_at',
+      sorter: (a: QuestionEntry, b: QuestionEntry) => a.due_at - b.due_at,
+      render: (value: number) => formatReviewTime(value),
+    },
+    {
+      title: t('learning.questionLastReviewed'),
+      dataIndex: 'last_reviewed_at',
+      sorter: (a: QuestionEntry, b: QuestionEntry) =>
+        (a.last_reviewed_at ?? 0) - (b.last_reviewed_at ?? 0),
+      render: (value: number | null) => formatReviewTime(value),
+    },
+    {
+      title: t('learning.questionReviewCount'),
+      dataIndex: 'review_count',
+      sorter: (a: QuestionEntry, b: QuestionEntry) => a.review_count - b.review_count,
+    },
+    {
+      title: t('learning.questionLapseCount'),
+      dataIndex: 'lapse_count',
+      sorter: (a: QuestionEntry, b: QuestionEntry) => a.lapse_count - b.lapse_count,
+    },
+    {
+      title: t('learning.questionStability'),
+      dataIndex: 'stability_days',
+      sorter: (a: QuestionEntry, b: QuestionEntry) => a.stability_days - b.stability_days,
+      render: (value: number) => value.toFixed(1),
+    },
+    {
+      title: t('learning.questionDifficulty'),
+      dataIndex: 'difficulty',
+      sorter: (a: QuestionEntry, b: QuestionEntry) => a.difficulty - b.difficulty,
+      render: (value: number) => value.toFixed(1),
+    },
+    {
+      title: t('learning.questionActions'),
+      render: (_value: unknown, entry: QuestionEntry) => (
+        <div className='flex gap-6px'>
+          <Button
+            size='mini'
+            type='text'
+            disabled={entry.activity_id === null}
+            onClick={() => setEditing(entry)}
+          >
+            {t('learning.questionEdit')}
+          </Button>
+          <Button
+            size='mini'
+            type='text'
+            status='danger'
+            onClick={() => confirmDelete(entry)}
+          >
+            {t('learning.questionDelete')}
+          </Button>
+        </div>
+      ),
+    },
+  ];
+  return (
+    <div className='flex flex-col gap-12px'>
+      <div className='flex flex-wrap items-center gap-8px'>
+        <Select
+          className='w-240px'
+          allowClear
+          placeholder={t('learning.questionFilterCourse')}
+          value={courseFilter}
+          onChange={(value: string | undefined) => setCourseFilter(value)}
+        >
+          {courses.map((course) => (
+            <Select.Option key={course.id} value={course.id}>
+              {course.title}
+            </Select.Option>
+          ))}
+        </Select>
+        <Select
+          className='w-160px'
+          allowClear
+          placeholder={t('learning.questionFilterState')}
+          value={stateFilter}
+          onChange={(value: string | undefined) => setStateFilter(value)}
+        >
+          <Select.Option value='new'>{t('learning.questionStateNew')}</Select.Option>
+          <Select.Option value='due'>{t('learning.questionStateDue')}</Select.Option>
+          <Select.Option value='scheduled'>{t('learning.questionStateScheduled')}</Select.Option>
+        </Select>
+        <Input.Search
+          className='w-240px'
+          allowClear
+          placeholder={t('learning.questionSearchPlaceholder')}
+          onSearch={(value) => setSearch(value)}
+        />
+      </div>
+      <Table
+        rowKey='review_item_id'
+        loading={loading}
+        data={entries}
+        columns={columns}
+        pagination={{ pageSize: 20, showTotal: true }}
+        scroll={{ x: 1500 }}
+        noDataElement={<Empty description={t('learning.questionEmpty')} />}
+      />
+      {editing !== null && (
+        <QuestionEditDialog
+          entry={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void load();
+            onMutated();
+          }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -856,6 +1277,8 @@ const LearningPage: React.FC = () => {
   const [reviews, setReviews] = useState<DueReview[]>([]);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [sessionQueue, setSessionQueue] = useState<DueReview[]>([]);
+  const [deletingCourse, setDeletingCourse] = useState<CourseSummary | null>(null);
+  const [listTab, setListTab] = useState('courses');
   const [detail, setDetail] = useState<CourseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -1136,7 +1559,12 @@ const LearningPage: React.FC = () => {
   const courseGrid = useMemo(
     () =>
       courses.map((course) => (
-        <CourseCard key={course.id} course={course} onOpen={(courseId) => navigate(`/learn/${courseId}`)} />
+        <CourseCard
+          key={course.id}
+          course={course}
+          onOpen={(courseId) => navigate(`/learn/${courseId}`)}
+          onDelete={() => setDeletingCourse(course)}
+        />
       )),
     [courses, navigate]
   );
@@ -1173,6 +1601,16 @@ const LearningPage: React.FC = () => {
           onSkip={skipReview}
           onClose={() => setSessionOpen(false)}
         />
+        {deletingCourse !== null && (
+          <CourseDeleteDialog
+            course={deletingCourse}
+            onClose={() => setDeletingCourse(null)}
+            onDeleted={() => {
+              setDeletingCourse(null);
+              void load();
+            }}
+          />
+        )}
         <DiagnosticModal
           plan={diagnosticPlan}
           index={diagnosticIndex}
@@ -1212,14 +1650,24 @@ const LearningPage: React.FC = () => {
       <Alert type='info' content={t('learning.packContract')} />
 
       <section>
-        <Title heading={5}>{t('learning.courses')}</Title>
-        {courses.length === 0 ? (
-          <Empty description={t('learning.noCourses')} />
-        ) : (
-          <div className='grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-14px'>
-            {courseGrid}
-          </div>
-        )}
+        <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line'>
+          <Tabs.TabPane key='courses' title={t('learning.courses')} destroyOnHide={false}>
+            {courses.length === 0 ? (
+              <Empty description={t('learning.noCourses')} />
+            ) : (
+              <div className='grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-14px'>
+                {courseGrid}
+              </div>
+            )}
+          </Tabs.TabPane>
+          <Tabs.TabPane
+            key='questions'
+            title={t('learning.questionManagement')}
+            destroyOnHide={false}
+          >
+            <QuestionManager onMutated={() => void load()} />
+          </Tabs.TabPane>
+        </Tabs>
       </section>
 
       <section>
