@@ -192,6 +192,9 @@
     "video_clip_done": "Shot video saved",
     "video_clips_partial": "Some shot videos failed",
     "video_clips_done": "All shot videos complete",
+    "video_create": "Submitting video task",
+    "video_poll": "Rendering in the cloud",
+    "video_download": "Downloading video clip",
     "video_generate": "Generating video",
     "concat_start": "Concatenating final video",
     "concat_done": "Concatenation complete",
@@ -321,7 +324,8 @@
       "workdir": "Working directory",
       "workdirLine": "Working directory: {{path}}",
       "stale": "No progress update for over 90 seconds. If the upstream failed, cancel and resume from checkpoint; successful clips will not be billed again.",
-      "currentModel": "Selected model: {{model}}"
+      "currentModel": "Selected model: {{model}}",
+      "pollWait": "Cloud rendering — waited {{secs}}s"
     },
     "failure": {
       "llmRenderTitle": "Chat model (LLM) failed during render",
@@ -366,6 +370,8 @@
     "revisePlaceholder": "For example: make it more tense with a fast push-in and heavier rain",
     "renderTitle": "Happy with the storyboard?",
     "renderHint": "Rendering creates keyframes, shot videos, and assembles the final film.",
+    "portraitReviewTitle": "Planning done — review the cast before rendering",
+    "portraitReviewHint": "The plan also generates global character sheets plus environment / prop reference images. Check them under \"Technical artifacts & run files\" first — rendering is expensive and irreversible.",
     "renderCta": "Generate film",
     "technicalDetails": "Technical artifacts & run files",
     "storyboard": {

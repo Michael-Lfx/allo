@@ -80,11 +80,11 @@ impl FlowyVimaxServices {
     }
 
     pub fn video(&self) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), None, None, None)
+        FlowyVideo::new(self.clone(), None, None, None, None)
     }
 
     pub fn video_with_model(&self, model: Option<String>) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, None, None)
+        FlowyVideo::new(self.clone(), model, None, None, None)
     }
 
     pub fn video_with_model_and_cancel(
@@ -92,7 +92,7 @@ impl FlowyVimaxServices {
         model: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, cancel, None)
+        FlowyVideo::new(self.clone(), model, cancel, None, None)
     }
 
     pub fn video_with_model_cancel_and_aspect(
@@ -101,7 +101,18 @@ impl FlowyVimaxServices {
         cancel: Option<tokio_util::sync::CancellationToken>,
         aspect_ratio: Option<String>,
     ) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio)
+        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio, None)
+    }
+
+    /// Video backend with a pipeline progress hook (create / poll / download stages).
+    pub fn video_with_model_cancel_and_aspect_and_progress(
+        &self,
+        model: Option<String>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        aspect_ratio: Option<String>,
+        progress: Option<crate::progress::ProgressCallback>,
+    ) -> FlowyVideo {
+        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio, progress)
     }
 
     /// Upload a local image via OSS presign PUT and return the HTTPS `publicUrl`.

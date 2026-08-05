@@ -374,7 +374,7 @@ impl VimaxService {
     }
 
     pub async fn revise(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         revision_target: String,
         revision_instruction: String,
@@ -597,7 +597,7 @@ impl VimaxService {
     }
 
     async fn backends_for(
-        &self,
+        self: &Arc<Self>,
         record: &SessionRecord,
         cancel: Option<CancellationToken>,
     ) -> VimaxResult<PipelineBackends> {
@@ -611,10 +611,12 @@ impl VimaxService {
             chat: Arc::new(flowy.chat_with_model(llm)),
             // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
             image: Arc::new(flowy.image_with_model(image.clone())),
-            video: Arc::new(flowy.video_with_model_cancel_and_aspect(
+            // Fine-grained create / poll / download progress for the progress rail.
+            video: Arc::new(flowy.video_with_model_cancel_and_aspect_and_progress(
                 video,
                 cancel.clone(),
                 Some(aspect),
+                Some(progress_callback(Arc::clone(self), &record.session_id)),
             )),
             flowy: Some(flowy.clone()),
             image_model: image,

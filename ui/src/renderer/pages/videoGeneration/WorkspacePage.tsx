@@ -22,7 +22,7 @@ import {
   Spin,
   Tag,
 } from '@arco-design/web-react';
-import { ArrowLeft, Delete, Export, FolderOpen, Play, Refresh, Share, VideoOne } from '@icon-park/react';
+import { ArrowLeft, Delete, Export, Eyes, FolderOpen, Play, Refresh, Share, VideoOne } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
@@ -785,6 +785,12 @@ const WorkspacePage: React.FC = () => {
   const canRender = !busy && (hasStoryboard || isFailed);
   const canContinue = isFailed && !busy;
   const currentStatus = runStatus?.status ?? session?.status;
+  /** Plan finished (idle + `planned`) but the film is not rendered yet. */
+  const plannedIdle =
+    currentStatus === 'idle' &&
+    !runStatus?.final_video &&
+    !session?.final_video &&
+    (runStatus?.stage === 'planned' || session?.stage === 'planned');
   const canPublishTvShow =
     !busy &&
     !publishing &&
@@ -1175,6 +1181,22 @@ const WorkspacePage: React.FC = () => {
 
         {hasStoryboard ? (
           <section className={`${styles.studioPanel} flex flex-wrap items-center justify-between gap-14px p-16px`}>
+            {plannedIdle ? (
+              <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
+                <div className='flex items-center gap-6px text-13px font-600 text-[var(--color-text-1)]'>
+                  <Eyes theme='outline' size={15} className='text-[rgb(var(--primary-6))]' />
+                  {t('videoGeneration.studio.portraitReviewTitle', {
+                    defaultValue: '规划完成——渲染前可先审阅定妆图',
+                  })}
+                </div>
+                <div className='mt-2px text-12px leading-18px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.portraitReviewHint', {
+                    defaultValue:
+                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在下方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
+                  })}
+                </div>
+              </div>
+            ) : null}
             <div>
               <div className='text-14px font-650 text-[var(--color-text-1)]'>
                 {t('videoGeneration.studio.renderTitle', { defaultValue: '分镜确认了吗？' })}

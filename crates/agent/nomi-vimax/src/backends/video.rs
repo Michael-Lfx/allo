@@ -9,7 +9,7 @@ use tracing::info;
 
 use nomifun_cloud::{
     video_task_failure_message, MODEL_CATEGORY_VIDEO, VideoContentImage, VideoCreateParams,
-    resolve_model_in_catalog,
+    resolve_model_in_catalog, VideoTaskRecord,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
@@ -29,6 +29,8 @@ pub struct FlowyVideo {
     model_override: Option<String>,
     cancel: Option<CancellationToken>,
     aspect_ratio: Option<String>,
+    /// Optional pipeline progress hook — emits fine-grained create / poll / download stages.
+    progress: Option<crate::progress::ProgressCallback>,
 }
 
 impl FlowyVideo {
@@ -37,6 +39,7 @@ impl FlowyVideo {
         model_override: Option<String>,
         cancel: Option<CancellationToken>,
         aspect_ratio: Option<String>,
+        progress: Option<crate::progress::ProgressCallback>,
     ) -> Self {
         Self {
             services,
@@ -53,6 +56,7 @@ impl FlowyVideo {
                     Some(crate::aspect::normalize_aspect_ratio(&t))
                 }
             }),
+            progress,
         }
     }
 
@@ -101,6 +105,29 @@ impl FlowyVideo {
     /// Read a local frame, optionally shrink it, upload via OSS presign PUT, return `publicUrl`.
     async fn frame_public_url(&self, path: &Path, role: &str) -> VimaxResult<String> {
         self.services.upload_image_public_url(path, role).await
+    }
+
+    /// Emit a user-visible progress event (no-op without a wired callback).
+    fn emit_progress(&self, stage: &str, message: &str, metadata: Option<serde_json::Value>) {
+        if let Some(cb) = &self.progress {
+            cb(stage, message, metadata);
+        }
+    }
+
+    /// Seedance poll progress hook — reports status + elapsed seconds so the UI
+    /// can render a live "cloud rendering · waited Ns" line (create → poll → download).
+    fn poll_progress_hook(&self) -> Option<Box<dyn FnMut(&VideoTaskRecord, u64) + Send>> {
+        let cb = self.progress.clone()?;
+        Some(Box::new(move |record: &VideoTaskRecord, elapsed: u64| {
+            cb(
+                "video_poll",
+                &format!("elapsed {elapsed}s"),
+                Some(serde_json::json!({
+                    "elapsed_secs": elapsed,
+                    "status": record.status,
+                })),
+            );
+        }))
     }
 }
 
@@ -270,18 +297,20 @@ impl VimaxVideo for FlowyVideo {
                 Arc::new(move || t.is_cancelled()) as Arc<dyn Fn() -> bool + Send + Sync>
             });
 
-        let first = self
-            .services
-            .api
-            .generate_video_with_timeout_and_progress_cancellable(
-                &self.services.session,
-                params.to_json(),
-                timeout,
-                None,
-                should_cancel.clone(),
-                None,
-            )
-            .await;
+        let first = {
+            self.emit_progress("video_create", "submitting video task", None);
+            self.services
+                .api
+                .generate_video_with_timeout_and_progress_cancellable(
+                    &self.services.session,
+                    params.to_json(),
+                    timeout,
+                    self.poll_progress_hook(),
+                    should_cancel.clone(),
+                    None,
+                )
+                .await
+        };
 
         let record = match first {
             Ok(r) => r,
@@ -308,7 +337,7 @@ impl VimaxVideo for FlowyVideo {
                         &self.services.session,
                         reinforced.to_json(),
                         timeout,
-                        None,
+                        self.poll_progress_hook(),
                         should_cancel.clone(),
                         None,
                     )
@@ -336,7 +365,7 @@ impl VimaxVideo for FlowyVideo {
                                 &self.services.session,
                                 silent.to_json(),
                                 timeout,
-                                None,
+                                self.poll_progress_hook(),
                                 should_cancel,
                                 None,
                             )
@@ -393,6 +422,7 @@ impl VimaxVideo for FlowyVideo {
             }
         })?;
 
+        self.emit_progress("video_download", "downloading video", None);
         download_video(&url, out_path).await?;
 
         if let Some(lf_out) = last_frame_out {
