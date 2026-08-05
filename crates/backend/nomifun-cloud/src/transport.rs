@@ -233,6 +233,10 @@ impl HttpTransport {
     ///
     /// Does **not** inject Flowy `Authorization` / `token` headers — only the
     /// caller-supplied headers (typically `requiredHeaders` from presign).
+    ///
+    /// Uses a dedicated long timeout (not the LLM `request_timeout_seconds`,
+    /// default 120s): TV Show `.nomivimax` packages routinely need several
+    /// minutes on consumer uplinks.
     pub async fn put_bytes_absolute(
         &self,
         url: &str,
@@ -253,16 +257,31 @@ impl HttpTransport {
             headers.insert(name, val);
         }
 
-        debug!(%url, bytes = body.len(), "external http PUT (presigned)");
+        // At least 10 minutes, and never shorter than the transport's general timeout.
+        const OSS_PUT_TIMEOUT_SECS: u64 = 600;
+        let timeout = Duration::from_secs(OSS_PUT_TIMEOUT_SECS).max(self.timeout);
+        let bytes = body.len();
+        debug!(%url, bytes, timeout_secs = timeout.as_secs(), "external http PUT (presigned)");
 
         self.client
             .put(url)
-            .timeout(self.timeout)
+            .timeout(timeout)
             .headers(headers)
             .body(body)
             .send()
             .await
-            .map_err(|e| ServerClientError::Http(e.to_string()))
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ServerClientError::Http(format!(
+                        "OSS PUT timed out after {}s while uploading {bytes} bytes to {url}",
+                        timeout.as_secs()
+                    ))
+                } else {
+                    ServerClientError::Http(format!(
+                        "OSS PUT failed while uploading {bytes} bytes: {e}"
+                    ))
+                }
+            })
     }
 }
 

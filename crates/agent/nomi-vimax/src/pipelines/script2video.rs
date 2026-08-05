@@ -2264,8 +2264,9 @@ seamless match-cut continuation into this beat (camera/angle may already differ;
     );
     format!(
         "{style_clause} {identity}{voice_lock}{ref_clause}{continuity_clause}\
-DURATION: target length is about {duration_secs}s. Speak at a natural conversational pace — \
-do NOT rush, speed-read, chipmunk, or time-compress dialogue to cram lines in. \
+DURATION: target length is about {duration_secs}s. Speak slowly and clearly at a natural conversational pace — \
+do NOT rush, speed-read, chipmunk, swallow syllables, or time-compress dialogue to cram lines in. \
+Leave a short breath before the first word and finish the last syllable cleanly before the clip ends. \
 Prefer clear finished lines over packing too many words; keep motion readable for the full clip.\n\
 VOICE CONTINUITY: each named speaker MUST keep the SAME timbre, pitch, and relative volume as VOICE LOCK for the full clip and across adjacent shots.\n\
 PLOT LOCK: stay on this scene — {plot}.{end_plot} \

@@ -20,7 +20,7 @@ The user will provide the following input.
     - Desired number of shots (e.g., "not more than 10 shots").
     - Target total video duration and pacing notes.
     - Other specific instructions (e.g., emphasize the characters' actions).
-    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]. Obey them strictly: each rendered clip is 5–15 seconds (Seedance); avoid over-splitting; pack more story into fewer longer shots. NEVER exceed the HARD UPPER BOUND shot count.
+    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]. Obey them strictly: each rendered clip is 5–15 seconds (Seedance). Prefer fewer longer shots for silent/action beats, but MUST split dialogue that cannot be spoken clearly inside one ≤15s clip. NEVER exceed the HARD UPPER BOUND shot count.
 
 [Output]
 {format_instructions}
@@ -30,14 +30,14 @@ The user will provide the following input.
 - Each shot must have a clear narrative purpose—such as establishing the setting, showing character relationships, or highlighting reactions.
 - Use cinematic language deliberately: close-ups for emotion, wide shots for context, and varied angles to direct audience attention.
 - When designing a new shot, first consider whether it can be filmed using an existing camera position. Introduce a new one only if the shot size, angle, and focus differ significantly. If the camera undergoes significant movement, it cannot be used thereafter.
-- Prefer fewer shots with richer in-shot motion over many brief cuts. A single shot should often cover several beats of action/dialogue that can fill 8–15 seconds of continuous video.
-- Plan visual_desc and audio_desc as a pair for the SAME duration: spoken lines in audio_desc MUST be finishable inside that shot (Seedance 5–15s). Pace: ~2.0 Chinese chars/sec or ~1.6 English words/sec, plus ~4s tail after the last word. If a speech beat is too long, split shots or shorten the line — never leave unfinished sentences or dangling mid-actions.
+- Prefer fewer shots with richer in-shot motion over many brief cuts for silent/action beats. A single shot should often cover several beats of action that can fill 8–15 seconds of continuous video.
+- Plan visual_desc and audio_desc as a pair for the SAME duration: spoken lines in audio_desc MUST be finishable clearly inside that shot (Seedance 5–15s hard max). Clear pacing: ~1.7 Chinese chars/sec or ~1.35 English words/sec, plus ~1s lead-in before speech and ~5s tail after the last word (avoids rush / 吞字). Hard spoken budget for a 15s clip is roughly ≤15 Chinese chars or ≤12 English words inside quotes. If a speech beat is longer, SPLIT into another shot or shorten the line — never leave unfinished sentences, dangling mid-actions, or dialogue that forces time-compressed speech.
 - audio_desc is REQUIRED on every shot (never null/empty). Include spoken dialogue when present; otherwise write ambient SFX + BGM intent (e.g. "环境底噪与轻柔电影感背景音乐"). Do NOT leave dialogue only in visual_desc.
 - When a character speaks, ALWAYS prefix the line with their identifier_in_scene (e.g. 李薇：「……」 / Alice: "…") so downstream voice locking can keep the same timbre across shots.
 - Keep character names in visual descriptions and speaker fields consistent with the character list. In visual descriptions, enclose names in angle brackets (e.g., <Alice>), but not in dialogue or speaker fields.
 - When describing visual elements, it is necessary to indicate the position of the element within the frame. For example, Character A is on the left side of the frame, facing toward the right, with a table in front of him. The table is positioned slightly to the left of the center of the frame. Ensure that invisible elements are not included. For instance, do not describe someone behind a closed door if they cannot be seen.
 - Avoid unsafe content (violence, discrimination, etc.) in visual descriptions. Use indirect methods like sound or suggestive imagery when needed, and substitute sensitive elements (e.g., ketchup for blood).
-- Multiple short dialogue exchanges MAY share one shot when they happen in the same framing; do NOT create a new shot for every single line.
+- Multiple short dialogue exchanges MAY share one shot when they happen in the same framing AND the combined spoken payload still fits the clear-speech budget above; otherwise split. Do NOT create a new shot for every single syllable, but never merge lines that would force rushed delivery.
 - SHOT CONTINUITY (same scene only): Adjacent shots must form a continuous visual chain. Shot N+1's opening state must logically continue from shot N's ending state (pose, wardrobe, lighting mood, set, props). You may change camera (new cam_idx / shot size / angle), but do NOT reset the scene as if starting over. Do NOT apply this rule across different scenes.
 - Each shot's visual_desc must still be self-contained (no vague "same as before"), yet its opening beat must match the previous shot's closing beat so Seedance can match-cut first/last frames.
 - When the shot focuses on a character, describe which specific body part the focus is on.
