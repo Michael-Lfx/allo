@@ -142,6 +142,27 @@ describe('collectTurnDeliverables', () => {
     expect(items![0].sources[0].sourceMessageIds).toEqual([MSG_1]);
   });
 
+  test('keeps Windows verbatim artifact paths usable by the preview API', () => {
+    const result = collect([
+      candidate({
+        toolMessages: [
+          toolCall({
+            artifacts: [
+              artifact({
+                kind: 'image',
+                mime_type: 'image/jpeg',
+                path: `\\\\?\\${WORKSPACE.replace(/\//g, '\\')}\\outputs\\weather.jpg`,
+                relative_path: 'outputs/weather.jpg',
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+
+    expect(result.get(TURN_1)?.[0].absolutePath).toBe(`${WORKSPACE}/outputs/weather.jpg`);
+  });
+
   test('skips artifacts of non-completed tool calls', () => {
     const result = collect([
       candidate({

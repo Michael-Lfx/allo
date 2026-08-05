@@ -81,6 +81,12 @@ export interface CollectTurnDeliverablesOptions {
 
 const normalizeSlashes = (value: string): string => value.trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/');
 
+// Windows canonicalization may return a verbatim path (`\\?\\C:\\...`). Keep
+// the drive path usable by the file APIs before normalizing separators. The
+// generic slash normalizer would otherwise turn it into the invalid `/?/C:/...`.
+const normalizeAbsolutePath = (value: string): string =>
+  normalizeSlashes(value.trim().replace(/^\\\\\?\\/, ''));
+
 const isAbsolutePath = (value: string): boolean => value.startsWith('/') || /^[A-Za-z]:\//.test(value);
 
 const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
@@ -204,7 +210,7 @@ const draftFromArtifact = (
   sourceMessageIds: MessageId[]
 ): DeliverableDraft => ({
   path: artifact.relative_path || artifact.path,
-  ...(artifact.path ? { absolutePath: normalizeSlashes(artifact.path) } : {}),
+  ...(artifact.path ? { absolutePath: normalizeAbsolutePath(artifact.path) } : {}),
   tier: 'receipt',
   sizeBytes: artifact.size_bytes,
   sha256: artifact.sha256,
