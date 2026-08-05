@@ -2353,6 +2353,8 @@ export type I18nKey =
   | 'learning.reviewNext'
   | 'learning.reviewRatePrompt'
   | 'learning.reviewRecorded'
+  | 'learning.reviewSkip'
+  | 'learning.reviewSkipped'
   | 'learning.reviewSubmitAnswer'
   | 'learning.reviewWrongMarkedAgain'
   | 'learning.reviews'

@@ -910,6 +910,47 @@ impl LearningService {
         })
     }
 
+    /// Postpones a due review without counting it: the memory state stays
+    /// untouched and the item simply becomes due again tomorrow.
+    pub async fn skip_review(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+    ) -> Result<ReviewResult, AppError> {
+        let row = sqlx::query(
+            "SELECT r.stability_days, r.difficulty, r.review_count, r.lapse_count \
+             FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE r.review_item_id = ? AND e.user_id = ?",
+        )
+        .bind(review_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("review item {review_id}")))?;
+        let now = now_ms();
+        let due_at = now.saturating_add(SKIP_DELAY_MS);
+        sqlx::query(
+            "UPDATE learning_review_items SET due_at = ?, updated_at = ? \
+             WHERE review_item_id = ?",
+        )
+        .bind(due_at)
+        .bind(now)
+        .bind(review_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(ReviewResult {
+            id: review_id.clone(),
+            due_at,
+            stability_days: row.try_get("stability_days").map_err(internal)?,
+            difficulty: row.try_get("difficulty").map_err(internal)?,
+            review_count: row.try_get("review_count").map_err(internal)?,
+            lapse_count: row.try_get("lapse_count").map_err(internal)?,
+        })
+    }
+
     /// Answers the question attached to a due review. A wrong answer (or an
     /// admitted lapse via `forgot`) is immediately rated `again` (scheduling +
     /// mastery updated); a correct answer only records the attempt and waits
@@ -1595,6 +1636,9 @@ where
 fn internal(error: impl std::fmt::Display) -> AppError {
     AppError::Internal(error.to_string())
 }
+
+/// Skipping a due review defers it by a full day without rating it.
+const SKIP_DELAY_MS: i64 = 86_400_000;
 
 #[cfg(test)]
 mod tests {

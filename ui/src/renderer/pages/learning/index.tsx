@@ -139,6 +139,7 @@ function ReviewCard({
   onAnswer,
   onForget,
   onRate,
+  onSkip,
   onDismiss,
 }: {
   review: DueReview;
@@ -147,6 +148,7 @@ function ReviewCard({
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (reviewId: string, rating: ReviewRating) => void;
+  onSkip: (reviewId: string) => void;
   onDismiss: (reviewId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -238,6 +240,15 @@ function ReviewCard({
           >
             {t('learning.reviewForgot')}
           </Button>
+          <Button
+            size='small'
+            type='text'
+            disabled={locked}
+            loading={busy}
+            onClick={() => onSkip(review.id)}
+          >
+            {t('learning.reviewSkip')}
+          </Button>
         </div>
       )}
       {result !== null && result.correct && (
@@ -294,12 +305,14 @@ function ReviewQueue({
   onAnswer,
   onForget,
   onRate,
+  onSkip,
 }: {
   reviews: DueReview[];
   busyId: string | null;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (reviewId: string, rating: ReviewRating) => void;
+  onSkip: (reviewId: string) => void;
 }) {
   const { t } = useTranslation();
   const [dismissed, setDismissed] = useState<string[]>([]);
@@ -318,6 +331,7 @@ function ReviewQueue({
           onAnswer={onAnswer}
           onForget={onForget}
           onRate={onRate}
+          onSkip={onSkip}
           onDismiss={(reviewId) => setDismissed((current) => [...current, reviewId])}
         />
       ))}
@@ -1028,6 +1042,22 @@ const LearningPage: React.FC = () => {
     [load, t]
   );
 
+  const skipReview = useCallback(
+    async (reviewId: string) => {
+      setBusyId(reviewId);
+      try {
+        await learningApi.skipReview(reviewId);
+        Message.success(t('learning.reviewSkipped'));
+        await load();
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, t]
+  );
+
   const answerReview = useCallback(
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
@@ -1145,6 +1175,7 @@ const LearningPage: React.FC = () => {
           onAnswer={answerReview}
           onForget={forgetReview}
           onRate={rateReview}
+          onSkip={skipReview}
         />
       </section>
 

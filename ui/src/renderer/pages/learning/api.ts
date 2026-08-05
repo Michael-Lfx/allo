@@ -42,4 +42,6 @@ export const learningApi = {
     }),
   rateReview: (id: string, rating: ReviewRating) =>
     httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/rate`, { rating }),
+  skipReview: (id: string) =>
+    httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/skip`),
 };

@@ -41,6 +41,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/reviews/due", get(due_reviews))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
+        .route("/api/learning/reviews/{id}/skip", post(skip_review))
         .with_state(state)
 }
 
@@ -197,6 +198,17 @@ async fn answer_review(
             .service
             .answer_review(&id, &user.id, request.response, request.forgot)
             .await?,
+    )))
+}
+
+async fn skip_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ReviewResult>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.skip_review(&id, &user.id).await?,
     )))
 }
 

@@ -76,6 +76,8 @@
   "reviewConceptLabel": "Concept",
   "reviewSubmitAnswer": "Submit answer",
   "reviewForgot": "Forgot it",
+  "reviewSkip": "Skip",
+  "reviewSkipped": "Skipped — it will come back tomorrow",
   "reviewForgotMarked": "Marked as \"forgot\"; it will return shortly.",
   "reviewRatePrompt": "Correct. Rate how hard it was to recall:",
   "reviewWrongMarkedAgain": "Incorrect. Marked as \"forgot\"; it will return shortly.",
