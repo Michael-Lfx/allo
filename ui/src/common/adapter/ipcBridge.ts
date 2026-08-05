@@ -6422,6 +6422,28 @@ export interface IMediaCreditsCheckinResult {
   authenticated: boolean;
 }
 
+export interface IMediaTurnCreditUsageCall {
+  chatId: number;
+  modelName: string;
+  channelModelId?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  cacheTokens?: number;
+  creditConsumed: number;
+  callStatus: string;
+  createdAt?: string;
+}
+
+/** Flowy per-turn credit usage (`GET /api/media/credits/usage-by-turn`). */
+export interface IMediaTurnCreditUsage {
+  turnId: string;
+  sessionId: string;
+  callCount: number;
+  creditsConsumed: number;
+  calls: IMediaTurnCreditUsageCall[];
+  authenticated: boolean;
+}
+
 export interface IMediaModelOption {
   id: string;
   name: string;
@@ -6452,6 +6474,9 @@ export const media = {
   checkin: httpPost<IMediaCreditsCheckinResult, IMediaCreditsCheckinParams>(
     '/api/media/credits/checkin',
     (p) => ({ timeZone: p.timeZone })
+  ),
+  getCreditsUsageByTurn: httpGet<IMediaTurnCreditUsage, { turnId: string }>(
+    (p) => `/api/media/credits/usage-by-turn?turnId=${encodeURIComponent(p.turnId)}`
   ),
   listModels: httpGet<IMediaModelList, void>('/api/media/models'),
   workflowHistory: httpGet<IMediaWorkflowHistory, { limit?: number }>(

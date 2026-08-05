@@ -206,6 +206,44 @@ pub struct CreditsCheckinResponse {
     pub day_key: Option<i64>,
 }
 
+/// Aggregate credit usage for one agent turn (`GET /credits/usageByTurn`).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnCreditUsage {
+    pub turn_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub call_count: i32,
+    #[serde(default)]
+    pub credits_consumed: i64,
+    #[serde(default)]
+    pub calls: Vec<TurnCreditUsageCall>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnCreditUsageCall {
+    #[serde(default)]
+    pub chat_id: i64,
+    #[serde(default)]
+    pub model_name: String,
+    #[serde(default)]
+    pub channel_model_id: Option<i64>,
+    #[serde(default)]
+    pub prompt_tokens: Option<i64>,
+    #[serde(default)]
+    pub completion_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_tokens: Option<i64>,
+    #[serde(default)]
+    pub credit_consumed: i64,
+    #[serde(default)]
+    pub call_status: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientPackageRequest {

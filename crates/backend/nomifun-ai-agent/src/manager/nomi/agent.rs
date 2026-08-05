@@ -1348,10 +1348,16 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         engine.set_system_resource_inbox(None);
                         break 'accepted None;
                     }
-                    res = engine.execute_turn_with_content_for_source(
-                        current_content,
-                        &data.msg_id,
-                        &source_message_id,
+                    res = nomi_providers::with_flowy_billing_turn_id(
+                        // Reuse the turn's root msg_id as Flowy billing turnId so
+                        // every model/media call in this Agent Run aggregates under
+                        // the same GET /credits/usageByTurn key.
+                        data.msg_id.clone(),
+                        engine.execute_turn_with_content_for_source(
+                            current_content,
+                            &data.msg_id,
+                            &source_message_id,
+                        ),
                     ) => res,
                 };
 

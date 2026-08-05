@@ -2590,6 +2590,7 @@ export type I18nKey =
   | 'messages.toolSummary.skipped'
   | 'messages.toolSummary.waiting'
   | 'messages.turnCanceled'
+  | 'messages.turnCredits.consumed'
   | 'messages.turnDeliverables.open'
   | 'messages.turnDeliverables.reveal'
   | 'messages.turnDeliverables.showLess'

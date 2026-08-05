@@ -49,6 +49,46 @@ pub struct MediaCreditsResponse {
     pub authenticated: bool,
 }
 
+/// Per-turn Flowy credit usage (`GET /api/media/credits/usage-by-turn`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTurnCreditUsage {
+    pub turn_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub call_count: i32,
+    #[serde(default)]
+    pub credits_consumed: i64,
+    #[serde(default)]
+    pub calls: Vec<MediaTurnCreditUsageCall>,
+    /// False when the local session has no JWT (caller should hide the chip).
+    pub authenticated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTurnCreditUsageCall {
+    #[serde(default)]
+    pub chat_id: i64,
+    #[serde(default)]
+    pub model_name: String,
+    #[serde(default)]
+    pub channel_model_id: Option<i64>,
+    #[serde(default)]
+    pub prompt_tokens: Option<i64>,
+    #[serde(default)]
+    pub completion_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_tokens: Option<i64>,
+    #[serde(default)]
+    pub credit_consumed: i64,
+    #[serde(default)]
+    pub call_status: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
 /// Body for `POST /api/media/credits/checkin`. Wire field is `timeZone`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -108,6 +108,9 @@
   "copy": "Copy",
   "copySuccess": "Copied successfully",
   "copyFailed": "Failed to copy",
+  "turnCredits": {
+    "consumed": "{{credits}} credits this turn"
+  },
   "copyLastOutput.empty": "No response to copy yet",
   "copiedToClipboard": "Copied to clipboard",
   "downloadSuccess": "Download successful",

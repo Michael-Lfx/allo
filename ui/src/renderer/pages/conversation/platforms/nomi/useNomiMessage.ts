@@ -43,6 +43,7 @@ import {
 } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { processLocalCronResponse } from './localCronCommands';
+import { fetchAndPersistTurnCredits } from './fetchTurnCredits';
 import {
   getNomiHydrationLifecycleFence,
   shouldApplyNomiStreamEventToTurn,
@@ -627,6 +628,17 @@ export const useNomiMessage = (
             if (message.msg_id) {
               void processCompletedAssistantMessage(message.msg_id);
             }
+            // Flowy billing turnId == root turn id (msg_id at send time). Prefer
+            // explicit turn_id when the Finish row is a distinct terminal message.
+            const creditTurnId = message.turn_id ?? message.msg_id;
+            if (creditTurnId && !readOnly) {
+              void fetchAndPersistTurnCredits({
+                conversation_id,
+                turn_id: creditTurnId,
+                // Brief delay so the last model call can finish server-side billing.
+                delayMs: 800,
+              });
+            }
             reconcileAfterStreamTerminal();
           }
           break;
@@ -724,6 +736,14 @@ export const useNomiMessage = (
               detail: typeof message.data === 'string' ? message.data : undefined,
             });
             onError?.(message as IResponseMessage);
+            const creditTurnId = message.turn_id ?? message.msg_id;
+            if (creditTurnId && !readOnly) {
+              void fetchAndPersistTurnCredits({
+                conversation_id,
+                turn_id: creditTurnId,
+                delayMs: 800,
+              });
+            }
             reconcileAfterStreamTerminal();
           } else if (message.type === 'content') {
             // A terminal Agent Execution report is a self-contained projection,

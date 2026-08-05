@@ -1,13 +1,9 @@
 
 
-import {
-  preferKnowledgeWritebackState,
-  type IMessageText,
-  type KnowledgeWritebackState,
-  type KnowledgeWritebackStatus,
-} from '@/common/chat/chatLib';
+import { preferKnowledgeWritebackState, type IMessageText, type KnowledgeWritebackState, type KnowledgeWritebackStatus } from '@/common/chat/chatLib';
 import { ipcBridge } from '@/common';
 import { toDisplayText } from '@/common/chat/displayText';
+import type { TurnCreditUsageData } from '@/common/config/storage';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
@@ -16,6 +12,7 @@ import { CheckOne, CloseOne, Copy, Edit, Info, Loading } from '@icon-park/react'
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { emitter } from '@/renderer/utils/emitter';
 import { useMessageList } from '../hooks';
@@ -29,6 +26,7 @@ import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIG
 import { parseMessageFileMarker } from './messageFileMarker';
 import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
+import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 
 const BUBBLE_ENTER_FRESH_MS = 1500;
 
@@ -342,6 +340,46 @@ const MessageText: React.FC<{
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const shouldShowActions = !hideActions;
+
+  const turnCreditKey = message.turn_id ?? message.msg_id ?? message.message_id;
+  const conversationId = conversationContext?.conversation_id;
+  // Conversation page already hydrates this SWR key — reuse it for persisted credits.
+  const { data: conversation } = useSWR(
+    conversationId ? `conversation/${conversationId}` : null,
+    () => getConversationOrNull(conversationId!)
+  );
+  const [liveTurnCredits, setLiveTurnCredits] = useState<TurnCreditUsageData | null>(null);
+  const persistedTurnCredits = useMemo(() => {
+    if (!turnCreditKey || !conversation || conversation.type !== 'nomi') return null;
+    return conversation.extra?.turn_credit_usage?.[String(turnCreditKey)] ?? null;
+  }, [conversation, turnCreditKey]);
+  useEffect(() => {
+    setLiveTurnCredits(null);
+  }, [turnCreditKey]);
+  useEffect(() => {
+    if (!turnCreditKey || !conversationId) return;
+    const handler = (payload: {
+      conversation_id: NonNullable<typeof conversationId>;
+      turn_id: NonNullable<typeof turnCreditKey>;
+      usage: TurnCreditUsageData;
+    }) => {
+      if (payload.conversation_id !== conversationId) return;
+      if (String(payload.turn_id) !== String(turnCreditKey)) return;
+      setLiveTurnCredits(payload.usage);
+    };
+    emitter.on('nomi.turn_credits.updated', handler);
+    return () => {
+      emitter.off('nomi.turn_credits.updated', handler);
+    };
+  }, [conversationId, turnCreditKey]);
+  const turnCredits = liveTurnCredits ?? persistedTurnCredits;
+  // Show whenever the server recorded at least one billed call, or a positive
+  // aggregate (covers laggy callCount while creditsConsumed already landed).
+  const showTurnCredits =
+    !isUserMessage &&
+    shouldShowActions &&
+    turnCredits != null &&
+    (turnCredits.callCount > 0 || turnCredits.creditsConsumed > 0);
   // The list is virtualized, so off-screen rows unmount and remount on
   // scroll-back. Gating on arrival time keeps the entry animation to genuinely
   // new messages instead of replaying the whole history on every scroll.
@@ -365,10 +403,11 @@ const MessageText: React.FC<{
     return (lastRight?.message_id ?? lastRight?.msg_id) === editableMessageId;
   }, [editableMessageId, isUserMessage, messageList]);
 
-  // 过滤空内容，避免渲染空DOM
   const hasRenderableContent = contentToRender.trim().length > 0;
 
-  if (!hasRenderableContent && !writebackState) {
+  // actionsOnly rows still need the actions chrome even if the mirrored
+  // assistant text was filtered to empty (rare but legal).
+  if (!actionsOnly && !hasRenderableContent && !writebackState) {
     return null;
   }
 
@@ -455,6 +494,31 @@ const MessageText: React.FC<{
     >
       {copyButton}
       {editButton}
+      {showTurnCredits && turnCredits ? (
+        <Tooltip
+          content={
+            turnCredits.calls && turnCredits.calls.length > 0
+              ? turnCredits.calls
+                  .map(
+                    (call) =>
+                      `${call.modelName || 'model'}: ${call.creditConsumed}`
+                  )
+                  .join('\n')
+              : undefined
+          }
+          disabled={!turnCredits.calls?.length}
+        >
+          <span
+            data-testid='turn-credits'
+            className='message-text-actions__credits text-12px leading-20px text-inherit select-none tabular-nums'
+          >
+            {t('messages.turnCredits.consumed', {
+              credits: turnCredits.creditsConsumed,
+              defaultValue: '本轮消耗 {{credits}} 积分',
+            })}
+          </span>
+        </Tooltip>
+      ) : null}
       {message.created_at && (
         <span className='message-text-actions__time text-12px leading-20px text-inherit select-none'>
           {formatMessageTime(message.created_at)}

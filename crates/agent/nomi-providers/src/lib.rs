@@ -1,9 +1,14 @@
 pub mod anthropic;
 pub mod anthropic_shared;
 pub mod bedrock;
+pub mod billing_turn;
 pub mod openai;
 pub mod retry;
 pub mod vertex;
+
+pub use billing_turn::{
+    FLOWY_TURN_ID_HEADER, current_flowy_billing_turn_id, with_flowy_billing_turn_id,
+};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};

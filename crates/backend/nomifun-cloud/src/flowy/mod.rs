@@ -190,6 +190,25 @@ impl FlowyApiClient {
             .await
     }
 
+    /// Query credits consumed by one agent turn (`X-Flowy-Turn-Id`).
+    pub async fn get_credits_usage_by_turn(
+        &self,
+        session: &ServerSession,
+        turn_id: &str,
+    ) -> Result<TurnCreditUsage, ServerClientError> {
+        let turn_id = turn_id.trim();
+        if turn_id.is_empty() || turn_id.len() > 64 {
+            return Err(ServerClientError::Http(
+                "turnId must be 1..=64 characters after trim".into(),
+            ));
+        }
+        let path = format!(
+            "/credits/usageByTurn?turnId={}",
+            form_urlencode(turn_id)
+        );
+        self.get_data(&path, Some(session)).await
+    }
+
     pub async fn send_bind_email_code(
         &self,
         session: &ServerSession,
