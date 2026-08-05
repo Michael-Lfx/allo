@@ -17,6 +17,21 @@ function newLocalId(): string {
   return `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Avoid using camera / WeChat export stems as cast names (e.g. `05382109.jpg`). */
+export function suggestCameoCharacterName(fileName: string, indexInBatch: number): string {
+  const stem = fileName.replace(/\.[^.]+$/, '').trim();
+  if (!stem) return `角色${indexInBatch + 1}`;
+  const lower = stem.toLowerCase();
+  if (/^\d{4,}$/.test(stem)) return `角色${indexInBatch + 1}`;
+  if (/^(img[_-]?|dscn?|photo[_-]?|pic[_-]?|mmexport|wx_camera[_-]?|screenshot)/i.test(lower)) {
+    return `角色${indexInBatch + 1}`;
+  }
+  if (/^[0-9a-f]{6,}$/i.test(stem) && !/[\u4e00-\u9fff]/.test(stem)) {
+    return `角色${indexInBatch + 1}`;
+  }
+  return stem.slice(0, 48);
+}
+
 const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disabled }) => {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -38,9 +53,9 @@ const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disa
       const room = Math.max(0, MAX_CAMEOS - value.length);
       const slice = list.slice(0, room);
       if (slice.length === 0) return;
-      const added: CameoDraftItem[] = slice.map((file) => ({
+      const added: CameoDraftItem[] = slice.map((file, i) => ({
         localId: newLocalId(),
-        characterName: file.name.replace(/\.[^.]+$/, '').slice(0, 48) || 'Character',
+        characterName: suggestCameoCharacterName(file.name, value.length + i),
         description: '',
         file,
         previewUrl: URL.createObjectURL(file),
@@ -140,7 +155,7 @@ const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disa
                   value={item.characterName}
                   disabled={disabled}
                   placeholder={t('videoGeneration.create.cameo.namePlaceholder', {
-                    defaultValue: '角色名（需与故事中角色对应）',
+                    defaultValue: '角色名（请改成故事里的名字，如「小」）',
                   })}
                   onChange={(characterName) => patch(item.localId, { characterName })}
                 />

@@ -14,7 +14,9 @@ use nomifun_cloud::{
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
-use crate::media_local::{is_usable_video_file, write_image_bytes_atomic, write_video_bytes_atomic};
+use crate::media_local::{
+    is_usable_video_file, scrub_unusable_video, write_image_bytes_atomic, write_video_bytes_atomic,
+};
 
 /// Cap concurrent Flowy video create+poll calls process-wide to **one**.
 const GLOBAL_VIDEO_CONCURRENCY: usize = 1;
@@ -146,7 +148,8 @@ impl VimaxVideo for FlowyVideo {
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
         }
-        // Resume: never re-bill for a clip already on disk.
+        // Resume: never re-bill for a clip already on disk (scrub drops corrupt first).
+        scrub_unusable_video(out_path).await?;
         if is_usable_video_file(out_path) {
             return Ok(());
         }

@@ -266,14 +266,31 @@ pub fn delete_photo(working_dir: &Path, photo_id: &str) -> VimaxResult<()> {
 }
 
 /// Persist bound character identifiers after planning.
+///
+/// Also renames each photo's `character_name` to the matched script
+/// `identifier_in_scene` so UI / re-plan no longer show camera file stems
+/// (e.g. `05382109` → `小`).
 pub fn set_bindings(
     working_dir: &Path,
     bindings: &[(String, String)],
 ) -> VimaxResult<CameoManifest> {
     let mut manifest = load_manifest(working_dir)?;
     for (photo_id, identifier) in bindings {
+        let id_name = normalize_character_name(identifier);
+        if id_name.is_empty() {
+            continue;
+        }
         if let Some(entry) = manifest.photos.iter_mut().find(|p| p.id == *photo_id) {
-            entry.bound_identifier = Some(identifier.clone());
+            entry.bound_identifier = Some(id_name.clone());
+            if entry.character_name.trim() != id_name {
+                tracing::info!(
+                    photo_id = %photo_id,
+                    from = %entry.character_name,
+                    to = %id_name,
+                    "renamed cameo character_name to script identifier"
+                );
+                entry.character_name = id_name;
+            }
             entry.updated_at = chrono::Local::now().to_rfc3339();
         }
     }
@@ -286,10 +303,13 @@ pub fn normalize_character_name(name: &str) -> String {
 }
 
 pub fn names_match(a: &str, b: &str) -> bool {
-    normalize_key(a) == normalize_key(b) && !normalize_key(a).is_empty()
+    let ka = normalize_match_key(a);
+    let kb = normalize_match_key(b);
+    !ka.is_empty() && ka == kb
 }
 
-fn normalize_key(s: &str) -> String {
+/// Lowercased key with spaces / `_` / `-` stripped — shared by exact + fuzzy cameo match.
+pub fn normalize_match_key(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
         .flat_map(|c| c.to_lowercase())
@@ -384,7 +404,19 @@ mod tests {
         set_bindings(working, &[(entry.id.clone(), "Eve_Prime".into())]).unwrap();
         let got = get_photo(working, &entry.id).unwrap();
         assert_eq!(got.bound_identifier.as_deref(), Some("Eve_Prime"));
+        assert_eq!(got.character_name, "Eve_Prime");
         assert!(names_match("Eve Prime", "eve_prime"));
+    }
+
+    #[test]
+    fn set_bindings_renames_anonymous_cameo_to_script_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path();
+        let entry = upload_photo(working, &tiny_jpeg(), "05382109", "").unwrap();
+        set_bindings(working, &[(entry.id.clone(), "小".into())]).unwrap();
+        let got = get_photo(working, &entry.id).unwrap();
+        assert_eq!(got.character_name, "小");
+        assert_eq!(got.bound_identifier.as_deref(), Some("小"));
     }
 
     #[test]

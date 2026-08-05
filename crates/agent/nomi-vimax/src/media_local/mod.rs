@@ -13,6 +13,19 @@ use tokio::process::Command;
 
 use crate::error::{VimaxError, VimaxResult};
 
+/// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
+fn ffmpeg_command(bin: impl AsRef<Path>) -> Command {
+    let mut cmd = Command::new(bin.as_ref());
+    // CREATE_NO_WINDOW (0x08000000): Allo is a GUI app; bare `Command::new(ffmpeg)`
+    // otherwise pops a CMD window on every last-frame extract / concat.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// PNG / JPEG / WEBP magic — used to reject HTML error bodies saved as `.png`.
 pub fn image_magic_kind(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
@@ -60,11 +73,17 @@ pub fn write_image_bytes_as_png(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     Ok(())
 }
 
-/// Sidecar path used for atomic image writes (`photo.png` → `photo.png.part`).
+/// Sidecar path used for atomic image writes (`photo.png` → `.photo.png.part-123.png`).
+///
+/// Keep a real `.png` suffix so decoders/savers never infer format from `.part` alone,
+/// and include the pid to avoid collisions when two cameos overwrite the same dest.
 pub fn image_part_path(out_path: &Path) -> PathBuf {
-    let mut s = out_path.as_os_str().to_owned();
-    s.push(".part");
-    PathBuf::from(s)
+    let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
+    let name = out_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("image.png");
+    parent.join(format!(".{name}.part-{}.png", std::process::id()))
 }
 
 /// Decode image bytes, normalize to PNG via a `.part` sidecar, then rename into place.
@@ -74,17 +93,60 @@ pub fn write_image_bytes_atomic(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     }
     let part = image_part_path(out_path);
     write_image_bytes_as_png(bytes, &part)?;
-    if out_path.exists() {
-        let _ = std::fs::remove_file(out_path);
+    replace_file_atomic(&part, out_path)
+}
+
+/// Copy an on-disk image into place without re-encoding (cameo photos are already PNG).
+pub fn copy_image_file_atomic(src: &Path, out_path: &Path) -> VimaxResult<()> {
+    if !src.is_file() {
+        return Err(VimaxError::Media(format!(
+            "copy source missing: {}",
+            src.display()
+        )));
     }
-    std::fs::rename(&part, out_path).map_err(|e| {
-        let _ = std::fs::remove_file(&part);
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    let part = image_part_path(out_path);
+    std::fs::copy(src, &part).map_err(|e| {
         VimaxError::Media(format!(
-            "failed to finalize image {}: {e}",
-            out_path.display()
+            "copy {} → {}: {e}",
+            src.display(),
+            part.display()
         ))
     })?;
-    Ok(())
+    replace_file_atomic(&part, out_path)
+}
+
+/// Move `part` onto `out_path`, with a Windows-friendly copy fallback.
+fn replace_file_atomic(part: &Path, out_path: &Path) -> VimaxResult<()> {
+    if !part.is_file() {
+        return Err(VimaxError::Media(format!(
+            "failed to finalize image {}: part sidecar missing at {}",
+            out_path.display(),
+            part.display()
+        )));
+    }
+    if out_path.exists() {
+        // Best-effort; Windows may still block replace if a preview has the file open.
+        let _ = std::fs::remove_file(out_path);
+    }
+    match std::fs::rename(part, out_path) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => match std::fs::copy(part, out_path) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(part);
+                Ok(())
+            }
+            Err(copy_err) => {
+                let _ = std::fs::remove_file(part);
+                Err(VimaxError::Media(format!(
+                    "failed to finalize image {}: rename={rename_err}; copy={copy_err}",
+                    out_path.display()
+                )))
+            }
+        },
+    }
 }
 
 /// Remove incomplete / unusable image artifacts so resume will regenerate them.
@@ -216,7 +278,7 @@ fn ffprobe_executable(ffmpeg: &Path) -> PathBuf {
 /// Probe container duration in seconds (ffprobe preferred; ffmpeg `-i` fallback).
 async fn probe_duration_secs(ffmpeg: &Path, input: &Path) -> Option<f64> {
     let ffprobe = ffprobe_executable(ffmpeg);
-    if let Ok(output) = Command::new(&ffprobe)
+    if let Ok(output) = ffmpeg_command(&ffprobe)
         .args([
             "-v",
             "error",
@@ -244,7 +306,7 @@ async fn probe_duration_secs(ffmpeg: &Path, input: &Path) -> Option<f64> {
     }
 
     // essentials installs sometimes only expose ffmpeg.exe on PATH — parse banner.
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg_command(ffmpeg)
         .args(["-hide_banner", "-i"])
         .arg(input)
         .args(["-f", "null", "-"])
@@ -386,6 +448,13 @@ async fn normalize_clip_for_concat(
 ) -> VimaxResult<()> {
     let input_s = input.to_str().unwrap_or("");
     let output_s = output.to_str().unwrap_or("");
+    if !is_usable_video_file(input) {
+        let _ = scrub_unusable_video(input).await;
+        return Err(VimaxError::Media(format!(
+            "concat input is not a valid video container (removed so resume can regenerate): {}",
+            input.display()
+        )));
+    }
     let dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
     let dur_arg = if dur > 0.05 {
         format!("{dur:.3}")
@@ -432,8 +501,8 @@ async fn normalize_clip_for_concat(
     }
     args.push(output_s.into());
 
-    let status = run_ffmpeg_owned(ffmpeg, &args).await?;
-    if status.success() && is_usable_video_file(output) {
+    let (ok_a, err_a) = run_ffmpeg_owned_capture(ffmpeg, &args).await?;
+    if ok_a && is_usable_video_file(output) {
         return Ok(());
     }
     let _ = tokio::fs::remove_file(output).await;
@@ -480,19 +549,46 @@ async fn normalize_clip_for_concat(
     }
     args2.push(output_s.into());
 
-    let status2 = run_ffmpeg_owned(ffmpeg, &args2).await?;
-    if !status2.success() || !is_usable_video_file(output) {
+    let (ok_b, err_b) = run_ffmpeg_owned_capture(ffmpeg, &args2).await?;
+    if ok_b && is_usable_video_file(output) {
+        return Ok(());
+    }
+    let _ = tokio::fs::remove_file(output).await;
+
+    // Corrupt / truncated downloads often pass the old size-only check and only
+    // fail here (ffmpeg AVERROR_INVALIDDATA = -1094995529). Drop the bad file
+    // so "resume from checkpoint" regenerates the scene instead of looping.
+    let detail = ffmpeg_stderr_hint(&err_b).or_else(|| ffmpeg_stderr_hint(&err_a));
+    let looks_corrupt = detail
+        .as_deref()
+        .is_some_and(|s| {
+            let lower = s.to_ascii_lowercase();
+            lower.contains("invalid data")
+                || lower.contains("moov atom not found")
+                || lower.contains("error while decoding")
+                || lower.contains("could not find codec")
+        });
+    if looks_corrupt || !video_file_has_magic(input) {
+        let _ = tokio::fs::remove_file(input).await;
         return Err(VimaxError::Media(format!(
-            "ffmpeg normalize failed for {} (exit {:?})",
+            "scene/shot video is corrupt or unreadable (removed so resume can regenerate): {}{}",
             input.display(),
-            status2.code()
+            detail
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
         )));
     }
-    Ok(())
+    Err(VimaxError::Media(format!(
+        "ffmpeg normalize failed for {}{}",
+        input.display(),
+        detail
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
+    )))
 }
 
 async fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> VimaxResult<std::process::ExitStatus> {
-    Command::new(ffmpeg)
+    ffmpeg_command(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -506,7 +602,7 @@ async fn run_ffmpeg_owned(
     ffmpeg: &Path,
     args: &[String],
 ) -> VimaxResult<std::process::ExitStatus> {
-    Command::new(ffmpeg)
+    ffmpeg_command(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -514,6 +610,51 @@ async fn run_ffmpeg_owned(
         .status()
         .await
         .map_err(|e| VimaxError::Media(format!("ffmpeg spawn: {e}")))
+}
+
+/// Run ffmpeg and return `(success, stderr)`.
+async fn run_ffmpeg_owned_capture(
+    ffmpeg: &Path,
+    args: &[String],
+) -> VimaxResult<(bool, String)> {
+    let output = ffmpeg_command(ffmpeg)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| VimaxError::Media(format!("ffmpeg spawn: {e}")))?;
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    Ok((output.status.success(), err))
+}
+
+fn ffmpeg_stderr_hint(stderr: &str) -> Option<String> {
+    let line = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .rev()
+        .find(|l| {
+            let lower = l.to_ascii_lowercase();
+            lower.contains("error")
+                || lower.contains("invalid")
+                || lower.contains("failed")
+                || lower.contains("moov")
+        })
+        .or_else(|| {
+            stderr
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .last()
+        })?;
+    let trimmed = if line.chars().count() > 240 {
+        format!("{}…", line.chars().take(240).collect::<String>())
+    } else {
+        line.to_string()
+    };
+    Some(trimmed)
 }
 
 /// Extract the last frame of `video_path` to PNG at `out_path`.
@@ -688,11 +829,38 @@ pub async fn extract_new_camera_frame(video_path: &Path, out_path: &Path) -> Vim
 /// Minimum size for a "usable" video artifact (filters empty / truncated downloads).
 pub const MIN_USABLE_VIDEO_BYTES: u64 = 4096;
 
-/// True when `path` exists and looks like a completed video download.
+/// MP4/MOV (`ftyp`) / WebM / AVI magic — rejects HTML/JSON error bodies saved as `.mp4`.
+pub fn video_magic_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        Some("mp4")
+    } else if bytes.len() >= 4 && bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        Some("webm")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"AVI " {
+        Some("avi")
+    } else {
+        None
+    }
+}
+
+fn video_file_has_magic(path: &Path) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 32];
+    use std::io::Read;
+    let n = f.read(&mut head).unwrap_or(0);
+    video_magic_kind(&head[..n]).is_some()
+}
+
+/// True when `path` exists, is large enough, and looks like a real video container.
 pub fn is_usable_video_file(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.len() >= MIN_USABLE_VIDEO_BYTES)
-        .unwrap_or(false)
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() < MIN_USABLE_VIDEO_BYTES {
+        return false;
+    }
+    video_file_has_magic(path)
 }
 
 /// Sidecar path used for atomic downloads (`video.mp4` → `video.mp4.part`).
@@ -714,6 +882,13 @@ pub async fn write_video_bytes_atomic(out_path: &Path, bytes: &[u8]) -> VimaxRes
             out_path.display()
         )));
     }
+    if video_magic_kind(bytes).is_none() {
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(80)]);
+        return Err(VimaxError::Video(format!(
+            "downloaded video is not a recognizable container for {} (head={head:?})",
+            out_path.display()
+        )));
+    }
     let part = video_part_path(out_path);
     tokio::fs::write(&part, bytes).await?;
     if out_path.exists() {
@@ -728,14 +903,41 @@ pub async fn write_video_bytes_atomic(out_path: &Path, bytes: &[u8]) -> VimaxRes
     Ok(())
 }
 
-/// Remove incomplete / too-small video artifacts so resume will regenerate them.
+/// Remove incomplete / too-small / undecodable video artifacts so resume regenerates them.
+///
+/// Checks size + container magic first; if those pass, probes with ffprobe/ffmpeg so
+/// truncated MP4s that still have an `ftyp` header are not treated as finished.
 pub async fn scrub_unusable_video(path: &Path) -> VimaxResult<()> {
     let part = video_part_path(path);
     if part.exists() {
         let _ = tokio::fs::remove_file(&part).await;
     }
-    if path.exists() && !is_usable_video_file(path) {
+    if !path.exists() {
+        return Ok(());
+    }
+    if !is_usable_video_file(path) {
         let _ = tokio::fs::remove_file(path).await;
+        return Ok(());
+    }
+    // Magic OK but body may be truncated (common Seedance / network partial write).
+    match ensure_ffmpeg_ready().await {
+        Ok(ffmpeg) => {
+            if probe_duration_secs(&ffmpeg, path).await.is_none() {
+                tracing::warn!(
+                    video = %path.display(),
+                    "scrubbing video that looks like a container but has no probeable duration"
+                );
+                let _ = tokio::fs::remove_file(path).await;
+            }
+        }
+        Err(e) => {
+            // Don't delete a seemingly valid file just because ffmpeg isn't installed yet.
+            tracing::debug!(
+                video = %path.display(),
+                error = %e,
+                "skipping duration probe during scrub (ffmpeg unavailable)"
+            );
+        }
     }
     Ok(())
 }
@@ -746,14 +948,27 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn usable_video_requires_min_size() {
+    fn usable_video_requires_min_size_and_magic() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v.mp4");
         assert!(!is_usable_video_file(&path));
         std::fs::write(&path, vec![0u8; 100]).unwrap();
         assert!(!is_usable_video_file(&path));
+        // Large but not a container → reject (old size-only check would accept).
         std::fs::write(&path, vec![0u8; MIN_USABLE_VIDEO_BYTES as usize]).unwrap();
+        assert!(!is_usable_video_file(&path));
+        std::fs::write(&path, fake_mp4_bytes(MIN_USABLE_VIDEO_BYTES as usize)).unwrap();
         assert!(is_usable_video_file(&path));
+        assert_eq!(video_magic_kind(&fake_mp4_bytes(32)), Some("mp4"));
+        assert!(video_magic_kind(b"<html>error</html>").is_none());
+    }
+
+    fn fake_mp4_bytes(len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len.max(12)];
+        v[0..4].copy_from_slice(&20u32.to_be_bytes());
+        v[4..8].copy_from_slice(b"ftyp");
+        v[8..12].copy_from_slice(b"isom");
+        v
     }
 
     #[test]
@@ -769,7 +984,7 @@ mod tests {
     async fn atomic_write_replaces_safely() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.mp4");
-        let bytes = vec![1u8; MIN_USABLE_VIDEO_BYTES as usize];
+        let bytes = fake_mp4_bytes(MIN_USABLE_VIDEO_BYTES as usize);
         write_video_bytes_atomic(&path, &bytes).await.unwrap();
         assert!(is_usable_video_file(&path));
         assert!(!video_part_path(&path).exists());
@@ -778,6 +993,17 @@ mod tests {
         drop(f);
         assert!(!is_usable_video_file(&path));
         scrub_unusable_video(&path).await.unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn atomic_write_rejects_html_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.mp4");
+        let mut bytes = b"<html>gateway timeout</html>".to_vec();
+        bytes.resize(MIN_USABLE_VIDEO_BYTES as usize, b' ');
+        let err = write_video_bytes_atomic(&path, &bytes).await.unwrap_err();
+        assert!(err.to_string().contains("recognizable container"));
         assert!(!path.exists());
     }
 
@@ -854,6 +1080,34 @@ mod tests {
         std::fs::write(&path, b"<html>").unwrap();
         scrub_unusable_image(&path).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn image_part_path_keeps_png_suffix() {
+        let p = PathBuf::from("character_portraits/0_小雅/小雅_cameo.png");
+        let part = image_part_path(&p);
+        let name = part.file_name().and_then(|s| s.to_str()).unwrap();
+        assert!(name.starts_with(".小雅_cameo.png.part-"));
+        assert!(name.ends_with(".png"));
+    }
+
+    #[test]
+    fn copy_image_file_atomic_overwrites() {
+        use image::{ImageFormat, Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.png");
+        let dest = dir.path().join("nested").join("小雅_cameo.png");
+        let mut png = Vec::new();
+        RgbImage::from_pixel(6, 6, Rgb([1, 2, 3]))
+            .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&src, &png).unwrap();
+        copy_image_file_atomic(&src, &dest).unwrap();
+        assert!(is_usable_image_file(&dest));
+        // Second copy overwrites without leaving part sidecars.
+        copy_image_file_atomic(&src, &dest).unwrap();
+        assert!(is_usable_image_file(&dest));
+        assert!(!image_part_path(&dest).exists());
     }
 
     #[test]
@@ -943,7 +1197,7 @@ mod tests {
         assert!(is_usable_video_file(&out));
 
         // Sample the last ~2s of the film; mean_volume must not be -inf.
-        let detect = Command::new(&ffmpeg)
+        let detect = ffmpeg_command(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-ss",
