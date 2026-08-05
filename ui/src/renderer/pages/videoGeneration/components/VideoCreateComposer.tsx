@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, InputNumber } from '@arco-design/web-react';
+import { Button, Input } from '@arco-design/web-react';
 import { BookOpen, FileText, Lightning, SettingTwo, VideoOne } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import type { CameoDraftItem, VimaxWorkflow } from '../types';
@@ -13,12 +13,9 @@ import {
   normalizeSeedanceAspectRatio,
   type SeedanceAspectRatio,
 } from '../aspectRatios';
-import {
-  CREDITS_PER_SECOND,
-  formatDurationCredits,
-} from '../durationCredits';
 import AspectRatioPicker from './AspectRatioPicker';
 import CameoCastEditor from './CameoCastEditor';
+import DurationTimelineBar from './DurationTimelineBar';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
 import VisualStyleSelect from './VisualStyleSelect';
 import styles from '../index.module.css';
@@ -294,32 +291,14 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
           {advancedOpen ? (
             <div className='mt-12px flex flex-col gap-12px rd-12px bg-[var(--color-fill-1)] p-12px'>
               <div className='grid grid-cols-1 gap-10px md:grid-cols-2'>
-                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.workspace.source.durationLabel', {
-                    defaultValue: '目标时长（秒）',
-                  })}
-                  <InputNumber
-                    value={draft.targetDurationSecs}
-                    onChange={(value) =>
-                      setDraft((current) => ({
-                        ...current,
-                        targetDurationSecs: typeof value === 'number' ? value : 30,
-                      }))
-                    }
-                    min={5}
-                    max={180}
-                    step={5}
-                    suffix='s'
-                    disabled={loading}
-                  />
-                  <span className='text-11px text-[var(--color-text-4)]'>
-                    {t('videoGeneration.workspace.source.durationCreditsHint', {
-                      credits: formatDurationCredits(draft.targetDurationSecs),
-                      rate: CREDITS_PER_SECOND,
-                      defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
-                    })}
-                  </span>
-                </label>
+                <DurationTimelineBar
+                  wide
+                  value={draft.targetDurationSecs}
+                  disabled={loading}
+                  onChange={(targetDurationSecs) =>
+                    setDraft((current) => ({ ...current, targetDurationSecs }))
+                  }
+                />
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>
                     {t('videoGeneration.workspace.source.aspectLabel', {
@@ -334,7 +313,7 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                     disabled={loading}
                   />
                 </div>
-                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
+                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>
                     {t('videoGeneration.workspace.source.styleLabel', { defaultValue: '视觉风格' })}
                   </span>

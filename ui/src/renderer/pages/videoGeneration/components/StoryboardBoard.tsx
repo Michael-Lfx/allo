@@ -1,8 +1,7 @@
-
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Spin } from '@arco-design/web-react';
-import { Edit, Music, VideoOne } from '@icon-park/react';
+import { Edit, LoadingFour, Music, VideoOne } from '@icon-park/react';
 import { getArtifact, loadArtifactMediaUrl } from '../api';
 import {
   buildStoryboardScenesFromStoryboards,
@@ -11,7 +10,12 @@ import {
   type StoryboardScene,
   type StoryboardShot,
 } from '../artifactPresentation';
-import type { ArtifactNode } from '../types';
+import {
+  activeVideoGenerationTarget,
+  resolveStoryboardVideoStatus,
+  type StoryboardVideoSlotStatus,
+} from '../storyboardVideoStatus';
+import type { ArtifactNode, SessionStatus } from '../types';
 import styles from '../index.module.css';
 
 const TextArea = Input.TextArea;
@@ -19,6 +23,8 @@ const TextArea = Input.TextArea;
 interface StoryboardBoardProps {
   sessionId: string;
   artifacts: ArtifactNode[];
+  /** Live pipeline status — drives per-shot Video pending / Generating badges. */
+  runStatus?: SessionStatus | null;
   disabled?: boolean;
   revising?: boolean;
   /** Persist edited Visual / audio direction for the active shot. */
@@ -34,10 +40,64 @@ interface SceneMediaProps {
   video?: boolean;
   compact?: boolean;
   alt: string;
+  videoStatus?: StoryboardVideoSlotStatus;
 }
 
-const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact, alt }) => {
+const VideoStatusPlaceholder: React.FC<{
+  compact?: boolean;
+  status: Exclude<StoryboardVideoSlotStatus, 'ready'>;
+}> = ({ compact, status }) => {
   const { t } = useTranslation();
+  const generating = status === 'generating';
+  return (
+    <div
+      className={[
+        styles.videoStatusPlaceholder,
+        generating ? styles.videoStatusGenerating : styles.videoStatusPending,
+        compact ? styles.videoStatusCompact : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      role='status'
+      aria-live={generating ? 'polite' : undefined}
+    >
+      {generating ? (
+        <LoadingFour theme='outline' size={compact ? 16 : 28} className={styles.videoStatusIcon} />
+      ) : (
+        <VideoOne theme='outline' size={compact ? 16 : 28} className={styles.videoStatusIcon} />
+      )}
+      <div className={styles.videoStatusLabel}>
+        {generating
+          ? t('videoGeneration.studio.storyboard.videoGenerating', {
+              defaultValue: 'Video generating',
+            })
+          : t('videoGeneration.studio.storyboard.videoPending', {
+              defaultValue: 'Video pending',
+            })}
+      </div>
+      {compact ? null : (
+        <div className={styles.videoStatusHint}>
+          {generating
+            ? t('videoGeneration.studio.storyboard.videoGeneratingHint', {
+                defaultValue: 'This shot is rendering now…',
+              })
+            : t('videoGeneration.studio.storyboard.videoPendingHint', {
+                defaultValue: 'Shot videos appear here after film generation',
+              })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const SceneMedia: React.FC<SceneMediaProps> = ({
+  sessionId,
+  path,
+  video,
+  compact,
+  alt,
+  videoStatus = 'pending',
+}) => {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -75,41 +135,12 @@ const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact
     [url]
   );
 
-  if (!path) {
-    return (
-      <div
-        className={`flex flex-col items-center justify-center text-center ${
-          compact ? 'gap-4px px-8px' : 'gap-8px px-24px'
-        }`}
-        role='status'
-      >
-        <VideoOne
-          theme='outline'
-          size={compact ? 18 : 30}
-          className='text-white/35'
-        />
-        <div
-          className={`font-600 text-white/72 ${compact ? 'text-10px leading-14px' : 'text-13px'}`}
-        >
-          {t('videoGeneration.studio.storyboard.videoPending', {
-            defaultValue: 'Video pending',
-          })}
-        </div>
-        {compact ? null : (
-          <div className='max-w-320px text-12px leading-18px text-white/45'>
-            {t('videoGeneration.studio.storyboard.videoPendingHint', {
-              defaultValue: 'Shot videos appear here after film generation',
-            })}
-          </div>
-        )}
-      </div>
-    );
-  }
-  if (failed) {
-    return <VideoOne theme='outline' size={compact ? 20 : 34} className='opacity-35' />;
-  }
-  if (!url) return <Spin size={compact ? 12 : 18} />;
-  if (video) {
+  // Ready clip — show the video player / filmstrip preview.
+  if (video && path) {
+    if (failed) {
+      return <VideoOne theme='outline' size={compact ? 20 : 34} className='opacity-35' />;
+    }
+    if (!url) return <Spin size={compact ? 12 : 18} />;
     return (
       <video
         src={url}
@@ -121,12 +152,29 @@ const SceneMedia: React.FC<SceneMediaProps> = ({ sessionId, path, video, compact
       />
     );
   }
-  return <img src={url} alt={alt} className='h-full w-full object-cover' />;
+
+  // Pending / generating — optional still underneath a high-contrast status chip.
+  const status: Exclude<StoryboardVideoSlotStatus, 'ready'> =
+    videoStatus === 'generating' ? 'generating' : 'pending';
+
+  if (path && url && !failed) {
+    return (
+      <div className={styles.videoStatusMediaWrap}>
+        <img src={url} alt={alt} className='h-full w-full object-cover opacity-50' />
+        <div className={styles.videoStatusOverlay}>
+          <VideoStatusPlaceholder compact={compact} status={status} />
+        </div>
+      </div>
+    );
+  }
+
+  return <VideoStatusPlaceholder compact={compact} status={status} />;
 };
 
 const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   sessionId,
   artifacts,
+  runStatus,
   disabled,
   revising,
   onSaveSceneDescriptions,
@@ -140,6 +188,12 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const [editMode, setEditMode] = useState(false);
   const [visualDraft, setVisualDraft] = useState('');
   const [audioDraft, setAudioDraft] = useState('');
+
+  const generatingTarget = useMemo(
+    () => activeVideoGenerationTarget(runStatus),
+    [runStatus]
+  );
+  const rendering = runStatus?.status === 'rendering';
 
   useEffect(() => {
     if (!storyboardPaths.length) {
@@ -225,6 +279,18 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     }
   }, [activeScene, audioDraft, onSaveSceneDescriptions, visualDraft]);
 
+  const videoStatusFor = useCallback(
+    (scene: StoryboardScene): StoryboardVideoSlotStatus =>
+      resolveStoryboardVideoStatus({
+        hasVideo: Boolean(scene.videoPath),
+        shotIndex: scene.shotIndex,
+        sceneRoot: scene.sceneRoot,
+        rendering,
+        target: generatingTarget,
+      }),
+    [generatingTarget, rendering]
+  );
+
   if (!activeScene) {
     return (
       <div className='flex min-h-240px flex-col items-center justify-center gap-8px rd-14px border border-dashed border-[var(--color-border-2)] text-center'>
@@ -243,7 +309,10 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     );
   }
 
-  const mainPath = activeScene.videoPath ?? activeScene.imagePath;
+  const activeVideoStatus = videoStatusFor(activeScene);
+  const mainPath =
+    activeScene.videoPath ??
+    (activeVideoStatus === 'ready' ? undefined : activeScene.imagePath);
   const mainIsVideo = Boolean(activeScene.videoPath);
   const sceneNumber = activeScene.index + 1;
 
@@ -259,6 +328,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               number: sceneNumber,
               defaultValue: '镜头 {{number}}',
             })}
+            videoStatus={activeVideoStatus}
           />
           <span className='absolute left-14px top-14px rd-full bg-black/55 px-9px py-4px text-11px font-650 text-white backdrop-blur'>
             {t('videoGeneration.studio.storyboard.shotNumber', {
@@ -376,12 +446,16 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
         {scenes.map((scene) => {
           const number = scene.index + 1;
           const active = scene.id === activeScene.id;
-          const thumbPath = scene.videoPath ?? scene.imagePath;
+          const status = videoStatusFor(scene);
+          const thumbPath =
+            scene.videoPath ?? (status === 'ready' ? undefined : scene.imagePath);
           return (
             <button
               key={scene.id}
               type='button'
-              className={`${styles.shotCard} ${active ? styles.shotCardActive : ''}`}
+              className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
+                status === 'generating' ? styles.shotCardGenerating : ''
+              }`}
               aria-pressed={active}
               onClick={() => setActiveSceneId(scene.id)}
             >
@@ -395,8 +469,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                     number,
                     defaultValue: '镜头 {{number}}',
                   })}
+                  videoStatus={status}
                 />
-                <span className='absolute bottom-6px left-6px rd-full bg-black/60 px-6px py-2px text-10px font-650 text-white'>
+                <span className='absolute bottom-6px left-6px z-1 rd-full bg-black/70 px-6px py-2px text-10px font-700 text-white'>
                   {String(number).padStart(2, '0')}
                 </span>
               </span>

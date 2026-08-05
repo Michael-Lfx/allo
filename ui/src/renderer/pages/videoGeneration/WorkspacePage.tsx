@@ -17,7 +17,6 @@ import { useTranslation } from 'react-i18next';
 import {
   Button,
   Input,
-  InputNumber,
   Popconfirm,
   Result,
   Spin,
@@ -52,6 +51,7 @@ import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxW
 import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
+import DurationTimelineBar from './components/DurationTimelineBar';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
 import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
@@ -67,10 +67,6 @@ import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
 } from './aspectRatios';
-import {
-  CREDITS_PER_SECOND,
-  formatDurationCredits,
-} from './durationCredits';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import styles from './index.module.css';
 
@@ -245,6 +241,8 @@ const WorkspacePage: React.FC = () => {
 
   // Poll while planning / rendering (1s so stage text feels live).
   // Also keep a slow poll while failed/idle so a late finish_job is not missed.
+  // Refresh artifacts when a shot clip finishes so storyboard thumbs update live.
+  const lastArtifactStageRef = useRef<string | null>(null);
   useEffect(() => {
     if (!sessionId) return;
     const active = isActiveStatus(runStatus?.status);
@@ -252,8 +250,25 @@ const WorkspacePage: React.FC = () => {
     const timer = window.setInterval(() => {
       void (async () => {
         const st = await refreshStatus();
-        if (st && !isActiveStatus(st.status)) {
+        if (!st) return;
+        if (!isActiveStatus(st.status)) {
           void refreshArtifacts();
+          lastArtifactStageRef.current = st.stage;
+          return;
+        }
+        const stage = st.stage || '';
+        const shouldRefreshArtifacts =
+          stage !== lastArtifactStageRef.current &&
+          (stage === 'video_clip_done' ||
+            stage === 'video_clip_exists' ||
+            stage === 'render_scene_done' ||
+            stage === 'concat_done' ||
+            stage === 'render_done');
+        if (shouldRefreshArtifacts) {
+          lastArtifactStageRef.current = stage;
+          void refreshArtifacts();
+        } else if (!lastArtifactStageRef.current) {
+          lastArtifactStageRef.current = stage;
         }
       })();
     }, ms);
@@ -1004,30 +1019,12 @@ const WorkspacePage: React.FC = () => {
               <WorkspaceCameoStrip sessionId={sessionId} disabled={busy} />
             ) : null}
             <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
-              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                {t('videoGeneration.workspace.source.durationLabel', {
-                  defaultValue: '目标成片时长（秒）',
-                })}
-                <InputNumber
-                  value={targetDurationSecs}
-                  onChange={(value) =>
-                    setTargetDurationSecs(typeof value === 'number' ? value : 30)
-                  }
-                  min={5}
-                  max={180}
-                  step={5}
-                  disabled={busy}
-                  suffix='s'
-                  style={{ width: '100%' }}
-                />
-                <span className='text-11px text-[var(--color-text-4)]'>
-                  {t('videoGeneration.workspace.source.durationCreditsHint', {
-                    credits: formatDurationCredits(targetDurationSecs),
-                    rate: CREDITS_PER_SECOND,
-                    defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
-                  })}
-                </span>
-              </label>
+              <DurationTimelineBar
+                wide
+                value={targetDurationSecs}
+                disabled={busy}
+                onChange={setTargetDurationSecs}
+              />
               <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 <span>
                   {t('videoGeneration.workspace.source.aspectLabel', {
@@ -1106,27 +1103,7 @@ const WorkspacePage: React.FC = () => {
                 disabled={busy}
               />
               <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.workspace.source.durationLabel', {
-                    defaultValue: '目标成片时长（秒）',
-                  })}
-                  <InputNumber
-                    value={targetDurationSecs}
-                    min={5}
-                    max={180}
-                    step={5}
-                    disabled
-                    suffix='s'
-                    style={{ width: '100%' }}
-                  />
-                  <span className='text-11px text-[var(--color-text-4)]'>
-                    {t('videoGeneration.workspace.source.durationCreditsHint', {
-                      credits: formatDurationCredits(targetDurationSecs),
-                      rate: CREDITS_PER_SECOND,
-                      defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
-                    })}
-                  </span>
-                </label>
+                <DurationTimelineBar wide value={targetDurationSecs} disabled />
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>
                     {t('videoGeneration.workspace.source.aspectLabel', {
@@ -1188,6 +1165,7 @@ const WorkspacePage: React.FC = () => {
             <StoryboardBoard
               sessionId={sessionId}
               artifacts={artifacts}
+              runStatus={runStatus}
               disabled={busy}
               revising={revising}
               onSaveSceneDescriptions={handleSaveSceneDescriptions}
