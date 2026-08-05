@@ -393,9 +393,29 @@ impl LearningService {
             .await?;
         let next_lesson_id = recommend_next_lesson(&modules, &concepts);
         let due_review_count = if let Some(enrollment_id) = &enrollment_id {
+            // Same admission rule as `due_reviews`: only count items whose
+            // concept still has a studied objective question, so the badge
+            // matches what the queue will actually show.
             sqlx::query_scalar(
-                "SELECT COUNT(*) FROM learning_review_items \
-                 WHERE enrollment_id = ? AND due_at <= ?",
+                "SELECT COUNT(*) FROM learning_review_items r \
+                 WHERE r.enrollment_id = ? AND r.due_at <= ? \
+                 AND EXISTS ( \
+                     SELECT 1 FROM learning_activity_concepts ac \
+                     JOIN learning_activities a ON a.activity_id = ac.activity_id \
+                     WHERE ac.concept_id = r.concept_id \
+                     AND a.kind IN ('single_choice', 'true_false') \
+                     AND EXISTS ( \
+                         SELECT 1 FROM learning_lesson_progress p \
+                         WHERE p.lesson_id = a.lesson_id \
+                         AND p.enrollment_id = r.enrollment_id \
+                         AND p.status = 'completed' \
+                     ) \
+                     AND EXISTS ( \
+                         SELECT 1 FROM learning_attempts t \
+                         WHERE t.activity_id = a.activity_id \
+                         AND t.enrollment_id = r.enrollment_id \
+                     ) \
+                 )",
             )
             .bind(enrollment_id.as_str())
             .bind(now_ms())
