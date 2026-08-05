@@ -6422,9 +6422,14 @@ export interface IMediaCreditsCheckinResult {
   authenticated: boolean;
 }
 
+export interface IMediaModelOption {
+  id: string;
+  name: string;
+}
+
 export interface IMediaModelList {
-  image_models: string[];
-  video_models: string[];
+  image_models: IMediaModelOption[];
+  video_models: IMediaModelOption[];
 }
 
 export interface IMediaWorkflowHistoryItem {

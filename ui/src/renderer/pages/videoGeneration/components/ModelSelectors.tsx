@@ -1,5 +1,3 @@
-
-
 /**
  * Per-session Flowy model pickers for video generation:
  * - LLM (planning / revise)
@@ -9,6 +7,7 @@
 import React, { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select, Spin } from '@arco-design/web-react';
+import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
@@ -22,16 +21,37 @@ export interface VimaxModelSelection {
 /** Preferred default video model when present in the Flowy catalog. */
 const PREFERRED_VIDEO_MODEL_NEEDLE = 'doubao-seedance-2-0-fast';
 
+/** Image catalog is restricted to Seedream 5.0 Lite by catalog `name`. */
+const ALLOWED_IMAGE_MODEL_NAME = 'Doubao-seedream-5-0-lite';
+
 function normalizeModelKey(id: string): string {
   return id.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function mediaModelLabel(model: IMediaModelOption): string {
+  const name = model.name.trim();
+  return name || formatCloudModelLabel(model.id);
+}
+
 /** Pick Seedance 2.0 Fast when listed; otherwise the first catalog entry. */
-export function pickDefaultVideoModel(videoModels: string[]): string | undefined {
+export function pickDefaultVideoModel(videoModels: IMediaModelOption[]): string | undefined {
   if (!videoModels.length) return undefined;
   const preferredKey = normalizeModelKey(PREFERRED_VIDEO_MODEL_NEEDLE);
-  const preferred = videoModels.find((id) => normalizeModelKey(id).includes(preferredKey));
-  return preferred ?? videoModels[0];
+  const preferred = videoModels.find((m) => {
+    const blob = normalizeModelKey(`${m.name} ${m.id}`);
+    return blob.includes(preferredKey);
+  });
+  return preferred?.id ?? videoModels[0]?.id;
+}
+
+/** Keep only Seedream 5.0 Lite entries (match catalog `name`, fall back to id). */
+export function filterAllowedImageModels(imageModels: IMediaModelOption[]): IMediaModelOption[] {
+  const needle = normalizeModelKey(ALLOWED_IMAGE_MODEL_NAME);
+  return imageModels.filter((m) => {
+    const nameKey = normalizeModelKey(m.name);
+    const idKey = normalizeModelKey(m.id);
+    return nameKey === needle || nameKey.includes(needle) || idKey.includes(needle);
+  });
 }
 
 interface ModelSelectorsProps {
@@ -65,21 +85,43 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     return opts;
   }, [llmModels.flat]);
 
+  const imageOptions = useMemo(() => {
+    return filterAllowedImageModels(imageModels).map((m) => ({
+      value: m.id,
+      label: mediaModelLabel(m),
+    }));
+  }, [imageModels]);
+
+  const videoOptions = useMemo(() => {
+    return videoModels.map((m) => ({
+      value: m.id,
+      label: mediaModelLabel(m),
+    }));
+  }, [videoModels]);
+
   // Prefer first available model when session has none yet.
   useEffect(() => {
     const patch: Partial<VimaxModelSelection> = {};
     if (!value.llm_model && llmOptions[0]) patch.llm_model = llmOptions[0].value;
-    if (!value.image_model && imageModels[0]) patch.image_model = imageModels[0];
+    if (!value.image_model && imageOptions[0]) patch.image_model = imageOptions[0].value;
     if (!value.video_model) {
       const preferred = pickDefaultVideoModel(videoModels);
       if (preferred) patch.video_model = preferred;
+    }
+    // If a previously selected image model is no longer in the allowed list, reset.
+    if (
+      value.image_model &&
+      imageOptions.length > 0 &&
+      !imageOptions.some((o) => o.value === value.image_model)
+    ) {
+      patch.image_model = imageOptions[0].value;
     }
     if (Object.keys(patch).length > 0) {
       onChange({ ...value, ...patch });
     }
     // Only seed once catalogs load / when empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llmOptions, imageModels, videoModels]);
+  }, [llmOptions, imageOptions, videoModels]);
 
   const grid = isMobile ? 'grid-cols-1' : 'grid-cols-3';
 
@@ -124,10 +166,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
             })}
             value={value.image_model || undefined}
             onChange={(v) => onChange({ ...value, image_model: (v as string) || '' })}
-            options={imageModels.map((id) => ({
-              value: id,
-              label: formatCloudModelLabel(id),
-            }))}
+            options={imageOptions}
             notFoundContent={t('videoGeneration.workspace.models.empty', {
               defaultValue: '暂无可用模型',
             })}
@@ -150,10 +189,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
             })}
             value={value.video_model || undefined}
             onChange={(v) => onChange({ ...value, video_model: (v as string) || '' })}
-            options={videoModels.map((id) => ({
-              value: id,
-              label: formatCloudModelLabel(id),
-            }))}
+            options={videoOptions}
             notFoundContent={t('videoGeneration.workspace.models.empty', {
               defaultValue: '暂无可用模型',
             })}

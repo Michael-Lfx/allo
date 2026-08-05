@@ -198,7 +198,7 @@ pub use mcp::{
 };
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
-    MediaModelListResponse, MediaSettingsResponse, MediaWorkflowHistoryItem,
+    MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaWorkflowHistoryItem,
     MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
 pub use model_capability::{infer_generation_capabilities, infer_model_modalities};
