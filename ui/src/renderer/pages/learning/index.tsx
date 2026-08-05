@@ -207,7 +207,9 @@ function ReviewCard({
           </Tag>
         )}
       </div>
-      <div className='mb-10px font-500 text-t-primary'>{question.prompt}</div>
+      <div className='mb-10px text-15px font-500 leading-relaxed text-t-primary'>
+        {question.prompt}
+      </div>
       {question.kind === 'single_choice' && (
         <Radio.Group
           direction='vertical'
@@ -276,34 +278,47 @@ function ReviewCard({
         </div>
       )}
       {result !== null && result.correct && (
-        <div className='mt-12px flex flex-col gap-8px'>
-          <Text type='success'>
+        <div className='mt-12px flex flex-col gap-10px rounded-10px border border-solid border-[var(--color-success-light-3)] bg-[var(--color-success-light-1)] p-14px'>
+          <Text type='success' className='font-500'>
             {t('learning.correct')}
             {result.feedback ? ` · ${result.feedback}` : ''}
           </Text>
-          <div className='flex flex-wrap items-center gap-6px'>
-            <Text type='secondary'>{t('learning.reviewRatePrompt')}</Text>
-            {(['hard', 'good', 'easy'] as ReviewRating[]).map((rating) => (
-              <Button
-                key={rating}
-                size='mini'
-                loading={busy}
-                disabled={locked && !busy}
-                onClick={() => onRate(review, rating)}
-              >
-                {rating === 'hard'
-                  ? t('learning.reviewHard')
-                  : rating === 'good'
-                    ? t('learning.reviewGood')
-                    : t('learning.reviewEasy')}
-              </Button>
-            ))}
+          <Text type='secondary' className='text-13px'>
+            {t('learning.reviewRatePrompt')}
+          </Text>
+          <div className='grid grid-cols-3 gap-8px'>
+            <Button
+              status='warning'
+              type='outline'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'hard')}
+            >
+              {t('learning.reviewHard')}
+            </Button>
+            <Button
+              type='primary'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'good')}
+            >
+              {t('learning.reviewGood')}
+            </Button>
+            <Button
+              status='success'
+              type='outline'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'easy')}
+            >
+              {t('learning.reviewEasy')}
+            </Button>
           </div>
         </div>
       )}
       {result !== null && !result.correct && (
-        <div className='mt-12px flex flex-col gap-8px'>
-          <Text type='error'>
+        <div className='mt-12px flex flex-col gap-8px rounded-10px border border-solid border-[var(--color-danger-light-3)] bg-[var(--color-danger-light-1)] p-14px'>
+          <Text type='error' className='font-500'>
             {wasForgot ? t('learning.reviewForgotMarked') : t('learning.reviewWrongMarkedAgain')}
           </Text>
           {result.correct_answer !== null && (
@@ -312,11 +327,16 @@ function ReviewCard({
             </Text>
           )}
           {result.feedback && <Text type='secondary'>{result.feedback}</Text>}
-          <div>
-            <Button size='small' disabled={locked} onClick={() => onDismiss(review.id)}>
-              {t('learning.reviewNext')}
-            </Button>
-          </div>
+          <Button
+            type='primary'
+            status='danger'
+            size='small'
+            className='self-start'
+            disabled={locked}
+            onClick={() => onDismiss(review.id)}
+          >
+            {t('learning.reviewNext')}
+          </Button>
         </div>
       )}
     </div>
@@ -369,9 +389,19 @@ function ReviewSessionModal({
         </div>
       ) : (
         <div className='flex flex-col gap-12px'>
-          <Text type='secondary'>
-            {index + 1} / {queue.length}
-          </Text>
+          <div className='flex items-center gap-12px'>
+            <span className='shrink-0 rounded-full bg-[var(--color-primary-light-1)] px-12px py-2px text-13px font-600 text-[var(--color-primary-6)]'>
+              {Math.min(index + 1, queue.length)} / {queue.length}
+            </span>
+            <div className='flex-1'>
+              <Progress
+                percent={Math.round((Math.min(index, queue.length) / queue.length) * 100)}
+                showText={false}
+                size='small'
+                className='!my-0'
+              />
+            </div>
+          </div>
           <ReviewCard
             key={current.id}
             review={current}
@@ -1536,8 +1566,10 @@ const LearningPage: React.FC = () => {
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
 
+  const initialLoaded = useRef(false);
   const load = useCallback(async () => {
-    setLoading(true);
+    // 只有首次加载才进入全屏加载态，避免刷新时卸载重建整棵页面子树（包括复习弹窗）
+    if (!initialLoaded.current) setLoading(true);
     setError(null);
     try {
       const [nextCourses, nextReviews, nextDetail] = await Promise.all([
@@ -1551,6 +1583,7 @@ const LearningPage: React.FC = () => {
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
+      initialLoaded.current = true;
       setLoading(false);
     }
   }, [id, reviewSessionLimit]);
@@ -1760,10 +1793,26 @@ const LearningPage: React.FC = () => {
     [load, t]
   );
 
-  const startReviewSession = useCallback(() => {
-    setSessionQueue(reviews);
-    setSessionOpen(true);
-  }, [reviews]);
+  const startReviewSession = useCallback(async () => {
+    setBusyId('review-session');
+    try {
+      // 每次开刷前重新拉取到期队列，避免使用会话期间过期的快照
+      const fresh = await learningApi.listDueReviews(reviewSessionLimit);
+      setReviews(fresh);
+      if (fresh.length === 0) {
+        Message.info(t('learning.noReviews'));
+        return;
+      }
+      setSessionQueue(fresh);
+      setSessionOpen(true);
+    } catch (sessionError) {
+      Message.error(
+        sessionError instanceof Error ? sessionError.message : t('learning.actionFailed')
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }, [reviewSessionLimit, t]);
 
   const answerReview = useCallback(
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
@@ -1865,8 +1914,8 @@ const LearningPage: React.FC = () => {
           </Button>
         </div>
       </div>
-      {error && <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
-      <Alert type='info' content={t('learning.packContract')} />
+      {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
+      <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
 
       {reviews.length > 0 && (
         <div className='flex flex-wrap items-center justify-between gap-12px rounded-12px border border-solid border-[var(--color-primary-6)] bg-[var(--color-primary-light-1)] px-20px py-16px'>
@@ -1879,14 +1928,19 @@ const LearningPage: React.FC = () => {
             </Text>
           </div>
           <Badge count={reviews.length}>
-            <Button type='primary' size='large' onClick={startReviewSession}>
+            <Button
+              type='primary'
+              size='large'
+              loading={busyId === 'review-session'}
+              onClick={() => void startReviewSession()}
+            >
               {t('learning.startReview')}
             </Button>
           </Badge>
         </div>
       )}
 
-      <section>
+      <section key='learn-tabs'>
         <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line'>
           <Tabs.TabPane key='courses' title={t('learning.courses')} destroyOnHide={false}>
             {courses.length === 0 ? (
@@ -1908,6 +1962,7 @@ const LearningPage: React.FC = () => {
       </section>
 
       <ReviewSessionModal
+        key='review-session'
         open={sessionOpen}
         queue={sessionQueue}
         busyId={busyId}
@@ -1915,7 +1970,11 @@ const LearningPage: React.FC = () => {
         onForget={forgetReview}
         onRate={rateReview}
         onSkip={skipReview}
-        onClose={() => setSessionOpen(false)}
+        onClose={() => {
+          setSessionOpen(false);
+          // 会话结束时刷新列表，让角标与下次入队状态保持一致
+          void load();
+        }}
       />
       {deletingCourse !== null && (
         <CourseDeleteDialog
