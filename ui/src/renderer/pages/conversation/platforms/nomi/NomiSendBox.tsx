@@ -1044,7 +1044,7 @@ const NomiSendBox: React.FC<{
         rightTools={
           hasContextUsage || !hideModeSelector ? (
             <div
-              className='sendbox-responsive-config-group flex flex-1 items-center justify-end gap-2 min-w-0'
+              className='sendbox-responsive-config-group'
               data-testid='nomi-sendbox-config-group'
             >
               {hasContextUsage && (

@@ -1,30 +1,27 @@
 
 
-import { ipcBridge } from '@/common';
 import type { IMcpServer } from '@/common/config/storage';
 import type { McpServerId } from '@/common/types/ids';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
-import { getCleanFileNames, FileService } from '@/renderer/services/FileService';
-import { iconColors } from '@/renderer/styles/colors';
-import { isDesktopShell } from '@/renderer/utils/platform';
+import { getCleanFileNames } from '@/renderer/services/FileService';
 import type { AvailableAgent } from '../types';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
-import { Button, Checkbox, Dropdown, Menu, Message, Tooltip } from '@arco-design/web-react';
-import { Aiming, CloseSmall, Plus, Shield, UploadOne } from '@icon-park/react';
-import React, { useCallback, useRef, useState } from 'react';
+import { Button, Checkbox, Dropdown, Menu, Tooltip } from '@arco-design/web-react';
+import { Aiming, CloseSmall, Plus, Shield } from '@icon-park/react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import styles from '../index.module.css';
 
 type GuidActionRowProps = {
-  // File handling
+  // Attachments
   files: string[];
-  onFilesUploaded: (paths: string[]) => void;
+  onOpenAddMenu: () => void;
 
   // Model selector node (rendered by parent)
   modelSelectorNode: React.ReactNode;
@@ -73,7 +70,7 @@ type GuidActionRowProps = {
 
 const GuidActionRow: React.FC<GuidActionRowProps> = ({
   files,
-  onFilesUploaded,
+  onOpenAddMenu,
   modelSelectorNode,
   selectedAgent,
   effectiveModeAgent,
@@ -108,123 +105,34 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const showModeSwitch = supportsModeSwitch(modeBackend);
   const hasModelSelector = Boolean(modelSelectorNode);
 
-  // Browser file picker ref (WebUI only)
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-
-  const handleLocalFileChange = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const fileList = e.target.files;
-      if (!fileList || fileList.length === 0) return;
-      setUploading(true);
-      try {
-        const processed = await FileService.processDroppedFiles(fileList);
-        if (processed.length > 0) {
-          onFilesUploaded(processed.map((f) => f.path));
-        }
-      } catch {
-        Message.error(t('common.fileAttach.failed'));
-      } finally {
-        setUploading(false);
-      }
-      // Reset so the same file can be re-selected
-      e.target.value = '';
-    },
-    [onFilesUploaded, t]
-  );
-
   const getModeDisplayLabel = (mode: AgentModeOption): string =>
     t(`agentMode.${mode.value}`, { defaultValue: mode.label });
 
-  const isWebUI = !isDesktopShell();
-
   const activeMcpCount = selectedMcpServerIds.length;
 
-  const menuContent = (
-    <Menu
-      className='min-w-200px'
-      onClickMenuItem={(key) => {
-        if (key === 'file') {
-          ipcBridge.dialog.showOpen
-            .invoke({ properties: ['openFile', 'multiSelections'] })
-            .then((uploadedFiles) => {
-              if (uploadedFiles && uploadedFiles.length > 0) {
-                onFilesUploaded(uploadedFiles);
-              }
-            })
-            .catch((error) => {
-              console.error('Failed to open file dialog:', error);
-            });
-        } else if (key === 'device') {
-          fileInputRef.current?.click();
-        }
-      }}
-    >
-      {isWebUI ? (
-        <>
-          <Menu.Item key='file'>
-            <div className='flex items-center gap-8px'>
-              <UploadOne theme='outline' size='16' fill={iconColors.secondary} style={{ lineHeight: 0 }} />
-              <span>{t('common.fileAttach.addFiles')}</span>
-            </div>
-          </Menu.Item>
-          <Menu.Item key='device'>
-            <div className='flex items-center gap-8px'>
-              <UploadOne theme='outline' size='16' fill={iconColors.secondary} style={{ lineHeight: 0 }} />
-              <span>{t('common.fileAttach.myDevice')}</span>
-            </div>
-          </Menu.Item>
-        </>
-      ) : (
-        <Menu.Item key='file'>
-          <div className='flex items-center gap-8px'>
-            <UploadOne theme='outline' size='16' fill={iconColors.secondary} style={{ lineHeight: 0 }} />
-            <span>{t('common.fileAttach.addFiles')}</span>
-          </div>
-        </Menu.Item>
-      )}
-      {mcpServers.length > 0 && (
-        <Menu.SubMenu
-          key='mcp'
-          title={
-            <div className='flex items-center gap-8px'>
-              <Shield theme='outline' size='16' fill={iconColors.primary} style={{ lineHeight: 0 }} />
-              <span>
-                {t('mcp.label')} ({activeMcpCount}/{mcpServers.length})
-              </span>
-            </div>
-          }
-          triggerProps={{
-            popupStyle: {
-              maxHeight: 360,
-              overflowY: 'auto',
-              overflowX: 'hidden',
-            },
+  const mcpMenuContent = (
+    <Menu className='min-w-200px'>
+      {mcpServers.map((server) => (
+        <Menu.Item
+          key={`mcp-${server.mcp_server_id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleMcpServer(server.mcp_server_id);
           }}
         >
-          {mcpServers.map((server) => (
-            <Menu.Item
-              key={`mcp-${server.mcp_server_id}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleMcpServer(server.mcp_server_id);
-              }}
-            >
-              <Checkbox
-                checked={selectedMcpServerIds.includes(server.mcp_server_id)}
-                className='guid-mcp-selection-checkbox'
-                onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                onChange={() => onToggleMcpServer(server.mcp_server_id)}
-              >
-                <span className='text-13px'>
-                  {server.name}
-                  {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
-                </span>
-              </Checkbox>
-            </Menu.Item>
-          ))}
-        </Menu.SubMenu>
-      )}
+          <Checkbox
+            checked={selectedMcpServerIds.includes(server.mcp_server_id)}
+            className='guid-mcp-selection-checkbox'
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+            onChange={() => onToggleMcpServer(server.mcp_server_id)}
+          >
+            <span className='text-13px'>
+              {server.name}
+              {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
+            </span>
+          </Checkbox>
+        </Menu.Item>
+      ))}
     </Menu>
   );
 
@@ -232,38 +140,41 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
     <div className={styles.actionRow}>
       <div className={`${styles.actionTools} composer-toolbar-tools`}>
         <div className={styles.actionEntry}>
-          <Dropdown trigger='hover' droplist={menuContent}>
-            <span className='flex items-center gap-4px cursor-pointer lh-[1]'>
+          <span className='flex items-center gap-4px lh-[1]'>
+            <Button
+              type='secondary'
+              shape='circle'
+              size='small'
+              className='sendbox-composer-plus-btn'
+              icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+              onClick={onOpenAddMenu}
+              data-testid='file-upload-btn'
+              aria-label={t('common.add')}
+            />
+            {files.length > 0 && (
+              <Tooltip
+                className={'!max-w-max'}
+                content={<span className='whitespace-break-spaces'>{getCleanFileNames(files).join('\n')}</span>}
+              >
+                <span className='text-t-primary'>File({files.length})</span>
+              </Tooltip>
+            )}
+          </span>
+        </div>
+        {mcpServers.length > 0 && (
+          <Tooltip content={`${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`}>
+            <Dropdown trigger='click' droplist={mcpMenuContent}>
               <Button
-                type='secondary'
+                type='text'
                 shape='circle'
                 size='small'
-                className='sendbox-composer-plus-btn'
-                icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
-                loading={uploading}
-                disabled={uploading}
-                data-testid='file-upload-btn'
+                icon={<Shield theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+                aria-label={`${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`}
+                data-testid='guid-mcp-menu-btn'
               />
-              {files.length > 0 && (
-                <Tooltip
-                  className={'!max-w-max'}
-                  content={<span className='whitespace-break-spaces'>{getCleanFileNames(files).join('\n')}</span>}
-                >
-                  <span className='text-t-primary'>File({files.length})</span>
-                </Tooltip>
-              )}
-            </span>
-          </Dropdown>
-          {isWebUI && (
-            <input
-              ref={fileInputRef}
-              type='file'
-              multiple
-              style={{ display: 'none' }}
-              onChange={handleLocalFileChange}
-            />
-          )}
-        </div>
+            </Dropdown>
+          </Tooltip>
+        )}
         {showModeSwitch && (
           <AgentModeSelector
             backend={modeBackend}

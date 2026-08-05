@@ -253,6 +253,18 @@
   color: var(--text-primary) !important;
 }
 
+/* Restore the hover surface for the permission/mode pill. The shared model
+ * reset above intentionally stays transparent, but this control needs a
+ * visible hover target in both home and conversation composers. */
+.sendbox-tools .agent-mode-compact-pill:hover,
+.sendbox-tools .agent-mode-compact-pill:focus-visible,
+.sendbox-actions .agent-mode-compact-pill:hover,
+.sendbox-actions .agent-mode-compact-pill:focus-visible,
+.composer-toolbar-tools .agent-mode-compact-pill:hover,
+.composer-toolbar-tools .agent-mode-compact-pill:focus-visible {
+  background: var(--color-fill-3) !important;
+}
+
 .speech-input-control {
   display: inline-flex;
   align-items: center;
@@ -503,13 +515,20 @@
   min-height: 28px;
   margin-left: auto;
   justify-content: flex-end;
+  container-name: sendbox-config;
+  container-type: inline-size;
+}
+
+/* Nomi's model trigger owns the 5px separation before Send. Keeping this
+ * action row gap-free avoids stacking it with the generic 8px flex gap. */
+.sendbox-actions--nomi [data-testid='nomi-context-usage-ring'] {
+  margin-right: 8px;
 }
 
 .sendbox-responsive-config-group {
-  container-name: sendbox-config;
-  container-type: inline-size;
-  flex: 1 1 0;
-  max-width: 100%;
+  /* Flatten model controls into `.sendbox-actions`: one Flex layout box is
+   * sufficient for the context ring, model selector, and submit action. */
+  display: contents;
 }
 
 .sendbox-responsive-config-group > * {

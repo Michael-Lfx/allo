@@ -56,9 +56,12 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
     loading || (autoWorkDraft ? autoWorkStartDisabled(loading, autoWorkDraft) : !autoWorkMode);
 
   const sendDisabled = disabled || isUploading || !hasDraft;
+  const showStopButton = showStop && Boolean(onStop);
 
-  const showSendButton = hasDraft && !autoWorkMode;
-  const showSendWithAutoWork = hasDraft && autoWorkMode;
+  // A running conversation replaces Send with Stop. Outside that state, Send
+  // remains visible and is disabled until the draft is valid.
+  const showSendButton = !autoWorkMode && !showStopButton;
+  const showSteerButton = showSteer && !showStopButton;
   const showAutoWorkButton = autoWorkMode;
 
   // Keep the rightmost circle slot stable: idle composer shows a filled (black)
@@ -66,7 +69,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   // inline mic opens to its left — avoids the mic jumping right→left and
   // swapping black→transparent on the first keystroke.
   const hasCompanionCircle =
-    showStop || showAutoWorkButton || showSendButton || showSendWithAutoWork;
+    showStopButton || showAutoWorkButton || showSendButton;
   const showSecondarySpeech = !hideSpeech && hasCompanionCircle;
   const showPrimaryFilledSpeech = !hideSpeech && !hasCompanionCircle;
 
@@ -86,7 +89,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
         </div>
       ) : null}
 
-      {showStop && onStop ? (
+      {showStopButton ? (
         <Button
           shape='circle'
           type='secondary'
@@ -99,7 +102,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
         />
       ) : null}
 
-      {showSteer && steerAvailable && onSteer && hasDraft ? (
+      {showSteerButton && steerAvailable && onSteer && hasDraft ? (
         <Button
           shape='circle'
           type='primary'
@@ -148,19 +151,6 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
               : t('conversation.chat.send', { defaultValue: 'Send' })
           }
-        />
-      ) : null}
-
-      {showSendWithAutoWork ? (
-        <Button
-          shape='circle'
-          type='primary'
-          loading={loading}
-          disabled={sendDisabled}
-          className='send-button-custom'
-          icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
-          onClick={onSend}
-          data-testid={sendTestId}
         />
       ) : null}
 

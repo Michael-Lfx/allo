@@ -30,7 +30,11 @@ import { Button, Input, Message, Tag } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Aiming, CloseSmall, Paperclip, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
-import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
+import {
+  groupSlashLauncherItems,
+  replaceActiveSlashToken,
+  type SlashLauncherItem,
+} from '@/common/chat/slash/launcher';
 import type { TFunction } from 'i18next';
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -47,6 +51,7 @@ import { useAbortUploadsOnConversationChange } from '@renderer/hooks/file/useAbo
 import UploadProgressBar from '@renderer/components/media/UploadProgressBar';
 import { allSupportedExts } from '@renderer/services/FileService';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
+import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
 import type { ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import ComposerSkillTokenInput, {
   type ComposerSkillTokenInputHandle,
@@ -291,7 +296,7 @@ const SendBox: React.FC<{
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [addMenuActiveIndex, setAddMenuActiveIndex] = useState(0);
   const isInputActive = isInputFocused;
-  const { activeBorderColor, inactiveBorderColor, activeShadow } = useInputFocusRing();
+  const { activeBorderColor, inactiveBorderColor } = useInputFocusRing();
   const containerRef = useRef<HTMLDivElement>(null);
   // Outer wrapper ref (the `relative` shell around `.sendbox-panel`). Used as the
   // Tauri native drag-drop hit-test scope so the catch includes floating children
@@ -661,6 +666,11 @@ const SendBox: React.FC<{
     [builtinSlashCommands, catalogSkills, slash_commands, t],
   );
 
+  const orderedLauncherItems = useMemo(
+    () => groupSlashLauncherItems(launcherItems).flatMap(({ items }) => items),
+    [launcherItems]
+  );
+
   const goalLauncherItem = useMemo(
     () => launcherItems.find((item) => item.kind === 'system' && item.name === 'goal'),
     [launcherItems]
@@ -679,7 +689,7 @@ const SendBox: React.FC<{
   const slashController = useSlashLauncherController({
     input: tokenInputState.projection,
     caretPosition: tokenInputState.selection.end,
-    items: launcherItems,
+    items: orderedLauncherItems,
     onExecuteSystem: (item, context: SlashLauncherSelectionContext) => {
       const goalInvocation = parseGoalSlashCommand(`/${item.name}`);
       if (goalInvocation) {
@@ -1693,7 +1703,7 @@ const SendBox: React.FC<{
       speechLocale={speechLocale}
       onSend={sendMessageHandler}
       onSpeechTranscript={handleSpeechTranscript}
-      showStop={showStopOnly}
+      showStop={isProcessing}
       onStop={stopHandler}
       showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
       steerAvailable={steerAvailable}
@@ -1722,114 +1732,119 @@ const SendBox: React.FC<{
   const renderedRightTools = isMobileCompact ? null : rightTools;
 
   return (
-    <div ref={dropzoneRef} className={`relative ${className ?? ''}`}>
-      {pinnedPlan && (
-        <div
-          className='absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2 z-30'
-          data-testid='sendbox-plan-anchor'
-        >
-          <PinnedPlan plan={pinnedPlan} active={Boolean(loading || isLoading)} />
+    <ComposerSurface
+      outerRef={dropzoneRef}
+      panelRef={containerRef}
+      dragHandlers={dragHandlers}
+      dragHandlersTarget='panel'
+      isOverlayOpen={isOverlayOpen}
+      overflowTarget='panel'
+      className={className}
+      panelClassName={`sendbox-panel p-16px border-3 b bg-dialog-fill-0 b-solid rd-20px ${
+        isFileDragging ? 'b-dashed sendbox-panel--dragging' : ''
+      }`}
+      before={
+        pinnedPlan ? (
+          <div
+            className='absolute left-1/2 bottom-[calc(100%+8px)] -translate-x-1/2 z-30'
+            data-testid='sendbox-plan-anchor'
+          >
+            <PinnedPlan plan={pinnedPlan} active={Boolean(loading || isLoading)} />
+          </div>
+        ) : null
+      }
+      panelStyle={{
+        ...(isFileDragging
+          ? {
+              backgroundColor: 'var(--color-primary-light-1)',
+              borderColor: 'rgb(var(--primary-3))',
+              borderWidth: '1px',
+            }
+          : {
+              borderWidth: '1px',
+              borderColor: isComposerMenuOpen
+                ? COMPOSER_MENU_BORDER_COLOR
+                : isInputActive
+                  ? activeBorderColor
+                  : inactiveBorderColor,
+              boxShadow: 'none',
+            }),
+      }}
+    >
+      <BtwOverlay
+        answer={btwCommand.answer}
+        anchorEl={containerRef.current}
+        isLoading={btwCommand.isLoading}
+        isOpen={btwCommand.isOpen}
+        onDismiss={btwCommand.dismiss}
+        parentTaskRunning={Boolean(loading || isLoading)}
+        question={btwCommand.question}
+      />
+      {isAtFileMenuOpen && (
+        <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
+          <AtFileMenu
+            activeIndex={atFileMenuActiveIndex}
+            emptyText={
+              deferredAtFileQuery
+                ? t('conversation.workspace.search.empty', { defaultValue: 'No files found' })
+                : t('messages.atFile.hint', { defaultValue: 'Type to search for files' })
+            }
+            items={visibleAtFileMenuItems}
+            label={t('messages.atFile.menuLabel', { defaultValue: 'File mentions' })}
+            loading={workspaceMentionLoading}
+            loadingText={t('messages.atFile.loading', { defaultValue: 'Loading...' })}
+            onHoverItem={setAtFileMenuActiveIndex}
+            onSelectItem={insertSelectedAtFile}
+          />
         </div>
       )}
-      <div
-        ref={containerRef}
-        className={`sendbox-panel relative p-16px border-3 b bg-dialog-fill-0 b-solid rd-20px flex flex-col ${isOverlayOpen ? 'overflow-visible' : 'overflow-hidden'} ${isFileDragging ? 'b-dashed sendbox-panel--dragging' : ''}`}
-        style={{
-          transition: 'box-shadow 0.25s ease, border-color 0.25s ease',
-          ...(isFileDragging
-            ? {
-                backgroundColor: 'var(--color-primary-light-1)',
-                borderColor: 'rgb(var(--primary-3))',
-                borderWidth: '1px',
-              }
-            : {
-                borderWidth: '1px',
-                borderColor: isComposerMenuOpen
-                  ? COMPOSER_MENU_BORDER_COLOR
-                  : isInputActive
-                    ? activeBorderColor
-                    : inactiveBorderColor,
-                boxShadow: isInputActive && !isComposerMenuOpen ? activeShadow : 'none',
-              }),
-        }}
-        {...dragHandlers}
-      >
-        <BtwOverlay
-          answer={btwCommand.answer}
-          anchorEl={containerRef.current}
-          isLoading={btwCommand.isLoading}
-          isOpen={btwCommand.isOpen}
-          onDismiss={btwCommand.dismiss}
-          parentTaskRunning={Boolean(loading || isLoading)}
-          question={btwCommand.question}
-        />
-        {isAtFileMenuOpen && (
-          <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
-            <AtFileMenu
-              activeIndex={atFileMenuActiveIndex}
-              emptyText={
-                deferredAtFileQuery
-                  ? t('conversation.workspace.search.empty', { defaultValue: 'No files found' })
-                  : t('messages.atFile.hint', { defaultValue: 'Type to search for files' })
-              }
-              items={visibleAtFileMenuItems}
-              label={t('messages.atFile.menuLabel', { defaultValue: 'File mentions' })}
-              loading={workspaceMentionLoading}
-              loadingText={t('messages.atFile.loading', { defaultValue: 'Loading...' })}
-              onHoverItem={setAtFileMenuActiveIndex}
-              onSelectItem={insertSelectedAtFile}
+      {(isAddMenuOpen || isCommandMenuOpen) && (
+        <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
+          {isAddMenuOpen ? (
+            <SlashCommandMenu
+              title={t('common.add')}
+              compact
+              items={addMenuItems}
+              activeIndex={addMenuActiveIndex}
+              onHoverItem={setAddMenuActiveIndex}
+              onSelectItem={handleAddMenuSelect}
+              emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
             />
-          </div>
-        )}
-        {(isAddMenuOpen || isCommandMenuOpen) && (
-          <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
-            {isAddMenuOpen ? (
-              <SlashCommandMenu
-                title={t('common.add')}
-                compact
-                items={addMenuItems}
-                activeIndex={addMenuActiveIndex}
-                onHoverItem={setAddMenuActiveIndex}
-                onSelectItem={handleAddMenuSelect}
-                emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-              />
-            ) : conversationExport.step === 'menu' ? (
-              <SlashCommandMenu
-                title={t('messages.export.menuTitle')}
-                hint={t('messages.export.menuHint')}
-                items={conversationExport.menuItems}
-                activeIndex={conversationExport.activeIndex}
-                loading={conversationExport.loading}
-                onHoverItem={conversationExport.setActiveIndex}
-                onSelectItem={(item) => {
-                  conversationExport.onSelectMenuItem(item.key);
-                }}
-                emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-              />
-            ) : conversationExport.step === 'filename' ? (
-              renderExportFileNamePanel()
-            ) : (
-              <SlashCommandMenu
-                title={t('messages.slash.title', { defaultValue: 'Commands' })}
-                hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
-                compact
-                items={slashMenuItems}
-                activeIndex={slashController.activeIndex}
-                loading={false}
-                onHoverItem={slashController.setActiveIndex}
-                onSelectItem={(item) => {
-                  const targetIndex = slashController.filteredItems.findIndex(
-                    (launcherItem) => launcherItem.id === item.key
-                  );
-                  if (targetIndex >= 0) {
-                    slashController.onSelectByIndex(targetIndex);
-                  }
-                }}
-                emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-              />
-            )}
-          </div>
-        )}
+          ) : conversationExport.step === 'menu' ? (
+            <SlashCommandMenu
+              title={t('messages.export.menuTitle')}
+              hint={t('messages.export.menuHint')}
+              items={conversationExport.menuItems}
+              activeIndex={conversationExport.activeIndex}
+              loading={conversationExport.loading}
+              onHoverItem={conversationExport.setActiveIndex}
+              onSelectItem={(item) => {
+                conversationExport.onSelectMenuItem(item.key);
+              }}
+              emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+            />
+          ) : conversationExport.step === 'filename' ? (
+            renderExportFileNamePanel()
+          ) : (
+            <SlashCommandMenu
+              title={t('messages.slash.title', { defaultValue: 'Commands' })}
+              hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+              compact
+              items={slashMenuItems}
+              activeIndex={slashController.activeIndex}
+              loading={false}
+              onHoverItem={slashController.setActiveIndex}
+              onSelectItem={(item) => {
+                const targetIndex = slashController.filteredItems.findIndex((launcherItem) => launcherItem.id === item.key);
+                if (targetIndex >= 0) {
+                  slashController.onSelectByIndex(targetIndex);
+                }
+              }}
+              emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+            />
+          )}
+        </div>
+      )}
         {hasInternalStatusRow && (
           <div
             className='sendbox-internal-status-row mb-8px flex w-full flex-wrap items-start gap-8px'
@@ -2026,15 +2041,18 @@ const SendBox: React.FC<{
             >
               {renderedTools}
             </div>
-            <div className='sendbox-actions flex items-center gap-2'>
+            <div
+              className={`sendbox-actions flex items-center ${
+                conversationContext?.type === 'nomi' ? 'sendbox-actions--nomi' : 'gap-2'
+              }`}
+            >
               {renderedRightTools}
               {sendButtonPrefix}
               {composerSubmitCluster}
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </ComposerSurface>
   );
 };
 

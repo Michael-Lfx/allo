@@ -245,10 +245,10 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
             <div className={styles.workspacePill}>
               <button
                 ref={triggerRef as React.RefObject<HTMLButtonElement>}
-                className={styles.workspacePillMain}
+                className={`${styles.workspaceSelector} ${styles.workspacePillMain}`}
                 onClick={toggleOpen}
               >
-                <FolderIcon size={14} />
+                <FolderIcon size={16} />
                 <PathText path={workspaceDir} className={styles.workspacePillName} />
                 <Down
                   theme='outline'
@@ -281,7 +281,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
         <>
           <button
             ref={triggerRef as React.RefObject<HTMLButtonElement>}
-            className={styles.workspaceEmptyBtn}
+            className={styles.workspaceSelector}
             data-testid='workspace-selector-btn'
             onClick={recentWorkspaces.length > 0 ? toggleOpen : handleBrowseWorkspace}
           >

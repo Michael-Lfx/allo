@@ -34,6 +34,7 @@ const NomiModelSelector: React.FC<{
   if (disabled || !selection) {
     return (
       <Button
+        data-testid='nomi-model-selector'
         className={classNames(
           'sendbox-model-btn header-model-btn min-w-0',
           compact ? '!max-w-[120px]' : '!max-w-[280px]',

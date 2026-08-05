@@ -1,0 +1,18 @@
+.composer-surface {
+  box-sizing: border-box;
+  transition: border-color 0.25s ease;
+}
+
+.composer-surface__panel {
+  box-sizing: border-box;
+  transition: border-color 0.25s ease;
+}
+
+/* Home keeps its workspace footnote inside the same rounded surface. */
+.composer-surface.guid-input-card-shell {
+  border-radius: 24px;
+}
+
+.composer-surface.guid-input-card-shell.overflow-hidden {
+  overflow: hidden;
+}

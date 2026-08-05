@@ -2131,7 +2131,8 @@ button.guidResourceCard:focus-visible {
   background: transparent;
 }
 
-.workspaceEmptyBtn {
+/* Shared workspace trigger styling for both empty and selected states. */
+.workspaceSelector {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2148,12 +2149,12 @@ button.guidResourceCard:focus-visible {
   line-height: 1;
 }
 
-.workspaceEmptyBtn:hover {
+.workspaceSelector:hover {
   color: var(--color-text-1);
   background: var(--color-fill-3);
 }
 
-/* 选中态：和空状态同色系，不做颜色跳变 */
+/* Selected state adds only path-width constraints. */
 .workspacePill {
   display: inline-flex;
   align-items: center;
@@ -2165,28 +2166,9 @@ button.guidResourceCard:focus-visible {
 }
 
 .workspacePillMain {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--color-text-2);
-  background: transparent;
-  border: none;
-  padding: 4px 4px 4px 6px;
-  cursor: pointer;
-  font-family: inherit;
-  transition:
-    background 0.12s,
-    color 0.12s;
   max-width: 400px;
   overflow: hidden;
   white-space: nowrap;
-}
-
-.workspacePillMain:hover {
-  background: var(--color-fill-3);
-  color: var(--color-text-1);
 }
 
 .workspacePillName {

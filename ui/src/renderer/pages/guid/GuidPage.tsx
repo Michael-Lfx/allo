@@ -16,6 +16,7 @@ import { resolveLocaleKey } from '@/common/utils';
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
 import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
+import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
 import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
@@ -58,6 +59,7 @@ import {
   type GuidTaskIntentId,
 } from './readiness/guidReadiness';
 import { ConfigProvider, Message } from '@arco-design/web-react';
+import { Aiming, Paperclip } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -104,6 +106,8 @@ const GuidPage: React.FC = () => {
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
+  const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
+  const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   const inputSnapshotRef = useRef('');
@@ -200,6 +204,9 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
+  const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
+    onFilesSelected: guidInput.handleFilesUploaded,
+  });
 
   const supportsHomeSkillLoading = ['nomi', 'acp'].includes(
     agentSelection.currentEffectiveAgentInfo.agent_type,
@@ -213,25 +220,31 @@ const GuidPage: React.FC = () => {
   }, [supportsHomeGoalCommand]);
   const homeLauncherItems = useMemo<SlashLauncherItem[]>(
     () =>
-      supportsHomeSkillLoading
-        ? [
-            ...(supportsHomeGoalCommand
-              ? [{
-                  id: 'system:goal',
-                  kind: 'system' as const,
-                  name: 'goal',
-                  description: t('guid.goalMode.tooltip'),
-              }]
-              : []),
-            ...catalogSkills.map((skill) => ({
+      [
+        {
+          id: 'system:open',
+          kind: 'system' as const,
+          name: 'open',
+          description: t('conversation.workspace.addFile', { defaultValue: 'Add File' }),
+        },
+        ...(supportsHomeGoalCommand
+          ? [{
+              id: 'system:goal',
+              kind: 'system' as const,
+              name: 'goal',
+              description: t('guid.goalMode.tooltip'),
+            }]
+          : []),
+        ...(supportsHomeSkillLoading
+          ? catalogSkills.map((skill) => ({
               id: skill.skillId,
               kind: 'skill' as const,
               name: skill.name,
               description: skill.description,
               source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
-            })),
-          ]
-        : [],
+            }))
+          : []),
+      ],
     [catalogSkills, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
   );
   const homeSlashController = useSlashLauncherController({
@@ -239,6 +252,19 @@ const GuidPage: React.FC = () => {
     caretPosition: homeTokenInputState.selection.end,
     items: homeLauncherItems,
     onExecuteSystem: (item) => {
+      if (item.name === 'open') {
+        openHomeFileSelector();
+        if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
+          guidInput.setInput(
+            replaceActiveSlashToken(
+              guidInput.input,
+              '',
+              homeTokenInputState.textSelection.end,
+            ),
+          );
+        }
+        return;
+      }
       if (item.name === 'goal') {
         setGoalMode(true);
         if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
@@ -291,6 +317,80 @@ const GuidPage: React.FC = () => {
       })),
     [homeSlashController.filteredItems, t]
   );
+  const homeAddMenuItems = useMemo<SlashCommandMenuItem[]>(
+    () => [
+      {
+        key: 'files',
+        label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
+        section: t('common.add'),
+        icon: <Paperclip theme='outline' size='17' />,
+      },
+      ...(supportsHomeGoalCommand
+        ? [
+            {
+              key: 'goal',
+              label: t('conversation.goal.chip.label', { defaultValue: 'Goal' }),
+              description: t('guid.goalMode.tooltip'),
+              icon: <Aiming theme='outline' size='17' />,
+            },
+          ]
+        : []),
+    ],
+    [supportsHomeGoalCommand, t],
+  );
+  const handleOpenHomeAddMenu = useCallback(() => {
+    setHomeAddMenuActiveIndex(0);
+    setIsHomeAddMenuOpen(true);
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, []);
+  const handleHomeAddMenuSelect = useCallback(
+    (item: SlashCommandMenuItem) => {
+      setIsHomeAddMenuOpen(false);
+      if (item.key === 'files') {
+        openHomeFileSelector();
+      } else if (item.key === 'goal') {
+        setGoalMode(true);
+      }
+    },
+    [openHomeFileSelector],
+  );
+  const handleHomeAddMenuKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (!isHomeAddMenuOpen || homeAddMenuItems.length === 0) {
+        return false;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsHomeAddMenuOpen(false);
+        return true;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setHomeAddMenuActiveIndex((current) => (current + 1) % homeAddMenuItems.length);
+        return true;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setHomeAddMenuActiveIndex((current) => (current - 1 + homeAddMenuItems.length) % homeAddMenuItems.length);
+        return true;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        const activeItem = homeAddMenuItems[homeAddMenuActiveIndex];
+        if (activeItem) {
+          handleHomeAddMenuSelect(activeItem);
+        }
+        return true;
+      }
+      return false;
+    },
+    [handleHomeAddMenuSelect, homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen],
+  );
+  useEffect(() => {
+    if (homeSlashController.isOpen) {
+      setIsHomeAddMenuOpen(false);
+    }
+  }, [homeSlashController.isOpen]);
   const homeInitialSkillIds = useMemo(
     () => (supportsHomeSkillLoading ? homeSkillChips.map((skill) => skill.skillId) : []),
     [homeSkillChips, supportsHomeSkillLoading],
@@ -444,6 +544,7 @@ const GuidPage: React.FC = () => {
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleInputChange = useCallback(
     (value: string) => {
+      setIsHomeAddMenuOpen(false);
       guidInput.setInput(value);
       const match = value.match(mention.mentionMatchRegex);
       // 首页不根据输入 @ 呼起 mention 列表，占位符里的 @agent 仅为提示，选 agent 用顶部栏或下拉手动选
@@ -463,6 +564,9 @@ const GuidPage: React.FC = () => {
 
   const handleInputKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if (handleHomeAddMenuKeyDown(event)) {
+        return;
+      }
       if (homeSlashController.onKeyDown(event)) {
         return;
       }
@@ -538,6 +642,7 @@ const GuidPage: React.FC = () => {
     },
     [
       homeInitialSkillIds,
+      handleHomeAddMenuKeyDown,
       homeSlashController,
       mention,
       guidInput.input,
@@ -757,7 +862,7 @@ const GuidPage: React.FC = () => {
   const actionRowNode = (
     <GuidActionRow
       files={guidInput.files}
-      onFilesUploaded={guidInput.handleFilesUploaded}
+      onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
@@ -849,7 +954,6 @@ const GuidPage: React.FC = () => {
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
               inactiveBorderColor={inactiveBorderColor}
-              activeShadow={activeShadow}
               dragHandlers={guidInput.dragHandlers}
               mentionOpen={mention.mentionOpen}
               mentionSelectorBadge={
@@ -863,25 +967,37 @@ const GuidPage: React.FC = () => {
                 />
               }
               mentionDropdown={mentionDropdownNode}
-              slashMenuOpen={homeSlashController.isOpen}
+              slashMenuOpen={isHomeAddMenuOpen || homeSlashController.isOpen}
               slashMenu={
-                <SlashCommandMenu
-                  title={t('messages.slash.title', { defaultValue: 'Commands' })}
-                  hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
-                  compact
-                  items={homeSlashMenuItems}
-                  activeIndex={homeSlashController.activeIndex}
-                  onHoverItem={homeSlashController.setActiveIndex}
-                  onSelectItem={(item) => {
-                    const targetIndex = homeSlashController.filteredItems.findIndex(
-                      (launcherItem) => launcherItem.id === item.key
-                    );
-                    if (targetIndex >= 0) {
-                      homeSlashController.onSelectByIndex(targetIndex);
-                    }
-                  }}
-                  emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-                />
+                isHomeAddMenuOpen ? (
+                  <SlashCommandMenu
+                    title={t('common.add')}
+                    compact
+                    items={homeAddMenuItems}
+                    activeIndex={homeAddMenuActiveIndex}
+                    onHoverItem={setHomeAddMenuActiveIndex}
+                    onSelectItem={handleHomeAddMenuSelect}
+                    emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+                  />
+                ) : (
+                  <SlashCommandMenu
+                    title={t('messages.slash.title', { defaultValue: 'Commands' })}
+                    hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+                    compact
+                    items={homeSlashMenuItems}
+                    activeIndex={homeSlashController.activeIndex}
+                    onHoverItem={homeSlashController.setActiveIndex}
+                    onSelectItem={(item) => {
+                      const targetIndex = homeSlashController.filteredItems.findIndex(
+                        (launcherItem) => launcherItem.id === item.key
+                      );
+                      if (targetIndex >= 0) {
+                        homeSlashController.onSelectByIndex(targetIndex);
+                      }
+                    }}
+                    emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+                  />
+                )
               }
               skillChips={supportsHomeSkillLoading ? homeSkillChips : []}
               onSkillChipsChange={supportsHomeSkillLoading ? setHomeSkillChips : undefined}

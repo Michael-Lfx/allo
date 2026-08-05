@@ -2,6 +2,7 @@
 
 import FilePreview from '@/renderer/components/media/FilePreview';
 import UploadProgressBar from '@/renderer/components/media/UploadProgressBar';
+import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
 import ComposerSkillTokenInput, {
   type ComposerSkillTokenInputHandle,
   type ComposerTokenInputState,
@@ -30,7 +31,6 @@ type GuidInputCardProps = {
   isFileDragging: boolean;
   activeBorderColor: string;
   inactiveBorderColor: string;
-  activeShadow: string;
   dragHandlers: React.HTMLAttributes<HTMLDivElement>;
   /**
    * Ref bound to the card's root div — used by the host for Tauri native
@@ -81,7 +81,6 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   isFileDragging,
   activeBorderColor,
   inactiveBorderColor,
-  activeShadow,
   dragHandlers,
   containerRef,
   mentionOpen,
@@ -118,12 +117,13 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
         : inactiveBorderColor;
 
   return (
-    <div
-      ref={containerRef}
-      className={`${styles.guidInputCardWrap} guid-input-card-shell relative rd-24px flex flex-col ${mentionOpen || slashMenuOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all duration-200 ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
+    <ComposerSurface
+      outerRef={containerRef}
+      dragHandlers={dragHandlers}
+      isOverlayOpen={mentionOpen || slashMenuOpen}
+      className={`${styles.guidInputCardWrap} guid-input-card-shell ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
       style={{
         zIndex: 1,
-        transition: 'box-shadow 0.25s ease',
         width: isMobile ? 'calc(100% + 28px)' : undefined,
         marginLeft: isMobile ? -14 : undefined,
         marginRight: isMobile ? -14 : undefined,
@@ -134,25 +134,29 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
               borderWidth: '1px',
             }
           : {
-              boxShadow: isInputActive && !slashMenuOpen ? activeShadow : 'none',
-            }),
+              boxShadow: 'none',
+          }),
       }}
-      {...dragHandlers}
+      panelClassName={`${styles.guidInputInner} p-12px bg-dialog-fill-0`}
+      panelStyle={{
+        borderColor: isFileDragging ? 'rgb(var(--primary-3))' : borderColor,
+        boxShadow: 'none',
+      }}
+      beforePanel={
+        slashMenuOpen ? (
+          <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
+            {slashMenu}
+          </div>
+        ) : null
+      }
+      afterPanel={
+        <GuidWorkspaceFootnote
+          workspaceDir={workspaceDir}
+          onSelectWorkspace={onSelectWorkspace}
+          onClearWorkspace={onClearWorkspace}
+        />
+      }
     >
-      {slashMenuOpen && (
-        <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
-          {slashMenu}
-        </div>
-      )}
-      {/* inner white card — narrower than outer wrap */}
-      <div
-        className={`${styles.guidInputInner} p-12px flex flex-col bg-dialog-fill-0`}
-        style={{
-          transition: 'box-shadow 0.25s ease, border-color 0.25s ease',
-          borderColor: isFileDragging ? 'rgb(var(--primary-3))' : borderColor,
-          boxShadow: isInputActive && !isFileDragging && !slashMenuOpen ? activeShadow : 'none',
-        }}
-      >
         {entryStrip}
         {mentionSelectorBadge}
         <ComposerSkillTokenInput
@@ -194,13 +198,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
         )}
         <UploadProgressBar source='sendbox' />
         {actionRow}
-      </div>
-      <GuidWorkspaceFootnote
-        workspaceDir={workspaceDir}
-        onSelectWorkspace={onSelectWorkspace}
-        onClearWorkspace={onClearWorkspace}
-      />
-    </div>
+    </ComposerSurface>
   );
 };
 

@@ -86,6 +86,14 @@ describe('Guid homepage slash launcher', () => {
     expect(actionRowSource.includes('onToggleGoalMode')).toBe(false);
   });
 
+  test('opens the existing homepage file selector from /open', () => {
+    const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
+
+    expect(pageSource.includes("id: 'system:open'")).toBe(true);
+    expect(pageSource.includes('useOpenFileSelector')).toBe(true);
+    expect(pageSource.includes('openHomeFileSelector();')).toBe(true);
+  });
+
   test('renders the goal chip only to clear goal mode after /goal enables it', () => {
     const actionRowSource = readSource(new URL('./components/GuidActionRow.tsx', import.meta.url));
 

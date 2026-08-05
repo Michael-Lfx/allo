@@ -231,6 +231,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
             className={'sendbox-model-btn guid-config-btn'}
             shape='round'
             size='small'
+            data-testid='guid-model-selector'
             aria-label={acpButtonLabel}
           >
             <span className='flex items-center gap-6px min-w-0'>
@@ -253,6 +254,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
         className={'sendbox-model-btn guid-config-btn'}
         shape='round'
         size='small'
+        data-testid='guid-model-selector'
         style={{ cursor: 'default' }}
         aria-label={acpButtonLabel}
       >
@@ -270,6 +272,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
       className={'sendbox-model-btn guid-config-btn'}
       shape='round'
       size='small'
+      data-testid='guid-model-selector'
       style={{ cursor: 'default' }}
       aria-label={defaultModelLabel}
     >

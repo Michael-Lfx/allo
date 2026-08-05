@@ -932,6 +932,23 @@ body[arco-theme='dark'] .arco-message-error {
   padding-right: 4px !important;
 }
 
+/* The model trigger sits directly before the primary conversation action.
+ * Keep its trailing padding deliberately small on both home and chat. */
+[data-testid='nomi-model-selector'].arco-btn,
+[data-testid='guid-model-selector'].arco-btn,
+[data-mobile='true'] [data-testid='nomi-model-selector'].arco-btn,
+[data-mobile='true'] [data-testid='guid-model-selector'].arco-btn {
+  padding-right: 5px !important;
+}
+
+/* The chat model trigger needs its own hover surface: the generic composer
+ * reset intentionally makes every `.sendbox-model-btn` transparent. */
+.sendbox-actions [data-testid='nomi-model-selector'].arco-btn:hover,
+.sendbox-actions [data-testid='nomi-model-selector'].arco-btn:focus-visible {
+  background: var(--color-fill-3) !important;
+  color: var(--text-primary) !important;
+}
+
 /* List pagination — Arco's default active page chip and the
  * prev/next arrows use the saturated brand primary, which reads as a harsh
  * colored block. Soften to calm neutral fills/text via theme tokens so it

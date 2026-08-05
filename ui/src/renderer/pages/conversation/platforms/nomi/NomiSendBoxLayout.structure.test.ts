@@ -102,18 +102,27 @@ describe('Nomi sendbox control layout', () => {
 
   test('collapses text pills to icons and expands their labels inline on desktop hover', () => {
     const sendBoxSource = readSource(new URL('./NomiSendBox.tsx', import.meta.url));
+    const composerSource = readSource(new URL('../../../../components/chat/SendBox/index.tsx', import.meta.url));
     const modelSource = readSource(new URL('./NomiModelSelector.tsx', import.meta.url));
     const sendBoxCss = readSource(new URL('../../../../components/chat/SendBox/sendbox.css', import.meta.url));
+    const arcoOverrideSource = readSource(new URL('../../../../styles/arco-override.css', import.meta.url));
     const collaboratorSource = readSource(new URL('../../../guid/components/GuidCollaboratorSelector.tsx', import.meta.url));
     const modeSource = readSource(new URL('../../../../components/agent/AgentModeSelector.tsx', import.meta.url));
 
     expect(sendBoxSource.includes('sendbox-responsive-config-group')).toBe(true);
     expect(sendBoxCss.includes('container-name: sendbox-config')).toBe(true);
+    expect(composerSource.includes("'sendbox-actions--nomi' : 'gap-2'")).toBe(true);
+    expect(sendBoxCss.includes(".sendbox-actions--nomi [data-testid='nomi-context-usage-ring']")).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group {\n  /* Flatten model controls')).toBe(true);
+    expect(sendBoxCss.includes('display: contents;')).toBe(true);
+    expect(sendBoxSource.includes("className='sendbox-responsive-config-group'")).toBe(true);
     expect(sendBoxCss.includes('@container sendbox-config (max-width: 560px)')).toBe(true);
     expect(sendBoxCss.includes('.sendbox-responsive-label')).toBe(true);
     expect(sendBoxCss.includes('max-width 160ms ease')).toBe(true);
     expect(sendBoxCss.includes('@media (hover: hover) and (pointer: fine)')).toBe(true);
     expect(sendBoxCss.includes('.nomi-sendbox-model-btn:hover')).toBe(true);
+    expect(sendBoxCss.includes('.composer-toolbar-tools .agent-mode-compact-pill:hover')).toBe(true);
+    expect(arcoOverrideSource.includes(".sendbox-actions [data-testid='nomi-model-selector'].arco-btn:hover")).toBe(true);
     expect(sendBoxCss.includes('display: inline-flex !important')).toBe(true);
 
     for (const source of [modelSource, collaboratorSource, modeSource]) {

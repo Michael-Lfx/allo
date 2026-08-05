@@ -44,6 +44,34 @@ describe('slash launcher', () => {
     ]);
   });
 
+  test('groups non-contiguous system commands into one launcher section', () => {
+    const interleavedItems: SlashLauncherItem[] = [
+      {
+        id: 'system:open',
+        kind: 'system',
+        name: 'open',
+        description: 'Add a file',
+      },
+      {
+        id: 'agent:acp:compact',
+        kind: 'agent',
+        name: 'compact',
+        description: 'Compress conversation context',
+      },
+      {
+        id: 'system:goal',
+        kind: 'system',
+        name: 'goal',
+        description: 'Set the current goal',
+      },
+    ];
+
+    expect(groupSlashLauncherItems(interleavedItems)).toEqual([
+      { kind: 'system', items: [interleavedItems[0], interleavedItems[2]] },
+      { kind: 'agent', items: [interleavedItems[1]] },
+    ]);
+  });
+
   test('searches Skill descriptions, tags, and source labels', () => {
     expect(filterSlashLauncherItems(items, 'documents').map((item) => item.id)).toEqual(['user:pdf']);
     expect(filterSlashLauncherItems(items, 'project').map((item) => item.id)).toEqual(['project:workspace-a:goal']);
