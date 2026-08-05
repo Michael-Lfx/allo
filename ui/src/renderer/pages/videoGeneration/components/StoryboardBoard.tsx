@@ -338,7 +338,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           </span>
         </div>
         <aside className={styles.storyInspector}>
-          <div className='mb-7px text-10px font-700 uppercase tracking-[0.14em] text-white/45'>
+          <div className={styles.storyInspectorLabel}>
             {t('videoGeneration.studio.storyboard.visualDirection', {
               defaultValue: '画面描述',
             })}
@@ -346,44 +346,48 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
 
           {editMode ? (
             <>
-              <TextArea
-                value={visualDraft}
-                onChange={setVisualDraft}
-                disabled={disabled || revising}
-                autoSize={{ minRows: 4, maxRows: 8 }}
-                className={styles.reviseInlineInput}
-                style={{
-                  color: 'rgba(255,255,255,0.92)',
-                  WebkitTextFillColor: 'rgba(255,255,255,0.92)',
-                  caretColor: 'rgba(255,255,255,0.92)',
-                  background: 'rgba(255,255,255,0.08)',
-                }}
-                placeholder={t('videoGeneration.studio.storyboard.visualEditPlaceholder', {
-                  defaultValue: '描述这个镜头的画面…',
-                })}
-              />
-              <div className='mb-6px mt-14px text-10px font-700 uppercase tracking-[0.14em] text-white/45'>
+              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorVisual}`}>
+                <TextArea
+                  value={visualDraft}
+                  onChange={setVisualDraft}
+                  disabled={disabled || revising}
+                  autoSize={{ minRows: 4, maxRows: 12 }}
+                  className={styles.reviseInlineInput}
+                  style={{
+                    color: 'rgba(255,255,255,0.92)',
+                    WebkitTextFillColor: 'rgba(255,255,255,0.92)',
+                    caretColor: 'rgba(255,255,255,0.92)',
+                    background: 'rgba(255,255,255,0.08)',
+                  }}
+                  placeholder={t('videoGeneration.studio.storyboard.visualEditPlaceholder', {
+                    defaultValue: '描述这个镜头的画面…',
+                  })}
+                />
+              </div>
+              <div className={styles.storyInspectorLabel}>
                 {t('videoGeneration.studio.storyboard.audioDirection', {
                   defaultValue: '音频 / 台词',
                 })}
               </div>
-              <TextArea
-                value={audioDraft}
-                onChange={setAudioDraft}
-                disabled={disabled || revising}
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                className={styles.reviseInlineInput}
-                style={{
-                  color: 'rgba(255,255,255,0.92)',
-                  WebkitTextFillColor: 'rgba(255,255,255,0.92)',
-                  caretColor: 'rgba(255,255,255,0.92)',
-                  background: 'rgba(255,255,255,0.08)',
-                }}
-                placeholder={t('videoGeneration.studio.storyboard.audioEditPlaceholder', {
-                  defaultValue: '背景音乐、环境音或台词…',
-                })}
-              />
-              <div className='mt-10px flex flex-wrap items-center gap-8px'>
+              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorAudio}`}>
+                <TextArea
+                  value={audioDraft}
+                  onChange={setAudioDraft}
+                  disabled={disabled || revising}
+                  autoSize={{ minRows: 2, maxRows: 10 }}
+                  className={styles.reviseInlineInput}
+                  style={{
+                    color: 'rgba(255,255,255,0.92)',
+                    WebkitTextFillColor: 'rgba(255,255,255,0.92)',
+                    caretColor: 'rgba(255,255,255,0.92)',
+                    background: 'rgba(255,255,255,0.08)',
+                  }}
+                  placeholder={t('videoGeneration.studio.storyboard.audioEditPlaceholder', {
+                    defaultValue: '背景音乐、环境音或台词…',
+                  })}
+                />
+              </div>
+              <div className={`${styles.storyInspectorActions} flex flex-wrap items-center gap-8px`}>
                 <Button
                   size='small'
                   className='!border-white/15 !bg-transparent !text-white/80 hover:!bg-white/10'
@@ -405,28 +409,33 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             </>
           ) : (
             <>
-              <p className='m-0 text-14px leading-23px text-white/90'>
-                {activeScene.visualDescription ||
-                  t('videoGeneration.studio.storyboard.visualPending', {
-                    defaultValue: '画面生成后将在这里展示。',
-                  })}
-              </p>
-              <div className='mt-14px border-t border-white/10 pt-12px'>
-                <div className='mb-6px text-10px font-700 uppercase tracking-[0.14em] text-white/45'>
-                  {t('videoGeneration.studio.storyboard.audioDirection', {
-                    defaultValue: '音频 / 台词',
-                  })}
-                </div>
+              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorVisual}`}>
+                <p className='m-0 text-14px leading-23px text-white/90'>
+                  {activeScene.visualDescription ||
+                    t('videoGeneration.studio.storyboard.visualPending', {
+                      defaultValue: '画面生成后将在这里展示。',
+                    })}
+                </p>
+              </div>
+              <div className='shrink-0 border-t border-white/10' />
+              <div className={styles.storyInspectorLabel}>
+                {t('videoGeneration.studio.storyboard.audioDirection', {
+                  defaultValue: '音频 / 台词',
+                })}
+              </div>
+              <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorAudio}`}>
                 <div className='flex items-start gap-7px text-12px leading-18px text-white/58'>
                   <Music theme='outline' size={14} className='mt-2px shrink-0' />
-                  {activeScene.audioDescription ||
-                    t('videoGeneration.studio.storyboard.audioPending', {
-                      defaultValue: '暂无音频或台词描述',
-                    })}
+                  <span>
+                    {activeScene.audioDescription ||
+                      t('videoGeneration.studio.storyboard.audioPending', {
+                        defaultValue: '暂无音频或台词描述',
+                      })}
+                  </span>
                 </div>
               </div>
               <Button
-                className='!mt-18px !border-white/15 !bg-white/8 !text-white hover:!bg-white/14'
+                className={`${styles.storyInspectorActions} !border-white/15 !bg-white/8 !text-white hover:!bg-white/14`}
                 disabled={disabled || !canEdit}
                 onClick={startEdit}
               >

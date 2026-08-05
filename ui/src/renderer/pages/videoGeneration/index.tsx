@@ -30,6 +30,10 @@ import VideoCreateComposer, {
   clearVideoCreateDraft,
   type VideoCreateDraft,
 } from './components/VideoCreateComposer';
+import {
+  clearVideoGenerationSessionMemory,
+  rememberVideoGenerationSession,
+} from './routeMemory';
 import styles from './index.module.css';
 
 type ListTab = 'recent' | 'tvShow';
@@ -160,8 +164,10 @@ const VideoGenerationListPage: React.FC = () => {
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },
           });
+          rememberVideoGenerationSession(created.id);
           return;
         }
+        rememberVideoGenerationSession(created.id);
         navigate(`/video-generation/${created.id}`);
       } catch (e) {
         message.error(
@@ -177,7 +183,10 @@ const VideoGenerationListPage: React.FC = () => {
   );
 
   const openSession = useCallback(
-    (s: SessionSummary) => navigate(`/video-generation/${s.id}`),
+    (s: SessionSummary) => {
+      rememberVideoGenerationSession(s.id);
+      navigate(`/video-generation/${s.id}`);
+    },
     [navigate]
   );
 
@@ -187,6 +196,7 @@ const VideoGenerationListPage: React.FC = () => {
       setDeletingId(s.id);
       try {
         await deleteSession(s.id);
+        clearVideoGenerationSessionMemory(s.id);
         setSessions((prev) => prev.filter((x) => x.id !== s.id));
         message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
       } catch (e) {

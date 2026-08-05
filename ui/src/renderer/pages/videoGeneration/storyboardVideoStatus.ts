@@ -103,6 +103,10 @@ export function activeVideoGenerationTarget(
     'video_generate',
     'video_clips_start',
     'video_continuity',
+    // Fine-grained Seedance job stages (still the same shot).
+    'video_create',
+    'video_poll',
+    'video_download',
   ]);
 
   // Only mark a shot as generating while the pipeline is actually in a clip stage.
@@ -113,7 +117,7 @@ export function activeVideoGenerationTarget(
   let shotIndex: number | null = parseShotFromMessage(status.message);
 
   for (const ev of events) {
-    if (!generatingStages.has(ev.stage)) continue;
+    if (!generatingStages.has(ev.stage) && ev.stage !== 'video_clip_done') continue;
     const fromMeta = metaNumber(ev.metadata, 'shot_idx');
     const fromMsg = parseShotFromMessage(ev.message);
     if (fromMeta != null || fromMsg != null) {

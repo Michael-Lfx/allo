@@ -68,6 +68,10 @@ import {
   normalizeSeedanceAspectRatio,
 } from './aspectRatios';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
+import {
+  clearVideoGenerationSessionMemory,
+  rememberVideoGenerationSession,
+} from './routeMemory';
 import styles from './index.module.css';
 
 const TextArea = Input.TextArea;
@@ -167,6 +171,7 @@ const WorkspacePage: React.FC = () => {
     try {
       const s = await getSession(sessionId);
       setSession(s);
+      rememberVideoGenerationSession(sessionId);
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
       setStyle(s.style?.trim() || launchDraft?.style?.trim() || DEFAULT_VISUAL_STYLE_PROMPT);
@@ -187,6 +192,7 @@ const WorkspacePage: React.FC = () => {
       });
       setLoadError(null);
     } catch (e) {
+      clearVideoGenerationSessionMemory(sessionId);
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
@@ -241,8 +247,10 @@ const WorkspacePage: React.FC = () => {
 
   // Poll while planning / rendering (1s so stage text feels live).
   // Also keep a slow poll while failed/idle so a late finish_job is not missed.
-  // Refresh artifacts when a shot clip finishes so storyboard thumbs update live.
-  const lastArtifactStageRef = useRef<string | null>(null);
+  // Refresh artifacts whenever a clip lands — including repeated `video_clip_done`
+  // for shot 2, 3, … (stage string alone is not unique across shots).
+  const lastArtifactRefreshKeyRef = useRef<string | null>(null);
+  const lastPeriodicArtifactAtRef = useRef(0);
   useEffect(() => {
     if (!sessionId) return;
     const active = isActiveStatus(runStatus?.status);
@@ -253,22 +261,38 @@ const WorkspacePage: React.FC = () => {
         if (!st) return;
         if (!isActiveStatus(st.status)) {
           void refreshArtifacts();
-          lastArtifactStageRef.current = st.stage;
+          lastArtifactRefreshKeyRef.current = `${st.status}:${st.stage}:${st.updated_at ?? ''}`;
           return;
         }
+
         const stage = st.stage || '';
-        const shouldRefreshArtifacts =
-          stage !== lastArtifactStageRef.current &&
-          (stage === 'video_clip_done' ||
-            stage === 'video_clip_exists' ||
-            stage === 'render_scene_done' ||
-            stage === 'concat_done' ||
-            stage === 'render_done');
-        if (shouldRefreshArtifacts) {
-          lastArtifactStageRef.current = stage;
+        const artifactLandingStages = new Set([
+          'video_clip_done',
+          'video_clip_exists',
+          'video_download',
+          'render_scene_done',
+          'concat_done',
+          'render_done',
+        ]);
+        // Include message + updated_at so consecutive shots finishing with the
+        // same stage name still trigger a refresh.
+        const refreshKey = `${stage}:${st.message ?? ''}:${st.updated_at ?? ''}`;
+        if (
+          artifactLandingStages.has(stage) &&
+          refreshKey !== lastArtifactRefreshKeyRef.current
+        ) {
+          lastArtifactRefreshKeyRef.current = refreshKey;
+          lastPeriodicArtifactAtRef.current = Date.now();
           void refreshArtifacts();
-        } else if (!lastArtifactStageRef.current) {
-          lastArtifactStageRef.current = stage;
+          return;
+        }
+
+        // Safety net: while rendering, rescan the artifact tree every ~4s so
+        // storyboard thumbs catch videos even if a stage event was missed.
+        const now = Date.now();
+        if (now - lastPeriodicArtifactAtRef.current >= 4000) {
+          lastPeriodicArtifactAtRef.current = now;
+          void refreshArtifacts();
         }
       })();
     }, ms);
@@ -548,6 +572,7 @@ const WorkspacePage: React.FC = () => {
     setDeleting(true);
     try {
       await deleteSession(sessionId);
+      clearVideoGenerationSessionMemory(sessionId);
       message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
       navigate('/video-generation');
     } catch (e) {

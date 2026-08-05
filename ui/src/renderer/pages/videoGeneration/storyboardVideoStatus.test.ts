@@ -90,6 +90,33 @@ describe('activeVideoGenerationTarget', () => {
       )
     ).toEqual({ shotIndex: 1, sceneIndex: 1 });
   });
+
+  test('inherits shot_idx across video_create/poll/download stages', () => {
+    expect(
+      activeVideoGenerationTarget(
+        status({
+          status: 'rendering',
+          stage: 'video_poll',
+          message: 'Cloud rendering — waited 12s',
+          events: [
+            {
+              stage: 'video_clip_start',
+              message: 'Generating shot 2 video',
+              metadata: { shot_idx: 2 },
+            },
+            {
+              stage: 'video_create',
+              message: 'submitting video task',
+            },
+            {
+              stage: 'video_poll',
+              message: 'Cloud rendering — waited 12s',
+            },
+          ],
+        })
+      )
+    ).toEqual({ shotIndex: 2, sceneIndex: null });
+  });
 });
 
 describe('resolveStoryboardVideoStatus', () => {

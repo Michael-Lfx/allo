@@ -245,7 +245,9 @@
 .storyStage {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.55fr);
+  grid-template-rows: minmax(360px, 1fr);
   min-height: 360px;
+  max-height: min(62vh, 560px);
   overflow: hidden;
   border: 1px solid var(--color-border-2);
   border-radius: 14px;
@@ -272,10 +274,56 @@
 .storyInspector {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  gap: 10px;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
   padding: 22px;
   color: rgba(255, 255, 255, 0.92);
   background: linear-gradient(160deg, #171c29, #0e1119);
+}
+
+.storyInspectorLabel {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.storyInspectorScroll {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.storyInspectorScroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.storyInspectorScroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.storyInspectorVisual {
+  flex: 1 1 0;
+  max-height: 46%;
+}
+
+.storyInspectorAudio {
+  flex: 0 1 auto;
+  max-height: 34%;
+}
+
+.storyInspectorActions {
+  flex-shrink: 0;
+  margin-top: auto;
 }
 
 .reviseInline {
@@ -812,10 +860,16 @@
 
   .storyStage {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(240px, 42vh) minmax(200px, 1fr);
+    max-height: none;
   }
 
   .storyMedia {
     min-height: 240px;
+  }
+
+  .storyInspector {
+    max-height: 280px;
   }
 }
 
