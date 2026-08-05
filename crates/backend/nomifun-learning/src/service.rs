@@ -641,22 +641,11 @@ impl LearningService {
         .fetch_all(&mut *transaction)
         .await
         .map_err(internal)?;
-        let settings = self.scheduler_settings().await;
+        // In-course attempts only feed mastery evidence. The memory curve
+        // (review items + FSRS scheduling) is driven exclusively by the
+        // review queue (`answer_review` / `rate_review`).
         for concept_id in concept_ids {
-            update_mastery_and_review(
-                &mut transaction,
-                &enrollment_id,
-                &concept_id,
-                score,
-                if passed {
-                    ReviewRating::Good
-                } else {
-                    ReviewRating::Again
-                },
-                now,
-                &settings,
-            )
-            .await?;
+            update_mastery(&mut transaction, &enrollment_id, &concept_id, score, now).await?;
         }
         transaction.commit().await.map_err(internal)?;
 
@@ -1771,5 +1760,12 @@ mod tests {
             .unwrap();
         assert_eq!(detail.concepts[0].mastery, Some(1.0));
         assert_eq!(detail.next_lesson_id, None);
+        // In-course attempts must never touch the memory curve: no review
+        // item may be created or rescheduled outside the review queue.
+        let review_items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_review_items")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(review_items, 0);
     }
 }
