@@ -5,7 +5,6 @@ import type { McpServerId } from '@/common/types/ids';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
-import { getCleanFileNames } from '@/renderer/services/FileService';
 import type { AvailableAgent } from '../types';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
@@ -19,8 +18,6 @@ import '@/renderer/components/chat/SendBox/sendbox.css';
 import styles from '../index.module.css';
 
 type GuidActionRowProps = {
-  // Attachments
-  files: string[];
   onOpenAddMenu: () => void;
 
   // Model selector node (rendered by parent)
@@ -69,7 +66,6 @@ type GuidActionRowProps = {
 };
 
 const GuidActionRow: React.FC<GuidActionRowProps> = ({
-  files,
   onOpenAddMenu,
   modelSelectorNode,
   selectedAgent,
@@ -151,14 +147,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               data-testid='file-upload-btn'
               aria-label={t('common.add')}
             />
-            {files.length > 0 && (
-              <Tooltip
-                className={'!max-w-max'}
-                content={<span className='whitespace-break-spaces'>{getCleanFileNames(files).join('\n')}</span>}
-              >
-                <span className='text-t-primary'>File({files.length})</span>
-              </Tooltip>
-            )}
           </span>
         </div>
         {mcpServers.length > 0 && (

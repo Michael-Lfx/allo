@@ -1,6 +1,7 @@
 
 
 import FilePreview from '@/renderer/components/media/FilePreview';
+import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
 import UploadProgressBar from '@/renderer/components/media/UploadProgressBar';
 import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
 import ComposerSkillTokenInput, {
@@ -159,6 +160,13 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
     >
         {entryStrip}
         {mentionSelectorBadge}
+        {files.length > 0 && (
+          <HorizontalFileList>
+            {files.map((path) => (
+              <FilePreview key={path} path={path} onRemove={() => onRemoveFile(path)} />
+            ))}
+          </HorizontalFileList>
+        )}
         <ComposerSkillTokenInput
           ref={tokenInputRef}
           autoFocus
@@ -187,13 +195,6 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
         {mentionOpen && (
           <div className='absolute z-50' style={{ left: 16, top: 44 }}>
             {mentionDropdown}
-          </div>
-        )}
-        {files.length > 0 && (
-          <div className='flex flex-wrap items-center gap-8px mt-12px mb-12px'>
-            {files.map((path) => (
-              <FilePreview key={path} path={path} onRemove={() => onRemoveFile(path)} />
-            ))}
           </div>
         )}
         <UploadProgressBar source='sendbox' />

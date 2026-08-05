@@ -861,7 +861,6 @@ const GuidPage: React.FC = () => {
   const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds);
   const actionRowNode = (
     <GuidActionRow
-      files={guidInput.files}
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
       selectedAgent={agentSelection.selectedAgent}
