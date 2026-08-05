@@ -70,6 +70,10 @@ function backendErrorMessage(error: unknown): string | null {
   return null;
 }
 
+function isMissingGoalError(message: string | null): boolean {
+  return message?.includes('No goal is set for this conversation') ?? false;
+}
+
 /**
  * Executes a parsed `/goal` or `/subgoal` invocation against the goal API,
  * surfaces a light Arco toast as user feedback and notifies GoalStatusNotice
@@ -191,7 +195,7 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
           case 'list_subgoals': {
             const subgoals = status?.subgoals ?? [];
             if (!status?.active) {
-              Message.info(t('conversation.goal.toast.statusNone'));
+              Message.error(t('conversation.goal.toast.subgoalRequiresGoal'));
             } else if (subgoals.length === 0) {
               Message.info(t('conversation.goal.toast.subgoalListEmpty'));
             } else {
@@ -273,9 +277,11 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
         console.error('[useGoalCommand] Goal action failed:', error);
         // 后端的 400/502 文本（如 "No goal is set…"）比通用失败文案更有用。
         const detail = backendErrorMessage(error);
-        const content = detail
-          ? t('conversation.goal.toast.failedWithReason', { reason: detail })
-          : t('conversation.goal.toast.failed');
+        const content = isMissingGoalError(detail)
+          ? t('conversation.goal.toast.goalRequired')
+          : detail
+            ? t('conversation.goal.toast.failedWithReason', { reason: detail })
+            : t('conversation.goal.toast.failed');
         if (invocation.action === 'draft') {
           Message.error({ id: DRAFT_LOADING_TOAST_ID, content });
         } else {
