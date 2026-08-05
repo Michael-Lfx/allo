@@ -92,6 +92,11 @@ export function useGoalCommand(conversation_id?: ConversationId, enabled = true)
       if (!conversation_id) {
         return false;
       }
+      // `start` is a composer-only action. SendBox arms goal mode and it must
+      // never reach the goal API.
+      if (invocation.action === 'start') {
+        return false;
+      }
       // Malformed `/subgoal remove <n>` / `/goal wait <pid>` — hint the user
       // without a request.
       if (invocation.action === 'invalid_subgoal_index') {

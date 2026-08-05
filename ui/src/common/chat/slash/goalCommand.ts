@@ -9,7 +9,7 @@
  * `/api/conversations/{id}/goal` action:
  * - `/goal <text>`  → set (text is the objective)
  * - `/goal status` / `/goal pause` / `/goal resume` / `/goal clear` → verbatim action
- * - `/goal` (no argument) → status
+ * - `/goal` (no argument) → start (enter goal objective input mode)
  * - `/goal draft [text]` → draft (text is an optional objective override)
  * - `/goal show` → show (status alias; response carries the contract)
  * - `/goal wait <pid>` → wait (pid barrier)
@@ -23,7 +23,7 @@
 import type { GoalContractDto } from '@/common/adapter/ipcBridge';
 
 export type GoalSlashInvocation =
-  | { action: 'status' | 'pause' | 'resume' | 'clear' }
+  | { action: 'start' | 'status' | 'pause' | 'resume' | 'clear' }
   | { action: 'set'; objective: string }
   | { action: 'add_subgoal'; subgoal: string }
   | { action: 'remove_subgoal'; index_1based: number }
@@ -59,7 +59,7 @@ export function parseGoalSlashCommand(input: string): GoalSlashInvocation | null
   }
   const arg = (match[1] ?? '').trim();
   if (!arg) {
-    return { action: 'status' };
+    return { action: 'start' };
   }
   const keyword = arg.toLowerCase();
   if (GOAL_SUBCOMMANDS.has(keyword)) {

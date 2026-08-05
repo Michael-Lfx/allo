@@ -147,6 +147,7 @@ const NomiSendBox: React.FC<{
   const [workspacePath, setWorkspacePath] = useState('');
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+  const [goalModeArmed, setGoalModeArmed] = useState(false);
   const layout = useLayoutContext();
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
@@ -276,6 +277,10 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setIsStopping(false);
+  }, [conversation_id]);
+
+  useEffect(() => {
+    setGoalModeArmed(false);
   }, [conversation_id]);
 
   useEffect(() => {
@@ -1033,7 +1038,7 @@ const NomiSendBox: React.FC<{
                 beforeRuntimeMutation={prepareRuntimeSync}
               />
             )}
-            <GoalModeChip conversation_id={conversation_id} />
+            <GoalModeChip conversation_id={conversation_id} armed={goalModeArmed} onArmedChange={setGoalModeArmed} />
           </div>
         }
         rightTools={
@@ -1108,6 +1113,8 @@ const NomiSendBox: React.FC<{
         onSlashBuiltinCommand={onSlashBuiltinCommand}
         onAddFiles={openFileSelector}
         enableGoalMenu
+        goalModeArmed={goalModeArmed}
+        onGoalModeChange={setGoalModeArmed}
         allowSendWhileLoading
       />
       {isMobile && (

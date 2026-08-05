@@ -15,6 +15,12 @@ describe('SendBox add menu', () => {
     expect(source.includes('                compact\n                items={addMenuItems}')).toBe(true);
     expect(source.includes('onAddFiles?: () => void')).toBe(true);
     expect(source.includes('enableGoalMenu?: boolean')).toBe(true);
+    expect(source.includes('goalModeArmed?: boolean')).toBe(true);
+    expect(source.includes('onGoalModeChange?: (enabled: boolean) => void')).toBe(true);
     expect(source.includes('slashController.onSelectItem(goalItem)')).toBe(true);
+    expect(source.includes("goalInvocation.action === 'start'")).toBe(true);
+    expect(source.includes('onGoalModeChange?.(true)')).toBe(true);
+    expect(source.includes('submitGoalObjective(input)')).toBe(true);
+    expect(source.includes("setInput('/goal ')")).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 
 
 import classNames from 'classnames';
-import React, { useEffect, useRef } from 'react';
+import React, { useLayoutEffect, useRef } from 'react';
 
 export interface SlashCommandMenuItem {
   key: string;
@@ -39,11 +39,35 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
   emptyText,
 }) => {
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Scrolling the list can cause Chromium to re-hit-test a stationary pointer
+  // against a different row. Only a real pointer movement should change the
+  // hover selection, otherwise keyboard navigation can oscillate.
+  const lastPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
 
-  useEffect(() => {
+  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>, index: number) => {
+    const nextPosition = { x: event.clientX, y: event.clientY };
+    const previousPosition = lastPointerPositionRef.current;
+    lastPointerPositionRef.current = nextPosition;
+    if (previousPosition && previousPosition.x === nextPosition.x && previousPosition.y === nextPosition.y) {
+      return;
+    }
+    onHoverItem(index);
+  };
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
     const current = itemRefs.current[activeIndex];
-    if (current) {
-      current.scrollIntoView({ block: 'nearest' });
+    if (!list || !current) {
+      return;
+    }
+
+    const listBounds = list.getBoundingClientRect();
+    const itemBounds = current.getBoundingClientRect();
+    if (itemBounds.top < listBounds.top) {
+      list.scrollTop += itemBounds.top - listBounds.top;
+    } else if (itemBounds.bottom > listBounds.bottom) {
+      list.scrollTop += itemBounds.bottom - listBounds.bottom;
     }
   }, [activeIndex, items.length]);
 
@@ -77,10 +101,14 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
         </div>
       )}
       <div
+        ref={listRef}
         role='listbox'
         aria-busy={loading}
         className={compact ? 'overflow-y-auto px-8px py-4px' : 'overflow-y-auto p-6px'}
         style={{ maxHeight: compact ? 'min(32vh, 232px)' : 'min(34vh, 260px)' }}
+        onPointerLeave={() => {
+          lastPointerPositionRef.current = null;
+        }}
       >
         {loading && (
           <div className={compact ? 'px-8px py-8px text-12px text-t-tertiary' : 'px-10px py-12px text-13px text-t-secondary'}>
@@ -109,8 +137,8 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                 }}
                 className={classNames(
                   compact
-                    ? 'w-full text-left px-10px py-2px rounded-10px transition-colors border border-solid outline-none cursor-pointer mb-1px last:mb-0'
-                    : 'w-full text-left px-10px py-6px rounded-8px transition-all border border-solid outline-none cursor-pointer mb-2px last:mb-0',
+                    ? 'w-full text-left px-10px py-2px rounded-10px transition-none border border-solid outline-none cursor-pointer mb-1px last:mb-0'
+                    : 'w-full text-left px-10px py-6px rounded-8px transition-none border border-solid outline-none cursor-pointer mb-2px last:mb-0',
                   {
                     'border-transparent': true,
                     'hover:bg-[var(--color-fill-1)]': index !== activeIndex,
@@ -124,7 +152,7 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                       : 'transparent',
                   boxShadow: undefined,
                 }}
-                onMouseEnter={() => onHoverItem(index)}
+                onPointerMove={(event) => handlePointerMove(event, index)}
                 onClick={() => onSelectItem(item)}
               >
                 <div className={compact ? 'flex items-center justify-between gap-6px' : 'flex items-center justify-between gap-8px'}>

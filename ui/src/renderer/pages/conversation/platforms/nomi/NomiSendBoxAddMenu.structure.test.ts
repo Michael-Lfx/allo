@@ -8,6 +8,10 @@ describe('Nomi desktop add menu', () => {
     const source = readSource();
 
     expect(source.includes('enableGoalMenu')).toBe(true);
+    expect(source.includes('const [goalModeArmed, setGoalModeArmed] = useState(false)')).toBe(true);
+    expect(source.includes('goalModeArmed={goalModeArmed}')).toBe(true);
+    expect(source.includes('onGoalModeChange={setGoalModeArmed}')).toBe(true);
+    expect(source.includes('armed={goalModeArmed} onArmedChange={setGoalModeArmed}')).toBe(true);
     expect(source.includes('openFileSelector={openFileSelector}')).toBe(true);
   });
 });

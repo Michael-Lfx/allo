@@ -215,6 +215,9 @@ const SendBox: React.FC<{
   onSlashBuiltinCommand?: (name: string) => void;
   onAddFiles?: () => void;
   enableGoalMenu?: boolean;
+  /** Conversation-only: the next regular message will become the goal objective. */
+  goalModeArmed?: boolean;
+  onGoalModeChange?: (enabled: boolean) => void;
   hasPendingAttachments?: boolean;
   enableBtw?: boolean;
   allowSendWhileLoading?: boolean;
@@ -259,6 +262,8 @@ const SendBox: React.FC<{
   onSlashBuiltinCommand,
   onAddFiles,
   enableGoalMenu = false,
+  goalModeArmed = false,
+  onGoalModeChange,
   hasPendingAttachments = false,
   enableBtw = false,
   allowSendWhileLoading = false,
@@ -678,6 +683,13 @@ const SendBox: React.FC<{
     onExecuteSystem: (item, context: SlashLauncherSelectionContext) => {
       const goalInvocation = parseGoalSlashCommand(`/${item.name}`);
       if (goalInvocation) {
+        if (goalInvocation.action === 'start') {
+          onGoalModeChange?.(true);
+          if (!context.manual && !tokenInputRef.current?.replaceActiveSlashToken()) {
+            setInput(replaceActiveSlashToken(input, '', tokenInputState.textSelection.end));
+          }
+          return;
+        }
         if (context.manual) {
           insertSlashCommandAtSelection(item.name);
           return;
@@ -1446,6 +1458,27 @@ const SendBox: React.FC<{
     setInput(prev);
   };
 
+  const submitGoalObjective = (objective: string) => {
+    const busy = !allowSendWhileLoading && (isLoading || loading);
+    void goalCommand.run({ action: 'set', objective }, { setToast: busy ? 'deferred' : 'started' }).then((ok) => {
+      if (!ok) {
+        return;
+      }
+      onGoalModeChange?.(false);
+      if (busy) {
+        return;
+      }
+      setIsLoading(true);
+      onSend(objective)
+        .catch(() => {
+          setInput(objective);
+        })
+        .finally(() => {
+          setIsLoading(false);
+        });
+    });
+  };
+
   const sendMessageHandler = () => {
     if (isUploading || isStopping) return;
     // 编辑模式：提交走截断重跑而非普通发送。
@@ -1508,6 +1541,16 @@ const SendBox: React.FC<{
     if (goalCommand.enabled) {
       const goalInvocation = parseGoalSlashCommand(input);
       if (goalInvocation) {
+        if (goalInvocation.action === 'start') {
+          historyDraftRef.current = null;
+          setHistoryNavigationIndex(null);
+          setInput('');
+          onGoalModeChange?.(true);
+          requestAnimationFrame(() => {
+            tokenInputRef.current?.focusAtTextOffset(0);
+          });
+          return;
+        }
         historyDraftRef.current = null;
         setHistoryNavigationIndex(null);
         setInput('');
@@ -1516,26 +1559,21 @@ const SendBox: React.FC<{
         // 进行中只设定目标（当前回合结束后由 judge 接管续作），不强行插消息；
         // set 失败（API 报错）则不发送。
         if (goalInvocation.action === 'set') {
-          const busy = !allowSendWhileLoading && (isLoading || loading);
           const objective = goalInvocation.objective;
-          void goalCommand.run(goalInvocation, { setToast: busy ? 'deferred' : 'started' }).then((ok) => {
-            if (!ok || busy) {
-              return;
-            }
-            setIsLoading(true);
-            onSend(objective)
-              .catch(() => {
-                setInput(objective);
-              })
-              .finally(() => {
-                setIsLoading(false);
-              });
-          });
+          submitGoalObjective(objective);
           return;
         }
         void goalCommand.run(goalInvocation);
         return;
       }
+    }
+
+    if (goalModeArmed && input.trim()) {
+      historyDraftRef.current = null;
+      setHistoryNavigationIndex(null);
+      setInput('');
+      submitGoalObjective(input);
+      return;
     }
 
     if (!allowSendWhileLoading && (isLoading || loading)) {
