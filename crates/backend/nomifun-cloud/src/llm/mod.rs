@@ -80,6 +80,9 @@ impl ServerLlmProvider {
         let base = self.config.effective_llm_base_url();
         let mut compat = ProviderCompat::default();
         compat.supports_image = Some(true);
+        // Mirror JWT into legacy `token` and enable X-Flowy-Turn-Id injection
+        // when a billing turn is scoped (same contract as flowy-cloud provider).
+        compat.mirror_bearer_header = Some("token".to_string());
         Ok(OpenAIProvider::new(&token, &base, compat))
     }
 

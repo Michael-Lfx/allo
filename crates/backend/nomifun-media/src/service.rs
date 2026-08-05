@@ -7,7 +7,8 @@ use nomi_config::{
 use nomi_media::workflows::store::{WorkflowRunRecord, WorkflowRunStore};
 use nomifun_api_types::{
     MediaCreditsCheckinResponse, MediaCreditsResponse, MediaSettingsResponse,
-    MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
+    MediaTurnCreditUsage, MediaTurnCreditUsageCall, MediaWorkflowHistoryItem,
+    MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
 use nomifun_cloud::{FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO, ensure_gateway_defaults};
 use nomifun_common::AppError;
@@ -193,6 +194,68 @@ impl MediaApiService {
             balance: resp.balance,
             check_in_at: resp.check_in_at,
             day_key: resp.day_key,
+            authenticated: true,
+        })
+    }
+
+    /// Look up Flowy credit usage for one agent turn (`X-Flowy-Turn-Id`).
+    pub async fn credits_usage_by_turn(
+        &self,
+        turn_id: String,
+    ) -> Result<MediaTurnCreditUsage, AppError> {
+        let turn_id = turn_id.trim().to_string();
+        let unauthenticated = || MediaTurnCreditUsage {
+            turn_id: turn_id.clone(),
+            authenticated: false,
+            ..Default::default()
+        };
+
+        if turn_id.is_empty() || turn_id.len() > 64 {
+            return Err(AppError::BadRequest(
+                "turnId must be 1..=64 characters after trim".into(),
+            ));
+        }
+
+        let cfg = self.gateway_config();
+        if !flowy_media_exposed(&cfg) {
+            return Ok(unauthenticated());
+        }
+        let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
+        let session = nomifun_cloud::ServerSession::from_config(&cfg.server, &self.data_dir);
+        let token = session
+            .access_token()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let Some(token) = token.filter(|t| !t.trim().is_empty()) else {
+            return Ok(unauthenticated());
+        };
+        let _ = token;
+
+        let usage = api
+            .get_credits_usage_by_turn(&session, &turn_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        Ok(MediaTurnCreditUsage {
+            turn_id: usage.turn_id,
+            session_id: usage.session_id,
+            call_count: usage.call_count,
+            credits_consumed: usage.credits_consumed,
+            calls: usage
+                .calls
+                .into_iter()
+                .map(|c| MediaTurnCreditUsageCall {
+                    chat_id: c.chat_id,
+                    model_name: c.model_name,
+                    channel_model_id: c.channel_model_id,
+                    prompt_tokens: c.prompt_tokens,
+                    completion_tokens: c.completion_tokens,
+                    cache_tokens: c.cache_tokens,
+                    credit_consumed: c.credit_consumed,
+                    call_status: c.call_status,
+                    created_at: c.created_at,
+                })
+                .collect(),
             authenticated: true,
         })
     }

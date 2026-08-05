@@ -198,8 +198,9 @@ pub use mcp::{
 };
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
-    MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaWorkflowHistoryItem,
-    MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
+    MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaTurnCreditUsage,
+    MediaTurnCreditUsageCall, MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse,
+    UpdateMediaSettingsRequest,
 };
 pub use model_capability::{infer_generation_capabilities, infer_model_modalities};
 pub use dispatch_target::{resolve_dispatch_target, DispatchTarget, RequestShape};

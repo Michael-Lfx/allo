@@ -139,6 +139,18 @@ export interface TokenUsageData {
   moa?: MoaTurnStatsData | null;
 }
 
+/** Persisted Flowy cloud credit usage for one agent turn (keyed by turnId). */
+export interface TurnCreditUsageData {
+  turnId: string;
+  creditsConsumed: number;
+  callCount: number;
+  calls?: Array<{
+    modelName: string;
+    creditConsumed: number;
+    callStatus?: string;
+  }>;
+}
+
 export type TChatConversation =
   | Omit<
       IChatConversation<
@@ -289,6 +301,8 @@ export type TChatConversation =
         is_health_check?: boolean;
         /** Last token usage stats */
         last_token_usage?: TokenUsageData;
+        /** Flowy cloud credit usage by turn id (root turn UUID). */
+        turn_credit_usage?: Record<string, TurnCreditUsageData>;
         /** Marks this nomi conversation as a desktop-companion's single per-companion
          * session (单会话契约). Written by the backend at companion-session creation.
          * Drives the 桌面伙伴 session-list group, the constrained companion chat panel
