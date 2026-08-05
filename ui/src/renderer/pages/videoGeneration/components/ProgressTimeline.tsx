@@ -77,7 +77,14 @@ function classifyFailure(
     'frame_prompt_start',
     'image_generate',
   ]);
-  const videoStages = new Set(['video_clips_start', 'video_generate', 'concat_start']);
+  const videoStages = new Set([
+    'video_clips_start',
+    'video_create',
+    'video_poll',
+    'video_download',
+    'video_generate',
+    'concat_start',
+  ]);
 
   let looksLikeLlm =
     lower.includes('llm failed') ||
@@ -206,6 +213,19 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
     return t('videoGeneration.workspace.progress.stale');
   }, [status, t]);
 
+  // Latest Seedance poll report: elapsed seconds for the "cloud rendering" line.
+  const pollReport = useMemo(() => {
+    const evs = status?.events ?? [];
+    for (let i = evs.length - 1; i >= 0; i--) {
+      if (evs[i].stage !== 'video_poll') continue;
+      const meta = evs[i].metadata as { elapsed_secs?: number; status?: number } | null | undefined;
+      if (typeof meta?.elapsed_secs === 'number') {
+        return meta.elapsed_secs;
+      }
+    }
+    return null;
+  }, [status?.events]);
+
   if (!status) {
     return (
       <div className='text-12px text-[var(--color-text-3)] py-8px'>
@@ -261,6 +281,14 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
               ? t('videoGeneration.workspace.progress.working')
               : t('videoGeneration.workspace.progress.idleStep'))}
         </div>
+        {status.stage === 'video_poll' && typeof pollReport === 'number' ? (
+          <div className='text-12px leading-18px text-[var(--color-text-2)] mt-2px tabular-nums'>
+            {t('videoGeneration.workspace.progress.pollWait', {
+              secs: pollReport,
+              defaultValue: '已等待 {{secs}} 秒',
+            })}
+          </div>
+        ) : null}
         {staleHint ? (
           <div className='text-12px leading-18px text-[rgb(var(--warning-6))] mt-6px'>
             {staleHint}
