@@ -19,7 +19,8 @@ use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
 };
 use super::{
-    PipelineBackends, emit, emit_pct, group_shots_into_cameras, load_or_write_json,
+    PipelineBackends, emit, emit_meta, emit_pct, emit_pct_meta, group_shots_into_cameras,
+    load_or_write_json,
     resolve_film_root, safe_component, sanitize_camera_tree,
 };
 
@@ -800,11 +801,12 @@ impl Script2VideoPipeline {
                 return Err(VimaxError::Cancelled);
             }
             let pct = 55.0 + 40.0 * (i as f32 / total as f32);
-            emit_pct(
+            emit_pct_meta(
                 progress,
                 "video_clip_start",
                 &format!("串行生成镜头视频（{}/{}）· 镜头 {}", i + 1, total, shot.idx),
                 pct,
+                serde_json::json!({ "shot_idx": shot.idx }),
             );
 
             // Timeline-adjacent continuity: previous shot's ending still as reference_image.
@@ -927,11 +929,12 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     );
                     // Prefer API return_last_frame; ffmpeg-extract if still missing.
                     let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx, false).await;
-                    emit_pct(
+                    emit_pct_meta(
                         progress,
                         "video_clip_done",
                         &format!("Shot {} ready ({ok}/{total})", shot.idx),
                         55.0 + 40.0 * ((i + 1) as f32 / total as f32),
+                        serde_json::json!({ "shot_idx": shot.idx }),
                     );
                 }
                 Err(e) => {
@@ -1490,7 +1493,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     .to_string()
             })
             .collect();
-        emit(
+        emit_meta(
             progress,
             "video_clip_start",
             &format!(
@@ -1501,6 +1504,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 using_video_continuity,
                 ref_names.join(", ")
             ),
+            serde_json::json!({ "shot_idx": shot.idx }),
         );
         tracing::info!(
             shot = shot.idx,

@@ -21,7 +21,9 @@ use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
 };
 use super::script2video::Script2VideoPipeline;
-use super::{PipelineBackends, emit_pct, load_or_write_json, load_or_write_text, safe_component};
+use super::{
+    PipelineBackends, emit_pct, emit_pct_meta, load_or_write_json, load_or_write_text, safe_component,
+};
 
 pub struct Idea2VideoPipeline {
     backends: PipelineBackends,
@@ -456,11 +458,12 @@ impl Idea2VideoPipeline {
             );
 
             let pct = 20.0 + 70.0 * (i as f32 / scene_total as f32);
-            emit_pct(
+            emit_pct_meta(
                 &progress,
                 "render_scene",
                 &format!("正在渲染场景（{}/{scene_total}）· 含图片与视频模型", i + 1),
                 pct,
+                serde_json::json!({ "scene_idx": i }),
             );
             let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_dir);
             match s2v

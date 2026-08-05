@@ -9,6 +9,9 @@ pub const MAX_CLIP_DURATION_SECS: u32 = 15;
 /// Default target total length when the user does not specify one.
 pub const DEFAULT_TARGET_DURATION_SECS: u32 = 45;
 
+/// Max user-facing film target (UI timeline + plan/render clamp).
+pub const MAX_TARGET_DURATION_SECS: u32 = 300;
+
 /// Natural spoken Chinese chars/sec (clear delivery — avoid rushed Seedance speech).
 const SPEECH_CJK_CHARS_PER_SEC: f32 = 2.0;
 /// Natural spoken English words/sec.
@@ -432,7 +435,7 @@ pub fn looks_like_child_character(identifier: &str, features: &str) -> bool {
 /// Clamp a user-provided target into a practical range.
 pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
     raw.unwrap_or(DEFAULT_TARGET_DURATION_SECS)
-        .clamp(MIN_CLIP_DURATION_SECS, 180)
+        .clamp(MIN_CLIP_DURATION_SECS, MAX_TARGET_DURATION_SECS)
 }
 
 /// Suggested shot count for a **single scene budget** (not the whole film).

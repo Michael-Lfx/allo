@@ -14,7 +14,7 @@ use crate::rag;
 use crate::session::{write_json_artifact, write_text_artifact};
 
 use super::script2video::Script2VideoPipeline;
-use super::{PipelineBackends, emit, emit_pct, load_or_write_text};
+use super::{PipelineBackends, emit, emit_meta, emit_pct, load_or_write_text};
 
 pub struct Novel2VideoPipeline {
     backends: PipelineBackends,
@@ -360,13 +360,14 @@ impl Novel2VideoPipeline {
                 }
                 pending += 1;
                 let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_work);
-                emit(
+                emit_meta(
                     &progress,
                     "render_scene",
                     &format!(
                         "正在渲染事件 {} 场景 {}",
                         event.index, scene.index
                     ),
+                    serde_json::json!({ "scene_idx": scene.index }),
                 );
                 let video = s2v
                     .render(&scene.script, user_requirement, style, None)

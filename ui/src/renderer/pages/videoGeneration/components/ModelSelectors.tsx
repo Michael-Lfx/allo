@@ -19,6 +19,21 @@ export interface VimaxModelSelection {
   video_model: string;
 }
 
+/** Preferred default video model when present in the Flowy catalog. */
+const PREFERRED_VIDEO_MODEL_NEEDLE = 'doubao-seedance-2-0-fast';
+
+function normalizeModelKey(id: string): string {
+  return id.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Pick Seedance 2.0 Fast when listed; otherwise the first catalog entry. */
+export function pickDefaultVideoModel(videoModels: string[]): string | undefined {
+  if (!videoModels.length) return undefined;
+  const preferredKey = normalizeModelKey(PREFERRED_VIDEO_MODEL_NEEDLE);
+  const preferred = videoModels.find((id) => normalizeModelKey(id).includes(preferredKey));
+  return preferred ?? videoModels[0];
+}
+
 interface ModelSelectorsProps {
   value: VimaxModelSelection;
   onChange: (next: VimaxModelSelection) => void;
@@ -55,7 +70,10 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     const patch: Partial<VimaxModelSelection> = {};
     if (!value.llm_model && llmOptions[0]) patch.llm_model = llmOptions[0].value;
     if (!value.image_model && imageModels[0]) patch.image_model = imageModels[0];
-    if (!value.video_model && videoModels[0]) patch.video_model = videoModels[0];
+    if (!value.video_model) {
+      const preferred = pickDefaultVideoModel(videoModels);
+      if (preferred) patch.video_model = preferred;
+    }
     if (Object.keys(patch).length > 0) {
       onChange({ ...value, ...patch });
     }

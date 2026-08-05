@@ -344,7 +344,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
               <img
                 src={detail.coverUrl}
                 alt=''
-                className='w-full rd-12px object-cover aspect-video bg-[var(--color-fill-2)]'
+                className='w-full rd-12px object-contain aspect-video bg-[var(--color-fill-2)]'
               />
             ) : null}
             <div className='text-13px text-[var(--color-text-3)]'>

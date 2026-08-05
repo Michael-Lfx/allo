@@ -56,19 +56,42 @@ pub(crate) fn emit(progress: &Option<ProgressCallback>, stage: &str, message: &s
     }
 }
 
+pub(crate) fn emit_meta(
+    progress: &Option<ProgressCallback>,
+    stage: &str,
+    message: &str,
+    meta: serde_json::Value,
+) {
+    if let Some(cb) = progress {
+        cb(stage, message, Some(meta));
+    }
+}
+
 pub(crate) fn emit_pct(
     progress: &Option<ProgressCallback>,
     stage: &str,
     message: &str,
     pct: f32,
 ) {
-    if let Some(cb) = progress {
-        cb(
-            stage,
-            message,
-            Some(serde_json::json!({ "progress": pct })),
-        );
+    emit_meta(
+        progress,
+        stage,
+        message,
+        serde_json::json!({ "progress": pct }),
+    );
+}
+
+pub(crate) fn emit_pct_meta(
+    progress: &Option<ProgressCallback>,
+    stage: &str,
+    message: &str,
+    pct: f32,
+    mut meta: serde_json::Value,
+) {
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("progress".into(), serde_json::json!(pct));
     }
+    emit_meta(progress, stage, message, meta);
 }
 
 pub(crate) async fn load_or_write_json<T, F, Fut>(
