@@ -140,10 +140,10 @@ impl WorldAssetsPlanner {
             }
         }
 
-        let style_ref_paths: Vec<&Path> = style_refs
+        let style_ref_paths: Vec<PathBuf> = style_refs
             .iter()
             .filter(|p| crate::media_local::is_usable_image_file(p))
-            .map(|p| p.as_path())
+            .cloned()
             .collect();
 
         let spec: WorldAssetsSpec = if spec_path.exists() {
@@ -169,6 +169,21 @@ impl WorldAssetsPlanner {
 
         let mut env_map = registry.remove("environments").unwrap_or_default();
         let mut prop_map = registry.remove("props").unwrap_or_default();
+
+        /// One env/prop plate prepared for generation + registry registration.
+        struct PreparedPlate {
+            group: &'static str,
+            key: String,
+            out: PathBuf,
+            stripped_desc: String,
+            registry_desc: String,
+            prompt: Option<String>,
+        }
+
+        // Phase A — prepare every plate (dirs, legacy rename, prompt) and collect
+        // the missing ones for parallel generation. Plates have no cross-dependency:
+        // each is a self-contained vacant-set image.
+        let mut prepared: Vec<PreparedPlate> = Vec::new();
         for env in &spec.environments {
             let key = if env.slugline.trim().is_empty() {
                 format!("env_{}", env.idx)
@@ -183,58 +198,39 @@ impl WorldAssetsPlanner {
             if !out.exists() && legacy.exists() {
                 let _ = tokio::fs::rename(&legacy, &out).await;
             }
-            if !out.exists() {
-                let desc = strip_people_mentions(&env.description);
+            let stripped_desc = strip_people_mentions(&env.description);
+            let prompt = if !out.exists() {
                 let style_clause = crate::planning::style_prompt_clause(&style);
-                let prompt = include_str!(
-                    "../../prompts/world_assets__prompt_template_environment_plate.txt"
+                Some(
+                    include_str!(
+                        "../../prompts/world_assets__prompt_template_environment_plate.txt"
+                    )
+                    .replace("{theme}", &theme)
+                    .replace("{slugline}", &env.slugline)
+                    .replace("{description}", &stripped_desc)
+                    .replace("{style}", &style_clause),
                 )
-                .replace("{theme}", &theme)
-                .replace("{slugline}", &env.slugline)
-                .replace("{description}", &desc)
-                .replace("{style}", &style_clause);
-                self.generate_empty_plate_resilient(&prompt, &style_ref_paths, &out)
-                    .await?;
-                let _ = write_generation_prompt_sidecar(&out, &prompt).await;
             } else {
-                let _ = ensure_world_prompt_sidecar(
-                    &out,
-                    &theme,
-                    &style,
-                    WorldPromptKind::Environment {
-                        slugline: &env.slugline,
-                        description: &env.description,
-                    },
-                )
-                .await;
-            }
-            if env_map.contains_key(&key) {
-                continue;
-            }
-            let detail: String = strip_people_mentions(&env.description)
-                .chars()
-                .take(120)
-                .collect();
+                None
+            };
+            let detail: String = stripped_desc.chars().take(120).collect();
             let cameo_note = if style_ref_paths.is_empty() {
                 String::new()
             } else {
                 " Style-locked to user Cameo references.".into()
             };
-            env_map.insert(
-                key.clone(),
-                asset_item(
-                    &out,
-                    &format!(
-                        "File [{plate_name}] = GLOBAL EMPTY environment plate (no people): {key}. {detail}. Lock architecture, lighting, set dressing only.{cameo_note}"
-                    ),
-                ),
+            let registry_desc = format!(
+                "File [{plate_name}] = GLOBAL EMPTY environment plate (no people): {key}. {detail}. Lock architecture, lighting, set dressing only.{cameo_note}"
             );
-            // Checkpoint so resume keeps completed plates even if a later one fails.
-            registry.insert("environments".into(), env_map.clone());
-            registry.insert("props".into(), prop_map.clone());
-            let _ = write_json_artifact(&registry_path, &registry).await;
+            prepared.push(PreparedPlate {
+                group: "environments",
+                key,
+                out,
+                stripped_desc,
+                registry_desc,
+                prompt,
+            });
         }
-
         for prop in &spec.props {
             let key = prop.name.trim().to_string();
             if key.is_empty() {
@@ -242,56 +238,112 @@ impl WorldAssetsPlanner {
             }
             let dir = prop_root.join(format!("{}_{}", prop.idx, safe_component(&key)));
             tokio::fs::create_dir_all(&dir).await?;
-            let prop_name = format!("{}_prop.png", safe_component(&key));
-            let out = dir.join(&prop_name);
+            let plate_name = format!("{}_prop.png", safe_component(&key));
+            let out = dir.join(&plate_name);
             let legacy = dir.join("prop.png");
             if !out.exists() && legacy.exists() {
                 let _ = tokio::fs::rename(&legacy, &out).await;
             }
-            if !out.exists() {
-                let desc = strip_people_mentions(&prop.description);
+            let stripped_desc = strip_people_mentions(&prop.description);
+            let prompt = if !out.exists() {
                 let style_clause = crate::planning::style_prompt_clause(&style);
-                let prompt = include_str!("../../prompts/world_assets__prompt_template_prop.txt")
-                    .replace("{theme}", &theme)
-                    .replace("{name}", &prop.name)
-                    .replace("{description}", &desc)
-                    .replace("{style}", &style_clause);
-                self.generate_empty_plate_resilient(&prompt, &style_ref_paths, &out)
-                    .await?;
-                let _ = write_generation_prompt_sidecar(&out, &prompt).await;
-            } else {
-                let _ = ensure_world_prompt_sidecar(
-                    &out,
-                    &theme,
-                    &style,
-                    WorldPromptKind::Prop {
-                        name: &prop.name,
-                        description: &prop.description,
-                    },
+                Some(
+                    include_str!("../../prompts/world_assets__prompt_template_prop.txt")
+                        .replace("{theme}", &theme)
+                        .replace("{name}", &prop.name)
+                        .replace("{description}", &stripped_desc)
+                        .replace("{style}", &style_clause),
                 )
-                .await;
-            }
-            if prop_map.contains_key(&key) {
-                continue;
-            }
-            let detail: String = strip_people_mentions(&prop.description)
-                .chars()
-                .take(100)
-                .collect();
+            } else {
+                None
+            };
+            let detail: String = stripped_desc.chars().take(100).collect();
             let cameo_note = if style_ref_paths.is_empty() {
                 String::new()
             } else {
                 " Style-locked to user Cameo references.".into()
             };
-            prop_map.insert(
-                key.clone(),
-                asset_item(
-                    &out,
-                    &format!(
-                        "File [{prop_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors.{cameo_note}"
-                    ),
-                ),
+            let registry_desc = format!(
+                "File [{plate_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors.{cameo_note}"
             );
+            prepared.push(PreparedPlate {
+                group: "props",
+                key,
+                out,
+                stripped_desc,
+                registry_desc,
+                prompt,
+            });
+        }
+
+        // Phase B — generate missing plates in parallel (semaphore 4, same as the
+        // character-portrait fan-out). Each worker owns its image/chat handles.
+        if prepared.iter().any(|p| p.prompt.is_some()) {
+            let sem = Arc::new(tokio::sync::Semaphore::new(4));
+            let mut set = tokio::task::JoinSet::new();
+            for plate in &prepared {
+                let Some(prompt) = plate.prompt.clone() else {
+                    continue;
+                };
+                let image = Arc::clone(&self.image);
+                let chat = Arc::clone(&self.chat);
+                let style_refs = style_ref_paths.clone();
+                let out = plate.out.clone();
+                let permit = Arc::clone(&sem);
+                set.spawn(async move {
+                    let _permit = permit.acquire_owned().await.map_err(|_| {
+                        VimaxError::msg("world plate semaphore closed")
+                    })?;
+                    let refs: Vec<&Path> =
+                        style_refs.iter().map(|p| p.as_path()).collect();
+                    let planner = WorldAssetsPlanner { image, chat };
+                    planner
+                        .generate_empty_plate_resilient(&prompt, &refs, &out)
+                        .await?;
+                    let _ = write_generation_prompt_sidecar(&out, &prompt).await;
+                    Ok::<_, VimaxError>(())
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                joined.map_err(|e| VimaxError::msg(format!("world plate join: {e}")))??;
+            }
+        }
+
+        // Phase C — register plates (skip ones already in the registry) with the
+        // same per-plate checkpoint writes as before, in deterministic order.
+        for plate in &prepared {
+            let out = &plate.out;
+            if plate.prompt.is_none() {
+                let _ = ensure_world_prompt_sidecar(
+                    out,
+                    &theme,
+                    &style,
+                    match plate.group {
+                        "environments" => WorldPromptKind::Environment {
+                            slugline: &plate.key,
+                            description: &plate.stripped_desc,
+                        },
+                        _ => WorldPromptKind::Prop {
+                            name: &plate.key,
+                            description: &plate.stripped_desc,
+                        },
+                    },
+                )
+                .await;
+            }
+            let already = match plate.group {
+                "environments" => env_map.contains_key(&plate.key),
+                _ => prop_map.contains_key(&plate.key),
+            };
+            if already {
+                continue;
+            }
+            let item = asset_item(out, &plate.registry_desc);
+            match plate.group {
+                "environments" => env_map.insert(plate.key.clone(), item),
+                _ => prop_map.insert(plate.key.clone(), item),
+            };
+            // Checkpoint so resume keeps completed plates even if a later one fails.
             registry.insert("environments".into(), env_map.clone());
             registry.insert("props".into(), prop_map.clone());
             let _ = write_json_artifact(&registry_path, &registry).await;

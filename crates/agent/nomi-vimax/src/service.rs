@@ -765,6 +765,7 @@ impl VimaxService {
                 .update_fields(id, |r| r.style = style_persist);
         }
         let progress = progress_callback(Arc::clone(self), id);
+        let plan_started = std::time::Instant::now();
 
         match record.workflow {
             WorkflowKind::Novel2Video => {
@@ -829,6 +830,12 @@ impl VimaxService {
             st.progress = 100.0;
             st.emit("planned", "规划完成，可以开始渲染", None);
         }
+        tracing::info!(
+            phase = "plan_total",
+            secs = plan_started.elapsed().as_secs_f64(),
+            workflow = ?record.workflow,
+            "plan job wall time"
+        );
         let cover_rel = self.sync_cover_from_disk(id);
         let _ = self.index.update_fields(id, |r| {
             r.stage = "planned".into();
@@ -891,6 +898,7 @@ impl VimaxService {
         if token.is_cancelled() {
             return Err(VimaxError::Cancelled);
         }
+        let render_started = std::time::Instant::now();
 
         let final_video = match record.workflow {
             WorkflowKind::Script2Video => {
@@ -949,6 +957,12 @@ impl VimaxService {
             r.stage = "render_done".into();
             r.summary = "render complete".into();
         });
+        tracing::info!(
+            phase = "render_total",
+            secs = render_started.elapsed().as_secs_f64(),
+            workflow = ?record.workflow,
+            "render job wall time"
+        );
         Ok(())
     }
 

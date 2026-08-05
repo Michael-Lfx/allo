@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use nomifun_cloud::{
-    MODEL_CATEGORY_VIDEO, VideoContentImage, VideoCreateParams, resolve_model_in_catalog,
+    video_task_failure_message, MODEL_CATEGORY_VIDEO, VideoContentImage, VideoCreateParams,
+    resolve_model_in_catalog,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
@@ -171,6 +172,10 @@ impl VimaxVideo for FlowyVideo {
                 ));
             }
         } else {
+            // Upload reference images concurrently (independent I/O) while preserving
+            // their order — the prompt binds each `Image N` by array position.
+            let n = ref_images.len();
+            let mut set = tokio::task::JoinSet::new();
             for (i, path) in ref_images.iter().enumerate() {
                 let stem = path
                     .file_stem()
@@ -178,9 +183,28 @@ impl VimaxVideo for FlowyVideo {
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("reference_image_{i}"));
+                let services = self.services.clone();
+                let p = (*path).to_path_buf();
+                let stem_clone = stem.clone();
+                set.spawn(async move {
+                    let url = services.upload_image_public_url(&p, &stem_clone).await;
+                    (i, stem, url)
+                });
+            }
+            let mut slots: Vec<Option<(String, VimaxResult<String>)>> = (0..n)
+                .map(|_| None)
+                .collect();
+            while let Some(joined) = set.join_next().await {
+                let (i, stem, url) =
+                    joined.map_err(|e| VimaxError::Video(format!("ref upload join: {e}")))?;
+                slots[i] = Some((stem, url));
+            }
+            for slot in slots {
+                let (stem, url) =
+                    slot.expect("every spawned ref upload joins exactly once");
                 local_frame_notes.push(format!("reference_image←{stem}"));
                 images.push(VideoContentImage {
-                    url: self.frame_public_url(path, &stem).await?,
+                    url: url?,
                     role: "reference_image".into(),
                 });
             }
@@ -359,9 +383,15 @@ impl VimaxVideo for FlowyVideo {
             return Err(VimaxError::Cancelled);
         }
 
-        let url = record
-            .video_url()
-            .ok_or_else(|| VimaxError::Video("video task succeeded but no video_url".into()))?;
+        let url = record.video_url().ok_or_else(|| {
+            if record.is_success() {
+                VimaxError::Video("video task succeeded but no video_url".into())
+            } else {
+                // Surface the upstream failure reason (e.g. InputTextSensitiveContentDetected)
+                // instead of a misleading success message.
+                VimaxError::Video(video_task_failure_message(&record))
+            }
+        })?;
 
         download_video(&url, out_path).await?;
 

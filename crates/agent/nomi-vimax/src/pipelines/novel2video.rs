@@ -106,6 +106,26 @@ impl Novel2VideoPipeline {
         tokio::fs::create_dir_all(gi_dir.join("novel_level")).await?;
 
         for (event_i, event) in events.iter().enumerate() {
+            // P1-6 fast path: this event's RAG / scene / character-merge artifacts
+            // already exist — re-running the per-event LLM work (rerank + merge)
+            // would only repeat cached results. Scene-level Script2Video plans are
+            // rebuilt lazily by render if any are missing.
+            let scenes_ready = self
+                .working_dir
+                .join("scenes")
+                .join(format!("event_{}", event.index))
+                .join("scenes.json")
+                .is_file();
+            let chars_ready = gi_dir
+                .join("novel_level")
+                .join(format!(
+                    "novel_characters_after_event_{}.json",
+                    event.index
+                ))
+                .is_file();
+            if scenes_ready && chars_ready {
+                continue;
+            }
             let base = 60.0 + 35.0 * (event_i as f32 / event_count as f32);
             emit_pct(
                 &progress,

@@ -39,6 +39,7 @@ pub use flowy::{
     FlowyApiClient, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
     MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, OssUploadResult, UserMe,
     VideoContentImage, VideoCreateParams, VideoTaskRecord, resolve_model_in_catalog,
+    video_task_failure_message,
 };
 pub use llm::ServerLlmProvider;
 pub use profile::ProfileStore;

@@ -108,12 +108,25 @@ impl FlowyVimaxServices {
     ///
     /// `role` is a fallback stem; the local file stem is preferred so multi-ref
     /// models can bind prompts to meaningful names (e.g. `Alice_three_view.jpg`).
+    ///
+    /// Identical files (same size + mtime) reuse the process-wide cached `publicUrl`,
+    /// so cross-shot re-uploads of unchanged cast/env/prop frames cost zero network.
     pub async fn upload_image_public_url(
         &self,
         path: &std::path::Path,
         role: &str,
     ) -> Result<String, crate::error::VimaxError> {
         use tracing::debug;
+
+        let meta = tokio::fs::metadata(path).await.ok();
+        let size = meta.as_ref().map(|m| m.len());
+        let modified = meta.and_then(|m| m.modified().ok());
+        if let Some(size) = size
+            && let Some(url) = oss_url_cache_get(path, size, modified)
+        {
+            debug!(path = %path.display(), "OSS publicUrl cache hit");
+            return Ok(url);
+        }
 
         let bytes = tokio::fs::read(path).await?;
         let (bytes, mime) =
@@ -161,15 +174,59 @@ impl FlowyVimaxServices {
             "uploading media image to OSS"
         );
 
-        self.api
+        let url = self
+            .api
             .upload_bytes_via_oss(&self.session, &bytes, &file_name, mime)
             .await
             .map_err(|e| {
                 crate::error::VimaxError::msg(format!(
                     "OSS upload failed ({safe_stem}): {e}"
                 ))
-            })
+            })?;
+        if let Some(size) = size {
+            oss_url_cache_put(path, size, modified, &url);
+        }
+        Ok(url)
     }
+}
+
+/// Cache key: canonical path + file size + mtime (cheap content fingerprint).
+/// `publicUrl` is the CDN download URL (long-lived) — safe to reuse within a process.
+type OssUrlCache = std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
+
+const OSS_URL_CACHE_MAX: usize = 2048;
+
+fn oss_url_cache() -> &'static std::sync::Mutex<OssUrlCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<OssUrlCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(OssUrlCache::new()))
+}
+
+fn oss_url_cache_get(
+    path: &std::path::Path,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+) -> Option<String> {
+    let guard = oss_url_cache().lock().unwrap_or_else(|e| e.into_inner());
+    match guard.get(path) {
+        Some((s, m, url)) if *s == size && *m == modified => Some(url.clone()),
+        _ => None,
+    }
+}
+
+fn oss_url_cache_put(
+    path: &std::path::Path,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    url: &str,
+) {
+    let mut guard = oss_url_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= OSS_URL_CACHE_MAX {
+        guard.clear();
+    }
+    guard.insert(
+        path.to_path_buf(),
+        (size, modified, url.to_string()),
+    );
 }
 
 /// Cap oversized images before OSS upload (shared by image + video backends).

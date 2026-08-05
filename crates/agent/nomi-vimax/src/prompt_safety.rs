@@ -306,6 +306,23 @@ pub fn finalize_llm_rewrite(raw: &str, original: &str) -> String {
     sanitize_image_prompt(&t)
 }
 
+/// Soften a Seedance video prompt before the first submission.
+///
+/// Unlike still prompts, video prompts are structural (REFERENCE BINDINGS / PLOT
+/// LOCK / typed audio captions `{…}`, `<…>`, `(…)`), so we only apply in-place
+/// lexical replacements — never reorder, re-prefix, or drop sections.
+pub fn sanitize_video_prompt(prompt: &str) -> String {
+    apply_replacements(prompt)
+}
+
+/// Aggressive in-place soften for a video prompt rejected for sensitive content.
+/// Strips residual risk tokens but keeps the structural sections (Seedance audio
+/// captions must survive). No truncation — cutting would drop the audio block.
+pub fn sanitize_video_prompt_strict(prompt: &str) -> String {
+    let softened = apply_replacements(prompt);
+    strip_residual_risk(&softened)
+}
+
 /// Ultra-safe short prompt that keeps a tiny gist of the original when possible.
 pub fn ultra_safe_fallback_prompt(original: &str) -> String {
     let vacant = looks_like_vacant_world_prompt(original);
@@ -529,5 +546,38 @@ mod tests {
             !lower.contains("stylized illustration still"),
             "anti-anime wording must not flip safety into illustration mode: {out}"
         );
+    }
+
+    #[test]
+    fn video_prompt_soften_keeps_structure() {
+        let prompt = "REFERENCE BINDINGS (each Image N is a reference_image input): Image 1 (x.png): a bloody fight. PLOT LOCK: stay on this scene. Motion: someone pulls a gun. Throughout: {I will kill you} <gunshot> (dark underscore)";
+        let out = sanitize_video_prompt(prompt);
+        let lower = out.to_ascii_lowercase();
+        // Structural sections survive untouched.
+        assert!(out.contains("REFERENCE BINDINGS"));
+        assert!(out.contains("PLOT LOCK"));
+        assert!(out.contains("Motion:"));
+        // Typed audio caption brackets survive.
+        assert!(out.contains('{'));
+        assert!(out.contains("<"));
+        assert!(out.contains('('));
+        // Risk phrases softened in place.
+        assert!(!lower.contains("bloody"));
+        assert!(!lower.contains("gunshot"));
+        assert!(out.contains("gun"));
+    }
+
+    #[test]
+    fn video_prompt_strict_strips_residual_keeps_audio_block() {
+        let prompt = "Motion: I will kill you with a pistol. Throughout: {I will kill you} <gunshot> (soft underscore)";
+        let out = sanitize_video_prompt_strict(prompt);
+        let lower = out.to_ascii_lowercase();
+        assert!(!lower.contains("kill"));
+        assert!(!lower.contains("pistol"));
+        // Audio typed brackets must survive strict sanitize.
+        assert!(out.contains('{'));
+        assert!(out.contains("<"));
+        assert!(out.contains('('));
+        assert!(out.contains("underscore"));
     }
 }

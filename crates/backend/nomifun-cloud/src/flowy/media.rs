@@ -24,7 +24,35 @@ const DEFAULT_VIDEO_POLL_INTERVAL_SECS: u64 = 5;
 const DEFAULT_VIDEO_POLL_TIMEOUT_SECS: u64 = 600;
 const VIDEO_CREATE_MAX_ATTEMPTS: u32 = 4;
 
+/// True when the upstream rejected the prompt/input for content safety.
+///
+/// These are **not** transient: retrying the same payload cannot pass, and the
+/// caller should fall through to the next strategy (sanitized rewrite, weaker
+/// fallback, or an explicit failure) instead of burning bounded backoff attempts.
+fn is_video_sensitive_content_err(err: &ServerClientError) -> bool {
+    let lower = match err {
+        ServerClientError::Api { msg, .. }
+        | ServerClientError::Http(msg)
+        | ServerClientError::Server { body: msg, .. }
+        | ServerClientError::InvalidResponse(msg) => msg.to_ascii_lowercase(),
+        _ => return false,
+    };
+    lower.contains("sensitivecontent")
+        || lower.contains("inputtextsensitive")
+        || lower.contains("sensitive content")
+        || lower.contains("inappropriate content")
+        || lower.contains("datainspectionfailed")
+        || lower.contains("内容安全")
+        || lower.contains("敏感内容")
+        || lower.contains("不当内容")
+}
+
 fn is_retryable_video_upstream_err(err: &ServerClientError) -> bool {
+    // Content-safety rejections (often wrapped as gateway 502 by Flowy) must never
+    // retry the identical payload — e.g. `InputTextSensitiveContentDetected`.
+    if is_video_sensitive_content_err(err) {
+        return false;
+    }
     match err {
         ServerClientError::Api { code, msg } => {
             matches!(*code, 429 | 500 | 502 | 503 | 504)
@@ -806,6 +834,32 @@ mod tests {
         assert!(!is_retryable_video_upstream_err(&ServerClientError::Api {
             code: 400,
             msg: "bad request".into(),
+        }));
+    }
+
+    #[test]
+    fn sensitive_content_errors_are_never_retryable() {
+        // Flowy often wraps upstream safety rejections as gateway 502 — retrying the
+        // identical payload cannot pass, so the retry loop must stop after one attempt.
+        assert!(!is_retryable_video_upstream_err(&ServerClientError::Api {
+            code: 502,
+            msg: "InputTextSensitiveContentDetected: prompt violates content policy".into(),
+        }));
+        assert!(!is_retryable_video_upstream_err(&ServerClientError::Api {
+            code: 502,
+            msg: "SensitiveContentDetected".into(),
+        }));
+        assert!(!is_retryable_video_upstream_err(&ServerClientError::Http(
+            "HTTP 502: InputTextSensitiveContentDetected".into(),
+        )));
+        assert!(!is_retryable_video_upstream_err(&ServerClientError::Api {
+            code: 400,
+            msg: "DataInspectionFailed: 内容安全".into(),
+        }));
+        // A genuine transient 502 without a safety marker stays retryable.
+        assert!(is_retryable_video_upstream_err(&ServerClientError::Api {
+            code: 502,
+            msg: "upstream channel timeout".into(),
         }));
     }
 

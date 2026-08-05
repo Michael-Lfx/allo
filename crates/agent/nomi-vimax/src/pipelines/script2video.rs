@@ -67,6 +67,7 @@ impl Script2VideoPipeline {
         write_text_artifact(&self.working_dir.join("script.txt"), script).await?;
         let style = crate::planning::resolve_visual_style(style);
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
+        let plan_started = std::time::Instant::now();
 
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
         let characters = self.extract_characters(script, &style).await?;
@@ -142,6 +143,42 @@ impl Script2VideoPipeline {
         .await;
 
         emit_pct(&progress, "planned", "文本规划完成（含全局定妆图）", 100.0);
+        tracing::info!(
+            phase = "plan_phase_total",
+            secs = plan_started.elapsed().as_secs_f64(),
+            "plan_text_artifacts total wall time"
+        );
+        Ok(PlanArtifacts {
+            characters,
+            storyboard,
+            shot_descriptions,
+            camera_tree,
+        })
+    }
+
+    /// True when every text-planning artifact already exists on disk, so render can
+    /// skip the (mostly cached) plan pipeline — character extract, voice profiles,
+    /// storyboard, per-shot decomposition, camera tree.
+    /// `shot_descriptions.json` is only written after ALL shots decompose, so its
+    /// presence implies every per-shot cache file exists too.
+    async fn plan_artifacts_complete(&self) -> bool {
+        ["characters.json", "storyboard.json", "shot_descriptions.json", "camera_tree.json"]
+            .iter()
+            .all(|name| self.working_dir.join(name).is_file())
+    }
+
+    /// Load cached plan artifacts without re-running any LLM work. Cameo bindings
+    /// are re-applied (cheap file ops) so user uploads stay fresh.
+    async fn load_plan_artifacts(&self) -> VimaxResult<PlanArtifacts> {
+        let wd = &self.working_dir;
+        let characters: Vec<CharacterInScene> =
+            read_json_artifact(&wd.join("characters.json")).await?;
+        let storyboard: Vec<ShotBriefDescription> =
+            read_json_artifact(&wd.join("storyboard.json")).await?;
+        let shot_descriptions: Vec<ShotDescription> =
+            read_json_artifact(&wd.join("shot_descriptions.json")).await?;
+        let camera_tree: Vec<Camera> = read_json_artifact(&wd.join("camera_tree.json")).await?;
+        apply_session_cameos(wd, &characters).await?;
         Ok(PlanArtifacts {
             characters,
             storyboard,
@@ -171,9 +208,17 @@ impl Script2VideoPipeline {
             return Ok(final_path);
         }
 
-        let plan = self
-            .plan_text_artifacts(script, user_requirement, &style, progress.clone())
-            .await?;
+        let plan = if self.plan_artifacts_complete().await {
+            emit(
+                &progress,
+                "reuse_plan",
+                "复用已有规划产物，跳过文本规划",
+            );
+            self.load_plan_artifacts().await?
+        } else {
+            self.plan_text_artifacts(script, user_requirement, &style, progress.clone())
+                .await?
+        };
 
         emit(
             &progress,
@@ -743,6 +788,7 @@ impl Script2VideoPipeline {
             durations = ?clip_durs,
             "content-aware shot durations (audio+motion)"
         );
+        let phase_started = std::time::Instant::now();
 
         for (i, shot) in shots.iter().enumerate() {
             if self.cancel_requested() {
@@ -816,6 +862,48 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 ),
             );
 
+            // P0-2: while this shot's create+poll is in flight, warm the OSS URL cache
+            // for the NEXT shot's fixed refs (cast/env/prop — the continuity frame is
+            // unknown until this shot finishes). Best-effort: a failed warm-up just
+            // falls back to the in-generate upload.
+            if let Some(next) = shots.get(i + 1) {
+                let warm_paths: Vec<PathBuf> = shot_video_ref_pairs(
+                    next,
+                    None,
+                    characters,
+                    registry,
+                    world_pairs,
+                )
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+                if !warm_paths.is_empty()
+                    && let Some(flowy) = self.backends.flowy.clone()
+                {
+                    let warm_paths_clone = warm_paths.clone();
+                    tokio::spawn(async move {
+                        for p in &warm_paths_clone {
+                            if let Err(e) =
+                                flowy.upload_image_public_url(p, "video_prewarm").await
+                            {
+                                tracing::debug!(
+                                    path = %p.display(),
+                                    error = %e,
+                                    "video ref prewarm failed; in-generate upload will retry"
+                                );
+                                break;
+                            }
+                        }
+                    });
+                    tracing::debug!(
+                        next_shot = next.idx,
+                        prewarm_paths = warm_paths.len(),
+                        "prewarming next shot OSS refs during current poll"
+                    );
+                }
+            }
+
+            let shot_started = std::time::Instant::now();
             match self
                 .generate_video_for_shot(
                     shot,
@@ -831,6 +919,12 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             {
                 Ok(()) => {
                     ok += 1;
+                    tracing::info!(
+                        phase = "video_shot",
+                        shot = shot.idx,
+                        secs = shot_started.elapsed().as_secs_f64(),
+                        "shot video wall time"
+                    );
                     // Prefer API return_last_frame; ffmpeg-extract if still missing.
                     let _ = ensure_shot_video_last_frame(&self.working_dir, shot.idx, false).await;
                     emit_pct(
@@ -863,6 +957,12 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 errors.join("\n")
             )));
         }
+        tracing::info!(
+            phase = "video_phase_total",
+            secs = phase_started.elapsed().as_secs_f64(),
+            shots = shots.len(),
+            "sequential video phase wall time"
+        );
         emit_pct(
             progress,
             "video_clips_done",
@@ -1378,6 +1478,9 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             duration_secs,
             using_video_continuity,
         );
+        // P0-3: soften risky wording (motion / plot / audio captions) before the
+        // first submission so Seedance content filters don't reject the prompt text.
+        let prompt = crate::prompt_safety::sanitize_video_prompt(&prompt);
         let ref_names: Vec<String> = ref_pairs
             .iter()
             .map(|(p, _)| {
@@ -1421,6 +1524,52 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             .await
         {
             Ok(()) => None,
+            Err(err) if is_video_sensitive_text_err(&err) => {
+                // Content filter rejected the prompt TEXT (e.g.
+                // InputTextSensitiveContentDetected). Retry once with a
+                // strict-softened wording on the SAME refs — the multi-ref
+                // drop-continuity / T2V cascade would only repeat the risky
+                // wording, so fail fast if the text is still blocked.
+                let strict_prompt =
+                    crate::prompt_safety::sanitize_video_prompt_strict(&prompt);
+                emit(
+                    progress,
+                    "video_clip_start",
+                    &format!(
+                        "Shot {}: 内容安全拦截提示词（{}）。已改用软化措辞重试一次",
+                        shot.idx,
+                        truncate_err(&err, 100)
+                    ),
+                );
+                match self
+                    .backends
+                    .video
+                    .generate(
+                        &strict_prompt,
+                        None,
+                        None,
+                        &ref_paths,
+                        duration_secs,
+                        &video_path,
+                        Some(&video_last_frame_path),
+                    )
+                    .await
+                {
+                    Ok(()) => None,
+                    Err(err2) if is_video_sensitive_text_err(&err2) => {
+                        tracing::warn!(
+                            shot = shot.idx,
+                            error = %err2,
+                            "sensitive prompt text rejected after strict soften; failing shot fast"
+                        );
+                        return Err(err2);
+                    }
+                    Err(err2) if should_retry_seedance_without_photoreal_frame(&err2) => {
+                        Some(err2)
+                    }
+                    Err(err2) => return Err(err2),
+                }
+            }
             Err(err) if should_retry_seedance_without_photoreal_frame(&err) => Some(err),
             Err(err) => return Err(err),
         };
@@ -1458,6 +1607,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     duration_secs,
                     false,
                 );
+                let retry_prompt = crate::prompt_safety::sanitize_video_prompt(&retry_prompt);
                 match self
                     .backends
                     .video
@@ -1493,6 +1643,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                             retry_prompt,
                             shot.ff_desc
                         );
+                        let t2v_prompt = crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
                         self.backends
                             .video
                             .generate(
@@ -1531,6 +1682,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     prompt,
                     shot.ff_desc
                 );
+                let t2v_prompt = crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
                 self.backends
                     .video
                     .generate(
@@ -2321,6 +2473,23 @@ fn is_seedance_privacy_image_err(err: &VimaxError) -> bool {
         || s.contains("may contain real person")
         || (s.contains("real person") && s.contains("sensitive"))
         || s.contains("含真人")
+}
+
+/// True when the video backend rejected the **prompt text** for content safety
+/// (e.g. `InputTextSensitiveContentDetected`, `DataInspectionFailed`), as opposed
+/// to rejecting an input frame. Retrying the same wording cannot pass; the client
+/// retries once with a strict-softened prompt, then fails fast instead of burning
+/// the multi-ref → drop-continuity → T2V cascade on the same risky text.
+fn is_video_sensitive_text_err(err: &VimaxError) -> bool {
+    let s = err.to_string().to_ascii_lowercase();
+    s.contains("sensitivecontent")
+        || s.contains("inputtextsensitive")
+        || s.contains("sensitive content")
+        || s.contains("inappropriate content")
+        || s.contains("datainspectionfailed")
+        || s.contains("内容安全")
+        || s.contains("敏感内容")
+        || s.contains("不当内容")
 }
 
 /// Flowy may wrap upstream 400 as opaque 502 without PrivacyInformation in the
