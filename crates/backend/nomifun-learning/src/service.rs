@@ -642,10 +642,13 @@ impl LearningService {
         .await
         .map_err(internal)?;
         // In-course attempts only feed mastery evidence. The memory curve
-        // (review items + FSRS scheduling) is driven exclusively by the
-        // review queue (`answer_review` / `rate_review`).
+        // (FSRS rescheduling, review/lapse counts) is driven exclusively by
+        // the review queue (`answer_review` / `rate_review`). The first
+        // practice of a concept still seeds its review item so the queue
+        // has something to schedule.
         for concept_id in concept_ids {
             update_mastery(&mut transaction, &enrollment_id, &concept_id, score, now).await?;
+            ensure_review_item(&mut transaction, &enrollment_id, &concept_id, now).await?;
         }
         transaction.commit().await.map_err(internal)?;
 
@@ -1990,6 +1993,45 @@ where
         .map_err(|error| AppError::Internal(format!("invalid persisted ID {value}: {error}")))
 }
 
+/// Creates the initial review item the first time a learner practices a
+/// concept, due immediately so it shows up in the queue. Existing items keep
+/// their schedule untouched: in-course attempts never reschedule, only the
+/// review queue does.
+async fn ensure_review_item(
+    transaction: &mut Transaction<'_, Sqlite>,
+    enrollment_id: &LearningEnrollmentId,
+    concept_id: &str,
+    now: i64,
+) -> Result<(), AppError> {
+    let exists: Option<String> = sqlx::query_scalar(
+        "SELECT review_item_id FROM learning_review_items \
+         WHERE enrollment_id = ? AND concept_id = ?",
+    )
+    .bind(enrollment_id.as_str())
+    .bind(concept_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(internal)?;
+    if exists.is_some() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO learning_review_items \
+         (review_item_id, enrollment_id, concept_id, due_at, stability_days, difficulty, \
+          review_count, lapse_count, last_reviewed_at, updated_at) \
+         VALUES (?, ?, ?, ?, 0, 5.0, 0, 0, NULL, ?)",
+    )
+    .bind(LearningReviewItemId::new().into_string())
+    .bind(enrollment_id.as_str())
+    .bind(concept_id)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(internal)?;
+    Ok(())
+}
+
 fn internal(error: impl std::fmt::Display) -> AppError {
     AppError::Internal(error.to_string())
 }
@@ -2161,12 +2203,16 @@ mod tests {
             .unwrap();
         assert_eq!(detail.concepts[0].mastery, Some(1.0));
         assert_eq!(detail.next_lesson_id, None);
-        // In-course attempts must never touch the memory curve: no review
-        // item may be created or rescheduled outside the review queue.
-        let review_items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_review_items")
-            .fetch_one(database.pool())
-            .await
-            .unwrap();
-        assert_eq!(review_items, 0);
+        // A first in-course attempt seeds the review item (initial schedule)
+        // but must not count as a review: counts stay at zero until the
+        // learner actually uses the review queue.
+        let (count, reviews): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(review_count), 0) FROM learning_review_items",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(reviews, 0);
     }
 }
