@@ -653,14 +653,23 @@ fn is_path_safe_ideograph(c: char) -> bool {
         || (0xAC00..=0xD7AF).contains(&u) // Hangul
 }
 
-/// Flatten registry into (path, description) pairs for frame reference selection.
-pub fn world_asset_pairs(registry: &WorldAssetRegistry) -> Vec<(PathBuf, String)> {
+/// Flatten registry into (path, description) pairs for frame / video reference selection.
+///
+/// Resolves absolute paths from another machine onto `film_root` when needed, and
+/// drops entries whose files are still missing.
+pub fn world_asset_pairs(
+    registry: &WorldAssetRegistry,
+    film_root: &Path,
+) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     for group in ["environments", "props"] {
         if let Some(map) = registry.get(group) {
             for item in map.values() {
                 if let (Some(p), Some(d)) = (item.get("path"), item.get("description")) {
-                    out.push((PathBuf::from(p), d.clone()));
+                    let path = crate::session::resolve_stored_asset_path(p, film_root);
+                    if crate::media_local::is_usable_image_file(&path) {
+                        out.push((path, d.clone()));
+                    }
                 }
             }
         }

@@ -91,7 +91,15 @@ pub struct MediaWorkflowHistoryResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaModelOption {
+    /// Flowy catalog id — pass as image/video request `model`.
+    pub id: String,
+    /// Human-readable catalog name for UI labels.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaModelListResponse {
-    pub image_models: Vec<String>,
-    pub video_models: Vec<String>,
+    pub image_models: Vec<MediaModelOption>,
+    pub video_models: Vec<MediaModelOption>,
 }

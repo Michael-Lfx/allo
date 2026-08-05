@@ -231,7 +231,7 @@ pub(crate) fn cameo_style_ref_paths(film_root: &Path, max: usize) -> Vec<PathBuf
         let Some(path) = item.get("path") else {
             continue;
         };
-        let p = PathBuf::from(path);
+        let p = crate::session::resolve_stored_asset_path(path, film_root);
         if is_usable_image_file(&p) {
             out.push(p);
         }

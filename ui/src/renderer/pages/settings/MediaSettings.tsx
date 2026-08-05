@@ -58,17 +58,17 @@ const MediaSettings: React.FC = () => {
 
   const imageModelOptions = useMemo(
     () =>
-      imageModels.map((id) => ({
-        label: formatCloudModelLabel(id),
-        value: id,
+      imageModels.map((m) => ({
+        label: m.name.trim() || formatCloudModelLabel(m.id),
+        value: m.id,
       })),
     [imageModels]
   );
   const videoModelOptions = useMemo(
     () =>
-      videoModels.map((id) => ({
-        label: formatCloudModelLabel(id),
-        value: id,
+      videoModels.map((m) => ({
+        label: m.name.trim() || formatCloudModelLabel(m.id),
+        value: m.id,
       })),
     [videoModels]
   );

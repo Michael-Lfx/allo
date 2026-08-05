@@ -877,10 +877,27 @@ impl VimaxService {
             record.target_duration_secs = target_secs;
         }
         let backends = self.backends_for(&record, Some(token.clone())).await?;
-        let work = self
-            .index
-            .working_dir(id)?
-            .join(record.workflow.artifact_root());
+        let session_root = self.index.working_dir(id)?;
+        // Imported projects may still carry another machine's absolute registry paths.
+        // Repair before we try to upload Seedance reference images.
+        match crate::session::remap_imported_working_paths(&session_root) {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    session_id = %id,
+                    rewritten = n,
+                    "remapped stale absolute asset paths before render"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %id,
+                    error = %e,
+                    "path remap before render failed"
+                );
+            }
+        }
+        let work = session_root.join(record.workflow.artifact_root());
         let _ = crate::session::write_text_artifact(
             &work.join("target_duration_secs.txt"),
             &target_secs.to_string(),

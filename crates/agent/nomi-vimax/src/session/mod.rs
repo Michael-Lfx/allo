@@ -14,8 +14,10 @@ use crate::progress::{RenderStatus, RunStatus};
 
 pub mod archive;
 pub mod cameo;
+pub mod path_remap;
 pub use archive::{ARCHIVE_EXTENSION, ArchiveManifest};
 pub use cameo::{CameoManifest, CameoPhotoEntry, CameoUpdate};
+pub use path_remap::{remap_imported_working_paths, resolve_stored_asset_path};
 
 const STALE_KEYS: &[&str] = &[
     "story",
@@ -445,6 +447,26 @@ impl SessionIndex {
         if let Err(e) = std::fs::rename(&staging, &final_abs) {
             cleanup_staging(&staging);
             return Err(VimaxError::Io(e));
+        }
+
+        // Exporter machines write absolute paths into asset registries. Remap them
+        // onto this session's working tree before the project is usable.
+        match path_remap::remap_imported_working_paths(&final_abs) {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    session_id = %new_id,
+                    rewritten = n,
+                    "remapped absolute asset paths after import"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %new_id,
+                    error = %e,
+                    "path remap after import failed; render may hit missing-path IO errors"
+                );
+            }
         }
 
         let now = chrono::Local::now().to_rfc3339();

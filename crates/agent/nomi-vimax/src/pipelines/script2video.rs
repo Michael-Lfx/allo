@@ -247,7 +247,7 @@ impl Script2VideoPipeline {
                     &lock_token,
                 )
                 .await?;
-            world_asset_pairs(&reg)
+            world_asset_pairs(&reg, &film_root)
         };
 
         for shot in &plan.shot_descriptions {
@@ -875,6 +875,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     characters,
                     registry,
                     world_pairs,
+                    &resolve_film_root(&self.working_dir),
                 )
                 .into_iter()
                 .map(|(p, _)| p)
@@ -1009,8 +1010,12 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 "frame_start",
                 &format!("generating first frame for shot {first_shot_idx}"),
             );
-            let mut available: Vec<(PathBuf, String)> =
-                portrait_pairs(characters, &first_shot.ff_vis_char_idxs, registry);
+            let mut available: Vec<(PathBuf, String)> = portrait_pairs(
+                characters,
+                &first_shot.ff_vis_char_idxs,
+                registry,
+                &resolve_film_root(&self.working_dir),
+            );
             available.extend(rank_world_pairs_for_frame(
                 &first_shot.ff_desc,
                 world_pairs,
@@ -1094,8 +1099,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         {
             let lf = shot_dir.join("last_frame.png");
             if !lf.exists() {
-                let mut available =
-                    portrait_pairs(characters, &first_shot.lf_vis_char_idxs, registry);
+                let mut available = portrait_pairs(
+                    characters,
+                    &first_shot.lf_vis_char_idxs,
+                    registry,
+                    &resolve_film_root(&self.working_dir),
+                );
                 available.extend(rank_world_pairs_for_frame(
                     &first_shot.lf_desc,
                     world_pairs,
@@ -1144,8 +1153,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             if !ff.exists() {
                 // Always generate a distinct first frame. Byte-copying the previous
                 // frame makes Seedance I2V freeze on the same opening for ~4s.
-                let mut available =
-                    portrait_pairs(characters, &shot.ff_vis_char_idxs, registry);
+                let mut available = portrait_pairs(
+                    characters,
+                    &shot.ff_vis_char_idxs,
+                    registry,
+                    &resolve_film_root(&self.working_dir),
+                );
                 available.extend(rank_world_pairs_for_frame(&shot.ff_desc, world_pairs, 4));
                 available.push((
                     continuity.path.clone(),
@@ -1171,8 +1184,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             {
                 let lf = sdir.join("last_frame.png");
                 if !lf.exists() {
-                    let mut available =
-                        portrait_pairs(characters, &shot.lf_vis_char_idxs, registry);
+                    let mut available = portrait_pairs(
+                        characters,
+                        &shot.lf_vis_char_idxs,
+                        registry,
+                        &resolve_film_root(&self.working_dir),
+                    );
                     available.extend(rank_world_pairs_for_frame(&shot.lf_desc, world_pairs, 4));
                     available.push((
                         ff.clone(),
@@ -1459,6 +1476,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             characters,
             registry,
             world_pairs,
+            &resolve_film_root(&self.working_dir),
         );
         if ref_pairs.is_empty() {
             return Err(VimaxError::Video(format!(
@@ -1745,7 +1763,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             return Ok(stylized_path);
         }
 
-        let mut available = portrait_pairs(characters, vis_char_idxs, registry);
+        let mut available = portrait_pairs(
+            characters,
+            vis_char_idxs,
+            registry,
+            &resolve_film_root(&self.working_dir),
+        );
         available.extend(rank_world_pairs_for_frame(frame_desc, world_pairs, 4));
         // Prefer composition layout from the multi-ref canonical without treating it as
         // a photoreal face bible (portraits already cover identity).
@@ -1830,6 +1853,7 @@ fn portrait_pairs(
     characters: &[CharacterInScene],
     idxs: &[i32],
     registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    film_root: &Path,
 ) -> Vec<(PathBuf, String)> {
     let mut available = Vec::new();
     for &ci in idxs {
@@ -1843,7 +1867,7 @@ fn portrait_pairs(
                     .or_else(|| views.get("front"));
                 if let Some(sheet) = preferred {
                     if let Some(p) = sheet.get("path") {
-                        let path = PathBuf::from(p);
+                        let path = crate::session::resolve_stored_asset_path(p, film_root);
                         if media_local::is_usable_image_file(&path) {
                             let file_name = path
                                 .file_name()
@@ -1865,8 +1889,12 @@ fn portrait_pairs(
                         continue;
                     }
                     if let Some(p) = item.get("path") {
+                        let path = crate::session::resolve_stored_asset_path(p, film_root);
+                        if !media_local::is_usable_image_file(&path) {
+                            continue;
+                        }
                         available.push((
-                            PathBuf::from(p),
+                            path,
                             format!(
                                 "GLOBAL character bible ({view}) <{}>: {feats}.",
                                 ch.identifier_in_scene
@@ -2284,6 +2312,7 @@ fn shot_video_ref_pairs(
     characters: &[CharacterInScene],
     registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
     world_pairs: &[(PathBuf, String)],
+    film_root: &Path,
 ) -> Vec<(PathBuf, String)> {
     let mut pairs: Vec<(PathBuf, String)> = Vec::new();
     if let Some(path) = continuity.filter(|p| media_local::is_usable_image_file(p)) {
@@ -2300,7 +2329,7 @@ fn shot_video_ref_pairs(
             vis.push(idx);
         }
     }
-    pairs.extend(portrait_pairs(characters, &vis, registry));
+    pairs.extend(portrait_pairs(characters, &vis, registry, film_root));
 
     let world_query = format!(
         "{} {} {}",

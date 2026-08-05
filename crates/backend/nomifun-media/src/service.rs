@@ -208,8 +208,16 @@ impl MediaApiService {
         MediaWorkflowHistoryResponse { runs }
     }
 
-    /// Fetch the latest image/video model ids from the cloud catalog (no local cache).
-    pub async fn list_models(&self) -> Result<(Vec<String>, Vec<String>), AppError> {
+    /// Fetch the latest image/video model catalog from the cloud (no local cache).
+    pub async fn list_models(
+        &self,
+    ) -> Result<
+        (
+            Vec<nomifun_api_types::MediaModelOption>,
+            Vec<nomifun_api_types::MediaModelOption>,
+        ),
+        AppError,
+    > {
         let cfg = self.load_effective_config()?;
         if !flowy_media_exposed(&cfg) {
             tracing::warn!(
@@ -230,8 +238,8 @@ impl MediaApiService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok((
-            image.cloud.into_iter().map(|m| m.id).collect(),
-            video.cloud.into_iter().map(|m| m.id).collect(),
+            image.cloud.into_iter().map(to_media_model_option).collect(),
+            video.cloud.into_iter().map(to_media_model_option).collect(),
         ))
     }
 
@@ -249,6 +257,22 @@ fn record_to_item(record: WorkflowRunRecord) -> MediaWorkflowHistoryItem {
         error: record.error,
         artifacts: record.artifacts,
     }
+}
+
+fn to_media_model_option(entry: nomifun_cloud::ClawModelEntry) -> nomifun_api_types::MediaModelOption {
+    let id = entry.api_model_id();
+    let name = {
+        let n = entry.name.trim();
+        if n.is_empty() {
+            id.strip_prefix("AIPC-")
+                .or_else(|| id.strip_prefix("aipc-"))
+                .unwrap_or(id.as_str())
+                .to_string()
+        } else {
+            n.to_string()
+        }
+    };
+    nomifun_api_types::MediaModelOption { id, name }
 }
 
 #[cfg(test)]
