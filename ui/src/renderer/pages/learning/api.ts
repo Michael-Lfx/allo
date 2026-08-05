@@ -1,8 +1,10 @@
 import { httpRequest } from '@/common/adapter/httpBridge';
 import type {
   AttemptResult,
+  ConceptRef,
   CourseDetail,
   CourseSummary,
+  CreateCustomQuestionRequest,
   DiagnosticPlan,
   DueReview,
   GenerateCourseRequest,
@@ -10,10 +12,17 @@ import type {
   QuestionEntry,
   ReviewAnswerResult,
   ReviewRating,
+  ReviewResult,
+  ReviewSource,
   UpdateQuestionRequest,
 } from './types';
 
 const BASE = '/api/learning';
+
+const reviewBase = (source: ReviewSource, id: string) =>
+  source === 'custom'
+    ? `${BASE}/custom-questions/${encodeURIComponent(id)}`
+    : `${BASE}/reviews/${encodeURIComponent(id)}`;
 
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
@@ -37,15 +46,15 @@ export const learningApi = {
     }),
   listDueReviews: (limit = 30) =>
     httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?limit=${limit}`),
-  answerReview: (id: string, response: unknown, forgot = false) =>
-    httpRequest<ReviewAnswerResult>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/answer`, {
+  answerReview: (source: ReviewSource, id: string, response: unknown, forgot = false) =>
+    httpRequest<ReviewAnswerResult>('POST', `${reviewBase(source, id)}/answer`, {
       response,
       forgot,
     }),
-  rateReview: (id: string, rating: ReviewRating) =>
-    httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/rate`, { rating }),
-  skipReview: (id: string) =>
-    httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/skip`),
+  rateReview: (source: ReviewSource, id: string, rating: ReviewRating) =>
+    httpRequest<ReviewResult>('POST', `${reviewBase(source, id)}/rate`, { rating }),
+  skipReview: (source: ReviewSource, id: string) =>
+    httpRequest<ReviewResult>('POST', `${reviewBase(source, id)}/skip`),
   deleteReviewItem: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/reviews/${encodeURIComponent(id)}`),
   listQuestions: (params: { course_id?: string; state?: string; search?: string }) => {
@@ -56,8 +65,23 @@ export const learningApi = {
     const suffix = query.size > 0 ? `?${query.toString()}` : '';
     return httpRequest<QuestionEntry[]>('GET', `${BASE}/questions${suffix}`);
   },
-  updateQuestion: (activityId: string, request: UpdateQuestionRequest) =>
-    httpRequest<void>('PUT', `${BASE}/questions/${encodeURIComponent(activityId)}`, request),
+  updateQuestion: (entry: Pick<QuestionEntry, 'source' | 'question_id'>, request: UpdateQuestionRequest) =>
+    entry.source === 'custom'
+      ? httpRequest<void>(
+          'PUT',
+          `${BASE}/custom-questions/${encodeURIComponent(entry.question_id)}`,
+          request
+        )
+      : httpRequest<void>(
+          'PUT',
+          `${BASE}/questions/${encodeURIComponent(entry.question_id)}`,
+          request
+        ),
+  createCustomQuestion: (request: CreateCustomQuestionRequest) =>
+    httpRequest<string>('POST', `${BASE}/custom-questions`, request),
+  deleteCustomQuestion: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
+  listConceptRefs: () => httpRequest<ConceptRef[]>('GET', `${BASE}/concepts`),
   deleteCourse: (id: string, deleteReviews: boolean) =>
     httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
       delete_reviews: deleteReviews,

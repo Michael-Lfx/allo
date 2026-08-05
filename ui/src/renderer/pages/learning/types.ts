@@ -1,6 +1,8 @@
 export type ActivityKind = 'single_choice' | 'true_false' | 'reflection';
 export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
+export type ReviewSource = 'course' | 'custom';
+export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled';
 
 export interface GenerateCourseRequest {
   knowledge_base_id: string;
@@ -91,7 +93,7 @@ export interface AttemptResult {
 }
 
 export interface ReviewQuestion {
-  activity_id: string;
+  activity_id: string | null;
   kind: ActivityKind;
   prompt: string;
   options: string[];
@@ -99,13 +101,14 @@ export interface ReviewQuestion {
 
 export interface DueReview {
   id: string;
-  enrollment_id: string;
+  source: ReviewSource;
+  enrollment_id: string | null;
   course_id: string | null;
   course_title: string | null;
-  module_title: string;
-  lesson_title: string;
-  concept_id: string;
-  concept_title: string;
+  module_title: string | null;
+  lesson_title: string | null;
+  concept_id: string | null;
+  concept_title: string | null;
   question: ReviewQuestion;
   due_at: number;
   stability_days: number;
@@ -131,18 +134,20 @@ export interface ReviewAnswerResult {
 }
 
 export interface QuestionEntry {
-  review_item_id: string;
+  source: ReviewSource;
+  question_id: string;
+  review_item_id: string | null;
+  state: QuestionState;
   course_id: string | null;
   course_title: string | null;
-  concept_id: string;
+  concept_id: string | null;
   concept_title: string | null;
-  activity_id: string | null;
   question_kind: ActivityKind | null;
   prompt: string | null;
   options: string[];
   answer: unknown | null;
   explanation: string | null;
-  due_at: number;
+  due_at: number | null;
   overdue: boolean;
   stability_days: number;
   difficulty: number;
@@ -157,4 +162,19 @@ export interface UpdateQuestionRequest {
   options?: string[];
   answer: unknown;
   explanation?: string;
+}
+
+export interface CreateCustomQuestionRequest {
+  kind: Exclude<ActivityKind, 'reflection'>;
+  prompt: string;
+  options?: string[];
+  answer: unknown;
+  explanation?: string;
+  concept_id?: string | null;
+}
+
+export interface ConceptRef {
+  concept_id: string;
+  title: string;
+  course_title: string | null;
 }

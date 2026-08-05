@@ -34,6 +34,7 @@ import { learningApi } from './api';
 import type {
   Activity,
   AttemptResult,
+  ConceptRef,
   CourseDetail,
   CourseSummary,
   DiagnosticPlan,
@@ -159,8 +160,8 @@ function ReviewCard({
   locked: boolean;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
-  onRate: (reviewId: string, rating: ReviewRating) => void;
-  onSkip: (reviewId: string) => void;
+  onRate: (review: DueReview, rating: ReviewRating) => void;
+  onSkip: (review: DueReview) => void;
   onDismiss: (reviewId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -179,22 +180,32 @@ function ReviewCard({
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
       <div className='mb-10px flex flex-wrap items-center gap-x-4px gap-y-2px text-12px text-t-tertiary'>
-        <span>
-          {t('learning.reviewCourseLabel')}:{' '}
-          {review.course_title ?? t('learning.deletedCourse')}
-        </span>
-        <span>›</span>
-        <span>
-          {t('learning.reviewModuleLabel')}: {review.module_title}
-        </span>
-        <span>›</span>
-        <span>
-          {t('learning.reviewLessonLabel')}: {review.lesson_title}
-        </span>
-        <span>›</span>
-        <Tag size='small' color='arcoblue'>
-          {t('learning.reviewConceptLabel')}: {review.concept_title}
-        </Tag>
+        {review.source === 'custom' ? (
+          <Tag size='small' color='purple'>
+            {t('learning.reviewCustomSource')}
+          </Tag>
+        ) : (
+          <>
+            <span>
+              {t('learning.reviewCourseLabel')}:{' '}
+              {review.course_title ?? t('learning.deletedCourse')}
+            </span>
+            <span>›</span>
+            <span>
+              {t('learning.reviewModuleLabel')}: {review.module_title ?? '—'}
+            </span>
+            <span>›</span>
+            <span>
+              {t('learning.reviewLessonLabel')}: {review.lesson_title ?? '—'}
+            </span>
+            <span>›</span>
+          </>
+        )}
+        {review.concept_title !== null && (
+          <Tag size='small' color='arcoblue'>
+            {t('learning.reviewConceptLabel')}: {review.concept_title}
+          </Tag>
+        )}
       </div>
       <div className='mb-10px font-500 text-t-primary'>{question.prompt}</div>
       {question.kind === 'single_choice' && (
@@ -258,7 +269,7 @@ function ReviewCard({
             type='text'
             disabled={locked}
             loading={busy}
-            onClick={() => onSkip(review.id)}
+            onClick={() => onSkip(review)}
           >
             {t('learning.reviewSkip')}
           </Button>
@@ -278,7 +289,7 @@ function ReviewCard({
                 size='mini'
                 loading={busy}
                 disabled={locked && !busy}
-                onClick={() => onRate(review.id, rating)}
+                onClick={() => onRate(review, rating)}
               >
                 {rating === 'hard'
                   ? t('learning.reviewHard')
@@ -327,8 +338,8 @@ function ReviewSessionModal({
   busyId: string | null;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
-  onRate: (reviewId: string, rating: ReviewRating) => Promise<boolean>;
-  onSkip: (reviewId: string) => Promise<boolean>;
+  onRate: (review: DueReview, rating: ReviewRating) => Promise<boolean>;
+  onSkip: (review: DueReview) => Promise<boolean>;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -368,13 +379,13 @@ function ReviewSessionModal({
             locked={busyId !== null && busyId !== current.id}
             onAnswer={onAnswer}
             onForget={onForget}
-            onRate={(reviewId, rating) =>
-              void onRate(reviewId, rating).then((handled) => {
+            onRate={(review, rating) =>
+              void onRate(review, rating).then((handled) => {
                 if (handled) advance();
               })
             }
-            onSkip={(reviewId) =>
-              void onSkip(reviewId).then((handled) => {
+            onSkip={(review) =>
+              void onSkip(review).then((handled) => {
                 if (handled) advance();
               })
             }
@@ -457,9 +468,6 @@ function QuestionEditDialog({
   const [busy, setBusy] = useState(false);
   const isSingleChoice = entry.question_kind === 'single_choice';
   const save = async () => {
-    if (entry.activity_id === null) {
-      return;
-    }
     if (prompt.trim().length === 0) {
       Message.error(t('learning.questionPromptRequired'));
       return;
@@ -480,7 +488,7 @@ function QuestionEditDialog({
     }
     setBusy(true);
     try {
-      await learningApi.updateQuestion(entry.activity_id, {
+      await learningApi.updateQuestion(entry, {
         prompt: prompt.trim(),
         options: isSingleChoice ? cleanedOptions : [],
         answer,
@@ -584,6 +592,205 @@ function formatReviewTime(value: number | null): string {
   return value === null ? '—' : new Date(value).toLocaleString();
 }
 
+function QuestionCreateDialog({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const [kind, setKind] = useState<'true_false' | 'single_choice'>('true_false');
+  const [prompt, setPrompt] = useState('');
+  const [options, setOptions] = useState<string[]>(['', '']);
+  const [answer, setAnswer] = useState<unknown>(undefined);
+  const [explanation, setExplanation] = useState('');
+  const [conceptId, setConceptId] = useState<string | undefined>(undefined);
+  const [conceptRefs, setConceptRefs] = useState<ConceptRef[]>([]);
+  const [conceptsLoading, setConceptsLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const isSingleChoice = kind === 'single_choice';
+
+  useEffect(() => {
+    let cancelled = false;
+    setConceptsLoading(true);
+    learningApi
+      .listConceptRefs()
+      .then((refs) => {
+        if (!cancelled) setConceptRefs(refs);
+      })
+      .catch(() => {
+        // Concept binding is optional; keep the dialog usable if listing fails.
+      })
+      .finally(() => {
+        if (!cancelled) setConceptsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = async () => {
+    if (prompt.trim().length === 0) {
+      Message.error(t('learning.questionPromptRequired'));
+      return;
+    }
+    const cleanedOptions = options.map((option) => option.trim()).filter((option) => option !== '');
+    if (isSingleChoice) {
+      if (cleanedOptions.length < 2) {
+        Message.error(t('learning.questionOptionsRequired'));
+        return;
+      }
+      if (typeof answer !== 'string' || !cleanedOptions.includes(answer)) {
+        Message.error(t('learning.questionAnswerInvalid'));
+        return;
+      }
+    } else if (typeof answer !== 'boolean') {
+      Message.error(t('learning.questionAnswerInvalid'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await learningApi.createCustomQuestion({
+        kind,
+        prompt: prompt.trim(),
+        options: isSingleChoice ? cleanedOptions : [],
+        answer,
+        explanation: explanation.trim(),
+        concept_id: conceptId ?? null,
+      });
+      Message.success(t('learning.questionCreated'));
+      onSaved();
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const switchKind = (next: 'true_false' | 'single_choice') => {
+    if (next === kind) return;
+    setKind(next);
+    setAnswer(undefined);
+  };
+
+  return (
+    <Modal
+      title={t('learning.questionCreateTitle')}
+      visible
+      style={{ width: 560 }}
+      confirmLoading={busy}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => void save()}
+    >
+      <div className='flex flex-col gap-14px'>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionKind')}</div>
+          <Radio.Group
+            value={kind}
+            onChange={(value) => switchKind(value as 'true_false' | 'single_choice')}
+          >
+            <Radio value='true_false'>{t('learning.kindTrueFalse')}</Radio>
+            <Radio value='single_choice'>{t('learning.kindSingleChoice')}</Radio>
+          </Radio.Group>
+        </div>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionPromptLabel')}</div>
+          <Input.TextArea
+            value={prompt}
+            onChange={setPrompt}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+        {isSingleChoice ? (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionOptions')}</div>
+            <div className='flex flex-col gap-6px'>
+              {options.map((option, index) => (
+                <div key={index} className='flex items-center gap-6px'>
+                  <Radio checked={answer === option} onChange={() => setAnswer(option)} />
+                  <Input
+                    value={option}
+                    onChange={(value) =>
+                      setOptions((current) =>
+                        current.map((item, itemIndex) => (itemIndex === index ? value : item))
+                      )
+                    }
+                  />
+                  <Button
+                    size='mini'
+                    type='text'
+                    status='danger'
+                    disabled={options.length <= 2}
+                    onClick={() => {
+                      setOptions((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                      if (answer === option) {
+                        setAnswer(undefined);
+                      }
+                    }}
+                  >
+                    {t('learning.questionOptionRemove')}
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button size='small' onClick={() => setOptions((current) => [...current, ''])}>
+                  {t('learning.questionOptionAdd')}
+                </Button>
+              </div>
+            </div>
+            <Text type='secondary' className='text-12px'>
+              {t('learning.questionAnswerHint')}
+            </Text>
+          </div>
+        ) : (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
+            <Radio.Group
+              value={answer === true ? 'true' : answer === false ? 'false' : undefined}
+              onChange={(value) => setAnswer(value === 'true')}
+            >
+              <Radio value='true'>{t('learning.trueLabel')}</Radio>
+              <Radio value='false'>{t('learning.falseLabel')}</Radio>
+            </Radio.Group>
+          </div>
+        )}
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionExplanation')}</div>
+          <Input.TextArea
+            value={explanation}
+            onChange={setExplanation}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionConceptBind')}</div>
+          <Select
+            className='w-full'
+            allowClear
+            loading={conceptsLoading}
+            value={conceptId}
+            placeholder={t('learning.questionConceptBindPlaceholder')}
+            onChange={(value: string | undefined) => setConceptId(value)}
+          >
+            {conceptRefs.map((concept) => (
+              <Select.Option key={concept.concept_id} value={concept.concept_id}>
+                {concept.title}
+                {concept.course_title !== null ? ` · ${concept.course_title}` : ''}
+              </Select.Option>
+            ))}
+          </Select>
+          <Text type='secondary' className='text-12px'>
+            {t('learning.questionConceptBindHint')}
+          </Text>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function QuestionManager({ onMutated }: { onMutated: () => void }) {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<QuestionEntry[]>([]);
@@ -593,6 +800,7 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
   const [stateFilter, setStateFilter] = useState<string | undefined>(undefined);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<QuestionEntry | null>(null);
+  const [creating, setCreating] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -616,22 +824,37 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
     void load();
   }, [load]);
   const stateOf = (entry: QuestionEntry): { label: string; color: string } => {
-    if (entry.review_count === 0) {
-      return { label: t('learning.questionStateNew'), color: 'gray' };
+    if (entry.state === 'unlearned') {
+      return { label: t('learning.questionStateUnlearned'), color: 'gray' };
     }
-    if (entry.overdue) {
+    if (entry.state === 'new') {
+      return { label: t('learning.questionStateNew'), color: 'blue' };
+    }
+    if (entry.state === 'due') {
       return { label: t('learning.questionStateDue'), color: 'red' };
     }
     return { label: t('learning.questionStateScheduled'), color: 'green' };
   };
   const confirmDelete = (entry: QuestionEntry) => {
+    const isCustom = entry.source === 'custom';
+    if (!isCustom && entry.review_item_id === null) {
+      return;
+    }
     Modal.confirm({
-      title: t('learning.questionDeleteTitle'),
-      content: t('learning.questionDeleteHint'),
+      title: isCustom
+        ? t('learning.questionDeleteCustomTitle')
+        : t('learning.questionDeleteTitle'),
+      content: isCustom
+        ? t('learning.questionDeleteCustomHint')
+        : t('learning.questionDeleteHint'),
       okButtonProps: { status: 'danger' },
       onOk: async () => {
         try {
-          await learningApi.deleteReviewItem(entry.review_item_id);
+          if (isCustom) {
+            await learningApi.deleteCustomQuestion(entry.question_id);
+          } else if (entry.review_item_id !== null) {
+            await learningApi.deleteReviewItem(entry.review_item_id);
+          }
           Message.success(t('learning.questionDeleted'));
           await load();
           onMutated();
@@ -646,9 +869,12 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
   const columns = [
     {
       title: t('learning.questionCourse'),
-      dataIndex: 'course_title',
-      render: (value: string | null) =>
-        value ?? <Tag color='orange'>{t('learning.deletedCourse')}</Tag>,
+      render: (_value: unknown, entry: QuestionEntry) =>
+        entry.source === 'custom' ? (
+          <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
+        ) : (
+          entry.course_title ?? <Tag color='orange'>{t('learning.deletedCourse')}</Tag>
+        ),
     },
     {
       title: t('learning.questionConcept'),
@@ -681,8 +907,8 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
     {
       title: t('learning.questionDueAt'),
       dataIndex: 'due_at',
-      sorter: (a: QuestionEntry, b: QuestionEntry) => a.due_at - b.due_at,
-      render: (value: number) => formatReviewTime(value),
+      sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
+      render: (value: number | null) => formatReviewTime(value),
     },
     {
       title: t('learning.questionLastReviewed'),
@@ -717,18 +943,14 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
       title: t('learning.questionActions'),
       render: (_value: unknown, entry: QuestionEntry) => (
         <div className='flex gap-6px'>
-          <Button
-            size='mini'
-            type='text'
-            disabled={entry.activity_id === null}
-            onClick={() => setEditing(entry)}
-          >
+          <Button size='mini' type='text' onClick={() => setEditing(entry)}>
             {t('learning.questionEdit')}
           </Button>
           <Button
             size='mini'
             type='text'
             status='danger'
+            disabled={entry.source === 'course' && entry.review_item_id === null}
             onClick={() => confirmDelete(entry)}
           >
             {t('learning.questionDelete')}
@@ -760,6 +982,7 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
           value={stateFilter}
           onChange={(value: string | undefined) => setStateFilter(value)}
         >
+          <Select.Option value='unlearned'>{t('learning.questionStateUnlearned')}</Select.Option>
           <Select.Option value='new'>{t('learning.questionStateNew')}</Select.Option>
           <Select.Option value='due'>{t('learning.questionStateDue')}</Select.Option>
           <Select.Option value='scheduled'>{t('learning.questionStateScheduled')}</Select.Option>
@@ -770,9 +993,14 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
           placeholder={t('learning.questionSearchPlaceholder')}
           onSearch={(value) => setSearch(value)}
         />
+        <Button className='ml-auto' type='primary' onClick={() => setCreating(true)}>
+          {t('learning.questionCreate')}
+        </Button>
       </div>
       <Table
-        rowKey='review_item_id'
+        rowKey={(entry: QuestionEntry) =>
+          `${entry.source}:${entry.question_id}:${entry.concept_id ?? '-'}`
+        }
         loading={loading}
         data={entries}
         columns={columns}
@@ -786,6 +1014,16 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
+            void load();
+            onMutated();
+          }}
+        />
+      )}
+      {creating && (
+        <QuestionCreateDialog
+          onClose={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
             void load();
             onMutated();
           }}
@@ -1487,10 +1725,10 @@ const LearningPage: React.FC = () => {
   );
 
   const rateReview = useCallback(
-    async (reviewId: string, rating: ReviewRating): Promise<boolean> => {
-      setBusyId(reviewId);
+    async (review: DueReview, rating: ReviewRating): Promise<boolean> => {
+      setBusyId(review.id);
       try {
-        await learningApi.rateReview(reviewId, rating);
+        await learningApi.rateReview(review.source, review.id, rating);
         Message.success(t('learning.reviewRecorded'));
         await load();
         return true;
@@ -1505,10 +1743,10 @@ const LearningPage: React.FC = () => {
   );
 
   const skipReview = useCallback(
-    async (reviewId: string): Promise<boolean> => {
-      setBusyId(reviewId);
+    async (review: DueReview): Promise<boolean> => {
+      setBusyId(review.id);
       try {
-        await learningApi.skipReview(reviewId);
+        await learningApi.skipReview(review.source, review.id);
         Message.success(t('learning.reviewSkipped'));
         await load();
         return true;
@@ -1531,7 +1769,7 @@ const LearningPage: React.FC = () => {
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.id, response);
+        return await learningApi.answerReview(review.source, review.id, response);
       } catch (actionError) {
         Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
         return undefined;
@@ -1546,7 +1784,7 @@ const LearningPage: React.FC = () => {
     async (review: DueReview): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.id, null, true);
+        return await learningApi.answerReview(review.source, review.id, null, true);
       } catch (actionError) {
         Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
         return undefined;
