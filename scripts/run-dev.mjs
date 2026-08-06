@@ -5,7 +5,7 @@
  * Unix-style inline env (`NOMI_CHANNEL=dev tauri dev ...`) fails on Windows
  * PowerShell/CMD. This script sets the env in-process and forwards argv.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +14,8 @@ import {
   createRestartSignal,
   removeRestartControlDirectory,
 } from './run-dev-restart-signal.mjs';
-import { createSupervisor } from './run-dev-supervisor.mjs';
+import { createSupervisor, waitForExit } from './run-dev-supervisor.mjs';
+import { createDevSessionLock } from './dev-session-lock.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VITE_ENTRY = join(ROOT, 'ui', 'node_modules', 'vite', 'bin', 'vite.js');
@@ -29,15 +30,52 @@ const tauriArgs = [
 ];
 
 const env = { ...process.env, NOMI_CHANNEL: 'dev' };
+const devSessionLock = createDevSessionLock({
+  buildDir: join(ROOT, 'build.noindex'),
+  workspaceRoot: ROOT,
+  targetDir: join(ROOT, 'target'),
+});
 const restartControlDirectory = createRestartControlDirectory();
 
-function stopProcess(child) {
+function waitForChildExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    waitForExit(child).then(() => finish(true));
+  });
+}
+
+async function runTaskkill(args) {
+  const command = spawn('taskkill', args, { stdio: 'ignore', windowsHide: true });
+  await waitForExit(command);
+}
+
+async function stopProcess(child, _reason) {
   if (!child || child.exitCode !== null) return;
+
   if (process.platform === 'win32' && child.pid) {
-    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-  } else {
-    child.kill('SIGTERM');
+    // Give console-aware children a chance to close their windows and run the
+    // Tauri cleanup coordinator before escalating to a process-tree kill.
+    try { child.kill('SIGINT'); } catch { /* child may already be closing */ }
+    if (await waitForChildExit(child, 5_000)) return;
+    await runTaskkill(['/PID', String(child.pid), '/T']);
+    if (await waitForChildExit(child, 5_000)) return;
+    await runTaskkill(['/PID', String(child.pid), '/T', '/F']);
+    await waitForChildExit(child, 5_000);
+    return;
   }
+
+  try { child.kill('SIGTERM'); } catch { /* child may already be closing */ }
+  if (await waitForChildExit(child, 5_000)) return;
+  try { child.kill('SIGKILL'); } catch { /* best effort */ }
+  await waitForChildExit(child, 5_000);
 }
 
 async function waitForVite() {
@@ -105,5 +143,6 @@ try {
 } finally {
   await supervisor.stop();
   removeRestartControlDirectory(restartControlDirectory);
+  devSessionLock.release();
 }
 process.exitCode = exitCode;

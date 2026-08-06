@@ -26,6 +26,9 @@ export function createSupervisor({
   waitForExitImpl = waitForExit,
   stopProcess,
   log = () => {},
+  now = () => Date.now(),
+  maxRestarts = 5,
+  restartWindowMs = 5 * 60_000,
 }) {
   let viteProcess;
   let tauriLaunch;
@@ -34,6 +37,7 @@ export function createSupervisor({
   let tauriExit;
   let stopping = false;
   let cleanupPromise;
+  const restartTimes = [];
   const viteState = { settled: false, result: undefined };
 
   const trackViteExit = (child) => {
@@ -45,13 +49,15 @@ export function createSupervisor({
     return viteExit;
   };
 
-  const stopAll = async () => {
+  const stopAll = async (reason = 'user-interrupt') => {
     if (cleanupPromise) return cleanupPromise;
     stopping = true;
     cleanupPromise = (async () => {
       const launch = tauriLaunch;
-      if (tauriProcess) stopProcess(tauriProcess);
-      if (viteProcess) stopProcess(viteProcess);
+      await Promise.all([
+        tauriProcess ? stopProcess(tauriProcess, reason) : undefined,
+        viteProcess ? stopProcess(viteProcess, reason) : undefined,
+      ].filter(Boolean));
       await Promise.allSettled([tauriExit, viteExit].filter(Boolean));
       try {
         await launch?.cleanup?.();
@@ -78,7 +84,7 @@ export function createSupervisor({
       }
     } catch (error) {
       const requestedStop = stopping;
-      await stopAll();
+      await stopAll('supervisor-error');
       if (requestedStop) return 0;
       throw error;
     }
@@ -95,12 +101,12 @@ export function createSupervisor({
       if (event.kind === 'vite') {
         const launch = tauriLaunch;
         if (stopping) {
-          stopProcess(tauriProcess);
+          await stopProcess(tauriProcess, 'user-interrupt');
           await tauriExit;
           await launch?.cleanup?.();
           return 0;
         }
-        stopProcess(tauriProcess);
+        await stopProcess(tauriProcess, 'vite-failed');
         await tauriExit;
         tauriProcess = undefined;
         tauriLaunch = undefined;
@@ -136,13 +142,25 @@ export function createSupervisor({
       if (result.error) throw result.error;
 
       if (restartRequested) {
+        const currentTime = now();
+        restartTimes.push(currentTime);
+        while (restartTimes.length && currentTime - restartTimes[0] > restartWindowMs) {
+          restartTimes.shift();
+        }
+        if (restartTimes.length > maxRestarts) {
+          await stopAll('supervisor-error');
+          throw new Error(
+            `development restart circuit breaker opened after ${restartTimes.length} restarts ` +
+              `in ${restartWindowMs}ms (exit code ${result.code ?? 'unknown'})`,
+          );
+        }
         log('[run-dev] Tauri requested a development restart; keeping Vite alive');
         continue;
       }
 
       // A normal Tauri exit owns the supervisor shutdown. Stop Vite and wait
       // for both children before returning the Tauri exit code.
-      await stopAll();
+      await stopAll('supervisor-error');
       return result.code ?? 1;
     }
     return 0;

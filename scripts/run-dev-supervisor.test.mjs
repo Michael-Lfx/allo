@@ -155,6 +155,54 @@ describe('run-dev supervisor', () => {
     expect(stopped).toEqual([vite]);
   });
 
+  test('passes an explicit stop reason and waits for the child close event', async () => {
+    const vite = new FakeChild();
+    const tauri = new FakeChild();
+    const reasons = [];
+    const supervisor = createSupervisor({
+      startVite: () => vite,
+      startTauri: () => tauri,
+      waitForVite: async () => {},
+      stopProcess: (child, reason) => {
+        reasons.push([child, reason]);
+        child.close(0);
+      },
+    });
+
+    const running = supervisor.run();
+    await tick();
+    tauri.close(0);
+    expect(await running).toBe(0);
+    expect(reasons).toEqual([[vite, 'supervisor-error']]);
+    expect(vite.exitCode).toBe(0);
+  });
+
+  test('opens the restart circuit breaker instead of looping forever', async () => {
+    const vite = new FakeChild();
+    const tauri = Array.from({ length: 4 }, () => new FakeChild());
+    let starts = 0;
+    const supervisor = createSupervisor({
+      startVite: () => vite,
+      startTauri: () => {
+        const child = tauri[starts++];
+        child.consumeRestartSignal = () => true;
+        return child;
+      },
+      waitForVite: async () => {},
+      maxRestarts: 2,
+      stopProcess: (child) => child.close(0),
+    });
+
+    const running = supervisor.run();
+    for (let index = 0; index < 3; index += 1) {
+      await tick();
+      tauri[index].close(0);
+    }
+    await expect(running).rejects.toThrow('circuit breaker');
+    expect(vite.exitCode).toBe(0);
+    expect(starts).toBe(3);
+  });
+
   test('uses a real child close event when tao exits with code 0 and leaves a marker', async () => {
     const vite = new FakeChild();
     const secondTauri = new FakeChild();
