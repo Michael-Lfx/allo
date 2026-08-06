@@ -1,0 +1,51 @@
+//! Wire DTOs for `/api/video-canvas/*` (snake_case JSON).
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasProjectMeta {
+    pub project_id: String,
+    pub title: String,
+    pub node_count: u32,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasMediaMeta {
+    pub media_id: String,
+    pub kind: String,
+    pub title: String,
+    pub mime: String,
+    pub bytes: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    /// Capability URL path: `/api/video-canvas/media/{id}`
+    pub url: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationTaskStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationTaskView {
+    pub task_id: String,
+    pub status: GenerationTaskStatus,
+    pub mode: String,
+    pub prompt: String,
+    pub model: Option<String>,
+    pub progress: f32,
+    pub error: Option<String>,
+    pub result_media_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

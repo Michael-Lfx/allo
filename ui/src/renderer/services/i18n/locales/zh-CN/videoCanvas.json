@@ -1,0 +1,31 @@
+{
+  "dev": {
+    "tag": "dev",
+    "navTooltip": "视频画布（dev）"
+  },
+  "list": {
+    "title": "画布项目",
+    "subtitle": "基于节点的无限画布：手动编排文/图/视频生成链路。",
+    "create": "新建画布",
+    "createFirst": "创建第一个画布",
+    "untitled": "未命名画布",
+    "searchPlaceholder": "搜索画布…",
+    "loadError": "加载失败",
+    "retry": "重试",
+    "empty": "还没有画布项目。创建一个开始节点编排。",
+    "nodes": "{{count}} 个节点"
+  },
+  "actions": {
+    "createFailed": "创建失败",
+    "deleteOk": "已删除",
+    "deleteFailed": "删除失败"
+  },
+  "project": {
+    "back": "返回"
+  },
+  "upload": {
+    "button": "上传素材",
+    "ok": "素材已添加",
+    "failed": "上传失败"
+  }
+}

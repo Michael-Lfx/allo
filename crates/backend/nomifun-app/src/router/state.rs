@@ -43,6 +43,7 @@ use nomifun_poi::PoiRouterState;
 use nomifun_insights::InsightsRouterState;
 use nomifun_media::MediaRouterState;
 use nomifun_vimax::VimaxRouterState;
+use nomifun_canvas::CanvasRouterState;
 use nomifun_cloud::CloudRouterState;
 use nomifun_mcp::{
     ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, McpAgentAdapter, McpConfigService,
@@ -97,6 +98,7 @@ pub struct ModuleStates {
     pub insights: InsightsRouterState,
     pub media: MediaRouterState,
     pub vimax: VimaxRouterState,
+    pub video_canvas: CanvasRouterState,
     pub cloud: CloudRouterState,
     pub companion: CompanionRouterState,
     /// 客服独立域 (customer-service domain).
@@ -615,6 +617,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             services.media_service.data_dir().to_path_buf(),
         ),
         vimax: VimaxRouterState::new(services.vimax_service.clone()),
+        video_canvas: CanvasRouterState::new(services.video_canvas_service.clone()),
         cloud: CloudRouterState::new(
             services.cloud_service.clone(),
             services.provider_repo.clone(),

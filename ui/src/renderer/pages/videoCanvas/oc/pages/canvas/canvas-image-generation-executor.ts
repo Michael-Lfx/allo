@@ -1,0 +1,203 @@
+import { nanoid } from "nanoid";
+
+import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationChildPosition, imageGenerationGroupSize } from "@oc/lib/canvas/canvas-generation-layout";
+import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
+import { fitNodeSize, nodeSizeFromRatio } from "@oc/lib/canvas/canvas-node-size";
+import { buildImageGenerationMetadata, getGenerationCount, isGenerationCanceled, runBackendCanvasGenerationTask } from "@oc/lib/canvas/canvas-project-generation";
+import { CONTENT_MODERATION_ERROR_CODE, generationFailureMetadata, type GenerationFailureMetadata } from "@oc/lib/generation-error";
+import { uploadImage } from "@oc/services/image-storage";
+import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
+
+import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
+
+const NODE_STATUS_LOADING = "loading" as const;
+const NODE_STATUS_SUCCESS = "success" as const;
+const NODE_STATUS_ERROR = "error" as const;
+const NODE_STATUS_IDLE = "idle" as const;
+
+export async function executeImageGeneration({
+    nodeId,
+    sourceNode,
+    canvasNodes,
+    prompt,
+    effectivePrompt,
+    generationConfig,
+    generationContext,
+    controller,
+    projectId,
+    setNodes,
+    setConnections,
+    setSelectedNodeIds,
+    setSelectedConnectionId,
+    setDialogNodeId,
+    startGenerationRequest,
+    finishGenerationRequest,
+    bindGenerationTask,
+    showError,
+    registerPendingNodeIds,
+}: CanvasGenerationExecution) {
+    const count = getGenerationCount(generationConfig.count);
+    const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
+    const isImageNode = sourceNode?.type === CanvasNodeType.Image;
+    const reuseSourceNode = canGenerateImageInPlace(sourceNode);
+    const directCopiedBatch = count > 1 && isImageNode && Boolean(sourceNode?.metadata?.content) && (Boolean(sourceNode?.metadata?.copiedFromNodeId) || sourceNode?.title.endsWith(" Copy"));
+    // 已有图片生成新结果并保留旧版本；参考图只来自入边，避免把旧结果误当成自身输入。
+    const referenceImages = generationContext.referenceImages;
+    const generationType = referenceImages.length ? ("edit" as const) : ("generation" as const);
+    const generationMetadata = buildImageGenerationMetadata(generationType, generationConfig, count, referenceImages);
+    const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : isImageNode ? CanvasNodeType.Image : CanvasNodeType.Text];
+    const imageDefaults = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+    // 生成中占位框按设置比例显示，避免 16:9 任务显示成默认 340x240。
+    const requestedImageSize = nodeSizeFromRatio(generationConfig.size || "auto", imageDefaults.width, imageDefaults.height);
+    const imageConfig = requestedImageSize || imageDefaults;
+    // auto 图生图沿用来源节点尺寸；用户明确选择比例时必须以目标比例创建节点。
+    const referenceNode = referenceImages.length === 1 ? canvasNodes.find((node) => node.id === referenceImages[0].id && node.type === CanvasNodeType.Image) : undefined;
+    const imageSizeSource = requestedImageSize ? undefined : (isImageNode && sourceNode?.metadata?.content ? sourceNode : referenceNode);
+    const outputNodeSize = imageSizeSource ? { width: imageSizeSource.width, height: imageSizeSource.height } : imageConfig;
+    const parentPosition = sourceNode?.position || { x: 0, y: 0 };
+    const parentWidth = sourceNode?.width || parentConfig.width;
+    const parentHeight = sourceNode?.height || parentConfig.height;
+    const rootId = reuseSourceNode || directCopiedBatch ? nodeId : nanoid();
+    const childIds = count > 1 ? Array.from({ length: count }, () => nanoid()) : [];
+    const targetIds = count > 1 ? childIds : [rootId];
+    registerPendingNodeIds(reuseSourceNode || directCopiedBatch ? childIds : [rootId, ...childIds]);
+    const rootWidth = outputNodeSize.width;
+    const rootHeight = outputNodeSize.height;
+    const preferredPosition = {
+        x: parentPosition.x + parentWidth + 96,
+        y: parentPosition.y + parentHeight / 2 - rootHeight / 2,
+    };
+    const rootPosition = reuseSourceNode ? parentPosition : findAvailableGenerationGroupPosition(canvasNodes, preferredPosition, imageGenerationGroupSize({ width: rootWidth, height: rootHeight }, outputNodeSize, childIds.length));
+
+    const rootNode: CanvasNodeData = {
+        id: rootId,
+        type: CanvasNodeType.Image,
+        title: effectivePrompt.slice(0, 32) || "Generated Image",
+        position: rootPosition,
+        width: rootWidth,
+        height: rootHeight,
+        metadata: {
+            prompt: effectivePrompt,
+            status: NODE_STATUS_LOADING,
+            size: generationConfig.size,
+            isBatchRoot: count > 1,
+            batchChildIds: count > 1 ? childIds : undefined,
+            batchUsesReferenceImages: referenceImages.length > 0,
+            primaryImageId: undefined,
+            ...generationMetadata,
+            imageBatchExpanded: count > 1 ? true : undefined,
+            generationErrorCode: undefined,
+            failedPromptFingerprint: undefined,
+        },
+    };
+    const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
+        id,
+        type: CanvasNodeType.Image,
+        title: effectivePrompt.slice(0, 32) || "Generated Image",
+        position: imageGenerationChildPosition(rootNode.position, rootNode.width, outputNodeSize, index),
+        width: outputNodeSize.width,
+        height: outputNodeSize.height,
+        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, generationErrorCode: undefined, failedPromptFingerprint: undefined },
+    }));
+    const batchConnections = directCopiedBatch
+        ? childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))
+        : [...(reuseSourceNode ? [] : [{ id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]), ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: rootId, toNodeId: childId }))];
+
+    setNodes((current) => {
+        return [
+            ...current.map((node) => {
+                if (node.id !== nodeId) return node;
+                if (isConfigNode) return { ...node, metadata: { ...node.metadata, prompt: effectivePrompt, status: NODE_STATUS_LOADING, errorDetails: undefined } };
+                if (reuseSourceNode) return { ...node, position: rootNode.position, width: rootNode.width, height: rootNode.height, title: rootNode.title, metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined } };
+                if (isImageNode) return node;
+                return {
+                    ...node,
+                    type: CanvasNodeType.Text,
+                    title: prompt.slice(0, 32) || "Prompt",
+                    width: parentConfig.width,
+                    height: parentConfig.height,
+                    metadata: { ...node.metadata, content: prompt, richText: undefined, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
+                };
+            }),
+            ...(reuseSourceNode || directCopiedBatch ? [] : [rootNode]),
+            ...childNodes,
+        ];
+    });
+    setConnections((current) => [...current, ...batchConnections]);
+    setSelectedNodeIds(new Set([nodeId]));
+    setSelectedConnectionId(null);
+    setDialogNodeId(nodeId);
+
+    targetIds.forEach((targetId) => startGenerationRequest(targetId, nodeId, nodeId, controller));
+    if (count > 1 && !directCopiedBatch) startGenerationRequest(rootId, nodeId, nodeId, controller);
+    let hasSuccess = false;
+    let hasFailure = false;
+    let representativeFailure: GenerationFailureMetadata | undefined;
+    await Promise.all(
+        targetIds.map(async (targetId) => {
+            try {
+                const result = await runBackendCanvasGenerationTask({
+                    projectId,
+                    nodeId: targetId,
+                    mode: "image",
+                    prompt: effectivePrompt,
+                    config: { ...generationConfig, count: "1" },
+                    referenceImages,
+                    signal: controller.signal,
+                    metadata: { sourceNodeId: nodeId, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation, promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables },
+                    onTaskCreated: (task) => bindGenerationTask(targetId, task),
+                });
+                const image = result.images?.[0];
+                if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
+                const uploaded = await uploadImage(image.dataUrl);
+                const imageSize = imageSizeSource ? outputNodeSize : fitNodeSize(uploaded.width, uploaded.height, outputNodeSize.width, outputNodeSize.height);
+                setNodes((current) => {
+                    const root = directCopiedBatch ? undefined : current.find((node) => node.id === rootId);
+                    return current.map((node) => {
+                        if (node.id !== targetId && (!root || node.id !== rootId)) return node;
+                        const center = { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 };
+                        const geometry = node.metadata?.locked ? {} : { position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 }, width: imageSize.width, height: imageSize.height };
+                        if (node.id === rootId && (targetId === rootId || !root?.metadata?.primaryImageId)) return { ...node, ...geometry, metadata: { ...node.metadata, ...imageMetadata(uploaded), primaryImageId: targetId } };
+                        if (node.id === targetId) return { ...node, ...geometry, metadata: { ...node.metadata, ...imageMetadata(uploaded) } };
+                        return node;
+                    });
+                });
+                hasSuccess = true;
+                if (isConfigNode) setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
+                return true;
+            } catch (error) {
+                if (isGenerationCanceled(error)) return false;
+                const failure = generationFailureMetadata(error, prompt);
+                if (!representativeFailure || failure.generationErrorCode === CONTENT_MODERATION_ERROR_CODE) representativeFailure = failure;
+                hasFailure = true;
+                setNodes((current) => current.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure } } : node)));
+                return false;
+            } finally {
+                finishGenerationRequest(targetId, controller);
+            }
+        }),
+    );
+    if (count > 1 && !directCopiedBatch) finishGenerationRequest(rootId, controller);
+    if (controller.signal.aborted) {
+        setNodes((current) => current.map((node) => (node.id === nodeId && isConfigNode && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
+        return;
+    }
+    if (hasFailure) showError(hasSuccess ? "部分图片生成失败" : "全部图片生成失败");
+    setNodes((current) =>
+        current.map((node) =>
+            node.id === nodeId && (isConfigNode || reuseSourceNode)
+                ? {
+                      ...node,
+                      metadata: {
+                          ...node.metadata,
+                          status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
+                          ...(hasSuccess ? { errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined } : representativeFailure || { errorDetails: "全部图片生成失败" }),
+                      },
+                  }
+                : !directCopiedBatch && node.id === rootId && !hasSuccess
+                  ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...(representativeFailure || { errorDetails: "全部图片生成失败" }) } }
+                  : node,
+        ),
+    );
+}

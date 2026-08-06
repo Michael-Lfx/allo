@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'path';
 import react from '@vitejs/plugin-react';
 import UnoCSS from 'unocss/vite';
+import tailwindcss from '@tailwindcss/vite';
 import unoConfig from './uno.config.ts';
 import { createUiBuildManifest } from '../scripts/ui-build-manifest';
 
@@ -60,6 +61,7 @@ ${components.map((k: string) => `const ${k.trim()} = IconParkHOC(_${k.trim()})`)
 }
 
 const src = resolve(__dirname, 'src');
+const ocRoot = resolve(src, 'renderer/pages/videoCanvas/oc');
 const buildId = manifest.frontend_build_id;
 const codeMirrorRuntimeVersions = Object.fromEntries(
   codeMirrorPackages.map((packageName) => [packageName, uiPackage.dependencies?.[packageName] ?? 'unknown'])
@@ -104,7 +106,9 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       proxy,
     },
-    plugins: [iconParkPlugin(), react(), UnoCSS({ ...unoConfig }), uiBuildManifestPlugin()],
+    // Tailwind v4 powers the ported open-ai-canvas (oc/) utility classes + globals.css.
+    // UnoCSS remains for the rest of allo UI.
+    plugins: [iconParkPlugin(), react(), tailwindcss(), UnoCSS({ ...unoConfig }), uiBuildManifestPlugin()],
     define: {
       __NOMI_BUILD_ID__: JSON.stringify(buildId),
       __NOMI_CODEMIRROR_VERSIONS__: JSON.stringify(codeMirrorRuntimeVersions),
@@ -114,6 +118,7 @@ export default defineConfig(({ mode }) => {
         '@': src,
         '@common': resolve(src, 'common'),
         '@renderer': resolve(src, 'renderer'),
+        '@oc': ocRoot,
       },
       // CodeMirror extension values are branded by their module instance.
       // Force every language package and the React wrapper through the same

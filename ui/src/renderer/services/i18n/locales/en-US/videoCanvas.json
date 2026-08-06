@@ -1,0 +1,31 @@
+{
+  "dev": {
+    "tag": "dev",
+    "navTooltip": "Video canvas (dev)"
+  },
+  "list": {
+    "title": "Canvas projects",
+    "subtitle": "Node-based infinite canvas for manual image/video generation pipelines.",
+    "create": "New canvas",
+    "createFirst": "Create first canvas",
+    "untitled": "Untitled canvas",
+    "searchPlaceholder": "Search canvases…",
+    "loadError": "Failed to load",
+    "retry": "Retry",
+    "empty": "No canvas projects yet. Create one to start composing nodes.",
+    "nodes": "{{count}} nodes"
+  },
+  "actions": {
+    "createFailed": "Create failed",
+    "deleteOk": "Deleted",
+    "deleteFailed": "Delete failed"
+  },
+  "project": {
+    "back": "Back"
+  },
+  "upload": {
+    "button": "Upload media",
+    "ok": "Media added",
+    "failed": "Upload failed"
+  }
+}

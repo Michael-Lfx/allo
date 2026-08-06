@@ -18,7 +18,8 @@
     "paths": {
       "@/*": ["./src/*"],
       "@common/*": ["./src/common/*"],
-      "@renderer/*": ["./src/renderer/*"]
+      "@renderer/*": ["./src/renderer/*"],
+      "@oc/*": ["./src/renderer/pages/videoCanvas/oc/*"]
     }
   },
   "include": ["src", "vite.config.ts", "uno.config.ts"]

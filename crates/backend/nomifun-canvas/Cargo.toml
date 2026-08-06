@@ -1,0 +1,29 @@
+[package]
+name = "nomifun-canvas"
+description = "Video-generation Canvas mode — infinite-canvas projects, media, and Flowy generation (/api/video-canvas/*)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomi-vimax.workspace = true
+nomifun-common.workspace = true
+nomifun-api-types.workspace = true
+nomifun-auth.workspace = true
+nomifun-cloud.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+mime_guess.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile.workspace = true
