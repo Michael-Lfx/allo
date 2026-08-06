@@ -23,8 +23,6 @@ if (!['crate', 'core', 'desktop', 'browser'].includes(mode)) {
   process.exit(2);
 }
 
-run(process.execPath, ['scripts/prune-build.mjs']);
-
 if (mode === 'crate') {
   const [packageName, ...cargoArgs] = inputArgs;
   if (!packageName || packageName.startsWith('-')) {

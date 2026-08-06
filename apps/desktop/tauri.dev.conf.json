@@ -4,7 +4,7 @@
   "identifier": "com.nomifun.desktop.dev",
   "build": {
     "beforeDevCommand": "",
-    "beforeBuildCommand": "bun scripts/prune-build.mjs && bun run --filter=./ui build"
+    "beforeBuildCommand": "bun run --filter=./ui build"
   },
   "bundle": {
     "resources": []
