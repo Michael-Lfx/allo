@@ -65,6 +65,12 @@ pub struct SessionRecord {
     /// Seedance video + poster aspect ratio (`16:9`, `9:16`, …). Empty → media default.
     #[serde(default)]
     pub aspect_ratio: String,
+    /// Seedance output resolution (`480p` / `720p` / `1080p`). Empty → media default.
+    #[serde(default)]
+    pub resolution: String,
+    /// Output frame rate. Seedance is fixed at 24; stored for UI + future models.
+    #[serde(default)]
+    pub fps: u32,
     #[serde(default = "default_stage")]
     pub stage: String,
     #[serde(default)]
@@ -198,6 +204,8 @@ impl SessionIndex {
             video_model: String::new(),
             target_duration_secs: 0,
             aspect_ratio: String::new(),
+            resolution: String::new(),
+            fps: 0,
             stage: "created".into(),
             summary: String::new(),
             status: RunStatus::Idle,

@@ -46,6 +46,10 @@ export interface VimaxSession extends SessionSummary {
   target_duration_secs?: number | null;
   /** Seedance video + poster aspect ratio (`16:9`, `9:16`, …). */
   aspect_ratio?: string | null;
+  /** Output resolution (`480p` / `720p` / `1080p`); clamped per video model. */
+  resolution?: string | null;
+  /** Output fps (Seedance fixed at 24). */
+  fps?: number | null;
   /** Relative or absolute URL of the finished video when available. */
   final_video?: string | null;
   /** Relative path of film poster image (display-only). */
@@ -132,6 +136,10 @@ export interface PlanBody {
   target_duration_secs?: number;
   /** Seedance / poster aspect ratio. */
   aspect_ratio?: string;
+  /** Output resolution (`480p` / `720p` / `1080p`). */
+  resolution?: string;
+  /** Output fps. */
+  fps?: number;
 }
 
 /** Server-side Cameo photo metadata (`GET/POST /api/vimax/sessions/:id/cameos`). */
@@ -163,6 +171,8 @@ export interface RenderBody {
   llm_model?: string;
   image_model?: string;
   video_model?: string;
+  resolution?: string;
+  fps?: number;
 }
 
 export interface ReviseBody {

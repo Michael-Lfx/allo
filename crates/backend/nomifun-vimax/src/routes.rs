@@ -158,6 +158,12 @@ struct PlanBody {
     /// Seedance / poster aspect ratio (`16:9`, `9:16`, …).
     #[serde(default)]
     aspect_ratio: Option<String>,
+    /// Output resolution (`480p` / `720p` / `1080p`); clamped per video model.
+    #[serde(default)]
+    resolution: Option<String>,
+    /// Output fps (Seedance fixed at 24).
+    #[serde(default)]
+    fps: Option<u32>,
 }
 
 async fn plan_session(
@@ -181,6 +187,8 @@ async fn plan_session(
             body.video_model,
             body.target_duration_secs,
             body.aspect_ratio,
+            body.resolution,
+            body.fps,
         )
         .await?;
     Ok(Json(ApiResponse::ok(())))
@@ -214,6 +222,10 @@ struct RenderBody {
     image_model: Option<String>,
     #[serde(default)]
     video_model: Option<String>,
+    #[serde(default)]
+    resolution: Option<String>,
+    #[serde(default)]
+    fps: Option<u32>,
 }
 
 async fn render_session(
@@ -225,7 +237,14 @@ async fn render_session(
     let body = body.map(|Json(b)| b).unwrap_or_default();
     state
         .service
-        .render(&id, body.llm_model, body.image_model, body.video_model)
+        .render(
+            &id,
+            body.llm_model,
+            body.image_model,
+            body.video_model,
+            body.resolution,
+            body.fps,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(())))
 }

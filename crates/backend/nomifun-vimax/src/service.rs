@@ -76,6 +76,8 @@ impl VimaxApiService {
         video_model: Option<String>,
         target_duration_secs: Option<u32>,
         aspect_ratio: Option<String>,
+        resolution: Option<String>,
+        fps: Option<u32>,
     ) -> Result<(), AppError> {
         self.refresh_backends().await;
         self.inner
@@ -91,6 +93,8 @@ impl VimaxApiService {
                 video_model,
                 target_duration_secs,
                 aspect_ratio,
+                resolution,
+                fps,
             )
             .await
             .map_err(map_vimax_err)
@@ -162,10 +166,12 @@ impl VimaxApiService {
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
+        resolution: Option<String>,
+        fps: Option<u32>,
     ) -> Result<(), AppError> {
         self.refresh_backends().await;
         self.inner
-            .render(id, llm_model, image_model, video_model)
+            .render(id, llm_model, image_model, video_model, resolution, fps)
             .await
             .map_err(map_vimax_err)
     }

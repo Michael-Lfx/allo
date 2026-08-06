@@ -290,6 +290,8 @@ impl VimaxService {
         video_model: Option<String>,
         target_duration_secs: Option<u32>,
         aspect_ratio: Option<String>,
+        resolution: Option<String>,
+        fps: Option<u32>,
     ) -> VimaxResult<()> {
         self.ensure_idle(id).await?;
         let token = CancellationToken::new();
@@ -315,6 +317,8 @@ impl VimaxService {
                     video_model,
                     target_duration_secs,
                     aspect_ratio,
+                    resolution,
+                    fps,
                     token.clone(),
                 ),
             )
@@ -335,8 +339,15 @@ impl VimaxService {
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
+        resolution: Option<String>,
+        fps: Option<u32>,
     ) -> VimaxResult<()> {
-        if llm_model.is_some() || image_model.is_some() || video_model.is_some() {
+        if llm_model.is_some()
+            || image_model.is_some()
+            || video_model.is_some()
+            || resolution.is_some()
+            || fps.is_some()
+        {
             let _ = self.index.update_fields(id, |r| {
                 if let Some(v) = &llm_model {
                     r.llm_model = v.trim().to_string();
@@ -347,7 +358,28 @@ impl VimaxService {
                 if let Some(v) = &video_model {
                     r.video_model = v.trim().to_string();
                 }
+                if let Some(v) = &resolution {
+                    r.resolution = v.trim().to_ascii_lowercase();
+                }
+                if let Some(v) = fps {
+                    r.fps = v;
+                }
             })?;
+        }
+        // Clamp quality against the (possibly updated) video model allow-list.
+        {
+            let record = self.index.get(id)?;
+            let guard = self.flowy.lock().await;
+            if let Some(flowy) = guard.as_ref() {
+                let res = resolve_resolution_for_session(&record, &flowy.media);
+                let fps_n = resolve_fps_for_session(&record, &flowy.media);
+                if record.resolution != res || record.fps != fps_n {
+                    let _ = self.index.update_fields(id, |r| {
+                        r.resolution = res;
+                        r.fps = fps_n;
+                    })?;
+                }
+            }
         }
         self.ensure_idle(id).await?;
         let token = CancellationToken::new();
@@ -607,15 +639,17 @@ impl VimaxService {
         let image = nonempty_opt(&record.image_model);
         let video = nonempty_opt(&record.video_model);
         let aspect = resolve_aspect_for_session(record, &flowy.media);
+        let resolution = resolve_resolution_for_session(record, &flowy.media);
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
             // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
             image: Arc::new(flowy.image_with_model(image.clone())),
             // Fine-grained create / poll / download progress for the progress rail.
-            video: Arc::new(flowy.video_with_model_cancel_and_aspect_and_progress(
+            video: Arc::new(flowy.video_with_session_quality(
                 video,
                 cancel.clone(),
                 Some(aspect),
+                Some(resolution),
                 Some(progress_callback(Arc::clone(self), &record.session_id)),
             )),
             flowy: Some(flowy.clone()),
@@ -637,6 +671,8 @@ impl VimaxService {
         video_model: Option<String>,
         target_duration_secs: Option<u32>,
         aspect_ratio: Option<String>,
+        resolution: Option<String>,
+        fps: Option<u32>,
         token: CancellationToken,
     ) -> VimaxResult<()> {
         if token.is_cancelled() {
@@ -673,25 +709,64 @@ impl VimaxService {
             if let Some(ar) = &aspect_ratio {
                 r.aspect_ratio = crate::aspect::normalize_aspect_ratio(ar);
             }
+            if let Some(res) = &resolution {
+                r.resolution = res.trim().to_ascii_lowercase();
+            }
+            if let Some(v) = fps {
+                r.fps = v;
+            }
         })?;
 
         // Resolve aspect (session → media default) before building backends so
         // video + cover image share the same Seedance ratio.
-        let aspect = {
+        let (aspect, resolution_norm, fps_norm) = {
             let guard = self.flowy.lock().await;
-            let media_default = guard
-                .as_ref()
-                .map(|f| f.media.video.default_aspect_ratio.as_str())
+            let media = guard.as_ref().map(|f| &f.media);
+            let media_default_aspect = media
+                .map(|m| m.video.default_aspect_ratio.as_str())
                 .unwrap_or(crate::aspect::DEFAULT_ASPECT_RATIO);
-            if record.aspect_ratio.trim().is_empty() {
-                crate::aspect::normalize_aspect_ratio(media_default)
+            let aspect = if record.aspect_ratio.trim().is_empty() {
+                crate::aspect::normalize_aspect_ratio(media_default_aspect)
             } else {
                 crate::aspect::normalize_aspect_ratio(&record.aspect_ratio)
-            }
+            };
+            let (resolution_norm, fps_norm) = if let Some(m) = media {
+                (
+                    resolve_resolution_for_session(&record, m),
+                    resolve_fps_for_session(&record, m),
+                )
+            } else {
+                let model = record.video_model.as_str();
+                (
+                    crate::video_quality::normalize_resolution_for_model(
+                        model,
+                        if record.resolution.trim().is_empty() {
+                            crate::video_quality::DEFAULT_VIDEO_RESOLUTION
+                        } else {
+                            record.resolution.as_str()
+                        },
+                    ),
+                    crate::video_quality::normalize_fps_for_model(
+                        model,
+                        if record.fps > 0 {
+                            record.fps
+                        } else {
+                            crate::video_quality::DEFAULT_VIDEO_FPS
+                        },
+                    ),
+                )
+            };
+            (aspect, resolution_norm, fps_norm)
         };
-        let record = if record.aspect_ratio != aspect {
-            self.index
-                .update_fields(id, |r| r.aspect_ratio = aspect.clone())?
+        let record = if record.aspect_ratio != aspect
+            || record.resolution != resolution_norm
+            || record.fps != fps_norm
+        {
+            self.index.update_fields(id, |r| {
+                r.aspect_ratio = aspect.clone();
+                r.resolution = resolution_norm.clone();
+                r.fps = fps_norm;
+            })?
         } else {
             record
         };
@@ -1022,6 +1097,37 @@ fn resolve_aspect_for_session(
     } else {
         crate::aspect::normalize_aspect_ratio(&media.video.default_aspect_ratio)
     }
+}
+
+fn resolve_resolution_for_session(
+    record: &SessionRecord,
+    media: &nomi_config::MediaGenConfig,
+) -> String {
+    let model = if record.video_model.trim().is_empty() {
+        media.video.model.as_str()
+    } else {
+        record.video_model.as_str()
+    };
+    let raw = if !record.resolution.trim().is_empty() {
+        record.resolution.as_str()
+    } else {
+        media.video.default_resolution.as_str()
+    };
+    crate::video_quality::normalize_resolution_for_model(model, raw)
+}
+
+fn resolve_fps_for_session(record: &SessionRecord, media: &nomi_config::MediaGenConfig) -> u32 {
+    let model = if record.video_model.trim().is_empty() {
+        media.video.model.as_str()
+    } else {
+        record.video_model.as_str()
+    };
+    let raw = if record.fps > 0 {
+        record.fps
+    } else {
+        crate::video_quality::DEFAULT_VIDEO_FPS
+    };
+    crate::video_quality::normalize_fps_for_model(model, raw)
 }
 
 fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::ProgressCallback {

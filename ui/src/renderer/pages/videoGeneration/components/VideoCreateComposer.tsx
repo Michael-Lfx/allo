@@ -17,7 +17,15 @@ import AspectRatioPicker from './AspectRatioPicker';
 import CameoCastEditor from './CameoCastEditor';
 import DurationTimelineBar from './DurationTimelineBar';
 import ModelSelectors, { type VimaxModelSelection } from './ModelSelectors';
+import VideoQualityPickers from './VideoQualityPickers';
 import VisualStyleSelect from './VisualStyleSelect';
+import {
+  DEFAULT_VIDEO_FPS,
+  DEFAULT_VIDEO_RESOLUTION,
+  normalizeVideoFps,
+  normalizeVideoResolution,
+  type VideoResolution,
+} from '../videoModelCapabilities';
 import styles from '../index.module.css';
 
 const TextArea = Input.TextArea;
@@ -30,6 +38,8 @@ export interface VideoCreateDraft {
   style: string;
   targetDurationSecs: number;
   aspectRatio: SeedanceAspectRatio;
+  resolution: VideoResolution;
+  fps: number;
   models: VimaxModelSelection;
   /** Local Cameo drafts; `file` is memory-only and not persisted. */
   cameos: CameoDraftItem[];
@@ -54,6 +64,8 @@ function loadDraft(): VideoCreateDraft {
     style: DEFAULT_VISUAL_STYLE_PROMPT,
     targetDurationSecs: 30,
     aspectRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
+    resolution: DEFAULT_VIDEO_RESOLUTION,
+    fps: DEFAULT_VIDEO_FPS,
     models: EMPTY_MODELS,
     cameos: [],
   };
@@ -72,6 +84,7 @@ function loadDraft(): VideoCreateDraft {
             description: typeof c.description === 'string' ? c.description : '',
           }))
       : [];
+    const videoModel = parsed.models?.video_model ?? '';
     return {
       workflow,
       sourceText: typeof parsed.sourceText === 'string' ? parsed.sourceText : '',
@@ -87,10 +100,22 @@ function loadDraft(): VideoCreateDraft {
           ? (parsed as { aspectRatio?: string }).aspectRatio
           : DEFAULT_SEEDANCE_ASPECT_RATIO
       ),
+      resolution: normalizeVideoResolution(
+        videoModel,
+        typeof (parsed as { resolution?: string }).resolution === 'string'
+          ? (parsed as { resolution?: string }).resolution!
+          : DEFAULT_VIDEO_RESOLUTION
+      ),
+      fps: normalizeVideoFps(
+        videoModel,
+        typeof (parsed as { fps?: number }).fps === 'number'
+          ? (parsed as { fps?: number }).fps!
+          : DEFAULT_VIDEO_FPS
+      ),
       models: {
         llm_model: parsed.models?.llm_model ?? '',
         image_model: parsed.models?.image_model ?? '',
-        video_model: parsed.models?.video_model ?? '',
+        video_model: videoModel,
       },
       cameos,
     };
@@ -270,7 +295,8 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
                 <SettingTwo theme='outline' size={14} />
                 {t('videoGeneration.create.advanced', { defaultValue: '风格与模型' })}
                 <span className='text-11px text-[var(--color-text-3)]'>
-                  · {draft.targetDurationSecs}s · {draft.aspectRatio}
+                  · {draft.targetDurationSecs}s · {draft.aspectRatio} · {draft.resolution} ·{' '}
+                  {draft.fps}fps
                 </span>
               </span>
             </Button>
@@ -342,6 +368,14 @@ const VideoCreateComposer: React.FC<VideoCreateComposerProps> = ({ loading, onSu
               <ModelSelectors
                 value={draft.models}
                 onChange={(models) => setDraft((current) => ({ ...current, models }))}
+                disabled={loading}
+              />
+              <VideoQualityPickers
+                videoModel={draft.models.video_model}
+                value={{ resolution: draft.resolution, fps: draft.fps }}
+                onChange={({ resolution, fps }) =>
+                  setDraft((current) => ({ ...current, resolution, fps }))
+                }
                 disabled={loading}
               />
               {modelMissing ? (
