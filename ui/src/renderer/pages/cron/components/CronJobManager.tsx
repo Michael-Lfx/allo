@@ -1,6 +1,5 @@
 
 
-import { iconColors } from '@/renderer/styles/colors';
 import { ipcBridge } from '@/common';
 import type { ICronJob } from '@/common/adapter/ipcBridge';
 import type { ConversationId, CronJobId } from '@/common/types/ids';
@@ -10,8 +9,13 @@ import { AlarmClock } from '@icon-park/react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
 import { useCronJobs } from '../useCronJobs';
 import { getJobStatusFlags } from '../cronUtils';
+import {
+  capabilityHeaderButtonClass,
+  capabilityHeaderButtonStyle,
+} from '@/renderer/pages/conversation/components/CapabilityHeaderButton';
 
 interface CronJobManagerProps {
   conversation_id: ConversationId;
@@ -97,9 +101,34 @@ const CronJobManager: React.FC<CronJobManagerProps> = ({ conversation_id, cron_j
     navigate(`/scheduled?create=conversation&conversation_id=${encodeURIComponent(conversation_id)}`);
   };
 
+  const { hasError, isPaused } = job ? getJobStatusFlags(job) : { hasError: false, isPaused: false };
+  const statusColor = !found
+    ? CAPABILITY_COLORS.off
+    : hasError
+      ? CAPABILITY_COLORS.danger
+      : isPaused
+        ? CAPABILITY_COLORS.idle
+        : CAPABILITY_COLORS.active;
+  const triggerButton = (
+    <Button
+      size='mini'
+      shape='round'
+      type='secondary'
+      className={capabilityHeaderButtonClass(found, 'shrink-0')}
+      style={capabilityHeaderButtonStyle(statusColor)}
+      onClick={found && job ? () => navigate(`/scheduled/${job.cron_job_id}`) : handleCreateClick}
+    >
+      <span className='inline-flex items-center gap-6px leading-none'>
+        <AlarmClock theme='outline' size='14' fill={statusColor} />
+        <span className='text-12px'>{t('cron.scheduledTasks')}</span>
+      </span>
+    </Button>
+  );
+
   if (!found && !loading) {
     return (
       <Popover
+        className='cron-job-manager-popover'
         trigger='hover'
         position='bottom'
         content={
@@ -111,41 +140,18 @@ const CronJobManager: React.FC<CronJobManagerProps> = ({ conversation_id, cron_j
           </div>
         }
       >
-        <Button
-          type='text'
-          size='small'
-          className='cron-job-manager-button chat-header-cron-pill !h-auto !w-auto !min-w-0 !px-0 !py-0'
-          onClick={handleCreateClick}
-        >
-          <span className='inline-flex items-center gap-2px rounded-full px-8px py-2px bg-2'>
-            <AlarmClock theme='outline' size={16} fill={iconColors.disabled} />
-            <span className='ml-4px w-8px h-8px rounded-full bg-fill-3' />
-          </span>
-        </Button>
+        {triggerButton}
       </Popover>
     );
   }
 
   if (loading || !job) return null;
 
-  const { hasError, isPaused } = getJobStatusFlags(job);
   const tooltipContent = isPaused ? t('cron.status.paused') : hasError ? t('cron.status.error') : job.name;
 
   return (
     <Tooltip content={tooltipContent}>
-      <Button
-        type='text'
-        size='small'
-        className='cron-job-manager-button chat-header-cron-pill !h-auto !w-auto !min-w-0 !px-0 !py-0'
-        onClick={() => navigate(`/scheduled/${job.cron_job_id}`)}
-      >
-        <span className='inline-flex items-center gap-2px rounded-full px-8px py-2px bg-2'>
-          <AlarmClock theme='outline' size={16} fill={iconColors.primary} />
-          <span
-            className={`ml-4px w-8px h-8px rounded-full ${hasError ? 'bg-[rgb(var(--danger-6))]' : isPaused ? 'bg-[rgb(var(--warning-6))]' : 'bg-[rgb(var(--success-6))]'}`}
-          />
-        </span>
-      </Button>
+      {triggerButton}
     </Tooltip>
   );
 };

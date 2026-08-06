@@ -18,6 +18,12 @@ body {
   border-radius: calc(var(--border-radius-medium) + 2px) !important;
 }
 
+/* The compact scheduled-task hint is anchored beneath an already rounded
+   titlebar control, so its default arrow produces a distracting double notch. */
+.cron-job-manager-popover .arco-popover-arrow {
+  display: none;
+}
+
 /* Workpath rows use one consistent 2px rhythm when rendered through
    ConversationRow's shared adjacent-row selector. */
 .workpath-drawer-content > .conversation-item + .conversation-item {
