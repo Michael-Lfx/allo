@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nomifun_common::AppError;
-use nomifun_db::{IProviderModelRepository, IProviderRepository, models::ProviderModelRow};
+use nomifun_common::{AppError, ProviderWithModel};
+use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use tracing::warn;
 
 use crate::factory::provider_config::{
@@ -32,7 +32,14 @@ const TITLE_RETRY_ZH: &str = "只输出一行标题，格式：TITLE: 标题内�
 /// Auto-generate a short conversation title from the first user message.
 #[async_trait]
 pub trait ConversationTitleCompleter: Send + Sync {
-    async fn summarize(&self, content: &str) -> Result<String, AppError>;
+    /// Try each candidate provider/model in order and return the first usable
+    /// title. Returns an empty string when every candidate fails or yields no
+    /// usable title — callers then keep the preview name.
+    async fn summarize(
+        &self,
+        content: &str,
+        candidates: &[ProviderWithModel],
+    ) -> Result<String, AppError>;
 }
 
 /// Provider-backed conversation title generator.
@@ -44,51 +51,6 @@ pub struct LiveConversationTitleCompleter {
 }
 
 impl LiveConversationTitleCompleter {
-    async fn resolve_title_model(&self) -> Result<(String, String), AppError> {
-        let providers = self
-            .provider_repo
-            .list()
-            .await
-            .map_err(|e| AppError::Internal(format!("failed to list providers: {e}")))?;
-        let rows = self
-            .provider_model_repo
-            .list()
-            .await
-            .map_err(|e| AppError::Internal(format!("failed to list provider models: {e}")))?;
-        let mut grouped: std::collections::HashMap<&str, Vec<&ProviderModelRow>> =
-            std::collections::HashMap::new();
-        for row in &rows {
-            grouped.entry(row.provider_id.as_str()).or_default().push(row);
-        }
-        let mut reasoning_fallback: Option<(String, String)> = None;
-        for provider in providers.iter().filter(|p| p.enabled) {
-            let Some(provider_rows) = grouped.get(provider.provider_id.as_str()) else {
-                continue;
-            };
-            for row in provider_rows.iter().filter(|r| r.enabled) {
-                let model = row.model.trim();
-                if model.is_empty() {
-                    continue;
-                }
-                let pair = (provider.provider_id.clone(), model.to_owned());
-                if is_reasoning_heavy_model(model) {
-                    reasoning_fallback.get_or_insert(pair);
-                } else {
-                    return Ok(pair);
-                }
-            }
-        }
-        reasoning_fallback.ok_or_else(|| {
-            AppError::Conflict(
-                "conversation auto-title unavailable: no enabled provider/model is configured".into(),
-            )
-        })
-    }
-
-    async fn resolve_default_model(&self) -> Result<(String, String), AppError> {
-        self.resolve_title_model().await
-    }
-
     fn title_system_for(content: &str) -> &'static str {
         if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
             TITLE_SYSTEM_ZH
@@ -108,15 +70,6 @@ impl LiveConversationTitleCompleter {
                 .await?;
         Ok(normalize_title_output(&raw))
     }
-}
-
-fn is_reasoning_heavy_model(model: &str) -> bool {
-    let m = model.to_lowercase();
-    [
-        "-r1", "r1-", "reasoner", "thinking", "-think", "qwq", "o1-", "o1", "o3", "o4",
-    ]
-    .iter()
-    .any(|needle| m.contains(needle))
 }
 
 fn is_meta_title_line(line: &str) -> bool {
@@ -157,6 +110,21 @@ fn is_meta_title_line(line: &str) -> bool {
         "i need to",
         "let me think",
         "let me ",
+        // Refusal / apology leakage: a model that declines the exchange must
+        // never have its disclaimer stored as the conversation title.
+        "抱歉",
+        "对不起",
+        "无法完成",
+        "无法生成",
+        "无法回答",
+        "无法理解",
+        "作为ai",
+        "作为 ai",
+        "as an ai",
+        "i cannot",
+        "i can't",
+        "cannot assist",
+        "cannot help",
     ];
     MARKERS.iter().any(|m| line.contains(m) || lower.contains(m))
 }
@@ -399,38 +367,75 @@ fn normalize_title_output(raw: &str) -> String {
 
 #[async_trait]
 impl ConversationTitleCompleter for LiveConversationTitleCompleter {
-    async fn summarize(&self, content: &str) -> Result<String, AppError> {
-        let (provider_id, model) = self.resolve_default_model().await?;
-        let cfg = resolve_provider_config(
-            &self.provider_repo,
-            &self.provider_model_repo,
-            &self.encryption_key,
-            &provider_id,
-            &model,
-            &self.workspace,
-        )
-        .await?;
-
+    async fn summarize(
+        &self,
+        content: &str,
+        candidates: &[ProviderWithModel],
+    ) -> Result<String, AppError> {
         let system = Self::title_system_for(content);
+        for candidate in candidates {
+            let cfg = match resolve_provider_config(
+                &self.provider_repo,
+                &self.provider_model_repo,
+                &self.encryption_key,
+                &candidate.provider_id,
+                &candidate.model,
+                &self.workspace,
+            )
+            .await
+            {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    warn!(
+                        provider_id = %candidate.provider_id,
+                        model = %candidate.model,
+                        error = %error,
+                        "conversation auto-title: candidate config resolve failed, trying next"
+                    );
+                    continue;
+                }
+            };
 
-        let title = self.call_and_normalize(&cfg, system, content).await?;
-        if !title.is_empty() {
-            return Ok(title);
-        }
+            match self.call_and_normalize(&cfg, system, content).await {
+                Ok(title) if !title.is_empty() => return Ok(title),
+                Ok(_) => {}
+                Err(error) => {
+                    warn!(
+                        provider_id = %candidate.provider_id,
+                        model = %candidate.model,
+                        error = %error,
+                        "conversation auto-title: candidate call failed, trying next"
+                    );
+                    continue;
+                }
+            }
 
-        if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
-            let retry_user = format!(
-                "请为以下对话起一个简短标题（不超过12字），严格按格式输出：\nTITLE: 标题\n\n{content}"
-            );
-            let title = self.call_and_normalize(&cfg, TITLE_RETRY_ZH, &retry_user).await?;
-            if !title.is_empty() {
-                return Ok(title);
+            // The first call produced no usable title (not a transport
+            // failure): retry once with the stricter Chinese prompt before
+            // moving to the next candidate.
+            if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+                let retry_user = format!(
+                    "请为以下对话起一个简短标题（不超过12字），严格按格式输出：\nTITLE: 标题\n\n{content}"
+                );
+                match self.call_and_normalize(&cfg, TITLE_RETRY_ZH, &retry_user).await {
+                    Ok(title) if !title.is_empty() => return Ok(title),
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(
+                            provider_id = %candidate.provider_id,
+                            model = %candidate.model,
+                            error = %error,
+                            "conversation auto-title: candidate retry failed, trying next"
+                        );
+                    }
+                }
             }
         }
 
         warn!(
             content_len = content.len(),
-            "conversation auto-title: all LLM attempts failed to produce a title"
+            candidates = candidates.len(),
+            "conversation auto-title: all candidates failed to produce a title"
         );
         Ok(String::new())
     }
@@ -441,16 +446,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skips_reasoning_heavy_models_for_title() {
-        assert!(is_reasoning_heavy_model("deepseek-r1"));
-        assert!(is_reasoning_heavy_model("qwen-qwq-32b"));
-        assert!(!is_reasoning_heavy_model("deepseek-chat"));
-    }
-
-    #[test]
     fn rejects_instruction_echo_reasoning() {
         let raw = "我们被要求生成一个短标题，3-7个词，描述对话的主题。";
         assert_eq!(normalize_title_output(raw), "");
+    }
+
+    #[test]
+    fn rejects_refusal_leakage() {
+        assert_eq!(normalize_title_output("抱歉，我无法完成这个请求。"), "");
+        assert_eq!(normalize_title_output("对不起，作为AI我无法生成该标题"), "");
+        assert_eq!(normalize_title_output("I'm sorry, as an AI I cannot help with that."), "");
     }
 
     #[test]

@@ -967,6 +967,7 @@ impl CompanionThreads {
                 conversation_id,
                 nomifun_api_types::UpdateConversationRequest {
                     name: None,
+                    name_source: None,
                     pinned: None,
                     model: Some(ProviderWithModel {
                         provider_id: model.provider_id.clone(),

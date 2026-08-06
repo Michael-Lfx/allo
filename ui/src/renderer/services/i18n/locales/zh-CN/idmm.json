@@ -87,7 +87,9 @@
     "defaultSteering": "默认决策策略",
     "defaultSteeringPlaceholder": "当值守未填写自由文本策略时套用的默认决策策略。",
     "saved": "智能决策设置已保存",
-    "none": "无"
+    "none": "无",
+    "titleModel": "会话标题模型",
+    "titleModelDesc": "用于自动生成会话标题，选择后立即生效；不选择则跟随会话当前模型。"
   },
   "log": {
     "title": "决策记录",

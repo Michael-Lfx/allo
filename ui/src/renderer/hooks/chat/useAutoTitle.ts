@@ -31,7 +31,7 @@ export const useAutoTitle = () => {
 
         const success = await ipcBridge.conversation.update.invoke({
           conversation_id: conversation_id,
-          updates: { name: newTitle },
+          updates: { name: newTitle, name_source: 'auto' },
         });
         if (!success) {
           return;
