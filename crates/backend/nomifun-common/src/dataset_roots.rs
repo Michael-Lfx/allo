@@ -66,6 +66,15 @@ pub const MANAGED_DATASET_ROOTS: &[ManagedDatasetRoot] = &[
         backup: BackupPolicy::Exclude(HOST_LOCAL_REFERENCE),
     },
     ManagedDatasetRoot {
+        // UI preferences belong to the installation, not to the selected
+        // workspace. Work-directory relocation never enters this reset
+        // registry, while an explicit factory reset retires this file too.
+        path: "installation-preferences.json",
+        kind: DatasetRootKind::File,
+        reset: ResetPolicy::Retire,
+        backup: BackupPolicy::Include,
+    },
+    ManagedDatasetRoot {
         path: WORK_ROOT_OWNER_FILE,
         kind: DatasetRootKind::File,
         reset: ResetPolicy::Preserve,

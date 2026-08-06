@@ -1,7 +1,7 @@
 import { ipcBridge } from '@/common';
 import type { IProvider } from '@/common/config/storage';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import useSWR, { mutate, type SWRConfiguration } from 'swr';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
 
@@ -35,19 +35,66 @@ export const fetchProviders = async (): Promise<IProvider[]> => {
   return (await ipcBridge.mode.listProviders.invoke()) ?? [];
 };
 
+export interface ProviderCatalogRefreshResult {
+  providers: IProvider[];
+  syncError?: Error;
+  stale?: boolean;
+}
+
+const isModelCatalogCacheKey = (key: unknown): boolean =>
+  key === PROVIDERS_SWR_KEY || (typeof key === 'string' && key.startsWith('models-for-task:'));
+
+let providerCatalogGeneration = 0;
+
+/** Clear all provider/model catalog entries before an account or generation transition. */
+export async function clearAvailableModelsCache(): Promise<void> {
+  providerCatalogGeneration += 1;
+  await mutate(isModelCatalogCacheKey, undefined, { revalidate: false });
+}
+
 /**
  * Optional cloud catalog sync then replace the shared providers SWR cache.
- * Soft-fails when cloud sync is unavailable (not logged in / no cloud host).
+ * The provider list is still returned when cloud sync fails so callers can
+ * distinguish a usable cached catalog (`syncError` + models) from a truly
+ * empty model environment.
  */
-export async function refreshProvidersCatalog(): Promise<IProvider[]> {
+export async function refreshProvidersCatalog(): Promise<ProviderCatalogRefreshResult> {
+  await clearAvailableModelsCache();
+  const requestGeneration = providerCatalogGeneration;
+  let syncError: Error | undefined;
   try {
-    await ipcBridge.cloud.syncModels.invoke();
+    const syncResult = await ipcBridge.cloud.syncModels.invoke();
+    if (!syncResult?.synced) {
+      throw new Error('The cloud model catalog was not synchronized');
+    }
   } catch (error) {
-    console.warn('[providers] Failed to sync chat model catalog:', error);
+    syncError = error instanceof Error ? error : new Error(String(error));
+    console.warn('[providers] Failed to sync chat model catalog:', syncError);
   }
   const providers = await fetchProviders();
+  if (requestGeneration !== providerCatalogGeneration) {
+    return { providers, syncError, stale: true };
+  }
   await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
-  return providers;
+  await mutate(
+    (key: unknown) => typeof key === 'string' && key.startsWith('models-for-task:'),
+    undefined,
+    { revalidate: true }
+  );
+  return { providers, syncError };
+}
+
+// Deduplicate concurrent selector mounts without introducing a time-based
+// cache: every fresh mount still gets a fresh catalog sync.
+let providersAutoRefreshPromise: Promise<ProviderCatalogRefreshResult> | null = null;
+
+export function refreshProvidersCatalogIfStale(): Promise<ProviderCatalogRefreshResult> {
+  if (!providersAutoRefreshPromise) {
+    providersAutoRefreshPromise = refreshProvidersCatalog().finally(() => {
+      providersAutoRefreshPromise = null;
+    });
+  }
+  return providersAutoRefreshPromise;
 }
 
 export const useProvidersQuery = () => {
@@ -62,6 +109,12 @@ export const useProvidersQuery = () => {
  */
 export const useModelProviderList = (): ModelProviderListResult => {
   const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery();
+
+  useEffect(() => {
+    void refreshProvidersCatalogIfStale().catch((error) => {
+      console.warn('[providers] Automatic catalog refresh failed:', error);
+    });
+  }, []);
 
   const configuredProviders = useMemo(() => {
     const list: IProvider[] = Array.isArray(modelConfig) ? modelConfig : [];

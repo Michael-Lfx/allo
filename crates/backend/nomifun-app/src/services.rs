@@ -2893,21 +2893,24 @@ impl AppServices {
         if cloud_service.is_authenticated().await {
             let gateway = cloud_service.gateway_config_snapshot();
             let provider_repo = provider_repo_for_services.clone();
+            let provider_model_repo = provider_model_repo.clone();
             let data_dir = cloud_service.data_dir().to_path_buf();
             let server = gateway.server.clone();
             tokio::spawn(async move {
                 let started = Instant::now();
                 match nomifun_cloud::sync_flowy_builtin_provider(
                     &provider_repo,
+                    &provider_model_repo,
                     &encryption_key,
                     &server,
                     &data_dir,
                 )
                 .await
                 {
-                    Ok(()) => tracing::info!(
+                    Ok(synced) => tracing::info!(
                         elapsed_ms = started.elapsed().as_millis(),
-                        "startup: background Flowy catalog sync completed"
+                        synced,
+                        "startup: background Flowy catalog sync finished"
                     ),
                     Err(e) => tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis(),

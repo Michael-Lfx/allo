@@ -14,6 +14,35 @@ pub struct SystemInfoResponse {
     pub platform: String,
     /// CPU architecture: `x64` or `arm64`.
     pub arch: String,
+    /// Result of the most recent work-root relocation, when one has been
+    /// attempted. The field is omitted on installations with no relocation
+    /// history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_dir_change: Option<WorkDirChangeStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkDirChangeStatus {
+    pub state: WorkDirChangeState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_work_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_work_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollback_copy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirChangeState {
+    None,
+    Completed,
+    Failed,
 }
 
 /// Response for `POST /api/system/support-logs/pack`.
@@ -38,13 +67,20 @@ pub struct UpdateCheckRequest {
 }
 
 /// Request body for `POST /api/system/work-dir`: request a user-chosen
-/// conversation workspace root for the next boot. Changing a finalized
-/// dataset's root creates one fresh v3 generation; historical data is not
-/// migrated.
+/// conversation workspace root for the next boot. The current v3 generation
+/// and data-root side stores remain in place; only managed conversations are
+/// relocated during the restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateWorkDirRequest {
     pub work_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateWorkDirResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    pub restart_required: bool,
 }
 
 /// Response for `POST /api/system/check-update`.
@@ -101,6 +137,7 @@ mod tests {
             storage_generation: "01900000-0000-7000-8000-000000000000".into(),
             platform: "linux".into(),
             arch: "x64".into(),
+            work_dir_change: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["cache_dir"], "/home/user/.cache/nomifun");
@@ -125,6 +162,7 @@ mod tests {
             storage_generation: "01900000-0000-7000-8000-000000000001".into(),
             platform: "darwin".into(),
             arch: "arm64".into(),
+            work_dir_change: None,
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let parsed: SystemInfoResponse = serde_json::from_str(&serialized).unwrap();

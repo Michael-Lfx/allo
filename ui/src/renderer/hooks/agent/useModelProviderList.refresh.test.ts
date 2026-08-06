@@ -16,7 +16,7 @@ describe('useModelProviderList catalog refresh wiring', () => {
     expect(text.includes('providersAutoRefreshPromise')).toBe(true);
     expect(text.includes('refreshProvidersCatalogIfStale')).toBe(true);
     expect(text.includes('useEffect')).toBe(true);
-    expect(text.includes('void refreshProvidersCatalogIfStale()')).toBe(true);
+    expect(text.includes('void refreshProvidersCatalogIfStale().catch')).toBe(true);
   });
 
   test('refresh syncs Flowy catalog then replaces SWR without revalidate race', () => {

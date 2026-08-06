@@ -110,6 +110,20 @@ i18n.on('languageChanged', async (lang: string) => {
   }
 });
 
+// `configService.reload()` is used after login and during host transitions.
+// Keep the renderer language subscribed to that authoritative snapshot so a
+// successful reload applies immediately instead of waiting for a restart.
+configService.subscribe('language', (value) => {
+  const next = typeof value === 'string' ? value : DEFAULT_LANGUAGE;
+  const normalized = normalizeLanguageCode(next);
+  if (normalizeLanguageCode(i18n.language) === normalized) return;
+  void ensureAndSwitch(i18n, normalized, loadLocaleModules).then(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('i18nextLng', normalized);
+    }
+  });
+});
+
 // Initialize on module load
 void initLanguage();
 

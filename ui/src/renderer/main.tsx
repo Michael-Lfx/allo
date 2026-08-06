@@ -20,7 +20,7 @@ import { ThemeProvider } from './hooks/context/ThemeContext';
 import { SupportChatProvider } from './features/supportChat/SupportChatProvider';
 
 // Arco Design
-import { ConfigProvider } from '@arco-design/web-react';
+import { Alert, Button, ConfigProvider } from '@arco-design/web-react';
 // Configure Arco Design to use React 18's createRoot, fixing Message component's CopyReactDOM.render error
 import '@arco-design/web-react/es/_util/react-19-adapter';
 import '@arco-design/web-react/dist/css/arco.css';
@@ -40,7 +40,7 @@ import './styles/themes/index.css';
 import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
 import { isHandledAuthExpiredHttpError } from '@/common/adapter/httpBridge';
-import { setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
+import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
 });
@@ -61,6 +61,7 @@ import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
+import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
   shouldScheduleAgentRefreshAfterHashChange,
   shouldScheduleAgentRefreshForHash,
@@ -103,9 +104,72 @@ const Config: React.FC<PropsWithChildren> = ({ children }) => {
   return React.createElement(ConfigProvider, { theme: { primaryColor: '#4E5969' }, locale: arcoLocale }, children);
 };
 
+const CloudModelEnvironmentGate: React.FC<PropsWithChildren> = ({ children }) => {
+  const { status, modelStatus, retryModelEnvironment } = useCloudAuth();
+  const { t } = useTranslation();
+
+  // Do not paint the authenticated shell while the cloud session is still
+  // being checked. The old ordering allowed the conversation route to mount
+  // model selectors during the login/restart gap, before sync and the task
+  // resolver had produced an authoritative catalog.
+  if (status === 'checking') {
+    return (
+      <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)]'>
+        <div className='text-16px font-medium text-t-primary'>{t('common.cloudModelEnvironment.restoringTitle')}</div>
+        <div className='text-13px text-t-secondary'>{t('common.cloudModelEnvironment.restoringDescription')}</div>
+      </div>
+    );
+  }
+
+  if (status !== 'authenticated' || modelStatus === 'ready' || modelStatus === 'idle') {
+    return <>{children}</>;
+  }
+
+  if (modelStatus === 'restoring') {
+    return (
+      <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)]'>
+        <div className='text-16px font-medium text-t-primary'>{t('common.cloudModelEnvironment.restoringTitle')}</div>
+        <div className='text-13px text-t-secondary'>{t('common.cloudModelEnvironment.restoringDescription')}</div>
+      </div>
+    );
+  }
+
+  if (modelStatus === 'failed') {
+    return (
+      <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)] px-24px'>
+        <Alert
+          type='error'
+          title={t('common.cloudModelEnvironment.failedTitle')}
+          content={t('common.cloudModelEnvironment.failedDescription')}
+          className='max-w-520px'
+        />
+        <Button type='primary' onClick={() => void retryModelEnvironment()}>
+          {t('common.cloudModelEnvironment.retry')}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className='flex h-full min-h-100vh flex-col bg-[var(--color-bg-1)]'>
+      <Alert
+        type='warning'
+        title={t('common.cloudModelEnvironment.degradedTitle')}
+        content={t('common.cloudModelEnvironment.degradedDescription')}
+        action={
+          <Button type='text' size='small' onClick={() => void retryModelEnvironment()}>
+            {t('common.cloudModelEnvironment.retry')}
+          </Button>
+        }
+      />
+      <div className='min-h-0 flex-1'>{children}</div>
+    </div>
+  );
+};
+
 const Main = () => {
   const { ready, status } = useAuth();
-  const { ready: cloudReady } = useCloudAuth();
+  const { ready: cloudReady, refresh: refreshCloudAuth } = useCloudAuth();
   const [configReady, setConfigReady] = useState(false);
   const [configError, setConfigError] = useState<Error | null>(null);
 
@@ -135,18 +199,27 @@ const Main = () => {
         console.error('Failed to prefetch agents:', err);
       });
     void Promise.all([
-      application.systemInfo
-        .invoke()
-        .then((info) => setBrowserStorageGeneration(info.storageGeneration))
-        .catch((err) => {
-          console.error('Failed to initialize browser storage generation:', err);
-          throw err;
-        }),
+      application.systemInfo.invoke().catch((err) => {
+        console.error('Failed to initialize browser storage generation:', err);
+        throw err;
+      }),
       configService.initialize().catch((err) => {
         console.error('Failed to initialize config:', err);
       }),
     ])
-      .then(() => {
+      .then(async ([info]) => {
+        let generationChanged = false;
+        try {
+          generationChanged = getBrowserStorageGeneration() !== info.storageGeneration;
+        } catch {
+          // The first authenticated bootstrap has no prior generation.
+        }
+        setBrowserStorageGeneration(info.storageGeneration);
+        if (generationChanged) {
+          await clearAvailableModelsCache();
+          await configService.reload();
+          await refreshCloudAuth();
+        }
         if (active) setConfigReady(true);
       })
       .catch((error: unknown) => {
@@ -160,7 +233,7 @@ const Main = () => {
     return () => {
       active = false;
     };
-  }, [ready, status]);
+  }, [ready, status, refreshCloudAuth]);
 
   useEffect(() => {
     if (!configReady || !shouldScheduleAgentRefreshForHash(window.location.hash)) return;
@@ -257,7 +330,7 @@ const Main = () => {
     return <AppLoader />;
   }
 
-  return router;
+  return <CloudModelEnvironmentGate>{router}</CloudModelEnvironmentGate>;
 };
 
 const App = HOC.Wrapper(Config)(Main);

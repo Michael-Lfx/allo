@@ -89,6 +89,7 @@ pub fn get_system_info() -> SystemInfoResponse {
         storage_generation: resolve_storage_generation(),
         platform: map_platform().to_owned(),
         arch: map_arch().to_owned(),
+        work_dir_change: None,
     }
 }
 

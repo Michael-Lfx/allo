@@ -959,6 +959,14 @@ export const application = {
         storage_generation: string;
         platform: string;
         arch: string;
+        work_dir_change?: {
+          state: 'none' | 'completed' | 'failed';
+          operation_id?: string;
+          source_work_dir?: string;
+          target_work_dir?: string;
+          rollback_copy?: string;
+          error?: string;
+        };
       },
       void
     >('/api/system/info'),
@@ -969,6 +977,16 @@ export const application = {
       storageGeneration: raw.storage_generation,
       platform: raw.platform,
       arch: raw.arch,
+      workDirChange: raw.work_dir_change
+        ? {
+            state: raw.work_dir_change.state,
+            operationId: raw.work_dir_change.operation_id,
+            sourceWorkDir: raw.work_dir_change.source_work_dir,
+            targetWorkDir: raw.work_dir_change.target_work_dir,
+            rollbackCopy: raw.work_dir_change.rollback_copy,
+            error: raw.work_dir_change.error,
+          }
+        : undefined,
     })
   ),
   getPath: shellProvider<string, { name: 'desktop' | 'home' | 'downloads' }>(({ name }) => tauriGetPath(name), ''),
@@ -977,7 +995,10 @@ export const application = {
   // The caller restarts right after this resolves; the new dir applies then.
   // `cacheDir` is accepted for back-compat but ignored — it is no longer
   // user-editable (removed from the settings UI), only `workDir` is sent.
-  updateSystemInfo: httpPost<void, { cacheDir: string; workDir: string }>(
+  updateSystemInfo: httpPost<
+    { operation_id?: string; restart_required: boolean },
+    { cacheDir: string; workDir: string }
+  >(
     '/api/system/work-dir',
     ({ workDir }) => ({ work_dir: workDir })
   ),

@@ -439,6 +439,28 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   font-weight: var(--flowy-weight-medium, 500);
 }
 
+/* This confirmation is the only destructive-but-reversible directory action.
+   Scope its palette so legacy dark Modal.confirm overrides cannot mix dialog
+   surfaces or collapse the title and explanation into one text hierarchy. */
+.arco-modal.work-dir-relocation-confirm,
+.arco-modal.work-dir-relocation-confirm .arco-modal-header,
+.arco-modal.work-dir-relocation-confirm .arco-modal-body,
+.arco-modal.work-dir-relocation-confirm .arco-modal-content,
+.arco-modal.work-dir-relocation-confirm .arco-modal-footer {
+  background: var(--flowy-surface-1, var(--dialog-fill-0)) !important;
+  border-color: var(--flowy-border, var(--border-base)) !important;
+}
+
+.arco-modal.work-dir-relocation-confirm .arco-modal-content,
+.arco-modal.work-dir-relocation-confirm .arco-modal-confirm-content {
+  color: var(--flowy-text-2, var(--text-secondary)) !important;
+}
+
+.arco-modal.work-dir-relocation-confirm .arco-modal-title,
+.arco-modal.work-dir-relocation-confirm .arco-modal-confirm-title {
+  color: var(--flowy-text-1, var(--text-primary)) !important;
+}
+
 .nomifun-modal:not(.conversation-search-modal) .arco-modal-content {
   background: transparent !important;
   border: 0 !important;

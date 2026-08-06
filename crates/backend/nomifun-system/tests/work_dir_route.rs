@@ -1,5 +1,5 @@
-//! Integration tests for `POST /api/system/work-dir` — durably binding a
-//! changed root to a one-shot fresh dataset before the next boot.
+//! Integration tests for `POST /api/system/work-dir` — durably planning a
+//! non-destructive work-root relocation before the next boot.
 
 use std::sync::Arc;
 
@@ -134,18 +134,19 @@ async fn explicit_factory_reset_binds_the_live_work_root_without_parsing_a_damag
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        nomifun_common::factory_reset::requested_v3_reset_work_dir(&data_dir)
+    assert!(nomifun_common::paths::paths_equivalent(
+        &nomifun_common::factory_reset::requested_v3_reset_work_dir(&data_dir)
+            .unwrap()
             .unwrap(),
-        Some(std::fs::canonicalize(&work_dir).unwrap())
-    );
+        &std::fs::canonicalize(&work_dir).unwrap()
+    ));
 
     let _ = std::fs::remove_dir_all(&data_dir);
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
 #[tokio::test]
-async fn valid_work_dir_change_creates_target_and_arms_one_shot_reset() {
+async fn valid_work_dir_change_creates_target_and_writes_relocation_plan() {
     let data_dir = unique_data_dir("valid");
     let target_root = unique_data_dir("valid-target");
     let target = target_root.join("chosen-workspace"); // absolute, does not exist yet
@@ -157,16 +158,25 @@ async fn valid_work_dir_change_creates_target_and_arms_one_shot_reset() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["success"], true);
-    // The durable request, rather than dir-config, chooses the target on the
-    // next boot. The config is committed only after the locked reset applies.
+    let body = body_json(resp).await;
+    assert_eq!(body["success"], true);
+    assert!(body["data"]["operation_id"].as_str().is_some());
+    assert_eq!(body["data"]["restart_required"], true);
+    // The relocation plan, rather than dir-config, chooses the target on the
+    // next boot. The config is committed only after the locked migration applies.
     assert!(target.is_dir(), "target work dir should have been created");
     let canonical_target = std::fs::canonicalize(&target).unwrap();
-    assert_eq!(
-        nomifun_common::factory_reset::requested_v3_reset_work_dir(&data_dir)
-            .unwrap()
-            .as_deref(),
-        Some(canonical_target.as_path())
+    let plan = nomifun_common::work_dir_relocation::read_pending_plan(&data_dir)
+        .unwrap()
+        .expect("relocation plan");
+    assert!(nomifun_common::paths::paths_equivalent(
+        std::path::Path::new(&plan.target_work_dir),
+        &canonical_target
+    ));
+    assert!(
+        !data_dir
+            .join(nomifun_common::factory_reset::V3_DATASET_RESET_REQUEST_FILE)
+            .exists()
     );
     assert!(
         nomifun_common::dir_config::persisted_work_dir(&data_dir).is_none()
@@ -177,7 +187,30 @@ async fn valid_work_dir_change_creates_target_and_arms_one_shot_reset() {
 }
 
 #[tokio::test]
-async fn finalized_dataset_change_arms_one_shot_reset_instead_of_rebinding_receipt() {
+async fn same_work_dir_is_a_noop_without_an_operation_id() {
+    let data_dir = unique_data_dir("same-work-dir-noop");
+    let app = setup(data_dir.clone()).await;
+
+    let resp = app
+        .oneshot(post(
+            "/api/system/work-dir",
+            json!({ "work_dir": data_dir.to_str().unwrap() }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["restart_required"], false);
+    assert!(body["data"].get("operation_id").is_none());
+    assert!(!data_dir
+        .join(nomifun_common::work_dir_relocation::PENDING_RELOCATION_DIR)
+        .exists());
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+#[tokio::test]
+async fn finalized_dataset_change_preserves_receipt_and_writes_relocation_plan() {
     let data_dir = unique_data_dir("finalized-change");
     let current = unique_data_dir("finalized-current");
     let target_root = unique_data_dir("finalized-target");
@@ -210,11 +243,17 @@ async fn finalized_dataset_change_arms_one_shot_reset_instead_of_rebinding_recei
         nomifun_common::dir_config::persisted_work_dir(&data_dir).is_none(),
         "target config is committed during locked pre-boot reset preparation"
     );
-    assert_eq!(
-        nomifun_common::factory_reset::requested_v3_reset_work_dir(&data_dir)
-            .unwrap()
-            .as_deref(),
-        Some(canonical_target.as_path())
+    let plan = nomifun_common::work_dir_relocation::read_pending_plan(&data_dir)
+        .unwrap()
+        .expect("relocation plan");
+    assert!(nomifun_common::paths::paths_equivalent(
+        std::path::Path::new(&plan.target_work_dir),
+        &canonical_target
+    ));
+    assert!(
+        !data_dir
+            .join(nomifun_common::factory_reset::V3_DATASET_RESET_REQUEST_FILE)
+            .exists()
     );
     assert_eq!(
         nomifun_common::factory_reset::inspect_v3_dataset_receipt(
@@ -286,12 +325,13 @@ async fn pending_change_cannot_be_retargeted_before_restart() {
         .await
         .unwrap();
     assert_eq!(second_resp.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        nomifun_common::factory_reset::requested_v3_reset_work_dir(&data_dir)
-            .unwrap()
-            .as_deref(),
-        Some(std::fs::canonicalize(&first).unwrap().as_path())
-    );
+    let pending = nomifun_common::work_dir_relocation::read_pending_plan(&data_dir)
+        .unwrap()
+        .expect("pending relocation");
+    assert!(nomifun_common::paths::paths_equivalent(
+        std::path::Path::new(&pending.target_work_dir),
+        &std::fs::canonicalize(&first).unwrap()
+    ));
 
     let _ = std::fs::remove_dir_all(&data_dir);
     let _ = std::fs::remove_dir_all(&first_root);

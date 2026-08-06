@@ -25,6 +25,7 @@ type GuidModelSelectorProps = {
   isGeminiMode: boolean;
   modelList: IProvider[];
   current_model: TProviderWithModel | undefined;
+  defaultModelUnavailable?: boolean;
   setCurrentModel: (model: TProviderWithModel) => Promise<void>;
 
   // ACP model state
@@ -37,6 +38,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   isGeminiMode,
   modelList,
   current_model,
+  defaultModelUnavailable = false,
   setCurrentModel,
   currentAcpCachedModelInfo,
   selectedAcpModel,
@@ -66,13 +68,14 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   }, [current_model]);
 
   const geminiButtonLabel = React.useMemo(() => {
+    if (defaultModelUnavailable) return t('conversation.chat.defaultModelUnavailable');
     return getModelDisplayLabel({
       selected_value: current_model?.use_model,
       selectedLabel: geminiSelectedLabel,
       defaultModelLabel,
       fallbackLabel: defaultModelLabel,
     });
-  }, [current_model?.use_model, defaultModelLabel, geminiSelectedLabel]);
+  }, [current_model?.use_model, defaultModelLabel, defaultModelUnavailable, geminiSelectedLabel, t]);
 
   const acpSelectedLabel = React.useMemo(() => {
     return (
@@ -131,6 +134,13 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                   </Menu.Item>,
                 ]
               : [
+                  ...(defaultModelUnavailable
+                    ? [
+                        <Menu.Item key='unavailable-default' disabled className='text-12px text-t-secondary'>
+                          {t('conversation.chat.defaultModelUnavailable')}
+                        </Menu.Item>,
+                      ]
+                    : []),
                   ...enabledGroups.map(({ provider, models }) => {
                     return (
                       <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>

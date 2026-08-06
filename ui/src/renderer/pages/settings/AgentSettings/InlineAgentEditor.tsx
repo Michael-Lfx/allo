@@ -6,8 +6,7 @@ import { acpConversation } from '@/common/adapter/ipcBridge';
 import { Alert, Avatar, Button, Collapse, Input, Typography } from '@arco-design/web-react';
 import { Plus, Delete, CheckOne, CloseOne } from '@icon-park/react';
 import EmojiPicker from '@/renderer/components/chat/EmojiPicker';
-import CodeMirror from '@uiw/react-codemirror';
-import { json } from '@codemirror/lang-json';
+import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
 import { uuid } from '@/common/utils';
 import React, { useState, useCallback, useEffect, useRef } from 'react';
@@ -436,7 +435,7 @@ const InlineAgentEditor: React.FC<InlineAgentEditorProps> = ({ agent, onSave, on
                 value={jsonInput}
                 height='200px'
                 theme={theme}
-                extensions={[json()]}
+                language='json'
                 onChange={handleJsonChange}
                 basicSetup={{ lineNumbers: true, foldGutter: true, dropCursor: false, allowMultipleSelections: false }}
                 style={{

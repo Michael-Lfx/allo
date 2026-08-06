@@ -43,6 +43,17 @@
   "download": "下载",
   "close": "关闭",
   "retry": "重试",
+  "cloudModelEnvironment": {
+    "restoringTitle": "正在恢复云端模型",
+    "restoringDescription": "正在同步模型目录，请稍候…",
+    "degradedTitle": "云端模型目录暂时未同步",
+    "degradedDescription": "已使用可用缓存模型，部分新模型可能暂不可用。",
+    "failedTitle": "云端模型暂不可用",
+    "failedDescription": "没有可用的模型缓存，请重试模型恢复。",
+    "retry": "重试模型恢复"
+  },
+  "codeEditorErrorTitle": "代码编辑器加载失败",
+  "codeEditorErrorDescription": "编辑器扩展发生异常，可以重试或关闭当前编辑器。",
   "reload": "重新加载",
   "technical_details": "技术详情",
   "error_details": "错误详情",

@@ -17,6 +17,7 @@ use nomifun_api_types::{
     SetManagedModelServiceEnabledRequest, SupportLogsPackResponse, SystemInfoResponse,
     SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
     UpdateProviderModelRequest, UpdateProviderRequest, UpdateSettingsRequest, UpdateWorkDirRequest,
+    UpdateWorkDirResponse, WorkDirChangeState, WorkDirChangeStatus,
     UpsertProviderConnectionRequest,
 };
 use nomifun_common::AppError;
@@ -45,8 +46,8 @@ pub struct SystemRouterState {
     pub managed_model_service: Option<std::sync::Arc<ManagedModelService>>,
     pub protocol_detection_service: ProtocolDetectionService,
     pub version_check_service: VersionCheckService,
-    /// Data directory root — used to arm the v3 reset request consumed by the
-    /// next boot. See `nomifun_common::factory_reset`.
+    /// Data directory root — owns the durable work-root relocation plan and
+    /// the v3 dataset lifecycle markers.
     pub data_dir: PathBuf,
     /// Canonical work root used by the live dataset. Explicit reset requests
     /// are bound to this value so config/env changes cannot redirect them.
@@ -553,9 +554,29 @@ async fn delete_provider_model(
 // System info & version check handlers
 // ===========================================================================
 
-async fn get_system_info() -> Json<ApiResponse<SystemInfoResponse>> {
-    let info = crate::sysinfo::get_system_info();
-    Json(ApiResponse::ok(info))
+async fn get_system_info(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<SystemInfoResponse>>, AppError> {
+    let mut info = crate::sysinfo::get_system_info();
+    info.work_dir_change = nomifun_common::work_dir_relocation::read_last_status(
+        &state.data_dir,
+    )?
+    .map(|status| WorkDirChangeStatus {
+        state: match status.state {
+            nomifun_common::work_dir_relocation::WorkDirRelocationState::Completed => {
+                WorkDirChangeState::Completed
+            }
+            nomifun_common::work_dir_relocation::WorkDirRelocationState::Failed => {
+                WorkDirChangeState::Failed
+            }
+        },
+        operation_id: status.operation_id,
+        source_work_dir: status.source_work_dir,
+        target_work_dir: status.target_work_dir,
+        rollback_copy: status.rollback_copy,
+        error: status.error,
+    });
+    Ok(Json(ApiResponse::ok(info)))
 }
 
 async fn pack_support_logs() -> Result<Json<ApiResponse<SupportLogsPackResponse>>, AppError> {
@@ -609,17 +630,16 @@ async fn factory_reset(State(state): State<SystemRouterState>) -> Result<Json<Ap
 /// Request a user-chosen working directory. This only takes effect on the next
 /// boot: the backend resolves `work_dir` before the HTTP server exists.
 ///
-/// Changing the root of a finalized v3 dataset also arms one durable reset so
-/// database/side-store IDs cannot be attached to an unrelated workspace. The
-/// old workspace is not migrated or deleted. The request is consumed by the
-/// immutable reset plan, so later boots do not reset the new generation again.
+/// Changing the root of a finalized v3 dataset writes a durable relocation
+/// plan. The next boot moves only the product-managed `conversations` tree and
+/// rebinds the existing v3 receipt to the same generation.
 ///
 /// The new path is validated to be a non-empty, absolute, creatable directory so
 /// the next boot does not fail on an unusable value.
 async fn set_work_dir(
     State(state): State<SystemRouterState>,
     body: Result<Json<UpdateWorkDirRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
+) -> Result<Json<ApiResponse<UpdateWorkDirResponse>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     if state.work_dir_is_cli_override {
         return Err(AppError::Conflict(
@@ -650,40 +670,23 @@ async fn set_work_dir(
         .ok_or_else(|| {
             AppError::Conflict(
                 "the current dataset has no finalized v3 work-root binding; preserving it without changing directories"
-                    .into(),
+                .into(),
             )
         })?;
-    // Create it now so we (a) confirm the location is writable and (b) reject a
-    // path that collides with an existing file — both would otherwise surface as
-    // a confusing failure on the next boot.
-    std::fs::create_dir_all(&path)
-        .map_err(|e| AppError::BadRequest(format!("cannot use work_dir {}: {e}", path.display())))?;
-    if !path.is_dir() {
-        return Err(AppError::BadRequest(format!(
-            "work_dir is not a directory: {}",
-            path.display()
-        )));
+    // Reject nested source/target paths before target creation. The target can
+    // be new, so the check is repeated after canonicalization by the durable
+    // relocation-plan writer and again during startup consumption.
+    if !nomifun_common::paths::paths_equivalent(&current_work_dir, &path) {
+        nomifun_common::work_dir_relocation::validate_work_dir_relationship(
+            &current_work_dir,
+            &path,
+        )?;
     }
-
-    let canonical = std::fs::canonicalize(&path).map_err(|error| {
-        AppError::BadRequest(format!(
-            "cannot canonicalize work_dir {}: {error}",
-            path.display()
-        ))
-    })?;
-    if let Some(pending_work_dir) =
-        nomifun_common::factory_reset::requested_v3_reset_work_dir(
-            &state.data_dir,
-        )?
-        && pending_work_dir != canonical
-    {
-        return Err(AppError::Conflict(format!(
-            "a restart-time dataset operation is already bound to {}; restart NomiFun before requesting another work directory",
-            pending_work_dir.display()
-        )));
-    }
-    match current_work_dir {
-        current if current == canonical => {
+    // Create it one component at a time so a symlink/junction in any parent is
+    // rejected before the request can mutate a location outside the selected
+    // work root.
+    let canonical = nomifun_common::work_dir_relocation::prepare_work_dir_target(&path)?;
+    if nomifun_common::paths::paths_equivalent(&current_work_dir, &canonical) {
             // Repair or refresh only the host-local control pointer; the
             // dataset binding is already correct, so no reset is needed.
             nomifun_common::dir_config::set_work_dir(
@@ -695,18 +698,25 @@ async fn set_work_dir(
                 work_dir = %canonical.display(),
                 "work dir override refreshed without changing dataset generation"
             );
-        }
-        _ => {
-            nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
-                &state.data_dir,
-                &canonical,
-            )?;
-            tracing::warn!(
-                target: "system",
-                work_dir = %canonical.display(),
-                "work dir change armed a one-shot fresh v3 dataset; historical data will not be migrated"
-            );
-        }
+            Ok(Json(ApiResponse::ok(UpdateWorkDirResponse {
+                operation_id: None,
+                restart_required: false,
+            })))
+    } else {
+        let plan = nomifun_common::work_dir_relocation::request_work_dir_relocation(
+            &state.data_dir,
+            &current_work_dir,
+            &canonical,
+        )?;
+        tracing::info!(
+            target: "system",
+            work_dir = %canonical.display(),
+            operation_id = %plan.operation_id,
+            "work dir relocation armed; existing dataset generation will be preserved"
+        );
+        Ok(Json(ApiResponse::ok(UpdateWorkDirResponse {
+            operation_id: Some(plan.operation_id),
+            restart_required: true,
+        })))
     }
-    Ok(Json(ApiResponse::success()))
 }

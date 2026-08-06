@@ -471,7 +471,6 @@ impl CompletedAutomaticLegacyRetirement {
 pub enum DatasetResetReason {
     NonV3Dataset,
     ExplicitFactoryReset,
-    WorkDirChange,
 }
 
 fn request_origin_for_reason(
@@ -481,9 +480,6 @@ fn request_origin_for_reason(
         DatasetResetReason::NonV3Dataset => None,
         DatasetResetReason::ExplicitFactoryReset => {
             Some(DatasetResetRequestOrigin::UserExplicitFactoryReset)
-        }
-        DatasetResetReason::WorkDirChange => {
-            Some(DatasetResetRequestOrigin::WorkDirChange)
         }
     }
 }
@@ -539,8 +535,7 @@ pub struct DatasetResetPlan {
 fn plan_requires_work_dir_persistence(
     plan: &DatasetResetPlan,
 ) -> bool {
-    (plan.version == PLAN_VERSION && plan.persist_work_dir)
-        || plan.reason == DatasetResetReason::WorkDirChange
+    plan.version == PLAN_VERSION && plan.persist_work_dir
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1629,14 +1624,6 @@ fn validate_completed_plan_replay_identity(
                 .into(),
         ));
     }
-    if plan.reason == DatasetResetReason::WorkDirChange
-        && crate::paths::stored_path_matches(&plan.work_dir, &canonical_data)
-    {
-        return Err(AppError::Internal(
-            "completed work-dir change replay cannot target its data root"
-                .into(),
-        ));
-    }
     let expected_retired_dir = format!(
         "{RETIRED_DATASETS_DIR}/id-reference-v3-{}",
         plan.generation
@@ -2563,15 +2550,11 @@ fn validate_plan(
 
     let canonical = canonical_data_dir(data_dir)?;
     let canonical_work = canonical_existing_work_dir(work_dir)?;
-    if plan.reason == DatasetResetReason::WorkDirChange {
-        validate_disjoint_data_and_work_roots(&canonical, &canonical_work)?;
-    } else {
-        validate_safe_reset_data_and_work_roots(
-            &canonical,
-            &canonical_work,
-            &managed_roots,
-        )?;
-    }
+    validate_safe_reset_data_and_work_roots(
+        &canonical,
+        &canonical_work,
+        &managed_roots,
+    )?;
     let mut expected_roots: Vec<_> = managed_roots
         .into_iter()
         .map(|(path, kind)| {
@@ -2606,18 +2589,6 @@ fn validate_plan(
     {
         return Err(AppError::Internal(
             "v3 dataset reset plan managed-root registry does not match this build".into(),
-        ));
-    }
-    if plan.reason == DatasetResetReason::WorkDirChange
-        && plan.roots.iter().any(|root| {
-            root.base == ManagedRootBase::WorkDir
-                && root.relative_path == MANAGED_WORKSPACES_DIR
-                && root.initially_present
-        })
-    {
-        return Err(AppError::Internal(
-            "work-dir change plan must never claim a pre-existing target conversations directory"
-                .into(),
         ));
     }
     let retired_root = canonical.join(&plan.retired_dir);
@@ -3001,19 +2972,6 @@ pub fn arm_v3_dataset_reset(
     archive_active_completed_reset_control_replay(data_dir)?;
     if let Some(existing) = read_pending_v3_reset(data_dir, work_dir)? {
         validate_active_reset_request_against_plan(data_dir, &existing)?;
-        if existing.reason == DatasetResetReason::WorkDirChange
-            && !has_phase(data_dir, "generation-installed")
-            && inspect_planned_root(
-                &Path::new(&existing.work_dir)
-                    .join(MANAGED_WORKSPACES_DIR),
-                ManagedRootKind::Directory,
-            )?
-        {
-            return Err(AppError::Internal(
-                "work-dir change target gained a conversations directory before generation installation; preserving both datasets"
-                    .into(),
-            ));
-        }
         ensure_v3_work_root_owner_for_reset(
             data_dir,
             Path::new(&existing.work_dir),
@@ -3037,15 +2995,11 @@ pub fn arm_v3_dataset_reset(
             DatasetResetReason::ExplicitFactoryReset
         );
     let managed_roots = managed_roots_for_plan_version(PLAN_VERSION)?;
-    if reason == DatasetResetReason::WorkDirChange {
-        validate_disjoint_data_and_work_roots(&canonical, &canonical_work)?;
-    } else {
-        validate_safe_reset_data_and_work_roots(
-            &canonical,
-            &canonical_work,
-            &managed_roots,
-        )?;
-    }
+    validate_safe_reset_data_and_work_roots(
+        &canonical,
+        &canonical_work,
+        &managed_roots,
+    )?;
     let generation = Uuid::now_v7().to_string();
     let (operation_id, requested_at) =
         if let Some(request) = active_request.as_ref() {
@@ -3085,14 +3039,6 @@ pub fn arm_v3_dataset_reset(
         let source = canonical_work.join(MANAGED_WORKSPACES_DIR);
         let initially_present =
             inspect_planned_root(&source, ManagedRootKind::Directory)?;
-        if reason == DatasetResetReason::WorkDirChange
-            && initially_present
-        {
-            return Err(AppError::Internal(format!(
-                "work-dir change target already contains {}; refusing to move unowned files",
-                source.display()
-            )));
-        }
         roots.push(ManagedRootPlan {
             base: ManagedRootBase::WorkDir,
             relative_path: MANAGED_WORKSPACES_DIR.to_owned(),
@@ -3535,18 +3481,6 @@ pub fn apply_pending_v3_dataset_reset(
         return Ok(false);
     }
     let canonical_work = canonical_work_dir(work_dir)?;
-    if plan.reason == DatasetResetReason::WorkDirChange
-        && !has_phase(data_dir, "generation-installed")
-        && inspect_planned_root(
-            &canonical_work.join(MANAGED_WORKSPACES_DIR),
-            ManagedRootKind::Directory,
-        )?
-    {
-        return Err(AppError::Internal(
-            "work-dir change target gained a conversations directory before generation installation; preserving both datasets"
-                .into(),
-        ));
-    }
     ensure_v3_work_root_owner_for_reset(
         data_dir,
         &canonical_work,
@@ -4439,6 +4373,265 @@ pub fn ensure_current_v3_work_root_owner(
     Ok(())
 }
 
+/// Rebind an already-finalized v3 dataset to a new managed work root without
+/// rotating its generation or touching any managed data roots.
+///
+/// Work-directory relocation owns the filesystem move and calls this function
+/// only after the target `conversations` tree has been published. Keeping the
+/// marker rewrite here is important: receipt, data-side binding, bootstrap
+/// binding, and owner markers must all use the same private validation rules as
+/// ordinary v3 startup.
+pub fn rebind_v3_dataset_work_root(
+    data_dir: &Path,
+    source_work_dir: &Path,
+    target_work_dir: &Path,
+    generation: &str,
+) -> Result<(), AppError> {
+    validate_uuidv7(generation).map_err(|error| {
+        AppError::Internal(format!("invalid relocation generation: {error}"))
+    })?;
+    let canonical_data = canonical_data_dir(data_dir)?;
+    let canonical_source = canonical_existing_work_dir(source_work_dir)?;
+    let canonical_target = canonical_existing_work_dir(target_work_dir)?;
+    if canonical_source == canonical_target {
+        return Ok(());
+    }
+    if data_and_work_roots_overlap(&canonical_data, &canonical_target) {
+        return Err(AppError::Conflict(
+            "relocation target overlaps the dataset data root".into(),
+        ));
+    }
+
+    let receipt_bytes = read_bounded_regular_file(
+        &receipt_path(&canonical_data),
+        MAX_CONTROL_FILE_BYTES,
+    )
+    .map_err(|error| {
+        AppError::Internal(format!(
+            "read v3 receipt before work-root relocation: {error}"
+        ))
+    })?;
+    let receipt: DatasetReceipt = serde_json::from_slice(&receipt_bytes)
+        .map_err(|error| {
+            AppError::Internal(format!(
+                "parse v3 receipt before work-root relocation: {error}"
+            ))
+        })?;
+    if receipt.contract_version != V3_DATASET_CONTRACT_VERSION
+        || receipt.generation != generation
+        || !bounded_regular_file_matches(
+            &canonical_data.join(STORAGE_GENERATION_FILE),
+            generation.as_bytes(),
+            128,
+        )
+        || !active_database_is_regular_file(&canonical_data)?
+    {
+        return Err(AppError::Conflict(
+            "cannot relocate a dataset whose finalized receipt, generation, or database is not current"
+                .into(),
+        ));
+    }
+
+    let receipt_names_source =
+        crate::paths::stored_path_matches(&receipt.work_root, &canonical_source);
+    let receipt_names_target =
+        crate::paths::stored_path_matches(&receipt.work_root, &canonical_target);
+    if !receipt_names_source && !receipt_names_target {
+        return Err(AppError::Conflict(
+            "v3 receipt is not bound to either side of the requested work-root relocation"
+                .into(),
+        ));
+    }
+
+    if receipt_names_source {
+        ensure_v3_work_root_binding_with_requirement(
+            &canonical_data,
+            &canonical_source,
+            generation,
+            receipt.work_root_binding_required,
+        )?;
+    }
+
+    // Validate an unfinished bootstrap binding before publishing any new
+    // owner, receipt, or data-side binding. A stale binding from another
+    // generation/work root must never be carried across a relocation.
+    let bootstrap_binding = match read_bounded_regular_file(
+        &bootstrap_binding_path(&canonical_data),
+        MAX_CONTROL_FILE_BYTES,
+    ) {
+        Ok(bytes) => {
+            let bootstrap: DatasetBootstrapBinding =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    AppError::Internal(format!(
+                        "parse bootstrap binding during work-root relocation: {error}"
+                    ))
+                })?;
+            if bootstrap.contract_version != V3_DATASET_CONTRACT_VERSION
+                || bootstrap.generation != generation
+                || bootstrap.prepared_at <= 0
+                || (!crate::paths::stored_path_matches(
+                    &bootstrap.work_root,
+                    &canonical_source,
+                ) && !crate::paths::stored_path_matches(
+                    &bootstrap.work_root,
+                    &canonical_target,
+                ))
+            {
+                return Err(AppError::Conflict(
+                    "bootstrap binding is not compatible with this work-root relocation"
+                        .into(),
+                ));
+            }
+            Some(bootstrap)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(AppError::Internal(format!(
+                "read bootstrap binding during work-root relocation: {error}"
+            )));
+        }
+    };
+
+    if let Some(existing) = read_work_root_binding(&canonical_data)?
+        && !binding_matches(
+            &existing,
+            &canonical_data,
+            if crate::paths::stored_path_matches(
+                &existing.work_root,
+                &canonical_target,
+            ) {
+                &canonical_target
+            } else {
+                &canonical_source
+            },
+            generation,
+        )
+    {
+        return Err(AppError::Conflict(
+            "data-side work-root binding belongs to a different dataset or target"
+                .into(),
+        ));
+    }
+
+    // A target owner may already exist after a crash. It is safe to reuse only
+    // when it belongs to this exact data root and generation.
+    ensure_v3_work_root_owner_for_reset(
+        &canonical_data,
+        &canonical_target,
+        generation,
+    )?;
+
+    let desired_binding = WorkRootBinding {
+        version: WORK_ROOT_BINDING_VERSION,
+        data_root: canonical_data.display().to_string(),
+        work_root: canonical_target.display().to_string(),
+        generation: generation.to_owned(),
+        installed_at: now_ms(),
+    };
+    let binding_bytes = serde_json::to_vec_pretty(&desired_binding).map_err(|error| {
+        AppError::Internal(format!(
+            "serialize relocated work-root binding: {error}"
+        ))
+    })?;
+    write_atomic(
+        &work_root_binding_path(&canonical_data),
+        &binding_bytes,
+    )
+    .map_err(|error| {
+        AppError::Internal(format!(
+            "write relocated work-root binding: {error}"
+        ))
+    })?;
+
+    let rebound_receipt = DatasetReceipt {
+        contract_version: receipt.contract_version,
+        generation: receipt.generation,
+        work_root: canonical_target.display().to_string(),
+        work_root_binding_required: true,
+        installed_at: receipt.installed_at,
+    };
+    let receipt_bytes = serde_json::to_vec_pretty(&rebound_receipt).map_err(|error| {
+        AppError::Internal(format!(
+            "serialize relocated v3 receipt: {error}"
+        ))
+    })?;
+    write_atomic(&receipt_path(&canonical_data), &receipt_bytes).map_err(|error| {
+        AppError::Internal(format!("write relocated v3 receipt: {error}"))
+    })?;
+
+    let bootstrap_path = bootstrap_binding_path(&canonical_data);
+    if let Some(mut bootstrap) = bootstrap_binding {
+            bootstrap.work_root = canonical_target.display().to_string();
+            let bytes = serde_json::to_vec_pretty(&bootstrap).map_err(|error| {
+                AppError::Internal(format!(
+                    "serialize relocated bootstrap binding: {error}"
+                ))
+            })?;
+            write_atomic(&bootstrap_path, &bytes).map_err(|error| {
+                AppError::Internal(format!(
+                    "write relocated bootstrap binding: {error}"
+                ))
+            })?;
+    }
+
+    if inspect_v3_dataset_receipt(&canonical_data, &canonical_target)?
+        != DatasetReceiptStatus::Current
+    {
+        return Err(AppError::Internal(
+            "relocated v3 receipt failed its post-write validation".into(),
+        ));
+    }
+    require_v3_work_root_owner(
+        &canonical_data,
+        &canonical_target,
+        generation,
+    )?;
+    Ok(())
+}
+
+/// Finish a work-root relocation after its new binding and persisted
+/// `dir-config.json` have both been verified. Removing the old owner marker is
+/// deliberately the final lifecycle mutation and is idempotent.
+pub fn finish_v3_dataset_work_root_relocation(
+    data_dir: &Path,
+    source_work_dir: &Path,
+    target_work_dir: &Path,
+    generation: &str,
+) -> Result<(), AppError> {
+    let canonical_data = canonical_data_dir(data_dir)?;
+    let canonical_source = canonical_existing_work_dir(source_work_dir)?;
+    let canonical_target = canonical_existing_work_dir(target_work_dir)?;
+    require_current_v3_dataset_for_work_dir(&canonical_data, &canonical_target)?;
+    require_v3_work_root_owner(&canonical_data, &canonical_target, generation)?;
+    if canonical_source == canonical_target {
+        return Ok(());
+    }
+    let source_owner_path = work_root_owner_path(&canonical_source);
+    match read_work_root_owner(&canonical_source)? {
+        Some(owner) if owner_matches(&owner, &canonical_data, generation) => {
+            fs::remove_file(&source_owner_path).map_err(|error| {
+                AppError::Internal(format!(
+                    "remove old work-root owner marker {}: {error}",
+                    source_owner_path.display()
+                ))
+            })?;
+            sync_parent(&source_owner_path).map_err(|error| {
+                AppError::Internal(format!(
+                    "sync old work-root owner removal: {error}"
+                ))
+            })?;
+        }
+        None => {}
+        Some(_) => {
+            return Err(AppError::Conflict(
+                "old work-root owner marker belongs to a different dataset"
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Prove that a root is either completely fresh or stopped during the
 /// first-bootstrap control-file sequence.
 ///
@@ -4611,12 +4804,26 @@ pub fn prepare_v3_dataset(
                     ));
                 }
             }
+            if request.origin == Some(DatasetResetRequestOrigin::WorkDirChange) {
+                // WorkDirChange requests were destructive in older releases.
+                // The application bootstrap converts them to a relocation
+                // plan before reaching this coordinator. If a caller reaches
+                // this compatibility branch directly, consume the request as
+                // cancelled rather than ever quarantining the active dataset.
+                archive_cancelled_work_dir_change_request(data_dir, &request)?;
+                tracing::warn!(
+                    target: "factory_reset",
+                    operation_id = %request.operation_id,
+                    "ignored a legacy destructive work-dir request without resetting the dataset"
+                );
+                return Ok(DatasetPreparation::Unchanged);
+            }
             let reason = match request.origin {
-                Some(DatasetResetRequestOrigin::WorkDirChange) => {
-                    DatasetResetReason::WorkDirChange
-                }
                 Some(DatasetResetRequestOrigin::UserExplicitFactoryReset) => {
                     DatasetResetReason::ExplicitFactoryReset
+                }
+                Some(DatasetResetRequestOrigin::WorkDirChange) => {
+                    unreachable!("legacy work-dir change was handled above")
                 }
                 None => {
                     return Err(AppError::Internal(
@@ -4624,17 +4831,6 @@ pub fn prepare_v3_dataset(
                     ));
                 }
             };
-            if reason == DatasetResetReason::WorkDirChange
-                && let Err(error) =
-                    require_safe_work_dir_change_target(data_dir, work_dir)
-            {
-                archive_cancelled_work_dir_change_request(
-                    data_dir, &request,
-                )?;
-                return Err(AppError::Internal(format!(
-                    "work-dir change request was cancelled without changing the active dataset: {error}"
-                )));
-            }
             let plan =
                 arm_v3_dataset_reset(data_dir, work_dir, reason)?;
             apply_pending_v3_dataset_reset(data_dir, work_dir)?;
@@ -4839,12 +5035,13 @@ pub fn request_v3_dataset_reset(
     )
 }
 
-/// Atomically request a reset that rebinds the fresh dataset to `work_dir`.
+/// Write the on-disk request shape emitted by pre-relocation releases.
 ///
-/// The target lives in the same durable request as the destructive intent so a
-/// crash can never persist only half of a work-root change. The boot resolver
-/// reads this target before the request is consumed.
-pub fn request_v3_dataset_reset_for_work_dir(
+/// This is test-only compatibility data: production callers must use
+/// `work_dir_relocation::request_work_dir_relocation`, and startup only reads
+/// this legacy shape to convert it before dataset preparation.
+#[cfg(test)]
+pub(crate) fn write_legacy_work_dir_change_request_for_test(
     data_dir: &Path,
     work_dir: &Path,
 ) -> Result<(), AppError> {
@@ -4939,6 +5136,68 @@ pub fn requested_v3_reset_work_dir(
         ));
     }
     Ok(Some(canonical))
+}
+
+/// Public, non-destructive view of the old work-directory reset request.
+///
+/// Older versions persisted a `WorkDirChange` reset request. Startup converts
+/// that request into a relocation plan before the reset coordinator is called;
+/// exposing only this narrow view keeps the old JSON parser private while
+/// preventing the destructive reset path from being used for migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingWorkDirChangeRequest {
+    pub operation_id: String,
+    pub requested_at: i64,
+    pub work_dir: PathBuf,
+}
+
+pub fn pending_work_dir_change_request(
+    data_dir: &Path,
+) -> Result<Option<PendingWorkDirChangeRequest>, AppError> {
+    let Some(request) = read_v3_dataset_reset_request(data_dir)? else {
+        return Ok(None);
+    };
+    if request.origin != Some(DatasetResetRequestOrigin::WorkDirChange)
+        || completed_reset_matches_request(data_dir, &request)?
+        || cancelled_reset_matches_request(data_dir, &request)?
+    {
+        return Ok(None);
+    }
+    let work_dir = request.work_dir.ok_or_else(|| {
+        AppError::Internal(
+            "work-dir change reset request is missing its target".into(),
+        )
+    })?;
+    let canonical = canonical_existing_work_dir(Path::new(&work_dir))?;
+    if !crate::paths::stored_path_matches(&work_dir, &canonical) {
+        return Err(AppError::Internal(
+            "work-dir change reset request target is not canonical".into(),
+        ));
+    }
+    Ok(Some(PendingWorkDirChangeRequest {
+        operation_id: request.operation_id,
+        requested_at: request.requested_at,
+        work_dir: canonical,
+    }))
+}
+
+pub fn consume_work_dir_change_request(
+    data_dir: &Path,
+    operation_id: &str,
+) -> Result<(), AppError> {
+    let request = read_v3_dataset_reset_request(data_dir)?.ok_or_else(|| {
+        AppError::Internal(
+            "work-dir change reset request disappeared during migration".into(),
+        )
+    })?;
+    if request.origin != Some(DatasetResetRequestOrigin::WorkDirChange)
+        || request.operation_id != operation_id
+    {
+        return Err(AppError::Conflict(
+            "work-dir change reset request changed during migration".into(),
+        ));
+    }
+    clear_v3_dataset_reset_request(data_dir)
 }
 
 fn read_v3_dataset_reset_request(
@@ -6630,158 +6889,6 @@ mod tests {
     }
 
     #[test]
-    fn work_dir_change_creates_one_fresh_generation_and_preserves_old_root() {
-        let data = tempfile::tempdir().unwrap();
-        let old_work = tempfile::tempdir().unwrap();
-        let new_work = tempfile::tempdir().unwrap();
-        let canonical_new_work =
-            crate::paths::canonicalize_simplified(new_work.path()).unwrap();
-        crate::dir_config::set_work_dir(data.path(), old_work.path()).unwrap();
-        touch(&data.path().join(DB_FILE));
-        let old_generation = Uuid::now_v7().to_string();
-        fs::write(
-            data.path().join(STORAGE_GENERATION_FILE),
-            &old_generation,
-        )
-        .unwrap();
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            old_work.path(),
-            &old_generation,
-        )
-        .unwrap();
-        fs::create_dir_all(old_work.path().join(MANAGED_WORKSPACES_DIR))
-            .unwrap();
-        touch(
-            &old_work
-                .path()
-                .join(MANAGED_WORKSPACES_DIR)
-                .join("old-root.txt"),
-        );
-        request_v3_dataset_reset_for_work_dir(data.path(), new_work.path())
-            .unwrap();
-        assert_eq!(
-            requested_v3_reset_work_dir(data.path())
-                .unwrap()
-                .as_deref(),
-            Some(canonical_new_work.as_path())
-        );
-        assert_eq!(
-            prepare_v3_dataset(data.path(), new_work.path()).unwrap(),
-            DatasetPreparation::ResetApplied
-        );
-        assert!(
-            old_work
-                .path()
-                .join(MANAGED_WORKSPACES_DIR)
-                .join("old-root.txt")
-                .is_file(),
-            "the detached historical work root is preserved, not migrated"
-        );
-        assert!(
-            !new_work.path().join(MANAGED_WORKSPACES_DIR).exists(),
-            "the target starts without a conversation tree"
-        );
-        assert_eq!(
-            crate::dir_config::persisted_work_dir(data.path()).as_deref(),
-            Some(canonical_new_work.as_path())
-        );
-        let plan = read_pending_v3_reset(data.path(), new_work.path())
-            .unwrap()
-            .unwrap();
-        touch(&data.path().join(DB_FILE));
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            new_work.path(),
-            &plan.generation,
-        )
-        .unwrap();
-        finalize_v3_dataset_reset(data.path(), new_work.path()).unwrap();
-        let retired_count =
-            fs::read_dir(data.path().join(RETIRED_DATASETS_DIR))
-                .unwrap()
-                .count();
-
-        assert_eq!(
-            prepare_v3_dataset(data.path(), new_work.path()).unwrap(),
-            DatasetPreparation::Unchanged
-        );
-        assert_eq!(
-            fs::read_dir(data.path().join(RETIRED_DATASETS_DIR))
-                .unwrap()
-                .count(),
-            retired_count
-        );
-    }
-
-    #[test]
-    fn work_dir_change_finalization_requires_matching_durable_config() {
-        let data = tempfile::tempdir().unwrap();
-        let old_work = tempfile::tempdir().unwrap();
-        let new_work = tempfile::tempdir().unwrap();
-        crate::dir_config::set_work_dir(data.path(), old_work.path()).unwrap();
-        touch(&data.path().join(DB_FILE));
-        let plan = arm_v3_dataset_reset(
-            data.path(),
-            new_work.path(),
-            DatasetResetReason::WorkDirChange,
-        )
-        .unwrap();
-        assert!(apply_pending_v3_dataset_reset(
-            data.path(),
-            new_work.path()
-        )
-        .unwrap());
-        touch(&data.path().join(DB_FILE));
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            new_work.path(),
-            &plan.generation,
-        )
-        .unwrap();
-
-        let error =
-            finalize_v3_dataset_reset(data.path(), new_work.path())
-                .unwrap_err();
-        assert!(error.to_string().contains("dir-config"));
-        assert!(reset_dir(data.path()).is_dir());
-
-        crate::dir_config::set_work_dir(
-            data.path(),
-            &fs::canonicalize(new_work.path()).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            finalize_v3_dataset_reset(data.path(), new_work.path()).unwrap()
-        );
-        assert!(!reset_dir(data.path()).exists());
-        assert!(
-            data.path()
-                .join(&plan.retired_dir)
-                .join(COMPLETED_RESET_CONTROL_DIR)
-                .join(V3_DATASET_RESET_PLAN_FILE)
-                .is_file()
-        );
-    }
-
-    #[test]
-    fn work_dir_change_never_moves_an_unowned_target_conversations_tree() {
-        let data = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let conversations = target.path().join(MANAGED_WORKSPACES_DIR);
-        fs::create_dir_all(&conversations).unwrap();
-        touch(&conversations.join("personal-file.txt"));
-
-        let error =
-            request_v3_dataset_reset_for_work_dir(data.path(), target.path())
-                .unwrap_err();
-        assert!(matches!(error, AppError::BadRequest(_)));
-        assert!(conversations.join("personal-file.txt").is_file());
-        assert!(!request_path(data.path()).exists());
-        assert!(!reset_dir(data.path()).exists());
-    }
-
-    #[test]
     fn historical_nested_work_root_is_reset_once_without_migrating_old_conversations() {
         let data = tempfile::tempdir().unwrap();
         let work = data.path().join("chosen-workspace");
@@ -6900,209 +7007,6 @@ mod tests {
         );
         assert!(request_path(data.path()).is_file());
         assert!(!reset_dir(data.path()).exists());
-    }
-
-    #[test]
-    fn work_dir_change_is_cancelled_if_target_changes_before_boot() {
-        let data = tempfile::tempdir().unwrap();
-        let old_work = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let old_generation = Uuid::now_v7().to_string();
-        touch(&data.path().join(DB_FILE));
-        fs::write(
-            data.path().join(STORAGE_GENERATION_FILE),
-            &old_generation,
-        )
-        .unwrap();
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            old_work.path(),
-            &old_generation,
-        )
-        .unwrap();
-        crate::dir_config::set_work_dir(data.path(), old_work.path()).unwrap();
-        request_v3_dataset_reset_for_work_dir(data.path(), target.path())
-            .unwrap();
-        fs::create_dir_all(target.path().join(MANAGED_WORKSPACES_DIR))
-            .unwrap();
-        touch(
-            &target
-                .path()
-                .join(MANAGED_WORKSPACES_DIR)
-                .join("appeared-later.txt"),
-        );
-
-        let error =
-            prepare_v3_dataset(data.path(), target.path()).unwrap_err();
-        assert!(error.to_string().contains("was cancelled"));
-        assert!(data.path().join(DB_FILE).is_file());
-        assert!(
-            target
-                .path()
-                .join(MANAGED_WORKSPACES_DIR)
-                .join("appeared-later.txt")
-                .is_file()
-        );
-        let persisted_work =
-            crate::dir_config::checked_persisted_work_dir(data.path())
-                .unwrap()
-                .expect("cancelled change must keep old dir-config");
-        assert_eq!(
-            fs::canonicalize(persisted_work).unwrap(),
-            fs::canonicalize(old_work.path()).unwrap()
-        );
-        assert!(!request_path(data.path()).exists());
-        assert!(!reset_dir(data.path()).exists());
-    }
-
-    #[test]
-    fn cancelled_work_dir_request_replay_never_resets_current_v3() {
-        let data = tempfile::tempdir().unwrap();
-        let current_work = tempfile::tempdir().unwrap();
-        let cancelled_target = tempfile::tempdir().unwrap();
-        let generation = Uuid::now_v7().to_string();
-        touch(&data.path().join(DB_FILE));
-        fs::write(
-            data.path().join(STORAGE_GENERATION_FILE),
-            &generation,
-        )
-        .unwrap();
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            current_work.path(),
-            &generation,
-        )
-        .unwrap();
-        crate::dir_config::set_work_dir(
-            data.path(),
-            current_work.path(),
-        )
-        .unwrap();
-        request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            cancelled_target.path(),
-        )
-        .unwrap();
-        let replay = fs::read(request_path(data.path())).unwrap();
-        fs::create_dir_all(
-            cancelled_target.path().join(MANAGED_WORKSPACES_DIR),
-        )
-        .unwrap();
-        touch(
-            &cancelled_target
-                .path()
-                .join(MANAGED_WORKSPACES_DIR)
-                .join("foreign-data"),
-        );
-        assert!(
-            prepare_v3_dataset(
-                data.path(),
-                cancelled_target.path(),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("was cancelled")
-        );
-        fs::remove_dir_all(
-            cancelled_target.path().join(MANAGED_WORKSPACES_DIR),
-        )
-        .unwrap();
-        fs::write(request_path(data.path()), &replay).unwrap();
-
-        assert!(
-            requested_v3_reset_work_dir(data.path())
-                .unwrap()
-                .is_none(),
-            "a cancelled operation must not redirect a later boot"
-        );
-        assert_eq!(
-            prepare_v3_dataset(data.path(), current_work.path()).unwrap(),
-            DatasetPreparation::Unchanged
-        );
-        assert!(data.path().join(DB_FILE).is_file());
-        assert_eq!(
-            fs::read_to_string(
-                data.path().join(STORAGE_GENERATION_FILE)
-            )
-            .unwrap(),
-            generation
-        );
-        assert_eq!(
-            inspect_v3_dataset_receipt(
-                data.path(),
-                current_work.path(),
-            )
-            .unwrap(),
-            DatasetReceiptStatus::Current
-        );
-    }
-
-    #[test]
-    fn cancelled_request_replay_does_not_block_a_new_pending_plan() {
-        let data = tempfile::tempdir().unwrap();
-        let current_work = tempfile::tempdir().unwrap();
-        let cancelled_target = tempfile::tempdir().unwrap();
-        let new_target = tempfile::tempdir().unwrap();
-        let generation = Uuid::now_v7().to_string();
-        touch(&data.path().join(DB_FILE));
-        fs::write(
-            data.path().join(STORAGE_GENERATION_FILE),
-            &generation,
-        )
-        .unwrap();
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            current_work.path(),
-            &generation,
-        )
-        .unwrap();
-        request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            cancelled_target.path(),
-        )
-        .unwrap();
-        let cancelled_replay =
-            fs::read(request_path(data.path())).unwrap();
-        fs::create_dir_all(
-            cancelled_target.path().join(MANAGED_WORKSPACES_DIR),
-        )
-        .unwrap();
-        assert!(
-            prepare_v3_dataset(
-                data.path(),
-                cancelled_target.path(),
-            )
-            .is_err()
-        );
-        fs::remove_dir_all(
-            cancelled_target.path().join(MANAGED_WORKSPACES_DIR),
-        )
-        .unwrap();
-
-        request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            new_target.path(),
-        )
-        .unwrap();
-        let new_plan = arm_v3_dataset_reset(
-            data.path(),
-            new_target.path(),
-            DatasetResetReason::WorkDirChange,
-        )
-        .unwrap();
-        fs::write(request_path(data.path()), cancelled_replay).unwrap();
-
-        assert_eq!(
-            prepare_v3_dataset(data.path(), new_target.path()).unwrap(),
-            DatasetPreparation::ResetApplied
-        );
-        let resumed =
-            read_pending_v3_reset(data.path(), new_target.path())
-                .unwrap()
-                .unwrap();
-        assert_eq!(resumed.operation_id, new_plan.operation_id);
-        assert_eq!(resumed.generation, new_plan.generation);
-        assert!(!data.path().join(DB_FILE).exists());
     }
 
     #[test]
@@ -7319,7 +7223,7 @@ mod tests {
         let target_data = data_path.clone();
         let targeted = std::thread::spawn(move || {
             target_barrier.wait();
-            request_v3_dataset_reset_for_work_dir(
+            write_legacy_work_dir_change_request_for_test(
                 &target_data,
                 &target_path,
             )
@@ -8131,15 +8035,6 @@ mod tests {
             &first_generation,
         )
         .unwrap();
-
-        let request_error = request_v3_dataset_reset_for_work_dir(
-            second_data.path(),
-            work.path(),
-        )
-        .unwrap_err();
-        assert!(matches!(request_error, AppError::Conflict(_)));
-        assert!(!request_path(second_data.path()).exists());
-        assert!(!reset_dir(second_data.path()).exists());
     }
 
     #[test]
@@ -8173,76 +8068,6 @@ mod tests {
         assert!(matches!(error, AppError::Conflict(_)));
         assert!(sentinel.is_file());
         assert!(!reset_dir(second_data.path()).exists());
-    }
-
-    #[test]
-    fn work_dir_change_target_cannot_be_another_data_root() {
-        let data = tempfile::tempdir().unwrap();
-        let target_data_root = tempfile::tempdir().unwrap();
-        touch(&target_data_root.path().join("server.lock"));
-
-        let error = request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            target_data_root.path(),
-        )
-        .unwrap_err();
-
-        assert!(matches!(error, AppError::Conflict(_)));
-        assert!(!request_path(data.path()).exists());
-        assert!(!reset_dir(data.path()).exists());
-    }
-
-    #[test]
-    fn owned_work_dir_change_target_can_resume_after_generation_install() {
-        let data = tempfile::tempdir().unwrap();
-        let old_work = tempfile::tempdir().unwrap();
-        let new_work = tempfile::tempdir().unwrap();
-        let old_generation = Uuid::now_v7().to_string();
-        touch(&data.path().join(DB_FILE));
-        fs::write(
-            data.path().join(STORAGE_GENERATION_FILE),
-            old_generation.as_bytes(),
-        )
-        .unwrap();
-        write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            old_work.path(),
-            &old_generation,
-        )
-        .unwrap();
-        let plan = arm_v3_dataset_reset(
-            data.path(),
-            new_work.path(),
-            DatasetResetReason::WorkDirChange,
-        )
-        .unwrap();
-
-        assert!(
-            apply_pending_v3_dataset_reset(
-                data.path(),
-                new_work.path()
-            )
-            .unwrap()
-        );
-        let conversations = new_work.path().join(MANAGED_WORKSPACES_DIR);
-        fs::create_dir_all(&conversations).unwrap();
-        touch(&conversations.join("new-generation.txt"));
-
-        assert!(
-            apply_pending_v3_dataset_reset(
-                data.path(),
-                new_work.path()
-            )
-            .unwrap(),
-            "a matching persistent owner makes the post-install retry unambiguous"
-        );
-        assert!(conversations.join("new-generation.txt").is_file());
-        require_v3_work_root_owner(
-            data.path(),
-            new_work.path(),
-            &plan.generation,
-        )
-        .unwrap();
     }
 
     #[test]

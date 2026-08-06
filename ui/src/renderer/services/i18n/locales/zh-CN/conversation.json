@@ -427,6 +427,7 @@
   },
   "chat": {
     "noModelSelected": "当前会话未选择模型，无法发送消息",
+    "defaultModelUnavailable": "原默认模型不可用，请重新选择模型",
     "modelHealedToDefault": "已回退到默认模型 {{model}}",
     "visionModelHint": "当前模型 {{model}} 可能不支持图片输入，图片附件可能被忽略或导致报错。",
     "sendMessageTo": "发送消息到 {{model}}",

@@ -49,6 +49,7 @@ const SystemModalContent: React.FC = () => {
   const [autoPreviewOfficeFiles, setAutoPreviewOfficeFiles] = useState(true);
   const [sendKey, setSendKey] = useState<'enter' | 'mod-enter'>('enter');
   const [factoryResetVisible, setFactoryResetVisible] = useState(false);
+  const [isRelocating, setIsRelocating] = useState(false);
 
   useEffect(() => {
     // Start-on-boot is only meaningful in the Tauri desktop shell (backed by
@@ -216,6 +217,7 @@ const SystemModalContent: React.FC = () => {
   const saveDirConfigValidate = (_values: { workDir: string }): Promise<unknown> => {
     return new Promise((resolve, reject) => {
       modal.confirm({
+        className: 'work-dir-relocation-confirm',
         title: t('settings.workDirChangeConfirmTitle'),
         content: t('settings.workDirChangeConfirmContent'),
         onOk: resolve,
@@ -236,15 +238,21 @@ const SystemModalContent: React.FC = () => {
       savingRef.current = true;
       setError(null);
       try {
-        // Confirm, then persist. A failure (or cancel) here means nothing was
-        // written, so reverting the field to the current value is correct.
+        // Confirmation is the last interactive step. Once it succeeds, put
+        // the settings surface behind the migration veil immediately so the
+        // old WebView cannot start another route transition or lazy import
+        // while the backend is publishing the relocation plan.
         try {
           await saveDirConfigValidate({ workDir });
+          setIsRelocating(true);
           // Pass systemInfo.cacheDir as-is: cacheDir is no longer user-editable
           // (removed from UI), but the backend IPC interface still expects it.
           // Passing the current value ensures existing custom paths are preserved.
           await ipcBridge.application.updateSystemInfo.invoke({ cacheDir: systemInfo.cacheDir, workDir });
         } catch (persistError: unknown) {
+          setIsRelocating(false);
+          // A failure (or cancel) here means nothing was written, so reverting
+          // the field to the current value is correct.
           form.setFieldValue('workDir', systemInfo.workDir);
           if (persistError) {
             setError(persistError instanceof Error ? persistError.message : String(persistError));
@@ -259,6 +267,7 @@ const SystemModalContent: React.FC = () => {
         try {
           await ipcBridge.application.restart.invoke();
         } catch (restartError: unknown) {
+          setIsRelocating(false);
           if (restartError) {
             setError(restartError instanceof Error ? restartError.message : String(restartError));
           }
@@ -273,6 +282,14 @@ const SystemModalContent: React.FC = () => {
   return (
     <div className='flex flex-col h-full w-full'>
       {modalContextHolder}
+      {isRelocating && (
+        <div className='fixed inset-0 z-[10000] flex items-center justify-center bg-black/45 backdrop-blur-2px'>
+          <div className='min-w-280px max-w-[calc(100vw-48px)] rounded-12px bg-2 px-24px py-20px shadow-xl text-center'>
+            <div className='text-16px font-600 text-t-primary'>{t('settings.workDirRelocating')}</div>
+            <div className='mt-8px text-13px text-t-secondary'>{t('settings.workDirRelocatingDesc')}</div>
+          </div>
+        </div>
+      )}
 
       <NomiScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow>
         <div className='space-y-16px'>
@@ -325,6 +342,21 @@ const SystemModalContent: React.FC = () => {
             </Collapse>
             <Form form={form} layout='vertical' className='!mt-32px space-y-16px' onValuesChange={handleValuesChange}>
               <DirInputItem label={t('settings.workDir')} field='workDir' />
+              {systemInfo?.workDirChange?.state === 'failed' && (
+                <Alert
+                  type='error'
+                  content={
+                    <div className='space-y-4px'>
+                      <div>{systemInfo.workDirChange.error || t('settings.workDirRelocationFailed')}</div>
+                      {systemInfo.workDirChange.rollbackCopy && (
+                        <div className='break-all text-12px'>
+                          {t('settings.workDirRelocationBackup')}: {systemInfo.workDirChange.rollbackCopy}
+                        </div>
+                      )}
+                    </div>
+                  }
+                />
+              )}
               {/* Log directory (read-only, click to open in file manager) */}
               <div>
                 <Form.Item label={t('settings.logDir')}>

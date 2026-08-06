@@ -18,8 +18,9 @@ export type HealModelResult = {
 
 /**
  * Resolve a conversation model when none is bound or the binding is no longer
- * available. Preference order: saved default → first available catalog model.
- * Returns null when no heal/default is needed or nothing is available.
+ * available. A conversation can be healed only to the persisted default; a
+ * missing or stale default is a deliberate user-selection boundary. Returns
+ * null when no heal/default is needed or the saved default is unavailable.
  */
 export function resolveHealModel(
   bound: TProviderWithModel | undefined,
@@ -42,8 +43,5 @@ export function resolveHealModel(
       return { provider: dp, use_model: savedDefault.model, reason };
     }
   }
-  const first = providers[0];
-  const firstModel = getAvailableModels(first)[0];
-  if (!firstModel) return null;
-  return { provider: first, use_model: firstModel, reason };
+  return null;
 }
