@@ -600,7 +600,14 @@ const BasicRuntimeSendBox: React.FC<{
     const processedKey = sessionStorageKey(config.initialMessageProcessedFeature, target);
 
     const processInitialMessage = async () => {
-      if (!sessionStorage.getItem(storageKey) || !claimInitialMessageDelivery(storageKey)) return;
+      if (!sessionStorage.getItem(storageKey)) {
+        // No guid handoff pending (AutoWork entry / plain mount): the mounted
+        // page IS the steady state — reveal the pending overlay if one is up.
+        // No-op when no transition is in flight (direct-link navigation).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
+        return;
+      }
+      if (!claimInitialMessageDelivery(storageKey)) return;
 
       let attemptedIdempotencyKey: string | null = null;
       try {
@@ -613,6 +620,7 @@ const BasicRuntimeSendBox: React.FC<{
           conversation_id
         );
         if (!initialMessage) {
+          emitter.emit('conversation.transition.reveal', { conversation_id });
           releaseInitialMessageDelivery(storageKey);
           return;
         }
@@ -661,6 +669,10 @@ const BasicRuntimeSendBox: React.FC<{
         }
 
         emitter.emit('chat.history.refresh');
+        // The first-turn bubble was committed above (fresh branch) or the
+        // transcript already holds it (replay) — the pending overlay's fake
+        // content is now backed by the real page. Reveal (transition handshake).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
       } catch (error) {
         handleInitialMessageDeliveryFailure(
           sessionStorage,
@@ -672,6 +684,9 @@ const BasicRuntimeSendBox: React.FC<{
         cancelLocalTurn();
         setAiProcessing(false);
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        // Reveal even on failure: the error toast lives on the destination
+        // page; the overlay must not hide it behind the timeout.
+        emitter.emit('conversation.transition.reveal', { conversation_id });
       }
     };
 

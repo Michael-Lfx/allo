@@ -27,7 +27,7 @@ import styles from './PendingConversationOverlay.module.css';
  * `relative` Outlet container), never the session sidebar.
  */
 const PendingConversationOverlay: React.FC = () => {
-  const { pending } = usePendingConversation();
+  const { pending, phase } = usePendingConversation();
   const { t } = useTranslation();
 
   if (!pending) return null;
@@ -53,7 +53,12 @@ const PendingConversationOverlay: React.FC = () => {
 
   return (
     <div
-      className={classNames('absolute inset-0 z-20 flex flex-col bg-1', styles.pendingOverlayEnter)}
+      className={classNames(
+        'absolute inset-0 z-20 flex flex-col bg-1',
+        // Fading out: let clicks reach the revealed conversation immediately.
+        phase === 'exiting' && 'pointer-events-none',
+        phase === 'exiting' ? styles.pendingOverlayExit : styles.pendingOverlayEnter
+      )}
       data-testid='pending-conversation-overlay'
       aria-busy='true'
     >

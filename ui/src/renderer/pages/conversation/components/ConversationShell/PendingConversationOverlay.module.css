@@ -2,6 +2,10 @@
   animation: pending-overlay-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, ease-out) both;
 }
 
+.pendingOverlayExit {
+  animation: pending-overlay-exit var(--flowy-motion-fast, 140ms) var(--flowy-ease-move, ease-in) both;
+}
+
 .pendingUserBubbleEnter {
   animation: pending-user-enter var(--flowy-motion-base, 180ms) var(--flowy-ease-enter, cubic-bezier(0.22, 1, 0.36, 1)) both;
 }
@@ -43,6 +47,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .pendingOverlayEnter,
+  .pendingOverlayExit,
   .pendingUserBubbleEnter,
   .pendingAssistEnter {
     animation: none;
@@ -59,6 +64,15 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes pending-overlay-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 

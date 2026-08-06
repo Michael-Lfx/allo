@@ -502,7 +502,14 @@ const NomiSendBox: React.FC<{
     const processedKey = sessionStorageKey('initial-message-processed-nomi', target);
 
     const processInitialMessage = async () => {
-      if (!sessionStorage.getItem(storageKey) || !claimInitialMessageDelivery(storageKey)) return;
+      if (!sessionStorage.getItem(storageKey)) {
+        // No guid handoff pending (AutoWork entry / plain mount): the mounted
+        // page IS the steady state — reveal the pending overlay if one is up.
+        // No-op when no transition is in flight (direct-link navigation).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
+        return;
+      }
+      if (!claimInitialMessageDelivery(storageKey)) return;
 
       let attemptedIdempotencyKey: string | null = null;
       try {
@@ -513,6 +520,7 @@ const NomiSendBox: React.FC<{
           conversation_id
         );
         if (!initialMessage) {
+          emitter.emit('conversation.transition.reveal', { conversation_id });
           releaseInitialMessageDelivery(storageKey);
           return;
         }
@@ -523,8 +531,15 @@ const NomiSendBox: React.FC<{
           undefined,
           true
         );
+        // executeCommand commits the deferred first-turn bubble before it
+        // resolves, so the destination now renders the same user message the
+        // pending overlay faked — safe to reveal (the transition handshake).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
         completeInitialMessageDelivery(sessionStorage, storageKey, idempotency_key);
       } catch (error) {
+        // Reveal even on failure: the error toast is on the destination page,
+        // the overlay must not hide it behind the timeout.
+        emitter.emit('conversation.transition.reveal', { conversation_id });
         handleInitialMessageDeliveryFailure(
           sessionStorage,
           storageKey,

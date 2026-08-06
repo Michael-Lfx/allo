@@ -53,7 +53,14 @@ export const useAcpInitialMessage = ({
     if (!enabled) return;
 
     const storageKey = sessionStorageKey('initial-message-acp', conversationTarget(conversation_id));
-    if (!sessionStorage.getItem(storageKey) || !claimInitialMessageDelivery(storageKey)) return;
+    if (!sessionStorage.getItem(storageKey)) {
+      // No guid handoff pending (AutoWork entry / plain mount): the mounted
+      // page IS the steady state — reveal the pending overlay if one is up.
+      // No-op when no transition is in flight (direct-link navigation).
+      emitter.emit('conversation.transition.reveal', { conversation_id });
+      return;
+    }
+    if (!claimInitialMessageDelivery(storageKey)) return;
 
     const sendInitialMessage = async () => {
       let attemptedIdempotencyKey: string | null = null;
@@ -64,6 +71,7 @@ export const useAcpInitialMessage = ({
           conversation_id
         );
         if (!initialMessage) {
+          emitter.emit('conversation.transition.reveal', { conversation_id });
           releaseInitialMessageDelivery(storageKey);
           return;
         }
@@ -117,6 +125,10 @@ export const useAcpInitialMessage = ({
 
         // Initial message sent successfully
         emitter.emit('chat.history.refresh');
+        // The first-turn bubble was committed above (fresh branch) or the
+        // transcript already holds it (replay) — the pending overlay's fake
+        // content is now backed by the real page. Reveal (transition handshake).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
       } catch (error) {
         handleInitialMessageDeliveryFailure(
           sessionStorage,
@@ -139,6 +151,9 @@ export const useAcpInitialMessage = ({
         // reconciliation could later duplicate or move into another turn.
         Message.error({ content: errorMessageText, duration: 6000 });
         setAiProcessing(false); // Stop loading state on error
+        // Reveal even on failure: the error toast lives on the destination
+        // page; the overlay must not hide it behind the timeout.
+        emitter.emit('conversation.transition.reveal', { conversation_id });
       }
     };
 

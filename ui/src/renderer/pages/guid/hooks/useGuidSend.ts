@@ -134,12 +134,21 @@ export type GuidSendDeps = {
   beginPending?: (payload: PendingConversation) => void;
   /** Reflect a real create/configure/navigation milestone in the overlay. */
   advancePending?: (stage: PendingConversationStage) => void;
-  /** Tear the loading overlay down (on success after navigate, or on failure). */
+  /** Success path: arm the reveal handshake once navigate has been dispatched.
+   * The overlay then waits for the destination's first-bubble reveal signal. */
   endPending?: () => void;
+  /** Failure path: drop the overlay instantly (no handshake, no fade) so the
+   * user lands back on the still-mounted Guid composer and can retry. */
+  abortPending?: () => void;
+  /** Attach the minted conversation id to the pending transition so the
+   * destination's reveal signal can be id-matched. */
+  attachPending?: (conversationId: ConversationId) => void;
 };
 
 export type GuidSendResult = {
-  handleSend: () => Promise<void>;
+  /** Resolves true only when navigation to the new conversation was dispatched;
+   * every early return (preflight refusal, create failure) resolves false. */
+  handleSend: () => Promise<boolean>;
   sendMessageHandler: () => void;
   isButtonDisabled: boolean;
 };
@@ -192,6 +201,8 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     beginPending,
     advancePending,
     endPending,
+    abortPending,
+    attachPending,
   } = deps;
   const sendingRef = useRef(false);
 
@@ -207,7 +218,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
     const preset_id = presetIdFromSelectionKey(selectedAgentKey);
     if (is_presetAgentPending && !selectedAgentInfo && !findAgentByKey(selectedAgentKey)) {
-      return;
+      return false;
     }
     const agentInfo = selectedAgentInfo ?? findAgentByKey(selectedAgentKey);
     const is_preset = is_presetAgent || is_presetAgentPending || preset_id !== undefined;
@@ -269,9 +280,10 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
         if (!conversation || !conversation.id) {
           Message.error(t('conversation.createFailed'));
-          return;
+          return false;
         }
         assertCreatedConversationPreset(conversation, preset_id);
+        attachPending?.(conversation.id);
 
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
@@ -298,11 +310,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        return true;
       } catch (error: unknown) {
         console.error('Failed to create OpenClaw conversation:', error);
         throw error;
       }
-      return;
     }
 
     // Nanobot path
@@ -328,9 +340,10 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
         if (!conversation || !conversation.id) {
           Message.error(t('conversation.createFailed'));
-          return;
+          return false;
         }
         assertCreatedConversationPreset(conversation, preset_id);
+        attachPending?.(conversation.id);
 
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
@@ -357,11 +370,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        return true;
       } catch (error: unknown) {
         console.error('Failed to create Nanobot conversation:', error);
         throw error;
       }
-      return;
     }
 
     // Nomi path (direct selection or preset preset with nomi as main agent)
@@ -369,7 +382,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       if (!current_model) {
         Message.warning(t('conversation.noModelConfigured'));
         onNeedModel?.();
-        return;
+        return false;
       }
 
       try {
@@ -401,9 +414,10 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
         if (!conversation || !conversation.id) {
           Message.error(t('conversation.createFailed'));
-          return;
+          return false;
         }
         assertCreatedConversationPreset(conversation, preset_id);
+        attachPending?.(conversation.id);
 
         // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
         // the new conversation before navigating, so they are live when the
@@ -447,11 +461,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        return true;
       } catch (error: unknown) {
         console.error('Failed to create Nomi conversation:', error);
         throw error;
       }
-      return;
     }
 
     // Remaining agent path (ACP/remote/custom, including preset fallbacks)
@@ -514,9 +528,10 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         const conversation = await ipcBridge.conversation.create.invoke(agentConversationParams);
         if (!conversation || !conversation.id) {
           console.error('Failed to create ACP conversation - conversation object is null or missing id');
-          return;
+          return false;
         }
         assertCreatedConversationPreset(conversation, preset_id);
+        attachPending?.(conversation.id);
 
         advancePending?.('configuring');
         await applyAdvancedConfig?.(conversation.id);
@@ -539,6 +554,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        return true;
       } catch (error: unknown) {
         console.error('Failed to create ACP conversation:', error);
         throw error;
@@ -572,6 +588,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     t,
     onNeedModel,
     advancePending,
+    attachPending,
   ]);
 
   const needsModelBeforeSend = useMemo(() => {
@@ -617,7 +634,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       sendsInitialMessage: !isAutoWorkEntry(autoWork),
     });
     handleSend()
-      .then(() => {
+      .then((navigated) => {
         trackFunnelEvent('task_accepted', { source: 'guid' });
         trackFunnelEvent('first_task_started', { source: 'guid' });
         setInput('');
@@ -628,15 +645,24 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         setFiles([]);
         setDir('');
         if (initialSkillIds.length > 0) onInitialSkillsSent?.();
+        if (navigated) {
+          // Navigation dispatched: arm the reveal handshake — the overlay stays
+          // up until the destination commits the first bubble (or the timeout).
+          endPending?.();
+        } else {
+          // Early-return path (preflight refusal / create failure): no
+          // destination will mount, so drop the overlay immediately.
+          abortPending?.();
+        }
       })
       .catch((error) => {
         console.error('Failed to send message:', error);
         Message.error(getConversationCreateErrorMessage(error, t));
+        abortPending?.();
       })
       .finally(() => {
         sendingRef.current = false;
         setLoading(false);
-        endPending?.();
       });
   }, [
     loading,
@@ -657,6 +683,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     autoWork,
     beginPending,
     endPending,
+    abortPending,
     needsModelBeforeSend,
     onNeedModel,
     onNeedWorkspace,
