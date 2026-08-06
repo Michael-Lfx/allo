@@ -857,10 +857,12 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 progress,
                 "video_duration",
                 &format!(
-                    "Shot {}: render {}s (need≈{}s from audio/motion)",
+                    "Shot {}: render {}s (need≈{}s from audio/motion, +{}s splice tail ≤{}s)",
                     shot.idx,
                     duration_secs,
-                    needs.get(i).copied().unwrap_or(duration_secs)
+                    needs.get(i).copied().unwrap_or(duration_secs),
+                    crate::planning::SHOT_SPLICE_TAIL_PADDING_SECS,
+                    crate::planning::MAX_CLIP_DURATION_SECS,
                 ),
             );
 

@@ -3,7 +3,8 @@ import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select } from '@arco-design/web-react';
 import {
-  VISUAL_STYLE_PRESETS,
+  VISUAL_STYLE_CATEGORIES,
+  presetsInCategory,
   promptForVisualStyleKey,
   visualStyleSelectValue,
 } from '../visualStylePresets';
@@ -14,39 +15,35 @@ interface VisualStyleSelectProps {
   disabled?: boolean;
 }
 
+const OptGroup = Select.OptGroup;
+const Option = Select.Option;
+
 const VisualStyleSelect: React.FC<VisualStyleSelectProps> = ({ value, onChange, disabled }) => {
   const { t } = useTranslation();
   const selectValue = visualStyleSelectValue(value);
   const trimmed = value.trim();
 
-  const options = useMemo(() => {
-    const presetOptions = VISUAL_STYLE_PRESETS.map((preset) => ({
-      value: preset.key,
-      label: t(preset.labelKey, { defaultValue: preset.defaultLabel }),
-    }));
-    if (selectValue === '__custom__' && trimmed) {
-      return [
-        ...presetOptions,
-        {
-          value: '__custom__',
-          label: t('videoGeneration.workspace.source.stylePresets.custom', {
-            defaultValue: '自定义风格',
-          }),
-        },
-      ];
-    }
-    return presetOptions;
-  }, [selectValue, t, trimmed]);
+  const customLabel = useMemo(
+    () =>
+      t('videoGeneration.workspace.source.stylePresets.custom', {
+        defaultValue: '自定义风格',
+      }),
+    [t]
+  );
 
   return (
     <Select
       value={selectValue}
       disabled={disabled}
-      options={options}
       placeholder={t('videoGeneration.workspace.source.stylePlaceholder', {
         defaultValue: '选择视觉风格',
       })}
       getPopupContainer={() => document.body}
+      showSearch
+      filterOption={(inputValue, option) => {
+        const label = String(option?.props?.children ?? '').toLowerCase();
+        return label.includes(String(inputValue).toLowerCase());
+      }}
       triggerProps={{
         autoAlignPopupWidth: true,
       }}
@@ -54,7 +51,34 @@ const VisualStyleSelect: React.FC<VisualStyleSelectProps> = ({ value, onChange, 
         if (typeof key !== 'string' || key === '__custom__') return;
         onChange(promptForVisualStyleKey(key));
       }}
-    />
+    >
+      {VISUAL_STYLE_CATEGORIES.map((category) => {
+        const presets = presetsInCategory(category.id);
+        if (presets.length === 0) return null;
+        return (
+          <OptGroup
+            key={category.id}
+            label={t(category.labelKey, { defaultValue: category.defaultLabel })}
+          >
+            {presets.map((preset) => (
+              <Option key={preset.key} value={preset.key}>
+                {t(preset.labelKey, { defaultValue: preset.defaultLabel })}
+              </Option>
+            ))}
+          </OptGroup>
+        );
+      })}
+      {selectValue === '__custom__' && trimmed ? (
+        <OptGroup
+          key='custom'
+          label={t('videoGeneration.workspace.source.styleCategories.custom', {
+            defaultValue: '自定义',
+          })}
+        >
+          <Option value='__custom__'>{customLabel}</Option>
+        </OptGroup>
+      ) : null}
+    </Select>
   );
 };
 
