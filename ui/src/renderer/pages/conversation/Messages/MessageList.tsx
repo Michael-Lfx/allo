@@ -1610,7 +1610,7 @@ const MessageList: React.FC<{
           className='min-w-0 message-item px-8px max-w-full md:max-w-780px mx-auto turn_actions'
           style={highlighted ? highlightStyle : undefined}
         >
-          <MessageText message={item.message} actionsOnly />
+          <MessageText message={item.message} actionsOnly creditTurnId={item.turn_id} />
         </div>
       );
     }
