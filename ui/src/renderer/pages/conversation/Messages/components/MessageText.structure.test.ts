@@ -21,7 +21,18 @@ describe('MessageText process action chrome', () => {
     expect(copyButtonSource.includes('opacity-0')).toBe(false);
     expect(copyButtonSource.includes('pointer-events-none')).toBe(false);
     expect(source.includes('text-t-secondary opacity-0 group-hover:opacity-100')).toBe(false);
-    expect(source.includes("className='text-12px leading-20px text-inherit select-none'")).toBe(true);
+    expect(
+      source.includes("className='message-text-actions__time text-12px leading-20px text-inherit select-none'")
+    ).toBe(true);
+  });
+
+  test('coalesces repeated model charges in the turn-credit tooltip', () => {
+    expect(source.includes('const formatTurnCreditDetails =')).toBe(true);
+    expect(source.includes('const creditsByModel = new Map<string, number>();')).toBe(true);
+    expect(source.includes('creditsByModel.set(modelName, (creditsByModel.get(modelName) ?? 0) + call.creditConsumed);')).toBe(
+      true
+    );
+    expect(source.includes('content={turnCreditDetails}')).toBe(true);
   });
 
   test('can render the unchanged message actions at the visual end of a turn', () => {

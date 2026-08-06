@@ -109,7 +109,7 @@
   "copySuccess": "复制成功",
   "copyFailed": "复制失败",
   "turnCredits": {
-    "consumed": "本轮消耗 {{credits}} 积分"
+    "consumed": "消耗"
   },
   "copyLastOutput.empty": "暂无可复制的回复",
   "copiedToClipboard": "已复制到剪贴板",

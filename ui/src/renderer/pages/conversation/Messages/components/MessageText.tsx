@@ -9,7 +9,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Message, Tooltip } from '@arco-design/web-react';
-import { CheckOne, CloseOne, Copy, Edit, Info, Loading } from '@icon-park/react';
+import { CheckOne, CloseOne, Copy, Edit, Info, Loading, Star } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -53,6 +53,18 @@ export const formatMessageTime = (timestamp: number): string => {
     return `${month}-${day} ${time}`;
   }
   return time;
+};
+
+const formatTurnCreditDetails = (calls: TurnCreditUsageData['calls']): string | undefined => {
+  if (!calls?.length) return undefined;
+
+  const creditsByModel = new Map<string, number>();
+  for (const call of calls) {
+    const modelName = call.modelName.trim() || 'model';
+    creditsByModel.set(modelName, (creditsByModel.get(modelName) ?? 0) + call.creditConsumed);
+  }
+
+  return [...creditsByModel].map(([modelName, credits]) => `${modelName}: ${credits}`).join('\n');
 };
 import MessageCronBadge from './MessageCronBadge';
 import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
@@ -385,6 +397,10 @@ const MessageText: React.FC<{
     };
   }, [conversationId, turnCreditKey]);
   const turnCredits = liveTurnCredits ?? persistedTurnCredits;
+  const turnCreditDetails = useMemo(
+    () => formatTurnCreditDetails(turnCredits?.calls),
+    [turnCredits?.calls]
+  );
   // Show whenever the server recorded at least one billed call, or a positive
   // aggregate (covers laggy callCount while creditsConsumed already landed).
   const showTurnCredits =
@@ -506,36 +522,31 @@ const MessageText: React.FC<{
     >
       {copyButton}
       {editButton}
-      {showTurnCredits && turnCredits ? (
-        <Tooltip
-          content={
-            turnCredits.calls && turnCredits.calls.length > 0
-              ? turnCredits.calls
-                  .map(
-                    (call) =>
-                      `${call.modelName || 'model'}: ${call.creditConsumed}`
-                  )
-                  .join('\n')
-              : undefined
-          }
-          disabled={!turnCredits.calls?.length}
-        >
-          <span
-            data-testid='turn-credits'
-            className='message-text-actions__credits text-12px leading-20px text-inherit select-none tabular-nums'
-          >
-            {t('messages.turnCredits.consumed', {
-              credits: turnCredits.creditsConsumed,
-              defaultValue: '本轮消耗 {{credits}} 积分',
-            })}
-          </span>
-        </Tooltip>
-      ) : null}
       {message.created_at && (
         <span className='message-text-actions__time text-12px leading-20px text-inherit select-none'>
           {formatMessageTime(message.created_at)}
         </span>
       )}
+      {showTurnCredits && turnCredits ? (
+        <Tooltip
+          content={turnCreditDetails}
+          disabled={!turnCreditDetails}
+        >
+          <span
+            data-testid='turn-credits'
+            className='message-text-actions__credits inline-flex items-center gap-3px text-12px leading-20px text-inherit select-none tabular-nums'
+          >
+            {t('messages.turnCredits.consumed', { defaultValue: '消耗' })}
+            <Star
+              theme='outline'
+              size='12'
+              strokeWidth={4}
+              aria-hidden='true'
+            />
+            <span>{turnCredits.creditsConsumed}</span>
+          </span>
+        </Tooltip>
+      ) : null}
     </div>
   ) : null;
   const copyAlert = showCopyAlert ? (
