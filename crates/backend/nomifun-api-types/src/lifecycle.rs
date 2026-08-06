@@ -125,6 +125,88 @@ pub struct UpdateWorkDirResponse {
     pub restart_required: bool,
 }
 
+/// Management state for a durable work-root relocation. Unlike the compact
+/// last-status field above, this state is backed by the pending plan and its
+/// phase markers and can be acted on by the settings UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirRelocationOperationState {
+    Planned,
+    Copying,
+    Verified,
+    Published,
+    SourcePreserved,
+    Completed,
+    Failed,
+    Paused,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirRelocationErrorClass {
+    Transient,
+    Deterministic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkDirRelocationOperation {
+    pub operation_id: String,
+    pub state: WorkDirRelocationOperationState,
+    pub source_work_dir: String,
+    pub target_work_dir: String,
+    pub restart_required: bool,
+    pub attempt_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_class: Option<WorkDirRelocationErrorClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortfall_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calculation_mode: Option<WorkDirRelocationCalculationMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirRelocationCalculationMode {
+    SameVolumeRename,
+    CrossVolumeCopy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkDirRelocationBackup {
+    pub operation_id: String,
+    pub generation: String,
+    pub source_work_dir: String,
+    pub target_work_dir: String,
+    pub backup_path: String,
+    pub byte_size: u64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkDirRelocationResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<WorkDirRelocationOperation>,
+    pub backups: Vec<WorkDirRelocationBackup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceWorkDirRelocationRequest {
+    pub work_dir: String,
+}
+
 /// Response for `POST /api/system/check-update`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpdateCheckResult {
@@ -241,6 +323,32 @@ mod tests {
         let raw = json!({ "work_dir": "/Users/me/Workspaces/nomi" });
         let req: UpdateWorkDirRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(req.work_dir, "/Users/me/Workspaces/nomi");
+    }
+
+    #[test]
+    fn test_work_dir_relocation_management_serializes_snake_case_and_optional_fields() {
+        let operation = WorkDirRelocationOperation {
+            operation_id: "01900000-0000-7000-8000-000000000002".into(),
+            state: WorkDirRelocationOperationState::Paused,
+            source_work_dir: "C:/old".into(),
+            target_work_dir: "D:/new".into(),
+            restart_required: true,
+            attempt_count: 3,
+            last_attempt_at: Some(123),
+            last_error_class: Some(WorkDirRelocationErrorClass::Transient),
+            last_error_code: Some("INTERNAL_ERROR".into()),
+            error: Some("target is locked".into()),
+            required_bytes: Some(42),
+            available_bytes: None,
+            shortfall_bytes: None,
+            calculation_mode: Some(WorkDirRelocationCalculationMode::CrossVolumeCopy),
+        };
+        let value = serde_json::to_value(&operation).unwrap();
+        assert_eq!(value["operation_id"], operation.operation_id);
+        assert_eq!(value["state"], "paused");
+        assert_eq!(value["last_error_class"], "transient");
+        assert_eq!(value["calculation_mode"], "cross_volume_copy");
+        assert!(value.get("available_bytes").is_none());
     }
 
     // -- UpdateCheckResult --

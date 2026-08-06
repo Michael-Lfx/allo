@@ -149,7 +149,41 @@ const SystemModalContent: React.FC = () => {
 
   // Get system directory info
   const { data: systemInfo } = useSWR('system.dir.info', () => ipcBridge.application.systemInfo.invoke());
+  const { data: relocation, mutate: refreshRelocation } = useSWR(
+    'system.work-dir.relocation',
+    () => ipcBridge.application.workDirRelocation.get.invoke()
+  );
   const canChangeWorkDirectory = systemInfo?.runtimeCapabilities.canChangeWorkDirectory === true;
+
+  const handleRelocationRetry = useCallback(async () => {
+    const operationId = relocation?.operation?.operationId;
+    if (!operationId) return;
+    setError(null);
+    setIsRelocating(true);
+    try {
+      const result = await ipcBridge.application.workDirRelocation.retry.invoke({ operationId });
+      if (result.restart_required) {
+        await ipcBridge.application.restart.invoke();
+      } else {
+        setIsRelocating(false);
+        await refreshRelocation();
+      }
+    } catch (caughtError: unknown) {
+      setIsRelocating(false);
+      setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+    }
+  }, [refreshRelocation, relocation?.operation?.operationId]);
+
+  const handleRelocationCancel = useCallback(async () => {
+    const operationId = relocation?.operation?.operationId;
+    if (!operationId) return;
+    try {
+      await ipcBridge.application.workDirRelocation.cancel.invoke({ operationId });
+      await refreshRelocation();
+    } catch (caughtError: unknown) {
+      setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+    }
+  }, [refreshRelocation, relocation?.operation?.operationId]);
 
   const handleOpenLogDir = useCallback(() => {
     if (!systemInfo?.logDir) return;
@@ -352,6 +386,24 @@ const SystemModalContent: React.FC = () => {
                 <div className='mt-6px text-12px text-t-secondary'>
                   {t('settings.workDirDesktopOnly')}
                 </div>
+              )}
+              {relocation?.operation && ['failed', 'paused'].includes(relocation.operation.state) && (
+                <Alert
+                  type='error'
+                  content={
+                    <div className='space-y-6px'>
+                      <div>{relocation.operation.error || t('settings.workDirRelocationFailed')}</div>
+                      <div className='flex gap-8px'>
+                        <Button size='small' type='primary' onClick={() => void handleRelocationRetry()}>
+                          {t('common.retry')}
+                        </Button>
+                        <Button size='small' onClick={() => void handleRelocationCancel()}>
+                          {t('common.cancel')}
+                        </Button>
+                      </div>
+                    </div>
+                  }
+                />
               )}
               {systemInfo?.workDirChange?.state === 'failed' && (
                 <Alert

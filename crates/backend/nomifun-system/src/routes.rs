@@ -17,7 +17,10 @@ use nomifun_api_types::{
     SetManagedModelServiceEnabledRequest, SupportLogsPackResponse, SystemInfoResponse,
     SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
     UpdateProviderModelRequest, UpdateProviderRequest, UpdateSettingsRequest, UpdateWorkDirRequest,
-    UpdateWorkDirResponse, RuntimeCapabilities, WorkDirChangeState, WorkDirChangeStatus,
+    UpdateWorkDirResponse, ReplaceWorkDirRelocationRequest, RuntimeCapabilities,
+    WorkDirChangeState, WorkDirChangeStatus, WorkDirRelocationBackup,
+    WorkDirRelocationCalculationMode, WorkDirRelocationErrorClass,
+    WorkDirRelocationOperation, WorkDirRelocationOperationState, WorkDirRelocationResponse,
     UpsertProviderConnectionRequest,
 };
 use nomifun_common::AppError;
@@ -153,6 +156,23 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/factory-reset", post(factory_reset))
         .route("/api/system/work-dir", post(set_work_dir))
+        .route("/api/system/work-dir-relocation", get(get_work_dir_relocation))
+        .route(
+            "/api/system/work-dir-relocation/{operation_id}",
+            delete(delete_work_dir_relocation),
+        )
+        .route(
+            "/api/system/work-dir-relocation/{operation_id}/retry",
+            post(retry_work_dir_relocation),
+        )
+        .route(
+            "/api/system/work-dir-relocation/{operation_id}/replace",
+            post(replace_work_dir_relocation),
+        )
+        .route(
+            "/api/system/work-dir-relocation/{operation_id}/backup",
+            delete(delete_work_dir_relocation_backup),
+        )
         .with_state(state)
 }
 
@@ -723,4 +743,159 @@ async fn set_work_dir(
             restart_required: true,
         })))
     }
+}
+
+fn map_relocation_operation_state(
+    state: nomifun_common::work_dir_relocation::RelocationManagementState,
+) -> WorkDirRelocationOperationState {
+    use nomifun_common::work_dir_relocation::RelocationManagementState as State;
+    match state {
+        State::Planned => WorkDirRelocationOperationState::Planned,
+        State::Copying => WorkDirRelocationOperationState::Copying,
+        State::Verified => WorkDirRelocationOperationState::Verified,
+        State::Published => WorkDirRelocationOperationState::Published,
+        State::SourcePreserved => WorkDirRelocationOperationState::SourcePreserved,
+        State::Completed => WorkDirRelocationOperationState::Completed,
+        State::Failed => WorkDirRelocationOperationState::Failed,
+        State::Paused => WorkDirRelocationOperationState::Paused,
+        State::Cancelled => WorkDirRelocationOperationState::Cancelled,
+    }
+}
+
+fn map_relocation_error_class(
+    class: Option<nomifun_common::work_dir_relocation::RelocationErrorClass>,
+) -> Option<WorkDirRelocationErrorClass> {
+    class.map(|class| match class {
+        nomifun_common::work_dir_relocation::RelocationErrorClass::Transient => {
+            WorkDirRelocationErrorClass::Transient
+        }
+        nomifun_common::work_dir_relocation::RelocationErrorClass::Deterministic => {
+            WorkDirRelocationErrorClass::Deterministic
+        }
+        nomifun_common::work_dir_relocation::RelocationErrorClass::Unknown => {
+            WorkDirRelocationErrorClass::Unknown
+        }
+    })
+}
+
+fn map_relocation_calculation_mode(
+    mode: Option<nomifun_common::work_dir_relocation::RelocationCalculationMode>,
+) -> Option<WorkDirRelocationCalculationMode> {
+    mode.map(|mode| match mode {
+        nomifun_common::work_dir_relocation::RelocationCalculationMode::SameVolumeRename => {
+            WorkDirRelocationCalculationMode::SameVolumeRename
+        }
+        nomifun_common::work_dir_relocation::RelocationCalculationMode::CrossVolumeCopy => {
+            WorkDirRelocationCalculationMode::CrossVolumeCopy
+        }
+    })
+}
+
+fn map_relocation_operation(
+    operation: nomifun_common::work_dir_relocation::RelocationOperationSnapshot,
+) -> WorkDirRelocationOperation {
+    WorkDirRelocationOperation {
+        operation_id: operation.operation_id,
+        state: map_relocation_operation_state(operation.state),
+        source_work_dir: operation.source_work_dir,
+        target_work_dir: operation.target_work_dir,
+        restart_required: operation.restart_required,
+        attempt_count: operation.attempt_count,
+        last_attempt_at: operation.last_attempt_at,
+        last_error_class: map_relocation_error_class(operation.last_error_class),
+        last_error_code: operation.last_error_code,
+        error: operation.error,
+        required_bytes: operation.required_bytes,
+        available_bytes: operation.available_bytes,
+        shortfall_bytes: operation.shortfall_bytes,
+        calculation_mode: map_relocation_calculation_mode(operation.calculation_mode),
+    }
+}
+
+fn map_relocation_backup(
+    backup: nomifun_common::work_dir_relocation::RelocationBackupDescriptor,
+) -> WorkDirRelocationBackup {
+    WorkDirRelocationBackup {
+        operation_id: backup.operation_id,
+        generation: backup.generation,
+        source_work_dir: backup.source_work_dir,
+        target_work_dir: backup.target_work_dir,
+        backup_path: backup.backup_path,
+        byte_size: backup.byte_size,
+        created_at: backup.created_at,
+    }
+}
+
+async fn get_work_dir_relocation(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<WorkDirRelocationResponse>>, AppError> {
+    let operation = nomifun_common::work_dir_relocation::read_relocation_operation(&state.data_dir)?
+        .map(map_relocation_operation);
+    let backups = nomifun_common::work_dir_relocation::read_relocation_backups(&state.data_dir)?
+        .into_iter()
+        .map(map_relocation_backup)
+        .collect();
+    Ok(Json(ApiResponse::ok(WorkDirRelocationResponse { operation, backups })))
+}
+
+async fn delete_work_dir_relocation(
+    State(state): State<SystemRouterState>,
+    Path(operation_id): Path<String>,
+) -> Result<Json<ApiResponse<UpdateWorkDirResponse>>, AppError> {
+    nomifun_common::work_dir_relocation::cancel_relocation(&state.data_dir, &operation_id)?;
+    Ok(Json(ApiResponse::ok(UpdateWorkDirResponse {
+        operation_id: Some(operation_id),
+        restart_required: false,
+    })))
+}
+
+async fn retry_work_dir_relocation(
+    State(state): State<SystemRouterState>,
+    Path(operation_id): Path<String>,
+) -> Result<Json<ApiResponse<UpdateWorkDirResponse>>, AppError> {
+    let plan = nomifun_common::work_dir_relocation::retry_relocation(
+        &state.data_dir,
+        &operation_id,
+    )?;
+    Ok(Json(ApiResponse::ok(UpdateWorkDirResponse {
+        operation_id: Some(plan.operation_id),
+        restart_required: true,
+    })))
+}
+
+async fn replace_work_dir_relocation(
+    State(state): State<SystemRouterState>,
+    Path(operation_id): Path<String>,
+    body: Result<Json<ReplaceWorkDirRelocationRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<UpdateWorkDirResponse>>, AppError> {
+    let Json(request) = body.map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let target = PathBuf::from(request.work_dir.trim());
+    if request.work_dir.trim().is_empty() || !target.is_absolute() {
+        return Err(AppError::BadRequest(
+            "work_dir must be a non-empty absolute path".into(),
+        ));
+    }
+    if nomifun_common::workspace_path_has_edge_whitespace_segment(&target) {
+        return Err(AppError::WorkspacePathEdgeWhitespace(target.display().to_string()));
+    }
+    let plan = nomifun_common::work_dir_relocation::replace_relocation(
+        &state.data_dir,
+        &operation_id,
+        &target,
+    )?;
+    Ok(Json(ApiResponse::ok(UpdateWorkDirResponse {
+        operation_id: Some(plan.operation_id),
+        restart_required: true,
+    })))
+}
+
+async fn delete_work_dir_relocation_backup(
+    State(state): State<SystemRouterState>,
+    Path(operation_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    nomifun_common::work_dir_relocation::delete_relocation_backup(
+        &state.data_dir,
+        &operation_id,
+    )?;
+    Ok(Json(ApiResponse::success()))
 }

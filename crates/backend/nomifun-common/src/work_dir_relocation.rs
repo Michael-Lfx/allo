@@ -25,11 +25,77 @@ use crate::timestamp::now_ms;
 pub const PENDING_RELOCATION_DIR: &str = ".work-dir-relocation.pending";
 pub const RELOCATION_PLAN_FILE: &str = "plan.json";
 pub const RELOCATION_RESULT_FILE: &str = ".work-dir-relocation.last.json";
-const PLAN_VERSION: u32 = 1;
+pub const RELOCATION_BACKUPS_DIR: &str = ".work-dir-relocation.backups";
+const PLAN_VERSION: u32 = 2;
 const MAX_CONTROL_FILE_BYTES: u64 = 64 * 1024;
 const CONVERSATIONS_DIR: &str = "conversations";
 const BACKUP_DIR: &str = ".nomifun-work-relocation-backups";
 const MAX_STATUS_ERROR_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelocationManagementState {
+    Planned,
+    Copying,
+    Verified,
+    Published,
+    SourcePreserved,
+    Failed,
+    Paused,
+    Cancelled,
+    Completed,
+}
+
+impl Default for RelocationManagementState {
+    fn default() -> Self {
+        Self::Planned
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelocationErrorClass {
+    Transient,
+    Deterministic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelocationCalculationMode {
+    SameVolumeRename,
+    CrossVolumeCopy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelocationOperationSnapshot {
+    pub operation_id: String,
+    pub state: RelocationManagementState,
+    pub source_work_dir: String,
+    pub target_work_dir: String,
+    pub restart_required: bool,
+    pub attempt_count: u32,
+    pub last_attempt_at: Option<i64>,
+    pub last_error_class: Option<RelocationErrorClass>,
+    pub last_error_code: Option<String>,
+    pub error: Option<String>,
+    pub required_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
+    pub shortfall_bytes: Option<u64>,
+    pub calculation_mode: Option<RelocationCalculationMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RelocationBackupDescriptor {
+    pub operation_id: String,
+    pub generation: String,
+    pub source_work_dir: String,
+    pub target_work_dir: String,
+    pub backup_path: String,
+    pub byte_size: u64,
+    pub created_at: i64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +113,23 @@ pub struct WorkDirRelocationPlan {
     /// was stopped.
     #[serde(default)]
     pub source_conversations_present: bool,
+    /// Management metadata was added after the original durable plan format.
+    /// Defaults keep version-1 plans readable until the first management
+    /// action upgrades them atomically.
+    #[serde(default)]
+    pub management_state: RelocationManagementState,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub last_attempt_at: Option<i64>,
+    #[serde(default)]
+    pub last_error_class: Option<RelocationErrorClass>,
+    #[serde(default)]
+    pub last_error_code: Option<String>,
+    #[serde(default)]
+    pub target_created_by_operation: bool,
+    #[serde(default)]
+    pub target_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,17 +159,21 @@ pub struct WorkDirRelocationStatus {
 enum RelocationPhase {
     Requested,
     Copying,
+    Verified,
     TargetPublished,
     BindingsRebound,
+    SourcePreserved,
     Completed,
 }
 
 impl RelocationPhase {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::Requested,
         Self::Copying,
+        Self::Verified,
         Self::TargetPublished,
         Self::BindingsRebound,
+        Self::SourcePreserved,
         Self::Completed,
     ];
 
@@ -94,8 +181,10 @@ impl RelocationPhase {
         match self {
             Self::Requested => "phase-requested",
             Self::Copying => "phase-copying",
+            Self::Verified => "phase-verified",
             Self::TargetPublished => "phase-target-published",
             Self::BindingsRebound => "phase-bindings-rebound",
+            Self::SourcePreserved => "phase-source-preserved",
             Self::Completed => "phase-completed",
         }
     }
@@ -124,6 +213,12 @@ fn backup_path(source_work_dir: &Path, operation_id: &str) -> PathBuf {
         .join(BACKUP_DIR)
         .join(operation_id)
         .join(CONVERSATIONS_DIR)
+}
+
+fn backup_descriptor_path(data_dir: &Path, operation_id: &str) -> PathBuf {
+    data_dir
+        .join(RELOCATION_BACKUPS_DIR)
+        .join(format!("{operation_id}.json"))
 }
 
 fn ensure_real_directory(path: &Path, label: &str) -> Result<(), AppError> {
@@ -277,7 +372,7 @@ pub fn validate_work_dir_relationship(
 }
 
 fn validate_plan(plan: &WorkDirRelocationPlan, data_dir: &Path) -> Result<(), AppError> {
-    if plan.version != PLAN_VERSION {
+    if plan.version != 1 && plan.version != PLAN_VERSION {
         return Err(AppError::Internal(format!(
             "unsupported work-dir relocation plan version {}",
             plan.version
@@ -341,7 +436,59 @@ fn validate_plan(plan: &WorkDirRelocationPlan, data_dir: &Path) -> Result<(), Ap
             "work-dir relocation target overlaps the dataset root".into(),
         ));
     }
+    if plan.version >= PLAN_VERSION {
+        if let Some(identity) = &plan.target_identity {
+            if identity.is_empty() {
+                return Err(AppError::Internal(
+                    "work-dir relocation target identity is empty".into(),
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+fn write_plan_atomic(data_dir: &Path, plan: &WorkDirRelocationPlan) -> Result<(), AppError> {
+    ensure_pending_directory(data_dir)?;
+    let bytes = serde_json::to_vec_pretty(plan).map_err(|error| {
+        AppError::Internal(format!("serialize work-dir relocation plan: {error}"))
+    })?;
+    if bytes.len() as u64 > MAX_CONTROL_FILE_BYTES {
+        return Err(AppError::Internal(
+            "work-dir relocation plan exceeds the control-file size limit".into(),
+        ));
+    }
+    crate::dir_config::write_atomic_replace(&plan_path(data_dir), &bytes).map_err(|error| {
+        AppError::Internal(format!("write work-dir relocation plan: {error}"))
+    })
+}
+
+fn target_identity(path: &Path) -> String {
+    normalized_path_string(path)
+}
+
+/// Upgrade an old plan only when a management operation needs to mutate it.
+/// Startup consumption remains backward compatible and can finish a version-1
+/// plan without rewriting it first.
+fn upgrade_plan_for_management(
+    data_dir: &Path,
+    plan: &WorkDirRelocationPlan,
+) -> Result<WorkDirRelocationPlan, AppError> {
+    validate_plan(plan, data_dir)?;
+    if plan.version == PLAN_VERSION {
+        return Ok(plan.clone());
+    }
+    let target = canonical_real_directory(
+        Path::new(&plan.target_work_dir),
+        "relocation target work root",
+    )?;
+    let mut upgraded = plan.clone();
+    upgraded.version = PLAN_VERSION;
+    upgraded.management_state = RelocationManagementState::Planned;
+    upgraded.target_created_by_operation = true;
+    upgraded.target_identity = Some(target_identity(&target));
+    write_plan_atomic(data_dir, &upgraded)?;
+    Ok(upgraded)
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
@@ -490,14 +637,15 @@ pub fn request_work_dir_relocation(
         generation,
         created_at: now_ms(),
         source_conversations_present,
+        management_state: RelocationManagementState::Planned,
+        attempt_count: 0,
+        last_attempt_at: None,
+        last_error_class: None,
+        last_error_code: None,
+        target_created_by_operation: true,
+        target_identity: Some(target_identity(&canonical_target)),
     };
-    ensure_pending_directory(&canonical_data)?;
-    let bytes = serde_json::to_vec_pretty(&plan).map_err(|error| {
-        AppError::Internal(format!("serialize work-dir relocation plan: {error}"))
-    })?;
-    crate::dir_config::write_atomic_replace(&plan_path(&canonical_data), &bytes).map_err(
-        |error| AppError::Internal(format!("write work-dir relocation plan: {error}")),
-    )?;
+    write_plan_atomic(&canonical_data, &plan)?;
     write_phase(&canonical_data, &plan, RelocationPhase::Requested)?;
     Ok(plan)
 }
@@ -577,6 +725,183 @@ fn phase_matches(
         )));
     }
     Ok(true)
+}
+
+fn highest_phase(
+    data_dir: &Path,
+    plan: &WorkDirRelocationPlan,
+) -> Result<Option<RelocationPhase>, AppError> {
+    let mut highest = None;
+    for phase in RelocationPhase::ALL {
+        if phase_matches(data_dir, plan, phase)? {
+            highest = Some(phase);
+        }
+    }
+    Ok(highest)
+}
+
+fn state_for_phase(phase: Option<RelocationPhase>) -> RelocationManagementState {
+    match phase {
+        Some(RelocationPhase::Copying) => RelocationManagementState::Copying,
+        Some(RelocationPhase::Verified) => RelocationManagementState::Verified,
+        Some(RelocationPhase::TargetPublished | RelocationPhase::BindingsRebound) => {
+            RelocationManagementState::Published
+        }
+        Some(RelocationPhase::SourcePreserved) => RelocationManagementState::SourcePreserved,
+        Some(RelocationPhase::Completed) => RelocationManagementState::Completed,
+        Some(RelocationPhase::Requested) | None => RelocationManagementState::Planned,
+    }
+}
+
+fn relocation_calculation_mode(plan: &WorkDirRelocationPlan) -> RelocationCalculationMode {
+    // This is an advisory value for the settings page. The actual operation
+    // still attempts an atomic rename and switches to copy on EXDEV, so this
+    // probe must never become an authorization or correctness decision.
+    #[cfg(windows)]
+    {
+        let source = Path::new(&plan.source_work_dir);
+        let target = Path::new(&plan.target_work_dir);
+        let source_root = source
+            .components()
+            .next()
+            .map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase());
+        let target_root = target
+            .components()
+            .next()
+            .map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase());
+        if source_root.is_some() && source_root == target_root {
+            RelocationCalculationMode::SameVolumeRename
+        } else {
+            RelocationCalculationMode::CrossVolumeCopy
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        RelocationCalculationMode::SameVolumeRename
+    }
+}
+
+fn managed_tree_size(path: &Path) -> Result<u64, AppError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        AppError::Internal(format!("inspect relocation tree size {}: {error}", path.display()))
+    })?;
+    if unsupported_reparse(&metadata) {
+        return Err(AppError::Conflict(format!(
+            "unsupported reparse point in relocation tree {}",
+            path.display()
+        )));
+    }
+    if metadata.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Err(AppError::Conflict(format!(
+            "unsupported filesystem entry in relocation tree {}",
+            path.display()
+        )));
+    }
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).map_err(|error| {
+        AppError::Internal(format!("read relocation tree size {}: {error}", path.display()))
+    })? {
+        let entry = entry.map_err(|error| AppError::Internal(error.to_string()))?;
+        total = total
+            .checked_add(managed_tree_size(&entry.path())?)
+            .ok_or_else(|| AppError::Conflict("relocation tree size overflow".into()))?;
+    }
+    Ok(total)
+}
+
+fn snapshot_for_plan(
+    data_dir: &Path,
+    plan: &WorkDirRelocationPlan,
+) -> Result<RelocationOperationSnapshot, AppError> {
+    let phase = highest_phase(data_dir, plan)?;
+    let state = match plan.management_state {
+        RelocationManagementState::Copying
+        | RelocationManagementState::Verified
+        | RelocationManagementState::Published
+        | RelocationManagementState::SourcePreserved => plan.management_state,
+        RelocationManagementState::Failed
+        | RelocationManagementState::Paused
+        | RelocationManagementState::Cancelled
+        | RelocationManagementState::Completed => plan.management_state,
+        RelocationManagementState::Planned => state_for_phase(phase),
+    };
+    let mode = relocation_calculation_mode(plan);
+    let error = read_last_status_best_effort(data_dir).and_then(|status| {
+        (status.operation_id.as_deref() == Some(plan.operation_id.as_str()))
+            .then_some(status.error)
+            .flatten()
+    });
+    let required_bytes = if mode == RelocationCalculationMode::CrossVolumeCopy {
+        let source = Path::new(&plan.source_work_dir).join(CONVERSATIONS_DIR);
+        entry_exists(&source, "relocation source conversations")?
+            .then(|| managed_tree_size(&source))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(RelocationOperationSnapshot {
+        operation_id: plan.operation_id.clone(),
+        state,
+        source_work_dir: plan.source_work_dir.clone(),
+        target_work_dir: plan.target_work_dir.clone(),
+        restart_required: !matches!(state, RelocationManagementState::Completed | RelocationManagementState::Cancelled),
+        attempt_count: plan.attempt_count,
+        last_attempt_at: plan.last_attempt_at,
+        last_error_class: plan.last_error_class,
+        last_error_code: plan.last_error_code.clone(),
+        error,
+        required_bytes,
+        available_bytes: None,
+        shortfall_bytes: None,
+        calculation_mode: Some(mode),
+    })
+}
+
+/// Return the durable relocation operation, if one is pending. A completed
+/// operation is reconstructed from the compact last-status file so the UI can
+/// still correlate the most recent result without reviving the plan.
+pub fn read_relocation_operation(
+    data_dir: &Path,
+) -> Result<Option<RelocationOperationSnapshot>, AppError> {
+    if let Some(plan) = read_pending_plan(data_dir)? {
+        return Ok(Some(snapshot_for_plan(data_dir, &plan)?));
+    }
+    let Some(status) = read_last_status_best_effort(data_dir) else {
+        return Ok(None);
+    };
+    let (Some(operation_id), Some(source_work_dir), Some(target_work_dir)) = (
+        status.operation_id,
+        status.source_work_dir,
+        status.target_work_dir,
+    ) else {
+        return Ok(None);
+    };
+    let state = match status.state {
+        WorkDirRelocationState::Completed => RelocationManagementState::Completed,
+        WorkDirRelocationState::Failed => RelocationManagementState::Failed,
+    };
+    Ok(Some(RelocationOperationSnapshot {
+        operation_id,
+        state,
+        source_work_dir,
+        target_work_dir,
+        restart_required: false,
+        attempt_count: 0,
+        last_attempt_at: None,
+        last_error_class: None,
+        last_error_code: None,
+        error: status.error,
+        required_bytes: None,
+        available_bytes: None,
+        shortfall_bytes: None,
+        calculation_mode: None,
+    }))
 }
 
 pub fn read_last_status(
@@ -737,9 +1062,43 @@ pub fn record_plan_relocation_failure(
     plan: &WorkDirRelocationPlan,
     error: impl Into<String>,
 ) -> Result<(), AppError> {
+    let error = AppError::Internal(bounded_status_error(error));
+    persist_plan_relocation_failure(data_dir, plan, &error)
+}
+
+fn relocation_error_class(error: &AppError) -> RelocationErrorClass {
+    match error {
+        AppError::BadRequest(_) | AppError::Conflict(_) | AppError::WorkspacePathEdgeWhitespace(_) => {
+            RelocationErrorClass::Deterministic
+        }
+        AppError::Internal(_) | AppError::Timeout(_) | AppError::BadGateway(_) => {
+            RelocationErrorClass::Transient
+        }
+        _ => RelocationErrorClass::Unknown,
+    }
+}
+
+fn persist_plan_relocation_failure(
+    data_dir: &Path,
+    plan: &WorkDirRelocationPlan,
+    error: &AppError,
+) -> Result<(), AppError> {
+    let mut plan = upgrade_plan_for_management(data_dir, plan)?;
+    plan.attempt_count = plan.attempt_count.saturating_add(1);
+    plan.last_attempt_at = Some(now_ms());
+    plan.last_error_class = Some(relocation_error_class(error));
+    plan.last_error_code = Some(error.error_code().to_owned());
+    plan.management_state = if matches!(plan.last_error_class, Some(RelocationErrorClass::Deterministic))
+        || plan.attempt_count >= 3
+    {
+        RelocationManagementState::Paused
+    } else {
+        RelocationManagementState::Failed
+    };
+    write_plan_atomic(data_dir, &plan)?;
     write_status(
         data_dir,
-        &failed_status(plan, &AppError::Internal(bounded_status_error(error)), None),
+        &failed_status(&plan, error, None),
     )
 }
 
@@ -810,14 +1169,15 @@ pub fn convert_legacy_work_dir_change_request(
             &source.join(CONVERSATIONS_DIR),
             "relocation source conversations",
         )?,
+        management_state: RelocationManagementState::Planned,
+        attempt_count: 0,
+        last_attempt_at: None,
+        last_error_class: None,
+        last_error_code: None,
+        target_created_by_operation: true,
+        target_identity: Some(target_identity(&target)),
     };
-    ensure_pending_directory(data_dir)?;
-    let bytes = serde_json::to_vec_pretty(&plan).map_err(|error| {
-        AppError::Internal(format!("serialize converted work-dir relocation plan: {error}"))
-    })?;
-    crate::dir_config::write_atomic_replace(&plan_path(data_dir), &bytes).map_err(|error| {
-        AppError::Internal(format!("write converted work-dir relocation plan: {error}"))
-    })?;
+    write_plan_atomic(data_dir, &plan)?;
     write_phase(data_dir, &plan, RelocationPhase::Requested)?;
     factory::consume_work_dir_change_request(data_dir, &legacy.operation_id)?;
     Ok(Some(plan))
@@ -1116,6 +1476,7 @@ fn publish_conversations(
     }
     let copying_phase = phase_matches(data_dir, plan, RelocationPhase::Copying)?;
     let target_was_published = phase_matches(data_dir, plan, RelocationPhase::TargetPublished)?;
+    let verified_phase = phase_matches(data_dir, plan, RelocationPhase::Verified)?;
     if source_exists && !plan.source_conversations_present {
         return Err(AppError::Conflict(
             "relocation source conversations appeared after the plan was created".into(),
@@ -1144,7 +1505,7 @@ fn publish_conversations(
             compare_tree(&source, &target)?;
             return Ok(true);
         }
-        if !source_exists && !target_was_published && !copying_phase {
+        if !source_exists && !target_was_published && !verified_phase && !copying_phase {
             return Err(AppError::Conflict(
                 "relocation target conversations were not published by this operation".into(),
             ));
@@ -1272,11 +1633,10 @@ fn preserve_cross_volume_source(
             // this already verified backup. Keep the backup as the rollback
             // copy, then remove the duplicate source before completing the
             // retry.
-            fs::remove_dir_all(&source).map_err(|error| {
-                AppError::Internal(format!(
-                    "remove restored source conversations after backup verification: {error}"
-                ))
-            })?;
+            remove_managed_tree(
+                &source,
+                "restored source conversations after backup verification",
+            )?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::rename(&source, &backup).map_err(|error| {
@@ -1294,6 +1654,179 @@ fn preserve_cross_volume_source(
         )));
     }
     Ok(Some(backup))
+}
+
+fn write_backup_descriptor(
+    data_dir: &Path,
+    plan: &WorkDirRelocationPlan,
+    backup: &Path,
+) -> Result<RelocationBackupDescriptor, AppError> {
+    validate_uuidv7(&plan.operation_id).map_err(|error| {
+        AppError::Internal(format!("invalid relocation backup operation ID: {error}"))
+    })?;
+    let expected = backup_path(Path::new(&plan.source_work_dir), &plan.operation_id);
+    if !paths_equivalent(&expected, backup) {
+        return Err(AppError::Conflict(
+            "relocation backup path does not match the operation-owned source backup".into(),
+        ));
+    }
+    ensure_real_directory_tree(backup, "relocation backup tree")?;
+    let descriptor = RelocationBackupDescriptor {
+        operation_id: plan.operation_id.clone(),
+        generation: plan.generation.clone(),
+        source_work_dir: plan.source_work_dir.clone(),
+        target_work_dir: plan.target_work_dir.clone(),
+        backup_path: backup.display().to_string(),
+        byte_size: managed_tree_size(backup)?,
+        created_at: now_ms(),
+    };
+    let dir = data_dir.join(RELOCATION_BACKUPS_DIR);
+    match fs::symlink_metadata(&dir) {
+        Ok(_) => ensure_real_directory(&dir, "relocation backup descriptor directory")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&dir).map_err(|error| {
+                AppError::Internal(format!("create relocation backup descriptor directory: {error}"))
+            })?;
+        }
+        Err(error) => {
+            return Err(AppError::Internal(format!(
+                "inspect relocation backup descriptor directory {}: {error}",
+                dir.display()
+            )));
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&descriptor).map_err(|error| {
+        AppError::Internal(format!("serialize relocation backup descriptor: {error}"))
+    })?;
+    if bytes.len() as u64 > MAX_CONTROL_FILE_BYTES {
+        return Err(AppError::Internal(
+            "relocation backup descriptor exceeds the control-file size limit".into(),
+        ));
+    }
+    crate::dir_config::write_atomic_replace(&backup_descriptor_path(data_dir, &plan.operation_id), &bytes)
+        .map_err(|error| AppError::Internal(format!("write relocation backup descriptor: {error}")))?;
+    Ok(descriptor)
+}
+
+fn validate_backup_descriptor(
+    data_dir: &Path,
+    descriptor: &RelocationBackupDescriptor,
+) -> Result<(), AppError> {
+    validate_uuidv7(&descriptor.operation_id).map_err(|error| {
+        AppError::Conflict(format!("invalid relocation backup operation ID: {error}"))
+    })?;
+    validate_uuidv7(&descriptor.generation).map_err(|error| {
+        AppError::Conflict(format!("invalid relocation backup generation: {error}"))
+    })?;
+    let expected = backup_path(
+        Path::new(&descriptor.source_work_dir),
+        &descriptor.operation_id,
+    );
+    if !paths_equivalent(&expected, Path::new(&descriptor.backup_path)) {
+        return Err(AppError::Conflict(
+            "relocation backup descriptor points outside its managed backup path".into(),
+        ));
+    }
+    if paths_overlap(data_dir, Path::new(&descriptor.source_work_dir)) {
+        return Err(AppError::Conflict(
+            "relocation backup source overlaps the dataset root".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn read_relocation_backups(
+    data_dir: &Path,
+) -> Result<Vec<RelocationBackupDescriptor>, AppError> {
+    let dir = data_dir.join(RELOCATION_BACKUPS_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(AppError::Internal(format!(
+                "read relocation backup descriptors {}: {error}",
+                dir.display()
+            )));
+        }
+    };
+    ensure_real_directory(&dir, "relocation backup descriptor directory")?;
+    let mut backups = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| AppError::Internal(error.to_string()))?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+            AppError::Internal(format!("inspect relocation backup descriptor: {error}"))
+        })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            tracing::warn!(path = %entry.path().display(), "ignoring non-regular relocation backup descriptor");
+            continue;
+        }
+        let bytes = match crate::dir_config::read_bounded_regular_file(&entry.path(), MAX_CONTROL_FILE_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(path = %entry.path().display(), error = %error, "ignoring unreadable relocation backup descriptor");
+                continue;
+            }
+        };
+        let descriptor: RelocationBackupDescriptor = match serde_json::from_slice(&bytes) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                tracing::warn!(path = %entry.path().display(), error = %error, "ignoring malformed relocation backup descriptor");
+                continue;
+            }
+        };
+        if let Err(error) = validate_backup_descriptor(data_dir, &descriptor) {
+            tracing::warn!(path = %entry.path().display(), error = %error, "ignoring unsafe relocation backup descriptor");
+            continue;
+        }
+        if !entry_exists(Path::new(&descriptor.backup_path), "relocation backup tree")? {
+            tracing::warn!(path = %descriptor.backup_path, "ignoring missing relocation backup tree");
+            continue;
+        }
+        backups.push(descriptor);
+    }
+    backups.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Ok(backups)
+}
+
+pub fn delete_relocation_backup(data_dir: &Path, operation_id: &str) -> Result<(), AppError> {
+    validate_uuidv7(operation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let descriptor_path = backup_descriptor_path(data_dir, operation_id);
+    let bytes = crate::dir_config::read_bounded_regular_file(&descriptor_path, MAX_CONTROL_FILE_BYTES)
+        .map_err(|error| AppError::NotFound(format!("relocation backup descriptor: {error}")))?;
+    let descriptor: RelocationBackupDescriptor = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::Conflict(format!("malformed relocation backup descriptor: {error}")))?;
+    validate_backup_descriptor(data_dir, &descriptor)?;
+    if descriptor.operation_id != operation_id {
+        return Err(AppError::Conflict(
+            "relocation backup operation ID does not match the requested backup".into(),
+        ));
+    }
+    let generation = read_storage_generation(data_dir)?;
+    if generation != descriptor.generation {
+        return Err(AppError::Conflict(
+            "relocation backup belongs to a different storage generation".into(),
+        ));
+    }
+    let target = factory::finalized_v3_work_dir(data_dir)?.ok_or_else(|| {
+        AppError::Conflict("the current dataset has no finalized work-root binding".into())
+    })?;
+    if !paths_equivalent(&target, Path::new(&descriptor.target_work_dir)) {
+        return Err(AppError::Conflict(
+            "relocation backup can only be deleted after its target is active".into(),
+        ));
+    }
+    if factory::inspect_v3_dataset_receipt(data_dir, &target)? != DatasetReceiptStatus::Current {
+        return Err(AppError::Conflict(
+            "the current target dataset receipt is not finalized".into(),
+        ));
+    }
+    let target_conversations = target.join(CONVERSATIONS_DIR);
+    compare_tree(&target_conversations, Path::new(&descriptor.backup_path))?;
+    remove_managed_tree(Path::new(&descriptor.backup_path), "relocation backup tree")?;
+    fs::remove_file(&descriptor_path).map_err(|error| {
+        AppError::Internal(format!("remove relocation backup descriptor: {error}"))
+    })?;
+    Ok(())
 }
 
 fn cleanup_pending_state(data_dir: &Path) -> Result<(), AppError> {
@@ -1326,6 +1859,164 @@ fn cleanup_pending_state(data_dir: &Path) -> Result<(), AppError> {
         Err(error) => Err(AppError::Internal(format!(
             "remove completed work-dir relocation state directory: {error}"
         ))),
+    }
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool, AppError> {
+    let mut entries = fs::read_dir(path).map_err(|error| {
+        AppError::Internal(format!("read relocation directory {}: {error}", path.display()))
+    })?;
+    Ok(entries.next().is_none())
+}
+
+fn cleanup_cancelled_relocation(
+    data_dir: &Path,
+    plan: &WorkDirRelocationPlan,
+) -> Result<(), AppError> {
+    if plan.management_state != RelocationManagementState::Cancelled {
+        return Ok(());
+    }
+    let target_root = Path::new(&plan.target_work_dir);
+    let staging = staging_path(target_root, &plan.operation_id);
+    if entry_exists(&staging, "cancelled relocation staging tree")? {
+        remove_managed_tree(&staging, "cancelled relocation staging tree")?;
+    }
+    if plan.target_created_by_operation && entry_exists(target_root, "cancelled relocation target")? {
+        ensure_real_directory(target_root, "cancelled relocation target")?;
+        let identity_matches = plan
+            .target_identity
+            .as_deref()
+            .is_some_and(|identity| identity == target_identity(target_root));
+        if identity_matches && directory_is_empty(target_root)? {
+            fs::remove_dir(target_root).map_err(|error| {
+                AppError::Internal(format!("remove cancelled relocation target: {error}"))
+            })?;
+        }
+    }
+    cleanup_pending_state(data_dir)
+}
+
+pub fn retry_relocation(
+    data_dir: &Path,
+    operation_id: &str,
+) -> Result<WorkDirRelocationPlan, AppError> {
+    validate_uuidv7(operation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let existing = read_pending_plan(data_dir)?.ok_or_else(|| {
+        AppError::NotFound("work-dir relocation operation is no longer pending".into())
+    })?;
+    if existing.operation_id != operation_id {
+        return Err(AppError::NotFound(
+            "work-dir relocation operation does not match the pending plan".into(),
+        ));
+    }
+    let mut plan = upgrade_plan_for_management(data_dir, &existing)?;
+    let phase = highest_phase(data_dir, &plan)?;
+    if matches!(
+        phase,
+        Some(RelocationPhase::TargetPublished)
+            | Some(RelocationPhase::BindingsRebound)
+            | Some(RelocationPhase::SourcePreserved)
+            | Some(RelocationPhase::Completed)
+    ) {
+        return Err(AppError::Conflict(
+            "published work-dir relocation cannot be retried through the management API".into(),
+        ));
+    }
+    plan.management_state = RelocationManagementState::Planned;
+    plan.last_attempt_at = None;
+    plan.last_error_class = None;
+    plan.last_error_code = None;
+    write_plan_atomic(data_dir, &plan)?;
+    write_phase(data_dir, &plan, RelocationPhase::Requested)?;
+    Ok(plan)
+}
+
+pub fn cancel_relocation(data_dir: &Path, operation_id: &str) -> Result<(), AppError> {
+    validate_uuidv7(operation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let existing = read_pending_plan(data_dir)?.ok_or_else(|| {
+        AppError::NotFound("work-dir relocation operation is no longer pending".into())
+    })?;
+    if existing.operation_id != operation_id {
+        return Err(AppError::NotFound(
+            "work-dir relocation operation does not match the pending plan".into(),
+        ));
+    }
+    let mut plan = upgrade_plan_for_management(data_dir, &existing)?;
+    let phase = highest_phase(data_dir, &plan)?;
+    if matches!(
+        phase,
+        Some(RelocationPhase::TargetPublished)
+            | Some(RelocationPhase::BindingsRebound)
+            | Some(RelocationPhase::SourcePreserved)
+            | Some(RelocationPhase::Completed)
+    ) {
+        return Err(AppError::Conflict(
+            "published work-dir relocation cannot be cancelled".into(),
+        ));
+    }
+    // The cancelled marker is durable before any cleanup. If the process dies
+    // now, the next startup sees it and performs cleanup without consuming the
+    // migration.
+    plan.management_state = RelocationManagementState::Cancelled;
+    write_plan_atomic(data_dir, &plan)?;
+    cleanup_cancelled_relocation(data_dir, &plan)
+}
+
+pub fn replace_relocation(
+    data_dir: &Path,
+    operation_id: &str,
+    target_work_dir: &Path,
+) -> Result<WorkDirRelocationPlan, AppError> {
+    validate_uuidv7(operation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let existing = read_pending_plan(data_dir)?.ok_or_else(|| {
+        AppError::NotFound("work-dir relocation operation is no longer pending".into())
+    })?;
+    if existing.operation_id != operation_id {
+        return Err(AppError::NotFound(
+            "work-dir relocation operation does not match the pending plan".into(),
+        ));
+    }
+    let phase = highest_phase(data_dir, &existing)?;
+    if matches!(
+        phase,
+        Some(RelocationPhase::TargetPublished)
+            | Some(RelocationPhase::BindingsRebound)
+            | Some(RelocationPhase::SourcePreserved)
+            | Some(RelocationPhase::Completed)
+    ) {
+        return Err(AppError::Conflict(
+            "published work-dir relocation cannot be replaced".into(),
+        ));
+    }
+    let source = Path::new(&existing.source_work_dir);
+    let canonical_data = canonical_real_directory(data_dir, "dataset root")?;
+    let canonical_target = prepare_work_dir_target(target_work_dir)?;
+    validate_work_dir_relationship(source, &canonical_target)?;
+    let canonical_target = validate_target_for_plan(&canonical_data, &canonical_target)?;
+    factory::require_safe_work_dir_change_target(&canonical_data, &canonical_target)?;
+
+    let mut cancelled = upgrade_plan_for_management(data_dir, &existing)?;
+    cancelled.management_state = RelocationManagementState::Cancelled;
+    write_plan_atomic(data_dir, &cancelled)?;
+    if let Err(error) = cleanup_cancelled_relocation(data_dir, &cancelled) {
+        // Keep the cancelled plan visible for a later cleanup attempt.
+        return Err(error);
+    }
+    match request_work_dir_relocation(data_dir, source, &canonical_target) {
+        Ok(plan) => Ok(plan),
+        Err(error) => {
+            // Re-install the old plan when replacing the target failed. No
+            // managed data has moved at this point, so retaining the original
+            // operation is safer than silently losing its retry handle.
+            let mut restored = existing;
+            restored.management_state = RelocationManagementState::Failed;
+            restored.last_error_class = Some(RelocationErrorClass::Unknown);
+            restored.last_error_code = Some(error.error_code().to_owned());
+            restored.last_attempt_at = Some(now_ms());
+            write_plan_atomic(data_dir, &restored)?;
+            write_phase(data_dir, &restored, RelocationPhase::Requested)?;
+            Err(error)
+        }
     }
 }
 
@@ -1412,6 +2103,17 @@ pub fn consume_pending_relocation(
     let Some(plan) = read_pending_plan(data_dir)? else {
         return Ok(None);
     };
+    if matches!(
+        plan.management_state,
+        RelocationManagementState::Paused
+            | RelocationManagementState::Completed
+    ) {
+        return Ok(None);
+    }
+    if plan.management_state == RelocationManagementState::Cancelled {
+        cleanup_cancelled_relocation(data_dir, &plan)?;
+        return Ok(None);
+    }
     let result = consume_pending_relocation_inner(data_dir, &plan);
     match result {
         Ok(result) => Ok(Some(result)),
@@ -1423,8 +2125,20 @@ pub fn consume_pending_relocation(
                     "work-dir relocation failed and conversation rollback was incomplete"
                 );
             }
-            rollback_rebound_markers(&plan);
-            let _ = write_status(data_dir, &failed_status(&plan, &error, None));
+            let rebound = phase_matches(data_dir, &plan, RelocationPhase::TargetPublished)
+                .unwrap_or(false)
+                || phase_matches(data_dir, &plan, RelocationPhase::BindingsRebound)
+                    .unwrap_or(false);
+            if rebound {
+                rollback_rebound_markers(&plan);
+            }
+            if let Err(status_error) = persist_plan_relocation_failure(data_dir, &plan, &error) {
+                tracing::error!(
+                    target: "work_dir_relocation",
+                    error = %status_error,
+                    "could not persist work-dir relocation failure state"
+                );
+            }
             Err(error)
         }
     }
@@ -1466,6 +2180,7 @@ fn consume_pending_relocation_inner(
 
     write_phase(data_dir, plan, RelocationPhase::Copying)?;
     let cross_volume_copy = publish_conversations(data_dir, plan)?;
+    write_phase(data_dir, plan, RelocationPhase::Verified)?;
     write_phase(data_dir, plan, RelocationPhase::TargetPublished)?;
 
     if target_status != DatasetReceiptStatus::Current {
@@ -1485,6 +2200,10 @@ fn consume_pending_relocation_inner(
     write_phase(data_dir, plan, RelocationPhase::BindingsRebound)?;
 
     let rollback_copy = preserve_cross_volume_source(plan, cross_volume_copy)?;
+    if let Some(backup) = &rollback_copy {
+        write_backup_descriptor(data_dir, plan, backup)?;
+        write_phase(data_dir, plan, RelocationPhase::SourcePreserved)?;
+    }
     factory::finish_v3_dataset_work_root_relocation(
         data_dir,
         source,
@@ -1780,6 +2499,106 @@ mod tests {
         consume_pending_relocation(data.path()).unwrap().unwrap();
         assert!(target.path().join(CONVERSATIONS_DIR).join("history.txt").is_file());
         assert_eq!(factory::finalized_v3_work_dir(data.path()).unwrap().unwrap(), simplified(&fs::canonicalize(target.path()).unwrap()));
+    }
+
+    #[test]
+    fn version_one_plan_is_upgraded_atomically_before_management_action() {
+        let data = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        seed_dataset(data.path(), source.path());
+        let plan = request_work_dir_relocation(data.path(), source.path(), target.path()).unwrap();
+        let mut legacy = serde_json::to_value(&plan).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.insert("version".into(), serde_json::json!(1));
+        for field in [
+            "management_state",
+            "attempt_count",
+            "last_attempt_at",
+            "last_error_class",
+            "last_error_code",
+            "target_created_by_operation",
+            "target_identity",
+        ] {
+            object.remove(field);
+        }
+        crate::dir_config::write_atomic_replace(
+            &plan_path(data.path()),
+            &serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let read_legacy = read_pending_plan(data.path()).unwrap().unwrap();
+        assert_eq!(read_legacy.version, 1);
+        let upgraded = retry_relocation(data.path(), &plan.operation_id).unwrap();
+        assert_eq!(upgraded.version, PLAN_VERSION);
+        assert!(upgraded.target_created_by_operation);
+        assert_eq!(
+            upgraded.target_identity.as_deref(),
+            Some(target_identity(target.path()).as_str())
+        );
+    }
+
+    #[test]
+    fn cancel_cleans_only_the_operation_owned_empty_target() {
+        let data = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let target_parent = tempfile::tempdir().unwrap();
+        let target = target_parent.path().join("new-root");
+        seed_dataset(data.path(), source.path());
+        fs::create_dir(&target).unwrap();
+        let plan = request_work_dir_relocation(data.path(), source.path(), &target).unwrap();
+
+        cancel_relocation(data.path(), &plan.operation_id).unwrap();
+
+        assert!(!target.exists());
+        assert!(source.path().join(CONVERSATIONS_DIR).join("history.txt").is_file());
+        assert!(read_pending_plan(data.path()).unwrap().is_none());
+        assert_eq!(
+            factory::finalized_v3_work_dir(data.path()).unwrap().unwrap(),
+            simplified(&fs::canonicalize(source.path()).unwrap())
+        );
+    }
+
+    #[test]
+    fn third_failure_pauses_and_startup_does_not_consume_the_plan() {
+        let data = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        seed_dataset(data.path(), source.path());
+        let plan = request_work_dir_relocation(data.path(), source.path(), target.path()).unwrap();
+        for _ in 0..3 {
+            let current = read_pending_plan(data.path()).unwrap().unwrap();
+            record_plan_relocation_failure(data.path(), &current, "target is locked").unwrap();
+        }
+        let paused = read_pending_plan(data.path()).unwrap().unwrap();
+        assert_eq!(paused.management_state, RelocationManagementState::Paused);
+        assert_eq!(paused.attempt_count, 3);
+        assert!(consume_pending_relocation(data.path()).unwrap().is_none());
+        assert!(source.path().join(CONVERSATIONS_DIR).join("history.txt").is_file());
+        assert_eq!(
+            read_relocation_operation(data.path()).unwrap().unwrap().state,
+            RelocationManagementState::Paused
+        );
+        assert_eq!(plan.operation_id, paused.operation_id);
+    }
+
+    #[test]
+    fn operation_snapshot_reports_pending_and_completed_states() {
+        let data = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        seed_dataset(data.path(), source.path());
+        let plan = request_work_dir_relocation(data.path(), source.path(), target.path()).unwrap();
+        assert_eq!(
+            read_relocation_operation(data.path()).unwrap().unwrap().state,
+            RelocationManagementState::Planned
+        );
+        consume_pending_relocation(data.path()).unwrap().unwrap();
+        let completed = read_relocation_operation(data.path()).unwrap().unwrap();
+        assert_eq!(completed.operation_id, plan.operation_id);
+        assert_eq!(completed.state, RelocationManagementState::Completed);
+        assert!(!completed.restart_required);
     }
 
     #[test]

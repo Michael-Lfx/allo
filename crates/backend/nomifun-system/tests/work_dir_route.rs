@@ -113,6 +113,14 @@ fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
+fn request(method: &str, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap()
+}
+
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
@@ -337,6 +345,66 @@ async fn pending_change_cannot_be_retargeted_before_restart() {
     let _ = std::fs::remove_dir_all(&data_dir);
     let _ = std::fs::remove_dir_all(&first_root);
     let _ = std::fs::remove_dir_all(&second_root);
+}
+
+#[tokio::test]
+async fn relocation_management_routes_expose_retry_and_cancel_lifecycle() {
+    let data_dir = unique_data_dir("management-lifecycle");
+    let target_root = unique_data_dir("management-target");
+    let target = target_root.join("workspace");
+    let app = setup(data_dir.clone()).await;
+
+    let plan_response = app
+        .clone()
+        .oneshot(post(
+            "/api/system/work-dir",
+            json!({ "work_dir": target.to_str().unwrap() }),
+        ))
+        .await
+        .unwrap();
+    let plan_body = body_json(plan_response).await;
+    let operation_id = plan_body["data"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let info = app
+        .clone()
+        .oneshot(request("GET", "/api/system/work-dir-relocation"))
+        .await
+        .unwrap();
+    assert_eq!(info.status(), StatusCode::OK);
+    let info_body = body_json(info).await;
+    assert_eq!(info_body["data"]["operation"]["operation_id"], operation_id);
+    assert_eq!(info_body["data"]["operation"]["state"], "planned");
+
+    let retry = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/api/system/work-dir-relocation/{operation_id}/retry"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::OK);
+    let retry_body = body_json(retry).await;
+    assert_eq!(retry_body["data"]["restart_required"], true);
+
+    let cancel = app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/api/system/work-dir-relocation/{operation_id}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    assert!(nomifun_common::work_dir_relocation::read_pending_plan(&data_dir)
+        .unwrap()
+        .is_none());
+
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let _ = std::fs::remove_dir_all(&target_root);
 }
 
 #[tokio::test]
