@@ -2,7 +2,12 @@
   "title": "视频生成",
   "subtitle": "从灵感、剧本或小说出发，规划产物并渲染成片。",
   "nav": {
-    "entry": "视频生成"
+    "entry": "视频生成",
+    "hoverCard": {
+      "name": "项目名",
+      "id": "项目 ID",
+      "status": "状态"
+    }
   },
   "list": {
     "searchPlaceholder": "搜索任务...",

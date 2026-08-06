@@ -1,15 +1,17 @@
 /**
  * Sider "视频生成" group — WorkpathDrawer-aligned collapsible submenu.
  * Parent click toggles expand/collapse and opens the video-generation home.
+ * Recent rows show a spinning loader when planning / rendering.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Tooltip } from '@arco-design/web-react';
-import { FolderClose, FolderOpen, VideoOne } from '@icon-park/react';
+import { Popover, Tooltip } from '@arco-design/web-react';
+import { FolderClose, FolderOpen, Loading, VideoOne } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
-import { listSessions } from '@renderer/pages/videoGeneration/api';
+import { isActiveStatus, listSessions } from '@renderer/pages/videoGeneration/api';
+import VideoGenerationHoverCard from '@renderer/pages/videoGeneration/components/VideoGenerationHoverCard';
 import {
   RECENT_VIDEO_GENERATION_VISIBLE,
   mergeRecentVideoGenerationProjects,
@@ -19,6 +21,14 @@ import {
 } from '@renderer/pages/videoGeneration/routeMemory';
 
 const NAV_EXPANDED_KEY = 'flowy.videoGeneration.navExpanded';
+/** Refresh frequency while any recent project is actively planning/rendering. */
+const ACTIVE_POLL_MS = 4000;
+
+type RecentNavItem = {
+  id: string;
+  title: string;
+  status?: string | null;
+};
 
 function readNavExpandedDefault(fallback: boolean): boolean {
   try {
@@ -71,7 +81,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
 }) => {
   const { t } = useTranslation();
   const label = t('videoGeneration.nav.entry', { defaultValue: '视频生成' });
-  const [items, setItems] = useState<Array<{ id: string; title: string }>>([]);
+  const [items, setItems] = useState<RecentNavItem[]>([]);
   const [expanded, setExpanded] = useState(() => readNavExpandedDefault(true));
   const syncedActiveRouteRef = useRef<string | null>(null);
 
@@ -85,10 +95,15 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         RECENT_VIDEO_GENERATION_VISIBLE
       );
       setItems((prev) => {
-        // Avoid needless re-renders when ids/titles are unchanged (keeps list visually stable).
+        // Avoid needless re-renders when ids/titles/status are unchanged.
         if (
           prev.length === merged.length &&
-          prev.every((row, i) => row.id === merged[i]?.id && row.title === merged[i]?.title)
+          prev.every(
+            (row, i) =>
+              row.id === merged[i]?.id &&
+              row.title === merged[i]?.title &&
+              (row.status ?? null) === (merged[i]?.status ?? null)
+          )
         ) {
           return prev;
         }
@@ -102,10 +117,16 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         local.slice(0, RECENT_VIDEO_GENERATION_VISIBLE).map((e) => ({
           id: e.id,
           title: e.title?.trim() || '',
+          status: null,
         }))
       );
     }
   }, []);
+
+  const hasActiveRecent = useMemo(
+    () => items.some((item) => isActiveStatus(item.status)),
+    [items]
+  );
 
   useEffect(() => {
     void refresh();
@@ -118,6 +139,15 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [refresh]);
+
+  // Keep sider spinners in sync while any recent project is planning/rendering.
+  useEffect(() => {
+    if (!hasActiveRecent) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, ACTIVE_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [hasActiveRecent, refresh]);
 
   // Mirror workpath: when a project route is active, force-expand once per route.
   useEffect(() => {
@@ -217,13 +247,19 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
               t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
             const short = truncateTitle(fullTitle);
             const active = activeSessionId === item.id;
-            return (
-              <Tooltip key={item.id} content={fullTitle} position='right'>
+            const busy = isActiveStatus(item.status);
+            const busyHint =
+              item.status === 'planning'
+                ? t('videoGeneration.status.planning', { defaultValue: '规划中' })
+                : item.status === 'rendering'
+                  ? t('videoGeneration.status.rendering', { defaultValue: '生成中' })
+                  : '';
+            const row = (
                 <div
                   role='button'
                   tabIndex={0}
                   data-testid={`sider-video-generation-recent-${item.id}`}
-                  title={fullTitle}
+                  data-busy={busy ? 'true' : 'false'}
                   className={classNames(
                     // Match ConversationRow (dimIcon) — use div, not <button>, to avoid UA black borders.
                     'chat-history__item conversation-item h-34px rd-10px flex items-center group cursor-pointer relative overflow-hidden shrink-0 min-w-0 transition-colors justify-start gap-8px pl-42px pr-16px',
@@ -247,11 +283,37 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                     onOpenProject(item.id);
                   }}
                 >
+                  {busy ? (
+                    <Loading
+                      theme='outline'
+                      size={14}
+                      fill='currentColor'
+                      className='block shrink-0 animate-spin text-[rgb(var(--primary-6))]'
+                      style={{ lineHeight: 0 }}
+                      aria-label={busyHint}
+                    />
+                  ) : null}
                   <span className='chat-history__item-name min-w-0 flex-1 truncate text-14px font-[500] leading-24px text-t-primary'>
                     {short}
                   </span>
                 </div>
-              </Tooltip>
+            );
+            return (
+              <Popover
+                key={item.id}
+                trigger='hover'
+                position='right'
+                content={
+                  <VideoGenerationHoverCard
+                    id={item.id}
+                    title={fullTitle}
+                    status={item.status}
+                  />
+                }
+                triggerProps={{ mouseEnterDelay: 400 }}
+              >
+                {row}
+              </Popover>
             );
           })}
         </div>

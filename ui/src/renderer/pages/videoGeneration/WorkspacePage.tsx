@@ -6,11 +6,11 @@
  * Sections (one job each):
  * 1. Header — title + locked workflow badge + status
  * 2. Technical artifacts — tree + editable preview (top)
- * 3. Source input — idea / script / novel + Plan
- * 4. Render CTA — above storyboard once planned
- * 5. Storyboard — inline shot revise + filmstrip
- * 6. Progress polling (1s while planning/rendering)
- * 7. Final video player when done
+ * 4. Active status (Planning / Rendering) — above the story brief
+ * 5. Source input — idea / script / novel + Plan
+ * 6. Render CTA — above storyboard once planned
+ * 7. Storyboard — inline shot revise + filmstrip
+ * 8. Final video player when done
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -1098,6 +1098,23 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
+        {runStatus && (busy || isFailed) ? (
+          <section
+            className={[
+              styles.studioPanel,
+              busy ? styles.progressGlow : '',
+              'p-16px',
+            ].join(' ')}
+          >
+            <ProgressTimeline
+              status={runStatus}
+              onCancel={() => void handleCancel()}
+              cancelling={cancelling}
+              models={models}
+            />
+          </section>
+        ) : null}
+
         {!hasStoryboard ? (
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
             <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
@@ -1267,23 +1284,6 @@ const WorkspacePage: React.FC = () => {
             </div>
           </details>
         )}
-
-        {runStatus && (busy || isFailed) ? (
-          <section
-            className={[
-              styles.studioPanel,
-              busy ? styles.progressGlow : '',
-              'p-16px',
-            ].join(' ')}
-          >
-            <ProgressTimeline
-              status={runStatus}
-              onCancel={() => void handleCancel()}
-              cancelling={cancelling}
-              models={models}
-            />
-          </section>
-        ) : null}
 
         {hasStoryboard ? (
           <section className={`${styles.studioPanel} flex flex-wrap items-center justify-between gap-14px p-16px`}>

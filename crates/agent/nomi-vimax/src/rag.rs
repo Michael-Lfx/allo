@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::backends::{FlowyVimaxServices, VimaxChat};
 use crate::error::VimaxResult;
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 fn cmp_f32_desc(a: f32, b: f32) -> std::cmp::Ordering {
     b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Less)
@@ -174,12 +174,11 @@ from the Passages list (the [rank] numbers), most relevant first. \
 Drop passages with relevance below ~0.7."
     );
     let user = format!("Query:\n{query}\n\n{body}");
-    let raw = chat.complete_text(&system, &user).await?;
     #[derive(Deserialize)]
     struct Resp {
         indices: Vec<usize>,
     }
-    let resp: Resp = parse_llm_json(&raw)?;
+    let resp: Resp = complete_and_parse_llm_json(chat.as_ref(), &system, &user).await?;
     let mut out = Vec::new();
     for rank in resp.indices {
         if let Some((orig, _)) = candidates.get(rank)

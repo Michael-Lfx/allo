@@ -203,28 +203,39 @@ export function videoGenerationEntryPath(): string {
  */
 export function mergeRecentVideoGenerationProjects(
   recent: RecentVideoGenerationEntry[],
-  sessions: Array<{ id: string; title?: string | null }>,
+  sessions: Array<{ id: string; title?: string | null; status?: string | null }>,
   limit = RECENT_VIDEO_GENERATION_VISIBLE
-): Array<{ id: string; title: string }> {
+): Array<{ id: string; title: string; status?: string | null }> {
   const byId = new Map(
-    sessions.map((s) => [s.id, (s.title ?? '').trim() || ''])
+    sessions.map((s) => [
+      s.id,
+      { title: (s.title ?? '').trim() || '', status: s.status ?? null },
+    ])
   );
-  const out: Array<{ id: string; title: string }> = [];
+  const out: Array<{ id: string; title: string; status?: string | null }> = [];
   const used = new Set<string>();
 
   for (const entry of recent) {
     if (out.length >= limit) break;
-    if (!byId.has(entry.id)) continue; // deleted / unknown
+    const hit = byId.get(entry.id);
+    if (!hit) continue; // deleted / unknown
     used.add(entry.id);
-    const title = byId.get(entry.id) || entry.title || '';
-    out.push({ id: entry.id, title });
+    out.push({
+      id: entry.id,
+      title: hit.title || entry.title || '',
+      status: hit.status,
+    });
   }
 
   for (const s of sessions) {
     if (out.length >= limit) break;
     if (used.has(s.id)) continue;
     used.add(s.id);
-    out.push({ id: s.id, title: (s.title ?? '').trim() });
+    out.push({
+      id: s.id,
+      title: (s.title ?? '').trim(),
+      status: s.status ?? null,
+    });
   }
 
   return out;

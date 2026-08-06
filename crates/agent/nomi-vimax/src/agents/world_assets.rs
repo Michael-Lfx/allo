@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backends::{VimaxChat, VimaxImage};
 use crate::error::{VimaxError, VimaxResult};
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 use crate::session::{read_json_artifact, write_json_artifact};
 
 use super::formats::WORLD_ASSETS;
@@ -15,16 +15,26 @@ use super::formats::WORLD_ASSETS;
 /// Extracted environment plate for global consistency.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentAsset {
+    #[serde(default)]
     pub idx: i32,
+    /// Location label; models sometimes emit `name` / `title` instead of `slugline`.
+    #[serde(default)]
+    #[serde(alias = "name", alias = "title", alias = "Slugline", alias = "location")]
     pub slugline: String,
+    #[serde(default)]
     pub description: String,
 }
 
 /// Key prop / object that must stay consistent across shots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PropAsset {
+    #[serde(default)]
     pub idx: i32,
+    /// Object label; tolerate alternate keys from weaker JSON models.
+    #[serde(alias = "title", alias = "label", alias = "slugline", alias = "Name")]
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub description: String,
 }
 
@@ -68,8 +78,35 @@ impl WorldAssetsPlanner {
         let user = include_str!("../../prompts/world_assets__human_prompt_template_extract.txt")
             .replace("{style}", &style)
             .replace("{text}", &text);
-        let raw = self.chat.complete_text(&system, &user).await?;
-        let mut spec: WorldAssetsSpec = parse_llm_json(&raw)?;
+        let mut spec: WorldAssetsSpec =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
+        // Drop empty shells; backfill prop names from description when models omit `name`.
+        spec.environments
+            .retain(|e| !e.slugline.trim().is_empty() || !e.description.trim().is_empty());
+        for e in &mut spec.environments {
+            if e.slugline.trim().is_empty() {
+                e.slugline = e
+                    .description
+                    .chars()
+                    .take(48)
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+            }
+        }
+        for p in &mut spec.props {
+            if p.name.trim().is_empty() {
+                p.name = p
+                    .description
+                    .chars()
+                    .take(32)
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+            }
+        }
+        spec.props
+            .retain(|p| !p.name.trim().is_empty() || !p.description.trim().is_empty());
         if spec.environments.len() > 5 {
             spec.environments.truncate(5);
         }
@@ -768,7 +805,7 @@ fn match_tokens(blob: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{rank_world_pairs_for_frame, strip_people_mentions};
+    use super::{WorldAssetsSpec, rank_world_pairs_for_frame, strip_people_mentions};
     use std::path::PathBuf;
 
     #[test]
@@ -813,5 +850,17 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("coffee")
         );
+    }
+
+    #[test]
+    fn world_assets_json_tolerates_name_aliases_and_defaults() {
+        use crate::json_util::parse_llm_json;
+        let raw = r#"{
+          "environments":[{"idx":0,"name":"INT. STUDIO - DAY","description":"beige void"}],
+          "props":[{"title":"red umbrella","description":"oil-paper"}]
+        }"#;
+        let spec: WorldAssetsSpec = parse_llm_json(raw).expect("parse");
+        assert_eq!(spec.environments[0].slugline, "INT. STUDIO - DAY");
+        assert_eq!(spec.props[0].name, "red umbrella");
     }
 }

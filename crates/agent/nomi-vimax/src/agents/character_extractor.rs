@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::backends::VimaxChat;
 use crate::domain::CharacterInScene;
 use crate::error::VimaxResult;
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats::CHARACTERS;
 
@@ -35,12 +35,12 @@ impl CharacterExtractor {
         .replace("{script}", script)
         .replace("{style}", &style);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]
         struct Resp {
             characters: Vec<CharacterInScene>,
         }
-        let resp: Resp = parse_llm_json(&raw)?;
+        let resp: Resp =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         Ok(resp.characters)
     }
 }

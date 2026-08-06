@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::backends::VimaxChat;
 use crate::error::{VimaxError, VimaxResult};
-use crate::json_util::parse_llm_json;
+use crate::json_util::{complete_and_parse_llm_json, complete_vision_and_parse_llm_json};
 
 use super::formats::REF_IMAGES;
 
@@ -47,9 +47,13 @@ impl ReferenceImageSelector {
                 "../../prompts/reference_image_selector__system_prompt_template_select_reference_images_only_text.txt"
             )
             .replace("{format_instructions}", REF_IMAGES);
-            let raw = self.chat.complete_text(&system, &user).await?;
-            let indices = parse_indices(&raw)?;
-            filtered = select_by_indices(&filtered, &indices)?;
+            #[derive(Deserialize)]
+            struct PrefilterResp {
+                ref_image_indices: Vec<usize>,
+            }
+            let resp: PrefilterResp =
+                complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
+            filtered = select_by_indices(&filtered, &resp.ref_image_indices)?;
         }
 
         // Multimodal refinement.
@@ -71,31 +75,24 @@ impl ReferenceImageSelector {
         )
         .replace("{format_instructions}", REF_IMAGES);
 
-        let raw = self
-            .chat
-            .complete_vision(&system, &user_parts_text, &image_paths)
-            .await?;
         #[derive(Deserialize)]
         struct Resp {
             ref_image_indices: Vec<usize>,
             text_prompt: String,
         }
-        let resp: Resp = parse_llm_json(&raw)?;
+        let resp: Resp = complete_vision_and_parse_llm_json(
+            self.chat.as_ref(),
+            &system,
+            &user_parts_text,
+            &image_paths,
+        )
+        .await?;
         let selected = select_by_indices(&filtered, &resp.ref_image_indices)?;
         Ok(SelectorOutput {
             reference_image_path_and_text_pairs: selected,
             text_prompt: resp.text_prompt,
         })
     }
-}
-
-fn parse_indices(raw: &str) -> VimaxResult<Vec<usize>> {
-    #[derive(Deserialize)]
-    struct Resp {
-        ref_image_indices: Vec<usize>,
-    }
-    let resp: Resp = parse_llm_json(raw)?;
-    Ok(resp.ref_image_indices)
 }
 
 fn select_by_indices(
