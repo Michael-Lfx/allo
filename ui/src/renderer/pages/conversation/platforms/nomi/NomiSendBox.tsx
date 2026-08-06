@@ -67,7 +67,7 @@ import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTi
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
-import { Message, Tag } from '@arco-design/web-react';
+import { Alert, Button, Message, Tag } from '@arco-design/web-react';
 import { Brain, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -1016,6 +1016,11 @@ const NomiSendBox: React.FC<{
     }
   };
 
+  const modelUnavailable =
+    !hideModeSelector &&
+    !modelSelection.isModelCatalogLoading &&
+    !modelSelection.isCurrentModelAvailable;
+
   return (
     <div className={CHAT_COMPOSER_WRAPPER_CLASSES}>
       <CommandQueuePanel
@@ -1031,6 +1036,23 @@ const NomiSendBox: React.FC<{
         onRemove={remove}
         onClear={clear}
       />
+      {modelUnavailable && (
+        <Alert
+          className='mb-8px'
+          type='warning'
+          content={
+            <div className='flex flex-wrap items-center gap-8px'>
+              <span>{t('conversation.chat.modelUnavailableHint')}</span>
+              <Button type='text' size='small' onClick={modelSelection.refreshModelCatalog}>
+                {t('common.retry')}
+              </Button>
+              <a className='text-primary-6 text-12px' href='#/models?section=models'>
+                {t('conversation.chat.openModelSettings')}
+              </a>
+            </div>
+          }
+        />
+      )}
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
@@ -1044,9 +1066,9 @@ const NomiSendBox: React.FC<{
           setAtPath(items);
         }}
         loading={isBusy}
-        disabled={!current_model?.use_model}
+        disabled={!current_model?.use_model || !modelSelection.isCurrentModelAvailable}
         placeholder={
-          current_model?.use_model
+          current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {
                 backend: agent_name || 'Flowy',
                 defaultValue: `Send message to {{backend}}...`,

@@ -11,6 +11,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export type NomiModelSelection = {
   current_model?: TProviderWithModel;
+  isCurrentModelAvailable: boolean;
+  isModelCatalogLoading: boolean;
+  modelCatalogError?: Error;
+  refreshModelCatalog: () => void;
   providers: IProvider[];
   getAvailableModels: (provider: IProvider) => string[];
   handleSelectModel: (provider: IProvider, modelName: string) => Promise<void>;
@@ -39,7 +43,8 @@ export const useNomiModelSelection = ({
   const { formatModelLabel } = useModelProviderList();
   // Unified chat catalog — the model list comes from the backend resolve
   // (profiles + inference), not from frontend name heuristics.
-  const { groups } = useModelsForTask('chat');
+  const { groups, isLoading: isModelCatalogLoading, error: modelCatalogError, refresh: refreshModelCatalog } =
+    useModelsForTask('chat');
 
   // Nomicore does not support Google Auth — filter it out
   const providers = useMemo(
@@ -59,6 +64,11 @@ export const useNomiModelSelection = ({
     (provider: IProvider): string[] => modelsByProvider.get(provider.id) ?? [],
     [modelsByProvider]
   );
+
+  const isCurrentModelAvailable = useMemo(() => {
+    if (!current_model?.id || !current_model.use_model) return false;
+    return modelsByProvider.get(current_model.id)?.includes(current_model.use_model) ?? false;
+  }, [current_model?.id, current_model?.use_model, modelsByProvider]);
 
   const handleSelectModel = useCallback(
     async (provider: IProvider, modelName: string) => {
@@ -86,6 +96,10 @@ export const useNomiModelSelection = ({
 
   return {
     current_model,
+    isCurrentModelAvailable,
+    isModelCatalogLoading,
+    modelCatalogError,
+    refreshModelCatalog,
     providers,
     getAvailableModels,
     handleSelectModel,

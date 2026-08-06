@@ -41,14 +41,49 @@ export interface ProviderCatalogRefreshResult {
   stale?: boolean;
 }
 
+export interface ProviderCatalogRefreshOptions {
+  force?: boolean;
+  accountId?: string;
+  storageGeneration?: string;
+}
+
 const isModelCatalogCacheKey = (key: unknown): boolean =>
   key === PROVIDERS_SWR_KEY || (typeof key === 'string' && key.startsWith('models-for-task:'));
 
 let providerCatalogGeneration = 0;
+const PROVIDER_CATALOG_REFRESH_WINDOW_MS = 60_000;
+let providerCatalogAccountId = 'unknown-account';
+let providerCatalogStorageGeneration = 'unknown-generation';
+let lastProviderCatalogRefreshAt = 0;
+let lastProviderCatalogRefreshResult: ProviderCatalogRefreshResult | null = null;
+let providersAutoRefreshPromise: Promise<ProviderCatalogRefreshResult> | null = null;
+let providersAutoRefreshContextKey: string | null = null;
+
+const getProviderCatalogContextKey = (options: ProviderCatalogRefreshOptions = {}): string =>
+  `${options.accountId ?? providerCatalogAccountId}:${options.storageGeneration ?? providerCatalogStorageGeneration}`;
+
+/** Set the account + dataset namespace used by the shared catalog coordinator. */
+export function setProviderCatalogContext(accountId: string | undefined, storageGeneration: string | undefined): void {
+  const nextKey = `${accountId ?? 'unknown-account'}:${storageGeneration ?? 'unknown-generation'}`;
+  const currentKey = `${providerCatalogAccountId}:${providerCatalogStorageGeneration}`;
+  if (nextKey === currentKey) return;
+  providerCatalogAccountId = accountId ?? 'unknown-account';
+  providerCatalogStorageGeneration = storageGeneration ?? 'unknown-generation';
+  providerCatalogGeneration += 1;
+  lastProviderCatalogRefreshAt = 0;
+  lastProviderCatalogRefreshResult = null;
+}
+
+/** Invalidate the time window without touching the SWR entries itself. */
+export function invalidateProviderCatalogCoordinator(): void {
+  lastProviderCatalogRefreshAt = 0;
+  lastProviderCatalogRefreshResult = null;
+}
 
 /** Clear all provider/model catalog entries before an account or generation transition. */
 export async function clearAvailableModelsCache(): Promise<void> {
   providerCatalogGeneration += 1;
+  invalidateProviderCatalogCoordinator();
   await mutate(isModelCatalogCacheKey, undefined, { revalidate: false });
 }
 
@@ -58,7 +93,24 @@ export async function clearAvailableModelsCache(): Promise<void> {
  * distinguish a usable cached catalog (`syncError` + models) from a truly
  * empty model environment.
  */
-export async function refreshProvidersCatalog(): Promise<ProviderCatalogRefreshResult> {
+export async function refreshProvidersCatalog(
+  options: ProviderCatalogRefreshOptions = {}
+): Promise<ProviderCatalogRefreshResult> {
+  const contextKey = getProviderCatalogContextKey(options);
+  if (
+    !options.force &&
+    lastProviderCatalogRefreshResult &&
+    contextKey === `${providerCatalogAccountId}:${providerCatalogStorageGeneration}` &&
+    Date.now() - lastProviderCatalogRefreshAt < PROVIDER_CATALOG_REFRESH_WINDOW_MS
+  ) {
+    return lastProviderCatalogRefreshResult;
+  }
+
+  if (providersAutoRefreshPromise && providersAutoRefreshContextKey === contextKey) {
+    return providersAutoRefreshPromise;
+  }
+
+  const refreshPromise = (async (): Promise<ProviderCatalogRefreshResult> => {
   await clearAvailableModelsCache();
   const requestGeneration = providerCatalogGeneration;
   let syncError: Error | undefined;
@@ -72,7 +124,10 @@ export async function refreshProvidersCatalog(): Promise<ProviderCatalogRefreshR
     console.warn('[providers] Failed to sync chat model catalog:', syncError);
   }
   const providers = await fetchProviders();
-  if (requestGeneration !== providerCatalogGeneration) {
+  if (
+    requestGeneration !== providerCatalogGeneration ||
+    contextKey !== `${providerCatalogAccountId}:${providerCatalogStorageGeneration}`
+  ) {
     return { providers, syncError, stale: true };
   }
   await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
@@ -81,20 +136,34 @@ export async function refreshProvidersCatalog(): Promise<ProviderCatalogRefreshR
     undefined,
     { revalidate: true }
   );
-  return { providers, syncError };
+  const result = { providers, syncError };
+  lastProviderCatalogRefreshAt = Date.now();
+  lastProviderCatalogRefreshResult = result;
+  return result;
+  })();
+  providersAutoRefreshPromise = refreshPromise;
+  providersAutoRefreshContextKey = contextKey;
+  void refreshPromise.then(
+    () => {
+      if (providersAutoRefreshPromise === refreshPromise) {
+        providersAutoRefreshPromise = null;
+        providersAutoRefreshContextKey = null;
+      }
+    },
+    () => {
+      if (providersAutoRefreshPromise === refreshPromise) {
+        providersAutoRefreshPromise = null;
+        providersAutoRefreshContextKey = null;
+      }
+    }
+  );
+  return refreshPromise;
 }
 
-// Deduplicate concurrent selector mounts without introducing a time-based
-// cache: every fresh mount still gets a fresh catalog sync.
-let providersAutoRefreshPromise: Promise<ProviderCatalogRefreshResult> | null = null;
-
-export function refreshProvidersCatalogIfStale(): Promise<ProviderCatalogRefreshResult> {
-  if (!providersAutoRefreshPromise) {
-    providersAutoRefreshPromise = refreshProvidersCatalog().finally(() => {
-      providersAutoRefreshPromise = null;
-    });
-  }
-  return providersAutoRefreshPromise;
+export function refreshProvidersCatalogIfStale(
+  options: ProviderCatalogRefreshOptions = {}
+): Promise<ProviderCatalogRefreshResult> {
+  return refreshProvidersCatalog(options);
 }
 
 export const useProvidersQuery = () => {

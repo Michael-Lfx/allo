@@ -427,6 +427,8 @@
   },
   "chat": {
     "noModelSelected": "No model selected for current session, cannot send message",
+    "modelUnavailableHint": "The current model is unavailable. Retry recovery or choose another model.",
+    "openModelSettings": "Open model settings",
     "defaultModelUnavailable": "Your saved default model is unavailable. Choose a model again.",
     "modelHealedToDefault": "Switched to your default model {{model}}",
     "visionModelHint": "The selected model {{model}} may not support image input; image attachments may be ignored or fail.",

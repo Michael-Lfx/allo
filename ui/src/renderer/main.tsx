@@ -109,54 +109,28 @@ const CloudModelEnvironmentGate: React.FC<PropsWithChildren> = ({ children }) =>
   const { status, modelStatus, retryModelEnvironment } = useCloudAuth();
   const { t } = useTranslation();
 
-  // Do not paint the authenticated shell while the cloud session is still
-  // being checked. The old ordering allowed the conversation route to mount
-  // model selectors during the login/restart gap, before sync and the task
-  // resolver had produced an authoritative catalog.
-  if (status === 'checking') {
-    return (
-      <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)]'>
-        <div className='text-16px font-medium text-t-primary'>{t('common.cloudModelEnvironment.restoringTitle')}</div>
-        <div className='text-13px text-t-secondary'>{t('common.cloudModelEnvironment.restoringDescription')}</div>
-      </div>
-    );
-  }
-
   if (status !== 'authenticated' || modelStatus === 'ready' || modelStatus === 'idle') {
     return <>{children}</>;
-  }
-
-  if (modelStatus === 'restoring') {
-    return (
-      <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)]'>
-        <div className='text-16px font-medium text-t-primary'>{t('common.cloudModelEnvironment.restoringTitle')}</div>
-        <div className='text-13px text-t-secondary'>{t('common.cloudModelEnvironment.restoringDescription')}</div>
-      </div>
-    );
-  }
-
-  if (modelStatus === 'failed') {
-    return (
-      <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)] px-24px'>
-        <Alert
-          type='error'
-          title={t('common.cloudModelEnvironment.failedTitle')}
-          content={t('common.cloudModelEnvironment.failedDescription')}
-          className='max-w-520px'
-        />
-        <Button type='primary' onClick={() => void retryModelEnvironment()}>
-          {t('common.cloudModelEnvironment.retry')}
-        </Button>
-      </div>
-    );
   }
 
   return (
     <div className='flex h-full min-h-100vh flex-col bg-[var(--color-bg-1)]'>
       <Alert
-        type='warning'
-        title={t('common.cloudModelEnvironment.degradedTitle')}
-        content={t('common.cloudModelEnvironment.degradedDescription')}
+        type={modelStatus === 'failed' ? 'error' : 'warning'}
+        title={
+          modelStatus === 'restoring'
+            ? t('common.cloudModelEnvironment.restoringTitle')
+            : modelStatus === 'failed'
+              ? t('common.cloudModelEnvironment.failedTitle')
+              : t('common.cloudModelEnvironment.degradedTitle')
+        }
+        content={
+          modelStatus === 'restoring'
+            ? t('common.cloudModelEnvironment.restoringDescription')
+            : modelStatus === 'failed'
+              ? t('common.cloudModelEnvironment.failedDescription')
+              : t('common.cloudModelEnvironment.degradedDescription')
+        }
         action={
           <Button type='text' size='small' onClick={() => void retryModelEnvironment()}>
             {t('common.cloudModelEnvironment.retry')}
@@ -204,8 +178,9 @@ const StartupRecoveryPanel: React.FC<{
 };
 
 const Main = () => {
-  const { ready, status, logout: localLogout } = useAuth();
+  const { ready, status } = useAuth();
   const { ready: cloudReady, refresh: refreshCloudAuth, logout: cloudLogout, status: cloudStatus } = useCloudAuth();
+  const { logout: localLogout } = useAuth();
   const [configReady, setConfigReady] = useState(false);
   const [configError, setConfigError] = useState<Error | null>(null);
   const [startupRetryToken, setStartupRetryToken] = useState(0);
@@ -256,7 +231,7 @@ const Main = () => {
         if (generationChanged) {
           await clearAvailableModelsCache();
           await configService.reload();
-          await refreshCloudAuth();
+          await refreshCloudAuth({ forceModelSync: true });
         }
         if (active) setConfigReady(true);
       })
