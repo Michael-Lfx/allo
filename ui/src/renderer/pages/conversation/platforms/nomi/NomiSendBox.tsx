@@ -62,6 +62,7 @@ import {
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
+import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
@@ -511,6 +512,10 @@ const NomiSendBox: React.FC<{
         return;
       }
       if (!claimInitialMessageDelivery(storageKey)) return;
+
+      // Split the post-navigation wait: everything before this mark is mount +
+      // model resolution; everything after is the first-turn POST round-trip.
+      guidTransitionMark('destinationMounted');
 
       let attemptedIdempotencyKey: string | null = null;
       try {

@@ -9,7 +9,13 @@
  * settles (wired to the transition controller's onSettled).
  */
 
-export type GuidTransitionMark = 'createResolved' | 'configureSettled' | 'navigateDispatched';
+export type GuidTransitionMark =
+  | 'createResolved'
+  | 'configureSettled'
+  | 'navigateDispatched'
+  /** Destination page mounted and began consuming the initial message —
+   * splits the post-navigation wait into mount (before) vs POST (after). */
+  | 'destinationMounted';
 export type GuidTransitionOutcome = 'revealed' | 'timeout' | 'aborted';
 
 type TransitionSession = {

@@ -65,7 +65,13 @@ export type PendingTransitionController = {
   stop: () => void;
 };
 
-const DEFAULT_REVEAL_TIMEOUT_MS = 1500;
+/**
+ * Hard fallback when the destination never signals reveal. Measured healthy
+ * transitions settle in ~0.7–1.1s (guid-transition timing); 3s keeps the
+ * backstop clear of slow machines and cold chunk loads while still bounding
+ * the wait when the destination genuinely fails.
+ */
+const DEFAULT_REVEAL_TIMEOUT_MS = 3000;
 const DEFAULT_EXIT_DURATION_MS = 140;
 
 /**
