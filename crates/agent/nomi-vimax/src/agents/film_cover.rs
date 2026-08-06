@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 
 use crate::backends::{VimaxChat, VimaxImage};
 use crate::error::VimaxResult;
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 use crate::media_local::{self, is_usable_image_file};
 use crate::progress::ProgressCallback;
 
@@ -180,14 +180,13 @@ Rules:
         "Visual style: {style}\nPoster frame: {frame} ({aspect})\n\nStory / synopsis:\n{syn}\n\nAvailable reference assets:\n{asset_lines}\nChoose include_cast, invent a short title_text, and write the poster prompt."
     );
 
-    let raw = chat.complete_text(system, &user).await?;
-    match parse_llm_json::<CoverBrief>(&raw) {
+    match complete_and_parse_llm_json::<CoverBrief>(chat, system, &user).await {
         Ok(mut b) => {
             b.title_text = sanitize_title_text(&b.title_text);
             Ok(b)
         }
         Err(e) => {
-            tracing::warn!(error = %e, "cover brief JSON parse failed; using defaults");
+            tracing::warn!(error = %e, "cover brief JSON parse failed after retries; using defaults");
             let title = infer_fallback_title(synopsis);
             Ok(CoverBrief {
                 include_cast: candidates.iter().any(|(_, k)| k == "cast"),

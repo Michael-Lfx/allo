@@ -101,16 +101,16 @@ describe('videoGeneration routeMemory', () => {
         { id: 'local-1', title: 'Old', at: 2 },
       ],
       [
-        { id: 'srv-1', title: 'Server One' },
-        { id: 'local-1', title: 'Local One' },
+        { id: 'srv-1', title: 'Server One', status: 'idle' },
+        { id: 'local-1', title: 'Local One', status: 'planning' },
         { id: 'srv-2', title: 'Server Two' },
       ],
       3
     );
     expect(merged).toEqual([
-      { id: 'local-1', title: 'Local One' },
-      { id: 'srv-1', title: 'Server One' },
-      { id: 'srv-2', title: 'Server Two' },
+      { id: 'local-1', title: 'Local One', status: 'planning' },
+      { id: 'srv-1', title: 'Server One', status: 'idle' },
+      { id: 'srv-2', title: 'Server Two', status: null },
     ]);
   });
 });

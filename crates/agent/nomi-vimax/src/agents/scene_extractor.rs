@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::backends::VimaxChat;
 use crate::domain::{Event, Scene};
 use crate::error::VimaxResult;
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats::SCENE;
 
@@ -68,8 +68,8 @@ impl SceneExtractor {
         .replace("{context_fragments}", &fragments)
         .replace("{previous_scenes}", &prev);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
-        let mut scene: Scene = parse_llm_json(&raw)?;
+        let mut scene: Scene =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         scene.index = previous.len() as i32;
         Ok(scene)
     }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::backends::VimaxChat;
 use crate::domain::Event;
 use crate::error::{VimaxError, VimaxResult};
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats::EVENT;
 
@@ -63,8 +63,8 @@ impl EventExtractor {
         .replace("{novel_text}", novel_text)
         .replace("{extracted_events}", &extracted_str);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
-        let mut event: Event = parse_llm_json(&raw)?;
+        let mut event: Event =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         if event.index != extracted.len() as i32 {
             // Soft-correct common LLM index drift.
             event.index = extracted.len() as i32;
