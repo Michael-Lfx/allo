@@ -15,7 +15,7 @@ use nomi_config::ServerConfig;
 use nomifun_common::encrypt_string;
 use nomifun_db::{
     CreateProviderParams, IProviderModelRepository, IProviderRepository, ProviderModelProfileSeed,
-    ProviderModelUpdate, UpdateProviderParams,
+    UpdateProviderParams,
 };
 use tracing::{info, warn};
 
@@ -273,20 +273,6 @@ fn promote_default_model(model_ids: &mut Vec<String>, default_model: &str) {
     model_ids.insert(0, default_model.to_string());
 }
 
-fn prune_model_enabled_json(
-    existing: Option<&str>,
-    keep_ids: &[String],
-) -> Result<String, String> {
-    let Some(raw) = existing.map(str::trim).filter(|s| !s.is_empty() && *s != "null") else {
-        return Ok("{}".to_string());
-    };
-    let mut map: HashMap<String, bool> =
-        serde_json::from_str(raw).map_err(|e| format!("parse model_enabled: {e}"))?;
-    let keep: std::collections::HashSet<&str> = keep_ids.iter().map(String::as_str).collect();
-    map.retain(|k, _| keep.contains(k.as_str()));
-    serde_json::to_string(&map).map_err(|e| format!("serialize model_enabled: {e}"))
-}
-
 /// Disable built-in provider when the user logs out (token no longer valid).
 pub async fn disable_flowy_builtin_provider(
     provider_repo: &Arc<dyn IProviderRepository>,
@@ -316,7 +302,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use nomifun_db::{CreateProviderParams, SqliteProviderModelRepository, SqliteProviderRepository};
+    use nomifun_db::{
+        CreateProviderParams, ProviderModelUpdate, SqliteProviderModelRepository,
+        SqliteProviderRepository,
+    };
 
     #[test]
     fn promote_default_model_reorders_when_present() {
@@ -428,16 +417,6 @@ mod tests {
         assert_eq!(limits.get("AIPC-qwen-long"), Some(&200_000));
         assert_eq!(limits.get("AIPC-tiny"), Some(&32_000));
         assert!(!limits.contains_key("AIPC-no-extra"));
-    }
-
-    #[test]
-    fn prune_model_enabled_removes_delisted_keys() {
-        let raw = r#"{"AIPC-keep":true,"AIPC-gone":false}"#;
-        let pruned = prune_model_enabled_json(Some(raw), &["AIPC-keep".into()]).unwrap();
-        let map: HashMap<String, bool> = serde_json::from_str(&pruned).unwrap();
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("AIPC-keep"), Some(&true));
-        assert!(!map.contains_key("AIPC-gone"));
     }
 
     #[tokio::test]
