@@ -675,6 +675,10 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     guidTransitionStart();
     beginPending?.({
       input,
+      // The conversation is created with the raw input as its name (verbatim
+      // for normal sends, the requirement tag for AutoWork). The overlay's
+      // header replica mirrors it so the title doesn't pop at reveal.
+      title: planGuidEntry(input, autoWork).conversationName,
       files: files.length > 0 ? files : undefined,
       sendsInitialMessage: !isAutoWorkEntry(autoWork),
     });

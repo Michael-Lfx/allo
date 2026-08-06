@@ -10,6 +10,8 @@ export type PendingConversationStage = 'validating' | 'creating' | 'configuring'
 export type PendingConversation = {
   /** The first message the user typed (echoed as a right-aligned bubble). */
   input: string;
+  /** The conversation's create-time name — shown in the header replica. */
+  title?: string;
   /** Attachment paths, if any — shown as a small count under the bubble. */
   files?: string[];
   /**
