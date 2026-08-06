@@ -16,6 +16,7 @@
 //! │  WebView2/WKWebView/WebKitGTK ── HTTP ──▶ 127.0.0.1:<p>/api │
 //! └────────────────────────────────────────────────────────────┘
 
+use std::fs as std_fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -31,6 +32,13 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
+
+/// Internal Tauri event code used to route a development restart through the
+/// same bounded backend cleanup path as a production restart. The Tauri
+/// runtime may flatten this code to the OS process exit code, so the external
+/// development supervisor uses the marker written below instead.
+const DEV_RESTART_REQUEST_CODE: i32 = 73;
+const DEV_RESTART_MARKER_MAX_BYTES: usize = 1024;
 
 mod memory_panel_window;
 mod companion_pointer;
@@ -569,6 +577,101 @@ fn set_keep_awake(enabled: bool, state: tauri::State<'_, AwakeState>) -> Result<
         }
     } else {
         *guard = None; // Drop 释放 assertion / Drop releases the assertion.
+    }
+    Ok(())
+}
+
+fn prepare_dev_restart_marker() -> Result<(), String> {
+    let marker_path = std::env::var_os("NOMI_DEV_RESTART_MARKER")
+        .ok_or_else(|| "NOMI_DEV_RESTART_MARKER is not configured".to_owned())?;
+    let token = std::env::var("NOMI_DEV_RESTART_TOKEN")
+        .map_err(|_| "NOMI_DEV_RESTART_TOKEN is not configured".to_owned())?;
+    prepare_dev_restart_marker_at(
+        Path::new(&marker_path),
+        &token,
+        std::process::id(),
+    )
+}
+
+fn prepare_dev_restart_marker_at(
+    marker_path: &Path,
+    token: &str,
+    app_pid: u32,
+) -> Result<(), String> {
+    if !marker_path.is_absolute() {
+        return Err("NOMI_DEV_RESTART_MARKER must be an absolute path".to_owned());
+    }
+    if marker_path.file_name().is_none() {
+        return Err("NOMI_DEV_RESTART_MARKER must name a file".to_owned());
+    }
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("NOMI_DEV_RESTART_TOKEN must be 64 hexadecimal characters".to_owned());
+    }
+
+    let parent = marker_path
+        .parent()
+        .ok_or_else(|| "NOMI_DEV_RESTART_MARKER has no parent directory".to_owned())?;
+    let parent_metadata = std_fs::symlink_metadata(parent).map_err(|error| {
+        format!(
+            "inspect NOMI_DEV_RESTART_MARKER parent {}: {error}",
+            parent.display()
+        )
+    })?;
+    if marker_metadata_is_link_or_reparse(&parent_metadata) || !parent_metadata.is_dir() {
+        return Err(format!(
+            "NOMI_DEV_RESTART_MARKER parent is not a real directory: {}",
+            parent.display()
+        ));
+    }
+
+    if let Ok(marker_metadata) = std_fs::symlink_metadata(marker_path) {
+        if marker_metadata_is_link_or_reparse(&marker_metadata) || !marker_metadata.is_file() {
+            return Err(format!(
+                "NOMI_DEV_RESTART_MARKER is not a regular file: {}",
+                marker_path.display()
+            ));
+        }
+    }
+
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "token": token,
+        "app_pid": app_pid,
+    }))
+    .map_err(|error| format!("serialize development restart marker: {error}"))?;
+    if bytes.len() > DEV_RESTART_MARKER_MAX_BYTES {
+        return Err("development restart marker exceeds the 1 KiB limit".to_owned());
+    }
+
+    nomifun_common::dir_config::write_atomic_replace(marker_path, &bytes)
+        .map_err(|error| format!("write development restart marker {}: {error}", marker_path.display()))
+}
+
+#[cfg(windows)]
+fn marker_metadata_is_link_or_reparse(metadata: &std_fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn marker_metadata_is_link_or_reparse(metadata: &std_fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// Restart the desktop shell after a pre-boot configuration change. Production
+/// uses Tauri's restart sentinel so the existing backend cleanup coordinator
+/// remains authoritative. Development writes a one-shot marker before
+/// exiting; `run-dev.mjs` consumes that marker and restarts only Tauri.
+#[tauri::command]
+fn restart_application(app: tauri::AppHandle) -> Result<(), String> {
+    if std::env::var("NOMI_CHANNEL").as_deref() == Ok("dev") {
+        prepare_dev_restart_marker()?;
+        app.exit(DEV_RESTART_REQUEST_CODE);
+    } else {
+        app.request_restart();
     }
     Ok(())
 }
@@ -1864,7 +1967,9 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                 return;
             };
 
-            if code == Some(tauri::RESTART_EXIT_CODE) {
+            if code == Some(tauri::RESTART_EXIT_CODE)
+                || code == Some(DEV_RESTART_REQUEST_CODE)
+            {
                 // Tauri documents that prevent_exit() is ignored for the
                 // restart sentinel. Mark the window as explicitly quitting
                 // and start cleanup immediately; the Tauri restart machinery
@@ -2517,7 +2622,8 @@ fn main() -> std::process::ExitCode {
             webui_start,
             webui_stop,
             set_keep_awake,
-            set_tray_labels
+            set_tray_labels,
+            restart_application
         ])
         // Close-to-tray is now the DEFAULT (and only) close behavior. Closing the
         // main window (titlebar ×, OS close, Alt+F4) hides it to the tray instead
@@ -2557,6 +2663,54 @@ mod tests {
     use super::*;
     use std::fs;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn development_restart_marker_is_bounded_and_contains_the_launch_token() {
+        let directory = tempfile::tempdir().expect("create marker directory");
+        let marker_path = directory.path().join("restart.json");
+        let token = "a".repeat(64);
+
+        prepare_dev_restart_marker_at(&marker_path, &token, 1234)
+            .expect("write development restart marker");
+
+        let marker: serde_json::Value = serde_json::from_slice(&fs::read(&marker_path).unwrap())
+            .expect("parse development restart marker");
+        assert_eq!(marker["version"], 1);
+        assert_eq!(marker["token"], token);
+        assert_eq!(marker["app_pid"], 1234);
+        assert!(fs::metadata(&marker_path).unwrap().len() <= DEV_RESTART_MARKER_MAX_BYTES as u64);
+    }
+
+    #[test]
+    fn development_restart_marker_rejects_relative_paths_invalid_tokens_and_missing_parents() {
+        assert!(prepare_dev_restart_marker_at(Path::new("restart.json"), &"a".repeat(64), 1)
+            .unwrap_err()
+            .contains("absolute"));
+
+        let directory = tempfile::tempdir().expect("create marker directory");
+        let marker_path = directory.path().join("restart.json");
+        assert!(prepare_dev_restart_marker_at(&marker_path, "not-a-token", 1)
+            .unwrap_err()
+            .contains("64 hexadecimal"));
+
+        let missing_parent = directory.path().join("missing").join("restart.json");
+        assert!(prepare_dev_restart_marker_at(&missing_parent, &"a".repeat(64), 1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_restart_marker_rejects_a_symbolic_link() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("create marker directory");
+        let target = directory.path().join("target.json");
+        fs::write(&target, b"target").unwrap();
+        let marker_path = directory.path().join("restart.json");
+        symlink(&target, &marker_path).unwrap();
+
+        assert!(prepare_dev_restart_marker_at(&marker_path, &"a".repeat(64), 1).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"target");
+    }
 
     #[test]
     fn updater_before_exit_retries_until_shutdown_is_verified_then_cleans_up_once() {

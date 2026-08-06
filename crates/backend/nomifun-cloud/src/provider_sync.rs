@@ -10,10 +10,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use nomifun_api_types::derive_tasks_and_traits;
 use nomi_config::ServerConfig;
 use nomifun_common::encrypt_string;
 use nomifun_db::{
-    CreateProviderParams, IProviderRepository, UpdateProviderParams,
+    CreateProviderParams, IProviderModelRepository, IProviderRepository, ProviderModelProfileSeed,
+    UpdateProviderParams,
 };
 use tracing::{info, warn};
 
@@ -21,13 +23,17 @@ use crate::config_defaults::FLOWY_BUILTIN_PROVIDER_ID;
 use crate::flowy::{ClawModelEntry, FlowyApiClient};
 use crate::session::ServerSession;
 
-/// Upsert Flowy Cloud provider with JWT + server model catalog for the model selector.
+/// Upsert Flowy Cloud provider with JWT + server model catalog for the model
+/// selector. The boolean reports whether the upstream catalog request
+/// succeeded; `Ok(false)` deliberately preserves an existing local projection
+/// while making the soft sync failure visible to the caller.
 pub async fn sync_flowy_builtin_provider(
     provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
     encryption_key: &[u8; 32],
     server: &ServerConfig,
     data_dir: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let session = ServerSession::from_config(server, data_dir);
     let token = session
         .access_token()
@@ -45,22 +51,21 @@ pub async fn sync_flowy_builtin_provider(
     // so a blip cannot silently leave callers believing a soft-failed sync
     // "updated" anything — and so we never invent a fake one-model catalog
     // that masks the real failure mode (stale DB until the next success).
-    let catalog_fields = match fetch_chat_models(server, &session, data_dir).await {
-        Ok(entries) if !entries.is_empty() => Some(build_model_fields(&entries, server)),
-        Ok(_) => {
-            warn!(
-                "Flowy server returned empty chat model catalog; clearing local projection to default model only"
-            );
-            Some(fallback_model_fields(server))
-        }
+    let (catalog_fields, catalog_synced) = match fetch_chat_models(server, &session, data_dir).await {
+        Ok(entries) => (Some(build_model_fields(&entries, server)), true),
         Err(e) => {
             warn!(
                 "Failed to fetch Flowy chat model catalog: {e}; keeping existing local model list"
             );
-            None
+            (None, false)
         }
     };
 
+    let profile_fields = catalog_fields.clone().unwrap_or_else(|| BuiltModelFields {
+        model_ids: Vec::new(),
+        descriptions_json: "{}".to_string(),
+        context_limits_json: "{}".to_string(),
+    });
     let models_json = catalog_fields
         .as_ref()
         .map(|fields| serde_json::to_string(&fields.model_ids))
@@ -73,14 +78,20 @@ pub async fn sync_flowy_builtin_provider(
         .as_ref()
         .map(|fields| fields.context_limits_json.as_str());
 
-    if provider_repo
+    let profile_seeds = if catalog_synced {
+        build_profile_seeds(&profile_fields.model_ids, "openai")?
+    } else {
+        Vec::new()
+    };
+    let provider_exists = provider_repo
         .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
         .await
         .map_err(|e| e.to_string())?
-        .is_some()
-    {
+        .is_some();
+
+    if provider_exists {
         provider_repo
-            .update(
+            .update_with_model_profiles(
                 FLOWY_BUILTIN_PROVIDER_ID,
                 UpdateProviderParams {
                     platform: Some("openai"),
@@ -108,14 +119,13 @@ pub async fn sync_flowy_builtin_provider(
                     sort_order: Some(0),
                     ..Default::default()
                 },
+                &profile_seeds,
+                provider_model_repo.as_ref(),
             )
             .await
             .map_err(|e| e.to_string())?;
     } else {
-        let fields = match &catalog_fields {
-            Some(fields) => fields.clone(),
-            None => fallback_model_fields(server),
-        };
+        let fields = profile_fields.clone();
         let models =
             serde_json::to_string(&fields.model_ids).map_err(|e| format!("serialize models: {e}"))?;
         let context_limits = if fields.context_limits_json == "{}" {
@@ -124,7 +134,8 @@ pub async fn sync_flowy_builtin_provider(
             Some(fields.context_limits_json.as_str())
         };
         provider_repo
-            .create(CreateProviderParams {
+            .create_with_model_profiles(
+                CreateProviderParams {
                 provider_id: Some(FLOWY_BUILTIN_PROVIDER_ID),
                 platform: "openai",
                 name: "Flowy Cloud",
@@ -139,12 +150,14 @@ pub async fn sync_flowy_builtin_provider(
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: Some(0),
-            })
+                },
+                &profile_seeds,
+                provider_model_repo.as_ref(),
+            )
             .await
             .map_err(|e| e.to_string())?;
     }
 
-    disable_non_flowy_providers(provider_repo).await?;
     let model_count = catalog_fields
         .as_ref()
         .map(|fields| fields.model_ids.len())
@@ -154,7 +167,27 @@ pub async fn sync_flowy_builtin_provider(
         catalog_replaced = catalog_fields.is_some(),
         "Synced Flowy Cloud provider from server catalog"
     );
-    Ok(())
+    Ok(catalog_synced)
+}
+
+fn build_profile_seeds(
+    catalog_models: &[String],
+    platform: &str,
+) -> Result<Vec<ProviderModelProfileSeed>, String> {
+    catalog_models
+        .iter()
+        .filter(|model| !model.trim().is_empty())
+        .map(|model| {
+            let (tasks, traits) = derive_tasks_and_traits(platform, model);
+            Ok(ProviderModelProfileSeed {
+                model: model.clone(),
+                tasks: serde_json::to_string(&tasks)
+                    .map_err(|error| format!("serialize Flowy model tasks: {error}"))?,
+                traits: serde_json::to_string(&traits)
+                    .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
+            })
+        })
+        .collect()
 }
 
 async fn fetch_chat_models(
@@ -212,20 +245,6 @@ fn build_model_fields(entries: &[ClawModelEntry], server: &ServerConfig) -> Buil
     }
 }
 
-fn fallback_model_fields(server: &ServerConfig) -> BuiltModelFields {
-    let default_model = server.effective_default_llm_model();
-    let model_ids = vec![default_model.clone()];
-    let descriptions = HashMap::from([(
-        default_model.clone(),
-        display_name_for_id(&default_model),
-    )]);
-    BuiltModelFields {
-        model_ids,
-        descriptions_json: serde_json::to_string(&descriptions).unwrap_or_else(|_| "{}".to_string()),
-        context_limits_json: "{}".to_string(),
-    }
-}
-
 fn display_name_for_entry(entry: &ClawModelEntry) -> String {
     let name = entry.name.trim();
     if !name.is_empty() {
@@ -252,44 +271,6 @@ fn promote_default_model(model_ids: &mut Vec<String>, default_model: &str) {
     }
     model_ids.retain(|m| m != default_model);
     model_ids.insert(0, default_model.to_string());
-}
-
-fn prune_model_enabled_json(
-    existing: Option<&str>,
-    keep_ids: &[String],
-) -> Result<String, String> {
-    let Some(raw) = existing.map(str::trim).filter(|s| !s.is_empty() && *s != "null") else {
-        return Ok("{}".to_string());
-    };
-    let mut map: HashMap<String, bool> =
-        serde_json::from_str(raw).map_err(|e| format!("parse model_enabled: {e}"))?;
-    let keep: std::collections::HashSet<&str> = keep_ids.iter().map(String::as_str).collect();
-    map.retain(|k, _| keep.contains(k.as_str()));
-    serde_json::to_string(&map).map_err(|e| format!("serialize model_enabled: {e}"))
-}
-
-async fn disable_non_flowy_providers(
-    provider_repo: &Arc<dyn IProviderRepository>,
-) -> Result<(), String> {
-    let rows = provider_repo.list().await.map_err(|e| e.to_string())?;
-    for row in rows {
-        if row.provider_id == FLOWY_BUILTIN_PROVIDER_ID {
-            continue;
-        }
-        if row.enabled {
-            provider_repo
-                .update(
-                    &row.provider_id,
-                    UpdateProviderParams {
-                        enabled: Some(false),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
 }
 
 /// Disable built-in provider when the user logs out (token no longer valid).
@@ -319,6 +300,12 @@ pub async fn disable_flowy_builtin_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use nomifun_db::{
+        CreateProviderParams, ProviderModelUpdate, SqliteProviderModelRepository,
+        SqliteProviderRepository,
+    };
 
     #[test]
     fn promote_default_model_reorders_when_present() {
@@ -339,6 +326,19 @@ mod tests {
         let mut ids = vec!["AIPC-b".into(), "AIPC-a".into()];
         promote_default_model(&mut ids, "AIPC-glm-4.7");
         assert_eq!(ids, vec!["AIPC-b".to_string(), "AIPC-a".to_string()]);
+    }
+
+    #[test]
+    fn empty_server_catalog_does_not_invent_a_default_model() {
+        let server = ServerConfig {
+            llm: nomi_config::ServerLlmConfig {
+                default_model: "AIPC-configured-default".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(build_model_fields(&[], &server).model_ids.is_empty());
     }
 
     #[test]
@@ -419,13 +419,83 @@ mod tests {
         assert!(!limits.contains_key("AIPC-no-extra"));
     }
 
-    #[test]
-    fn prune_model_enabled_removes_delisted_keys() {
-        let raw = r#"{"AIPC-keep":true,"AIPC-gone":false}"#;
-        let pruned = prune_model_enabled_json(Some(raw), &["AIPC-keep".into()]).unwrap();
-        let map: HashMap<String, bool> = serde_json::from_str(&pruned).unwrap();
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("AIPC-keep"), Some(&true));
-        assert!(!map.contains_key("AIPC-gone"));
+    #[tokio::test]
+    async fn cloud_sync_backfills_chat_profiles_without_overwriting_user_edits() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let provider_repo = SqliteProviderRepository::new(database.pool().clone());
+        let provider_model_repo: Arc<dyn IProviderModelRepository> =
+            Arc::new(SqliteProviderModelRepository::new(database.pool().clone()));
+
+        provider_repo
+            .create(CreateProviderParams {
+                provider_id: Some(FLOWY_BUILTIN_PROVIDER_ID),
+                platform: "openai",
+                name: "Flowy Cloud",
+                base_url: "https://example.test/v1",
+                api_key_encrypted: "ciphertext",
+                models: r#"["gpt-4o"]"#,
+                enabled: true,
+                model_context_limits: None,
+                model_protocols: None,
+                model_descriptions: None,
+                model_enabled: None,
+                bedrock_config: None,
+                is_full_url: false,
+                sort_order: Some(0),
+            })
+            .await
+            .unwrap();
+
+        let seeds = build_profile_seeds(&["gpt-4o".to_string()], "openai").unwrap();
+        provider_repo
+            .update_with_model_profiles(
+                FLOWY_BUILTIN_PROVIDER_ID,
+                UpdateProviderParams::default(),
+                &seeds,
+                provider_model_repo.as_ref(),
+            )
+            .await
+            .unwrap();
+        let row = provider_model_repo
+            .get(FLOWY_BUILTIN_PROVIDER_ID, "gpt-4o")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.tasks, r#"["chat"]"#);
+        assert_eq!(row.source, "inferred");
+
+        let user_tasks = r#"["image_generation"]"#;
+        let user_traits = "[]";
+        let user_source = "user";
+        provider_model_repo
+            .update(
+                FLOWY_BUILTIN_PROVIDER_ID,
+                "gpt-4o",
+                &ProviderModelUpdate {
+                    tasks: Some(user_tasks),
+                    traits: Some(user_traits),
+                    source: Some(user_source),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        provider_repo
+            .update_with_model_profiles(
+                FLOWY_BUILTIN_PROVIDER_ID,
+                UpdateProviderParams::default(),
+                &seeds,
+                provider_model_repo.as_ref(),
+            )
+            .await
+            .unwrap();
+        let user_row = provider_model_repo
+            .get(FLOWY_BUILTIN_PROVIDER_ID, "gpt-4o")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user_row.tasks, user_tasks);
+        assert_eq!(user_row.source, user_source);
     }
 }

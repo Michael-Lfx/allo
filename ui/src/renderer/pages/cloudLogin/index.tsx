@@ -144,7 +144,7 @@ const CloudLoginPage: React.FC = () => {
         justLoggedInRef.current = true;
         trackFunnelEvent('auth_completed', { method: 'email' });
         showMessage({ type: 'success', text: t('cloudLogin.login.successRedirect') });
-        await refresh();
+        await refresh({ forceModelSync: true });
       } else {
         showMessage({ type: 'error', text: res.error ?? t('cloudLogin.errors.unknown') });
       }
@@ -185,7 +185,7 @@ const CloudLoginPage: React.FC = () => {
         setOtp('');
         trackFunnelEvent('auth_completed', { method: 'email_otp' });
         showMessage({ type: 'success', text: t('cloudLogin.login.successRedirect') });
-        await refresh();
+        await refresh({ forceModelSync: true });
       } else if (res.status === 'pending') {
         setPendingId(res.pendingId);
         showMessage({ type: 'info', text: res.message });

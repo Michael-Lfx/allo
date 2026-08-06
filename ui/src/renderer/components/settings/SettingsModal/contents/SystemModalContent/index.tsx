@@ -49,6 +49,7 @@ const SystemModalContent: React.FC = () => {
   const [autoPreviewOfficeFiles, setAutoPreviewOfficeFiles] = useState(true);
   const [sendKey, setSendKey] = useState<'enter' | 'mod-enter'>('enter');
   const [factoryResetVisible, setFactoryResetVisible] = useState(false);
+  const [isRelocating, setIsRelocating] = useState(false);
 
   useEffect(() => {
     // Start-on-boot is only meaningful in the Tauri desktop shell (backed by
@@ -148,6 +149,41 @@ const SystemModalContent: React.FC = () => {
 
   // Get system directory info
   const { data: systemInfo } = useSWR('system.dir.info', () => ipcBridge.application.systemInfo.invoke());
+  const { data: relocation, mutate: refreshRelocation } = useSWR(
+    'system.work-dir.relocation',
+    () => ipcBridge.application.workDirRelocation.get.invoke()
+  );
+  const canChangeWorkDirectory = systemInfo?.runtimeCapabilities.canChangeWorkDirectory === true;
+
+  const handleRelocationRetry = useCallback(async () => {
+    const operationId = relocation?.operation?.operationId;
+    if (!operationId) return;
+    setError(null);
+    setIsRelocating(true);
+    try {
+      const result = await ipcBridge.application.workDirRelocation.retry.invoke({ operationId });
+      if (result.restart_required) {
+        await ipcBridge.application.restart.invoke();
+      } else {
+        setIsRelocating(false);
+        await refreshRelocation();
+      }
+    } catch (caughtError: unknown) {
+      setIsRelocating(false);
+      setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+    }
+  }, [refreshRelocation, relocation?.operation?.operationId]);
+
+  const handleRelocationCancel = useCallback(async () => {
+    const operationId = relocation?.operation?.operationId;
+    if (!operationId) return;
+    try {
+      await ipcBridge.application.workDirRelocation.cancel.invoke({ operationId });
+      await refreshRelocation();
+    } catch (caughtError: unknown) {
+      setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+    }
+  }, [refreshRelocation, relocation?.operation?.operationId]);
 
   const handleOpenLogDir = useCallback(() => {
     if (!systemInfo?.logDir) return;
@@ -163,6 +199,13 @@ const SystemModalContent: React.FC = () => {
     if (systemInfo) {
       initializingRef.current = true;
       form.setFieldsValue({ workDir: systemInfo.workDir });
+      try {
+        if (window.sessionStorage.getItem('nomifun.relocationTarget') === systemInfo.workDir) {
+          window.sessionStorage.setItem('nomifun.relocationCompleted', '1');
+        }
+      } catch {
+        // Diagnostics are best effort and must not affect settings bootstrap.
+      }
       requestAnimationFrame(() => {
         initializingRef.current = false;
       });
@@ -216,6 +259,7 @@ const SystemModalContent: React.FC = () => {
   const saveDirConfigValidate = (_values: { workDir: string }): Promise<unknown> => {
     return new Promise((resolve, reject) => {
       modal.confirm({
+        className: 'work-dir-relocation-confirm',
         title: t('settings.workDirChangeConfirmTitle'),
         content: t('settings.workDirChangeConfirmContent'),
         onOk: resolve,
@@ -230,21 +274,40 @@ const SystemModalContent: React.FC = () => {
     async (_changedValue: unknown, allValues: Record<string, string>) => {
       if (initializingRef.current || savingRef.current || !systemInfo) return;
       const { workDir } = allValues;
+      if (!systemInfo.runtimeCapabilities.canChangeWorkDirectory) return;
       const needsRestart = workDir !== systemInfo.workDir;
       if (!needsRestart) return;
 
       savingRef.current = true;
       setError(null);
       try {
-        // Confirm, then persist. A failure (or cancel) here means nothing was
-        // written, so reverting the field to the current value is correct.
+        // Confirmation is the last interactive step. Once it succeeds, put
+        // the settings surface behind the migration veil immediately so the
+        // old WebView cannot start another route transition or lazy import
+        // while the backend is publishing the relocation plan.
         try {
           await saveDirConfigValidate({ workDir });
+          setIsRelocating(true);
           // Pass systemInfo.cacheDir as-is: cacheDir is no longer user-editable
           // (removed from UI), but the backend IPC interface still expects it.
           // Passing the current value ensures existing custom paths are preserved.
-          await ipcBridge.application.updateSystemInfo.invoke({ cacheDir: systemInfo.cacheDir, workDir });
+          const response = await ipcBridge.application.updateSystemInfo.invoke({
+            cacheDir: systemInfo.cacheDir,
+            workDir,
+          });
+          try {
+            if (response.operation_id) {
+              window.sessionStorage.setItem('nomifun.lastRelocationOperationId', response.operation_id);
+              window.sessionStorage.setItem('nomifun.relocationTarget', workDir);
+              window.sessionStorage.setItem('nomifun.relocationCompleted', '0');
+            }
+          } catch {
+            // Diagnostics are best effort and must not affect the restart path.
+          }
         } catch (persistError: unknown) {
+          setIsRelocating(false);
+          // A failure (or cancel) here means nothing was written, so reverting
+          // the field to the current value is correct.
           form.setFieldValue('workDir', systemInfo.workDir);
           if (persistError) {
             setError(persistError instanceof Error ? persistError.message : String(persistError));
@@ -259,6 +322,7 @@ const SystemModalContent: React.FC = () => {
         try {
           await ipcBridge.application.restart.invoke();
         } catch (restartError: unknown) {
+          setIsRelocating(false);
           if (restartError) {
             setError(restartError instanceof Error ? restartError.message : String(restartError));
           }
@@ -273,6 +337,14 @@ const SystemModalContent: React.FC = () => {
   return (
     <div className='flex flex-col h-full w-full'>
       {modalContextHolder}
+      {isRelocating && (
+        <div className='fixed inset-0 z-[10000] flex items-center justify-center bg-black/45 backdrop-blur-2px'>
+          <div className='min-w-280px max-w-[calc(100vw-48px)] rounded-12px bg-2 px-24px py-20px shadow-xl text-center'>
+            <div className='text-16px font-600 text-t-primary'>{t('settings.workDirRelocating')}</div>
+            <div className='mt-8px text-13px text-t-secondary'>{t('settings.workDirRelocatingDesc')}</div>
+          </div>
+        </div>
+      )}
 
       <NomiScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow>
         <div className='space-y-16px'>
@@ -324,7 +396,49 @@ const SystemModalContent: React.FC = () => {
               </Collapse.Item>
             </Collapse>
             <Form form={form} layout='vertical' className='!mt-32px space-y-16px' onValuesChange={handleValuesChange}>
-              <DirInputItem label={t('settings.workDir')} field='workDir' />
+              <DirInputItem
+                label={t('settings.workDir')}
+                field='workDir'
+                disabled={!canChangeWorkDirectory}
+              />
+              {systemInfo && !canChangeWorkDirectory && (
+                <div className='mt-6px text-12px text-t-secondary'>
+                  {t('settings.workDirDesktopOnly')}
+                </div>
+              )}
+              {relocation?.operation && ['failed', 'paused'].includes(relocation.operation.state) && (
+                <Alert
+                  type='error'
+                  content={
+                    <div className='space-y-6px'>
+                      <div>{relocation.operation.error || t('settings.workDirRelocationFailed')}</div>
+                      <div className='flex gap-8px'>
+                        <Button size='small' type='primary' onClick={() => void handleRelocationRetry()}>
+                          {t('common.retry')}
+                        </Button>
+                        <Button size='small' onClick={() => void handleRelocationCancel()}>
+                          {t('common.cancel')}
+                        </Button>
+                      </div>
+                    </div>
+                  }
+                />
+              )}
+              {systemInfo?.workDirChange?.state === 'failed' && (
+                <Alert
+                  type='error'
+                  content={
+                    <div className='space-y-4px'>
+                      <div>{systemInfo.workDirChange.error || t('settings.workDirRelocationFailed')}</div>
+                      {systemInfo.workDirChange.rollbackCopy && (
+                        <div className='break-all text-12px'>
+                          {t('settings.workDirRelocationBackup')}: {systemInfo.workDirChange.rollbackCopy}
+                        </div>
+                      )}
+                    </div>
+                  }
+                />
+              )}
               {/* Log directory (read-only, click to open in file manager) */}
               <div>
                 <Form.Item label={t('settings.logDir')}>

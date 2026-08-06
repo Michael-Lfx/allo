@@ -142,6 +142,19 @@ const useTheme = (): [Theme, ThemePreference, (preference: ThemePreference) => P
     }
   }, []);
 
+  // Apply authoritative backend changes after login/workspace bootstrap
+  // reloads. The localStorage value remains only a first-paint hint.
+  useEffect(() => {
+    return configService.subscribe('theme', (value) => {
+      const next = typeof value === 'string' && isPreference(value) ? value : DEFAULT_PREFERENCE;
+      preferenceRef.current = next;
+      setPreferenceState(next);
+      setThemeState(resolveTheme(next));
+      applyPreference(next);
+      broadcastThemeSync(resolveTheme(next));
+    });
+  }, [applyPreference]);
+
   // Follow the OS color scheme live while the preference is 'system'. When the
   // user picks an explicit light/dark the listener is torn down, so manual
   // choices are never overridden by the OS.

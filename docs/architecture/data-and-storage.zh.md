@@ -7,6 +7,9 @@
 
 NomiFun 把状态保存在三个地方：一个 SQLite 数据库（一切结构化数据的真理之源）、一个按安装划分的**数据目录**（数据库文件、日志、操作系统缓存的运行时），以及按会话划分的**工作目录**（agent 读写的文件）。本页解释什么内容存在哪里、怎么命名，以及如何加以保护。
 
+涉及启动、云登录、模型恢复、安装偏好或工作目录迁移时，另请先阅读
+[启动、登录、配置与工作目录稳定性维护手册](./startup-login-workdir-stability.zh.md)。
+
 ## 数据目录
 
 | 宿主 | 默认路径 | 覆盖方式 |
@@ -159,6 +162,20 @@ SQLite cascade 或 trigger。数据库和受管 side-store 都执行 orphan audi
 - `work_dir` —— 运行时工作目录；未显式设置时回退至数据目录。来源依次为：`--work-dir` flag → UI 中选择并持久化在 `dir-config.json` 的工作区 → 环境变量 `NOMIFUN_WORK_DIR` → `<data_dir>`。继承到的 `NOMIFUN_WORK_DIR` 若指向默认数据根位置或已不存在的目录会被忽略（防止自动更新重启时残留的自导出值）。
 - `workspace_id` —— 后端签发并存入 `extra.temp_workspace_id` 的裸小写 UUIDv7，
   固定 36 字符。目录名不包含类型前缀、标题 slug 或 `temp` 标记。
+
+### 工作目录切换不是数据集切换
+
+普通 UI 切换只迁移受管的 `<旧 work_dir>/conversations/`，并在启动时发布到新根；
+SQLite、Provider、模型配置、默认模型、聊天行、`encryption_key`、`logs/`、
+`installation-preferences.json` 和 runtime 缓存都留在固定 `<data_dir>`。因此切换工作目录
+不应轮换 `storage_generation`，也不应触发登录或清空 Provider。跨卷迁移会保留旧会话树
+备份；自定义外部 workspace 不属于受管迁移树，不复制、不移动、不修改。
+
+迁移失败时应用继续使用旧 work root。不要手动删除
+`.work-dir-relocation.pending/`、owner marker 或 phase 文件来“修复”状态；先通过
+`GET /api/system/work-dir-relocation` 和 `GET /api/system/info` 读取 operation/error，
+再使用设置页的 Retry、Replace 或 Cancel。Factory Reset/非 v3 数据升级是另一条 hard
+reset 流程，不要将其与普通工作目录切换混用。
 
 未选择自定义工作区时，Conversation 行创建完成后立即物化该目录。会话被删除时该目录被移除（`nomifun_common::hooks` 中的 `OnConversationDelete` 钩子）。其内的文件操作处于沙箱中并被监视：
 

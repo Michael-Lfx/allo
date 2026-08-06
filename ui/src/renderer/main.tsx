@@ -8,7 +8,7 @@ import '@/common/adapter/browser';
 
 // React and core dependencies
 import type { PropsWithChildren } from 'react';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 // Context providers
@@ -20,7 +20,7 @@ import { ThemeProvider } from './hooks/context/ThemeContext';
 import { SupportChatProvider } from './features/supportChat/SupportChatProvider';
 
 // Arco Design
-import { ConfigProvider } from '@arco-design/web-react';
+import { Alert, Button, ConfigProvider } from '@arco-design/web-react';
 // Configure Arco Design to use React 18's createRoot, fixing Message component's CopyReactDOM.render error
 import '@arco-design/web-react/es/_util/react-19-adapter';
 import '@arco-design/web-react/dist/css/arco.css';
@@ -39,8 +39,9 @@ import './styles/themes/index.css';
 // authoritative settings from the backend instead of the empty cache.
 import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
+import * as ipcBridgeModule from '@/common/adapter/ipcBridge';
 import { isHandledAuthExpiredHttpError } from '@/common/adapter/httpBridge';
-import { setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
+import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
 });
@@ -61,6 +62,7 @@ import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
+import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
   shouldScheduleAgentRefreshAfterHashChange,
   shouldScheduleAgentRefreshForHash,
@@ -103,11 +105,49 @@ const Config: React.FC<PropsWithChildren> = ({ children }) => {
   return React.createElement(ConfigProvider, { theme: { primaryColor: '#4E5969' }, locale: arcoLocale }, children);
 };
 
+const StartupRecoveryPanel: React.FC<{
+  error: Error;
+  onRetry: () => void;
+  onOpenLogs: () => void;
+  onSignOut: () => void;
+  logsError: string | null;
+}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError }) => {
+  const { t } = useTranslation();
+  return (
+    <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)] px-24px'>
+      <Alert
+        type='error'
+        title={t('common.startupRecovery.title')}
+        content={
+          <div className='space-y-8px'>
+            <div>{t('common.startupRecovery.description')}</div>
+            <div className='max-w-640px break-all text-12px text-t-secondary'>
+              {error.name}: {error.message}
+            </div>
+            {logsError ? <div className='text-12px text-[rgb(var(--danger-6))]'>{logsError}</div> : null}
+          </div>
+        }
+        className='w-full max-w-640px'
+      />
+      <div className='flex flex-wrap justify-center gap-8px'>
+        <Button type='primary' onClick={onRetry}>
+          {t('common.startupRecovery.retrySystemInfo')}
+        </Button>
+        <Button onClick={onOpenLogs}>{t('common.startupRecovery.openLogs')}</Button>
+        <Button onClick={onSignOut}>{t('common.userMenu.logout')}</Button>
+      </div>
+    </div>
+  );
+};
+
 const Main = () => {
   const { ready, status } = useAuth();
-  const { ready: cloudReady } = useCloudAuth();
+  const { ready: cloudReady, refresh: refreshCloudAuth, logout: cloudLogout, status: cloudStatus } = useCloudAuth();
+  const { logout: localLogout } = useAuth();
   const [configReady, setConfigReady] = useState(false);
   const [configError, setConfigError] = useState<Error | null>(null);
+  const [startupRetryToken, setStartupRetryToken] = useState(0);
+  const [logsError, setLogsError] = useState<string | null>(null);
 
   useEffect(() => {
     // Browser sessions must pass the auth probe before any protected startup
@@ -135,18 +175,27 @@ const Main = () => {
         console.error('Failed to prefetch agents:', err);
       });
     void Promise.all([
-      application.systemInfo
-        .invoke()
-        .then((info) => setBrowserStorageGeneration(info.storageGeneration))
-        .catch((err) => {
-          console.error('Failed to initialize browser storage generation:', err);
-          throw err;
-        }),
+      application.systemInfo.invoke().catch((err) => {
+        console.error('Failed to initialize browser storage generation:', err);
+        throw err;
+      }),
       configService.initialize().catch((err) => {
         console.error('Failed to initialize config:', err);
       }),
     ])
-      .then(() => {
+      .then(async ([info]) => {
+        let generationChanged = false;
+        try {
+          generationChanged = getBrowserStorageGeneration() !== info.storageGeneration;
+        } catch {
+          // The first authenticated bootstrap has no prior generation.
+        }
+        setBrowserStorageGeneration(info.storageGeneration);
+        if (generationChanged) {
+          await clearAvailableModelsCache();
+          await configService.reload();
+          await refreshCloudAuth({ forceModelSync: true });
+        }
         if (active) setConfigReady(true);
       })
       .catch((error: unknown) => {
@@ -160,7 +209,36 @@ const Main = () => {
     return () => {
       active = false;
     };
-  }, [ready, status]);
+  }, [ready, status, refreshCloudAuth, startupRetryToken]);
+
+  const retryStartup = useCallback(() => {
+    setConfigError(null);
+    setLogsError(null);
+    setConfigReady(false);
+    setStartupRetryToken((value) => value + 1);
+  }, []);
+
+  const openSupportLogs = useCallback(async () => {
+    setLogsError(null);
+    try {
+      const info = await application.systemInfo.invoke();
+      await ipcBridgeModule.shell.openFolderWith.invoke({ folder_path: info.logDir, tool: 'explorer' });
+    } catch (error: unknown) {
+      setLogsError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const signOutFromStartup = useCallback(async () => {
+    try {
+      if (cloudStatus === 'authenticated') {
+        await cloudLogout();
+      } else {
+        await localLogout();
+      }
+    } catch (error) {
+      setLogsError(error instanceof Error ? error.message : String(error));
+    }
+  }, [cloudLogout, cloudStatus, localLogout]);
 
   useEffect(() => {
     if (!configReady || !shouldScheduleAgentRefreshForHash(window.location.hash)) return;
@@ -250,7 +328,15 @@ const Main = () => {
   }
 
   if (configError) {
-    throw configError;
+    return (
+      <StartupRecoveryPanel
+        error={configError}
+        onRetry={retryStartup}
+        onOpenLogs={() => void openSupportLogs()}
+        onSignOut={() => void signOutFromStartup()}
+        logsError={logsError}
+      />
+    );
   }
 
   if (!configReady) {

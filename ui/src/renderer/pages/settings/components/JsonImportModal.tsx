@@ -2,8 +2,7 @@ import type { IMcpServer } from '@/common/config/storage';
 import { Alert, Button } from '@arco-design/web-react';
 import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import CodeMirror from '@uiw/react-codemirror';
-import { json } from '@codemirror/lang-json';
+import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
 import { Link } from '@icon-park/react';
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
 import NomiModal from '@/renderer/components/base/NomiModal';
@@ -236,7 +235,8 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
               value={jsonInput}
               height='300px'
               theme={theme}
-              extensions={[json()]}
+              language='json'
+              onClose={onCancel}
               onChange={(value: string) => setJsonInput(value)}
               placeholder={`{
   "mcpServers": {

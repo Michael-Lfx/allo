@@ -354,7 +354,6 @@ const NomiConversationPanel: React.FC<{
         updates: { model: selected, execution_model_pool, execution_template_id: null },
       });
       if (ok) {
-        void saveNomiDefaultModel(heal.provider.id, heal.use_model);
         // Silent for first-time default; only notify when replacing a stale binding.
         if (heal.reason === 'stale') {
           Message.info(

@@ -938,6 +938,115 @@ export interface IRendererLogEntry {
   data?: unknown;
 }
 
+export interface RuntimeCapabilities {
+  runtime: 'desktop' | 'web';
+  canRestartApplication: boolean;
+  canChangeWorkDirectory: boolean;
+}
+
+export type WorkDirRelocationOperationState =
+  | 'planned'
+  | 'copying'
+  | 'verified'
+  | 'published'
+  | 'source_preserved'
+  | 'completed'
+  | 'failed'
+  | 'paused'
+  | 'cancelled';
+
+export interface WorkDirRelocationOperation {
+  operationId: string;
+  state: WorkDirRelocationOperationState;
+  sourceWorkDir: string;
+  targetWorkDir: string;
+  restartRequired: boolean;
+  attemptCount: number;
+  lastAttemptAt?: number;
+  lastErrorClass?: 'transient' | 'deterministic' | 'unknown';
+  lastErrorCode?: string;
+  error?: string;
+  requiredBytes?: number;
+  availableBytes?: number;
+  shortfallBytes?: number;
+  calculationMode?: 'same_volume_rename' | 'cross_volume_copy';
+}
+
+export interface WorkDirRelocationBackup {
+  operationId: string;
+  generation: string;
+  sourceWorkDir: string;
+  targetWorkDir: string;
+  backupPath: string;
+  byteSize: number;
+  createdAt: number;
+}
+
+export interface WorkDirRelocationResponse {
+  operation?: WorkDirRelocationOperation;
+  backups: WorkDirRelocationBackup[];
+}
+
+interface RawWorkDirRelocationResponse {
+  operation?: {
+    operation_id: string;
+    state: WorkDirRelocationOperationState;
+    source_work_dir: string;
+    target_work_dir: string;
+    restart_required: boolean;
+    attempt_count: number;
+    last_attempt_at?: number;
+    last_error_class?: 'transient' | 'deterministic' | 'unknown';
+    last_error_code?: string;
+    error?: string;
+    required_bytes?: number;
+    available_bytes?: number;
+    shortfall_bytes?: number;
+    calculation_mode?: 'same_volume_rename' | 'cross_volume_copy';
+  };
+  backups: Array<{
+    operation_id: string;
+    generation: string;
+    source_work_dir: string;
+    target_work_dir: string;
+    backup_path: string;
+    byte_size: number;
+    created_at: number;
+  }>;
+}
+
+function mapWorkDirRelocationResponse(raw: RawWorkDirRelocationResponse): WorkDirRelocationResponse {
+  return {
+    operation: raw.operation
+      ? {
+          operationId: raw.operation.operation_id,
+          state: raw.operation.state,
+          sourceWorkDir: raw.operation.source_work_dir,
+          targetWorkDir: raw.operation.target_work_dir,
+          restartRequired: raw.operation.restart_required,
+          attemptCount: raw.operation.attempt_count,
+          lastAttemptAt: raw.operation.last_attempt_at,
+          lastErrorClass: raw.operation.last_error_class,
+          lastErrorCode: raw.operation.last_error_code,
+          error: raw.operation.error,
+          requiredBytes: raw.operation.required_bytes,
+          availableBytes: raw.operation.available_bytes,
+          shortfallBytes: raw.operation.shortfall_bytes,
+          calculationMode: raw.operation.calculation_mode,
+        }
+      : undefined,
+    backups: raw.backups.map((backup) => ({
+      operationId: backup.operation_id,
+      generation: backup.generation,
+      sourceWorkDir: backup.source_work_dir,
+      targetWorkDir: backup.target_work_dir,
+      backupPath: backup.backup_path,
+      byteSize: backup.byte_size,
+      createdAt: backup.created_at,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Application — stays IPC (Electron-native)
 // ---------------------------------------------------------------------------
@@ -959,6 +1068,19 @@ export const application = {
         storage_generation: string;
         platform: string;
         arch: string;
+        runtime_capabilities?: {
+          runtime?: 'desktop' | 'web';
+          can_restart_application?: boolean;
+          can_change_work_directory?: boolean;
+        };
+        work_dir_change?: {
+          state: 'none' | 'completed' | 'failed';
+          operation_id?: string;
+          source_work_dir?: string;
+          target_work_dir?: string;
+          rollback_copy?: string;
+          error?: string;
+        };
       },
       void
     >('/api/system/info'),
@@ -969,6 +1091,21 @@ export const application = {
       storageGeneration: raw.storage_generation,
       platform: raw.platform,
       arch: raw.arch,
+      runtimeCapabilities: {
+        runtime: raw.runtime_capabilities?.runtime === 'desktop' ? 'desktop' : 'web',
+        canRestartApplication: raw.runtime_capabilities?.can_restart_application === true,
+        canChangeWorkDirectory: raw.runtime_capabilities?.can_change_work_directory === true,
+      },
+      workDirChange: raw.work_dir_change
+        ? {
+            state: raw.work_dir_change.state,
+            operationId: raw.work_dir_change.operation_id,
+            sourceWorkDir: raw.work_dir_change.source_work_dir,
+            targetWorkDir: raw.work_dir_change.target_work_dir,
+            rollbackCopy: raw.work_dir_change.rollback_copy,
+            error: raw.work_dir_change.error,
+          }
+        : undefined,
     })
   ),
   getPath: shellProvider<string, { name: 'desktop' | 'home' | 'downloads' }>(({ name }) => tauriGetPath(name), ''),
@@ -977,10 +1114,35 @@ export const application = {
   // The caller restarts right after this resolves; the new dir applies then.
   // `cacheDir` is accepted for back-compat but ignored — it is no longer
   // user-editable (removed from the settings UI), only `workDir` is sent.
-  updateSystemInfo: httpPost<void, { cacheDir: string; workDir: string }>(
+  updateSystemInfo: httpPost<
+    { operation_id?: string; restart_required: boolean },
+    { cacheDir: string; workDir: string }
+  >(
     '/api/system/work-dir',
     ({ workDir }) => ({ work_dir: workDir })
   ),
+  workDirRelocation: {
+    get: withResponseMap(
+      httpGet<RawWorkDirRelocationResponse>('/api/system/work-dir-relocation'),
+      mapWorkDirRelocationResponse
+    ),
+    cancel: httpDelete<{ operation_id?: string; restart_required: boolean }, { operationId: string }>(
+      ({ operationId }) => `/api/system/work-dir-relocation/${encodeURIComponent(operationId)}`
+    ),
+    retry: httpPost<{ operation_id?: string; restart_required: boolean }, { operationId: string }>(
+      ({ operationId }) => `/api/system/work-dir-relocation/${encodeURIComponent(operationId)}/retry`
+    ),
+    replace: httpPost<
+      { operation_id?: string; restart_required: boolean },
+      { operationId: string; workDir: string }
+    >(
+      ({ operationId }) => `/api/system/work-dir-relocation/${encodeURIComponent(operationId)}/replace`,
+      ({ workDir }) => ({ work_dir: workDir })
+    ),
+    deleteBackup: httpDelete<void, { operationId: string }>(
+      ({ operationId }) => `/api/system/work-dir-relocation/${encodeURIComponent(operationId)}/backup`
+    ),
+  },
   getZoomFactor: shellProvider<number, void>(async () => tauriGetZoom(), 1),
   setZoomFactor: shellProvider<number, { factor: number }>(({ factor }) => tauriSetZoom(factor), 1),
   applyKeepAwake: shellProvider<void, { enabled: boolean }>(({ enabled }) => tauriSetKeepAwake(enabled), undefined),

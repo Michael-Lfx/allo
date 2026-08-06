@@ -25,6 +25,7 @@ import {
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
 import styles from './Sider.module.css';
+import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -185,9 +186,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       {/* Main content area */}
       {isSettings ? (
         <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
-          <Suspense fallback={<div className='size-full' />}>
-            <SettingsSider collapsed={collapsed} tooltipEnabled={tooltipEnabled} />
-          </Suspense>
+          <SettingsSiderErrorBoundary resetKey={`${pathname}${search}${hash}`}>
+            <Suspense fallback={<div className='size-full' />}>
+              <SettingsSider collapsed={collapsed} tooltipEnabled={tooltipEnabled} />
+            </Suspense>
+          </SettingsSiderErrorBoundary>
         </div>
       ) : (
         <div className='flex-1 min-h-0 flex flex-col'>

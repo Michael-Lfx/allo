@@ -231,8 +231,8 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       setUser(qrLoginUser);
       setStatus('authenticated');
       setNeedsSetup(false);
+      await configService.reload();
       setReady(true);
-      configService.reload().catch(() => {});
       if (typeof window !== 'undefined' && (window as any).__websocketReconnect) {
         (window as any).__websocketReconnect();
       }
@@ -348,12 +348,11 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       hadSessionRef.current = true;
       setUser(authenticatedUser);
       setStatus('authenticated');
+      // The settings endpoint was intentionally unavailable before login.
+      // Finish this reload before publishing the authenticated-ready state so
+      // language/theme/model consumers never render from an empty snapshot.
+      await configService.reload();
       setReady(true);
-
-      // Settings were unreachable (401/403) before login; now that we're
-      // authenticated, re-fetch them so theme/language/preferences populate
-      // without a manual page refresh.
-      configService.reload().catch(() => {});
 
       // Re-enable WebSocket reconnection after successful login (WebUI mode only)
       if (typeof window !== 'undefined' && (window as any).__websocketReconnect) {
@@ -433,10 +432,8 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       setUser(authenticatedUser);
       setStatus('authenticated');
       setNeedsSetup(false);
+      await configService.reload();
       setReady(true);
-
-      // Re-fetch settings now that we're authenticated (see login()).
-      configService.reload().catch(() => {});
 
       if (typeof window !== 'undefined' && (window as any).__websocketReconnect) {
         (window as any).__websocketReconnect();

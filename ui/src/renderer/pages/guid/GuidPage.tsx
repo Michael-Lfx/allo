@@ -849,6 +849,7 @@ const GuidPage: React.FC = () => {
       isGeminiMode={isGeminiMode}
       modelList={modelSelection.modelList}
       current_model={modelSelection.current_model}
+      defaultModelUnavailable={modelSelection.defaultModelUnavailable}
       setCurrentModel={modelSelection.setCurrentModel}
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}

@@ -1,10 +1,7 @@
 
 
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
-import { html } from '@codemirror/lang-html';
-import { history, historyKeymap } from '@codemirror/commands';
-import { keymap } from '@codemirror/view';
-import CodeMirror from '@uiw/react-codemirror';
+import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
 import React, { useMemo, useRef, useCallback } from 'react';
 import { useCodeMirrorScroll, useScrollSyncTarget } from '../../hooks/useScrollSyncHelpers';
 
@@ -58,17 +55,6 @@ const HTMLEditor: React.FC<HTMLEditorProps> = ({ value, onChange, containerRef, 
     [onChange]
   );
 
-  // 配置扩展，包含 HTML 语法和历史记录支持
-  // Configure extensions including HTML syntax and history support
-  const extensions = useMemo(
-    () => [
-      html(),
-      history(), // 显式添加历史记录支持 / Explicitly add history support
-      keymap.of(historyKeymap), // 添加历史记录快捷键 / Add history keymaps
-    ],
-    []
-  );
-
   return (
     <div ref={containerRef} className='h-full w-full overflow-hidden'>
       <div ref={editorWrapperRef} className='h-full w-full'>
@@ -77,7 +63,8 @@ const HTMLEditor: React.FC<HTMLEditorProps> = ({ value, onChange, containerRef, 
           value={value}
           height='100%'
           theme={theme === 'dark' ? 'dark' : 'light'}
-          extensions={extensions}
+          language='html'
+          withHistory
           onChange={handleChange}
           basicSetup={{
             lineNumbers: true,

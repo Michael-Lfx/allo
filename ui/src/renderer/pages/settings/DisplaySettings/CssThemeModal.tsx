@@ -7,8 +7,7 @@ import { iconColors } from '@renderer/styles/colors';
 import { Button, Input } from '@arco-design/web-react';
 import NomiModal from '@renderer/components/base/NomiModal.tsx';
 import { Plus, Delete } from '@icon-park/react';
-import CodeMirror from '@uiw/react-codemirror';
-import { css as cssLang } from '@codemirror/lang-css';
+import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CSSProperties } from 'react';
@@ -158,7 +157,8 @@ const CssThemeModal: React.FC<CssThemeModalProps> = ({ visible, theme, onClose, 
           <CodeMirror
             value={css}
             theme={colorTheme}
-            extensions={[cssLang()]}
+            language='css'
+            onClose={onClose}
             onChange={setCss}
             placeholder={`/* ${t('settings.customCssDesc') || 'Enter custom CSS styles here'} */`}
             basicSetup={CODE_MIRROR_BASIC_SETUP}

@@ -66,6 +66,19 @@ release 构建仍使用 stable 的 `NomiFun` 目录。开发环境需要复现 s
 `window.__nomiLocalTrust`，renderer 每次请求都会带上这个本次启动生成的信任
 secret。
 
+### 开发重启的进程边界
+
+`bun run dev` 会启动一个长期 Vite（`127.0.0.1:5173`）和多轮 `tauri dev`。
+工作目录、配置等需要重启的操作只替换 Tauri，Vite PID 和端口应保持不变。每轮
+Tauri 使用临时 restart marker 和一次性 token；Rust 的退出码 73 是内部请求信号，
+不能作为 supervisor 判断重启的唯一依据。只有 marker 路径、父目录、版本和 token
+都匹配时才允许下一轮 Tauri 启动。
+
+Ctrl+C、SIGTERM 或 Vite 异常退出优先清理全部子进程；Windows 停止流程会先等待
+正常退出，再升级到 `taskkill /T` 和 `taskkill /T /F`。如果出现重复重启，先检查
+Vite 是否仍监听 5173、`cargo`/`rustc`/Tauri 是否残留，再查看 supervisor 的
+重启熔断信息，不要并发启动第二个 `bun run dev`。
+
 ## 验证命令
 
 | 命令 | 覆盖范围 |
@@ -79,9 +92,14 @@ secret。
 | `bun run typecheck` | Renderer TypeScript。 |
 | `bun run check:i18n` | i18n key 类型生成是否最新。 |
 | `bun run check:theme` | 主题 token 契约。 |
+| `bun run check:codemirror-runtime` | CodeMirror/Lezer 运行时闭包与共享编辑器入口。 |
+| `bun run check` | 聚合前端类型、i18n、主题、图标、CodeMirror、运行时边界和脚本登记门禁。 |
 | `bun run help --check` | 根脚本帮助文本。 |
 | `bun run build:ui` | 生产 Vite 构建。 |
 | `bun run build` | 当前 OS 的 Tauri 桌面包。 |
+| `bun run build:inspect` | 只读检查 `build.noindex`、`target` 和活跃开发会话。 |
+| `bun run build:gc` | 停止开发会话后，显式回收可证明不用的历史构建产物。 |
+| `bun run build:clean` | 显式破坏性清理；会导致下一次 Rust 冷编译。 |
 
 提交前常用组合：
 
@@ -92,6 +110,11 @@ bun run check:i18n
 bun run check:theme
 bun run help --check
 ```
+
+正常 `dev`、测试和默认构建流程不再自动删除 Cargo 增量缓存。构建目录超过预算时，
+先运行 `bun run build:inspect`，确认没有活跃 dev session，再选择 `build:gc`；只有
+明确接受冷编译时才运行 `build:clean`。清理命令超时后不要再次并发启动，先监控原进程
+并核对 `git status --short --branch`。
 
 ## 后端 CLI
 

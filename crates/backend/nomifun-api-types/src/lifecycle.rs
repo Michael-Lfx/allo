@@ -14,6 +14,77 @@ pub struct SystemInfoResponse {
     pub platform: String,
     /// CPU architecture: `x64` or `arm64`.
     pub arch: String,
+    /// Result of the most recent work-root relocation, when one has been
+    /// attempted. The field is omitted on installations with no relocation
+    /// history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_dir_change: Option<WorkDirChangeStatus>,
+    /// Capabilities supplied by the host composition. The renderer must use
+    /// this contract instead of inferring the runtime from browser globals.
+    #[serde(default)]
+    pub runtime_capabilities: RuntimeCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeKind {
+    Desktop,
+    Web,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeCapabilities {
+    pub runtime: RuntimeKind,
+    pub can_restart_application: bool,
+    pub can_change_work_directory: bool,
+}
+
+impl RuntimeCapabilities {
+    pub const fn desktop() -> Self {
+        Self {
+            runtime: RuntimeKind::Desktop,
+            can_restart_application: true,
+            can_change_work_directory: true,
+        }
+    }
+
+    pub const fn web() -> Self {
+        Self {
+            runtime: RuntimeKind::Web,
+            can_restart_application: false,
+            can_change_work_directory: false,
+        }
+    }
+}
+
+impl Default for RuntimeCapabilities {
+    fn default() -> Self {
+        Self::web()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkDirChangeStatus {
+    pub state: WorkDirChangeState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_work_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_work_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollback_copy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirChangeState {
+    None,
+    Completed,
+    Failed,
 }
 
 /// Response for `POST /api/system/support-logs/pack`.
@@ -38,12 +109,101 @@ pub struct UpdateCheckRequest {
 }
 
 /// Request body for `POST /api/system/work-dir`: request a user-chosen
-/// conversation workspace root for the next boot. Changing a finalized
-/// dataset's root creates one fresh v3 generation; historical data is not
-/// migrated.
+/// conversation workspace root for the next boot. The current v3 generation
+/// and data-root side stores remain in place; only managed conversations are
+/// relocated during the restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateWorkDirRequest {
+    pub work_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateWorkDirResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    pub restart_required: bool,
+}
+
+/// Management state for a durable work-root relocation. Unlike the compact
+/// last-status field above, this state is backed by the pending plan and its
+/// phase markers and can be acted on by the settings UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirRelocationOperationState {
+    Planned,
+    Copying,
+    Verified,
+    Published,
+    SourcePreserved,
+    Completed,
+    Failed,
+    Paused,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirRelocationErrorClass {
+    Transient,
+    Deterministic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkDirRelocationOperation {
+    pub operation_id: String,
+    pub state: WorkDirRelocationOperationState,
+    pub source_work_dir: String,
+    pub target_work_dir: String,
+    pub restart_required: bool,
+    pub attempt_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_class: Option<WorkDirRelocationErrorClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortfall_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calculation_mode: Option<WorkDirRelocationCalculationMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDirRelocationCalculationMode {
+    SameVolumeRename,
+    CrossVolumeCopy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkDirRelocationBackup {
+    pub operation_id: String,
+    pub generation: String,
+    pub source_work_dir: String,
+    pub target_work_dir: String,
+    pub backup_path: String,
+    pub byte_size: u64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkDirRelocationResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<WorkDirRelocationOperation>,
+    pub backups: Vec<WorkDirRelocationBackup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceWorkDirRelocationRequest {
     pub work_dir: String,
 }
 
@@ -101,6 +261,8 @@ mod tests {
             storage_generation: "01900000-0000-7000-8000-000000000000".into(),
             platform: "linux".into(),
             arch: "x64".into(),
+            work_dir_change: None,
+            runtime_capabilities: RuntimeCapabilities::web(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["cache_dir"], "/home/user/.cache/nomifun");
@@ -125,6 +287,8 @@ mod tests {
             storage_generation: "01900000-0000-7000-8000-000000000001".into(),
             platform: "darwin".into(),
             arch: "arm64".into(),
+            work_dir_change: None,
+            runtime_capabilities: RuntimeCapabilities::desktop(),
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let parsed: SystemInfoResponse = serde_json::from_str(&serialized).unwrap();
@@ -159,6 +323,32 @@ mod tests {
         let raw = json!({ "work_dir": "/Users/me/Workspaces/nomi" });
         let req: UpdateWorkDirRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(req.work_dir, "/Users/me/Workspaces/nomi");
+    }
+
+    #[test]
+    fn test_work_dir_relocation_management_serializes_snake_case_and_optional_fields() {
+        let operation = WorkDirRelocationOperation {
+            operation_id: "01900000-0000-7000-8000-000000000002".into(),
+            state: WorkDirRelocationOperationState::Paused,
+            source_work_dir: "C:/old".into(),
+            target_work_dir: "D:/new".into(),
+            restart_required: true,
+            attempt_count: 3,
+            last_attempt_at: Some(123),
+            last_error_class: Some(WorkDirRelocationErrorClass::Transient),
+            last_error_code: Some("INTERNAL_ERROR".into()),
+            error: Some("target is locked".into()),
+            required_bytes: Some(42),
+            available_bytes: None,
+            shortfall_bytes: None,
+            calculation_mode: Some(WorkDirRelocationCalculationMode::CrossVolumeCopy),
+        };
+        let value = serde_json::to_value(&operation).unwrap();
+        assert_eq!(value["operation_id"], operation.operation_id);
+        assert_eq!(value["state"], "paused");
+        assert_eq!(value["last_error_class"], "transient");
+        assert_eq!(value["calculation_mode"], "cross_volume_copy");
+        assert!(value.get("available_bytes").is_none());
     }
 
     // -- UpdateCheckResult --

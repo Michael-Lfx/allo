@@ -43,6 +43,14 @@
   "download": "Download",
   "close": "Close",
   "retry": "Retry",
+  "startupRecovery": {
+    "title": "Startup data could not be loaded",
+    "description": "System information is temporarily unavailable. Retry, open support logs, or sign out.",
+    "retrySystemInfo": "Retry system info",
+    "openLogs": "Open support logs"
+  },
+  "codeEditorErrorTitle": "Code editor failed to load",
+  "codeEditorErrorDescription": "An editor extension failed. Retry or close this editor to continue.",
   "reload": "Reload",
   "technical_details": "Technical Details",
   "error_details": "Error Details",

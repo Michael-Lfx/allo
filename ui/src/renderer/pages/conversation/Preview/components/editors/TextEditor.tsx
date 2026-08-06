@@ -1,8 +1,7 @@
 
 
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
-import { EditorView } from '@codemirror/view';
-import CodeMirror from '@uiw/react-codemirror';
+import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
 import React, { useCallback, useMemo } from 'react';
 
 interface TextEditorProps {
@@ -71,7 +70,7 @@ const TextEditor: React.FC<TextEditorProps> = ({ value, onChange, readOnly = fal
         value={value}
         height='100%'
         theme={theme === 'dark' ? 'dark' : 'light'}
-        extensions={[EditorView.lineWrapping]}
+        lineWrapping
         onChange={handleChange}
         readOnly={readOnly}
         basicSetup={basicSetupConfig}

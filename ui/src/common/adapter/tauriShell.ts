@@ -99,10 +99,10 @@ export function noopEmitter<Params = void>(): ShellEmitter<Params> {
 // Operations (Tauri v2 JS APIs)
 // ---------------------------------------------------------------------------
 
-/** Restart the desktop shell (tauri-plugin-process). */
+/** Restart the desktop shell through the Rust cleanup coordinator. */
 export async function tauriRelaunch(): Promise<void> {
-  const { relaunch } = await import('@tauri-apps/plugin-process');
-  await relaunch();
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('restart_application');
 }
 
 /** OS directory paths (@tauri-apps/api/path). */

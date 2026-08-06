@@ -45,6 +45,17 @@ const useFontScale = (): [number, (scale: number) => Promise<void>] => {
     void restoreZoomFactor();
   }, [restoreZoomFactor]);
 
+  useEffect(() => {
+    return configService.subscribe('ui.zoomFactor', (value) => {
+      if (typeof value !== 'number') return;
+      const factor = clampFontScale(value);
+      setFontScaleState(factor);
+      void ipcBridge.application.setZoomFactor.invoke({ factor }).catch((error) => {
+        console.error('Failed to apply reloaded zoom factor:', error);
+      });
+    });
+  }, []);
+
   // 乐观更新 slider，应用 zoom，并持久化到后端配置(重启后可恢复)。
   // Optimistically update slider, apply zoom, and persist so it survives restart.
   const setFontScale = useCallback(

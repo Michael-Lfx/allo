@@ -7,7 +7,9 @@ use crate::models::Provider;
 use crate::repository::{
     provider_preference_delete_action, IProviderRepository, ProviderPreferenceDeleteAction,
 };
-use crate::repository::provider::{CreateProviderParams, UpdateProviderParams};
+use crate::repository::provider::{
+    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams,
+};
 
 const PROVIDER_HARD_BINDING_DELETE_CONFLICT: &str =
     "provider is still referenced by an executable Agent binding";
@@ -62,6 +64,179 @@ pub struct SqliteProviderRepository {
 impl SqliteProviderRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    async fn create_with_profiles(
+        &self,
+        params: CreateProviderParams<'_>,
+        profiles: &[ProviderModelProfileSeed],
+    ) -> Result<Provider, DbError> {
+        let provider_id = match params.provider_id {
+            Some(provider_id) => nomifun_common::ProviderId::parse(provider_id)
+                .map(nomifun_common::ProviderId::into_string)
+                .map_err(|error| {
+                    DbError::Conflict(format!(
+                        "invalid provider_id '{provider_id}': {error}"
+                    ))
+                })?,
+            None => nomifun_common::ProviderId::new().into_string(),
+        };
+        let now = nomifun_common::now_ms();
+        let mut transaction = self.pool.begin().await?;
+        let sort_order = match params.sort_order {
+            Some(value) => value,
+            None => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM providers",
+                )
+                .fetch_one(&mut *transaction)
+                .await?
+            }
+        };
+
+        sqlx::query(
+            "INSERT INTO providers \
+                (provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+                 bedrock_config, is_full_url, sort_order, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&provider_id)
+        .bind(params.platform)
+        .bind(params.name)
+        .bind(params.base_url)
+        .bind(params.api_key_encrypted)
+        .bind(params.enabled)
+        .bind(params.bedrock_config)
+        .bind(params.is_full_url)
+        .bind(sort_order)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_err) if is_unique_violation(db_err.as_ref()) => {
+                DbError::Conflict(format!("Provider with id '{provider_id}' already exists"))
+            }
+            _ => DbError::Query(e),
+        })?;
+
+        sync_provider_models_tx(
+            &mut transaction,
+            &provider_id,
+            Some(params.models),
+            [
+                (ModelMapColumn::Enabled, params.model_enabled, false),
+                (ModelMapColumn::Protocol, params.model_protocols, false),
+                (
+                    ModelMapColumn::ContextLimit,
+                    params.model_context_limits,
+                    false,
+                ),
+                (
+                    ModelMapColumn::Description,
+                    params.model_descriptions,
+                    false,
+                ),
+            ],
+            now,
+        )
+        .await?;
+        sync_inferred_profiles_tx(&mut transaction, &provider_id, profiles, now).await?;
+
+        let id = sqlx::query_scalar("SELECT id FROM providers WHERE provider_id = ?")
+            .bind(&provider_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+
+        Ok(Provider {
+            id,
+            provider_id,
+            platform: params.platform.to_string(),
+            name: params.name.to_string(),
+            base_url: params.base_url.to_string(),
+            api_key_encrypted: params.api_key_encrypted.to_string(),
+            enabled: params.enabled,
+            bedrock_config: params.bedrock_config.map(String::from),
+            is_full_url: params.is_full_url,
+            sort_order,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn update_with_profiles(
+        &self,
+        id: &str,
+        params: UpdateProviderParams<'_>,
+        profiles: &[ProviderModelProfileSeed],
+    ) -> Result<Provider, DbError> {
+        let existing = self
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| DbError::NotFound(format!("Provider '{id}' not found")))?;
+
+        let models_json = params.models;
+        let map_enabled = params.model_enabled;
+        let map_protocols = params.model_protocols;
+        let map_limits = params.model_context_limits;
+        let map_descriptions = params.model_descriptions;
+        let merged = merge_update(existing, params);
+
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE providers SET \
+                platform = ?, name = ?, base_url = ?, api_key_encrypted = ?, \
+                enabled = ?, bedrock_config = ?, \
+                is_full_url = ?, sort_order = ?, updated_at = ? \
+             WHERE provider_id = ?",
+        )
+        .bind(&merged.platform)
+        .bind(&merged.name)
+        .bind(&merged.base_url)
+        .bind(&merged.api_key_encrypted)
+        .bind(merged.enabled)
+        .bind(&merged.bedrock_config)
+        .bind(merged.is_full_url)
+        .bind(merged.sort_order)
+        .bind(merged.updated_at)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+
+        sync_provider_models_tx(
+            &mut transaction,
+            id,
+            models_json,
+            [
+                (
+                    ModelMapColumn::Enabled,
+                    map_enabled.flatten(),
+                    map_enabled.is_some(),
+                ),
+                (
+                    ModelMapColumn::Protocol,
+                    map_protocols.flatten(),
+                    map_protocols.is_some(),
+                ),
+                (
+                    ModelMapColumn::ContextLimit,
+                    map_limits.flatten(),
+                    map_limits.is_some(),
+                ),
+                (
+                    ModelMapColumn::Description,
+                    map_descriptions.flatten(),
+                    map_descriptions.is_some(),
+                ),
+            ],
+            merged.updated_at,
+        )
+        .await?;
+        sync_inferred_profiles_tx(&mut transaction, id, profiles, merged.updated_at).await?;
+        transaction.commit().await?;
+
+        Ok(merged)
     }
 }
 
@@ -355,6 +530,55 @@ async fn sync_provider_models_tx(
     Ok(())
 }
 
+/// Apply inferred capability profiles while the provider membership update is
+/// still inside the same SQLite transaction.  A catalog row is only enriched
+/// when it is still the untouched inferred shape (`tasks=[]`,
+/// `source=inferred`); user edits remain authoritative.
+async fn sync_inferred_profiles_tx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider_id: &str,
+    profiles: &[ProviderModelProfileSeed],
+    now: i64,
+) -> Result<(), DbError> {
+    if profiles.is_empty() {
+        return Ok(());
+    }
+
+    let seeds = profiles
+        .iter()
+        .filter(|seed| !seed.model.trim().is_empty())
+        .map(|seed| (seed.model.as_str(), seed))
+        .collect::<HashMap<_, _>>();
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT model, tasks, source FROM provider_models WHERE provider_id = ?",
+    )
+    .bind(provider_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    for (model, tasks, source) in rows {
+        if tasks.trim() != "[]" || source != "inferred" {
+            continue;
+        }
+        let Some(seed) = seeds.get(model.as_str()) else {
+            continue;
+        };
+        sqlx::query(
+            "UPDATE provider_models SET tasks = ?, traits = ?, updated_at = ? \
+             WHERE provider_id = ? AND model = ?",
+        )
+        .bind(&seed.tasks)
+        .bind(&seed.traits)
+        .bind(now)
+        .bind(provider_id)
+        .bind(model)
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl IProviderRepository for SqliteProviderRepository {
     async fn list(&self) -> Result<Vec<Provider>, DbError> {
@@ -377,178 +601,30 @@ impl IProviderRepository for SqliteProviderRepository {
     }
 
     async fn create(&self, params: CreateProviderParams<'_>) -> Result<Provider, DbError> {
-        let provider_id = match params.provider_id {
-            Some(provider_id) => nomifun_common::ProviderId::parse(provider_id)
-                .map(nomifun_common::ProviderId::into_string)
-                .map_err(|error| {
-                    DbError::Conflict(format!(
-                        "invalid provider_id '{provider_id}': {error}"
-                    ))
-                })?,
-            None => nomifun_common::ProviderId::new().into_string(),
-        };
-        let now = nomifun_common::now_ms();
-        let mut transaction = self.pool.begin().await?;
-        let sort_order = match params.sort_order {
-            Some(value) => value,
-            None => {
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM providers",
-                )
-                .fetch_one(&mut *transaction)
-                .await?
-            }
-        };
-
-        sqlx::query(
-            "INSERT INTO providers \
-                (provider_id, platform, name, base_url, api_key_encrypted, enabled, \
-                 bedrock_config, is_full_url, sort_order, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&provider_id)
-        .bind(params.platform)
-        .bind(params.name)
-        .bind(params.base_url)
-        .bind(params.api_key_encrypted)
-        .bind(params.enabled)
-        .bind(params.bedrock_config)
-        .bind(params.is_full_url)
-        .bind(sort_order)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db_err) if is_unique_violation(db_err.as_ref()) => {
-                DbError::Conflict(format!("Provider with id '{provider_id}' already exists"))
-            }
-            _ => DbError::Query(e),
-        })?;
-
-        // Translate the models array + per-model map params into
-        // provider_models rows in the same transaction (the only per-model
-        // store). Every row is a fresh insert seeded from the map params, so
-        // no whole-map replacement pass is needed (replace = false).
-        sync_provider_models_tx(
-            &mut transaction,
-            &provider_id,
-            Some(params.models),
-            [
-                (ModelMapColumn::Enabled, params.model_enabled, false),
-                (ModelMapColumn::Protocol, params.model_protocols, false),
-                (
-                    ModelMapColumn::ContextLimit,
-                    params.model_context_limits,
-                    false,
-                ),
-                (
-                    ModelMapColumn::Description,
-                    params.model_descriptions,
-                    false,
-                ),
-            ],
-            now,
-        )
-        .await?;
-
-        let id = sqlx::query_scalar("SELECT id FROM providers WHERE provider_id = ?")
-            .bind(&provider_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-        transaction.commit().await?;
-
-        Ok(Provider {
-            id,
-            provider_id,
-            platform: params.platform.to_string(),
-            name: params.name.to_string(),
-            base_url: params.base_url.to_string(),
-            api_key_encrypted: params.api_key_encrypted.to_string(),
-            enabled: params.enabled,
-            bedrock_config: params.bedrock_config.map(String::from),
-            is_full_url: params.is_full_url,
-            sort_order,
-            created_at: now,
-            updated_at: now,
-        })
+        self.create_with_profiles(params, &[]).await
     }
 
     async fn update(&self, id: &str, params: UpdateProviderParams<'_>) -> Result<Provider, DbError> {
-        let existing = self
-            .find_by_id(id)
-            .await?
-            .ok_or_else(|| DbError::NotFound(format!("Provider '{id}' not found")))?;
+        self.update_with_profiles(id, params, &[]).await
+    }
 
-        // Capture the row-sync inputs before params is consumed by the merge.
-        // `models: None` keeps membership; a map param of `None` keeps that
-        // column on existing rows; `Some(None)` clears the map (all rows
-        // reset to the column default); `Some(Some(json))` replaces it.
-        let models_json = params.models;
-        let map_enabled = params.model_enabled;
-        let map_protocols = params.model_protocols;
-        let map_limits = params.model_context_limits;
-        let map_descriptions = params.model_descriptions;
+    async fn update_with_model_profiles(
+        &self,
+        id: &str,
+        params: UpdateProviderParams<'_>,
+        profiles: &[ProviderModelProfileSeed],
+        _model_repo: &dyn crate::repository::provider_model::IProviderModelRepository,
+    ) -> Result<Provider, DbError> {
+        self.update_with_profiles(id, params, profiles).await
+    }
 
-        let merged = merge_update(existing, params);
-
-        let mut transaction = self.pool.begin().await?;
-        sqlx::query(
-            "UPDATE providers SET \
-                platform = ?, name = ?, base_url = ?, api_key_encrypted = ?, \
-                enabled = ?, bedrock_config = ?, \
-                is_full_url = ?, sort_order = ?, updated_at = ? \
-             WHERE provider_id = ?",
-        )
-        .bind(&merged.platform)
-        .bind(&merged.name)
-        .bind(&merged.base_url)
-        .bind(&merged.api_key_encrypted)
-        .bind(merged.enabled)
-        .bind(&merged.bedrock_config)
-        .bind(merged.is_full_url)
-        .bind(merged.sort_order)
-        .bind(merged.updated_at)
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-
-        // Sync provider_models in the same transaction (the only per-model
-        // store). Map values supplied by this call seed mirrored columns for
-        // any newly inserted membership row; whole-map replacement runs only
-        // for map params the caller actually supplied.
-        sync_provider_models_tx(
-            &mut transaction,
-            id,
-            models_json,
-            [
-                (
-                    ModelMapColumn::Enabled,
-                    map_enabled.flatten(),
-                    map_enabled.is_some(),
-                ),
-                (
-                    ModelMapColumn::Protocol,
-                    map_protocols.flatten(),
-                    map_protocols.is_some(),
-                ),
-                (
-                    ModelMapColumn::ContextLimit,
-                    map_limits.flatten(),
-                    map_limits.is_some(),
-                ),
-                (
-                    ModelMapColumn::Description,
-                    map_descriptions.flatten(),
-                    map_descriptions.is_some(),
-                ),
-            ],
-            merged.updated_at,
-        )
-        .await?;
-        transaction.commit().await?;
-
-        Ok(merged)
+    async fn create_with_model_profiles(
+        &self,
+        params: CreateProviderParams<'_>,
+        profiles: &[ProviderModelProfileSeed],
+        _model_repo: &dyn crate::repository::provider_model::IProviderModelRepository,
+    ) -> Result<Provider, DbError> {
+        self.create_with_profiles(params, profiles).await
     }
 
     async fn delete(&self, id: &str) -> Result<(), DbError> {
@@ -935,6 +1011,120 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DbError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn catalog_profile_failure_at_reconcile_start_rolls_back_membership_update() {
+        let (repo, db) = setup().await;
+        let provider = repo
+            .create(CreateProviderParams {
+                models: r#"["old-model"]"#,
+                ..sample_params()
+            })
+            .await
+            .unwrap();
+        let model_repo = crate::SqliteProviderModelRepository::new(db.pool().clone());
+
+        // The trigger is the one-shot failure injector: the profile write is
+        // rejected after provider membership has already been staged in the
+        // transaction. The whole catalog update must still roll back.
+        sqlx::query(&format!(
+            "CREATE TRIGGER cloud_profile_failure_start \
+             BEFORE UPDATE OF tasks ON provider_models \
+             WHEN NEW.provider_id = '{}' AND NEW.tasks <> '[]' \
+             BEGIN SELECT RAISE(ABORT, 'injected cloud profile failure'); END",
+            provider.provider_id
+        ))
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let seeds = [ProviderModelProfileSeed {
+            model: "new-model".into(),
+            tasks: r#"["chat"]"#.into(),
+            traits: "[]".into(),
+        }];
+        let result = repo
+            .update_with_model_profiles(
+                &provider.provider_id,
+                UpdateProviderParams {
+                    models: Some(r#"["new-model"]"#),
+                    ..Default::default()
+                },
+                &seeds,
+                &model_repo,
+            )
+            .await;
+        assert!(result.is_err(), "the injected profile failure must escape");
+
+        let stored_models: Vec<(String, String)> = sqlx::query_as(
+            "SELECT model, tasks FROM provider_models WHERE provider_id = ? ORDER BY sort_order",
+        )
+        .bind(&provider.provider_id)
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(stored_models, vec![("old-model".into(), "[]".into())]);
+    }
+
+    #[tokio::test]
+    async fn catalog_profile_failure_mid_reconcile_rolls_back_earlier_profile_writes() {
+        let (repo, db) = setup().await;
+        let provider = repo
+            .create(CreateProviderParams {
+                models: r#"["old-model"]"#,
+                ..sample_params()
+            })
+            .await
+            .unwrap();
+        let model_repo = crate::SqliteProviderModelRepository::new(db.pool().clone());
+
+        // Only the second profile fails, proving that a successful first
+        // profile write cannot escape the surrounding provider transaction.
+        sqlx::query(&format!(
+            "CREATE TRIGGER cloud_profile_failure_mid \
+             BEFORE UPDATE OF tasks ON provider_models \
+             WHEN NEW.provider_id = '{}' AND NEW.model = 'new-model-2' \
+             BEGIN SELECT RAISE(ABORT, 'injected mid-profile failure'); END",
+            provider.provider_id
+        ))
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let seeds = [
+            ProviderModelProfileSeed {
+                model: "new-model-1".into(),
+                tasks: r#"["chat"]"#.into(),
+                traits: "[]".into(),
+            },
+            ProviderModelProfileSeed {
+                model: "new-model-2".into(),
+                tasks: r#"["chat"]"#.into(),
+                traits: "[]".into(),
+            },
+        ];
+        let result = repo
+            .update_with_model_profiles(
+                &provider.provider_id,
+                UpdateProviderParams {
+                    models: Some(r#"["new-model-1","new-model-2"]"#),
+                    ..Default::default()
+                },
+                &seeds,
+                &model_repo,
+            )
+            .await;
+        assert!(result.is_err(), "the injected mid-profile failure must escape");
+
+        let stored_models: Vec<(String, String)> = sqlx::query_as(
+            "SELECT model, tasks FROM provider_models WHERE provider_id = ? ORDER BY sort_order",
+        )
+        .bind(&provider.provider_id)
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(stored_models, vec![("old-model".into(), "[]".into())]);
     }
 
     #[tokio::test]

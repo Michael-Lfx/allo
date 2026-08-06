@@ -48,7 +48,13 @@ pub fn safe_zip_entry_path(name: &str, colon_policy: ZipColonPolicy) -> Option<P
     if path.is_absolute() {
         return None;
     }
-    let mut safe_path = PathBuf::new();
+    // Build the relative spelling as one path instead of repeatedly calling
+    // `PathBuf::push`. On Windows, pushing a later component containing `:`
+    // can reinterpret it as a drive/prefix and discard the earlier safe
+    // components (`files/a:b.md` became `a:b.md`). The component checks below
+    // already reject dangerous prefixes, so joining the validated names with
+    // `/` preserves legal non-prefix colons on every host.
+    let mut safe_name = String::new();
     let mut saw_normal = false;
     for component in path.components() {
         match component {
@@ -62,16 +68,19 @@ pub fn safe_zip_entry_path(name: &str, colon_policy: ZipColonPolicy) -> Option<P
                     }
                     saw_normal = true;
                 }
-                safe_path.push(part);
+                if !safe_name.is_empty() {
+                    safe_name.push('/');
+                }
+                safe_name.push_str(&part.to_string_lossy());
             }
             Component::CurDir => {}
             _ => return None,
         }
     }
-    if safe_path.as_os_str().is_empty() {
+    if safe_name.is_empty() {
         return None;
     }
-    Some(safe_path)
+    Some(PathBuf::from(safe_name))
 }
 
 /// True when a zip entry's unix mode marks it a symlink (`S_IFLNK`), which

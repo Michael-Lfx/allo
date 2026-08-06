@@ -109,6 +109,16 @@ const useColorScheme = (): [ColorScheme, (scheme: ColorScheme) => Promise<void>]
     }
   }, []);
 
+  // Re-apply the installation-scoped scheme when configService refreshes
+  // after login or a host/workspace transition.
+  useEffect(() => {
+    return configService.subscribe('colorScheme', (value) => {
+      const next = value === 'default' ? value : DEFAULT_COLOR_SCHEME;
+      setColorSchemeState(next);
+      applyColorScheme(next);
+    });
+  }, [applyColorScheme]);
+
   return [colorScheme, setColorScheme];
 };
 
