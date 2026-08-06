@@ -105,43 +105,6 @@ const Config: React.FC<PropsWithChildren> = ({ children }) => {
   return React.createElement(ConfigProvider, { theme: { primaryColor: '#4E5969' }, locale: arcoLocale }, children);
 };
 
-const CloudModelEnvironmentGate: React.FC<PropsWithChildren> = ({ children }) => {
-  const { status, modelStatus, retryModelEnvironment } = useCloudAuth();
-  const { t } = useTranslation();
-
-  if (status !== 'authenticated' || modelStatus === 'ready' || modelStatus === 'idle') {
-    return <>{children}</>;
-  }
-
-  return (
-    <div className='flex h-full min-h-100vh flex-col bg-[var(--color-bg-1)]'>
-      <Alert
-        type={modelStatus === 'failed' ? 'error' : 'warning'}
-        title={
-          modelStatus === 'restoring'
-            ? t('common.cloudModelEnvironment.restoringTitle')
-            : modelStatus === 'failed'
-              ? t('common.cloudModelEnvironment.failedTitle')
-              : t('common.cloudModelEnvironment.degradedTitle')
-        }
-        content={
-          modelStatus === 'restoring'
-            ? t('common.cloudModelEnvironment.restoringDescription')
-            : modelStatus === 'failed'
-              ? t('common.cloudModelEnvironment.failedDescription')
-              : t('common.cloudModelEnvironment.degradedDescription')
-        }
-        action={
-          <Button type='text' size='small' onClick={() => void retryModelEnvironment()}>
-            {t('common.cloudModelEnvironment.retry')}
-          </Button>
-        }
-      />
-      <div className='min-h-0 flex-1'>{children}</div>
-    </div>
-  );
-};
-
 const StartupRecoveryPanel: React.FC<{
   error: Error;
   onRetry: () => void;
@@ -380,7 +343,7 @@ const Main = () => {
     return <AppLoader />;
   }
 
-  return <CloudModelEnvironmentGate>{router}</CloudModelEnvironmentGate>;
+  return router;
 };
 
 const App = HOC.Wrapper(Config)(Main);

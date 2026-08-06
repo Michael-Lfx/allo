@@ -43,15 +43,6 @@
   "download": "Download",
   "close": "Close",
   "retry": "Retry",
-  "cloudModelEnvironment": {
-    "restoringTitle": "Restoring cloud models",
-    "restoringDescription": "Syncing the model catalog. Please wait…",
-    "degradedTitle": "Cloud model catalog is temporarily out of date",
-    "degradedDescription": "Available cached models are ready; some new models may be unavailable.",
-    "failedTitle": "Cloud models are unavailable",
-    "failedDescription": "No usable model cache is available. Retry model recovery to continue.",
-    "retry": "Retry model recovery"
-  },
   "startupRecovery": {
     "title": "Startup data could not be loaded",
     "description": "System information is temporarily unavailable. Retry, open support logs, or sign out.",
