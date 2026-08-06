@@ -90,8 +90,12 @@ impl Tool for LearningGenerateCourseTool {
     fn description(&self) -> &str {
         "Generate a learning course (modules, lessons, quizzes, spaced-repetition concepts) FROM a \
          mounted knowledge base. The course is grounded in the base's markdown documents, so FIRST \
-         make sure the base contains well-structured .md notes (one topic per file, headings + \
-         definitions + examples); write missing ones with knowledge_write before calling this. \
+         make sure the base contains well-structured .md notes: one topic per file, and each file's \
+         atomic unit must cover, in order, the sections 描述 (description), 例子 (examples), \
+         迁移 (transfer), 其他 (other), 关键词 (keywords), 验证 (verification), 推广 (promotion) — \
+         write missing ones with knowledge_write before calling this. \
+         Generated lessons follow the same atomic structure, so the course reads like a real study \
+         document instead of a bare summary. \
          Generation samples the documents and takes a while (one model call); it creates the course \
          and returns its id — the user then opens it on the Learning page to enroll, take the \
          diagnostic, and review."

@@ -29,7 +29,7 @@ Reply with ONLY one JSON object matching this shape:
       "lessons": [
         {
           "title": "lesson title",
-          "summary": "learning objective and concise explanation",
+          "summary": "the lesson's atomic study document in structured Markdown (see the Lesson Document rule below)",
           "estimated_minutes": 15,
           "source": {"path": "exact/sample/path.md"},
           "concepts": ["concept-key"],
@@ -59,6 +59,21 @@ Rules:
 - true_false answer must be a JSON boolean.
 - reflection answer must be null and asks the learner to explain or apply an idea.
 - Questions, answers, explanations, and summaries must be supported by the sampled documents.
+- Lesson Document rule: "summary" is the ATOMIC study text of the lesson — the smallest
+  self-contained document the learner reads. It must be complete, source-grounded Markdown
+  containing exactly these seven sections, IN THIS ORDER, each introduced by a `## ` heading
+  in the dominant language of the source documents (canonical labels below, English in parentheses):
+  1. 描述 (Description) — a precise definition of what the lesson is about, in plain words.
+  2. 例子 (Examples) — 1-3 concrete worked examples drawn from the sampled documents.
+  3. 迁移 (Transfer) — how to apply the idea to new situations; which contexts it generalizes to,
+     what changes and what stays the same.
+  4. 其他 (Other) — caveats, common mistakes, edge cases, or extra facts that fit nowhere else.
+  5. 关键词 (Keywords) — a comma-separated list of the key terms, matching the terms used in activities.
+  6. 验证 (Verification) — self-check questions the learner must answer to prove understanding;
+     at least one must be objective and correspond to an activity listed below.
+  7. 推广 (Promotion) — natural next steps and wider applications of the concept.
+  Every section must carry substantive content grounded in the samples; never leave a section
+  empty, one line long, or a placeholder.
 - Do not include source_kb_id; the server attaches the selected knowledge base.
 - Output JSON only, without Markdown fences or commentary."#;
 
@@ -219,6 +234,22 @@ mod tests {
         assert!(prompt.contains("Requested domain label: trading"));
         assert!(COURSE_GENERATION_SYSTEM.contains("untrusted source material"));
         assert!(COURSE_GENERATION_SYSTEM.contains("Never invent paths"));
+        // The atomic lesson document must carry all seven mandated sections.
+        for section in [
+            "描述 (Description)",
+            "例子 (Examples)",
+            "迁移 (Transfer)",
+            "其他 (Other)",
+            "关键词 (Keywords)",
+            "验证 (Verification)",
+            "推广 (Promotion)",
+        ] {
+            assert!(
+                COURSE_GENERATION_SYSTEM.contains(section),
+                "missing lesson-document section: {section}"
+            );
+        }
+        assert!(COURSE_GENERATION_SYSTEM.contains("ATOMIC study text"));
     }
 
     #[test]

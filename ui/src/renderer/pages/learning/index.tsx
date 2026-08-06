@@ -1306,7 +1306,7 @@ function LessonBlock({
   const { t } = useTranslation();
   return (
     <div className='flex flex-col gap-14px'>
-      {lesson.summary && <Paragraph className='m-0 text-t-secondary'>{lesson.summary}</Paragraph>}
+      {lesson.summary && <Markdown className='text-13px'>{lesson.summary}</Markdown>}
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
         <Text type='secondary'>
