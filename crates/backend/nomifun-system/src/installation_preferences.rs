@@ -7,6 +7,7 @@ use nomifun_common::{AppError, dir_config};
 use nomifun_db::IClientPreferenceRepository;
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 /// Stable installation-local preference file. It lives below `data_dir`,
 /// which remains fixed when the user changes the workspace root.
@@ -27,6 +28,7 @@ pub const INSTALLATION_PREFERENCE_KEYS: &[&str] = &[
 ];
 
 const MAX_INSTALLATION_PREFERENCES_BYTES: u64 = 4 * 1024 * 1024;
+const INSTALLATION_PREFERENCES_BACKUP_SUFFIX: &str = ".bak";
 
 type InstallationFileLock = Mutex<()>;
 
@@ -82,32 +84,47 @@ impl InstallationPreferenceStore {
             return Ok(());
         }
 
-        if self.read_map_async().await?.is_none() {
-            let key_refs = INSTALLATION_PREFERENCE_KEYS.to_vec();
-            let rows = repo.get_by_keys(&key_refs).await.map_err(|error| {
-                AppError::Internal(format!("read legacy installation preferences: {error}"))
-            })?;
-            let mut migrated = BTreeMap::new();
-            for row in rows {
-                let value = serde_json::from_str::<Value>(&row.value)
-                    .unwrap_or_else(|_| Value::String(row.value.clone()));
-                if validate_preference_value(&row.key, &value).is_ok() {
-                    migrated.insert(row.key, value);
-                } else {
-                    tracing::warn!(
-                        key = %row.key,
-                        "skipping invalid legacy installation preference during migration"
-                    );
-                }
+        let key_refs = INSTALLATION_PREFERENCE_KEYS.to_vec();
+        let mut values = self.read_map_async().await?.unwrap_or_default();
+        let rows = repo.get_by_keys(&key_refs).await.map_err(|error| {
+            AppError::Internal(format!("read legacy installation preferences: {error}"))
+        })?;
+        for row in rows {
+            if values.contains_key(&row.key) {
+                // The installation file is authoritative once it contains a
+                // valid value, even when SQLite still has the old row.
+                continue;
             }
-            self.write_map_async(migrated).await?;
+            let value = serde_json::from_str::<Value>(&row.value)
+                .unwrap_or_else(|_| Value::String(row.value.clone()));
+            if validate_preference_value(&row.key, &value).is_ok() {
+                values.insert(row.key, value);
+            } else {
+                tracing::warn!(
+                    key = %row.key,
+                    "skipping invalid legacy installation preference during migration"
+                );
+            }
         }
 
-        let key_refs = INSTALLATION_PREFERENCE_KEYS.to_vec();
-        repo.delete_keys(&key_refs).await.map_err(|error| {
-            AppError::Internal(format!("remove legacy installation preferences: {error}"))
+        self.write_map_async(values).await?;
+        let verified = self.read_map_async().await?.unwrap_or_default();
+        let removable_keys: Vec<&str> = key_refs
+            .iter()
+            .copied()
+            .filter(|key| verified.contains_key(*key))
+            .collect();
+        if !removable_keys.is_empty() {
+            repo.delete_keys(&removable_keys).await.map_err(|error| {
+                AppError::Internal(format!("remove legacy installation preferences: {error}"))
+            })?;
+        }
+        let remaining = repo.get_by_keys(&INSTALLATION_PREFERENCE_KEYS.to_vec()).await.map_err(|error| {
+            AppError::Internal(format!("verify legacy installation preference cleanup: {error}"))
         })?;
-        self.legacy_cleanup_done.store(true, Ordering::Release);
+        if remaining.is_empty() {
+            self.legacy_cleanup_done.store(true, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -167,51 +184,137 @@ impl InstallationPreferenceStore {
     }
 }
 
-fn read_map_from_path(path: &Path) -> Result<Option<BTreeMap<String, Value>>, AppError> {
-    let bytes = match dir_config::read_bounded_regular_file(path, MAX_INSTALLATION_PREFERENCES_BYTES) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(AppError::Internal(format!(
-                    "read installation preferences safely {}: {error}",
-                    path.display()
-                )));
-            }
-        };
-        let raw: Map<String, Value> = serde_json::from_slice(&bytes).map_err(|error| {
-            AppError::Internal(format!(
-                "parse installation preferences {}: {error}",
-                path.display()
-            ))
-        })?;
-        let mut values = BTreeMap::new();
-        for (key, value) in raw {
-            if !is_installation_preference_key(&key) {
-                return Err(AppError::Internal(format!(
-                    "installation preferences contains unknown key '{key}'"
-                )));
-            }
-            validate_preference_value(&key, &value)?;
+fn backup_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}{}", path.display(), INSTALLATION_PREFERENCES_BACKUP_SUFFIX))
+}
+
+fn validate_map(raw: Map<String, Value>, path: &Path) -> Result<BTreeMap<String, Value>, AppError> {
+    let mut values = BTreeMap::new();
+    for (key, value) in raw {
+        if !is_installation_preference_key(&key) {
+            tracing::warn!(key = %key, path = %path.display(), "preserving unknown installation preference key");
             values.insert(key, value);
+            continue;
         }
-        Ok(Some(values))
+        validate_preference_value(&key, &value)?;
+        values.insert(key, value);
+    }
+    Ok(values)
+}
+
+fn read_valid_map(path: &Path) -> Result<Option<(Vec<u8>, BTreeMap<String, Value>)>, AppError> {
+    let bytes = match dir_config::read_bounded_regular_file(path, MAX_INSTALLATION_PREFERENCES_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Internal(format!(
+                "read installation preferences safely {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let raw: Map<String, Value> = serde_json::from_slice(&bytes).map_err(|error| {
+        AppError::Internal(format!(
+            "parse installation preferences {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(Some((bytes, validate_map(raw, path)?)))
+}
+
+fn quarantine_file(path: &Path) -> Result<Option<PathBuf>, AppError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::Internal(format!("inspect corrupt preference {}: {error}", path.display()))),
+    }
+    let quarantined = PathBuf::from(format!(
+        "{}.corrupt-{}-{}",
+        path.display(),
+        chrono_like_timestamp(),
+        Uuid::now_v7()
+    ));
+    std::fs::rename(path, &quarantined).map_err(|error| {
+        AppError::Internal(format!("quarantine installation preference {}: {error}", path.display()))
+    })?;
+    Ok(Some(quarantined))
+}
+
+fn chrono_like_timestamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn read_map_from_path(path: &Path) -> Result<Option<BTreeMap<String, Value>>, AppError> {
+    match read_valid_map(path) {
+        Ok(Some((_, values))) => return Ok(Some(values)),
+        Ok(None) => {}
+        Err(main_error) => {
+            tracing::warn!(error = %main_error, "installation preference main file is invalid; trying backup");
+        }
+    }
+
+    let backup = backup_path(path);
+    match read_valid_map(&backup) {
+        Ok(Some((bytes, values))) => {
+            // Replace the main entry only after the backup has passed all
+            // bounded-file and JSON validation. A symlink is renamed as an
+            // entry, never followed.
+            let _ = quarantine_file(path)?;
+            dir_config::write_atomic_replace(path, &bytes).map_err(|error| {
+                AppError::Internal(format!("restore installation preferences {}: {error}", path.display()))
+            })?;
+            tracing::warn!(path = %path.display(), "restored installation preferences from backup");
+            Ok(Some(values))
+        }
+        Ok(None) | Err(_) => {
+            // Both copies are unusable. Quarantine them before allowing the
+            // caller to rebuild from SQLite/defaults; a failed quarantine is
+            // propagated so a suspicious file is never silently overwritten.
+            let _ = quarantine_file(path)?;
+            let _ = quarantine_file(&backup)?;
+            Ok(None)
+        }
+    }
+}
+
+fn ensure_replaceable_regular_file(path: &Path) -> Result<(), AppError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(AppError::Internal(format!(
+            "installation preference path is not a regular file: {}",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::Internal(format!("inspect installation preference path {}: {error}", path.display()))),
+    }
 }
 
 fn write_map_to_path(path: &Path, values: &BTreeMap<String, Value>) -> Result<(), AppError> {
-        let json = serde_json::to_vec_pretty(values).map_err(|error| {
-            AppError::Internal(format!("serialize installation preferences: {error}"))
+    let json = serde_json::to_vec_pretty(values).map_err(|error| {
+        AppError::Internal(format!("serialize installation preferences: {error}"))
+    })?;
+    if json.len() as u64 > MAX_INSTALLATION_PREFERENCES_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "installation preferences exceed the {MAX_INSTALLATION_PREFERENCES_BYTES}-byte limit"
+        )));
+    }
+    ensure_replaceable_regular_file(path)?;
+    let backup = backup_path(path);
+    ensure_replaceable_regular_file(&backup)?;
+    if let Some((old_bytes, _)) = read_valid_map(path)? {
+        dir_config::write_atomic_replace(&backup, &old_bytes).map_err(|error| {
+            AppError::Internal(format!("backup installation preferences {}: {error}", backup.display()))
         })?;
-        if json.len() as u64 > MAX_INSTALLATION_PREFERENCES_BYTES {
-            return Err(AppError::BadRequest(format!(
-                "installation preferences exceed the {MAX_INSTALLATION_PREFERENCES_BYTES}-byte limit"
-            )));
-        }
-        dir_config::write_atomic_replace(path, &json).map_err(|error| {
-            AppError::Internal(format!(
-                "write installation preferences {}: {error}",
-                path.display()
-            ))
-        })
+    }
+    dir_config::write_atomic_replace(path, &json).map_err(|error| {
+        AppError::Internal(format!(
+            "write installation preferences {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 pub fn is_installation_preference_key(key: &str) -> bool {
@@ -260,24 +363,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_oversized_files() {
+    async fn merges_partial_json_without_deleting_unmigrated_rows() {
+        let data = tempdir().unwrap();
+        let db = init_database_memory().await.unwrap();
+        let repo = SqliteClientPreferenceRepository::new(db.pool().clone());
+        repo.upsert_batch(&[
+            ("language", "\"en-US\""),
+            ("theme", "\"dark\""),
+            ("colorScheme", "\"purple\""),
+        ])
+        .await
+        .unwrap();
+        std::fs::write(
+            data.path().join(INSTALLATION_PREFERENCES_FILE),
+            br#"{"language":"zh-CN","opaque.future":true}"#,
+        )
+        .unwrap();
+
+        let store = InstallationPreferenceStore::new(data.path());
+        store.ensure_migrated(&repo).await.unwrap();
+
+        let values = store.get(None).await.unwrap();
+        assert_eq!(values.get("language"), Some(&json!("zh-CN")));
+        assert_eq!(values.get("theme"), Some(&json!("dark")));
+        assert_eq!(values.get("colorScheme"), Some(&json!("purple")));
+        assert_eq!(values.get("opaque.future"), Some(&json!(true)));
+        assert!(repo.get_by_keys(&["language", "theme", "colorScheme"]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_files_by_quarantining_them() {
         let data = tempdir().unwrap();
         let store = InstallationPreferenceStore::new(data.path());
         let path = data.path().join(INSTALLATION_PREFERENCES_FILE);
         std::fs::write(&path, vec![b'x'; (MAX_INSTALLATION_PREFERENCES_BYTES + 1) as usize]).unwrap();
-        let error = store.get(None).await.unwrap_err();
-        assert!(error.to_string().contains("safely"));
+        assert!(store.get(None).await.unwrap().is_empty());
+        assert!(std::fs::read_dir(data.path()).unwrap().any(|entry| {
+            entry.unwrap().file_name().to_string_lossy().contains(".corrupt-")
+        }));
     }
 
     #[tokio::test]
-    async fn rejects_malformed_files() {
+    async fn recovers_a_corrupt_main_file_from_the_previous_backup() {
+        let data = tempdir().unwrap();
+        let store = InstallationPreferenceStore::new(data.path());
+        let path = data.path().join(INSTALLATION_PREFERENCES_FILE);
+        store.update(&[("language".into(), json!("zh-CN"))]).await.unwrap();
+        store.update(&[("theme".into(), json!("dark"))]).await.unwrap();
+        std::fs::write(&path, b"{\"language\":").unwrap();
+
+        let values = store.get(None).await.unwrap();
+        assert_eq!(values.get("language"), Some(&json!("zh-CN")));
+        assert!(values.get("theme").is_none());
+        assert!(serde_json::from_slice::<Map<String, Value>>(&std::fs::read(&path).unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn quarantines_both_copies_when_main_and_backup_are_corrupt() {
         let data = tempdir().unwrap();
         let store = InstallationPreferenceStore::new(data.path());
         let path = data.path().join(INSTALLATION_PREFERENCES_FILE);
         std::fs::write(&path, b"{\"language\":").unwrap();
+        std::fs::write(backup_path(&path), b"not-json").unwrap();
 
-        let error = store.get(None).await.unwrap_err();
-        assert!(error.to_string().contains("parse installation preferences"));
+        assert!(store.get(None).await.unwrap().is_empty());
+        let quarantined = std::fs::read_dir(data.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(quarantined, 2);
     }
 
     #[test]
