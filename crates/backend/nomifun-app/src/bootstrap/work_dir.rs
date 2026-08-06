@@ -118,61 +118,6 @@ mod tests {
         dir
     }
 
-    fn rewrite_active_plan_as_released_v1(
-        data_dir: &Path,
-        mut plan: nomifun_common::factory_reset::DatasetResetPlan,
-    ) -> nomifun_common::factory_reset::DatasetResetPlan {
-        use nomifun_common::dataset_roots::{
-            AGENT_PROCESS_REGISTRY_FILE, WORK_ROOT_BINDING_FILE,
-        };
-        use nomifun_common::factory_reset::{
-            ManagedRootBase, ManagedRootKind, ManagedRootPlan,
-            V3_DATASET_RESET_DIR, V3_DATASET_RESET_PLAN_FILE,
-        };
-
-        plan.version = 1;
-        plan.persist_work_dir = false;
-        plan.automatic_legacy_retirement = false;
-        plan.roots.retain(|root| {
-            root.relative_path != WORK_ROOT_BINDING_FILE
-                && root.relative_path != AGENT_PROCESS_REGISTRY_FILE
-        });
-        let insertion_index = plan
-            .roots
-            .iter()
-            .position(|root| root.relative_path == "encryption_key")
-            .expect("released registry contains encryption_key")
-            + 1;
-        plan.roots.insert(
-            insertion_index,
-            ManagedRootPlan {
-                base: ManagedRootBase::DataDir,
-                relative_path: dir_config::DIR_CONFIG_FILE.into(),
-                retired_relative_path: format!(
-                    "{}/{}",
-                    plan.retired_dir,
-                    dir_config::DIR_CONFIG_FILE
-                ),
-                kind: ManagedRootKind::File,
-                initially_present: data_dir
-                    .join(dir_config::DIR_CONFIG_FILE)
-                    .is_file(),
-            },
-        );
-        let mut released = serde_json::to_value(&plan).unwrap();
-        let object = released.as_object_mut().unwrap();
-        object.remove("persist_work_dir");
-        object.remove("automatic_legacy_retirement");
-        std::fs::write(
-            data_dir
-                .join(V3_DATASET_RESET_DIR)
-                .join(V3_DATASET_RESET_PLAN_FILE),
-            serde_json::to_vec_pretty(&released).unwrap(),
-        )
-        .unwrap();
-        plan
-    }
-
     #[test]
     fn persisted_work_dir_is_used_when_no_cli_flag() {
         let data_dir = temp_data_dir("persisted");
@@ -303,7 +248,7 @@ mod tests {
         std::fs::write(data.path().join("nomifun-backend.db"), b"old")
             .unwrap();
 
-        nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
+        nomifun_common::factory_reset::request_v3_dataset_reset(
             data.path(),
             &first_work_path,
         )
@@ -340,7 +285,7 @@ mod tests {
         )
         .unwrap();
 
-        nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
+        nomifun_common::factory_reset::request_v3_dataset_reset(
             data.path(),
             &second_work_path,
         )
@@ -407,149 +352,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ignored_v1_control_replay_cannot_redirect_or_clear_a_later_v3_root() {
-        use nomifun_common::factory_reset::{
-            DatasetPreparation, DatasetResetReason, RETIRED_DATASETS_DIR,
-            V3_DATASET_RECEIPT_FILE, V3_DATASET_RESET_DIR,
-            V3_DATASET_RESET_PLAN_FILE,
-        };
-
-        let data = tempfile::tempdir().unwrap();
-        let first_work = tempfile::tempdir().unwrap();
-        let first_work_path =
-            nomifun_common::paths::canonicalize_simplified(first_work.path()).unwrap();
-        let second_work = tempfile::tempdir().unwrap();
-        let second_work_path =
-            nomifun_common::paths::canonicalize_simplified(second_work.path()).unwrap();
-        dir_config::set_work_dir(data.path(), &first_work_path).unwrap();
-        std::fs::write(data.path().join("nomifun-backend.db"), b"old")
-            .unwrap();
-
-        let first_plan =
-            nomifun_common::factory_reset::arm_v3_dataset_reset(
-                data.path(),
-                &first_work_path,
-                DatasetResetReason::NonV3Dataset,
-            )
-            .unwrap();
-        let first_plan = rewrite_active_plan_as_released_v1(
-            data.path(),
-            first_plan,
-        );
-        assert_eq!(
-            nomifun_common::factory_reset::prepare_v3_dataset(
-                data.path(),
-                &first_work_path,
-            )
-            .unwrap(),
-            DatasetPreparation::Unchanged
-        );
-        let archived_control = data
-            .path()
-            .join(RETIRED_DATASETS_DIR)
-            .join("ignored-legacy-reset-plans")
-            .join(&first_plan.operation_id);
-        let replay = std::fs::read_dir(&archived_control)
-            .unwrap()
-            .map(|entry| {
-                let entry = entry.unwrap();
-                (
-                    entry.file_name(),
-                    std::fs::read(entry.path()).unwrap(),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            &second_work_path,
-        )
-        .unwrap();
-        assert_eq!(
-            nomifun_common::factory_reset::prepare_v3_dataset(
-                data.path(),
-                &second_work_path,
-            )
-            .unwrap(),
-            DatasetPreparation::ResetApplied
-        );
-        let current_plan =
-            nomifun_common::factory_reset::read_pending_v3_reset(
-                data.path(),
-                &second_work_path,
-            )
-            .unwrap()
-            .unwrap();
-        std::fs::write(
-            data.path().join("nomifun-backend.db"),
-            b"current-v3",
-        )
-        .unwrap();
-        nomifun_common::factory_reset::write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            &second_work_path,
-            &current_plan.generation,
-        )
-        .unwrap();
-        nomifun_common::factory_reset::finalize_v3_dataset_reset(
-            data.path(),
-            &second_work_path,
-        )
-        .unwrap();
-        std::fs::create_dir_all(second_work_path.join("conversations"))
-            .unwrap();
-        let sentinel =
-            second_work_path.join("conversations/current-v3");
-        std::fs::write(&sentinel, b"current").unwrap();
-        let generation =
-            std::fs::read(data.path().join("storage-generation")).unwrap();
-        let receipt =
-            std::fs::read(data.path().join(V3_DATASET_RECEIPT_FILE))
-                .unwrap();
-
-        let active_control = data.path().join(V3_DATASET_RESET_DIR);
-        std::fs::create_dir(&active_control).unwrap();
-        for (name, bytes) in replay {
-            std::fs::write(active_control.join(name), bytes).unwrap();
-        }
-        std::fs::write(
-            active_control.join("phase-generation-installed"),
-            b"v1\n",
-        )
-        .unwrap();
-        assert!(
-            active_control.join(V3_DATASET_RESET_PLAN_FILE).is_file()
-        );
-        first_work.close().unwrap();
-
-        assert_eq!(
-            resolve_work_dir(None, data.path()).unwrap(),
-            second_work_path,
-            "a permanently ignored v1 control must not win over the current dir-config"
-        );
-        assert_eq!(
-            nomifun_common::factory_reset::prepare_v3_dataset(
-                data.path(),
-                &second_work_path,
-            )
-            .unwrap(),
-            DatasetPreparation::Unchanged
-        );
-        assert_eq!(
-            std::fs::read(data.path().join("nomifun-backend.db")).unwrap(),
-            b"current-v3"
-        );
-        assert!(sentinel.is_file());
-        assert_eq!(
-            std::fs::read(data.path().join("storage-generation")).unwrap(),
-            generation
-        );
-        assert_eq!(
-            std::fs::read(data.path().join(V3_DATASET_RECEIPT_FILE))
-                .unwrap(),
-            receipt
-        );
-        assert!(!active_control.exists());
-    }
 }

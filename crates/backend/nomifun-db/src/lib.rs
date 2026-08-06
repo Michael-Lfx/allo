@@ -69,7 +69,9 @@ pub use repository::cron::{
 };
 pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
 pub use repository::oauth_token::UpsertOAuthTokenParams;
-pub use repository::provider::{CreateProviderParams, UpdateProviderParams};
+pub use repository::provider::{
+    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams,
+};
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};
 pub use repository::{
     AdoptAgentExecutionStepOutputParams, AgentExecutionAttemptRecoveryDisposition,

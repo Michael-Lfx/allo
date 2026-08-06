@@ -12,6 +12,7 @@ mod enums;
 mod error;
 mod execution_authority;
 pub mod factory_reset;
+pub mod work_dir_relocation;
 mod fsname;
 mod hooks;
 mod id;

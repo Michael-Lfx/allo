@@ -4,6 +4,7 @@ pub mod client_pref;
 pub mod managed_model;
 pub mod model_fetcher;
 pub mod model_profile;
+pub mod installation_preferences;
 pub mod protocol;
 pub mod provider;
 pub mod provider_connection;
@@ -25,6 +26,10 @@ pub use managed_model::{
 };
 pub use model_fetcher::ModelFetchService;
 pub use model_profile::{ModelProfileService, seed_inferred_provider_models, seed_missing_inferred_profiles};
+pub use installation_preferences::{
+    INSTALLATION_PREFERENCE_KEYS, INSTALLATION_PREFERENCES_FILE, InstallationPreferenceStore,
+    is_installation_preference_key,
+};
 pub use protocol::ProtocolDetectionService;
 pub use provider::ProviderService;
 pub use provider_connection::ProviderConnectionService;

@@ -1,7 +1,7 @@
 import { ipcBridge } from '@/common';
 import type { IProvider } from '@/common/config/storage';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import useSWR, { mutate, type SWRConfiguration } from 'swr';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
 
@@ -35,19 +35,135 @@ export const fetchProviders = async (): Promise<IProvider[]> => {
   return (await ipcBridge.mode.listProviders.invoke()) ?? [];
 };
 
+export interface ProviderCatalogRefreshResult {
+  providers: IProvider[];
+  syncError?: Error;
+  stale?: boolean;
+}
+
+export interface ProviderCatalogRefreshOptions {
+  force?: boolean;
+  accountId?: string;
+  storageGeneration?: string;
+}
+
+const isModelCatalogCacheKey = (key: unknown): boolean =>
+  key === PROVIDERS_SWR_KEY || (typeof key === 'string' && key.startsWith('models-for-task:'));
+
+let providerCatalogGeneration = 0;
+const PROVIDER_CATALOG_REFRESH_WINDOW_MS = 60_000;
+let providerCatalogAccountId = 'unknown-account';
+let providerCatalogStorageGeneration = 'unknown-generation';
+let lastProviderCatalogRefreshAt = 0;
+let lastProviderCatalogRefreshResult: ProviderCatalogRefreshResult | null = null;
+let providersAutoRefreshPromise: Promise<ProviderCatalogRefreshResult> | null = null;
+let providersAutoRefreshContextKey: string | null = null;
+
+const getProviderCatalogContextKey = (options: ProviderCatalogRefreshOptions = {}): string =>
+  `${options.accountId ?? providerCatalogAccountId}:${options.storageGeneration ?? providerCatalogStorageGeneration}`;
+
+/** Set the account + dataset namespace used by the shared catalog coordinator. */
+export function setProviderCatalogContext(accountId: string | undefined, storageGeneration: string | undefined): void {
+  const nextKey = `${accountId ?? 'unknown-account'}:${storageGeneration ?? 'unknown-generation'}`;
+  const currentKey = `${providerCatalogAccountId}:${providerCatalogStorageGeneration}`;
+  if (nextKey === currentKey) return;
+  providerCatalogAccountId = accountId ?? 'unknown-account';
+  providerCatalogStorageGeneration = storageGeneration ?? 'unknown-generation';
+  providerCatalogGeneration += 1;
+  lastProviderCatalogRefreshAt = 0;
+  lastProviderCatalogRefreshResult = null;
+}
+
+/** Invalidate the time window without touching the SWR entries itself. */
+export function invalidateProviderCatalogCoordinator(): void {
+  lastProviderCatalogRefreshAt = 0;
+  lastProviderCatalogRefreshResult = null;
+}
+
+/** Clear all provider/model catalog entries before an account or generation transition. */
+export async function clearAvailableModelsCache(): Promise<void> {
+  providerCatalogGeneration += 1;
+  invalidateProviderCatalogCoordinator();
+  await mutate(isModelCatalogCacheKey, undefined, { revalidate: false });
+}
+
 /**
  * Optional cloud catalog sync then replace the shared providers SWR cache.
- * Soft-fails when cloud sync is unavailable (not logged in / no cloud host).
+ * The provider list is still returned when cloud sync fails so callers can
+ * distinguish a usable cached catalog (`syncError` + models) from a truly
+ * empty model environment.
  */
-export async function refreshProvidersCatalog(): Promise<IProvider[]> {
+export async function refreshProvidersCatalog(
+  options: ProviderCatalogRefreshOptions = {}
+): Promise<ProviderCatalogRefreshResult> {
+  const contextKey = getProviderCatalogContextKey(options);
+  if (
+    !options.force &&
+    lastProviderCatalogRefreshResult &&
+    contextKey === `${providerCatalogAccountId}:${providerCatalogStorageGeneration}` &&
+    Date.now() - lastProviderCatalogRefreshAt < PROVIDER_CATALOG_REFRESH_WINDOW_MS
+  ) {
+    return lastProviderCatalogRefreshResult;
+  }
+
+  if (providersAutoRefreshPromise && providersAutoRefreshContextKey === contextKey) {
+    return providersAutoRefreshPromise;
+  }
+
+  const refreshPromise = (async (): Promise<ProviderCatalogRefreshResult> => {
+  await clearAvailableModelsCache();
+  const requestGeneration = providerCatalogGeneration;
+  let syncError: Error | undefined;
   try {
-    await ipcBridge.cloud.syncModels.invoke();
+    const syncResult = await ipcBridge.cloud.syncModels.invoke();
+    if (!syncResult?.synced) {
+      throw new Error('The cloud model catalog was not synchronized');
+    }
   } catch (error) {
-    console.warn('[providers] Failed to sync chat model catalog:', error);
+    syncError = error instanceof Error ? error : new Error(String(error));
+    console.warn('[providers] Failed to sync chat model catalog:', syncError);
   }
   const providers = await fetchProviders();
+  if (
+    requestGeneration !== providerCatalogGeneration ||
+    contextKey !== `${providerCatalogAccountId}:${providerCatalogStorageGeneration}`
+  ) {
+    return { providers, syncError, stale: true };
+  }
   await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
-  return providers;
+  await mutate(
+    (key: unknown) => typeof key === 'string' && key.startsWith('models-for-task:'),
+    undefined,
+    { revalidate: true }
+  );
+  const result = { providers, syncError };
+  lastProviderCatalogRefreshAt = Date.now();
+  lastProviderCatalogRefreshResult = result;
+  return result;
+  })();
+  providersAutoRefreshPromise = refreshPromise;
+  providersAutoRefreshContextKey = contextKey;
+  void refreshPromise.then(
+    () => {
+      if (providersAutoRefreshPromise === refreshPromise) {
+        providersAutoRefreshPromise = null;
+        providersAutoRefreshContextKey = null;
+      }
+    },
+    () => {
+      if (providersAutoRefreshPromise === refreshPromise) {
+        providersAutoRefreshPromise = null;
+        providersAutoRefreshContextKey = null;
+      }
+    }
+  );
+  return refreshPromise;
+}
+
+export function refreshProvidersCatalogIfStale(
+  options: ProviderCatalogRefreshOptions = {}
+): Promise<ProviderCatalogRefreshResult> {
+  return refreshProvidersCatalog(options);
 }
 
 export const useProvidersQuery = () => {
@@ -62,6 +178,12 @@ export const useProvidersQuery = () => {
  */
 export const useModelProviderList = (): ModelProviderListResult => {
   const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery();
+
+  useEffect(() => {
+    void refreshProvidersCatalogIfStale().catch((error) => {
+      console.warn('[providers] Automatic catalog refresh failed:', error);
+    });
+  }, []);
 
   const configuredProviders = useMemo(() => {
     const list: IProvider[] = Array.isArray(modelConfig) ? modelConfig : [];

@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::backends::VimaxChat;
 use crate::domain::{CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::VimaxResult;
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats::{STORYBOARD, VIS_DECOMPOSE};
 
@@ -42,12 +42,12 @@ impl StoryboardArtist {
         .replace("{characters_str}", &characters_str)
         .replace("{user_requirement_str}", user_requirement);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]
         struct Resp {
             storyboard: Vec<ShotBriefDescription>,
         }
-        let resp: Resp = parse_llm_json(&raw)?;
+        let resp: Resp =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         Ok(resp.storyboard)
     }
 
@@ -95,7 +95,6 @@ reset to an unrelated establishing pose. Cross-scene continuity does NOT apply h
         .replace("{characters_str}", &characters_str)
         .replace("{continuity_block}", &continuity_block);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]
         struct Decomp {
             ff_desc: String,
@@ -108,7 +107,8 @@ reset to an unrelated establishing pose. Cross-scene continuity does NOT apply h
             variation_type: String,
             variation_reason: String,
         }
-        let d: Decomp = parse_llm_json(&raw)?;
+        let d: Decomp =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         Ok(ShotDescription {
             idx: brief.idx,
             is_last: brief.is_last,

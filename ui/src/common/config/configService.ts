@@ -95,16 +95,22 @@ class ConfigServiceImpl {
     this.initPromise = (async () => {
       try {
         const data = await fetchJson<Record<string, unknown>>('GET', '/api/settings/client');
-        this.cache.clear();
+        const previous = this.cache;
+        const next = new Map<string, unknown>();
         if (data) {
           for (const [key, value] of Object.entries(data)) {
-            this.cache.set(key, value);
+            next.set(key, value);
           }
         }
+        this.cache = next;
         this.initialized = true;
+        this.notifyChanged(previous, next);
       } catch (error) {
         console.warn('[configService] settings unavailable (pre-login or offline); using empty config:', error);
-        this.cache.clear();
+        // Keep the last authoritative snapshot available during a transient
+        // reload failure. Clearing it here made a login/workspace transition
+        // look like a preference reset even though the backend was only
+        // temporarily unavailable.
         this.initPromise = null;
       }
     })();
@@ -180,6 +186,35 @@ class ConfigServiceImpl {
         cb(value);
       }
     }
+  }
+
+  private notifyChanged(previous: Map<string, unknown>, next: Map<string, unknown>): void {
+    for (const key of getChangedConfigKeys(previous, next)) {
+      this.notify(key as ConfigKey, next.get(key));
+    }
+  }
+}
+
+export function getChangedConfigKeys(
+  previous: ReadonlyMap<string, unknown>,
+  next: ReadonlyMap<string, unknown>
+): string[] {
+  const changed: string[] = [];
+  const keys = new Set([...previous.keys(), ...next.keys()]);
+  for (const key of keys) {
+    if (!configValuesEqual(previous.get(key), next.get(key))) {
+      changed.push(key);
+    }
+  }
+  return changed;
+}
+
+function configValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
   }
 }
 

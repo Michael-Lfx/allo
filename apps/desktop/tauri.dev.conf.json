@@ -3,7 +3,8 @@
   "productName": "Flowy Dev",
   "identifier": "com.nomifun.desktop.dev",
   "build": {
-    "beforeBuildCommand": "bun scripts/prune-build.mjs && bun run --filter=./ui build"
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "bun run --filter=./ui build"
   },
   "bundle": {
     "resources": []

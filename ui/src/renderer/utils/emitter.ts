@@ -59,6 +59,12 @@ interface EventTypes {
   // GET-poll fallback confirms the runtime is idle, so the transcript
   // reloads even when every WebSocket frame was lost.
   'conversation.turn.settled': [ConversationId];
+  // Guid→会话页转场揭示信号：目标页首条用户气泡已提交（或无需首条消息的入口
+  // 已完成挂载）,PendingConversationOverlay 据此握手退出。无转场时发射无副作用。
+  // Guid→conversation transition reveal: the destination committed the first
+  // user bubble (or, for no-initial-message entries, finished mounting);
+  // PendingConversationOverlay tears down on this handshake.
+  'conversation.transition.reveal': [{ conversation_id: ConversationId }];
   // 预览面板事件 / Preview panel events
   'preview.open': [
     { content: string; contentType: PreviewContentType; metadata?: { title?: string; file_name?: string } },

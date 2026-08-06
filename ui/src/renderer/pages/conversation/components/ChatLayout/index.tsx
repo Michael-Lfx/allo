@@ -34,6 +34,7 @@ import {
   WORKSPACE_HEADER_HEIGHT,
   calcLayoutMetrics,
 } from '@/renderer/pages/conversation/utils/layoutCalc';
+import { CHAT_HEADER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { Layout as ArcoLayout } from '@arco-design/web-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -282,9 +283,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
 
   const desktopHeader = (
     <ArcoLayout.Header
-      className={classNames(
-        'min-h-44px flex items-center justify-between px-16px pt-8px pb-10px gap-16px !bg-1 chat-layout-header chat-layout-header--glass overflow-hidden'
-      )}
+      className={classNames(CHAT_HEADER_CLASSES)}
     >
       <FlexFullContainer className='h-full min-w-0' containerClassName='flex items-center'>
         <ChatTitleEditor

@@ -43,10 +43,22 @@ pub fn simplified(path: &Path) -> PathBuf {
 /// Windows verbatim prefix on either side.
 ///
 /// Both inputs are expected to originate from `fs::canonicalize` (directly or
-/// from a durable marker that stored such a value), so component casing and
-/// symlink resolution already match; only the `\\?\` prefix may differ.
+/// from a durable marker that stored such a value). Windows filesystem paths
+/// are case-insensitive, so comparison also accepts the casing differences
+/// produced by user input and older durable markers.
 pub fn paths_equivalent(a: &Path, b: &Path) -> bool {
-    dunce::simplified(a) == dunce::simplified(b)
+    let a = dunce::simplified(a);
+    let b = dunce::simplified(b);
+    #[cfg(windows)]
+    {
+        let a = a.to_string_lossy();
+        let b = b.to_string_lossy();
+        a.eq_ignore_ascii_case(&b)
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
 }
 
 /// String-typed convenience for durable markers: does the stored spelling

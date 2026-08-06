@@ -46,6 +46,8 @@ export type GuidModelSelectionResult = {
     modelName?: string
   ) => string;
   current_model: TProviderWithModel | undefined;
+  /** True when a persisted default exists but is no longer in the catalog. */
+  defaultModelUnavailable: boolean;
   setCurrentModel: (model_info: TProviderWithModel) => Promise<void>;
 };
 
@@ -88,6 +90,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
   );
 
   const [current_model, _setCurrentModel] = useState<TProviderWithModel>();
+  const [defaultModelUnavailable, setDefaultModelUnavailable] = useState(false);
   const selectedModelKeyRef = useRef<string | null>(null);
   const prevStorageKeyRef = useRef<string | null>(null);
 
@@ -104,6 +107,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
           console.error('Failed to save default model:', error);
         });
       }
+      setDefaultModelUnavailable(false);
       _setCurrentModel(model_info);
     },
     [storageKey]
@@ -131,47 +135,38 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       }
       const rawSavedModel: unknown = configService.get(storageKey);
       const savedModel = isPersistedDefaultModel(rawSavedModel) ? rawSavedModel : undefined;
-      const canPersistFallback = rawSavedModel === undefined || savedModel !== undefined;
       if (rawSavedModel !== undefined && savedModel === undefined) {
         console.warn(`Ignoring invalid persisted default model for ${storageKey}; no legacy migration is performed.`);
       }
 
-      // First-available enabled model — the fallback whenever nothing valid was
-      // saved. `modelList` mirrors the catalog groups (only providers with at
-      // least one chat-capable model), so the first provider is guaranteed to
-      // expose at least one selectable model. Use the CATALOG list the picker
-      // shows rather than raw `provider.models[0]`, which can be a model that
-      // is not chat-capable and thus never appears in the picker — picking it
-      // would leave current_model pointing at an unselectable model. This
-      // guarantees the lead (主管) model is always set and editable, so submit
-      // is never silently blocked in auto/range mode.
-      const firstProvider = modelList[0];
-      const firstAvailableModel = availableModelsFor(firstProvider)[0] ?? '';
+      const exactMatch = savedModel
+        ? modelList.find((provider) => provider.id === savedModel.provider_id)
+        : undefined;
+      const resolvedUseModel =
+        exactMatch && savedModel && availableModelsFor(exactMatch).includes(savedModel.model)
+          ? savedModel.model
+          : undefined;
 
-      let defaultModel: IProvider | undefined;
-      let resolvedUseModel: string;
-
-      if (savedModel) {
-        const { provider_id, model } = savedModel;
-        const exactMatch = modelList.find((m) => m.id === provider_id);
-        if (exactMatch && availableModelsFor(exactMatch).includes(model)) {
-          defaultModel = exactMatch;
-          resolvedUseModel = model;
-        } else {
-          defaultModel = firstProvider;
-          resolvedUseModel = firstAvailableModel;
-        }
-      } else {
-        defaultModel = firstProvider;
-        resolvedUseModel = firstAvailableModel;
+      if (!exactMatch || !resolvedUseModel) {
+        // A missing/invalid preference is a user decision boundary. Do not
+        // silently replace it with the first provider: that can send a new
+        // conversation to an unintended account and also rewrite the user's
+        // persisted choice. Explicit selection remains the only path that
+        // updates nomi.defaultModel.
+        selectedModelKeyRef.current = null;
+        _setCurrentModel(undefined);
+        setDefaultModelUnavailable(rawSavedModel !== undefined);
+        return;
       }
 
-      if (!defaultModel || !resolvedUseModel) return;
-
-      await setCurrentModel({
-        ...defaultModel,
-        use_model: resolvedUseModel,
-      }, canPersistFallback);
+      setDefaultModelUnavailable(false);
+      await setCurrentModel(
+        {
+          ...exactMatch,
+          use_model: resolvedUseModel,
+        },
+        false,
+      );
     };
 
     setDefaultModel().catch((error) => {
@@ -185,6 +180,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     modelList,
     formatGeminiModelLabel,
     current_model,
+    defaultModelUnavailable,
     setCurrentModel,
   };
 };

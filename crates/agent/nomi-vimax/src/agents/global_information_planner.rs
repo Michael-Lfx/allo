@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::backends::VimaxChat;
 use crate::domain::{CharacterInEvent, CharacterInNovel, Scene};
 use crate::error::VimaxResult;
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats::{CHARACTERS_IN_EVENT, CHARACTERS_IN_NOVEL};
 
@@ -48,7 +48,6 @@ impl GlobalInformationPlanner {
         )
         .replace("{scenes_sequence}", &blob);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]
         struct Resp {
             characters: Vec<CharacterInEventLoose>,
@@ -62,7 +61,8 @@ impl GlobalInformationPlanner {
             #[serde(default)]
             static_features: String,
         }
-        let resp: Resp = parse_llm_json(&raw)?;
+        let resp: Resp =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         Ok(resp
             .characters
             .into_iter()
@@ -113,7 +113,6 @@ impl GlobalInformationPlanner {
         .replace("{existing_characters_in_novel}", &existing_blob)
         .replace("{characters_in_event}", &event_blob);
 
-        let raw = self.chat.complete_text(&system, &user).await?;
         #[derive(Deserialize)]
         struct Resp {
             characters: Vec<CharacterInNovelLoose>,
@@ -127,7 +126,8 @@ impl GlobalInformationPlanner {
             #[serde(default)]
             static_features: String,
         }
-        let resp: Resp = parse_llm_json(&raw)?;
+        let resp: Resp =
+            complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
         Ok(resp
             .characters
             .into_iter()

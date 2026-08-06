@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::backends::VimaxChat;
 use crate::domain::{Camera, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
-use crate::json_util::parse_llm_json;
+use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats::CAMERA_TREE;
 
@@ -81,8 +81,14 @@ impl CameraImageGenerator {
                     "retrying camera tree construction after length mismatch"
                 );
             }
-            let raw = self.chat.complete_text(&system, &user).await?;
-            let resp: Resp = parse_llm_json(&raw)?;
+            let resp: Resp =
+                match complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last_err = e.to_string();
+                        continue;
+                    }
+                };
             match normalize_parent_items(resp.camera_parent_items, expected) {
                 Ok(items) => {
                     parent_items = Some(items);

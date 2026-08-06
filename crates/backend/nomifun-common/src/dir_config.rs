@@ -10,15 +10,16 @@
 //! lifetime of the install (it does not change when `work_dir` does) and is
 //! resolved at the very start of boot.
 //!
-//! Unlike [`crate::factory_reset`]'s one-shot reset request,
-//! this config is *persistent*: it is kept until the user changes the directory
-//! again, so every subsequent boot honors the choice.
+//! Unlike the relocation plan, this config is *persistent*: it is kept until
+//! the user changes the directory again, so every subsequent boot honors the
+//! chosen root. The relocation coordinator updates it only after the managed
+//! conversations tree and lifecycle markers have been rebound.
 //!
 //! Flow for a changed work root:
-//!   1. `POST /api/system/work-dir` writes a bound one-shot reset request.
+//!   1. `POST /api/system/work-dir` writes a durable relocation plan.
 //!   2. Frontend relaunches the desktop shell.
-//!   3. Locked pre-boot reset preparation creates a fresh generation and calls
-//!      [`set_work_dir`] only after the target is accepted.
+//!   3. Locked pre-boot relocation moves only managed conversations and keeps
+//!      the existing generation/database before calling [`set_work_dir`].
 //!   4. Later boots call [`checked_persisted_work_dir`] and reuse that path.
 
 use std::fs::OpenOptions;
@@ -111,7 +112,12 @@ pub fn checked_persisted_work_dir(
     Ok(Some(work_dir))
 }
 
-fn read_bounded_regular_file(
+/// Read a bounded regular file without following symlinks or reparse points.
+///
+/// This is shared by the small installation-scoped JSON stores that must be
+/// readable before the database is opened. Callers still own JSON/schema
+/// validation; this helper only enforces the filesystem boundary and byte cap.
+pub fn read_bounded_regular_file(
     path: &Path,
     max_bytes: u64,
 ) -> std::io::Result<Vec<u8>> {
@@ -119,7 +125,7 @@ fn read_bounded_regular_file(
     if metadata_is_link_or_reparse(&path_metadata) || !path_metadata.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("dir-config is not a regular file: {}", path.display()),
+            format!("path is not a regular file: {}", path.display()),
         ));
     }
 
@@ -141,16 +147,13 @@ fn read_bounded_regular_file(
     if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("dir-config is not a regular file: {}", path.display()),
+            format!("path is not a regular file: {}", path.display()),
         ));
     }
     if metadata.len() > max_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "dir-config exceeds the {max_bytes}-byte limit: {}",
-                path.display()
-            ),
+            format!("path exceeds the {max_bytes}-byte limit: {}", path.display()),
         ));
     }
 
@@ -160,10 +163,7 @@ fn read_bounded_regular_file(
     if bytes.len() as u64 > max_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "dir-config grew beyond the {max_bytes}-byte limit: {}",
-                path.display()
-            ),
+            format!("path grew beyond the {max_bytes}-byte limit: {}", path.display()),
         ));
     }
     Ok(bytes)
@@ -258,7 +258,11 @@ pub fn repairable_malformed_work_dir_exists(
     Ok(serde_json::from_slice::<DirConfig>(&bytes).is_err())
 }
 
-fn write_atomic_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Atomically replace a small local file and make the replacement durable.
+///
+/// The Windows implementation uses `MoveFileExW(REPLACE_EXISTING)` so the
+/// same operation works when the target already exists.
+pub fn write_atomic_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let temp = parent.join(format!(

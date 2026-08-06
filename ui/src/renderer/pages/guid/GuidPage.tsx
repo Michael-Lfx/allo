@@ -522,6 +522,8 @@ const GuidPage: React.FC = () => {
     beginPending: pendingConversation.begin,
     advancePending: pendingConversation.advance,
     endPending: pendingConversation.end,
+    abortPending: pendingConversation.abort,
+    attachPending: pendingConversation.attach,
   });
 
   sendRef.current = send.sendMessageHandler;
@@ -847,6 +849,7 @@ const GuidPage: React.FC = () => {
       isGeminiMode={isGeminiMode}
       modelList={modelSelection.modelList}
       current_model={modelSelection.current_model}
+      defaultModelUnavailable={modelSelection.defaultModelUnavailable}
       setCurrentModel={modelSelection.setCurrentModel}
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}

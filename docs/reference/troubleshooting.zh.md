@@ -213,6 +213,64 @@ cookie 的情况下加载。如果你的反向代理剥掉了 URL 路径段，�
 退出或崩溃时锁由 OS 自动释放；残留的 `server.lock` 文件无害。
 `nomicore doctor` 与 `mcp-*` stdio 子命令不取这把锁，因此不受影响。
 
+## 工作目录、启动与模型恢复
+
+更完整的边界说明见[启动、登录、配置与工作目录稳定性维护手册](../architecture/startup-login-workdir-stability.zh.md)。
+
+### 切换工作目录后聊天记录或 Provider 看起来消失
+
+普通工作目录切换只迁移受管的 `<work_dir>/conversations/`；SQLite、Provider、模型、
+默认模型、密钥、日志和安装偏好都在固定 `<data_dir>`，不应因切换而清空。先在设置或
+`GET /api/system/info` 确认实际的 `work_dir` 和 `log_dir`，再结合启动参数或
+`NOMIFUN_DATA_DIR` 确认 data root，不要只看 UI 显示的目录。
+
+如果迁移失败，应用会继续使用旧 work root，不会执行 hard reset。查看：
+
+```text
+GET /api/system/work-dir-relocation
+GET /api/system/info
+```
+
+根据 operation 的 `state`、`error`、`last_error_code` 和 `rollback_copy` 判断是锁、
+目标碰撞、空间不足、路径身份不匹配还是跨盘备份。不要手动删除
+`.work-dir-relocation.pending`、owner marker 或 phase 文件；使用 Retry、Replace 或
+Cancel，让后端按 operation identity 清理，避免误删用户目录。
+
+### 切换工作目录后没有重启，或 Vite 端口变化
+
+桌面端切换成功后返回 `restart_required: true`，前端应进入重启遮罩并调用
+`restart_application`。开发版由 `run-dev` supervisor 保留 Vite，只重启 Tauri；
+`http://127.0.0.1:5173/` 的监听和 Vite PID 应保持不变。
+
+排查顺序：
+
+1. 确认是 Desktop capability：`runtime_capabilities.can_restart_application` 和
+   `can_change_work_directory` 必须为 `true`；WebUI 不支持这两项操作。
+2. 查看 supervisor 是否仍有 Vite、Tauri、Cargo 或 rustc 子进程。
+3. 检查 restart marker 是否被当前 Tauri token 消费；不要依据退出码 73 单独判断。
+4. 若 Vite 已退出，supervisor 会先终止 Tauri，不会启动旧 WebView 继续请求动态模块。
+
+`Chrome_WidgetWin_0` / `Error = 1412` 属于 WebView2 退出阶段警告，不是判断重启成功
+与否的依据；只有 Tauri close 事件、Vite 健康状态和新进程启动结果才是有效证据。
+
+### 登录成功但主界面没有可用模型
+
+认证成功不等于模型环境已恢复。前端必须执行“同步 → Provider 刷新 → `task=chat`
+resolver → 默认模型校验”。Provider metadata 有模型但 resolver 返回零模型时，不能
+放行发送；设置、日志和退出登录仍应可访问，Retry 会重新执行整条链路。
+
+- 网络、超时和 5xx：保持已确认登录，进入 offline/degraded，不清理账号或自建 Provider。
+- 401 或明确 session/token invalid：才清除认证并进入未登录。
+- 同步失败但 resolver 仍有可用模型：允许聊天并显示 warning。
+- 默认模型不可用：保留原 `nomi.defaultModel`，不自动选择第一个模型；用户显式选择后
+  才覆盖。
+
+### 暗色模式下工作目录确认弹窗颜色异常
+
+确认弹窗使用 `work-dir-relocation-confirm` 样式契约，背景、内容区、文字和 footer
+必须使用主题 token，不能在组件内写死浅色背景或全局覆盖 Arco modal。修改后至少检查
+light/dark 两套主题，以及取消、确认、错误和长路径四种状态。
+
 ## Docker 专项
 
 ### `docker compose up` 完成构建并启动后立刻退出

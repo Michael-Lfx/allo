@@ -9,7 +9,7 @@ use nomifun_ai_agent::{
     AcpSessionSyncService, AcpSkillManager, AgentFactoryDeps, AgentRegistry, AgentRuntimeRegistry,
     InMemoryAgentRuntimeRegistry, ManagedExtractMode, build_agent_factory,
 };
-use nomifun_api_types::{GatewayMcpConfig, RequirementMcpConfig};
+use nomifun_api_types::{GatewayMcpConfig, RequirementMcpConfig, RuntimeCapabilities};
 use nomifun_auth::{
     AuthPolicy, CompanionTokenValidator, CookieConfig, JwtService, QrTokenStore, resolve_jwt_secret,
 };
@@ -942,6 +942,7 @@ async fn forward_browser_inventory_events(
 pub struct AppHostCapabilities {
     pub managed_search: bool,
     pub managed_extract: ManagedExtractMode,
+    pub runtime_capabilities: RuntimeCapabilities,
 }
 
 impl AppHostCapabilities {
@@ -949,6 +950,7 @@ impl AppHostCapabilities {
         Self {
             managed_search: true,
             managed_extract: ManagedExtractMode::EvidenceBacked,
+            runtime_capabilities: RuntimeCapabilities::desktop(),
         }
     }
 
@@ -988,6 +990,7 @@ impl AppHostCapabilities {
         Self {
             managed_search: true,
             managed_extract,
+            runtime_capabilities: RuntimeCapabilities::desktop(),
         }
     }
 }
@@ -1145,6 +1148,7 @@ pub struct AppServices {
     pub data_dir: PathBuf,
     pub work_dir: PathBuf,
     pub work_dir_is_cli_override: bool,
+    pub runtime_capabilities: RuntimeCapabilities,
     /// Authentication policy (single source of truth, replaces `local: bool`).
     pub auth_policy: AuthPolicy,
     /// Per-boot secret the desktop's own webview presents to be trusted as the
@@ -2893,21 +2897,24 @@ impl AppServices {
         if cloud_service.is_authenticated().await {
             let gateway = cloud_service.gateway_config_snapshot();
             let provider_repo = provider_repo_for_services.clone();
+            let provider_model_repo = provider_model_repo.clone();
             let data_dir = cloud_service.data_dir().to_path_buf();
             let server = gateway.server.clone();
             tokio::spawn(async move {
                 let started = Instant::now();
                 match nomifun_cloud::sync_flowy_builtin_provider(
                     &provider_repo,
+                    &provider_model_repo,
                     &encryption_key,
                     &server,
                     &data_dir,
                 )
                 .await
                 {
-                    Ok(()) => tracing::info!(
+                    Ok(synced) => tracing::info!(
                         elapsed_ms = started.elapsed().as_millis(),
-                        "startup: background Flowy catalog sync completed"
+                        synced,
+                        "startup: background Flowy catalog sync finished"
                     ),
                     Err(e) => tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis(),
@@ -2955,6 +2962,7 @@ impl AppServices {
             data_dir,
             work_dir,
             work_dir_is_cli_override,
+            runtime_capabilities: capabilities.runtime_capabilities,
             auth_policy,
             local_trust_secret,
             app_version,

@@ -35,16 +35,16 @@ pub use world_assets::{
 /// Concise JSON schema strings substituted for `{format_instructions}`.
 pub mod formats {
     pub const CHARACTERS: &str = r#"Return a JSON object:
-{"characters":[{"idx":0,"identifier_in_scene":"string","is_visible":true,"static_features":"string","dynamic_features":"string|null","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string"}}]}
-Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appearance/physique), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED stable speaking voice bible reused across every shot — timbre, volume quiet|normal|loud, pitch low|mid|high, speaking_style, caption_clause one-line Seedance hint like "Alice: clear mid female voice, normal volume, calm pace"). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
+{"characters":[{"idx":0,"identifier_in_scene":"string","is_visible":true,"static_features":"string","dynamic_features":"string|null","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string|null"}}]}
+Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appearance/physique), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED film-stable speaking voice bible reused across every shot — timbre must be a concrete acoustic fingerprint with age/gender/resonance/texture; volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+emotional baseline only; caption_clause optional). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
 
     pub const VOICE_PROFILES: &str = r#"Return a JSON object:
-{"voices":[{"idx":0,"identifier_in_scene":"string","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string"}}]}
-One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive. caption_clause is a compact one-line Seedance inject string. Prose MUST match the user's input language (Chinese input → 简体中文)."#;
+{"voices":[{"idx":0,"identifier_in_scene":"string","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":null}}]}
+One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive: timbre = concrete acoustic fingerprint (not vague 女声/男声); volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+baseline only (no per-shot crying/shouting baked into timbre). caption_clause may be null (pipeline rebuilds FIXED SPEAKER VOICE inject). Prose MUST match the user's input language (Chinese input → 简体中文)."#;
 
     pub const STORYBOARD: &str = r#"Return a JSON object:
 {"storyboard":[{"idx":0,"is_last":false,"cam_idx":0,"visual_desc":"string","audio_desc":"string"}]}
-idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). Dialogue MUST finish inside the same shot's 5–15s Seedance clip: pace ~2.0 Chinese chars/sec or ~1.6 English words/sec, leave ~4s after the last word. Purely visual beats still need ambient audio_desc (room tone + soft cinematic underscore). Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#;
+idx from 0; is_last true only on the final shot; cam_idx groups shots sharing a camera; visual_desc is a complete shot description; audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). When a character speaks, prefix with identifier_in_scene (e.g. 李薇：「……」). Do NOT invent vocal timbre/age/gender in audio_desc (no 低沉嗓音/尖细女声/沙哑男声) — voice identity is locked separately; only dialogue text, emotion intensity, SFX, BGM. Dialogue MUST finish inside the same shot's 5–15s Seedance clip: pace ~2.0 Chinese chars/sec or ~1.6 English words/sec, leave ~4s after the last word. Purely visual beats still need ambient audio_desc (room tone + soft cinematic underscore). Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#;
 
     pub const VIS_DECOMPOSE: &str = r#"Return a single JSON object. Each key MUST appear exactly once (never repeat ff_vis_char_idxs / lf_vis_char_idxs / any other field).
 {"ff_desc":"string","ff_vis_char_idxs":[0],"lf_desc":"string","lf_vis_char_idxs":[0],"motion_desc":"string","variation_type":"large|medium|small","variation_reason":"string"}
@@ -60,7 +60,8 @@ ref_image_indices: 0-based indices into the provided image list (max 8). text_pr
 
     pub const SCRIPT_SCENES: &str = r#"Return a JSON object:
 {"scenes":["scene script string", "..."]}
-Each string is one scene's screenplay (heading, action, dialogue). Screenplay text MUST match the user's input language (Chinese input → 简体中文)."#;
+Each string is one scene's screenplay (heading, action, dialogue). Screenplay text MUST match the user's input language (Chinese input → 简体中文).
+CRITICAL JSON SAFETY: inside each scene string do NOT use raw ASCII double quotes ("). Use Chinese quotes 「」 for dialogue/SFX (e.g. 发出「咚」的一声). If you must use ", write it as \"."#;
 
     pub const EVENT: &str = r#"Return a JSON object matching one Event:
 {"index":0,"is_last":false,"description":"string","characters":["name"]}

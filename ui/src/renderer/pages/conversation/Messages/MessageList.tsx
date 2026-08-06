@@ -11,6 +11,7 @@ import type {
 import { normalizeToolMessages } from '@/common/chat/normalizeToolCall';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
+import { CHAT_MESSAGE_ROW_METRICS_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { Image } from '@arco-design/web-react';
 import { Down } from '@icon-park/react';
 import MessageAcpPermission from '@renderer/pages/conversation/Messages/acp/MessageAcpPermission';
@@ -769,7 +770,10 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
         data-message-type={message.type}
         data-message-position={message.position}
         className={classNames(
-          'min-w-0 flex items-start message-item [&>div]:max-w-full px-8px m-t-10px max-w-full md:max-w-780px mx-auto',
+          // Row metrics come from the shared contract so the pending overlay's
+          // echoed message rows land at the same X/Y (see conversationLayoutClasses).
+          'min-w-0 flex items-start message-item [&>div]:max-w-full',
+          CHAT_MESSAGE_ROW_METRICS_CLASSES,
           message.type,
           {
             'justify-center': message.position === 'center',

@@ -42,6 +42,8 @@ import {
   useConversationStopAttemptGuard,
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
+import { awaitConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { getConversationRuntimeAuthority } from '@/renderer/pages/conversation/utils/conversationRuntime';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
@@ -600,7 +602,14 @@ const BasicRuntimeSendBox: React.FC<{
     const processedKey = sessionStorageKey(config.initialMessageProcessedFeature, target);
 
     const processInitialMessage = async () => {
-      if (!sessionStorage.getItem(storageKey) || !claimInitialMessageDelivery(storageKey)) return;
+      if (!sessionStorage.getItem(storageKey)) {
+        // No guid handoff pending (AutoWork entry / plain mount): the mounted
+        // page IS the steady state — reveal the pending overlay if one is up.
+        // No-op when no transition is in flight (direct-link navigation).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
+        return;
+      }
+      if (!claimInitialMessageDelivery(storageKey)) return;
 
       let attemptedIdempotencyKey: string | null = null;
       try {
@@ -613,11 +622,16 @@ const BasicRuntimeSendBox: React.FC<{
           conversation_id
         );
         if (!initialMessage) {
+          emitter.emit('conversation.transition.reveal', { conversation_id });
           releaseInitialMessageDelivery(storageKey);
           return;
         }
         const { input, files, idempotency_key } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
+        // Invariant: the guid page's background config (knowledge/IDMM/AutoWork)
+        // must settle before the first turn reaches the runtime. Navigation no
+        // longer blocks on it, so the ordering is enforced here instead.
+        await awaitConversationConfig(conversation_id);
         let resolvedWorkspace = workspacePath;
         if (config.workspaceResolution === 'at-initial-message') {
           const res = await getConversationOrNull(conversation_id);
@@ -661,6 +675,10 @@ const BasicRuntimeSendBox: React.FC<{
         }
 
         emitter.emit('chat.history.refresh');
+        // The first-turn bubble was committed above (fresh branch) or the
+        // transcript already holds it (replay) — the pending overlay's fake
+        // content is now backed by the real page. Reveal (transition handshake).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
       } catch (error) {
         handleInitialMessageDeliveryFailure(
           sessionStorage,
@@ -672,6 +690,9 @@ const BasicRuntimeSendBox: React.FC<{
         cancelLocalTurn();
         setAiProcessing(false);
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        // Reveal even on failure: the error toast lives on the destination
+        // page; the overlay must not hide it behind the timeout.
+        emitter.emit('conversation.transition.reveal', { conversation_id });
       }
     };
 
@@ -788,7 +809,7 @@ const BasicRuntimeSendBox: React.FC<{
     );
 
   return (
-    <div className='max-w-800px w-full mx-auto flex flex-col mt-auto mb-16px'>
+    <div className={CHAT_COMPOSER_WRAPPER_CLASSES}>
       <CommandQueuePanel
         items={items}
         paused={isQueuePaused}

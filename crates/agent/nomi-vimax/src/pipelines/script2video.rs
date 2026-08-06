@@ -2284,13 +2284,14 @@ seamless match-cut continuation into this beat (camera/angle may already differ;
     } else {
         ""
     };
-    let voice_lock = character_voice_lock_clause(characters, &shot.ff_vis_char_idxs);
+    let speaker_idxs = speaker_idxs_for_shot(shot, characters);
+    let voice_lock = character_voice_lock_clause(characters, &speaker_idxs);
     let audio_block = seedance_audio_caption_block(
         shot.audio_desc.as_deref(),
         &shot.motion_desc,
         &shot.visual_desc,
         characters,
-        &shot.ff_vis_char_idxs,
+        &speaker_idxs,
     );
     format!(
         "{style_clause} {identity}{voice_lock}{ref_clause}{continuity_clause}\
@@ -2298,7 +2299,9 @@ DURATION: target length is about {duration_secs}s. Speak slowly and clearly at a
 do NOT rush, speed-read, chipmunk, swallow syllables, or time-compress dialogue to cram lines in. \
 Leave a short breath before the first word and finish the last syllable cleanly before the clip ends. \
 Prefer clear finished lines over packing too many words; keep motion readable for the full clip.\n\
-VOICE CONTINUITY: each named speaker MUST keep the SAME timbre, pitch, and relative volume as VOICE LOCK for the full clip and across adjacent shots.\n\
+VOICE CONTINUITY: copy each speaker's FIXED SPEAKER VOICE from VOICE LOCK verbatim. \
+Emotion intensity may shift slightly; NEVER reinvent timbre, pitch band, age, or gender between shots. \
+Ignore any conflicting voice-color stage directions in the audio line — VOICE LOCK wins.\n\
 PLOT LOCK: stay on this scene — {plot}.{end_plot} \
 Do not invent new characters, locations, outfits, or story beats.\n\
 Motion: {motion}\n\
@@ -2365,6 +2368,30 @@ fn shot_video_ref_pairs(
     }
 }
 
+/// Prefer characters who actually speak in this shot's audio, then visible cast.
+fn speaker_idxs_for_shot(shot: &ShotDescription, characters: &[CharacterInScene]) -> Vec<i32> {
+    let audio = shot.audio_desc.as_deref().unwrap_or("");
+    let mut idxs: Vec<i32> = Vec::new();
+    let mut push = |idx: i32| {
+        if !idxs.contains(&idx) {
+            idxs.push(idx);
+        }
+    };
+    for ch in characters {
+        let name = ch.identifier_in_scene.trim();
+        if !name.is_empty() && audio.contains(name) {
+            push(ch.idx);
+        }
+    }
+    for &idx in &shot.ff_vis_char_idxs {
+        push(idx);
+    }
+    for &idx in &shot.lf_vis_char_idxs {
+        push(idx);
+    }
+    idxs
+}
+
 /// Compact VOICE LOCK so Seedance keeps the same speaker timbre across shots.
 fn character_voice_lock_clause(characters: &[CharacterInScene], idxs: &[i32]) -> String {
     let mut parts = Vec::new();
@@ -2384,6 +2411,7 @@ fn character_voice_lock_clause(characters: &[CharacterInScene], idxs: &[i32]) ->
             push_ch(ch);
         }
     }
+    // Ensure every cast member with a bible is available as fallback (capped).
     for ch in characters {
         push_ch(ch);
     }
@@ -2391,7 +2419,8 @@ fn character_voice_lock_clause(characters: &[CharacterInScene], idxs: &[i32]) ->
         return String::new();
     }
     format!(
-        "VOICE LOCK (same speaker = same voice every shot): {}. ",
+        "VOICE LOCK (immutable speaker identity — reuse these FIXED SPEAKER VOICE clauses \
+exactly on every shot; emotion may vary slightly, timbre/pitch/age/gender must not): {}. ",
         parts.join(" | ")
     )
 }
@@ -2413,11 +2442,11 @@ fn seedance_audio_caption_block(
 ) -> String {
     let audio = audio_desc.unwrap_or("").trim();
     let raw = if !audio.is_empty() {
-        audio.to_string()
+        strip_conflicting_voice_color_cues(audio)
     } else if crate::planning::text_looks_like_dialogue(motion_desc) {
-        motion_desc.trim().to_string()
+        strip_conflicting_voice_color_cues(motion_desc.trim())
     } else if crate::planning::text_looks_like_dialogue(visual_desc) {
-        visual_desc.trim().chars().take(280).collect()
+        strip_conflicting_voice_color_cues(&visual_desc.trim().chars().take(280).collect::<String>())
     } else {
         String::new()
     };
@@ -2454,6 +2483,61 @@ fn seedance_audio_caption_block(
     }
 }
 
+/// Remove stage directions that redefine speaker timbre (they fight VOICE LOCK).
+/// Keeps emotion intensity cues like 轻声/激动 and the actual quoted line.
+fn strip_conflicting_voice_color_cues(raw: &str) -> String {
+    let mut s = raw.to_string();
+    const CUES: &[&str] = &[
+        "用低沉的声音",
+        "用沙哑的声音",
+        "用尖细的声音",
+        "用清脆的声音",
+        "用磁性的声音",
+        "用甜美的声音",
+        "低沉地说",
+        "沙哑地说",
+        "尖声说",
+        "尖细地说",
+        "清脆地说",
+        "低沉道",
+        "沙哑道",
+        "低沉嗓音",
+        "沙哑嗓音",
+        "尖细女声",
+        "浑厚男声",
+        "清亮女声",
+        "in a deep voice",
+        "in a raspy voice",
+        "in a high voice",
+        "in a breathy voice",
+        "with a deep voice",
+        "with a raspy voice",
+        "with a high-pitched voice",
+    ];
+    for cue in CUES {
+        while let Some(pos) = find_case_insensitive(&s, cue) {
+            s.replace_range(pos..pos + cue.len(), "");
+        }
+    }
+    while s.contains("  ") {
+        s = s.replace("  ", " ");
+    }
+    s.trim().to_string()
+}
+
+fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    // Fast path for CJK / exact.
+    if let Some(p) = haystack.find(needle) {
+        return Some(p);
+    }
+    let hay_lower: String = haystack.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    hay_lower.find(&needle_lower)
+}
+
 /// Prefix dialogue with matched character voice clauses when names appear in the text.
 fn inject_voice_into_audio_text(
     raw: &str,
@@ -2472,7 +2556,7 @@ fn inject_voice_into_audio_text(
         })
         .collect();
     if matched.is_empty() {
-        // Fall back to visible cast voices so unnamed dialogue still gets a lock.
+        // Fall back to prioritized speaker idxs (named speakers / visible cast).
         matched = characters
             .iter()
             .filter(|c| {
@@ -2497,7 +2581,7 @@ fn inject_voice_into_audio_text(
         return raw.to_string();
     }
     format!(
-        "[speakers: {}] {raw}",
+        "[FIXED SPEAKER VOICE for this clip — reuse verbatim: {}] {raw}",
         locks.join("; ")
     )
 }
@@ -2667,19 +2751,21 @@ mod continuity_tests {
     #[test]
     fn audio_caption_injects_character_voice_lock() {
         use crate::domain::VoiceProfile;
+        let mut vp = VoiceProfile {
+            timbre: "清亮女中音".into(),
+            volume: Some("normal".into()),
+            pitch: Some("mid-high".into()),
+            speaking_style: "语速平稳".into(),
+            caption_clause: None,
+        };
+        vp.normalize("李薇");
         let chars = vec![CharacterInScene {
             idx: 0,
             identifier_in_scene: "李薇".into(),
             is_visible: true,
             static_features: "年轻女性".into(),
             dynamic_features: None,
-            voice_profile: Some(VoiceProfile {
-                timbre: "清亮女中音".into(),
-                volume: Some("normal".into()),
-                pitch: Some("mid-high".into()),
-                speaking_style: "语速平稳".into(),
-                caption_clause: Some("李薇: 清亮女中音, mid-high, volume normal, 语速平稳".into()),
-            }),
+            voice_profile: Some(vp),
         }];
         let caption = seedance_audio_caption_block(
             Some("李薇说：「今晚别等我」"),
@@ -2689,7 +2775,7 @@ mod continuity_tests {
             &[0],
         );
         assert!(caption.contains("李薇"));
-        assert!(caption.contains("清亮女中音") || caption.contains("speakers:"));
+        assert!(caption.contains("FIXED SPEAKER VOICE"));
         let prompt = i2v_motion_prompt(
             &ShotDescription {
                 idx: 0,
@@ -2703,7 +2789,7 @@ mod continuity_tests {
                 lf_desc: "face".into(),
                 lf_vis_char_idxs: vec![0],
                 motion_desc: "speaks".into(),
-                audio_desc: Some("李薇说：「今晚别等我」".into()),
+                audio_desc: Some("李薇用低沉的声音说：「今晚别等我」".into()),
             },
             &chars,
             "cinematic",
@@ -2712,7 +2798,23 @@ mod continuity_tests {
             false,
         );
         assert!(prompt.contains("VOICE LOCK"));
-        assert!(prompt.contains("清亮女中音") || prompt.contains("李薇"));
+        assert!(prompt.contains("FIXED SPEAKER VOICE"));
+        assert!(prompt.contains("清亮女中音"));
+        assert!(
+            !prompt.contains("用低沉的声音"),
+            "timbre-redefining stage directions must be stripped so VOICE LOCK wins"
+        );
+        assert!(prompt.contains("今晚别等我"));
+    }
+
+    #[test]
+    fn strip_voice_color_cues_keeps_dialogue() {
+        let cleaned = strip_conflicting_voice_color_cues(
+            "李薇用低沉的声音说：「今晚别等我」",
+        );
+        assert!(!cleaned.contains("用低沉的声音"));
+        assert!(cleaned.contains("今晚别等我"));
+        assert!(cleaned.contains("李薇"));
     }
 
     #[test]

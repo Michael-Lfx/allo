@@ -41,8 +41,11 @@ const VisualStyleSelect: React.FC<VisualStyleSelectProps> = ({ value, onChange, 
       getPopupContainer={() => document.body}
       showSearch
       filterOption={(inputValue, option) => {
-        const label = String(option?.props?.children ?? '').toLowerCase();
-        return label.includes(String(inputValue).toLowerCase());
+        // Arco types `option` loosely; cast to read the Option's children as
+        // the searchable label (same pattern as `filterByLabel` in
+        // GuidCollaboratorSelector / ExecutionPlanEditor / StepModelPill).
+        const children = (option as React.ReactElement<{ children?: React.ReactNode }>)?.props?.children;
+        return String(children ?? '').toLowerCase().includes(inputValue.toLowerCase());
       }}
       triggerProps={{
         autoAlignPopupWidth: true,

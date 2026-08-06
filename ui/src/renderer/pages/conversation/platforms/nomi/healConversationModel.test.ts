@@ -31,25 +31,19 @@ describe('resolveHealModel', () => {
     expect(r?.use_model).toBe('m3');
     expect(r?.reason).toBe('stale');
   });
-  test('heals to first available when no valid default', () => {
+  test('does not choose a model when no persisted default exists', () => {
     const r = resolveHealModel({ id: PROVIDER_DEAD, use_model: 'x' } as any, provs, getAvailable, undefined);
-    expect(r?.provider.id).toBe(PROVIDER_A);
-    expect(r?.use_model).toBe('m1');
-    expect(r?.reason).toBe('stale');
+    expect(r).toBeNull();
   });
   test('returns null when there are no providers at all', () => {
     expect(resolveHealModel({ id: PROVIDER_DEAD, use_model: 'x' } as any, [], getAvailable, undefined)).toBeNull();
   });
-  test('defaults to first available when the conversation has no bound provider', () => {
+  test('does not choose a model when an unbound conversation has no default', () => {
     const empty = resolveHealModel({ id: '', use_model: '' } as any, provs, getAvailable, undefined);
-    expect(empty?.provider.id).toBe(PROVIDER_A);
-    expect(empty?.use_model).toBe('m1');
-    expect(empty?.reason).toBe('default');
+    expect(empty).toBeNull();
 
     const missing = resolveHealModel(undefined, provs, getAvailable, undefined);
-    expect(missing?.provider.id).toBe(PROVIDER_A);
-    expect(missing?.use_model).toBe('m1');
-    expect(missing?.reason).toBe('default');
+    expect(missing).toBeNull();
   });
   test('defaults to saved default when unbound and a valid preference exists', () => {
     const r = resolveHealModel(undefined, provs, getAvailable, {
@@ -60,7 +54,7 @@ describe('resolveHealModel', () => {
     expect(r?.use_model).toBe('m3');
     expect(r?.reason).toBe('default');
   });
-  test('falls back to first available when saved default model is unavailable', () => {
+  test('does not fall back when saved default model is unavailable', () => {
     // saved default provider exists but its stored model is no longer offered
     const r = resolveHealModel(
       { id: PROVIDER_DEAD, use_model: 'x' } as any,
@@ -68,8 +62,6 @@ describe('resolveHealModel', () => {
       getAvailable,
       { provider_id: PROVIDER_A, model: 'zzz' } as any,
     );
-    expect(r?.provider.id).toBe(PROVIDER_A);
-    expect(r?.use_model).toBe('m1');
-    expect(r?.reason).toBe('stale');
+    expect(r).toBeNull();
   });
 });

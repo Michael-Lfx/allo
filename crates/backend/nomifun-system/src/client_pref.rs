@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use nomifun_api_types::{ClientPreferencesResponse, UpdateClientPreferencesRequest};
 use nomifun_common::AppError;
+use nomifun_db::models::ClientPreference;
 use nomifun_db::IClientPreferenceRepository;
+
+use crate::installation_preferences::{InstallationPreferenceStore, is_installation_preference_key};
 
 /// Maximum allowed key length for client preferences.
 const MAX_KEY_LENGTH: usize = 255;
@@ -22,15 +25,33 @@ const SYSTEM_RESERVED_PREFIXES: &[&str] = &["managedModel.", "agent.browserUse.d
 #[derive(Clone)]
 pub struct ClientPrefService {
     repo: Arc<dyn IClientPreferenceRepository>,
+    installation_store: Option<Arc<InstallationPreferenceStore>>,
 }
 
 impl ClientPrefService {
     pub fn new(repo: Arc<dyn IClientPreferenceRepository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            installation_store: None,
+        }
+    }
+
+    /// Build the production service with installation-scoped UI preferences.
+    /// The plain [`Self::new`] constructor remains useful for isolated
+    /// workspace-only callers and tests.
+    pub fn with_installation_store(repo: Arc<dyn IClientPreferenceRepository>, data_dir: &std::path::Path) -> Self {
+        Self {
+            repo,
+            installation_store: Some(Arc::new(InstallationPreferenceStore::new(data_dir))),
+        }
     }
 
     /// Get all client preferences, or only the specified keys.
     pub async fn get_preferences(&self, keys: Option<&[&str]>) -> Result<ClientPreferencesResponse, AppError> {
+        if let Some(store) = &self.installation_store {
+            store.ensure_migrated(self.repo.as_ref()).await?;
+        }
+
         let rows = match keys {
             Some(k) if !k.is_empty() => self.repo.get_by_keys(k).await,
             _ => self.repo.get_all().await,
@@ -43,6 +64,11 @@ impl ClientPrefService {
                 serde_json::from_str(&row.value).unwrap_or(serde_json::Value::String(row.value));
             map.insert(row.key, value);
         }
+        if let Some(store) = &self.installation_store {
+            for (key, value) in store.get(keys).await? {
+                map.insert(key, value);
+            }
+        }
         Ok(map)
     }
 
@@ -50,6 +76,7 @@ impl ClientPrefService {
     pub async fn update_preferences(&self, req: UpdateClientPreferencesRequest) -> Result<(), AppError> {
         let mut upserts: Vec<(String, String)> = Vec::new();
         let mut deletes: Vec<String> = Vec::new();
+        let mut installation_updates: Vec<(String, serde_json::Value)> = Vec::new();
 
         for (key, value) in req {
             validate_key(&key)?;
@@ -60,6 +87,11 @@ impl ClientPrefService {
                 return Err(AppError::Forbidden(format!(
                     "Preference key '{key}' is managed by the system"
                 )));
+            }
+
+            if self.installation_store.is_some() && is_installation_preference_key(&key) {
+                installation_updates.push((key, value));
+                continue;
             }
 
             if value.is_null() {
@@ -73,14 +105,72 @@ impl ClientPrefService {
             }
         }
 
+        if let Some(store) = &self.installation_store {
+            store.ensure_migrated(self.repo.as_ref()).await?;
+        }
+
         let entries: Vec<(&str, &str)> = upserts
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
         let keys: Vec<&str> = deletes.iter().map(String::as_str).collect();
-        self.repo.update_batch(&entries, &keys).await?;
+
+        // Keep the existing SQLite transaction as the first write in a mixed
+        // batch. Provider-reference validation therefore still fails closed
+        // without leaving installation preferences half-applied. If the local
+        // JSON write fails afterwards, restore the prior SQLite rows.
+        let previous_rows = if self.installation_store.is_some() && (!entries.is_empty() || !keys.is_empty()) {
+            let workspace_keys = upserts
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .chain(deletes.iter().map(String::as_str))
+                .collect::<Vec<_>>();
+            Some(self.repo.get_by_keys(&workspace_keys).await?)
+        } else {
+            None
+        };
+
+        if !entries.is_empty() || !keys.is_empty() {
+            self.repo.update_batch(&entries, &keys).await?;
+        }
+
+        if let Some(store) = &self.installation_store {
+            if let Err(error) = store.update(&installation_updates).await {
+                if let Some(previous_rows) = previous_rows {
+                    if let Err(rollback_error) = self.restore_workspace_rows(&upserts, &deletes, &previous_rows).await {
+                        tracing::error!(
+                            error = %rollback_error,
+                            "failed to roll back workspace preferences after installation preference write failure"
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        }
 
         Ok(())
+    }
+
+    async fn restore_workspace_rows(
+        &self,
+        upserts: &[(String, String)],
+        deletes: &[String],
+        previous_rows: &[ClientPreference],
+    ) -> Result<(), nomifun_db::DbError> {
+        let previous_by_key = previous_rows
+            .iter()
+            .map(|row| (row.key.as_str(), row.value.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut restore_upserts = Vec::new();
+        let mut restore_deletes = Vec::new();
+        for key in upserts.iter().map(|(key, _)| key).chain(deletes.iter()) {
+            if let Some(value) = previous_by_key.get(key.as_str()) {
+                restore_upserts.push((key.as_str(), *value));
+            } else {
+                restore_deletes.push(key.as_str());
+            }
+        }
+        self.repo.update_batch(&restore_upserts, &restore_deletes).await
     }
 }
 
@@ -101,12 +191,26 @@ mod tests {
     use super::*;
     use nomifun_db::{SqliteClientPreferenceRepository, init_database_memory};
     use serde_json::json;
+    use tempfile::tempdir;
 
     async fn setup() -> ClientPrefService {
         let db = init_database_memory().await.unwrap();
         let repo = Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()));
         std::mem::forget(db);
         ClientPrefService::new(repo)
+    }
+
+    async fn setup_with_installation_store() -> (ClientPrefService, tempfile::TempDir) {
+        let db = init_database_memory().await.unwrap();
+        let data_dir = tempdir().unwrap();
+        let repo = Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()));
+        // The service owns the repository and store; keep the in-memory DB
+        // alive for the duration of these tests just like `setup` above.
+        std::mem::forget(db);
+        (
+            ClientPrefService::with_installation_store(repo, data_dir.path()),
+            data_dir,
+        )
     }
 
     #[test]
@@ -290,6 +394,46 @@ mod tests {
         assert_eq!(prefs.len(), 2);
         assert_eq!(prefs["keep"], json!(1));
         assert_eq!(prefs["new"], json!(3));
+    }
+
+    #[tokio::test]
+    async fn installation_preferences_are_separate_from_workspace_preferences() {
+        let (svc, _data_dir) = setup_with_installation_store().await;
+
+        let mut req = UpdateClientPreferencesRequest::new();
+        req.insert("theme".into(), json!("dark"));
+        req.insert("system.closeToTray".into(), json!(true));
+        svc.update_preferences(req).await.unwrap();
+
+        let prefs = svc.get_preferences(None).await.unwrap();
+        assert_eq!(prefs["theme"], json!("dark"));
+        assert_eq!(prefs["system.closeToTray"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn concurrent_installation_services_do_not_lose_json_updates() {
+        let db = init_database_memory().await.unwrap();
+        let data_dir = tempdir().unwrap();
+        let repo = Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()));
+        std::mem::forget(db);
+        let first = ClientPrefService::with_installation_store(repo.clone(), data_dir.path());
+        let second = ClientPrefService::with_installation_store(repo, data_dir.path());
+
+        let mut first_request = UpdateClientPreferencesRequest::new();
+        first_request.insert("theme".into(), json!("dark"));
+        let mut second_request = UpdateClientPreferencesRequest::new();
+        second_request.insert("colorScheme".into(), json!("default"));
+
+        let (first_result, second_result) = tokio::join!(
+            first.update_preferences(first_request),
+            second.update_preferences(second_request)
+        );
+        first_result.unwrap();
+        second_result.unwrap();
+
+        let prefs = first.get_preferences(None).await.unwrap();
+        assert_eq!(prefs["theme"], json!("dark"));
+        assert_eq!(prefs["colorScheme"], json!("default"));
     }
 
     #[tokio::test]

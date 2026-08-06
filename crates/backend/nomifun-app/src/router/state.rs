@@ -618,6 +618,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         cloud: CloudRouterState::new(
             services.cloud_service.clone(),
             services.provider_repo.clone(),
+            services.provider_model_repo.clone(),
             services.encryption_key,
         ),
         companion: companion_state,
@@ -706,7 +707,10 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
 
     SystemRouterState {
         settings_service: SettingsService::new(Arc::new(SqliteSettingsRepository::new(pool.clone()))),
-        client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(pool.clone()))),
+        client_pref_service: ClientPrefService::with_installation_store(
+            Arc::new(SqliteClientPreferenceRepository::new(pool.clone())),
+            &services.data_dir,
+        ),
         provider_service: ProviderService::new(
             provider_repo.clone(),
             Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
@@ -732,6 +736,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         data_dir: services.data_dir.clone(),
         work_dir: services.work_dir.clone(),
         work_dir_is_cli_override: services.work_dir_is_cli_override,
+        runtime_capabilities: services.runtime_capabilities,
     }
 }
 
@@ -2117,7 +2122,7 @@ pub fn build_office_state(services: &AppServices) -> OfficeRouterState {
 pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
     let pool = services.database.pool().clone();
     let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool.clone()));
-    let client_pref_service = ClientPrefService::new(client_pref_repo);
+    let client_pref_service = ClientPrefService::with_installation_store(client_pref_repo, &services.data_dir);
     let provider_repo = Arc::new(SqliteProviderRepository::new(pool.clone()));
     let provider_model_repo = Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool));
 

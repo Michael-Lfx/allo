@@ -68,6 +68,7 @@ async fn setup() -> (
         data_dir: std::env::temp_dir(),
         work_dir: std::env::temp_dir(),
         work_dir_is_cli_override: false,
+        runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
     };
     (system_routes(state), db, server)
 }

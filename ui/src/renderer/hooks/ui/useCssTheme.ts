@@ -187,9 +187,17 @@ export const useCssTheme = (): UseCssThemeResult => {
 
     window.addEventListener('custom-css-updated', onCssUpdated as EventListener);
     window.addEventListener(CSS_THEMES_CHANGED_EVENT, onThemesChanged as EventListener);
+    const unsubscribeThemes = configService.subscribe('css.themes', () => void reload());
+    const unsubscribeActiveTheme = configService.subscribe('css.activeThemeId', () => void reload());
+    const unsubscribeCustomCss = configService.subscribe('customCss', (value) => {
+      dispatchCustomCssUpdated(typeof value === 'string' ? value : '');
+    });
     return () => {
       window.removeEventListener('custom-css-updated', onCssUpdated as EventListener);
       window.removeEventListener(CSS_THEMES_CHANGED_EVENT, onThemesChanged as EventListener);
+      unsubscribeThemes();
+      unsubscribeActiveTheme();
+      unsubscribeCustomCss();
     };
   }, [reload]);
 

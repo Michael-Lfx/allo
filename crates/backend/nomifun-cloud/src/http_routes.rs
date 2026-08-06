@@ -17,7 +17,7 @@ use nomifun_api_types::{
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
-use nomifun_db::IProviderRepository;
+use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use tracing::warn;
 
 use crate::http_service::CloudService;
@@ -41,6 +41,7 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
 pub struct CloudRouterState {
     pub service: Arc<CloudService>,
     pub provider_repo: Arc<dyn IProviderRepository>,
+    pub provider_model_repo: Arc<dyn IProviderModelRepository>,
     pub encryption_key: [u8; 32],
 }
 
@@ -48,11 +49,13 @@ impl CloudRouterState {
     pub fn new(
         service: Arc<CloudService>,
         provider_repo: Arc<dyn IProviderRepository>,
+        provider_model_repo: Arc<dyn IProviderModelRepository>,
         encryption_key: [u8; 32],
     ) -> Self {
         Self {
             service,
             provider_repo,
+            provider_model_repo,
             encryption_key,
         }
     }
@@ -188,18 +191,6 @@ async fn login_continue(
         .continue_login(&req.pending_id, req.input)
         .await?;
 
-    if result.get("status").and_then(|v| v.as_str()) == Some("success") {
-        let cfg = state.service.gateway_config_snapshot();
-        sync_flowy_builtin_provider(
-            &state.provider_repo,
-            &state.encryption_key,
-            &cfg.server,
-            state.service.data_dir(),
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("sync Flowy provider: {e}")))?;
-    }
-
     Ok(Json(ApiResponse::ok(result)))
 }
 
@@ -224,13 +215,14 @@ async fn sync_models(
     let cfg = state.service.gateway_config_snapshot();
     match sync_flowy_builtin_provider(
         &state.provider_repo,
+        &state.provider_model_repo,
         &state.encryption_key,
         &cfg.server,
         state.service.data_dir(),
     )
     .await
     {
-        Ok(()) => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse { synced: true }))),
+        Ok(synced) => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse { synced }))),
         Err(e) if e.contains("not logged in") => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse {
             synced: false,
         }))),

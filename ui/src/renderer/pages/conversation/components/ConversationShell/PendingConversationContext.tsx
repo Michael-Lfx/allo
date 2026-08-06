@@ -1,55 +1,60 @@
+import type { ConversationId } from '@/common/types/ids';
+import { emitter } from '@/renderer/utils/emitter';
+import { guidTransitionEnd } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createPendingTransitionController,
+  type PendingConversation,
+  type PendingConversationStage,
+  type PendingTransitionController,
+  type PendingTransitionPhase,
+  type PendingTransitionSnapshot,
+} from './pendingTransitionController';
 
-
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
-
-export type PendingConversationStage = 'validating' | 'creating' | 'configuring' | 'opening';
-
-/**
- * Snapshot of the message the user just submitted from the Guid composer, used
- * to render an immediate conversation-shaped loading state while the backend
- * mints the conversation entity.
- */
-export type PendingConversation = {
-  /** The first message the user typed (echoed as a right-aligned bubble). */
-  input: string;
-  /** Attachment paths, if any — shown as a small count under the bubble. */
-  files?: string[];
-  /**
-   * Whether this entry will send `input` as the conversation's first turn.
-   * AutoWork entries start a backend loop WITHOUT sending a first message, so
-   * the loading caption differs ("正在启动 AutoWork…" vs "正在创建会话…").
-   */
-  sendsInitialMessage: boolean;
-  /** Real client-side milestone reached by the create flow. */
-  stage?: PendingConversationStage;
-};
+export type { PendingConversation, PendingConversationStage, PendingTransitionPhase };
 
 type PendingConversationContextValue = {
   pending: PendingConversation | null;
+  /** Overlay lifecycle phase — the overlay reads it to switch enter/exit animation. */
+  phase: PendingTransitionPhase;
   /** Show the loading overlay immediately (called synchronously on send). */
   begin: (payload: PendingConversation) => void;
   /** Advance the overlay only when the corresponding operation actually begins. */
   advance: (stage: PendingConversationStage) => void;
-  /** Tear the overlay down, deferred one frame to hide the mount seam. */
+  /** Attach the minted conversation id so the reveal handshake can id-match. */
+  attach: (conversationId: ConversationId) => void;
+  /**
+   * Success path, called after navigate is dispatched. Arms the reveal
+   * handshake: the overlay stays up until the destination emits
+   * `conversation.transition.reveal` (first bubble committed / page mounted),
+   * with a timeout backstop — replacing the old fixed-delay teardown that
+   * raced the destination mount and flashed an empty message list.
+   */
   end: () => void;
+  /** Failure path: drop the overlay instantly (no fade) to restore the Guid composer. */
+  abort: () => void;
 };
 
 // Stable no-op fallback for consumers rendered outside the provider (e.g. any
 // non-shell route). They still get callable handlers so they never null-check.
 const NOOP_VALUE: PendingConversationContextValue = {
   pending: null,
+  phase: 'idle',
   begin: () => undefined,
   advance: () => undefined,
+  attach: () => undefined,
   end: () => undefined,
+  abort: () => undefined,
 };
 
-// After the real conversation page is navigated to, keep the overlay up for a
-// brief beat so the destination has time to mount and NomiSendBox can echo the
-// same user bubble in the same place — then the swap has nothing to flicker.
-// Worst case (slower echo) it degrades to the destination's own shimmer
-// skeleton, which is the same visual family, so no jarring blank flash either
-// way. Purely cosmetic; not a correctness wait.
-const OVERLAY_TEARDOWN_DELAY_MS = 280;
+const EXIT_DURATION_MS = 140;
+
+const prefersReducedMotion = (): boolean =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const INITIAL_SNAPSHOT: PendingTransitionSnapshot = { phase: 'idle', pending: null };
 
 const PendingConversationContext = createContext<PendingConversationContextValue | null>(null);
 
@@ -59,31 +64,44 @@ const PendingConversationContext = createContext<PendingConversationContextValue
  * persists across `/guid` ↔ `/conversation/:id`), so the overlay begun on the
  * Guid page stays mounted continuously through the navigation into the real
  * conversation — no fake id, no route juggling.
+ *
+ * The state machine itself lives in {@link createPendingTransitionController}
+ * (React-free, unit-tested); this provider is only the binding: snapshot →
+ * state, emitter subscription, reduced-motion exit duration.
  */
 export const PendingConversationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [pending, setPending] = useState<PendingConversation | null>(null);
+  const [snapshot, setSnapshot] = useState<PendingTransitionSnapshot>(INITIAL_SNAPSHOT);
 
-  const begin = useCallback((payload: PendingConversation) => {
-    setPending({ ...payload, stage: 'validating' });
-  }, []);
+  const controllerRef = useRef<PendingTransitionController | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = createPendingTransitionController({
+      onChange: setSnapshot,
+      onSettled: guidTransitionEnd,
+      exitDurationMs: () => (prefersReducedMotion() ? 0 : EXIT_DURATION_MS),
+      subscribeReveal: (fn) => {
+        emitter.on('conversation.transition.reveal', fn);
+        return () => {
+          emitter.off('conversation.transition.reveal', fn);
+        };
+      },
+    });
+  }
+  const controller = controllerRef.current;
 
-  const advance = useCallback((stage: PendingConversationStage) => {
-    setPending((current) => (current ? { ...current, stage } : current));
-  }, []);
+  useEffect(() => {
+    controller.start();
+    return () => controller.stop();
+  }, [controller]);
 
-  const end = useCallback(() => {
-    // Defer teardown so the freshly-navigated conversation page has committed
-    // and echoed the first message before we uncover it (see the constant note).
-    if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
-      window.setTimeout(() => setPending(null), OVERLAY_TEARDOWN_DELAY_MS);
-    } else {
-      setPending(null);
-    }
-  }, []);
+  const begin = useCallback((payload: PendingConversation) => controller.begin(payload), [controller]);
+  const advance = useCallback((stage: PendingConversationStage) => controller.advance(stage), [controller]);
+  const attach = useCallback((conversationId: ConversationId) => controller.attach(conversationId), [controller]);
+  const end = useCallback(() => controller.end(), [controller]);
+  const abort = useCallback(() => controller.abort(), [controller]);
 
   const value = useMemo<PendingConversationContextValue>(
-    () => ({ pending, begin, advance, end }),
-    [pending, begin, advance, end]
+    () => ({ pending: snapshot.pending, phase: snapshot.phase, begin, advance, attach, end, abort }),
+    [snapshot, begin, advance, attach, end, abort]
   );
 
   return <PendingConversationContext.Provider value={value}>{children}</PendingConversationContext.Provider>;

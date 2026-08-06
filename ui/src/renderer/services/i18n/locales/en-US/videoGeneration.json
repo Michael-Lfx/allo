@@ -2,7 +2,12 @@
   "title": "Video Generation",
   "subtitle": "Start from an idea, script, or novel — plan artifacts and render a finished video.",
   "nav": {
-    "entry": "Video Generation"
+    "entry": "Video Generation",
+    "hoverCard": {
+      "name": "Project name",
+      "id": "Project ID",
+      "status": "Status"
+    }
   },
   "list": {
     "searchPlaceholder": "Search sessions...",

@@ -160,17 +160,199 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
     nomifun_common::factory_reset::require_data_root_not_owned_as_external_work(
         &data_dir,
     )?;
-    let requested_work_dir =
-        resolve_work_dir(cli.work_dir.clone(), &data_dir)?;
-    let external_work_root_lock =
-        acquire_distinct_work_root_lock(
+
+    // A legacy WorkDirChange request used to arm a destructive dataset reset.
+    // Convert it before the normal v3 reset coordinator can inspect it. Any
+    // conversion failure is recorded in the boot log and leaves the old root
+    // selected; `prepare_v3_dataset` also treats the legacy request as
+    // non-destructive compatibility input.
+    let legacy_conversion_failed = if cli.work_dir.is_some() {
+        false
+    } else {
+        match nomifun_common::work_dir_relocation::convert_legacy_work_dir_change_request(
+            &data_dir,
+        ) {
+            Ok(_) => false,
+            Err(error) => {
+                warn!(
+                    target: "work_dir_relocation",
+                    error = %error,
+                    "could not convert legacy work-dir reset request; preserving the existing work root"
+                );
+                if let Err(status_error) =
+                    nomifun_common::work_dir_relocation::record_relocation_failure(
+                        &data_dir,
+                        error.to_string(),
+                    )
+                {
+                    warn!(
+                        target: "work_dir_relocation",
+                        error = %status_error,
+                        "could not persist failed legacy work-dir relocation status"
+                    );
+                }
+                true
+            }
+        }
+    };
+    // A forced CLI root is an explicit operator override. Do not consume a
+    // UI-created relocation while it is active; the plan remains durable for
+    // the next ordinary boot, and the normal receipt gate rejects a forced
+    // root that is not the currently bound source.
+    let (pending_relocation, relocation_read_failed) = if cli.work_dir.is_some() {
+        (None, false)
+    } else {
+        match nomifun_common::work_dir_relocation::read_pending_plan(&data_dir) {
+            Ok(plan) => (plan, false),
+            Err(error) => {
+                warn!(
+                    target: "work_dir_relocation",
+                    error = %error,
+                    "could not read work-dir relocation plan; preserving the finalized work root"
+                );
+                if let Err(status_error) =
+                    nomifun_common::work_dir_relocation::record_relocation_failure(
+                        &data_dir,
+                        error.to_string(),
+                    )
+                {
+                    warn!(
+                        target: "work_dir_relocation",
+                        error = %status_error,
+                        "could not persist failed work-dir relocation status"
+                    );
+                }
+                // A damaged or unsafe relocation control directory is itself
+                // a failed migration. Never fall through to dir-config here:
+                // a crash may already have persisted the target pointer, and
+                // selecting it would let the normal v3 gate attach a partial
+                // move. The finalized receipt remains the authoritative old
+                // root until an operator repairs the control state.
+                (None, true)
+            }
+        }
+    };
+    let requested_work_dir = match if legacy_conversion_failed || relocation_read_failed {
+        nomifun_common::factory_reset::finalized_v3_work_dir(&data_dir)
+            .map(|work_dir| work_dir.unwrap_or_else(|| data_dir.clone()))
+            .map_err(anyhow::Error::from)
+    } else {
+        resolve_work_dir(cli.work_dir.clone(), &data_dir)
+    } {
+        Ok(path) => path,
+        Err(error) if pending_relocation.is_some() => {
+            warn!(
+                target: "work_dir_relocation",
+                error = %error,
+                "current work-dir pointer is unusable while a relocation is pending; trying its source root"
+            );
+            PathBuf::from(
+                &pending_relocation
+                    .as_ref()
+                    .expect("pending relocation present")
+                    .source_work_dir,
+            )
+        }
+        Err(error) => return Err(error),
+    };
+
+    let (work_dir, external_work_root_lock) = if let Some(plan) = pending_relocation {
+        let source = PathBuf::from(&plan.source_work_dir);
+        let target = PathBuf::from(&plan.target_work_dir);
+        let source_lock = if nomifun_common::paths::paths_equivalent(
+            &source,
+            data_root_work_lock.protected_root(),
+        ) {
+            None
+        } else {
+            acquire_distinct_work_root_lock(&data_root_work_lock, &source)?
+        };
+        let target_lock = if nomifun_common::paths::paths_equivalent(
+            &target,
+            data_root_work_lock.protected_root(),
+        ) {
+            None
+        } else {
+            match acquire_distinct_work_root_lock(&data_root_work_lock, &target) {
+                Ok(lock) => lock,
+                Err(error) => {
+                    warn!(
+                        target: "work_dir_relocation",
+                        error = %error,
+                        "could not lock relocation target; preserving the existing work root"
+                    );
+                    if let Err(status_error) =
+                        nomifun_common::work_dir_relocation::record_plan_relocation_failure(
+                            &data_dir,
+                            &plan,
+                            format!("could not lock relocation target: {error}"),
+                        )
+                    {
+                        warn!(
+                            target: "work_dir_relocation",
+                            error = %status_error,
+                            "could not persist relocation target lock failure"
+                        );
+                    }
+                    None
+                }
+            }
+        };
+
+        if target_lock.is_some() || nomifun_common::paths::paths_equivalent(
+            &target,
+            data_root_work_lock.protected_root(),
+        ) {
+            match nomifun_common::work_dir_relocation::consume_pending_relocation(
+                &data_dir,
+            ) {
+                Ok(Some((_plan, _rollback_copy))) => {
+                    drop(source_lock);
+                    (target, target_lock)
+                }
+                Ok(None) => {
+                    drop(target_lock);
+                    (source, source_lock)
+                }
+                Err(error) => {
+                    warn!(
+                        target: "work_dir_relocation",
+                        error = %error,
+                        "work-dir relocation failed; continuing with the old work root"
+                    );
+                    // If a previous crash had already persisted the target
+                    // pointer, restore the source pointer before services are
+                    // initialized. The relocation coordinator has already
+                    // attempted marker rollback for failures after rebind.
+                    if nomifun_common::paths::paths_equivalent(&requested_work_dir, &target) {
+                        if let Err(pointer_error) =
+                            nomifun_common::dir_config::set_work_dir(&data_dir, &source)
+                        {
+                            warn!(
+                                target: "work_dir_relocation",
+                                error = %pointer_error,
+                                "could not restore the old work-dir pointer after relocation failure"
+                            );
+                        }
+                    }
+                    drop(target_lock);
+                    (source, source_lock)
+                }
+            }
+        } else {
+            (source, source_lock)
+        }
+    } else {
+        let external = acquire_distinct_work_root_lock(
             &data_root_work_lock,
             &requested_work_dir,
         )?;
-    let work_dir = external_work_root_lock
-        .as_ref()
-        .map(|lock| lock.protected_root().to_path_buf())
-        .unwrap_or_else(|| data_root_work_lock.protected_root().to_path_buf());
+        let work_dir = external
+            .as_ref()
+            .map(|lock| lock.protected_root().to_path_buf())
+            .unwrap_or_else(|| data_root_work_lock.protected_root().to_path_buf());
+        (work_dir, external)
+    };
 
     // SAFETY: called before any service initialization; no concurrent reads.
     unsafe {
@@ -1236,7 +1418,7 @@ mod tests {
         let retired_database = data
             .path()
             .join(plan.retired_dir)
-            .join("nomifun-backend.db");
+            .join(nomifun_common::storage_paths::DATABASE_FILE);
         assert!(retired_database.is_file());
 
         let retired_options = SqliteConnectOptions::new()
@@ -1309,80 +1491,6 @@ mod tests {
                 .join(nomifun_common::factory_reset::V3_DATASET_RESET_DIR)
                 .exists()
         );
-    }
-
-    #[tokio::test]
-    async fn work_root_change_plan_resumes_after_request_clear_crash_gap() {
-        let data = tempfile::tempdir().unwrap();
-        let old_work = tempfile::tempdir().unwrap();
-        let new_work = tempfile::tempdir().unwrap();
-        let config = test_config(data.path(), new_work.path());
-        let database =
-            nomifun_db::init_database(&config.database_path()).await.unwrap();
-        database.close().await;
-        let old_generation = uuid::Uuid::now_v7().to_string();
-        std::fs::write(
-            data.path().join("storage-generation"),
-            &old_generation,
-        )
-        .unwrap();
-        nomifun_common::factory_reset::write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            old_work.path(),
-            &old_generation,
-        )
-        .unwrap();
-        std::fs::create_dir_all(old_work.path().join("conversations"))
-            .unwrap();
-        let old_sentinel =
-            old_work.path().join("conversations/current-before-change");
-        std::fs::write(&old_sentinel, b"old-current").unwrap();
-
-        nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            new_work.path(),
-        )
-        .unwrap();
-        let plan =
-            nomifun_common::factory_reset::arm_v3_dataset_reset(
-                data.path(),
-                new_work.path(),
-                nomifun_common::factory_reset::DatasetResetReason::WorkDirChange,
-            )
-            .unwrap();
-        assert!(
-            !data
-                .path()
-                .join(
-                    nomifun_common::factory_reset::V3_DATASET_RESET_REQUEST_FILE,
-                )
-                .exists(),
-            "the immutable plan must have consumed the transient request"
-        );
-        assert!(
-            config.database_path().is_file(),
-            "simulate a crash before the plan applies the old data roots"
-        );
-
-        assert_eq!(
-            prepare_v3_data_layer(&config).await.unwrap(),
-            V3DataLayerState::BootstrapRequired
-        );
-        let resumed =
-            nomifun_common::factory_reset::read_pending_v3_reset(
-                data.path(),
-                new_work.path(),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(resumed.operation_id, plan.operation_id);
-        assert_eq!(resumed.generation, plan.generation);
-        assert!(!config.database_path().exists());
-        assert!(
-            old_sentinel.is_file(),
-            "the detached old work root is preserved rather than migrated"
-        );
-        assert!(!new_work.path().join("conversations").exists());
     }
 
     #[tokio::test]

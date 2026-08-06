@@ -1,5 +1,91 @@
 use crate::error::DbError;
 use crate::models::Provider;
+use crate::repository::provider_model::IProviderModelRepository;
+
+/// Inferred capability data for a catalog model.
+///
+/// Cloud catalog reconciliation uses this small owned value so the provider
+/// row and the model-profile rows can be committed by one repository
+/// operation.  User-authored profile rows are never represented here and are
+/// therefore never overwritten by catalog sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderModelProfileSeed {
+    pub model: String,
+    pub tasks: String,
+    pub traits: String,
+}
+
+async fn reconcile_inferred_model_profiles(
+    provider_id: &str,
+    profiles: &[ProviderModelProfileSeed],
+    model_repo: &dyn IProviderModelRepository,
+) -> Result<(), DbError> {
+    if profiles.is_empty() {
+        return Ok(());
+    }
+
+    let existing = model_repo.list_for_provider(provider_id).await?;
+    let mut known = existing
+        .iter()
+        .map(|row| row.model.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut next_sort = existing
+        .iter()
+        .map(|row| row.sort_order)
+        .max()
+        .map_or(0, |max| max + 1);
+
+    for seed in profiles {
+        if seed.model.trim().is_empty() || known.contains(seed.model.as_str()) {
+            continue;
+        }
+        let inserted = model_repo
+            .insert_if_absent(
+                provider_id,
+                &crate::models::NewProviderModel {
+                    model: &seed.model,
+                    enabled: true,
+                    sort_order: next_sort,
+                    tasks: &seed.tasks,
+                    traits: &seed.traits,
+                    params: "{}",
+                    source: "inferred",
+                    ..Default::default()
+                },
+            )
+            .await?;
+        if inserted {
+            known.insert(seed.model.as_str());
+            next_sort += 1;
+        }
+    }
+
+    let seeds = profiles
+        .iter()
+        .map(|seed| (seed.model.as_str(), seed))
+        .collect::<std::collections::HashMap<_, _>>();
+    for row in model_repo.list_for_provider(provider_id).await? {
+        if row.tasks.trim() != "[]" || row.source != "inferred" {
+            continue;
+        }
+        let Some(seed) = seeds.get(row.model.as_str()) else {
+            continue;
+        };
+        model_repo
+            .update(
+                provider_id,
+                &row.model,
+                &crate::models::ProviderModelUpdate {
+                    tasks: Some(&seed.tasks),
+                    traits: Some(&seed.traits),
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+
+    Ok(())
+}
 
 /// Model provider data access abstraction.
 ///
@@ -21,6 +107,39 @@ pub trait IProviderRepository: Send + Sync {
 
     /// Deletes a provider by ID. Returns `DbError::NotFound` if the ID doesn't exist.
     async fn delete(&self, id: &str) -> Result<(), DbError>;
+
+    /// Update a provider and reconcile inferred model profiles.
+    ///
+    /// SQLite overrides this with one transaction.  The default keeps custom
+    /// repository implementations source-compatible; those implementations
+    /// use the same idempotent reconciliation semantics but cannot promise
+    /// cross-table atomicity unless they provide their own override.
+    async fn update_with_model_profiles(
+        &self,
+        id: &str,
+        params: UpdateProviderParams<'_>,
+        profiles: &[ProviderModelProfileSeed],
+        model_repo: &dyn IProviderModelRepository,
+    ) -> Result<Provider, DbError> {
+        let provider = self.update(id, params).await?;
+        reconcile_inferred_model_profiles(id, profiles, model_repo).await?;
+        Ok(provider)
+    }
+
+    /// Create a provider and reconcile inferred model profiles.
+    ///
+    /// See [`Self::update_with_model_profiles`] for the compatibility fallback
+    /// and the SQLite implementation's atomic guarantee.
+    async fn create_with_model_profiles(
+        &self,
+        params: CreateProviderParams<'_>,
+        profiles: &[ProviderModelProfileSeed],
+        model_repo: &dyn IProviderModelRepository,
+    ) -> Result<Provider, DbError> {
+        let provider = self.create(params).await?;
+        reconcile_inferred_model_profiles(&provider.provider_id, profiles, model_repo).await?;
+        Ok(provider)
+    }
 }
 
 /// Parameters for creating a new provider.

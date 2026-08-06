@@ -1,14 +1,12 @@
 #!/usr/bin/env bun
 /**
- * prune-build -- self-cleaning preflight for every build/dev/test entry point.
+ * prune-build -- explicit build-cache inspection and garbage collection.
  *
- * Keeps build artifact directories bounded WITHOUT a scheduled/cron job.
- * "Cleanup cadence = build cadence": this runs once at the START of every build,
- * before cargo touches anything, so the previous session's cruft is reclaimed
- * exactly when the next session begins. The growth driver IS the build, so
- * hooking cleanup to the build makes the two cadences match by construction.
+ * Default invocations are read-only. Garbage collection and destructive cache
+ * cleanup are explicit commands so a normal development/test start cannot
+ * invalidate Cargo's incremental graph.
  *
- * What it does (dev/test preflight, in order):
+ * What --gc does (in order):
  *   1. GC the incremental cache PER UNIT: inside each incremental/<crate>-<hash>/
  *      dir, keep only the newest finalized session (the one rustc would load)
  *      and delete older/interrupted sessions + orphan locks. This preserves
@@ -18,10 +16,8 @@
  *   3. Size-gated cap: only if build.noindex / target exceed their soft cap,
  *      run `cargo sweep --maxsize` to trim the oldest artifacts. Without
  *      cargo-sweep, evict only the oldest incremental units to a fixed budget.
- *   4. Hard backstop: if build.noindex or target STILL exceeds CAP_GB, nuke
- *      debug/ + release/ intermediates (all-or-nothing on Windows for profile
- *      dirs; release bundles are preserved). This is the "can never silently
- *      balloon" guarantee.
+ *   4. If a root remains above its cap, report it and require explicit
+ *      --clean. No automatic profile nuke is allowed.
  *
  * Release build split:
  *   --pre   cheap, output-cleaning preflight run by tauri's beforeBuildCommand
@@ -29,7 +25,7 @@
  *           junk. Runs in seconds, so cargo starts compiling immediately.
  *   --post  bounded cleanup AFTER a successful release build. It preserves the
  *           warm debug cache and freshly-built release bundle.
- *   --release  explicit destructive cleanup used by `bun run clean`: remove
+ *   --clean    explicit destructive cleanup used by `bun run build:clean`: remove
  *           stale outputs and reclaim debug profiles + flycheck on demand.
  *
  * Design invariants:
@@ -67,6 +63,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync } fr
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertNoActiveDevSession } from './dev-session-lock.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_DIR = join(ROOT, 'build.noindex');
@@ -86,6 +83,9 @@ const TARGET_INCREMENTAL_BUDGET_GB = 2;
 // ── Parse flags ──────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const isRelease = args.includes('--release');
+const isClean = args.includes('--clean') || isRelease;
+const isInspect = args.includes('--inspect');
+const isGc = args.includes('--gc');
 const isPre = args.includes('--pre');
 const isPost = args.includes('--post');
 const capIdx = args.indexOf('--cap');
@@ -129,6 +129,18 @@ function dirSizeGB(dir) {
 function fmtGB(gb) {
   if (gb < 1) return `${(gb * 1024).toFixed(0)}M`;
   return `${gb.toFixed(1)}G`;
+}
+
+function inspectBuildCache() {
+  const buildGB = dirSizeGB(BUILD_DIR);
+  const targetGB = dirSizeGB(TARGET_DIR);
+  log(`inspect: build.noindex=${fmtGB(buildGB)}, target=${fmtGB(targetGB)}`);
+  log(`inspect: caps build.noindex=${CAP_GB}G, target=${TARGET_MAXSIZE_GB}G`);
+  if (buildGB > BUILD_MAXSIZE_GB || targetGB > TARGET_MAXSIZE_GB) {
+    log('inspect: cache is above the soft budget; run `bun run build:gc` after stopping active dev sessions');
+  } else {
+    log('inspect: cache is within the soft budget; no files changed');
+  }
 }
 
 function relPath(p) {
@@ -318,6 +330,7 @@ function preReleaseClean() {
  * is essential for fast edit/build cycles. Release intermediates are untouched.
  */
 function reclaimDebugDeadWeight() {
+  assertNoActiveDevSession(BUILD_DIR);
   log('reclaiming debug dead weight (debug profile + flycheck)...');
   killStaleLockers(); // release locks before wholesale deletes (Windows)
   nukeProfileAllOrNothing(join(BUILD_DIR, 'debug'), 'build.noindex/debug');
@@ -488,6 +501,7 @@ function cargoSweepMaxsize(targetDir, maxGB, label) {
 }
 
 function boundedCleanup(initialSizes) {
+  assertNoActiveDevSession(BUILD_DIR);
   for (const incrDir of incrementalCacheDirs()) {
     if (!existsSync(incrDir)) continue;
     pruneIncrementalSessions(incrDir);
@@ -521,27 +535,11 @@ function boundedCleanup(initialSizes) {
   let buildGB = dirSizeGB(BUILD_DIR);
   let targetGB = dirSizeGB(TARGET_DIR);
   if (buildGB > CAP_GB) {
-    log(`WARN: build.noindex is ${fmtGB(buildGB)} > cap ${CAP_GB}G - nuking profiles as last resort`);
-    killStaleLockers();
-    nukeProfileAllOrNothing(join(BUILD_DIR, 'debug'), 'build.noindex/debug (cap exceeded)');
-    nukeProfileAllOrNothing(join(BUILD_DIR, 'release'), 'build.noindex/release (cap exceeded)');
-    for (const { name, dir } of knownTripleDirs(BUILD_DIR)) {
-      nukeProfileAllOrNothing(join(dir, 'debug'), `build.noindex/${name}/debug (cap exceeded)`);
-      nukeProfileAllOrNothing(join(dir, 'release'), `build.noindex/${name}/release (cap exceeded)`);
-    }
-    buildGB = dirSizeGB(BUILD_DIR);
+    log(`WARN: build.noindex remains ${fmtGB(buildGB)} > cap ${CAP_GB}G; run explicit 'bun run build:clean' if a cold rebuild is acceptable`);
   }
 
   if (targetGB > CAP_GB) {
-    log(`WARN: target is ${fmtGB(targetGB)} > cap ${CAP_GB}G - reclaiming profiles as last resort`);
-    killStaleLockers();
-    nukeProfileAllOrNothing(join(TARGET_DIR, 'debug'), 'target/debug (cap exceeded)');
-    clearReleaseIntermediatesPreservingBundle(join(TARGET_DIR, 'release'), 'target/release (cap exceeded)');
-    for (const { name, dir } of knownTargetTripleDirs()) {
-      nukeProfileAllOrNothing(join(dir, 'debug'), `target/${name}/debug (cap exceeded)`);
-      clearReleaseIntermediatesPreservingBundle(join(dir, 'release'), `target/${name}/release (cap exceeded)`);
-    }
-    targetGB = dirSizeGB(TARGET_DIR);
+    log(`WARN: target remains ${fmtGB(targetGB)} > cap ${CAP_GB}G; run explicit 'bun run build:clean' if a cold rebuild is acceptable`);
   }
   return { buildGB, targetGB };
 }
@@ -550,18 +548,21 @@ function boundedCleanup(initialSizes) {
 try {
   const beforeSizes = { buildGB: dirSizeGB(BUILD_DIR), targetGB: dirSizeGB(TARGET_DIR) };
   const beforeGB = beforeSizes.buildGB + beforeSizes.targetGB;
-  const mode = isPre ? ' [pre]' : isPost ? ' [post]' : isRelease ? ' [release]' : '';
+  const mode = isInspect ? ' [inspect]' : isGc ? ' [gc]' : isPre ? ' [pre]' : isPost ? ' [post]' : isClean ? ' [clean]' : '';
   log(`start: ${fmtGB(beforeGB)} total (build.noindex + target)${mode}`);
   let afterSizes;
 
-  if (isPre) {
+  if (isInspect || (!isGc && !isPre && !isPost && !isClean)) {
+    inspectBuildCache();
+    process.exit(0);
+  } else if (isPre) {
     // Cheap pre-build step (tauri beforeBuildCommand): clean output + junk only,
     // so the release compile starts immediately. Bounded cleanup runs via --post.
     preReleaseClean();
   } else if (isPost) {
     // Preserve warm debug caches after release while still enforcing disk bounds.
     afterSizes = boundedCleanup(beforeSizes);
-  } else if (isRelease) {
+  } else if (isClean) {
     // Explicit destructive cleanup (`bun run clean`): outputs + debug profiles.
     preReleaseClean();
     reclaimDebugDeadWeight();

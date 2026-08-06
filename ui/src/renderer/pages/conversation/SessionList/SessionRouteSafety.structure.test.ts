@@ -39,6 +39,11 @@ describe('shared session shell route safety', () => {
     expect(boundarySource.includes("window.location.reload()")).toBe(true);
   });
 
+  test('does not mount a global cloud-model loading banner', () => {
+    expect(mainSource.includes('CloudModelEnvironmentGate')).toBe(false);
+    expect(mainSource.includes('cloudModelEnvironment.restoringTitle')).toBe(false);
+  });
+
   test('expired WebUI auth returns to login without tripping the application boundary', () => {
     expect(mainSource.includes('const { ready, status } = useAuth()')).toBe(true);
     expect(mainSource.includes("if (!ready || status !== 'authenticated') {")).toBe(true);

@@ -17,12 +17,12 @@ Given a script and a cast list (visual features already decided), invent or refi
 - Match the script language for all natural-language values (Chinese input → 简体中文).
 - Each voice must be DISTINCT from the others (different timbre / pitch / pace) so listeners can tell speakers apart.
 - Keep profiles SHORT and concrete — they will be pasted into Seedance audio captions every shot.
-- timbre: vocal color / age / gender presentation (e.g. 清亮女中音略带气声 / 低沉沙哑男声).
-- volume: quiet | normal | loud (relative speaking loudness, NOT scene SFX).
-- pitch: low | mid | high (or mid-low / mid-high).
-- speaking_style: pace, diction, emotional baseline (e.g. 语速平稳、句尾轻扬、克制坚定).
-- caption_clause: ONE compact line used verbatim in video prompts, preferably:
-  "<Name>: <timbre>, <pitch>, volume <volume>, <speaking_style>"
+- timbre: a FIXED acoustic fingerprint (age band + gender presentation + resonance + one texture). Example: "清亮偏柔的成年女中音，胸腹共鸣均衡，略带稳定气声，无鼻音". Avoid vague one-word labels like "女声" / "男声".
+- volume: quiet | normal | loud (baseline speaking loudness for this character, NOT scene SFX and NOT per-shot emotion).
+- pitch: low | mid-low | mid | mid-high | high (fixed band for the whole film).
+- speaking_style: pace + diction + emotional BASELINE only (e.g. 语速平稳、咬字清楚、情绪基线冷静). Do NOT encode per-shot shouting/crying into the bible — intensity may vary later, timbre must not.
+- caption_clause: leave empty or a short draft; the pipeline will rebuild a canonical "FIXED SPEAKER VOICE" inject string from the fields above. Prefer filling timbre/pitch/volume/speaking_style accurately.
 - Do NOT invent celebrity voice clones ("sounds like X"). Original fictional voices only.
 - Do NOT change idx / identifier_in_scene — copy them exactly from input.
 - Personality may inform speaking_style, but do not write plot spoilers into the voice bible.
+- NEVER write shot-varying delivery into timbre (no "愤怒时变尖" / "哭腔"). One locked voice for the entire film.
