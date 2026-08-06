@@ -33,7 +33,7 @@ use crate::terminal_proof::{
 use nomifun_api_types::{
     ApprovalCheckResponse, CloneConversationRequest, ConfirmRequest, ConfirmationListResponse,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse,
-    ConversationMcpStatus, ConversationMcpStatusKind,
+    ConversationMcpStatus, ConversationMcpStatusKind, ConversationNameSource,
     ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest, KnowledgeMountInfo, ListConversationsQuery,
     ListMessagesQuery, McpServerId, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
     ExecutionModelPool, ExecutionModelRef, ResolvedPresetSnapshot, SendMessageRequest, SessionMcpServer, SessionMcpTransport, SkillCatalogSource, SkillId, UpdateConversationArtifactRequest,
@@ -96,6 +96,16 @@ const CANCEL_TEARDOWN_GRACE: Duration = Duration::from_secs(7);
 const CANCEL_HANDLER_GRACE: Duration = Duration::from_secs(11);
 const CANCEL_AUTH_PREFLIGHT_GRACE: Duration = Duration::from_secs(2);
 const KNOWLEDGE_AUTOGEN_MODEL_PREF_KEY: &str = "knowledge.autogenModel";
+/// Client preference key holding the preferred conversation-title model
+/// (`ProviderWithModel` JSON: `{provider_id, model}`), written from the
+/// model-routing settings UI. Absent/invalid falls back to the session model.
+const TITLE_MODEL_PREF_KEY: &str = "conversation.titleModel";
+/// Overall budget for one auto-title pass, including the candidate fallback
+/// chain. Title generation is fire-and-forget metadata work: without this cap
+/// a hung provider (HTTP read timeout alone is 120s) would pin the pass for
+/// minutes.
+const TITLE_TASK_TIMEOUT: Duration = Duration::from_secs(15);
+
 const DELETE_CORE_GRACE: Duration = Duration::from_secs(5);
 const DELETE_CLEANUP_ITEM_GRACE: Duration = Duration::from_secs(5);
 const TURN_WRITEBACK_CANCEL_GRACE: Duration = Duration::from_secs(10);
@@ -5331,6 +5341,35 @@ impl ConversationService {
             None
         };
 
+        // Title ownership split. A user rename claims the conversation name:
+        // persist `extra.titleSource = "user"` so in-flight and future
+        // auto-title passes refuse to overwrite it. An auto preview write is
+        // handled by a conditional repo write below and must not flow through
+        // the generic update, where it could clobber a model-generated title
+        // that landed meanwhile.
+        let name_source = req.name_source.unwrap_or(ConversationNameSource::User);
+        let preview_name = match (req.name.is_some(), name_source) {
+            (true, ConversationNameSource::Auto) => req.name.clone(),
+            _ => None,
+        };
+        let merged_extra = if req.name.is_some() && name_source == ConversationNameSource::User {
+            let base = merged_extra.as_deref().unwrap_or(&existing.extra);
+            let mut extra_value: serde_json::Value = serde_json::from_str(base).map_err(|error| {
+                AppError::Internal(format!("Conversation {id} has invalid extra JSON: {error}"))
+            })?;
+            if !extra_value.is_object() {
+                return Err(AppError::Internal(format!(
+                    "Conversation {id} extra must be a JSON object"
+                )));
+            }
+            extra_value["titleSource"] = serde_json::json!("user");
+            Some(serde_json::to_string(&extra_value).map_err(|e| {
+                AppError::Internal(format!("Failed to serialize merged extra: {e}"))
+            })?)
+        } else {
+            merged_extra
+        };
+
         // Handle pinned_at: set timestamp on pin, clear on unpin
         let pinned_at = req.pinned.map(|p| if p { Some(now) } else { None });
 
@@ -5432,7 +5471,11 @@ impl ConversationService {
         }
 
         let updates = ConversationRowUpdate {
-            name: req.name,
+            name: if preview_name.is_some() {
+                None
+            } else {
+                req.name
+            },
             pinned: req.pinned,
             pinned_at,
             model: model_json,
@@ -5452,6 +5495,15 @@ impl ConversationService {
         };
 
         self.conversation_repo.update(parse_conv_id(id)?, &updates).await?;
+
+        if let Some(name) = preview_name {
+            // Best-effort preview write: the conditional UPDATE silently loses
+            // to a model-generated title or a user rename that already landed.
+            let _ = self
+                .conversation_repo
+                .update_preview_name_if_untitled(parse_conv_id(id)?, &name, now)
+                .await;
+        }
 
         if model_changed || workspace_changed || delegation_policy_changed {
             info!(
@@ -8951,6 +9003,7 @@ impl ConversationService {
         let durable_kind = durable_kind.map(str::to_owned);
         let autotitle_user_content = req.content.clone();
         let autotitle_conversation_id = conversation_id.to_owned();
+        let autotitle_user_message_id = user_msg_id.clone();
         // Only an active attempt relation needs per-turn token accounting. The
         // relation repository is authoritative; Conversation extra carries no
         // execution identity. Ordinary chat/companion turns therefore create no
@@ -9678,11 +9731,15 @@ impl ConversationService {
 
             if !load_only {
                 let title_service = service.clone();
+                let title_user_message_id = autotitle_user_message_id.clone();
+                let title_turn_model = successful_turn_model.clone();
                 tokio::spawn(async move {
                     title_service
                         .maybe_autotitle(
                             &autotitle_conversation_id,
+                            &title_user_message_id,
                             autotitle_user_content,
+                            title_turn_model,
                         )
                         .await;
                 });
@@ -13128,46 +13185,155 @@ impl ConversationService {
         Ok(())
     }
 
-    async fn maybe_autotitle(&self, conversation_id: &str, first_user_content: String) {
-        if self
-            .llm_title_fired
-            .insert(conversation_id.to_owned(), ())
-            .is_some()
-        {
+    pub(crate) async fn maybe_autotitle(
+        &self,
+        conversation_id: &str,
+        user_message_id: &str,
+        first_user_content: String,
+        session_model: Option<ProviderWithModel>,
+    ) {
+        self.run_autotitle(conversation_id, user_message_id, first_user_content, session_model)
+            .await;
+    }
+
+    /// The single auto-title attempt for a conversation. Fires once after the
+    /// first turn completes (input: first user message + first assistant
+    /// reply). Independent, asynchronous, and allowed to fail: every failure
+    /// mode degrades to "keep the current (preview) name" and never touches a
+    /// name the user has claimed.
+    async fn run_autotitle(
+        &self,
+        conversation_id: &str,
+        user_message_id: &str,
+        first_user_content: String,
+        session_model: Option<ProviderWithModel>,
+    ) {
+        let guard_key = conversation_id.to_owned();
+        if self.llm_title_fired.insert(guard_key.clone(), ()).is_some() {
             return;
         }
-        let release_once_guard = || {
-            self.llm_title_fired.remove(conversation_id);
+        // Release the in-process guard only where a later retry is meaningful;
+        // terminal outcomes keep it so subsequent turns exit immediately.
+        let release_guard = || {
+            self.llm_title_fired.remove(&guard_key);
         };
 
         let completer = match self.title_completer.read().ok().and_then(|guard| guard.clone()) {
             Some(completer) => completer,
             None => {
-                release_once_guard();
+                release_guard();
                 return;
             }
         };
 
-        let Ok(Some(row)) = self.conversation_repo.get(conversation_id).await else {
-            release_once_guard();
-            return;
+        let row = match self.conversation_repo.get(conversation_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                release_guard();
+                return;
+            }
+            Err(error) => {
+                warn!(
+                    conversation_id,
+                    error = %ErrorChain(&error),
+                    "conversation auto-title: failed to load conversation"
+                );
+                release_guard();
+                return;
+            }
         };
-        if serde_json::from_str::<serde_json::Value>(&row.extra)
-            .ok()
-            .and_then(|extra| {
-                extra
-                    .get("autoTitleState")
-                    .and_then(|state| state.as_str())
-                    .map(str::to_owned)
-            })
-            .as_deref()
-            == Some("done")
-        {
+
+        let extra_value: serde_json::Value =
+            serde_json::from_str(&row.extra).unwrap_or_else(|_| serde_json::json!({}));
+        // A user rename permanently owns the name.
+        if extra_value.get("titleSource").and_then(|value| value.as_str()) == Some("user") {
+            return;
+        }
+        let state = extra_value
+            .get("autoTitleState")
+            .and_then(|state| state.as_str())
+            .map(str::to_owned);
+        let state = state.as_deref();
+        // A terminal title state (done/failed) means this conversation was
+        // already considered — never re-title.
+        if matches!(state, Some("done") | Some("failed")) {
+            return;
+        }
+
+        // Only ever title a conversation by its very first user message — a
+        // later message must not rename an existing conversation.
+        if !self.is_first_user_message(conversation_id, user_message_id).await {
             return;
         }
 
         let user_snippet = first_user_content.chars().take(500).collect::<String>();
-        let assistant_snippet = self
+        let assistant_snippet = self.first_assistant_snippet(conversation_id).await;
+
+        let content = if assistant_snippet.is_empty() {
+            user_snippet.clone()
+        } else {
+            format!("User: {user_snippet}\n\nAssistant: {assistant_snippet}")
+        };
+
+        let candidates = self.title_model_candidates(session_model.as_ref()).await;
+        let title = if candidates.is_empty() {
+            None
+        } else {
+            match tokio::time::timeout(TITLE_TASK_TIMEOUT, completer.summarize(&content, &candidates))
+                .await
+            {
+                Ok(Ok(title)) if !title.is_empty() => Some(title),
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => {
+                    warn!(
+                        conversation_id,
+                        error = %ErrorChain(&error),
+                        "conversation auto-title: model call failed"
+                    );
+                    None
+                }
+                Err(_) => {
+                    warn!(conversation_id, "conversation auto-title: timed out");
+                    None
+                }
+            }
+        };
+
+        match title {
+            Some(title) => {
+                let applied = self
+                    .persist_auto_title(&row, Some(&title), "done", &[""])
+                    .await;
+                if applied {
+                    self.broadcast_list_changed(&row.user_id, conversation_id, "updated", None);
+                }
+            }
+            // Terminal failure: keep the preview name. The state gate above
+            // then blocks any later turn from retrying.
+            None => {
+                self.persist_auto_title(&row, None, "failed", &[""]).await;
+            }
+        }
+    }
+
+    /// Only the very first user message may drive auto-titling.
+    async fn is_first_user_message(&self, conversation_id: &str, user_message_id: &str) -> bool {
+        self.conversation_repo
+            .get_messages(conversation_id, 1, 50, SortOrder::Asc)
+            .await
+            .map(|result| {
+                result
+                    .items
+                    .iter()
+                    .find(|message| message.position.as_deref() == Some("right"))
+                    .is_some_and(|first| first.message_id == user_message_id)
+            })
+            .unwrap_or(false)
+    }
+
+    /// First assistant text reply, folded into the single auto-title input.
+    async fn first_assistant_snippet(&self, conversation_id: &str) -> String {
+        let snippet = self
             .conversation_repo
             .get_messages(conversation_id, 1, 100, SortOrder::Asc)
             .await
@@ -13193,47 +13359,104 @@ impl ConversationService {
                     .unwrap_or_default()
             })
             .unwrap_or_default();
-        let assistant_snippet = assistant_snippet.chars().take(500).collect::<String>();
-        let content = if assistant_snippet.is_empty() {
-            user_snippet.clone()
-        } else {
-            format!("User: {user_snippet}\n\nAssistant: {assistant_snippet}")
-        };
-        let title = match completer.summarize(&content).await {
-            Ok(title) if !title.is_empty() => title,
-            Ok(_) | Err(_) => crate::title::fallback_title_from_first_message(
-                &user_snippet,
-                crate::title::TITLE_MAX_CHARS,
-            ),
-        };
-        if title.is_empty() {
-            release_once_guard();
-            return;
-        }
+        snippet.chars().take(500).collect()
+    }
 
-        let new_extra = match serde_json::from_str::<serde_json::Value>(&row.extra) {
-            Ok(mut extra) => {
-                extra["autoTitleState"] = serde_json::json!("done");
-                serde_json::to_string(&extra).unwrap_or_else(|_| row.extra.clone())
+    /// Candidate models for one auto-title pass, in preference order: the
+    /// configured title model (`conversation.titleModel`), then the
+    /// conversation's own session model. The first candidate producing a
+    /// usable title wins.
+    async fn title_model_candidates(
+        &self,
+        session_model: Option<&ProviderWithModel>,
+    ) -> Vec<ProviderWithModel> {
+        let mut candidates: Vec<ProviderWithModel> = Vec::new();
+        if let Some((_, _, client_prefs)) = self.failover_deps() {
+            match client_prefs.get_by_keys(&[TITLE_MODEL_PREF_KEY]).await {
+                Ok(preferences) => {
+                    if let Some(raw) = preferences
+                        .into_iter()
+                        .find(|preference| preference.key == TITLE_MODEL_PREF_KEY)
+                        .map(|preference| preference.value)
+                    {
+                        match serde_json::from_str::<ProviderWithModel>(&raw) {
+                            Ok(mut selected) if selected.validate().is_ok() => {
+                                // `use_model` is a per-turn failover override;
+                                // never honor it from stored preference JSON.
+                                selected.use_model = None;
+                                candidates.push(selected);
+                            }
+                            _ => warn!(
+                                preference = TITLE_MODEL_PREF_KEY,
+                                "Invalid conversation title model preference; ignoring"
+                            ),
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %ErrorChain(&error),
+                        "Failed to read conversation title model preference"
+                    );
+                }
             }
-            Err(_) => row.extra.clone(),
-        };
-        let update = ConversationRowUpdate {
-            name: Some(title),
-            extra: Some(new_extra),
-            updated_at: Some(now_ms()),
-            ..Default::default()
-        };
-        if let Err(error) = self.conversation_repo.update(conversation_id, &update).await {
-            warn!(
-                conversation_id,
-                error = %ErrorChain(&error),
-                "conversation auto-title update failed"
-            );
-            release_once_guard();
-            return;
         }
-        self.broadcast_list_changed(&row.user_id, conversation_id, "updated", None);
+        if let Some(model) = session_model {
+            let mut model = model.clone();
+            model.use_model = None;
+            if model.validate().is_ok() {
+                candidates.push(model);
+            }
+        }
+        candidates.dedup_by(|next, kept| {
+            next.provider_id == kept.provider_id && next.model == kept.model
+        });
+        candidates
+    }
+
+    /// Conditionally persist an auto-title outcome. `new_name == None` writes
+    /// only the state marker. `allowed_prior_states` (`""` = absent state)
+    /// gates the CAS so an outdated pass can never regress a further-along
+    /// state. Returns whether the row was updated — `false` means a user
+    /// rename owns the name or the state moved on, and nothing was written.
+    async fn persist_auto_title(
+        &self,
+        row: &nomifun_db::models::ConversationRow,
+        new_name: Option<&str>,
+        state: &str,
+        allowed_prior_states: &[&str],
+    ) -> bool {
+        let mut extra: serde_json::Value =
+            serde_json::from_str(&row.extra).unwrap_or_else(|_| serde_json::json!({}));
+        if !extra.is_object() {
+            extra = serde_json::json!({});
+        }
+        extra["autoTitleState"] = serde_json::json!(state);
+        let extra_json = match serde_json::to_string(&extra) {
+            Ok(json) => json,
+            Err(_) => return false,
+        };
+        match self
+            .conversation_repo
+            .update_auto_title_if_auto(
+                &row.conversation_id,
+                new_name.unwrap_or(&row.name),
+                &extra_json,
+                allowed_prior_states,
+                now_ms(),
+            )
+            .await
+        {
+            Ok(applied) => applied,
+            Err(error) => {
+                warn!(
+                    conversation_id = %row.conversation_id,
+                    error = %ErrorChain(&error),
+                    "conversation auto-title update failed"
+                );
+                false
+            }
+        }
     }
 
     /// Broadcast a `conversation.listChanged` WebSocket event.
@@ -13712,7 +13935,7 @@ fn reject_execution_policy_extra_keys(extra: &serde_json::Value) -> Result<(), A
 /// Reject instead of silently stripping them so every caller gets an explicit
 /// failure and no partial PATCH can make an injected fence indistinguishable
 /// from a backend reservation after restart.
-pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 10] = [
+pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 12] = [
     "_edit_resubmit_fence",
     "active_turn_operation_id",
     "admission_epoch",
@@ -13723,6 +13946,10 @@ pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 10] = [
     "execution_attempt_id",
     "execution_step_id",
     "execution_id",
+    // Auto-title state machine: written only by the backend title passes and
+    // the name_source-aware update path, never accepted from client `extra`.
+    "autoTitleState",
+    "titleSource",
 ];
 
 fn reject_backend_owned_lifecycle_extra_keys(
