@@ -667,30 +667,38 @@ pub async fn concat_videos(segment_paths: &[PathBuf], output_path: &Path) -> Res
     // streams (typical same-model Seedance output). Turns long-video concat into
     // a seconds-level remux; any mismatch or validation failure falls through to
     // a re-encode below.
-    let mut copy_args: Vec<std::ffi::OsString> = vec![
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "error".into(),
-        "-f".into(),
-        "concat".into(),
-        "-safe".into(),
-        "0".into(),
-        "-i".into(),
-    ];
-    copy_args.push(list_path.as_os_str().to_os_string());
-    for flag in ["-c", "copy", "-an", "-movflags", "+faststart", "-y"] {
-        copy_args.push(flag.into());
-    }
-    copy_args.push(output_path.as_os_str().to_os_string());
+    //
+    // Pre-check: only attempt the copy join when every segment shares one stream
+    // signature (video codec/resolution/timebase + audio params). Mismatches skip
+    // straight to the re-encode instead of producing a broken remux.
+    if nomi_config::ffmpeg_hw::streams_uniform(&ffmpeg, segment_paths).await {
+        let mut copy_args: Vec<std::ffi::OsString> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-f".into(),
+            "concat".into(),
+            "-safe".into(),
+            "0".into(),
+            "-i".into(),
+        ];
+        copy_args.push(list_path.as_os_str().to_os_string());
+        for flag in ["-c", "copy", "-an", "-movflags", "+faststart", "-y"] {
+            copy_args.push(flag.into());
+        }
+        copy_args.push(output_path.as_os_str().to_os_string());
 
-    let copied_ok = run_ffmpeg_concat(&ffmpeg, &copy_args).await.is_ok()
-        && concat_output_plausible(&ffmpeg, output_path, segment_paths).await;
-    if copied_ok {
-        let _ = tokio::fs::remove_file(&list_path).await;
-        tracing::info!(out = %output_path.display(), "ffmpeg concat via stream copy");
-        return Ok(());
+        let copied_ok = run_ffmpeg_concat(&ffmpeg, &copy_args).await.is_ok()
+            && concat_output_plausible(&ffmpeg, output_path, segment_paths).await;
+        if copied_ok {
+            let _ = tokio::fs::remove_file(&list_path).await;
+            tracing::info!(out = %output_path.display(), "ffmpeg concat via stream copy");
+            return Ok(());
+        }
+        let _ = tokio::fs::remove_file(output_path).await;
+    } else {
+        tracing::info!("ffmpeg segments are not stream-uniform; skipping copy concat");
     }
-    let _ = tokio::fs::remove_file(output_path).await;
 
     // 2) Re-encode with the best H.264 plan (NVENC/QSV/AMF/VideoToolbox when
     // available and verified, else libx264). A hardware plan that fails at
@@ -703,12 +711,18 @@ pub async fn concat_videos(segment_paths: &[PathBuf], output_path: &Path) -> Res
             "-hide_banner".into(),
             "-loglevel".into(),
             "error".into(),
+        ];
+        // Input-side options (e.g. `-vaapi_device`) must precede `-i`.
+        for a in &p.input_args {
+            args.push(a.into());
+        }
+        args.extend([
             "-f".into(),
             "concat".into(),
             "-safe".into(),
             "0".into(),
             "-i".into(),
-        ];
+        ]);
         args.push(list_path.as_os_str().to_os_string());
         for a in p.encode_args() {
             args.push(a.into());
@@ -738,6 +752,11 @@ pub async fn concat_videos(segment_paths: &[PathBuf], output_path: &Path) -> Res
                 tracing::warn!(label, error = %e, "ffmpeg concat re-encode failed");
                 encode_err = Some(e);
                 let _ = tokio::fs::remove_file(output_path).await;
+                // Software is the last resort — no third try when the plan was
+                // already libx264.
+                if !p.uses_hw {
+                    break;
+                }
             }
         }
     }
@@ -774,6 +793,12 @@ async fn run_ffmpeg_concat(
 /// every segment probed successfully. Guards against copy concat silently
 /// producing a broken file when segments are not actually uniform.
 async fn concat_output_plausible(ffmpeg: &Path, out: &Path, segments: &[PathBuf]) -> bool {
+    let Ok(meta) = std::fs::metadata(out) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() < 16 * 1024 {
+        return false;
+    }
     let Some(out_dur) = probe_video_duration_secs(out, ffmpeg).await else {
         return false;
     };

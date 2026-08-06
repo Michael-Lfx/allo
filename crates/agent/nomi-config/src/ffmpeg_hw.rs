@@ -29,6 +29,9 @@ pub struct VideoEncodePlan {
     /// Encoder-specific args AFTER `-c:v <codec>` (includes `-pix_fmt` when the
     /// encoder takes regular frames).
     pub args: Vec<&'static str>,
+    /// Input-side args placed BEFORE every `-i` (e.g. `-vaapi_device /dev/dri/…`
+    /// for `h264_vaapi`). Empty for encoders that take regular frames.
+    pub input_args: Vec<&'static str>,
     /// Non-empty only for encoders that need an hwupload stage appended to the
     /// caller's `-vf` / `-filter_complex` chain (currently `h264_vaapi`).
     pub hwupload_vf: Option<&'static str>,
@@ -44,6 +47,15 @@ impl VideoEncodePlan {
         let mut out = vec!["-c:v", self.codec];
         out.extend_from_slice(&self.args);
         out
+    }
+}
+
+/// Per-encoder concurrency cap for parallel clip normalization. Consumer NVENC
+/// GPUs allow only ~3-5 concurrent sessions, so keep headroom for the encode.
+pub fn recommended_parallelism(plan: &VideoEncodePlan) -> usize {
+    match plan.codec {
+        "h264_qsv" | "h264_videotoolbox" => 3,
+        _ => 2,
     }
 }
 
@@ -70,12 +82,26 @@ const AMF_ARGS: &[&str] = &[
     "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "18", "-pix_fmt", "yuv420p",
 ];
 const VT_ARGS: &[&str] = &["-q:v", "65", "-pix_fmt", "yuv420p", "-allow_sw", "1"];
-const VAAPI_ARGS: &[&str] = &["-vaapi_device", "/dev/dri/renderD128", "-qp", "20"];
+/// Quality args only — `-vaapi_device` is an INPUT option and lives in
+/// [`VideoEncodePlan::input_args`] (must precede every `-i`).
+const VAAPI_ARGS: &[&str] = &["-qp", "20"];
+
+/// First existing DRM render node for VAAPI (Linux).
+fn vaapi_device_path() -> &'static str {
+    if Path::new("/dev/dri/renderD128").exists() {
+        "/dev/dri/renderD128"
+    } else if Path::new("/dev/dri/card0").exists() {
+        "/dev/dri/card0"
+    } else {
+        "/dev/dri/renderD128"
+    }
+}
 
 fn x264_plan() -> VideoEncodePlan {
     VideoEncodePlan {
         codec: "libx264",
         args: X264_ARGS.to_vec(),
+        input_args: Vec::new(),
         hwupload_vf: None,
         description: "libx264 crf18/fast",
         uses_hw: false,
@@ -86,6 +112,7 @@ fn nvenc_plan() -> VideoEncodePlan {
     VideoEncodePlan {
         codec: "h264_nvenc",
         args: NVENC_ARGS.to_vec(),
+        input_args: Vec::new(),
         hwupload_vf: None,
         description: "nvenc p4/cq19",
         uses_hw: true,
@@ -96,6 +123,7 @@ fn qsv_plan() -> VideoEncodePlan {
     VideoEncodePlan {
         codec: "h264_qsv",
         args: QSV_ARGS.to_vec(),
+        input_args: Vec::new(),
         hwupload_vf: None,
         description: "qsv gq20/medium",
         uses_hw: true,
@@ -106,6 +134,7 @@ fn amf_plan() -> VideoEncodePlan {
     VideoEncodePlan {
         codec: "h264_amf",
         args: AMF_ARGS.to_vec(),
+        input_args: Vec::new(),
         hwupload_vf: None,
         description: "amf cqp18",
         uses_hw: true,
@@ -116,6 +145,7 @@ fn videotoolbox_plan() -> VideoEncodePlan {
     VideoEncodePlan {
         codec: "h264_videotoolbox",
         args: VT_ARGS.to_vec(),
+        input_args: Vec::new(),
         hwupload_vf: None,
         description: "videotoolbox q65",
         uses_hw: true,
@@ -126,6 +156,7 @@ fn vaapi_plan() -> VideoEncodePlan {
     VideoEncodePlan {
         codec: "h264_vaapi",
         args: VAAPI_ARGS.to_vec(),
+        input_args: vec!["-vaapi_device", vaapi_device_path()],
         hwupload_vf: Some("format=nv12,hwupload"),
         description: "vaapi qp20",
         uses_hw: true,
@@ -445,12 +476,16 @@ async fn micro_probe_encoder(ffmpeg: &Path, plan: &VideoEncodePlan) -> bool {
         "-hide_banner".into(),
         "-loglevel".into(),
         "error".into(),
+    ];
+    // Input-side options (e.g. `-vaapi_device`) must precede the input.
+    args.extend(plan.input_args.iter().map(|s| (*s).to_string()));
+    args.extend([
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
         "testsrc=size=64x64:rate=1:duration=1".into(),
         "-an".into(),
-    ];
+    ]);
     if let Some(vf) = plan.hwupload_vf {
         args.push("-vf".into());
         args.push(vf.into());
@@ -499,6 +534,139 @@ fn hw_command(bin: &Path) -> tokio::process::Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+// ---------------------------------------------------------------------------
+// Stream-signature checks for stream-copy concat
+// ---------------------------------------------------------------------------
+
+/// Compact stream fingerprint used to decide whether files can be joined by
+/// stream copy (uniform codec + parameters).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StreamSignature {
+    pub video_codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub time_base: String,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+}
+
+fn ffprobe_bin(ffmpeg: &Path) -> PathBuf {
+    let name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    ffmpeg
+        .parent()
+        .map(|d| d.join(name))
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// Probe one file's video + audio stream signature via ffprobe.
+pub async fn probe_stream_signature(ffmpeg: &Path, path: &Path) -> Option<StreamSignature> {
+    let ffprobe = ffprobe_bin(ffmpeg);
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "-v".into(),
+        "error".into(),
+        "-show_entries".into(),
+        "stream=codec_type,codec_name,width,height,time_base,sample_rate,channels".into(),
+        "-of".into(),
+        "json".into(),
+    ];
+    args.push(path.as_os_str().to_os_string());
+    let output = run_captured_os(&ffprobe, &args, 10).await?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_stream_signature(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// True when every file shares an identical stream signature — a precondition
+/// for a safe stream-copy concat. Any missing/unreadable file fails the check.
+pub async fn streams_uniform(ffmpeg: &Path, paths: &[PathBuf]) -> bool {
+    if paths.len() < 2 {
+        return true;
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for p in paths {
+        let ffmpeg = ffmpeg.to_path_buf();
+        let p = p.clone();
+        set.spawn(async move { probe_stream_signature(&ffmpeg, &p).await });
+    }
+    let mut first: Option<StreamSignature> = None;
+    let mut n = 0usize;
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Some(sig)) => {
+                n += 1;
+                match &first {
+                    None => first = Some(sig),
+                    Some(f) if *f == sig => {}
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+    n == paths.len()
+}
+
+async fn run_captured_os(
+    bin: &Path,
+    args: &[std::ffi::OsString],
+    timeout_secs: u64,
+) -> Option<std::process::Output> {
+    let mut cmd = hw_command(bin);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await {
+        Ok(Ok(output)) => Some(output),
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, bin = %bin.display(), "probe spawn failed");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(bin = %bin.display(), "probe timed out");
+            None
+        }
+    }
+}
+
+fn parse_stream_signature(json: &str) -> Option<StreamSignature> {
+    #[derive(serde::Deserialize)]
+    struct StreamEntry {
+        #[serde(rename = "codec_type")]
+        codec_type: String,
+        #[serde(rename = "codec_name", default)]
+        codec_name: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        #[serde(rename = "time_base", default)]
+        time_base: String,
+        #[serde(rename = "sample_rate", default)]
+        sample_rate: Option<String>,
+        #[serde(default)]
+        channels: Option<u32>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ProbeOut {
+        streams: Vec<StreamEntry>,
+    }
+    let parsed: ProbeOut = serde_json::from_str(json).ok()?;
+    let video = parsed.streams.iter().find(|s| s.codec_type == "video")?;
+    let audio = parsed.streams.iter().find(|s| s.codec_type == "audio");
+    Some(StreamSignature {
+        video_codec: video.codec_name.clone(),
+        width: video.width?,
+        height: video.height?,
+        time_base: video.time_base.clone(),
+        sample_rate: audio
+            .and_then(|a| a.sample_rate.as_deref())
+            .and_then(|s| s.parse().ok()),
+        channels: audio.and_then(|a| a.channels),
+    })
 }
 
 #[cfg(test)]
@@ -598,6 +766,43 @@ mod tests {
         let sw = x264_plan();
         let fb2 = software_fallback_plan(&sw);
         assert_eq!(fb2.codec, "libx264");
+    }
+
+    #[test]
+    fn parses_stream_signature_json() {
+        let json = r#"{"streams":[
+            {"codec_type":"video","codec_name":"h264","width":1280,"height":720,"time_base":"1/24"},
+            {"codec_type":"audio","codec_name":"aac","sample_rate":"44100","channels":2}
+        ]}"#;
+        let sig = parse_stream_signature(json).unwrap();
+        assert_eq!(sig.video_codec, "h264");
+        assert_eq!(sig.width, 1280);
+        assert_eq!(sig.height, 720);
+        assert_eq!(sig.time_base, "1/24");
+        assert_eq!(sig.sample_rate, Some(44100));
+        assert_eq!(sig.channels, Some(2));
+        // Audio-less file still yields a video signature.
+        let video_only = r#"{"streams":[{"codec_type":"video","codec_name":"h264","width":640,"height":360,"time_base":"1/30"}]}"#;
+        let sig2 = parse_stream_signature(video_only).unwrap();
+        assert_eq!(sig2.sample_rate, None);
+        assert_eq!(sig2.channels, None);
+    }
+
+    #[test]
+    fn vaapi_plan_puts_device_in_input_args() {
+        let p = vaapi_plan();
+        assert!(p.input_args.iter().any(|a| *a == "-vaapi_device"));
+        assert!(p.hwupload_vf.is_some());
+        let sw = software_fallback_plan(&p);
+        assert!(sw.input_args.is_empty(), "software fallback must drop vaapi device args");
+        assert_eq!(sw.codec, "libx264");
+    }
+
+    #[test]
+    fn parallelism_caps_hw_encoders() {
+        assert_eq!(recommended_parallelism(&nvenc_plan()), 2);
+        assert_eq!(recommended_parallelism(&qsv_plan()), 3);
+        assert_eq!(recommended_parallelism(&x264_plan()), 2);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgba, RgbaImage};
@@ -354,10 +355,34 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     tokio::fs::create_dir_all(&norm_dir).await?;
 
     let mut normalized: Vec<PathBuf> = Vec::with_capacity(clip_paths.len());
-    for (i, clip) in clip_paths.iter().enumerate() {
-        let dest = norm_dir.join(format!("{i:03}.mp4"));
-        normalize_clip_for_concat(&ffmpeg, clip, &dest).await?;
-        normalized.push(dest);
+    {
+        // Finite parallelism per encoder (NVENC consumer GPUs cap sessions at
+        // ~3-5) — near-linear speedup for N clips without starving the encode.
+        let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+        let parallelism = nomi_config::ffmpeg_hw::recommended_parallelism(&plan);
+        let sem = Arc::new(tokio::sync::Semaphore::new(parallelism));
+        let mut set = tokio::task::JoinSet::new();
+        for (i, clip) in clip_paths.iter().enumerate() {
+            let ffmpeg = ffmpeg.clone();
+            let input = (*clip).to_path_buf();
+            let dest = norm_dir.join(format!("{i:03}.mp4"));
+            let permit = Arc::clone(&sem);
+            set.spawn(async move {
+                let _permit = permit.acquire_owned().await.map_err(|_| {
+                    VimaxError::Media("normalize semaphore closed".into())
+                })?;
+                normalize_clip_for_concat(&ffmpeg, &input, &dest).await.map(|_| i)
+            });
+        }
+        let mut slots: Vec<Option<PathBuf>> = (0..clip_paths.len()).map(|_| None).collect();
+        while let Some(joined) = set.join_next().await {
+            let i = joined
+                .map_err(|e| VimaxError::Media(format!("normalize join: {e}")))??;
+            slots[i] = Some(norm_dir.join(format!("{i:03}.mp4")));
+        }
+        for slot in slots {
+            normalized.push(slot.expect("every spawned normalize joins exactly once"));
+        }
     }
 
     let out = out_path.to_str().unwrap_or("");
@@ -397,6 +422,8 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         }
 
         let mut args: Vec<String> = vec!["-y".into()];
+        // Input-side options (e.g. `-vaapi_device`) must precede the inputs.
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
         for norm in &normalized {
             args.push("-i".into());
             args.push(norm.to_string_lossy().into_owned());
@@ -438,6 +465,11 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
             "ffmpeg concat filter failed; retrying with software encoder"
         );
         let _ = tokio::fs::remove_file(out_path).await;
+        // Software is the last resort — no third try when the plan was already
+        // libx264.
+        if !p.uses_hw {
+            break;
+        }
     }
 
     let _ = tokio::fs::remove_dir_all(&norm_dir).await;
@@ -452,6 +484,12 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
 /// falls back to a filter re-encode otherwise. Cleanup of a partial output is
 /// the caller's job.
 async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> VimaxResult<bool> {
+    // Pre-check: per-clip HW→SW fallback can leave a mixed-codec set (some shots
+    // NVENC, one libx264) — the copy join requires one uniform signature.
+    if !nomi_config::ffmpeg_hw::streams_uniform(ffmpeg, clips).await {
+        tracing::info!("normalized clips are not stream-uniform; skipping copy concat");
+        return Ok(false);
+    }
     let list_path = out_path.with_extension("concat_remux_list.txt");
     let mut list_body = String::new();
     for p in clips {
@@ -568,16 +606,24 @@ async fn normalize_clip_for_concat(
     // retries the same input with libx264 before giving up.
     let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(ffmpeg).await;
     let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
-    let vf = if plan.hwupload_vf.is_some() {
-        "fps=24,format=nv12,hwupload,setpts=PTS-STARTPTS".to_string()
-    } else {
-        "fps=24,format=yuv420p,setpts=PTS-STARTPTS".to_string()
+
+    // The `-vf` chain depends on the ACTUAL plan: VAAPI needs an hwupload stage
+    // (nv12 → GPU), everything else takes yuv420p software frames. Computing it
+    // per plan keeps the software fallback from inheriting VAAPI's hwupload.
+    let normalize_vf = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> String {
+        if p.hwupload_vf.is_some() {
+            "fps=24,format=nv12,hwupload,setpts=PTS-STARTPTS".to_string()
+        } else {
+            "fps=24,format=yuv420p,setpts=PTS-STARTPTS".to_string()
+        }
     };
 
     // Path A: clip already has an audio stream.
-    let build_a = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
-        let mut args: Vec<String> = vec![
-            "-y".into(),
+    let build_a = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan, vf: &str| -> Vec<String> {
+        let mut args: Vec<String> = vec!["-y".into()];
+        // Input-side options (e.g. `-vaapi_device`) must precede `-i`.
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend([
             "-i".into(),
             input_s.into(),
             "-map".into(),
@@ -585,10 +631,10 @@ async fn normalize_clip_for_concat(
             "-map".into(),
             "0:a:0".into(),
             "-vf".into(),
-            vf.clone(),
+            vf.to_string(),
             "-af".into(),
             af.clone(),
-        ];
+        ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
             "-c:a".into(),
@@ -611,9 +657,10 @@ async fn normalize_clip_for_concat(
     };
 
     // Path B: missing/broken audio — synthesize stereo silence for the video duration.
-    let build_b = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
-        let mut args: Vec<String> = vec![
-            "-y".into(),
+    let build_b = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan, vf: &str| -> Vec<String> {
+        let mut args: Vec<String> = vec!["-y".into()];
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend([
             "-i".into(),
             input_s.into(),
             "-f".into(),
@@ -621,12 +668,12 @@ async fn normalize_clip_for_concat(
             "-i".into(),
             "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
             "-vf".into(),
-            vf.clone(),
+            vf.to_string(),
             "-map".into(),
             "0:v:0".into(),
             "-map".into(),
             "1:a:0".into(),
-        ];
+        ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
             "-c:a".into(),
@@ -651,7 +698,8 @@ async fn normalize_clip_for_concat(
     let mut attempts: Vec<(String, String)> = Vec::new();
     // Path A: clip already has an audio stream.
     for (plan_label, p) in [("plan", &plan), ("sw", &fallback)] {
-        let args = build_a(p);
+        let vf = normalize_vf(p);
+        let args = build_a(p, &vf);
         let (ok, err) = run_ffmpeg_owned_capture(ffmpeg, &args).await?;
         if ok && is_usable_video_file(output) {
             return Ok(());
@@ -669,7 +717,8 @@ async fn normalize_clip_for_concat(
     );
     // Path B: missing/broken audio — synthesize stereo silence for the video duration.
     for (plan_label, p) in [("plan", &plan), ("sw", &fallback)] {
-        let args = build_b(p);
+        let vf = normalize_vf(p);
+        let args = build_b(p, &vf);
         let (ok, err) = run_ffmpeg_owned_capture(ffmpeg, &args).await?;
         if ok && is_usable_video_file(output) {
             return Ok(());
