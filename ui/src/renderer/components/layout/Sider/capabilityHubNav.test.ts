@@ -31,7 +31,7 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('sider-more-capabilities')).toBe(false);
     expect(siderSource.includes('SiderLearningEntry')).toBe(true);
     expect(siderSource.includes('SiderKnowledgeEntry')).toBe(true);
-    expect(siderSource.includes('SiderVideoGenerationEntry')).toBe(true);
+    expect(siderSource.includes('SiderVideoGenerationGroup')).toBe(true);
     expect(siderSource.includes('sider-conversation-entry')).toBe(false);
   });
 

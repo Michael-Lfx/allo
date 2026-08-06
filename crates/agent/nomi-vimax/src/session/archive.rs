@@ -425,6 +425,8 @@ mod tests {
             video_model: String::new(),
             target_duration_secs: 15,
             aspect_ratio: "16:9".into(),
+            resolution: "720p".into(),
+            fps: 24,
             stage: "succeeded".into(),
             summary: "done".into(),
             status: RunStatus::Succeeded,

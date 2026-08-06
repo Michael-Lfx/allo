@@ -44,6 +44,8 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
     style: draft.style.trim() || undefined,
     target_duration_secs: draft.targetDurationSecs,
     aspect_ratio: draft.aspectRatio,
+    resolution: draft.resolution,
+    fps: draft.fps,
     llm_model: draft.models.llm_model,
     image_model: draft.models.image_model || undefined,
     video_model: draft.models.video_model || undefined,
@@ -164,10 +166,10 @@ const VideoGenerationListPage: React.FC = () => {
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },
           });
-          rememberVideoGenerationSession(created.id);
+          rememberVideoGenerationSession(created.id, titleForDraft(draft));
           return;
         }
-        rememberVideoGenerationSession(created.id);
+        rememberVideoGenerationSession(created.id, titleForDraft(draft));
         navigate(`/video-generation/${created.id}`);
       } catch (e) {
         message.error(
@@ -184,7 +186,7 @@ const VideoGenerationListPage: React.FC = () => {
 
   const openSession = useCallback(
     (s: SessionSummary) => {
-      rememberVideoGenerationSession(s.id);
+      rememberVideoGenerationSession(s.id, s.title);
       navigate(`/video-generation/${s.id}`);
     },
     [navigate]

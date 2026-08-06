@@ -12,10 +12,6 @@ import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import {
-  readRememberedVideoGenerationSession,
-  videoGenerationEntryPath,
-} from '@renderer/pages/videoGeneration/routeMemory';
-import {
   ConversationSiderActions,
   SiderConversationEntry,
   SiderKnowledgeEntry,
@@ -25,7 +21,7 @@ import {
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderSectionHeader,
-  SiderVideoGenerationEntry,
+  SiderVideoGenerationGroup,
 } from './SiderNav';
 import SiderFooter from './SiderFooter';
 import styles from './Sider.module.css';
@@ -105,18 +101,21 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   );
 
   const handleConversationClick = () => navTo('/guid');
-  const handleVideoGenerationClick = () => {
-    // Restore last project workspace when leaving other modules; toggle to the
-    // list home when already viewing that same project.
-    const lastId = readRememberedVideoGenerationSession();
-    const onRememberedWorkspace =
-      !!lastId && pathname === `/video-generation/${lastId}`;
-    if (onRememberedWorkspace) {
-      navTo('/video-generation');
-      return;
-    }
-    navTo(videoGenerationEntryPath());
+  const handleVideoGenerationHome = () => {
+    navTo('/video-generation');
   };
+
+  const activeVideoGenerationSessionId = useMemo(() => {
+    const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
+    return m?.[1] ? decodeURIComponent(m[1]) : null;
+  }, [pathname]);
+
+  const handleOpenRecentVideoGeneration = useCallback(
+    (sessionId: string) => {
+      navTo(`/video-generation/${encodeURIComponent(sessionId)}`);
+    },
+    [navTo]
+  );
   const handleScheduledClick = () => navTo('/scheduled');
   const handleKnowledgeClick = () => navTo('/knowledge');
   const handleNomiClick = () => navTo('/nomi');
@@ -201,13 +200,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            {/* ViMax video generation */}
-            <SiderVideoGenerationEntry
+            {/* ViMax video generation — collapsible recent projects (workpath-aligned) */}
+            <SiderVideoGenerationGroup
               isMobile={isMobile}
-              isActive={pathname.startsWith('/video-generation')}
+              moduleActive={pathname.startsWith('/video-generation')}
+              activeSessionId={activeVideoGenerationSessionId}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
-              onClick={handleVideoGenerationClick}
+              onEnterHome={handleVideoGenerationHome}
+              onOpenProject={handleOpenRecentVideoGeneration}
             />
             <SiderKnowledgeEntry
               isMobile={isMobile}
