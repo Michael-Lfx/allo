@@ -67,14 +67,15 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
   );
 
   return (
-    <div className='px-12px'>
+    <div className='workspace-toolbar'>
       {/* Search Input */}
       {(showSearch || searchText) && (
-        <div className='py-8px workspace-toolbar-search'>
+        <div className='workspace-toolbar-search'>
           <Input
             className='w-full workspace-search-input'
             ref={searchInputRef}
             placeholder={t('conversation.workspace.searchPlaceholder')}
+            aria-label={t('conversation.workspace.searchPlaceholder')}
             value={searchText}
             onChange={(value) => {
               setSearchText(value);
@@ -91,8 +92,11 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
 
       {/* Directory name with collapse and action icons */}
       <div className='workspace-toolbar-row flex items-center justify-between gap-8px'>
-        <div
-          className='flex items-center gap-8px cursor-pointer flex-1 min-w-0'
+        <button
+          type='button'
+          className='workspace-toolbar-toggle flex items-center gap-4px flex-1 min-w-0'
+          aria-expanded={!isWorkspaceCollapsed}
+          aria-label={t(isWorkspaceCollapsed ? 'common.expand' : 'common.collapse')}
           onClick={() => setIsWorkspaceCollapsed(!isWorkspaceCollapsed)}
         >
           <Down
@@ -103,34 +107,34 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
           <span className='workspace-title-label font-bold text-14px text-t-primary overflow-hidden text-ellipsis whitespace-nowrap'>
             {workspaceDisplayName}
           </span>
-        </div>
+        </button>
         <div className='workspace-toolbar-actions flex items-center gap-8px flex-shrink-0'>
           {!isDesktopShell() && (
             <Dropdown droplist={workspaceUploadMenu} trigger='click' position='bl'>
-              <span>
-                <Plus
-                  className='workspace-toolbar-icon-btn lh-[1] flex cursor-pointer'
-                  theme='outline'
-                  size='16'
-                  fill={iconColors.secondary}
-                />
-              </span>
+              <button
+                type='button'
+                className='workspace-toolbar-icon-btn'
+                aria-label={t('common.fileAttach.addFiles')}
+              >
+                <Plus theme='outline' size='16' fill={iconColors.secondary} />
+              </button>
             </Dropdown>
           )}
           <Tooltip content={t('conversation.workspace.refresh')}>
-            <span>
+            <button
+              type='button'
+              className='workspace-toolbar-icon-btn'
+              aria-label={t('conversation.workspace.refresh')}
+              aria-busy={loading}
+              onClick={() => refreshWorkspace()}
+            >
               <Refresh
-                className={
-                  loading
-                    ? 'workspace-toolbar-icon-btn loading lh-[1] flex cursor-pointer'
-                    : 'workspace-toolbar-icon-btn flex cursor-pointer'
-                }
+                className={loading ? 'loading' : undefined}
                 theme='outline'
                 size='16'
                 fill={iconColors.secondary}
-                onClick={() => refreshWorkspace()}
               />
-            </span>
+            </button>
           </Tooltip>
         </div>
       </div>

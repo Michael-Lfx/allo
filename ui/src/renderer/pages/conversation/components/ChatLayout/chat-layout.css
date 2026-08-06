@@ -54,6 +54,58 @@
   color: var(--color-text-1);
 }
 
+.workspace-open-button__btn,
+.workspace-open-button__dropdown-btn,
+.workspace-bind-button__btn {
+  min-width: 28px;
+  height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--color-text-2);
+  background: transparent;
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.workspace-open-button__btn:hover,
+.workspace-open-button__dropdown-btn:hover,
+.workspace-bind-button__btn:hover {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+}
+
+.workspace-open-button__btn:active,
+.workspace-open-button__dropdown-btn:active,
+.workspace-bind-button__btn:active {
+  background: var(--color-fill-3);
+  transform: scale(0.96);
+}
+
+.workspace-open-button__btn:focus-visible,
+.workspace-open-button__dropdown-btn:focus-visible,
+.workspace-bind-button__btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, rgb(var(--primary-6)) 48%, transparent);
+  outline-offset: 1px;
+}
+
+.workspace-open-button__dropdown-btn {
+  min-width: 22px;
+  padding-right: 4px;
+  padding-left: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-open-button__btn,
+  .workspace-open-button__dropdown-btn,
+  .workspace-bind-button__btn {
+    transition: none;
+  }
+}
+
 /* Persistent workspace tool rail: always visible between the main content and
    the expandable right panel, so Files / Changes / Metrics / DAG remain
    discoverable even while the panel itself is closed. */

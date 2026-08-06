@@ -13,6 +13,7 @@ import {
 } from '@/renderer/pages/conversation/components/ChatLayout/WorkspaceToolRail';
 import { getWorkspaceDisplayName as getDisplayName } from '@/renderer/utils/workspace/workspace';
 import { Empty, Tree } from '@arco-design/web-react';
+import { Down } from '@icon-park/react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -20,6 +21,7 @@ import FileChangeList from './components/FileChangeList';
 import PasteConfirmModal from './components/PasteConfirmModal';
 import WorkspaceContextMenu from './components/WorkspaceContextMenu';
 import WorkspaceDialogs from './components/WorkspaceDialogs';
+import WorkspaceFileIcon from './components/WorkspaceFileIcon';
 import WorkspaceToolbar from './components/WorkspaceToolbar';
 import { useFileChanges } from './hooks/useFileChanges';
 import { useWorkspaceCollapse } from './hooks/useWorkspaceCollapse';
@@ -39,6 +41,10 @@ import {
   getTargetFolderPath,
 } from './utils/treeHelpers';
 import './workspace.css';
+
+const workspaceTreeChevron = (
+  <Down aria-hidden='true' className='workspace-tree-chevron' theme='outline' size={14} strokeWidth={4} fill='currentColor' />
+);
 
 /**
  * WorkspaceRailBody — 表面无关的工作区右栏「身体」
@@ -413,16 +419,22 @@ const WorkspaceRailBody: React.FC<{ source: WorkspaceSource; messageApi?: Messag
               </div>
             ) : (
               <Tree
-                className={`${isMobile ? '!pl-12px !pr-8px chat-workspace-tree--mobile' : '!pl-32px !pr-16px'} workspace-tree`}
+                className={`workspace-tree${isMobile ? ' chat-workspace-tree--mobile' : ''}`}
                 showLine
+                blockNode
                 key={treeHook.treeKey}
                 selectedKeys={treeHook.selected}
                 expandedKeys={treeHook.expandedKeys}
                 actionOnClick={['select', 'expand']}
-                // Reuse the +/- glyph during lazy-load so the switcher doesn't
-                // flash a spinner on first expand of each folder.
+                // Use the same SVG chevron while a folder is loading so the
+                // switcher never flashes a mismatched spinner.
                 icons={(nodeProps) => ({
-                  loadingIcon: <span className={`arco-tree-node-${nodeProps.expanded ? 'minus' : 'plus'}-icon`} />,
+                  switcherIcon: nodeProps.isLeaf ? (
+                    <WorkspaceFileIcon fileName={nodeProps.dataRef?.name ?? ''} />
+                  ) : (
+                    workspaceTreeChevron
+                  ),
+                  loadingIcon: workspaceTreeChevron,
                 })}
                 treeData={treeData}
                 fieldNames={{
@@ -440,7 +452,7 @@ const WorkspaceRailBody: React.FC<{ source: WorkspaceSource; messageApi?: Messag
 
                   return (
                     <div
-                      className='flex items-center justify-between gap-6px min-w-0'
+                      className='workspace-node-content flex items-center justify-between gap-6px min-w-0'
                       style={{ color: 'inherit' }}
                       onDoubleClick={() => {
                         if (isFile) {
@@ -453,8 +465,13 @@ const WorkspaceRailBody: React.FC<{ source: WorkspaceSource; messageApi?: Messag
                         openNodeContextMenu(nodeData, event.clientX, event.clientY);
                       }}
                     >
-                      <span className='flex items-center gap-4px min-w-0'>
-                        <span className='overflow-hidden text-ellipsis whitespace-nowrap'>{node.title}</span>
+                      <span className='workspace-node-label flex items-center gap-4px min-w-0'>
+                        <span
+                          className='workspace-node-name overflow-hidden text-ellipsis whitespace-nowrap'
+                          title={nodeData.name}
+                        >
+                          {node.title}
+                        </span>
                         {isPasteTarget && (
                           <span className='ml-1 text-xs font-bold bg-[var(--color-primary)] text-white px-1.5 py-0.5 rounded'>
                             PASTE
@@ -464,8 +481,9 @@ const WorkspaceRailBody: React.FC<{ source: WorkspaceSource; messageApi?: Messag
                       {isMobile && (
                         <button
                           type='button'
-                          className='workspace-header__toggle workspace-node-more-btn h-24px w-24px rd-6px flex items-center justify-center text-t-secondary hover:text-t-primary active:text-t-primary flex-shrink-0'
+                          className='workspace-header__toggle workspace-node-more-btn flex items-center justify-center text-t-secondary hover:text-t-primary active:text-t-primary flex-shrink-0'
                           aria-label={t('common.more')}
+                          aria-haspopup='menu'
                           onMouseDown={(event) => {
                             event.stopPropagation();
                           }}
