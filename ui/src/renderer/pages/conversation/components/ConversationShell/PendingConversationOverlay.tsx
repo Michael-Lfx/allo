@@ -46,9 +46,14 @@ const PendingConversationOverlay: React.FC = () => {
   const fileCount = pending.files?.length ?? 0;
   const trimmedInput = pending.input.trim();
   const displayTitle = pending.title?.trim() || trimmedInput;
+  // Mirrors NomiSendBox's placeholder contract. backend stays 'Flowy' (the
+  // overlay renders before the destination, so the real agent_name isn't known
+  // yet) — the common case matches exactly; a custom-named agent differs by one
+  // word during the ~140ms crossfade. The defaultValue uses the same {{backend}}
+  // template so the missing-key fallback still interpolates.
   const composerPlaceholder = t('acp.sendbox.placeholder', {
     backend: 'Flowy',
-    defaultValue: 'Send message to Flowy...',
+    defaultValue: 'Send message to {{backend}}...',
   });
   const steps = [
     t('conversation.pending.stepValidate', { defaultValue: '核对任务' }),
