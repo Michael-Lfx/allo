@@ -390,7 +390,9 @@ const NomiSendBox: React.FC<{
             }
           }
           markTurnAccepted();
-          notifyAccepted(msg_id);
+          // Billing turnId == send msg_id; pass explicitly so rootTurnId is set
+          // before turn.started (avoids first-turn finish being fenced out).
+          notifyAccepted(msg_id, msg_id);
           setActiveMsgId(msg_id);
           if (localMsgId && msg_id !== localMsgId) {
             removeMessageByMsgId(localMsgId);

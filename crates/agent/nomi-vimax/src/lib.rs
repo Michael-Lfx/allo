@@ -16,11 +16,17 @@ pub mod rag;
 pub mod revise;
 pub mod service;
 pub mod session;
+pub mod video_quality;
 
 pub use aspect::{
     DEFAULT_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS, aspect_prompt_clause, aspect_to_dashscope_size,
     aspect_to_seedream_size, aspect_to_upload_dims, image_request_extra_for_aspect,
     normalize_aspect_ratio,
+};
+
+pub use video_quality::{
+    DEFAULT_VIDEO_FPS, DEFAULT_VIDEO_RESOLUTION, VIDEO_RESOLUTIONS, VideoModelCapabilities,
+    normalize_fps_for_model, normalize_resolution_for_model, video_model_capabilities,
 };
 
 pub use artifact_edit::ImagePromptInfo;

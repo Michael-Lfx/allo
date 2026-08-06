@@ -31,6 +31,7 @@ pub struct FlowyVideo {
     model_override: Option<String>,
     cancel: Option<CancellationToken>,
     aspect_ratio: Option<String>,
+    resolution: Option<String>,
     /// Optional pipeline progress hook — emits fine-grained create / poll / download stages.
     progress: Option<crate::progress::ProgressCallback>,
 }
@@ -41,6 +42,7 @@ impl FlowyVideo {
         model_override: Option<String>,
         cancel: Option<CancellationToken>,
         aspect_ratio: Option<String>,
+        resolution: Option<String>,
         progress: Option<crate::progress::ProgressCallback>,
     ) -> Self {
         Self {
@@ -58,6 +60,10 @@ impl FlowyVideo {
                     Some(crate::aspect::normalize_aspect_ratio(&t))
                 }
             }),
+            resolution: resolution.and_then(|s| {
+                let t = s.trim().to_ascii_lowercase();
+                if t.is_empty() { None } else { Some(t) }
+            }),
             progress,
         }
     }
@@ -70,6 +76,22 @@ impl FlowyVideo {
                     &self.services.media.video.default_aspect_ratio,
                 )
             })
+    }
+
+    fn resolved_resolution(&self, model: &str) -> String {
+        let raw = self
+            .resolution
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                self.services
+                    .media
+                    .video
+                    .default_resolution
+                    .trim()
+                    .to_ascii_lowercase()
+            });
+        crate::video_quality::normalize_resolution_for_model(model, &raw)
     }
 
     fn is_cancelled(&self) -> bool {
@@ -241,7 +263,7 @@ impl VimaxVideo for FlowyVideo {
         }
 
         let aspect = self.resolved_aspect();
-        let resolution = Some(self.services.media.video.default_resolution.clone());
+        let resolution = Some(self.resolved_resolution(&model));
         // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; ViMax plans clips in [5, 15].
         // `default_duration` is only a fallback when callers omit duration — never a max cap.
         // (Capping at default_duration=5 previously forced every shot to 5s and cut dialogue.)

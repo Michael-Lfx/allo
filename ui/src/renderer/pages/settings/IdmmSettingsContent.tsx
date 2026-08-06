@@ -10,6 +10,7 @@ import { useProvidersQuery } from '@renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { useConversationTitleModel } from '@/renderer/hooks/chat/useConversationTitleModel';
 
 /**
  * Global IDMM defaults: the backup provider/model the sidecar uses when a
@@ -42,6 +43,23 @@ const IdmmSettingsContent: React.FC = () => {
     const group = chatGroups.find((g) => g.provider.id === settings.backup_provider_id);
     return (group?.models ?? []).map((m) => ({ label: m, value: m }));
   }, [chatGroups, settings.backup_provider_id]);
+
+  // 会话标题模型偏好：独立于上面的 IDMM 保存按钮，选择即写入 client preference。
+  // 单个分组下拉一次选定 provider+model，避免"先选供应商再选模型"的中间态。
+  const { choice: titleModelChoice, setChoice: setTitleModelChoice } = useConversationTitleModel();
+  const titleModelOptions = useMemo(
+    () =>
+      chatGroups.flatMap((g) =>
+        g.models.map((m) => ({
+          label: `${providerLabel(g.provider)} · ${m}`,
+          value: JSON.stringify([g.provider.id, m]),
+        }))
+      ),
+    [chatGroups, providerLabel]
+  );
+  const titleModelValue = titleModelChoice
+    ? JSON.stringify([titleModelChoice.provider_id, titleModelChoice.model])
+    : undefined;
 
   const save = async () => {
     setSaving(true);
@@ -103,6 +121,26 @@ const IdmmSettingsContent: React.FC = () => {
         <Button type='primary' loading={saving} onClick={save}>
           {t('common.save', { defaultValue: 'Save' })}
         </Button>
+      </div>
+
+      <div className='border-t border-border-2 pt-16px flex flex-col gap-6px'>
+        <span className='text-t-secondary text-13px'>{t('idmm.settings.titleModel')}</span>
+        <span className='text-t-tertiary text-12px leading-18px'>{t('idmm.settings.titleModelDesc')}</span>
+        <Select
+          placeholder={t('idmm.settings.selectModel')}
+          value={titleModelValue}
+          onChange={(v: string | undefined) => {
+            if (!v) {
+              void setTitleModelChoice(null);
+              return;
+            }
+            const [provider_id, model] = JSON.parse(v) as [ProviderId, string];
+            void setTitleModelChoice({ provider_id, model });
+          }}
+          options={titleModelOptions}
+          allowClear
+          showSearch
+        />
       </div>
     </div>
   );

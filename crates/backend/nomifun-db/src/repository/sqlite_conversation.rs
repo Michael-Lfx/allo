@@ -3975,6 +3975,58 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(())
     }
 
+    async fn update_auto_title_if_auto(
+        &self,
+        conversation_id: &str,
+        name: &str,
+        extra: &str,
+        allowed_prior_states: &[&str],
+        updated_at: TimestampMs,
+    ) -> Result<bool, DbError> {
+        if allowed_prior_states.is_empty() {
+            return Ok(false);
+        }
+        // `""` in `allowed_prior_states` matches an absent `autoTitleState`
+        // via COALESCE. The state gate additionally prevents a stale retry
+        // from overwriting a conversation that has already reached a terminal
+        // title state.
+        let placeholders = vec!["?"; allowed_prior_states.len()].join(",");
+        let sql = format!(
+            "UPDATE conversations SET name = ?, extra = ?, updated_at = ? \
+             WHERE conversation_id = ? \
+               AND (json_extract(extra, '$.titleSource') IS NULL \
+                    OR json_extract(extra, '$.titleSource') = 'auto') \
+               AND COALESCE(json_extract(extra, '$.autoTitleState'), '') IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql).bind(name).bind(extra).bind(updated_at).bind(conversation_id);
+        for state in allowed_prior_states {
+            query = query.bind(*state);
+        }
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn update_preview_name_if_untitled(
+        &self,
+        conversation_id: &str,
+        name: &str,
+        updated_at: TimestampMs,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE conversations SET name = ?, updated_at = ? \
+             WHERE conversation_id = ? \
+               AND COALESCE(json_extract(extra, '$.autoTitleState'), '') IN ('', 'failed') \
+               AND (json_extract(extra, '$.titleSource') IS NULL \
+                    OR json_extract(extra, '$.titleSource') = 'auto')",
+        )
+        .bind(name)
+        .bind(updated_at)
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn update_idmm(
         &self,
         conversation_id: &str,
@@ -8177,5 +8229,127 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn update_auto_title_if_auto_rejects_user_owned_name() {
+        let (repo, _db) = setup().await;
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.extra = r#"{"titleSource":"user"}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+
+        let applied = repo
+            .update_auto_title_if_auto(
+                &conv.conversation_id,
+                "Model Title",
+                r#"{"titleSource":"user","autoTitleState":"done"}"#,
+                &[""],
+                nomifun_common::now_ms(),
+            )
+            .await
+            .unwrap();
+        assert!(!applied, "a user rename permanently owns the name");
+
+        let found = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+        assert_eq!(found.name, "Test Conversation");
+        assert_eq!(found.extra, r#"{"titleSource":"user"}"#);
+    }
+
+    #[tokio::test]
+    async fn update_auto_title_if_auto_gates_on_prior_state() {
+        let (repo, _db) = setup().await;
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.extra = r#"{"autoTitleState":"done"}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+
+        // A conversation already titled (state "done") rejects a re-attempt
+        // gated on the absent-only prior state: the CAS must not regress a
+        // completed title.
+        let applied = repo
+            .update_auto_title_if_auto(
+                &conv.conversation_id,
+                "Re-attempt Title",
+                r#"{"autoTitleState":"done"}"#,
+                &[""],
+                nomifun_common::now_ms(),
+            )
+            .await
+            .unwrap();
+        assert!(!applied);
+        let found = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+        assert_eq!(found.name, "Test Conversation");
+        assert_eq!(found.extra, r#"{"autoTitleState":"done"}"#);
+
+        // An untitled conversation (state absent) accepts the single title
+        // write gated on the absent-only prior state, applying name + extra.
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.extra = r#"{}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+        let applied = repo
+            .update_auto_title_if_auto(
+                &conv.conversation_id,
+                "Auto Title",
+                r#"{"autoTitleState":"done"}"#,
+                &[""],
+                nomifun_common::now_ms(),
+            )
+            .await
+            .unwrap();
+        assert!(applied);
+        let found = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+        assert_eq!(found.name, "Auto Title");
+        assert_eq!(found.extra, r#"{"autoTitleState":"done"}"#);
+    }
+
+    #[tokio::test]
+    async fn update_preview_name_if_untitled_respects_title_state() {
+        let (repo, _db) = setup().await;
+
+        // No title state: the preview applies.
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+        let applied = repo
+            .update_preview_name_if_untitled(&conv.conversation_id, "Preview Name", nomifun_common::now_ms())
+            .await
+            .unwrap();
+        assert!(applied);
+        assert_eq!(
+            repo.get(&conv.conversation_id).await.unwrap().unwrap().name,
+            "Preview Name"
+        );
+
+        // A completed (done) title blocks late previews.
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.extra = r#"{"autoTitleState":"done"}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+        let applied = repo
+            .update_preview_name_if_untitled(&conv.conversation_id, "Late Preview", nomifun_common::now_ms())
+            .await
+            .unwrap();
+        assert!(!applied);
+        assert_eq!(
+            repo.get(&conv.conversation_id).await.unwrap().unwrap().name,
+            "Test Conversation"
+        );
+
+        // Terminal failure lets the preview recover (the model never titled).
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.extra = r#"{"autoTitleState":"failed"}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+        let applied = repo
+            .update_preview_name_if_untitled(&conv.conversation_id, "Recovered Preview", nomifun_common::now_ms())
+            .await
+            .unwrap();
+        assert!(applied);
+
+        // A user-owned name blocks previews.
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.extra = r#"{"titleSource":"user"}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
+        let applied = repo
+            .update_preview_name_if_untitled(&conv.conversation_id, "Preview", nomifun_common::now_ms())
+            .await
+            .unwrap();
+        assert!(!applied);
     }
 }

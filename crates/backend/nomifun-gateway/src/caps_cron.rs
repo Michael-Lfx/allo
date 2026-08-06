@@ -135,6 +135,7 @@ async fn create(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: CronCreateParams) -> 
                     Ok((m, source)) => {
                         let req = UpdateConversationRequest {
                             name: None,
+                            name_source: None,
                             pinned: None,
                             model: Some(m.clone()),
                             delegation_policy: None,

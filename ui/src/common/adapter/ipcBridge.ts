@@ -637,7 +637,9 @@ export const conversation = {
   ),
   // updates 额外允许顶层 `pinned`：对应 conversations 表真列（UpdateConversationRequest.pinned，
   // 服务端置位时自动维护 pinned_at）；body 构造的 `...rest` 原样透传该字段。
-  update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean }; merge_extra?: boolean }>(
+  // `name_source` 声明 name 写入来源：'user' 表示用户改名（后端据此阻止自动标题覆盖），
+  // 'auto' 表示首条消息截断 preview（仅当还没有模型标题时生效）。
+  update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean; name_source?: 'user' | 'auto' }; merge_extra?: boolean }>(
     (p) => `/api/conversations/${p.conversation_id}`,
     (p) => {
       // `merge_extra` is a client-only hint: the backend always merges `extra`

@@ -162,7 +162,7 @@ export const useConversationActions = ({
     try {
       const success = await ipcBridge.conversation.update.invoke({
         conversation_id: renameModalId,
-        updates: { name: renameModalName.trim() },
+        updates: { name: renameModalName.trim(), name_source: 'user' },
       });
 
       if (success) {

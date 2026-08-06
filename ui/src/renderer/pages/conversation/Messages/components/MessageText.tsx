@@ -4,6 +4,7 @@ import { preferKnowledgeWritebackState, type IMessageText, type KnowledgeWriteba
 import { ipcBridge } from '@/common';
 import { toDisplayText } from '@/common/chat/displayText';
 import type { TurnCreditUsageData } from '@/common/config/storage';
+import type { MessageId } from '@/common/types/ids';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
@@ -27,6 +28,7 @@ import { parseMessageFileMarker } from './messageFileMarker';
 import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { peekTurnCredits } from '@/renderer/pages/conversation/platforms/nomi/fetchTurnCredits';
 
 const BUBBLE_ENTER_FRESH_MS = 1500;
 
@@ -313,7 +315,9 @@ const MessageText: React.FC<{
   message: IMessageText;
   hideActions?: boolean;
   actionsOnly?: boolean;
-}> = ({ message, hideActions = false, actionsOnly = false }) => {
+  /** Prefer list-assigned turn id (turn_actions) over message.msg_id for credit lookup. */
+  creditTurnId?: MessageId;
+}> = ({ message, hideActions = false, actionsOnly = false, creditTurnId }) => {
   // Filter think tags from content before rendering
   // 在渲染前过滤 think 标签
   const contentToRender = useMemo(() => {
@@ -341,30 +345,38 @@ const MessageText: React.FC<{
   const isMobile = layout?.isMobile ?? false;
   const shouldShowActions = !hideActions;
 
-  const turnCreditKey = message.turn_id ?? message.msg_id ?? message.message_id;
+  const turnCreditKey =
+    creditTurnId ?? message.turn_id ?? message.msg_id ?? message.message_id;
   const conversationId = conversationContext?.conversation_id;
   // Conversation page already hydrates this SWR key — reuse it for persisted credits.
   const { data: conversation } = useSWR(
     conversationId ? `conversation/${conversationId}` : null,
     () => getConversationOrNull(conversationId!)
   );
-  const [liveTurnCredits, setLiveTurnCredits] = useState<TurnCreditUsageData | null>(null);
+  const [liveTurnCredits, setLiveTurnCredits] = useState<TurnCreditUsageData | null>(() => {
+    if (!conversationId || !turnCreditKey) return null;
+    return peekTurnCredits(conversationId, turnCreditKey);
+  });
   const persistedTurnCredits = useMemo(() => {
     if (!turnCreditKey || !conversation || conversation.type !== 'nomi') return null;
     return conversation.extra?.turn_credit_usage?.[String(turnCreditKey)] ?? null;
   }, [conversation, turnCreditKey]);
   useEffect(() => {
-    setLiveTurnCredits(null);
-  }, [turnCreditKey]);
-  useEffect(() => {
-    if (!turnCreditKey || !conversationId) return;
+    if (!turnCreditKey || !conversationId) {
+      setLiveTurnCredits(null);
+      return;
+    }
+    // Remount / turn-key change: restore from module cache before the next emit
+    // (first-turn list reconcile often remounts MessageText after finish emit).
+    setLiveTurnCredits(peekTurnCredits(conversationId, turnCreditKey));
     const handler = (payload: {
       conversation_id: NonNullable<typeof conversationId>;
       turn_id: NonNullable<typeof turnCreditKey>;
       usage: TurnCreditUsageData;
     }) => {
       if (payload.conversation_id !== conversationId) return;
-      if (String(payload.turn_id) !== String(turnCreditKey)) return;
+      const key = String(turnCreditKey);
+      if (String(payload.turn_id) !== key && String(payload.usage.turnId) !== key) return;
       setLiveTurnCredits(payload.usage);
     };
     emitter.on('nomi.turn_credits.updated', handler);

@@ -54,6 +54,7 @@ import AspectRatioPicker from './components/AspectRatioPicker';
 import DurationTimelineBar from './components/DurationTimelineBar';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
+import VideoQualityPickers from './components/VideoQualityPickers';
 import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
 import StoryboardBoard from './components/StoryboardBoard';
 import StudioStageRail from './components/StudioStageRail';
@@ -67,6 +68,13 @@ import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
 } from './aspectRatios';
+import {
+  DEFAULT_VIDEO_FPS,
+  DEFAULT_VIDEO_RESOLUTION,
+  normalizeVideoFps,
+  normalizeVideoResolution,
+  type VideoResolution,
+} from './videoModelCapabilities';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import {
   clearVideoGenerationSessionMemory,
@@ -106,6 +114,8 @@ const WorkspacePage: React.FC = () => {
   const [style, setStyle] = useState(DEFAULT_VISUAL_STYLE_PROMPT);
   const [targetDurationSecs, setTargetDurationSecs] = useState<number>(30);
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_SEEDANCE_ASPECT_RATIO);
+  const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
+  const [fps, setFps] = useState(DEFAULT_VIDEO_FPS);
   const [models, setModels] = useState<VimaxModelSelection>({
     llm_model: '',
     image_model: '',
@@ -171,7 +181,7 @@ const WorkspacePage: React.FC = () => {
     try {
       const s = await getSession(sessionId);
       setSession(s);
-      rememberVideoGenerationSession(sessionId);
+      rememberVideoGenerationSession(sessionId, s.title);
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
       setStyle(s.style?.trim() || launchDraft?.style?.trim() || DEFAULT_VISUAL_STYLE_PROMPT);
@@ -185,11 +195,26 @@ const WorkspacePage: React.FC = () => {
           s.aspect_ratio || launchDraft?.aspectRatio || DEFAULT_SEEDANCE_ASPECT_RATIO
         )
       );
+      const videoModel = s.video_model || launchDraft?.models.video_model || '';
       setModels({
         llm_model: s.llm_model || launchDraft?.models.llm_model || '',
         image_model: s.image_model || launchDraft?.models.image_model || '',
-        video_model: s.video_model || launchDraft?.models.video_model || '',
+        video_model: videoModel,
       });
+      setResolution(
+        normalizeVideoResolution(
+          videoModel,
+          s.resolution || launchDraft?.resolution || DEFAULT_VIDEO_RESOLUTION
+        )
+      );
+      setFps(
+        normalizeVideoFps(
+          videoModel,
+          typeof s.fps === 'number' && s.fps > 0
+            ? s.fps
+            : launchDraft?.fps ?? DEFAULT_VIDEO_FPS
+        )
+      );
       setLoadError(null);
     } catch (e) {
       clearVideoGenerationSessionMemory(sessionId);
@@ -422,6 +447,8 @@ const WorkspacePage: React.FC = () => {
         style: style.trim() || undefined,
         target_duration_secs: targetDurationSecs,
         aspect_ratio: aspectRatio,
+        resolution,
+        fps,
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
@@ -456,6 +483,8 @@ const WorkspacePage: React.FC = () => {
     style,
     targetDurationSecs,
     aspectRatio,
+    resolution,
+    fps,
     models,
     message,
     t,
@@ -528,6 +557,8 @@ const WorkspacePage: React.FC = () => {
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
+        resolution,
+        fps,
       });
       message.success(t('videoGeneration.workspace.renderStarted', { defaultValue: '已开始渲染' }));
       const st = await refreshStatus();
@@ -547,7 +578,7 @@ const WorkspacePage: React.FC = () => {
     } finally {
       setRendering(false);
     }
-  }, [sessionId, models, message, t, refreshStatus]);
+  }, [sessionId, models, resolution, fps, message, t, refreshStatus]);
 
   const handleCancel = useCallback(async () => {
     if (!sessionId) return;
@@ -1116,6 +1147,17 @@ const WorkspacePage: React.FC = () => {
                   disabled={busy}
                   isMobile={isMobile}
                 />
+                <div className='mt-12px'>
+                  <VideoQualityPickers
+                    videoModel={models.video_model}
+                    value={{ resolution, fps }}
+                    onChange={({ resolution: nextRes, fps: nextFps }) => {
+                      setResolution(nextRes);
+                      setFps(nextFps);
+                    }}
+                    disabled={busy}
+                  />
+                </div>
               </div>
             </details>
           </section>
@@ -1154,6 +1196,15 @@ const WorkspacePage: React.FC = () => {
                 onChange={setModels}
                 disabled={busy}
                 isMobile={isMobile}
+              />
+              <VideoQualityPickers
+                videoModel={models.video_model}
+                value={{ resolution, fps }}
+                onChange={({ resolution: nextRes, fps: nextFps }) => {
+                  setResolution(nextRes);
+                  setFps(nextFps);
+                }}
+                disabled={busy}
               />
             </div>
           </details>

@@ -757,6 +757,42 @@ pub trait IConversationRepository: Send + Sync {
         updates: &ConversationRowUpdate,
     ) -> Result<(), DbError>;
 
+    /// Atomically writes an auto-generated title plus its merged state marker
+    /// (`extra` is the full replacement JSON), but only while the name is
+    /// still auto-owned and the persisted `autoTitleState` is one of
+    /// `allowed_prior_states` (`""` represents an absent state). Returns
+    /// `true` when applied; `false` when a user rename
+    /// (`extra.titleSource = "user"`) or a further-along title pass already
+    /// claimed the row. Repositories without conditional JSON updates fail
+    /// closed: auto-titling is disabled, but a user rename is never at risk.
+    async fn update_auto_title_if_auto(
+        &self,
+        _conversation_id: &str,
+        _name: &str,
+        _extra: &str,
+        _allowed_prior_states: &[&str],
+        _updated_at: TimestampMs,
+    ) -> Result<bool, DbError> {
+        Err(DbError::Init(
+            "conditional auto-title update is not supported by this repository".to_owned(),
+        ))
+    }
+
+    /// Atomically writes the first-message preview name while no
+    /// model-generated title exists yet (`extra.autoTitleState` absent or
+    /// `"failed"`) and the name is still auto-owned. Returns `true` when
+    /// applied.
+    async fn update_preview_name_if_untitled(
+        &self,
+        _conversation_id: &str,
+        _name: &str,
+        _updated_at: TimestampMs,
+    ) -> Result<bool, DbError> {
+        Err(DbError::Init(
+            "conditional preview-name update is not supported by this repository".to_owned(),
+        ))
+    }
+
     /// Atomically replaces the persisted IDMM configuration inside
     /// `conversation.extra`. Implementations must validate and logically lock
     /// every per-watch `bypass_model.provider_id` before writing the JSON.

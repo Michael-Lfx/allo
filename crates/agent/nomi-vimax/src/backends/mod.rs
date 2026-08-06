@@ -80,11 +80,11 @@ impl FlowyVimaxServices {
     }
 
     pub fn video(&self) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), None, None, None, None)
+        FlowyVideo::new(self.clone(), None, None, None, None, None)
     }
 
     pub fn video_with_model(&self, model: Option<String>) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, None, None, None)
+        FlowyVideo::new(self.clone(), model, None, None, None, None)
     }
 
     pub fn video_with_model_and_cancel(
@@ -92,7 +92,7 @@ impl FlowyVimaxServices {
         model: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, cancel, None, None)
+        FlowyVideo::new(self.clone(), model, cancel, None, None, None)
     }
 
     pub fn video_with_model_cancel_and_aspect(
@@ -101,7 +101,7 @@ impl FlowyVimaxServices {
         cancel: Option<tokio_util::sync::CancellationToken>,
         aspect_ratio: Option<String>,
     ) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio, None)
+        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio, None, None)
     }
 
     /// Video backend with a pipeline progress hook (create / poll / download stages).
@@ -112,7 +112,25 @@ impl FlowyVimaxServices {
         aspect_ratio: Option<String>,
         progress: Option<crate::progress::ProgressCallback>,
     ) -> FlowyVideo {
-        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio, progress)
+        FlowyVideo::new(self.clone(), model, cancel, aspect_ratio, None, progress)
+    }
+
+    pub fn video_with_session_quality(
+        &self,
+        model: Option<String>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        aspect_ratio: Option<String>,
+        resolution: Option<String>,
+        progress: Option<crate::progress::ProgressCallback>,
+    ) -> FlowyVideo {
+        FlowyVideo::new(
+            self.clone(),
+            model,
+            cancel,
+            aspect_ratio,
+            resolution,
+            progress,
+        )
     }
 
     /// Upload a local image via OSS presign PUT and return the HTTPS `publicUrl`.

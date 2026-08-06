@@ -304,14 +304,16 @@ export const useNomiMessage = (
       markFunnelTurnAccepted(timingKey, { conversation_type: 'nomi' });
       setActiveRequestMessageId(requestMessageId);
       activeMsgIdRef.current = requestMessageId;
-      if (turnId) {
-        setActiveTurnId(turnId);
-        rootTurnIdRef.current = turnId;
-      }
+      // Flowy billing turnId == send msg_id. Establish the root immediately so
+      // stream finish is not fenced out while turn.started is still verifying
+      // (Guid first-turn handoff races this hard).
+      const resolvedTurnId = turnId ?? requestMessageId;
+      setActiveTurnId(resolvedTurnId);
+      rootTurnIdRef.current = resolvedTurnId;
       dispatchPresentation({
         type: 'accepted',
         requestMessageId,
-        turnId,
+        turnId: resolvedTurnId,
       });
     },
     [bindTimingKey, resolveTimingKey]
@@ -517,6 +519,20 @@ export const useNomiMessage = (
           awaitingBackendTurn: awaitingBackendTurnRef.current,
         })
       ) {
+        // Fence rejects lifecycle mutation, but finish/error still ends the
+        // Agent Run — fetch credits so the first-turn Guid race cannot skip
+        // the only path that used to query usageByTurn.
+        if (!readOnly && (message.type === 'finish' || message.type === 'error')) {
+          const creditTurnId =
+            message.turn_id ?? rootTurnIdRef.current ?? message.msg_id;
+          if (creditTurnId) {
+            void fetchAndPersistTurnCredits({
+              conversation_id,
+              turn_id: creditTurnId,
+              delayMs: 800,
+            });
+          }
+        }
         addOrUpdateMessage(transformMessage(message));
         return;
       }
@@ -629,8 +645,9 @@ export const useNomiMessage = (
               void processCompletedAssistantMessage(message.msg_id);
             }
             // Flowy billing turnId == root turn id (msg_id at send time). Prefer
-            // explicit turn_id when the Finish row is a distinct terminal message.
-            const creditTurnId = message.turn_id ?? message.msg_id;
+            // the authoritative root over Finish-row msg_id when turn_id is absent.
+            const creditTurnId =
+              message.turn_id ?? rootTurnIdRef.current ?? message.msg_id;
             if (creditTurnId && !readOnly) {
               void fetchAndPersistTurnCredits({
                 conversation_id,
@@ -736,7 +753,8 @@ export const useNomiMessage = (
               detail: typeof message.data === 'string' ? message.data : undefined,
             });
             onError?.(message as IResponseMessage);
-            const creditTurnId = message.turn_id ?? message.msg_id;
+            const creditTurnId =
+              message.turn_id ?? rootTurnIdRef.current ?? message.msg_id;
             if (creditTurnId && !readOnly) {
               void fetchAndPersistTurnCredits({
                 conversation_id,
@@ -876,6 +894,17 @@ export const useNomiMessage = (
         completedTurnId: event.turn_id,
         awaitingBackendTurn,
       });
+      // Credits are independent of settle vs reconcile — first turn often lands
+      // here with rootTurnId still null until turn.started verifies.
+      const creditTurnId = event.turn_id ?? rootTurnId;
+      if (creditTurnId && !readOnly && action !== 'ignore') {
+        void fetchAndPersistTurnCredits({
+          conversation_id,
+          turn_id: creditTurnId,
+          delayMs: 400,
+        });
+      }
+
       if (action === 'settle') {
         settleCompletedTurn();
         return;
@@ -904,7 +933,7 @@ export const useNomiMessage = (
       disposed = true;
       unsubscribe();
     };
-  }, [conversation_id, settleCompletedTurn]);
+  }, [conversation_id, readOnly, settleCompletedTurn]);
 
   useEffect(() => {
     let cancelled = false;

@@ -70,6 +70,9 @@ use nomifun_knowledge::{
 #[path = "service_test/acp_error_recovery_test.rs"]
 mod acp_error_recovery_test;
 
+#[path = "service_test/autotitle_test.rs"]
+mod autotitle_test;
+
 #[path = "service_test/summon_test.rs"]
 mod summon_test;
 
@@ -766,6 +769,64 @@ impl IConversationRepository for MockRepo {
             row.updated_at = updated_at;
         }
         Ok(())
+    }
+
+    // In-memory mirror of the SQLite conditional title updates: same WHERE
+    // semantics (`titleSource` gate + `autoTitleState` allow-list, `""` = absent).
+    async fn update_auto_title_if_auto(
+        &self,
+        conversation_id: &str,
+        name: &str,
+        extra: &str,
+        allowed_prior_states: &[&str],
+        updated_at: TimestampMs,
+    ) -> Result<bool, nomifun_db::DbError> {
+        let mut rows = self.rows.lock().unwrap();
+        let Some(row) = rows.iter_mut().find(|r| r.conversation_id == conversation_id) else {
+            return Ok(false);
+        };
+        let extra_value: serde_json::Value =
+            serde_json::from_str(&row.extra).unwrap_or_else(|_| json!({}));
+        let title_source = extra_value.get("titleSource").and_then(|value| value.as_str());
+        if !matches!(title_source, None | Some("auto")) {
+            return Ok(false);
+        }
+        let state = extra_value
+            .get("autoTitleState")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !allowed_prior_states.contains(&state) {
+            return Ok(false);
+        }
+        row.name = name.to_owned();
+        row.extra = extra.to_owned();
+        row.updated_at = updated_at;
+        Ok(true)
+    }
+
+    async fn update_preview_name_if_untitled(
+        &self,
+        conversation_id: &str,
+        name: &str,
+        updated_at: TimestampMs,
+    ) -> Result<bool, nomifun_db::DbError> {
+        let mut rows = self.rows.lock().unwrap();
+        let Some(row) = rows.iter_mut().find(|r| r.conversation_id == conversation_id) else {
+            return Ok(false);
+        };
+        let extra_value: serde_json::Value =
+            serde_json::from_str(&row.extra).unwrap_or_else(|_| json!({}));
+        let title_source = extra_value.get("titleSource").and_then(|value| value.as_str());
+        let state = extra_value
+            .get("autoTitleState")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !matches!(title_source, None | Some("auto")) || !matches!(state, "" | "failed") {
+            return Ok(false);
+        }
+        row.name = name.to_owned();
+        row.updated_at = updated_at;
+        Ok(true)
     }
 
     async fn finalize_turn(

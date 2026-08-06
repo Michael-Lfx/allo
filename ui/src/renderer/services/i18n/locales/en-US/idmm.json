@@ -87,7 +87,9 @@
     "defaultSteering": "Default policy",
     "defaultSteeringPlaceholder": "Default decision policy applied when a watch leaves its free-form policy empty.",
     "saved": "IDMM settings saved",
-    "none": "None"
+    "none": "None",
+    "titleModel": "Conversation title model",
+    "titleModelDesc": "Used to auto-generate conversation titles, applied immediately. Falls back to the conversation's own model when unset."
   },
   "log": {
     "title": "Decision log",

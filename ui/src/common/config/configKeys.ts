@@ -53,6 +53,9 @@ export type ConfigKeyMap = {
   // generators (autogen / description.generate / description.polish). Empty
   // value = let the backend fall back to its own default completer model.
   'knowledge.autogenModel': { provider_id: ProviderId; model: string } | undefined;
+  // Preferred model for conversation auto-title generation. Absent = the
+  // backend falls back to the conversation's own session model.
+  'conversation.titleModel': { provider_id: ProviderId; model: string } | undefined;
   'tools.imageGenerationModel': { provider_id: ProviderId; model: string; switch?: boolean };
   'tools.speechToText': SpeechToTextConfig | undefined;
   'workspace.pasteConfirm': boolean | undefined;

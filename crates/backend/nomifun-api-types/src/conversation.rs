@@ -64,6 +64,16 @@ pub struct CreateConversationRequest {
     pub extra: serde_json::Value,
 }
 
+/// Who is writing a conversation name. Drives the auto-title guard: a `User`
+/// rename is protected from later auto-title overwrites, while an `Auto`
+/// preview write is dropped once a model-generated title exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationNameSource {
+    User,
+    Auto,
+}
+
 /// Body for `PATCH /api/conversations/:id`.
 ///
 /// All fields optional — only supplied fields are applied.
@@ -72,6 +82,9 @@ pub struct CreateConversationRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateConversationRequest {
     pub name: Option<String>,
+    /// Declares who writes `name`. Absent defaults to `User` (conservative:
+    /// unlabeled writers are treated as human intent and block auto-titles).
+    pub name_source: Option<ConversationNameSource>,
     pub pinned: Option<bool>,
     #[serde(
         default,
