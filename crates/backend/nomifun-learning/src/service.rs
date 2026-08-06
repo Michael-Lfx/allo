@@ -805,10 +805,16 @@ impl LearningService {
         // Course questions: one row per objective activity / linked concept,
         // enriched with the review item when one exists for this enrollment.
         // Rows without an item are `unlearned`: the lesson was never
-        // completed, so nothing entered the review queue yet.
+        // completed, so nothing entered the review queue yet. A row whose own
+        // lesson is not completed yet is also `unlearned` even when the
+        // concept already has a review item seeded by another lesson: the
+        // review queue only serves questions from completed lessons
+        // (see `concept_objective_questions`), so showing a due/scheduled
+        // state here would make the counts disagree with the queue.
         let base = "SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
                            ac.concept_id, lc.title AS concept_title, \
                            e.course_id, c.title AS course_title, \
+                           p.status AS lesson_status, \
                            ri.review_item_id, ri.due_at, ri.stability_days, ri.difficulty, \
                            ri.review_count, ri.lapse_count, ri.last_reviewed_at, ri.updated_at \
                     FROM learning_activities a \
@@ -818,6 +824,8 @@ impl LearningService {
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
                     LEFT JOIN learning_courses c ON c.course_id = e.course_id \
+                    LEFT JOIN learning_lesson_progress p \
+                      ON p.lesson_id = a.lesson_id AND p.enrollment_id = e.enrollment_id \
                     LEFT JOIN learning_review_items ri \
                       ON ri.enrollment_id = e.enrollment_id AND ri.concept_id = ac.concept_id \
                     WHERE a.kind IN ('single_choice', 'true_false')";
@@ -841,7 +849,14 @@ impl LearningService {
                 .map_err(internal)?
                 .unwrap_or(0);
             let due_at: Option<i64> = row.try_get("due_at").map_err(internal)?;
-            let entry_state = if review_item_id.is_none() {
+            // Aligned with the review queue: only questions whose own lesson is
+            // completed can be served, so anything else stays `unlearned`.
+            let lesson_completed =
+                row.try_get::<Option<String>, _>("lesson_status")
+                    .map_err(internal)?
+                    .as_deref()
+                    == Some("completed");
+            let entry_state = if review_item_id.is_none() || !lesson_completed {
                 "unlearned"
             } else if review_count == 0 {
                 "new"
@@ -995,13 +1010,17 @@ impl LearningService {
             }
         }
 
-        // Rows with a schedule first (nearest deadline at the top); unlearned
-        // rows without any schedule trail the list.
-        entries.sort_by(|left, right| match (left.due_at, right.due_at) {
-            (Some(a), Some(b)) => b.cmp(&a),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
+        // Queued rows first (nearest deadline at the top); unlearned rows
+        // trail the list regardless of any seeded review item.
+        entries.sort_by(|left, right| {
+            let left_queued = left.state != "unlearned";
+            let right_queued = right.state != "unlearned";
+            match (left_queued, right_queued) {
+                (true, true) => right.due_at.cmp(&left.due_at),
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                (false, false) => Ordering::Equal,
+            }
         });
         entries.truncate(500);
         Ok(entries)
@@ -2687,5 +2706,113 @@ mod tests {
         .unwrap();
         assert_eq!(count, 1);
         assert_eq!(reviews, 0);
+    }
+
+    #[tokio::test]
+    async fn question_entries_aligns_states_with_review_queue() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+
+        // One concept shared across two lessons: completing lesson A seeds the
+        // concept's review item, lesson B is never touched.
+        let shared = ActivityPack {
+            kind: ActivityKind::TrueFalse,
+            prompt: String::new(),
+            options: Vec::new(),
+            answer: Value::Bool(true),
+            explanation: String::new(),
+            concepts: vec!["shared".into()],
+        };
+        let pack = CoursePack {
+            title: "Shared Concepts".into(),
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            concepts: vec![ConceptPack {
+                key: "shared".into(),
+                title: "Shared".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![
+                    LessonPack {
+                        title: "Lesson A".into(),
+                        summary: String::new(),
+                        estimated_minutes: 10,
+                        source: None,
+                        concepts: vec!["shared".into()],
+                        activities: vec![ActivityPack {
+                            prompt: "A1".into(),
+                            ..shared.clone()
+                        }],
+                    },
+                    LessonPack {
+                        title: "Lesson B".into(),
+                        summary: String::new(),
+                        estimated_minutes: 10,
+                        source: None,
+                        concepts: vec!["shared".into()],
+                        activities: vec![ActivityPack {
+                            prompt: "A2".into(),
+                            ..shared
+                        }],
+                    },
+                ],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson_a = &detail.modules[0].lessons[0];
+        service
+            .update_lesson_progress(&lesson_a.id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+
+        fn state_of<'a>(entries: &'a [QuestionEntry], prompt: &str) -> Option<&'a str> {
+            entries
+                .iter()
+                .find(|entry| entry.prompt.as_deref() == Some(prompt))
+                .map(|entry| entry.state.as_str())
+        }
+        let entries = service
+            .question_entries(&user_id, None, None, None)
+            .await
+            .unwrap();
+        // Lesson B is not completed: A2 must not claim a queue state even
+        // though the shared concept already has a review item seeded by A.
+        assert_eq!(state_of(&entries, "A1"), Some("new"));
+        assert_eq!(state_of(&entries, "A2"), Some("unlearned"));
+
+        // Simulate an overdue, already-reviewed concept: lesson A's row turns
+        // due while lesson B's row stays unlearned, so the question-manager
+        // counts agree with the review queue.
+        sqlx::query("UPDATE learning_review_items SET review_count = 1, due_at = ?")
+            .bind(now_ms() - 1000)
+            .execute(database.pool())
+            .await
+            .unwrap();
+        let entries = service
+            .question_entries(&user_id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(state_of(&entries, "A1"), Some("due"));
+        assert_eq!(state_of(&entries, "A2"), Some("unlearned"));
+
+        // The queue itself serves exactly the completed lesson's question.
+        let due = service.due_reviews(&user_id, 30).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].question.prompt, "A1");
     }
 }

@@ -1155,7 +1155,7 @@ function QuestionDetailDrawer({
   const state = questionStateMeta(entry, t);
   const isSingleChoice = entry.question_kind === 'single_choice';
   const deletable = entry.source === 'custom' || entry.review_item_id !== null;
-  const inQueue = entry.source === 'course' && entry.review_item_id !== null;
+  const inQueue = entry.source === 'course' && entry.state !== 'unlearned';
   const metrics = [
     {
       label: t('learning.questionLastReviewed'),
@@ -1215,7 +1215,7 @@ function QuestionDetailDrawer({
               ) : (
                 <Tag color='gray'>{t('learning.questionQueueNotInQueue')}</Tag>
               )}
-              {entry.due_at !== null && (
+              {inQueue && entry.due_at !== null && (
                 <Text type='secondary'>
                   {t('learning.questionDueAt')}: {formatReviewTime(entry.due_at)}
                 </Text>
