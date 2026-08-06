@@ -8,6 +8,8 @@ import {
   Card,
   Checkbox,
   Collapse,
+  Drawer,
+  Dropdown,
   Empty,
   Input,
   Message,
@@ -19,6 +21,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from '@arco-design/web-react';
 
@@ -620,6 +623,40 @@ function formatReviewTime(value: number | null): string {
   return value === null ? '—' : new Date(value).toLocaleString();
 }
 
+function questionStateMeta(
+  entry: QuestionEntry,
+  t: (key: string) => string
+): { label: string; color: string } {
+  if (entry.state === 'unlearned') {
+    return { label: t('learning.questionStateUnlearned'), color: 'gray' };
+  }
+  if (entry.state === 'new') {
+    return { label: t('learning.questionStateNew'), color: 'blue' };
+  }
+  if (entry.state === 'due') {
+    return { label: t('learning.questionStateDue'), color: 'red' };
+  }
+  return { label: t('learning.questionStateScheduled'), color: 'green' };
+}
+
+const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at'];
+const QUESTION_COLUMNS_STORAGE_KEY = 'learning.questionTableColumns';
+
+function loadVisibleQuestionColumns(): string[] {
+  try {
+    const raw = localStorage.getItem(QUESTION_COLUMNS_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return QUESTION_SELECTABLE_COLUMNS.filter((key) => parsed.includes(key));
+      }
+    }
+  } catch {
+    // Corrupted storage falls back to the default column set.
+  }
+  return [...QUESTION_SELECTABLE_COLUMNS];
+}
+
 function QuestionCreateDialog({
   onClose,
   onSaved,
@@ -829,6 +866,16 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<QuestionEntry | null>(null);
   const [creating, setCreating] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(loadVisibleQuestionColumns);
+  const [detailEntry, setDetailEntry] = useState<QuestionEntry | null>(null);
+  const persistVisibleColumns = (next: string[]) => {
+    setVisibleColumns(next);
+    try {
+      localStorage.setItem(QUESTION_COLUMNS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Storage is unavailable; keep the in-memory selection only.
+    }
+  };
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -851,18 +898,6 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
   useEffect(() => {
     void load();
   }, [load]);
-  const stateOf = (entry: QuestionEntry): { label: string; color: string } => {
-    if (entry.state === 'unlearned') {
-      return { label: t('learning.questionStateUnlearned'), color: 'gray' };
-    }
-    if (entry.state === 'new') {
-      return { label: t('learning.questionStateNew'), color: 'blue' };
-    }
-    if (entry.state === 'due') {
-      return { label: t('learning.questionStateDue'), color: 'red' };
-    }
-    return { label: t('learning.questionStateScheduled'), color: 'green' };
-  };
   const confirmDelete = (entry: QuestionEntry) => {
     const isCustom = entry.source === 'custom';
     if (!isCustom && entry.review_item_id === null) {
@@ -894,98 +929,85 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
       },
     });
   };
-  const columns = [
-    {
-      title: t('learning.questionCourse'),
-      render: (_value: unknown, entry: QuestionEntry) =>
-        entry.source === 'custom' ? (
-          <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
-        ) : (
-          entry.course_title ?? <Tag color='orange'>{t('learning.deletedCourse')}</Tag>
-        ),
+  const promptColumn = {
+    title: t('learning.questionPrompt'),
+    render: (_value: unknown, entry: QuestionEntry) => {
+      const text = entry.prompt ?? '—';
+      return (
+        <Tooltip content={text} position='tl'>
+          <span className='line-clamp-2 block'>{text}</span>
+        </Tooltip>
+      );
     },
-    {
-      title: t('learning.questionConcept'),
-      dataIndex: 'concept_title',
-      render: (value: string | null) => value ?? '—',
-    },
-    {
-      title: t('learning.questionKind'),
-      dataIndex: 'question_kind',
-      render: (kind: QuestionEntry['question_kind']) =>
-        kind === 'single_choice'
-          ? t('learning.kindSingleChoice')
-          : kind === 'true_false'
-            ? t('learning.kindTrueFalse')
-            : '—',
-    },
-    {
-      title: t('learning.questionPrompt'),
-      dataIndex: 'prompt',
-      ellipsis: true,
-      render: (value: string | null) => value ?? '—',
-    },
-    {
-      title: t('learning.questionState'),
-      render: (_value: unknown, entry: QuestionEntry) => {
-        const state = stateOf(entry);
-        return <Tag color={state.color}>{state.label}</Tag>;
-      },
-    },
-    {
-      title: t('learning.questionDueAt'),
-      dataIndex: 'due_at',
-      sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
-      render: (value: number | null) => formatReviewTime(value),
-    },
-    {
-      title: t('learning.questionLastReviewed'),
-      dataIndex: 'last_reviewed_at',
-      sorter: (a: QuestionEntry, b: QuestionEntry) =>
-        (a.last_reviewed_at ?? 0) - (b.last_reviewed_at ?? 0),
-      render: (value: number | null) => formatReviewTime(value),
-    },
-    {
-      title: t('learning.questionReviewCount'),
-      dataIndex: 'review_count',
-      sorter: (a: QuestionEntry, b: QuestionEntry) => a.review_count - b.review_count,
-    },
-    {
-      title: t('learning.questionLapseCount'),
-      dataIndex: 'lapse_count',
-      sorter: (a: QuestionEntry, b: QuestionEntry) => a.lapse_count - b.lapse_count,
-    },
-    {
-      title: t('learning.questionStability'),
-      dataIndex: 'stability_days',
-      sorter: (a: QuestionEntry, b: QuestionEntry) => a.stability_days - b.stability_days,
-      render: (value: number) => value.toFixed(1),
-    },
-    {
-      title: t('learning.questionDifficulty'),
-      dataIndex: 'difficulty',
-      sorter: (a: QuestionEntry, b: QuestionEntry) => a.difficulty - b.difficulty,
-      render: (value: number) => value.toFixed(1),
-    },
-    {
-      title: t('learning.questionActions'),
-      render: (_value: unknown, entry: QuestionEntry) => (
-        <div className='flex gap-6px'>
-          <Button size='mini' type='text' onClick={() => setEditing(entry)}>
-            {t('learning.questionEdit')}
-          </Button>
-          <Button
-            size='mini'
-            type='text'
-            status='danger'
-            disabled={entry.source === 'course' && entry.review_item_id === null}
-            onClick={() => confirmDelete(entry)}
-          >
-            {t('learning.questionDelete')}
-          </Button>
+  };
+  const sourceColumn = {
+    title: t('learning.questionSource'),
+    dataIndex: 'source',
+    width: 220,
+    render: (_value: unknown, entry: QuestionEntry) =>
+      entry.source === 'custom' ? (
+        <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
+      ) : (
+        <div className='flex flex-col gap-2px'>
+          <span className='truncate'>{entry.concept_title ?? '—'}</span>
+          <span className='truncate text-12px text-t-tertiary'>
+            {entry.course_title ?? t('learning.deletedCourse')}
+          </span>
         </div>
       ),
+  };
+  const stateColumn = {
+    title: t('learning.questionState'),
+    dataIndex: 'state',
+    width: 96,
+    render: (_value: unknown, entry: QuestionEntry) => {
+      const state = questionStateMeta(entry, t);
+      return <Tag color={state.color}>{state.label}</Tag>;
     },
+  };
+  const dueColumn = {
+    title: t('learning.questionDueAt'),
+    dataIndex: 'due_at',
+    width: 170,
+    sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
+    render: (value: number | null) => formatReviewTime(value),
+  };
+  const actionsColumn = {
+    title: t('learning.questionActions'),
+    width: 130,
+    render: (_value: unknown, entry: QuestionEntry) => (
+      <div className='flex gap-6px'>
+        <Button
+          size='mini'
+          type='text'
+          onClick={(event) => {
+            event.stopPropagation();
+            setEditing(entry);
+          }}
+        >
+          {t('learning.questionEdit')}
+        </Button>
+        <Button
+          size='mini'
+          type='text'
+          status='danger'
+          disabled={entry.source === 'course' && entry.review_item_id === null}
+          onClick={(event) => {
+            event.stopPropagation();
+            confirmDelete(entry);
+          }}
+        >
+          {t('learning.questionDelete')}
+        </Button>
+      </div>
+    ),
+  };
+  const columns = [
+    promptColumn,
+    ...(visibleColumns.includes('source') ? [sourceColumn] : []),
+    ...(visibleColumns.includes('state') ? [stateColumn] : []),
+    ...(visibleColumns.includes('due_at') ? [dueColumn] : []),
+    actionsColumn,
   ];
   return (
     <div className='flex flex-col gap-12px'>
@@ -1021,9 +1043,37 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
           placeholder={t('learning.questionSearchPlaceholder')}
           onSearch={(value) => setSearch(value)}
         />
-        <Button className='ml-auto' type='primary' onClick={() => setCreating(true)}>
-          {t('learning.questionCreate')}
-        </Button>
+        <div className='ml-auto flex items-center gap-8px'>
+          <Dropdown
+            position='br'
+            trigger='click'
+            droplist={
+              <div className='rounded-8px border border-[var(--color-border-2)] bg-[var(--color-bg-popup)] p-10px'>
+                <Checkbox.Group
+                  value={visibleColumns}
+                  onChange={(value) => persistVisibleColumns(value as string[])}
+                >
+                  <div className='flex flex-col gap-6px'>
+                    {QUESTION_SELECTABLE_COLUMNS.map((key) => (
+                      <Checkbox key={key} value={key}>
+                        {key === 'source'
+                          ? t('learning.questionSource')
+                          : key === 'state'
+                            ? t('learning.questionState')
+                            : t('learning.questionDueAt')}
+                      </Checkbox>
+                    ))}
+                  </div>
+                </Checkbox.Group>
+              </div>
+            }
+          >
+            <Button>{t('learning.questionColumnsConfig')}</Button>
+          </Dropdown>
+          <Button type='primary' onClick={() => setCreating(true)}>
+            {t('learning.questionCreate')}
+          </Button>
+        </div>
       </div>
       <Table
         rowKey={(entry: QuestionEntry) =>
@@ -1033,9 +1083,25 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
         data={entries}
         columns={columns}
         pagination={{ pageSize: 20, showTotal: true }}
-        scroll={{ x: 1500 }}
+        onRow={(record: QuestionEntry) => ({
+          onClick: () => setDetailEntry(record),
+        })}
         noDataElement={<Empty description={t('learning.questionEmpty')} />}
       />
+      {detailEntry !== null && (
+        <QuestionDetailDrawer
+          entry={detailEntry}
+          onClose={() => setDetailEntry(null)}
+          onEdit={(entry) => {
+            setDetailEntry(null);
+            setEditing(entry);
+          }}
+          onDelete={(entry) => {
+            setDetailEntry(null);
+            confirmDelete(entry);
+          }}
+        />
+      )}
       {editing !== null && (
         <QuestionEditDialog
           entry={editing}
@@ -1058,6 +1124,130 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
         />
       )}
     </div>
+  );
+}
+
+function QuestionDetailDrawer({
+  entry,
+  onClose,
+  onEdit,
+  onDelete,
+}: {
+  entry: QuestionEntry;
+  onClose: () => void;
+  onEdit: (entry: QuestionEntry) => void;
+  onDelete: (entry: QuestionEntry) => void;
+}) {
+  const { t } = useTranslation();
+  const state = questionStateMeta(entry, t);
+  const isSingleChoice = entry.question_kind === 'single_choice';
+  const deletable = entry.source === 'custom' || entry.review_item_id !== null;
+  const metrics = [
+    { label: t('learning.questionDueAt'), value: formatReviewTime(entry.due_at) },
+    {
+      label: t('learning.questionLastReviewed'),
+      value: formatReviewTime(entry.last_reviewed_at),
+    },
+    { label: t('learning.questionReviewCount'), value: String(entry.review_count) },
+    { label: t('learning.questionLapseCount'), value: String(entry.lapse_count) },
+    { label: t('learning.questionStability'), value: entry.stability_days.toFixed(1) },
+    { label: t('learning.questionDifficulty'), value: entry.difficulty.toFixed(1) },
+  ];
+  return (
+    <Drawer
+      title={t('learning.questionDetailTitle')}
+      visible
+      width={480}
+      onCancel={onClose}
+      footer={
+        <div className='flex justify-end gap-8px'>
+          <Button status='danger' disabled={!deletable} onClick={() => onDelete(entry)}>
+            {t('learning.questionDelete')}
+          </Button>
+          <Button type='primary' onClick={() => onEdit(entry)}>
+            {t('learning.questionEdit')}
+          </Button>
+        </div>
+      }
+    >
+      <div className='flex flex-col gap-16px'>
+        <div>
+          <div className='mb-8px flex flex-wrap items-center gap-6px'>
+            <Tag color={state.color}>{state.label}</Tag>
+            {entry.question_kind !== null && (
+              <Tag>
+                {entry.question_kind === 'single_choice'
+                  ? t('learning.kindSingleChoice')
+                  : t('learning.kindTrueFalse')}
+              </Tag>
+            )}
+          </div>
+          <div className='text-16px font-600 leading-relaxed'>{entry.prompt ?? '—'}</div>
+        </div>
+        <div className='text-12px text-t-tertiary'>
+          {entry.source === 'custom'
+            ? t('learning.questionCustomSource')
+            : [entry.course_title ?? t('learning.deletedCourse'), entry.concept_title]
+                .filter((part) => part !== null && part !== undefined)
+                .join(' › ')}
+        </div>
+        {isSingleChoice && entry.options.length > 0 && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionOptions')}</div>
+            <div className='flex flex-col gap-6px'>
+              {entry.options.map((option, index) => {
+                const isAnswer = entry.answer === option;
+                return (
+                  <div
+                    key={index}
+                    className={`flex items-center rounded-8px border px-12px py-8px text-13px ${
+                      isAnswer
+                        ? 'border-[var(--color-success-light-3)] bg-[var(--color-success-light-1)]'
+                        : 'border-[var(--color-border-2)]'
+                    }`}
+                  >
+                    <span>{option}</span>
+                    {isAnswer && (
+                      <Tag size='small' color='green' className='ml-8px'>
+                        {t('learning.questionDetailCorrectAnswer')}
+                      </Tag>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {!isSingleChoice && typeof entry.answer === 'boolean' && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
+            <Tag color='green'>
+              {entry.answer ? t('learning.trueLabel') : t('learning.falseLabel')}
+            </Tag>
+          </div>
+        )}
+        {entry.explanation !== null && entry.explanation.trim() !== '' && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionExplanation')}</div>
+            <div className='text-13px text-t-secondary'>{entry.explanation}</div>
+          </div>
+        )}
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionDetailMetrics')}</div>
+          <div className='grid grid-cols-2 gap-8px'>
+            {metrics.map((metric) => (
+              <div
+                key={metric.label}
+                className='rounded-8px bg-[var(--color-fill-2)] px-12px py-8px'
+              >
+                <div className='text-12px text-t-tertiary'>{metric.label}</div>
+                <div className='mt-2px text-14px font-500'>{metric.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Drawer>
   );
 }
 
