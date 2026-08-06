@@ -29,6 +29,10 @@
       "group": "check",
       "desc": "Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences."
     },
+    "check:codemirror-runtime": {
+      "group": "check",
+      "desc": "Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package."
+    },
     "check:ux-baseline": {
       "group": "check",
       "desc": "校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线）"
@@ -43,6 +47,9 @@
     "build:linux":   { "group": "build", "desc": "打 Linux 安装包（.deb/.AppImage/.rpm），汇总到 dist/desktop/" },
     "build:signed":  { "group": "build", "desc": "打桌面包并签名+公证（仅 macOS）" },
     "build:updater": { "group": "build", "desc": "打桌面包并产出自更新 .sig 制品" },
+    "build:inspect": { "group": "build", "desc": "只读检查构建目录占用与活跃开发会话" },
+    "build:gc": { "group": "build", "desc": "显式回收可证明不再使用的历史构建产物" },
+    "build:clean": { "group": "build", "desc": "显式清理构建缓存并提示下一次会冷编译" },
     "make:latest":   { "group": "build", "desc": "扫描本机更新产物，生成/合并自动更新清单 latest.json" },
     "upload:modelscope": { "group": "build", "desc": "上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN）" },
     "release:mac":   { "group": "build", "desc": "一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },
