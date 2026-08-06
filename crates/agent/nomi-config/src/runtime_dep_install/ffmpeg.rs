@@ -35,6 +35,26 @@ enum ArchiveFormat {
 struct FfmpegMirror {
     url: &'static str,
     format: ArchiveFormat,
+    /// True for known lite/essentials/static builds that usually omit hardware
+    /// encoders (gyan essentials, johnvansickle static). Only used to sharpen
+    /// the missing-hw-encoder hint after a fresh install.
+    lite_hw: bool,
+}
+
+fn mirror(url: &'static str, format: ArchiveFormat) -> FfmpegMirror {
+    FfmpegMirror {
+        url,
+        format,
+        lite_hw: false,
+    }
+}
+
+fn lite_mirror(url: &'static str, format: ArchiveFormat) -> FfmpegMirror {
+    FfmpegMirror {
+        url,
+        format,
+        lite_hw: true,
+    }
 }
 
 fn platform_mirrors() -> Vec<FfmpegMirror> {
@@ -43,64 +63,66 @@ fn platform_mirrors() -> Vec<FfmpegMirror> {
 
     match (os, arch) {
         ("windows", "x86_64") => vec![
-            FfmpegMirror {
-                url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-                format: ArchiveFormat::Zip,
-            },
-            FfmpegMirror {
-                url: "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-                format: ArchiveFormat::Zip,
-            },
+            mirror(
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+                ArchiveFormat::Zip,
+            ),
+            // gyan "essentials" is the default-slim release — may lack NVENC/QSV.
+            lite_mirror(
+                "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+                ArchiveFormat::Zip,
+            ),
         ],
         ("windows", "aarch64") => vec![
-            FfmpegMirror {
-                url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-gpl.zip",
-                format: ArchiveFormat::Zip,
-            },
-            FfmpegMirror {
-                url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-gpl-7.1.zip",
-                format: ArchiveFormat::Zip,
-            },
+            mirror(
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-gpl.zip",
+                ArchiveFormat::Zip,
+            ),
+            mirror(
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-gpl-7.1.zip",
+                ArchiveFormat::Zip,
+            ),
         ],
         ("linux", "x86_64") => vec![
-            FfmpegMirror {
-                url: "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-                format: ArchiveFormat::TarXz,
-            },
-            FfmpegMirror {
-                url: "https://ffmpeg.martin-riedl.de/redirect/latest/linux/amd64/release/ffmpeg.zip",
-                format: ArchiveFormat::Zip,
-            },
+            // johnvansickle static builds typically lack NVENC/VAAPI drivers.
+            lite_mirror(
+                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+                ArchiveFormat::TarXz,
+            ),
+            mirror(
+                "https://ffmpeg.martin-riedl.de/redirect/latest/linux/amd64/release/ffmpeg.zip",
+                ArchiveFormat::Zip,
+            ),
         ],
         ("linux", "aarch64") => vec![
-            FfmpegMirror {
-                url: "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
-                format: ArchiveFormat::TarXz,
-            },
-            FfmpegMirror {
-                url: "https://ffmpeg.martin-riedl.de/redirect/latest/linux/arm64/release/ffmpeg.zip",
-                format: ArchiveFormat::Zip,
-            },
+            lite_mirror(
+                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
+                ArchiveFormat::TarXz,
+            ),
+            mirror(
+                "https://ffmpeg.martin-riedl.de/redirect/latest/linux/arm64/release/ffmpeg.zip",
+                ArchiveFormat::Zip,
+            ),
         ],
         ("macos", "x86_64") => vec![
-            FfmpegMirror {
-                url: "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip",
-                format: ArchiveFormat::Zip,
-            },
-            FfmpegMirror {
-                url: "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip",
-                format: ArchiveFormat::Zip,
-            },
+            mirror(
+                "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip",
+                ArchiveFormat::Zip,
+            ),
+            mirror(
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip",
+                ArchiveFormat::Zip,
+            ),
         ],
         ("macos", "aarch64") => vec![
-            FfmpegMirror {
-                url: "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
-                format: ArchiveFormat::Zip,
-            },
-            FfmpegMirror {
-                url: "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip",
-                format: ArchiveFormat::Zip,
-            },
+            mirror(
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
+                ArchiveFormat::Zip,
+            ),
+            mirror(
+                "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip",
+                ArchiveFormat::Zip,
+            ),
         ],
         _ => Vec::new(),
     }
@@ -206,6 +228,11 @@ pub async fn ensure_ffmpeg(quiet: bool) -> Result<PathBuf, FfmpegInstallError> {
                 if !quiet {
                     info!(path = %dest.display(), "ffmpeg installed");
                 }
+                // Fresh install: detect lite/essentials/static builds that lack
+                // hardware encoders and hint once (concat would fall back to
+                // slow software libx264). Only runs on the install path — the
+                // already-installed fast path stays probe-free.
+                hint_missing_hw_encoders(&dest, mirror.lite_hw).await;
                 return Ok(dest);
             }
             Err(e) => {
@@ -218,6 +245,35 @@ pub async fn ensure_ffmpeg(quiet: bool) -> Result<PathBuf, FfmpegInstallError> {
 
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     Err(last_err)
+}
+
+/// Probe the freshly installed ffmpeg and warn once per process when it has no
+/// usable hardware H.264 encoder. `installed_lite` sharpens the message when we
+/// know the managed download was a lite/essentials/static build.
+async fn hint_missing_hw_encoders(ffmpeg: &Path, installed_lite: bool) {
+    use std::sync::OnceLock;
+    static HINTED: OnceLock<()> = OnceLock::new();
+    if HINTED.get().is_some() {
+        return;
+    }
+    let probe = crate::ffmpeg_hw::probe_ffmpeg_hw(ffmpeg).await;
+    if probe.encode_plan.uses_hw {
+        return;
+    }
+    let _ = HINTED.set(());
+    let build_note = if installed_lite {
+        " The managed download is a lite/essentials/static build. "
+    } else {
+        " "
+    };
+    tracing::warn!(
+        path = %ffmpeg.display(),
+        encoders = ?probe.caps.h264_encoders,
+        "ffmpeg has no usable hardware H.264 encoder.{build_note}\
+Long-video concat and clip re-encode fall back to slow software libx264. \
+Install a full GPL build with NVENC/QSV/AMF/VideoToolbox (e.g. BtbN win64-gpl) \
+to enable hardware acceleration."
+    );
 }
 
 fn archive_filename(mirror: FfmpegMirror) -> String {
