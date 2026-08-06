@@ -7,7 +7,7 @@
   "subtitle": "Knowledge-backed courses, practice, mastery, and spaced review",
   "generate": "Generate from knowledge",
   "generateTitle": "Generate a course",
-  "generateHint": "AI samples Markdown from the selected knowledge base and creates a source-linked course with concept prerequisites and retrieval practice.",
+  "generateHint": "AI designs a course blueprint first, then writes each lesson as a long-form study document (about 1000-1500 characters) with practice activities. Generation runs multiple model calls and takes about 1-3 minutes; please wait.",
   "generateSuccess": "Course generated",
   "generateAndEnrollSuccess": "Course generated and enrolled",
   "knowledgeBase": "Knowledge base",

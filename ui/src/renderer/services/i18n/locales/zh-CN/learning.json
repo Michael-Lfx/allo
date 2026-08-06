@@ -7,7 +7,7 @@
   "subtitle": "基于知识库的课程、练习、掌握度与间隔复习",
   "generate": "从知识库生成",
   "generateTitle": "自动生成课程",
-  "generateHint": "AI 将采样所选知识库的 Markdown 文档，生成带来源、概念依赖和检索练习的课程。",
+  "generateHint": "AI 将先设计课程蓝图，再逐课时撰写深度学习文档（每课时约 1000-1500 字）与练习，分多轮生成，耗时约 1-3 分钟，请耐心等待。",
   "generateSuccess": "课程生成成功",
   "generateAndEnrollSuccess": "课程已生成并加入学习",
   "knowledgeBase": "知识库",
