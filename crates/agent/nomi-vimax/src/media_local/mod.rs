@@ -363,12 +363,22 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     let out = out_path.to_str().unwrap_or("");
     let n = normalized.len();
 
+    // Same hardware encode plan as per-clip normalize (cached, one recipe).
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+
     // filter_complex concat keeps each shot's A/V pair locked together.
     let mut filter = String::new();
     for i in 0..n {
         filter.push_str(&format!("[{i}:v:0][{i}:a:0]"));
     }
     filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
+    // Encoders that need an hwupload stage (e.g. h264_vaapi) get a second video
+    // label that maps instead of `[v]`.
+    let mut map_v = "[v]";
+    if let Some(vf) = plan.hwupload_vf {
+        filter.push_str(&format!(";[v]{vf}[vh]"));
+        map_v = "[vh]";
+    }
 
     let mut args: Vec<String> = vec!["-y".into()];
     for p in &normalized {
@@ -379,15 +389,12 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         "-filter_complex".into(),
         filter,
         "-map".into(),
-        "[v]".into(),
+        map_v.into(),
         "-map".into(),
         "[a]".into(),
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "medium".into(),
-        "-crf".into(),
-        "18".into(),
+    ]);
+    args.extend(plan.encode_args().iter().map(|s| (*s).to_string()));
+    args.extend([
         "-c:a".into(),
         "aac".into(),
         "-ar".into(),
@@ -465,6 +472,14 @@ async fn normalize_clip_for_concat(
     // Edge afade softens BGM/volume jumps at shot boundaries without changing duration.
     let af = normalize_audio_filter(dur);
 
+    // Same hardware plan as the final join — one probe per process, one recipe.
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(ffmpeg).await;
+    let vf = if plan.hwupload_vf.is_some() {
+        "fps=24,format=nv12,hwupload,setpts=PTS-STARTPTS".to_string()
+    } else {
+        "fps=24,format=yuv420p,setpts=PTS-STARTPTS".to_string()
+    };
+
     // Path A: clip already has an audio stream.
     let mut args: Vec<String> = vec![
         "-y".into(),
@@ -475,15 +490,12 @@ async fn normalize_clip_for_concat(
         "-map".into(),
         "0:a:0".into(),
         "-vf".into(),
-        "fps=24,format=yuv420p,setpts=PTS-STARTPTS".into(),
+        vf.clone(),
         "-af".into(),
         af,
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "veryfast".into(),
-        "-crf".into(),
-        "18".into(),
+    ];
+    args.extend(plan.encode_args().iter().map(|s| (*s).to_string()));
+    args.extend([
         "-c:a".into(),
         "aac".into(),
         "-ar".into(),
@@ -492,7 +504,7 @@ async fn normalize_clip_for_concat(
         "2".into(),
         "-movflags".into(),
         "+faststart".into(),
-    ];
+    ]);
     if !dur_arg.is_empty() {
         args.push("-t".into());
         args.push(dur_arg.clone());
@@ -521,17 +533,14 @@ async fn normalize_clip_for_concat(
         "-i".into(),
         "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
         "-vf".into(),
-        "fps=24,format=yuv420p,setpts=PTS-STARTPTS".into(),
+        vf,
         "-map".into(),
         "0:v:0".into(),
         "-map".into(),
         "1:a:0".into(),
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "veryfast".into(),
-        "-crf".into(),
-        "18".into(),
+    ];
+    args2.extend(plan.encode_args().iter().map(|s| (*s).to_string()));
+    args2.extend([
         "-c:a".into(),
         "aac".into(),
         "-ar".into(),
@@ -540,7 +549,7 @@ async fn normalize_clip_for_concat(
         "2".into(),
         "-movflags".into(),
         "+faststart".into(),
-    ];
+    ]);
     if !dur_arg.is_empty() {
         args2.push("-t".into());
         args2.push(dur_arg);
@@ -672,6 +681,40 @@ pub async fn extract_last_frame(video_path: &Path, out_path: &Path) -> VimaxResu
 
     let out = out_path.to_str().unwrap_or("");
     let vin = video_path.to_str().unwrap_or("");
+
+    // Hardware decode attempt first (fast path); the software attempts below are
+    // the automatic fallback when the hwaccel / driver misbehaves.
+    let hwaccel = nomi_config::ffmpeg_hw::select_decode_hwaccel(&ffmpeg).await;
+    if let Some(accel) = hwaccel
+        && let Some(decode) = nomi_config::ffmpeg_hw::hwaccel_decode_args(accel)
+    {
+        let mut hw_args: Vec<String> = vec!["-y".into()];
+        hw_args.extend(decode.iter().map(|s| (*s).to_string()));
+        hw_args.extend([
+            "-sseof".into(),
+            "-0.1".into(),
+            "-i".into(),
+            vin.into(),
+        ]);
+        // videotoolbox copies frames to system memory; GPU-resident accels need
+        // hwdownload back before the PNG encoder can consume the frame.
+        if accel != "videotoolbox" {
+            hw_args.push("-vf".into());
+            hw_args.push("hwdownload,format=nv12".into());
+        }
+        hw_args.extend([
+            "-frames:v".into(),
+            "1".into(),
+            "-q:v".into(),
+            "2".into(),
+            out.into(),
+        ]);
+        let hw_status = run_ffmpeg_owned(&ffmpeg, &hw_args).await?;
+        if hw_status.success() && out_path.is_file() {
+            return Ok(());
+        }
+        let _ = tokio::fs::remove_file(out_path).await;
+    }
 
     let status = run_ffmpeg(
         &ffmpeg,
@@ -1240,4 +1283,3 @@ mod tests {
         assert!(!short.contains("afade"), "too-short clips skip edge fade");
     }
 }
-

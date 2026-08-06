@@ -188,8 +188,9 @@ pub async fn extract_last_frame_jpeg(video_path: &Path, output_jpg: &Path) -> Re
     }
 
     let duration_secs = probe_video_duration_secs(video_path, &ffmpeg).await;
+    let hwaccel = nomi_config::ffmpeg_hw::select_decode_hwaccel(&ffmpeg).await;
     let mut last_err = None;
-    for (label, args) in frame_extract_attempts_jpeg(video_path, output_jpg, duration_secs) {
+    for (label, args) in frame_extract_attempts_jpeg(video_path, output_jpg, duration_secs, hwaccel) {
         if run_ffmpeg_frame_extract(&ffmpeg, &args).await.is_ok() && frame_image_ready(output_jpg) {
             return Ok(());
         }
@@ -220,8 +221,9 @@ pub async fn extract_last_frame_png(video_path: &Path, output_png: &Path) -> Res
     }
 
     let duration_secs = probe_video_duration_secs(video_path, &ffmpeg).await;
+    let hwaccel = nomi_config::ffmpeg_hw::select_decode_hwaccel(&ffmpeg).await;
     let mut last_err = None;
-    for (label, args) in frame_extract_attempts(video_path, output_png, duration_secs) {
+    for (label, args) in frame_extract_attempts(video_path, output_png, duration_secs, hwaccel) {
         if run_ffmpeg_frame_extract(&ffmpeg, &args).await.is_ok() && frame_png_ready(output_png) {
             return Ok(());
         }
@@ -283,8 +285,43 @@ fn frame_extract_attempts(
     video_path: &Path,
     output_png: &Path,
     duration_secs: Option<f64>,
+    hwaccel: Option<&str>,
 ) -> Vec<(&'static str, Vec<std::ffi::OsString>)> {
     let mut attempts = Vec::new();
+
+    // Hardware decode attempt first (fast path); the software attempts below are
+    // the automatic fallback when the hwaccel / driver misbehaves.
+    if let Some(accel) = hwaccel
+        && let Some(decode) = nomi_config::ffmpeg_hw::hwaccel_decode_args(accel)
+    {
+        let mut hw: Vec<std::ffi::OsString> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+        ];
+        hw.extend(decode.iter().map(|s| (*s).into()));
+        hw.extend([
+            "-sseof".into(),
+            "-0.08".into(),
+            "-i".into(),
+            video_path.as_os_str().to_os_string(),
+        ]);
+        // videotoolbox copies frames to system memory; GPU-resident accels need
+        // hwdownload back before image encoders can consume them.
+        if accel != "videotoolbox" {
+            hw.push("-vf".into());
+            hw.push("hwdownload,format=nv12".into());
+        }
+        hw.extend([
+            "-frames:v".into(),
+            "1".into(),
+            "-q:v".into(),
+            "2".into(),
+            "-y".into(),
+            output_png.as_os_str().to_os_string(),
+        ]);
+        attempts.push(("hwaccel", hw));
+    }
 
     attempts.push((
         "sseof",
@@ -356,11 +393,13 @@ fn frame_extract_attempts_jpeg(
     video_path: &Path,
     output_jpg: &Path,
     duration_secs: Option<f64>,
+    hwaccel: Option<&str>,
 ) -> Vec<(&'static str, Vec<std::ffi::OsString>)> {
     let mut attempts = frame_extract_attempts(
         video_path,
         &output_jpg.with_extension("png"),
         duration_secs,
+        hwaccel,
     );
     for (_, args) in attempts.iter_mut() {
         if let Some(last) = args.last_mut() {
@@ -624,33 +663,36 @@ pub async fn concat_videos(segment_paths: &[PathBuf], output_path: &Path) -> Res
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("write concat list: {e}")))?;
 
+    // Pick the best H.264 encoder (NVENC/QSV/AMF/VideoToolbox when available and
+    // verified, else libx264). Probe is cached per process.
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-f".into(),
+        "concat".into(),
+        "-safe".into(),
+        "0".into(),
+        "-i".into(),
+    ];
+    args.push(list_path.as_os_str().to_os_string());
+    for a in plan.encode_args() {
+        args.push(a.into());
+    }
+    // Encoders that need an hwupload stage (e.g. h264_vaapi).
+    if let Some(vf) = plan.hwupload_vf {
+        args.push("-vf".into());
+        args.push(vf.into());
+    }
+    for flag in ["-movflags", "+faststart", "-an", "-y"] {
+        args.push(flag.into());
+    }
+    args.push(output_path.as_os_str().to_os_string());
+
     let output = Command::new(&ffmpeg)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-        ])
-        .arg(&list_path)
-        .args([
-            "-c:v",
-            "libx264",
-            "-crf",
-            "18",
-            "-preset",
-            "fast",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-an",
-            "-y",
-        ])
-        .arg(output_path)
+        .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()

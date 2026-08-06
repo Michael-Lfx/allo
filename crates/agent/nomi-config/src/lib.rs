@@ -5,6 +5,7 @@ pub mod compat;
 pub mod config;
 pub mod dep_check;
 pub mod dep_gate;
+pub mod ffmpeg_hw;
 pub mod file_cache;
 pub mod gateway;
 pub mod hooks;
