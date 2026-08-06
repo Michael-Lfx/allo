@@ -179,26 +179,24 @@ function ReviewCard({
   };
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
-      <div className='mb-10px flex flex-wrap items-center gap-x-4px gap-y-2px text-12px text-t-tertiary'>
+      <div className='mb-12px flex flex-wrap items-center gap-x-6px gap-y-6px text-12px'>
         {review.source === 'custom' ? (
           <Tag size='small' color='purple'>
             {t('learning.reviewCustomSource')}
           </Tag>
         ) : (
           <>
-            <span>
-              {t('learning.reviewCourseLabel')}:{' '}
+            <span className='rounded-6px bg-[var(--color-fill-2)] px-8px py-2px font-500 text-t-secondary'>
               {review.course_title ?? t('learning.deletedCourse')}
             </span>
-            <span>›</span>
-            <span>
-              {t('learning.reviewModuleLabel')}: {review.module_title ?? '—'}
+            <span className='text-t-tertiary'>›</span>
+            <span className='rounded-6px bg-[var(--color-fill-2)] px-8px py-2px font-500 text-t-secondary'>
+              {review.module_title ?? '—'}
             </span>
-            <span>›</span>
-            <span>
-              {t('learning.reviewLessonLabel')}: {review.lesson_title ?? '—'}
+            <span className='text-t-tertiary'>›</span>
+            <span className='rounded-6px bg-[var(--color-fill-2)] px-8px py-2px font-500 text-t-secondary'>
+              {review.lesson_title ?? '—'}
             </span>
-            <span>›</span>
           </>
         )}
         {review.concept_title !== null && (
@@ -207,7 +205,7 @@ function ReviewCard({
           </Tag>
         )}
       </div>
-      <div className='mb-10px text-15px font-500 leading-relaxed text-t-primary'>
+      <div className='mb-12px text-16px font-500 leading-relaxed text-t-primary'>
         {question.prompt}
       </div>
       {question.kind === 'single_choice' && (
@@ -374,7 +372,7 @@ function ReviewSessionModal({
       title={t('learning.reviewSessionTitle')}
       visible={open}
       footer={null}
-      style={{ width: 640 }}
+      style={{ width: 780 }}
       maskClosable={false}
       onCancel={() => {
         if (busyId === null) onClose();
