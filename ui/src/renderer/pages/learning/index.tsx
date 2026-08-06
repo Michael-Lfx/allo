@@ -959,10 +959,22 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
   const stateColumn = {
     title: t('learning.questionState'),
     dataIndex: 'state',
-    width: 96,
+    width: 130,
     render: (_value: unknown, entry: QuestionEntry) => {
       const state = questionStateMeta(entry, t);
-      return <Tag color={state.color}>{state.label}</Tag>;
+      const hint =
+        entry.state === 'unlearned'
+          ? t('learning.questionStateUnlearnedHint')
+          : entry.state === 'new'
+            ? t('learning.questionStateNewHint')
+            : entry.state === 'due'
+              ? t('learning.questionStateDueHint')
+              : t('learning.questionStateScheduledHint');
+      return (
+        <Tooltip content={hint} position='tl'>
+          <Tag color={state.color}>{state.label}</Tag>
+        </Tooltip>
+      );
     },
   };
   const dueColumn = {
@@ -1075,6 +1087,7 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
           </Button>
         </div>
       </div>
+      <Alert type='info' content={t('learning.questionQueueLegend')} />
       <Table
         rowKey={(entry: QuestionEntry) =>
           `${entry.source}:${entry.question_id}:${entry.concept_id ?? '-'}`
@@ -1142,8 +1155,8 @@ function QuestionDetailDrawer({
   const state = questionStateMeta(entry, t);
   const isSingleChoice = entry.question_kind === 'single_choice';
   const deletable = entry.source === 'custom' || entry.review_item_id !== null;
+  const inQueue = entry.source === 'course' && entry.review_item_id !== null;
   const metrics = [
-    { label: t('learning.questionDueAt'), value: formatReviewTime(entry.due_at) },
     {
       label: t('learning.questionLastReviewed'),
       value: formatReviewTime(entry.last_reviewed_at),
@@ -1190,6 +1203,32 @@ function QuestionDetailDrawer({
             : [entry.course_title ?? t('learning.deletedCourse'), entry.concept_title]
                 .filter((part) => part !== null && part !== undefined)
                 .join(' › ')}
+        </div>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionQueueSection')}</div>
+          <div className='flex flex-col gap-8px'>
+            <div className='flex flex-wrap items-center gap-8px'>
+              {entry.source === 'custom' ? (
+                <Tag color='purple'>{t('learning.questionQueueCustom')}</Tag>
+              ) : inQueue ? (
+                <Tag color='green'>{t('learning.questionQueueInQueue')}</Tag>
+              ) : (
+                <Tag color='gray'>{t('learning.questionQueueNotInQueue')}</Tag>
+              )}
+              {entry.due_at !== null && (
+                <Text type='secondary'>
+                  {t('learning.questionDueAt')}: {formatReviewTime(entry.due_at)}
+                </Text>
+              )}
+            </div>
+            <div className='text-13px text-t-secondary'>
+              {entry.source === 'custom'
+                ? t('learning.questionQueueHintCustom')
+                : inQueue
+                  ? t('learning.questionQueueHintIn')
+                  : t('learning.questionQueueHintOut')}
+            </div>
+          </div>
         </div>
         {isSingleChoice && entry.options.length > 0 && (
           <div>
