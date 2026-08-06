@@ -363,59 +363,150 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     let out = out_path.to_str().unwrap_or("");
     let n = normalized.len();
 
-    // Same hardware encode plan as per-clip normalize (cached, one recipe).
+    // Fast path: normalized clips already share one video codec/params and each
+    // has audio padded to its own video length (normalize does this), so the
+    // concat DEMUXER + stream copy is safe and turns the final join into a
+    // seconds-level remux. Falls back to the filter re-encode below on any
+    // mismatch or validation failure.
+    let copy_ok = try_remux_concat(&ffmpeg, &normalized, out_path).await?;
+    if copy_ok {
+        let _ = tokio::fs::remove_dir_all(&norm_dir).await;
+        tracing::info!(out = %out_path.display(), "vimax concat via stream copy");
+        return Ok(());
+    }
+    let _ = tokio::fs::remove_file(out_path).await;
+
+    // Same hardware encode plan as per-clip normalize (cached, one recipe). A
+    // hardware plan that fails at runtime retries once with libx264.
     let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
 
     // filter_complex concat keeps each shot's A/V pair locked together.
-    let mut filter = String::new();
-    for i in 0..n {
-        filter.push_str(&format!("[{i}:v:0][{i}:a:0]"));
-    }
-    filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
-    // Encoders that need an hwupload stage (e.g. h264_vaapi) get a second video
-    // label that maps instead of `[v]`.
-    let mut map_v = "[v]";
-    if let Some(vf) = plan.hwupload_vf {
-        filter.push_str(&format!(";[v]{vf}[vh]"));
-        map_v = "[vh]";
+    let build_filter_args = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut filter = String::new();
+        for i in 0..n {
+            filter.push_str(&format!("[{i}:v:0][{i}:a:0]"));
+        }
+        filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
+        // Encoders that need an hwupload stage (e.g. h264_vaapi) get a second
+        // video label that maps instead of `[v]`.
+        let mut map_v = "[v]";
+        if let Some(vf) = p.hwupload_vf {
+            filter.push_str(&format!(";[v]{vf}[vh]"));
+            map_v = "[vh]";
+        }
+
+        let mut args: Vec<String> = vec!["-y".into()];
+        for norm in &normalized {
+            args.push("-i".into());
+            args.push(norm.to_string_lossy().into_owned());
+        }
+        args.extend([
+            "-filter_complex".into(),
+            filter,
+            "-map".into(),
+            map_v.into(),
+            "-map".into(),
+            "[a]".into(),
+        ]);
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            out.into(),
+        ]);
+        args
+    };
+
+    for (label, p) in [("hw", &plan), ("sw", &fallback)] {
+        let args = build_filter_args(p);
+        let status = run_ffmpeg_owned(&ffmpeg, &args).await?;
+        if status.success() {
+            let _ = tokio::fs::remove_dir_all(&norm_dir).await;
+            tracing::info!(out = %out_path.display(), encoder = p.codec, "vimax concat filter re-encode ({label})");
+            return Ok(());
+        }
+        tracing::warn!(
+            label,
+            exit = ?status.code(),
+            "ffmpeg concat filter failed; retrying with software encoder"
+        );
+        let _ = tokio::fs::remove_file(out_path).await;
     }
 
-    let mut args: Vec<String> = vec!["-y".into()];
-    for p in &normalized {
-        args.push("-i".into());
-        args.push(p.to_string_lossy().into_owned());
+    let _ = tokio::fs::remove_dir_all(&norm_dir).await;
+    Err(VimaxError::Media(format!(
+        "ffmpeg concat filter failed for {}",
+        out_path.display()
+    )))
+}
+
+/// Try joining `clips` with the concat demuxer + full stream copy. Returns true
+/// when the output is a plausible join (duration ≈ sum of clips); the caller
+/// falls back to a filter re-encode otherwise. Cleanup of a partial output is
+/// the caller's job.
+async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> VimaxResult<bool> {
+    let list_path = out_path.with_extension("concat_remux_list.txt");
+    let mut list_body = String::new();
+    for p in clips {
+        let escaped = p.display().to_string().replace('\'', "'\\''");
+        list_body.push_str(&format!("file '{escaped}'\n"));
     }
-    args.extend([
-        "-filter_complex".into(),
-        filter,
-        "-map".into(),
-        map_v.into(),
-        "-map".into(),
-        "[a]".into(),
-    ]);
-    args.extend(plan.encode_args().iter().map(|s| (*s).to_string()));
-    args.extend([
-        "-c:a".into(),
-        "aac".into(),
-        "-ar".into(),
-        "44100".into(),
-        "-ac".into(),
-        "2".into(),
+    let _ = tokio::fs::write(&list_path, &list_body).await;
+
+    let args: Vec<String> = vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-f".into(),
+        "concat".into(),
+        "-safe".into(),
+        "0".into(),
+        "-i".into(),
+        list_path.to_string_lossy().into_owned(),
+        "-c".into(),
+        "copy".into(),
         "-movflags".into(),
         "+faststart".into(),
-        out.into(),
-    ]);
-
-    let status = run_ffmpeg_owned(&ffmpeg, &args).await?;
-    let _ = tokio::fs::remove_dir_all(&norm_dir).await;
-
+        "-y".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let status = run_ffmpeg_owned(ffmpeg, &args).await?;
+    let _ = tokio::fs::remove_file(&list_path).await;
     if !status.success() {
-        return Err(VimaxError::Media(format!(
-            "ffmpeg concat filter failed (exit {:?})",
-            status.code()
-        )));
+        return Ok(false);
     }
-    Ok(())
+    if !is_usable_video_file(out_path) {
+        return Ok(false);
+    }
+    // Duration ≈ sum of clip durations guards against silent mis-joins.
+    let mut expected = 0.0f64;
+    let mut probed = 0usize;
+    let mut set = tokio::task::JoinSet::new();
+    for clip in clips {
+        let ffmpeg = ffmpeg.to_path_buf();
+        let clip = clip.clone();
+        set.spawn(async move { probe_duration_secs(&ffmpeg, &clip).await });
+    }
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(d)) = joined {
+            expected += d;
+            probed += 1;
+        }
+    }
+    let Some(out_dur) = probe_duration_secs(ffmpeg, out_path).await else {
+        return Ok(false);
+    };
+    if probed != clips.len() || expected <= 0.0 {
+        return Ok(false);
+    }
+    Ok((out_dur - expected).abs() <= (expected * 0.01).max(0.5))
 }
 
 /// Soft fade at clip edges so hard cuts do not click / jump in BGM loudness.
@@ -473,7 +564,10 @@ async fn normalize_clip_for_concat(
     let af = normalize_audio_filter(dur);
 
     // Same hardware plan as the final join — one probe per process, one recipe.
+    // A hardware plan that fails at runtime (full NVENC session, driver hiccup)
+    // retries the same input with libx264 before giving up.
     let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
     let vf = if plan.hwupload_vf.is_some() {
         "fps=24,format=nv12,hwupload,setpts=PTS-STARTPTS".to_string()
     } else {
@@ -481,93 +575,119 @@ async fn normalize_clip_for_concat(
     };
 
     // Path A: clip already has an audio stream.
-    let mut args: Vec<String> = vec![
-        "-y".into(),
-        "-i".into(),
-        input_s.into(),
-        "-map".into(),
-        "0:v:0".into(),
-        "-map".into(),
-        "0:a:0".into(),
-        "-vf".into(),
-        vf.clone(),
-        "-af".into(),
-        af,
-    ];
-    args.extend(plan.encode_args().iter().map(|s| (*s).to_string()));
-    args.extend([
-        "-c:a".into(),
-        "aac".into(),
-        "-ar".into(),
-        "44100".into(),
-        "-ac".into(),
-        "2".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-    ]);
-    if !dur_arg.is_empty() {
-        args.push("-t".into());
-        args.push(dur_arg.clone());
-    } else {
-        args.push("-shortest".into());
-    }
-    args.push(output_s.into());
-
-    let (ok_a, err_a) = run_ffmpeg_owned_capture(ffmpeg, &args).await?;
-    if ok_a && is_usable_video_file(output) {
-        return Ok(());
-    }
-    let _ = tokio::fs::remove_file(output).await;
+    let build_a = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "-y".into(),
+            "-i".into(),
+            input_s.into(),
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            "0:a:0".into(),
+            "-vf".into(),
+            vf.clone(),
+            "-af".into(),
+            af.clone(),
+        ];
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+        ]);
+        if !dur_arg.is_empty() {
+            args.push("-t".into());
+            args.push(dur_arg.clone());
+        } else {
+            args.push("-shortest".into());
+        }
+        args.push(output_s.into());
+        args
+    };
 
     // Path B: missing/broken audio — synthesize stereo silence for the video duration.
+    let build_b = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "-y".into(),
+            "-i".into(),
+            input_s.into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+            "-vf".into(),
+            vf.clone(),
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            "1:a:0".into(),
+        ];
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+        ]);
+        if !dur_arg.is_empty() {
+            args.push("-t".into());
+            args.push(dur_arg.clone());
+        } else {
+            args.push("-shortest".into());
+        }
+        args.push(output_s.into());
+        args
+    };
+
+    let mut attempts: Vec<(String, String)> = Vec::new();
+    // Path A: clip already has an audio stream.
+    for (plan_label, p) in [("plan", &plan), ("sw", &fallback)] {
+        let args = build_a(p);
+        let (ok, err) = run_ffmpeg_owned_capture(ffmpeg, &args).await?;
+        if ok && is_usable_video_file(output) {
+            return Ok(());
+        }
+        attempts.push((format!("path_a_{plan_label}"), err));
+        let _ = tokio::fs::remove_file(output).await;
+        // Software is the last resort for this audio path — no third try.
+        if !p.uses_hw {
+            break;
+        }
+    }
     tracing::warn!(
         clip = %input.display(),
-        "normalize_clip: no usable audio; padding with silence"
+        "normalize_clip: audio path failed; padding with silence"
     );
-    let mut args2: Vec<String> = vec![
-        "-y".into(),
-        "-i".into(),
-        input_s.into(),
-        "-f".into(),
-        "lavfi".into(),
-        "-i".into(),
-        "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
-        "-vf".into(),
-        vf,
-        "-map".into(),
-        "0:v:0".into(),
-        "-map".into(),
-        "1:a:0".into(),
-    ];
-    args2.extend(plan.encode_args().iter().map(|s| (*s).to_string()));
-    args2.extend([
-        "-c:a".into(),
-        "aac".into(),
-        "-ar".into(),
-        "44100".into(),
-        "-ac".into(),
-        "2".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-    ]);
-    if !dur_arg.is_empty() {
-        args2.push("-t".into());
-        args2.push(dur_arg);
-    } else {
-        args2.push("-shortest".into());
+    // Path B: missing/broken audio — synthesize stereo silence for the video duration.
+    for (plan_label, p) in [("plan", &plan), ("sw", &fallback)] {
+        let args = build_b(p);
+        let (ok, err) = run_ffmpeg_owned_capture(ffmpeg, &args).await?;
+        if ok && is_usable_video_file(output) {
+            return Ok(());
+        }
+        attempts.push((format!("path_b_{plan_label}"), err));
+        let _ = tokio::fs::remove_file(output).await;
+        if !p.uses_hw {
+            break;
+        }
     }
-    args2.push(output_s.into());
-
-    let (ok_b, err_b) = run_ffmpeg_owned_capture(ffmpeg, &args2).await?;
-    if ok_b && is_usable_video_file(output) {
-        return Ok(());
-    }
-    let _ = tokio::fs::remove_file(output).await;
 
     // Corrupt / truncated downloads often pass the old size-only check and only
     // fail here (ffmpeg AVERROR_INVALIDDATA = -1094995529). Drop the bad file
     // so "resume from checkpoint" regenerates the scene instead of looping.
-    let detail = ffmpeg_stderr_hint(&err_b).or_else(|| ffmpeg_stderr_hint(&err_a));
+    let detail = attempts
+        .iter()
+        .find_map(|(_, err)| ffmpeg_stderr_hint(err))
+        .or_else(|| attempts.last().map(|(_, err)| err.as_str().to_string()));
     let looks_corrupt = detail
         .as_deref()
         .is_some_and(|s| {

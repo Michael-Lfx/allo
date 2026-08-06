@@ -47,6 +47,16 @@ impl VideoEncodePlan {
     }
 }
 
+/// Guaranteed-software plan for retrying a failed hardware encode: returns the
+/// `libx264` recipe when `plan` uses hardware, otherwise the same plan.
+pub fn software_fallback_plan(plan: &VideoEncodePlan) -> VideoEncodePlan {
+    if plan.uses_hw {
+        x264_plan()
+    } else {
+        plan.clone()
+    }
+}
+
 // Quality targets mirror the existing `libx264 -crf 18` look; hardware `cq` /
 // `global_quality` are NOT 1:1 with CRF, so values are slightly relaxed and
 // favour a marginally larger file over visible quality loss.
@@ -165,7 +175,9 @@ fn select_plan_from(
     forced: Option<&str>,
     probe_ok: &dyn Fn(&str) -> bool,
 ) -> VideoEncodePlan {
-    // Explicit force: honour it when available and working, else fall through.
+    // Explicit force: honour it when available and working; otherwise fall through
+    // to the normal priority loop (the forced codec is skipped there because its
+    // probe result is already known to be false).
     if let Some(f) = forced.and_then(forced_codec) {
         if f == "libx264" {
             tracing::info!(encoder = "libx264", "ffmpeg encoder forced to software");
@@ -179,12 +191,15 @@ fn select_plan_from(
         }
         tracing::warn!(
             forced = f,
-            "requested ffmpeg encoder unavailable or failed probe; falling back to libx264"
+            "forced ffmpeg encoder unavailable or failed probe; trying next candidate"
         );
-        return x264_plan();
     }
 
     for codec in candidate_order(os) {
+        // The forced codec already failed its probe above — skip re-testing it.
+        if forced.and_then(forced_codec) == Some(codec) {
+            continue;
+        }
         if !caps.h264_encoders.iter().any(|e| e == codec) {
             continue;
         }
@@ -549,10 +564,40 @@ mod tests {
     }
 
     #[test]
-    fn forced_nvenc_unavailable_falls_back() {
+    fn forced_nvenc_unavailable_falls_through_to_qsv() {
+        // Forcing nvenc on a machine without it must try the next candidate
+        // (qsv) instead of jumping straight to libx264.
         let c = caps(&["libx264", "h264_qsv"], &["qsv"]);
         let plan = select_plan_from("windows", &c, Some("nvenc"), &ok_probe);
+        assert_eq!(plan.codec, "h264_qsv");
+    }
+
+    #[test]
+    fn forced_nvenc_broken_falls_through_to_qsv() {
+        // Forced nvenc is listed but its micro-probe fails — next candidate wins.
+        let c = caps(&["libx264", "h264_qsv", "h264_nvenc"], &["qsv"]);
+        let probe = |codec: &str| codec != "h264_nvenc";
+        let plan = select_plan_from("windows", &c, Some("nvenc"), &probe);
+        assert_eq!(plan.codec, "h264_qsv");
+    }
+
+    #[test]
+    fn forced_nvenc_alone_unavailable_ends_in_libx264() {
+        // No other candidate exists — the loop bottoms out at libx264.
+        let c = caps(&["libx264"], &[]);
+        let plan = select_plan_from("windows", &c, Some("nvenc"), &ok_probe);
         assert_eq!(plan.codec, "libx264");
+    }
+
+    #[test]
+    fn software_fallback_plan_downgrades_hw_to_x264() {
+        let hw = nvenc_plan();
+        let fb = software_fallback_plan(&hw);
+        assert_eq!(fb.codec, "libx264");
+        assert!(!fb.uses_hw);
+        let sw = x264_plan();
+        let fb2 = software_fallback_plan(&sw);
+        assert_eq!(fb2.codec, "libx264");
     }
 
     #[test]

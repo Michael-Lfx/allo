@@ -663,11 +663,11 @@ pub async fn concat_videos(segment_paths: &[PathBuf], output_path: &Path) -> Res
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("write concat list: {e}")))?;
 
-    // Pick the best H.264 encoder (NVENC/QSV/AMF/VideoToolbox when available and
-    // verified, else libx264). Probe is cached per process.
-    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
-
-    let mut args: Vec<std::ffi::OsString> = vec![
+    // 1) Fast path: remux with stream copy when all segments share compatible
+    // streams (typical same-model Seedance output). Turns long-video concat into
+    // a seconds-level remux; any mismatch or validation failure falls through to
+    // a re-encode below.
+    let mut copy_args: Vec<std::ffi::OsString> = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
         "error".into(),
@@ -677,37 +677,125 @@ pub async fn concat_videos(segment_paths: &[PathBuf], output_path: &Path) -> Res
         "0".into(),
         "-i".into(),
     ];
-    args.push(list_path.as_os_str().to_os_string());
-    for a in plan.encode_args() {
-        args.push(a.into());
+    copy_args.push(list_path.as_os_str().to_os_string());
+    for flag in ["-c", "copy", "-an", "-movflags", "+faststart", "-y"] {
+        copy_args.push(flag.into());
     }
-    // Encoders that need an hwupload stage (e.g. h264_vaapi).
-    if let Some(vf) = plan.hwupload_vf {
-        args.push("-vf".into());
-        args.push(vf.into());
-    }
-    for flag in ["-movflags", "+faststart", "-an", "-y"] {
-        args.push(flag.into());
-    }
-    args.push(output_path.as_os_str().to_os_string());
+    copy_args.push(output_path.as_os_str().to_os_string());
 
-    let output = Command::new(&ffmpeg)
-        .args(&args)
+    let copied_ok = run_ffmpeg_concat(&ffmpeg, &copy_args).await.is_ok()
+        && concat_output_plausible(&ffmpeg, output_path, segment_paths).await;
+    if copied_ok {
+        let _ = tokio::fs::remove_file(&list_path).await;
+        tracing::info!(out = %output_path.display(), "ffmpeg concat via stream copy");
+        return Ok(());
+    }
+    let _ = tokio::fs::remove_file(output_path).await;
+
+    // 2) Re-encode with the best H.264 plan (NVENC/QSV/AMF/VideoToolbox when
+    // available and verified, else libx264). A hardware plan that fails at
+    // runtime (full NVENC session, driver hiccup) retries once with libx264.
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
+
+    let build_args = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-f".into(),
+            "concat".into(),
+            "-safe".into(),
+            "0".into(),
+            "-i".into(),
+        ];
+        args.push(list_path.as_os_str().to_os_string());
+        for a in p.encode_args() {
+            args.push(a.into());
+        }
+        // Encoders that need an hwupload stage (e.g. h264_vaapi).
+        if let Some(vf) = p.hwupload_vf {
+            args.push("-vf".into());
+            args.push(vf.into());
+        }
+        for flag in ["-movflags", "+faststart", "-an", "-y"] {
+            args.push(flag.into());
+        }
+        args.push(output_path.as_os_str().to_os_string());
+        args
+    };
+
+    let mut encode_err = None;
+    for (label, p) in [("hw", &plan), ("sw", &fallback)] {
+        let args = build_args(p);
+        match run_ffmpeg_concat(&ffmpeg, &args).await {
+            Ok(()) => {
+                let _ = tokio::fs::remove_file(&list_path).await;
+                tracing::info!(out = %output_path.display(), encoder = p.codec, "ffmpeg concat re-encode ({label})");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(label, error = %e, "ffmpeg concat re-encode failed");
+                encode_err = Some(e);
+                let _ = tokio::fs::remove_file(output_path).await;
+            }
+        }
+    }
+
+    let _ = tokio::fs::remove_file(&list_path).await;
+    Err(encode_err.unwrap_or_else(|| {
+        ToolError::ExecutionFailed("ffmpeg concat failed without error".into())
+    }))
+}
+
+async fn run_ffmpeg_concat(
+    ffmpeg: &Path,
+    args: &[std::ffi::OsString],
+) -> Result<(), ToolError> {
+    let output = Command::new(ffmpeg)
+        .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("ffmpeg concat: {e}")))?;
-
-    let _ = tokio::fs::remove_file(&list_path).await;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(ToolError::ExecutionFailed(format!(
-            "ffmpeg concat failed: {err}"
-        )));
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(ToolError::ExecutionFailed(format!(
+            "ffmpeg concat failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )))
     }
-    Ok(())
+}
+
+/// True when `out` looks like a valid concat of `segments`: its duration matches
+/// the sum of the segment durations (stream copy preserves duration exactly) and
+/// every segment probed successfully. Guards against copy concat silently
+/// producing a broken file when segments are not actually uniform.
+async fn concat_output_plausible(ffmpeg: &Path, out: &Path, segments: &[PathBuf]) -> bool {
+    let Some(out_dur) = probe_video_duration_secs(out, ffmpeg).await else {
+        return false;
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for seg in segments {
+        let ffmpeg = ffmpeg.to_path_buf();
+        let seg = seg.clone();
+        set.spawn(async move { probe_video_duration_secs(&seg, &ffmpeg).await });
+    }
+    let mut expected = 0.0f64;
+    let mut probed = 0usize;
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(d)) = joined {
+            expected += d;
+            probed += 1;
+        }
+    }
+    if probed != segments.len() || expected <= 0.0 {
+        return false;
+    }
+    let delta = (out_dur - expected).abs();
+    delta <= (expected * 0.01).max(0.5)
 }
 
 /// On-disk checkpoint for resuming long-video generation after credit/network failures.
