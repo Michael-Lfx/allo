@@ -5,11 +5,12 @@
  *
  * Sections (one job each):
  * 1. Header — title + locked workflow badge + status
- * 2. Source input — idea / script / novel + Plan
- * 3. Storyboard — inline shot revise + filmstrip
- * 4. Technical artifacts — tree + editable preview
- * 5. Render + progress polling (1s while planning/rendering)
- * 6. Final video player when done
+ * 2. Technical artifacts — tree + editable preview (top)
+ * 3. Source input — idea / script / novel + Plan
+ * 4. Render CTA — above storyboard once planned
+ * 5. Storyboard — inline shot revise + filmstrip
+ * 6. Progress polling (1s while planning/rendering)
+ * 7. Final video player when done
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -135,6 +136,8 @@ const WorkspacePage: React.FC = () => {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<ArtifactContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  /** Keep technical artifacts expanded by default so cast/env plates stay discoverable. */
+  const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(true);
   const [finalBlobUrl, setFinalBlobUrl] = useState<string | null>(null);
   const [coverBlobUrl, setCoverBlobUrl] = useState<string | null>(null);
 
@@ -997,6 +1000,61 @@ const WorkspacePage: React.FC = () => {
           hasFinalVideo={Boolean(finalBlobUrl)}
         />
 
+        {artifacts.length > 0 ? (
+          <details
+            className={`${styles.studioPanel} px-14px py-12px`}
+            open={artifactsPanelOpen}
+            onToggle={(event) => {
+              setArtifactsPanelOpen((event.currentTarget as HTMLDetailsElement).open);
+            }}
+          >
+            <summary className='cursor-pointer list-none marker:content-none'>
+              <div className='flex flex-wrap items-center justify-between gap-8px'>
+                <div>
+                  <div className='text-14px font-650 text-[var(--color-text-1)]'>
+                    {t('videoGeneration.studio.technicalDetails', {
+                      defaultValue: '技术产物与运行文件',
+                    })}
+                  </div>
+                  <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                    {t('videoGeneration.studio.technicalDetailsHint', {
+                      defaultValue: '审阅并编辑定妆图、环境/道具参考与工程文件，再生成成片。',
+                    })}
+                  </div>
+                </div>
+                <Tag size='small' color='orangered'>
+                  {t('videoGeneration.studio.technicalDetailsBadge', {
+                    defaultValue: '建议先检查',
+                  })}
+                </Tag>
+              </div>
+            </summary>
+            <div
+              className={[
+                'mt-12px grid min-h-240px gap-12px',
+                isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
+              ].join(' ')}
+            >
+              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
+                <ArtifactTree
+                  tree={artifacts}
+                  selectedPath={selectedPath}
+                  onSelect={setSelectedPath}
+                />
+              </div>
+              <ArtifactPreviewPanel
+                sessionId={sessionId}
+                selectedPath={selectedPath}
+                preview={preview}
+                previewLoading={previewLoading}
+                disabled={busy}
+                onChanged={handleArtifactsChanged}
+                onRequestRegenerate={() => void handleRender()}
+              />
+            </div>
+          </details>
+        ) : null}
+
         {finalBlobUrl ? (
           <section className={`${styles.studioPanel} overflow-hidden`}>
             <div className='flex flex-wrap items-center justify-between gap-10px px-16px py-13px'>
@@ -1228,34 +1286,6 @@ const WorkspacePage: React.FC = () => {
         ) : null}
 
         {hasStoryboard ? (
-          <section className={`${styles.studioPanel} p-14px md:p-18px`}>
-            <div className='mb-12px flex items-end justify-between gap-10px'>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.storyboard.hint', {
-                    defaultValue: '逐镜头检查叙事和画面，满意后再生成成片。',
-                  })}
-                </p>
-              </div>
-              <Tag size='small' color='arcoblue'>
-                {t('videoGeneration.studio.storyboard.editable', { defaultValue: '可编辑' })}
-              </Tag>
-            </div>
-            <StoryboardBoard
-              sessionId={sessionId}
-              artifacts={artifacts}
-              runStatus={runStatus}
-              disabled={busy}
-              revising={revising}
-              onSaveSceneDescriptions={handleSaveSceneDescriptions}
-            />
-          </section>
-        ) : null}
-
-        {hasStoryboard ? (
           <section className={`${styles.studioPanel} flex flex-wrap items-center justify-between gap-14px p-16px`}>
             {plannedIdle ? (
               <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
@@ -1268,7 +1298,7 @@ const WorkspacePage: React.FC = () => {
                 <div className='mt-2px text-12px leading-18px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.portraitReviewHint', {
                     defaultValue:
-                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在下方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
+                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在上方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
                   })}
                 </div>
               </div>
@@ -1314,35 +1344,32 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {artifacts.length > 0 ? (
-          <details className={`${styles.studioPanel} px-14px py-11px`}>
-            <summary className='cursor-pointer text-11px text-[var(--color-text-3)]'>
-              {t('videoGeneration.studio.technicalDetails', { defaultValue: '技术产物与运行文件' })}
-            </summary>
-            <div
-              className={[
-                'mt-12px grid min-h-240px gap-12px',
-                isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
-              ].join(' ')}
-            >
-              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
-                <ArtifactTree
-                  tree={artifacts}
-                  selectedPath={selectedPath}
-                  onSelect={setSelectedPath}
-                />
+        {hasStoryboard ? (
+          <section className={`${styles.studioPanel} p-14px md:p-18px`}>
+            <div className='mb-12px flex items-end justify-between gap-10px'>
+              <div>
+                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                  {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
+                </h2>
+                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.storyboard.hint', {
+                    defaultValue: '逐镜头检查叙事和画面，满意后再生成成片。',
+                  })}
+                </p>
               </div>
-              <ArtifactPreviewPanel
-                sessionId={sessionId}
-                selectedPath={selectedPath}
-                preview={preview}
-                previewLoading={previewLoading}
-                disabled={busy}
-                onChanged={handleArtifactsChanged}
-                onRequestRegenerate={() => void handleRender()}
-              />
+              <Tag size='small' color='arcoblue'>
+                {t('videoGeneration.studio.storyboard.editable', { defaultValue: '可编辑' })}
+              </Tag>
             </div>
-          </details>
+            <StoryboardBoard
+              sessionId={sessionId}
+              artifacts={artifacts}
+              runStatus={runStatus}
+              disabled={busy}
+              revising={revising}
+              onSaveSceneDescriptions={handleSaveSceneDescriptions}
+            />
+          </section>
         ) : null}
       </div>
     </div>
