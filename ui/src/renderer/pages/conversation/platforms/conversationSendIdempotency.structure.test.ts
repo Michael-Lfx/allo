@@ -265,12 +265,36 @@ describe('conversation send idempotency wiring', () => {
     }
 
     const nomiInitial = nomiSource.indexOf('const processInitialMessage = async () => {');
-    const nomiDeferredDispatch = nomiSource.indexOf(
-      '{ id: idempotency_key, input, files, initialOnly: true }',
+    // P1: the nomi initial turn takes the optimistic direct-send path so the
+    // local user bubble renders before the POST, and the reveal handshake fires
+    // as soon as that bubble is committed (before the POST resolves) — cutting
+    // the ~480ms POST-gated overlay dwell. The guid background config still
+    // precedes the turn (B4 invariant), and the handoff is only consumed after
+    // a fresh accepted response.
+    const configAwait = nomiSource.indexOf(
+      'await awaitConversationConfig(conversation_id)',
       nomiInitial
     );
+    const deferVar = nomiSource.indexOf(
+      'const deferInitialTurnUntilFresh = false',
+      configAwait
+    );
+    const exec = nomiSource.indexOf('executeCommand(', deferVar);
+    const reveal = nomiSource.indexOf("'conversation.transition.reveal'", exec);
+    const complete = nomiSource.indexOf(
+      'completeInitialMessageDelivery(sessionStorage, storageKey, idempotency_key)',
+      reveal
+    );
+    const execCall = nomiSource.slice(exec, reveal);
+
     expect(nomiInitial >= 0).toBe(true);
-    expect(nomiDeferredDispatch > nomiInitial).toBe(true);
+    expect(configAwait > nomiInitial).toBe(true);
+    expect(deferVar > configAwait).toBe(true);
+    expect(exec > deferVar).toBe(true);
+    expect(execCall.includes('deferInitialTurnUntilFresh')).toBe(true);
+    expect(execCall.includes('initialOnly: true')).toBe(true);
+    expect(reveal > exec).toBe(true);
+    expect(complete > reveal).toBe(true);
   });
 
   test('keeps edit replays behind authoritative reconciliation', () => {

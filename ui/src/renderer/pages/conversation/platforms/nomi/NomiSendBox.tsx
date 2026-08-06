@@ -496,6 +496,11 @@ const NomiSendBox: React.FC<{
           console.error('[NomiSendBox] Failed to fill draft message:', error);
           sessionStorage.removeItem(draftProcessedKey);
         }
+        // The mounted page is the steady state here (draft restored, no pending
+        // handoff to consume) — reveal any in-flight overlay now instead of
+        // letting it wait out the reveal timeout. Idempotent: a no-op when no
+        // transition is up (direct-link navigation).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
         return;
       }
     }
@@ -536,15 +541,25 @@ const NomiSendBox: React.FC<{
         // must settle before the first turn reaches the runtime. Navigation no
         // longer blocks on it, so the ordering is enforced here instead.
         await awaitConversationConfig(conversation_id);
-        await executeCommand(
+        // Optimistic first bubble: take executeCommand's direct-send path so
+        // the local user message renders synchronously (before the POST), then
+        // reveal the destination at once. The POST still runs to reconcile the
+        // bubble onto the real server id and seed the assistant turn, but it
+        // no longer gates the overlay teardown — cutting ~480ms of fake-screen
+        // dwell while the real page's TurnStatusRail shows the wait. On a
+        // non-fresh reply or failure executeCommand's own path removes the
+        // local bubble and reconciles, same as any direct send.
+        const deferInitialTurnUntilFresh = false;
+        const delivery = executeCommand(
           { id: idempotency_key, input, files, injectSkills: inject_skills, initialOnly: true },
           undefined,
-          true
+          deferInitialTurnUntilFresh
         );
-        // executeCommand commits the deferred first-turn bubble before it
-        // resolves, so the destination now renders the same user message the
-        // pending overlay faked — safe to reveal (the transition handshake).
+        // executeCommand has synchronously rendered the optimistic user bubble
+        // before reaching its POST await, so the destination now matches the
+        // pending overlay — safe to reveal (the transition handshake).
         emitter.emit('conversation.transition.reveal', { conversation_id });
+        await delivery;
         completeInitialMessageDelivery(sessionStorage, storageKey, idempotency_key);
       } catch (error) {
         // Reveal even on failure: the error toast is on the destination page,
