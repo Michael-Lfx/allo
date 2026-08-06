@@ -576,7 +576,9 @@ const ComposerSkillTokenInput = forwardRef<ComposerSkillTokenInputHandle, Compos
         return;
       }
       const nativeEvent = event.nativeEvent as InputEvent;
-      if (isComposingRef.current || nativeEvent.isComposing || nativeEvent.inputType.includes('Composition')) {
+      // Some IME paths fire beforeinput without inputType — treat it like any
+      // other unclassifiable event and fall through to the switch's default.
+      if (isComposingRef.current || nativeEvent.isComposing || nativeEvent.inputType?.includes('Composition')) {
         return;
       }
 
