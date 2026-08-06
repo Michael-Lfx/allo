@@ -9,7 +9,7 @@ describe('useGuidSend pending preset guard', () => {
   test('blocks send and disables the button until the preset catalog resolves', () => {
     const source = readSource(new URL('./useGuidSend.ts', import.meta.url));
 
-    expect(source.includes('if (is_preset && !agentInfo)')).toBe(true);
+    expect(source.includes('if (preset_id && (!agentInfo || agentInfo.preset_id !== preset_id))')).toBe(true);
     expect(source.includes('is_presetAgentPending && !resolvedPresetSelection')).toBe(true);
   });
 
@@ -33,5 +33,26 @@ describe('useGuidSend pending preset guard', () => {
     expect(source.includes("advancePending?.('configuring')")).toBe(true);
     expect(source.includes("advancePending?.('opening')")).toBe(true);
     expect(overlay.includes('setInterval')).toBe(false);
+  });
+
+  test('arms the reveal handshake only after navigation; aborts instantly on failure', () => {
+    const source = readSource(new URL('./useGuidSend.ts', import.meta.url));
+
+    // handleSend reports whether navigate was dispatched; the overlay's
+    // teardown path is chosen from that outcome.
+    expect(source.includes('handleSend: () => Promise<boolean>')).toBe(true);
+    expect(source.includes('attachPending?.(')).toBe(true);
+
+    const handler = source.slice(source.indexOf('const sendMessageHandler'), source.indexOf('// Calculate button'));
+    expect(handler.includes('abortPending?.()')).toBe(true);
+    expect(handler.includes('endPending?.()')).toBe(true);
+
+    // endPending must not live in .finally — an aborted transition would wait
+    // out the reveal timeout instead of dropping instantly. (Slice only the
+    // finally callback body; the useCallback deps array legitimately mentions
+    // endPending.)
+    const finallyStart = handler.indexOf('.finally(');
+    const finallyBody = handler.slice(finallyStart, handler.indexOf('});', finallyStart));
+    expect(finallyBody.includes('endPending')).toBe(false);
   });
 });

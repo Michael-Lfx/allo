@@ -522,6 +522,8 @@ const GuidPage: React.FC = () => {
     beginPending: pendingConversation.begin,
     advancePending: pendingConversation.advance,
     endPending: pendingConversation.end,
+    abortPending: pendingConversation.abort,
+    attachPending: pendingConversation.attach,
   });
 
   sendRef.current = send.sendMessageHandler;

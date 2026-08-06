@@ -53,6 +53,8 @@ import {
   useConversationStopAttemptGuard,
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
+import { awaitConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import {
   warmupConversation,
@@ -61,6 +63,7 @@ import {
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
+import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
@@ -494,6 +497,11 @@ const NomiSendBox: React.FC<{
           console.error('[NomiSendBox] Failed to fill draft message:', error);
           sessionStorage.removeItem(draftProcessedKey);
         }
+        // The mounted page is the steady state here (draft restored, no pending
+        // handoff to consume) — reveal any in-flight overlay now instead of
+        // letting it wait out the reveal timeout. Idempotent: a no-op when no
+        // transition is up (direct-link navigation).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
         return;
       }
     }
@@ -502,7 +510,18 @@ const NomiSendBox: React.FC<{
     const processedKey = sessionStorageKey('initial-message-processed-nomi', target);
 
     const processInitialMessage = async () => {
-      if (!sessionStorage.getItem(storageKey) || !claimInitialMessageDelivery(storageKey)) return;
+      if (!sessionStorage.getItem(storageKey)) {
+        // No guid handoff pending (AutoWork entry / plain mount): the mounted
+        // page IS the steady state — reveal the pending overlay if one is up.
+        // No-op when no transition is in flight (direct-link navigation).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
+        return;
+      }
+      if (!claimInitialMessageDelivery(storageKey)) return;
+
+      // Split the post-navigation wait: everything before this mark is mount +
+      // model resolution; everything after is the first-turn POST round-trip.
+      guidTransitionMark('destinationMounted');
 
       let attemptedIdempotencyKey: string | null = null;
       try {
@@ -513,18 +532,40 @@ const NomiSendBox: React.FC<{
           conversation_id
         );
         if (!initialMessage) {
+          emitter.emit('conversation.transition.reveal', { conversation_id });
           releaseInitialMessageDelivery(storageKey);
           return;
         }
         const { input, files, idempotency_key, inject_skills } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
-        await executeCommand(
+        // Invariant: the guid page's background config (knowledge/IDMM/goal)
+        // must settle before the first turn reaches the runtime. Navigation no
+        // longer blocks on it, so the ordering is enforced here instead.
+        await awaitConversationConfig(conversation_id);
+        // Optimistic first bubble: take executeCommand's direct-send path so
+        // the local user message renders synchronously (before the POST), then
+        // reveal the destination at once. The POST still runs to reconcile the
+        // bubble onto the real server id and seed the assistant turn, but it
+        // no longer gates the overlay teardown — cutting ~480ms of fake-screen
+        // dwell while the real page's TurnStatusRail shows the wait. On a
+        // non-fresh reply or failure executeCommand's own path removes the
+        // local bubble and reconciles, same as any direct send.
+        const deferInitialTurnUntilFresh = false;
+        const delivery = executeCommand(
           { id: idempotency_key, input, files, injectSkills: inject_skills, initialOnly: true },
           undefined,
-          true
+          deferInitialTurnUntilFresh
         );
+        // executeCommand has synchronously rendered the optimistic user bubble
+        // before reaching its POST await, so the destination now matches the
+        // pending overlay — safe to reveal (the transition handshake).
+        emitter.emit('conversation.transition.reveal', { conversation_id });
+        await delivery;
         completeInitialMessageDelivery(sessionStorage, storageKey, idempotency_key);
       } catch (error) {
+        // Reveal even on failure: the error toast is on the destination page,
+        // the overlay must not hide it behind the timeout.
+        emitter.emit('conversation.transition.reveal', { conversation_id });
         handleInitialMessageDeliveryFailure(
           sessionStorage,
           storageKey,
@@ -976,7 +1017,7 @@ const NomiSendBox: React.FC<{
   };
 
   return (
-    <div className='max-w-800px w-full mx-auto flex flex-col mt-auto mb-16px'>
+    <div className={CHAT_COMPOSER_WRAPPER_CLASSES}>
       <CommandQueuePanel
         items={queuedCommands}
         paused={isQueuePaused}
