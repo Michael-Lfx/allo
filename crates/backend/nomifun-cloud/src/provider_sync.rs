@@ -14,7 +14,7 @@ use nomifun_api_types::derive_tasks_and_traits;
 use nomi_config::ServerConfig;
 use nomifun_common::encrypt_string;
 use nomifun_db::{
-    CreateProviderParams, IProviderModelRepository, IProviderRepository, NewProviderModel,
+    CreateProviderParams, IProviderModelRepository, IProviderRepository, ProviderModelProfileSeed,
     ProviderModelUpdate, UpdateProviderParams,
 };
 use tracing::{info, warn};
@@ -78,14 +78,20 @@ pub async fn sync_flowy_builtin_provider(
         .as_ref()
         .map(|fields| fields.context_limits_json.as_str());
 
-    if provider_repo
+    let profile_seeds = if catalog_synced {
+        build_profile_seeds(&profile_fields.model_ids, "openai")?
+    } else {
+        Vec::new()
+    };
+    let provider_exists = provider_repo
         .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
         .await
         .map_err(|e| e.to_string())?
-        .is_some()
-    {
+        .is_some();
+
+    if provider_exists {
         provider_repo
-            .update(
+            .update_with_model_profiles(
                 FLOWY_BUILTIN_PROVIDER_ID,
                 UpdateProviderParams {
                     platform: Some("openai"),
@@ -113,6 +119,8 @@ pub async fn sync_flowy_builtin_provider(
                     sort_order: Some(0),
                     ..Default::default()
                 },
+                &profile_seeds,
+                provider_model_repo.as_ref(),
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -126,7 +134,8 @@ pub async fn sync_flowy_builtin_provider(
             Some(fields.context_limits_json.as_str())
         };
         provider_repo
-            .create(CreateProviderParams {
+            .create_with_model_profiles(
+                CreateProviderParams {
                 provider_id: Some(FLOWY_BUILTIN_PROVIDER_ID),
                 platform: "openai",
                 name: "Flowy Cloud",
@@ -141,24 +150,12 @@ pub async fn sync_flowy_builtin_provider(
                 bedrock_config: None,
                 is_full_url: false,
                 sort_order: Some(0),
-            })
+                },
+                &profile_seeds,
+                provider_model_repo.as_ref(),
+            )
             .await
             .map_err(|e| e.to_string())?;
-    }
-
-    // Provider membership sync intentionally leaves capability-profile columns
-    // untouched. A newly created cloud provider therefore starts with
-    // `tasks=[]`, which is an explicit resolver exclusion rather than an
-    // invitation to use the name heuristic. Complete that local projection in
-    // the same request so the first authenticated resolver call can see chat
-    // models immediately; user-edited profiles are never overwritten.
-    if catalog_synced {
-        reconcile_flowy_provider_profiles(
-            provider_model_repo,
-            &profile_fields.model_ids,
-            "openai",
-        )
-        .await?;
     }
 
     let model_count = catalog_fields
@@ -173,91 +170,24 @@ pub async fn sync_flowy_builtin_provider(
     Ok(catalog_synced)
 }
 
-async fn reconcile_flowy_provider_profiles(
-    provider_model_repo: &Arc<dyn IProviderModelRepository>,
+fn build_profile_seeds(
     catalog_models: &[String],
     platform: &str,
-) -> Result<usize, String> {
-    let existing = provider_model_repo
-        .list_for_provider(FLOWY_BUILTIN_PROVIDER_ID)
-        .await
-        .map_err(|error| format!("list Flowy provider model profiles: {error}"))?;
-    let mut known = existing
+) -> Result<Vec<ProviderModelProfileSeed>, String> {
+    catalog_models
         .iter()
-        .map(|row| row.model.clone())
-        .collect::<std::collections::HashSet<_>>();
-    let mut next_sort = existing
-        .iter()
-        .map(|row| row.sort_order)
-        .max()
-        .map_or(0, |max| max + 1);
-    let mut changed = 0usize;
-
-    for model in catalog_models {
-        let model = model.trim();
-        if model.is_empty() || known.contains(model) {
-            continue;
-        }
-        let (tasks, traits) = derive_tasks_and_traits(platform, model);
-        let tasks_json = serde_json::to_string(&tasks)
-            .map_err(|error| format!("serialize Flowy model tasks: {error}"))?;
-        let traits_json = serde_json::to_string(&traits)
-            .map_err(|error| format!("serialize Flowy model traits: {error}"))?;
-        let inserted = provider_model_repo
-            .insert_if_absent(
-                FLOWY_BUILTIN_PROVIDER_ID,
-                &NewProviderModel {
-                    model,
-                    enabled: true,
-                    sort_order: next_sort,
-                    tasks: &tasks_json,
-                    traits: &traits_json,
-                    params: "{}",
-                    source: "inferred",
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|error| format!("seed Flowy model profile {model}: {error}"))?;
-        if inserted {
-            known.insert(model.to_owned());
-            next_sort += 1;
-            changed += 1;
-        }
-    }
-
-    // Provider sync can recreate a row for a model that was previously
-    // unprofiled (`tasks=[]`, `source=inferred`). Backfill only that exact
-    // state; explicit user/catalog profiles remain authoritative.
-    let rows = provider_model_repo
-        .list_for_provider(FLOWY_BUILTIN_PROVIDER_ID)
-        .await
-        .map_err(|error| format!("reload Flowy provider model profiles: {error}"))?;
-    for row in rows {
-        if row.tasks.trim() != "[]" || row.source != "inferred" {
-            continue;
-        }
-        let (tasks, traits) = derive_tasks_and_traits(platform, &row.model);
-        let tasks_json = serde_json::to_string(&tasks)
-            .map_err(|error| format!("serialize Flowy model tasks: {error}"))?;
-        let traits_json = serde_json::to_string(&traits)
-            .map_err(|error| format!("serialize Flowy model traits: {error}"))?;
-        provider_model_repo
-            .update(
-                FLOWY_BUILTIN_PROVIDER_ID,
-                &row.model,
-                &ProviderModelUpdate {
-                    tasks: Some(&tasks_json),
-                    traits: Some(&traits_json),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|error| format!("backfill Flowy model profile {}: {error}", row.model))?;
-        changed += 1;
-    }
-
-    Ok(changed)
+        .filter(|model| !model.trim().is_empty())
+        .map(|model| {
+            let (tasks, traits) = derive_tasks_and_traits(platform, model);
+            Ok(ProviderModelProfileSeed {
+                model: model.clone(),
+                tasks: serde_json::to_string(&tasks)
+                    .map_err(|error| format!("serialize Flowy model tasks: {error}"))?,
+                traits: serde_json::to_string(&traits)
+                    .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
+            })
+        })
+        .collect()
 }
 
 async fn fetch_chat_models(
@@ -537,14 +467,16 @@ mod tests {
             .await
             .unwrap();
 
-        let seeded = reconcile_flowy_provider_profiles(
-            &provider_model_repo,
-            &["gpt-4o".to_string()],
-            "openai",
-        )
-        .await
-        .unwrap();
-        assert_eq!(seeded, 1);
+        let seeds = build_profile_seeds(&["gpt-4o".to_string()], "openai").unwrap();
+        provider_repo
+            .update_with_model_profiles(
+                FLOWY_BUILTIN_PROVIDER_ID,
+                UpdateProviderParams::default(),
+                &seeds,
+                provider_model_repo.as_ref(),
+            )
+            .await
+            .unwrap();
         let row = provider_model_repo
             .get(FLOWY_BUILTIN_PROVIDER_ID, "gpt-4o")
             .await
@@ -570,16 +502,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            reconcile_flowy_provider_profiles(
-                &provider_model_repo,
-                &["gpt-4o".to_string()],
-                "openai",
+        provider_repo
+            .update_with_model_profiles(
+                FLOWY_BUILTIN_PROVIDER_ID,
+                UpdateProviderParams::default(),
+                &seeds,
+                provider_model_repo.as_ref(),
             )
             .await
-            .unwrap(),
-            0
-        );
+            .unwrap();
         let user_row = provider_model_repo
             .get(FLOWY_BUILTIN_PROVIDER_ID, "gpt-4o")
             .await
