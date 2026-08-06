@@ -53,6 +53,19 @@ impl LearningService {
             .expect("learning course completer lock poisoned") = Some(completer);
     }
 
+    /// The injected knowledge service, or a conflict when the learning
+    /// service was constructed without generation dependencies (used by the
+    /// tutorial seed, which needs knowledge-base registration and file IO).
+    pub(crate) fn injected_knowledge_service(&self) -> Result<Arc<KnowledgeService>, AppError> {
+        self.knowledge_service
+            .read()
+            .map_err(|_| AppError::Internal("learning knowledge service lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("knowledge-backed learning is not configured".into())
+            })
+    }
+
     pub async fn generate_course(
         &self,
         request: GenerateCourseRequest,

@@ -6534,6 +6534,7 @@ dependencies = [
 name = "nomifun-learning"
 version = "0.3.7"
 dependencies = [
+ "async-trait",
  "axum",
  "fsrs",
  "nomifun-api-types",
@@ -6541,9 +6542,11 @@ dependencies = [
  "nomifun-common",
  "nomifun-db",
  "nomifun-knowledge",
+ "nomifun-realtime",
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
 ]
 

@@ -4,6 +4,7 @@ mod routes;
 mod scheduler;
 mod service;
 mod state;
+mod tutorial;
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, ConceptView, CourseDetail, CoursePack, CourseSummary,

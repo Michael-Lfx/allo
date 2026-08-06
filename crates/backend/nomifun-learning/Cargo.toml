@@ -20,3 +20,6 @@ sqlx.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+async-trait.workspace = true
+nomifun-realtime.workspace = true
+tempfile.workspace = true

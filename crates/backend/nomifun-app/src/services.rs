@@ -2433,6 +2433,11 @@ impl AppServices {
             knowledge_service.clone(),
             knowledge_completer,
         );
+        // Seed the tutorial knowledge base and example course once per binary
+        // version. Failures are non-fatal: the app still boots without them.
+        if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
+            tracing::warn!(%error, "tutorial learning content seed failed; continuing");
+        }
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases
         // search/read and policy-gated write tools over a stdio bridge. It owns
