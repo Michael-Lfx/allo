@@ -90,6 +90,7 @@ pub fn get_system_info() -> SystemInfoResponse {
         platform: map_platform().to_owned(),
         arch: map_arch().to_owned(),
         work_dir_change: None,
+        runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
     }
 }
 

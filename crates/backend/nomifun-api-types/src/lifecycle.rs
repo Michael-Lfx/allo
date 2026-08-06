@@ -19,6 +19,48 @@ pub struct SystemInfoResponse {
     /// history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_dir_change: Option<WorkDirChangeStatus>,
+    /// Capabilities supplied by the host composition. The renderer must use
+    /// this contract instead of inferring the runtime from browser globals.
+    #[serde(default)]
+    pub runtime_capabilities: RuntimeCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeKind {
+    Desktop,
+    Web,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeCapabilities {
+    pub runtime: RuntimeKind,
+    pub can_restart_application: bool,
+    pub can_change_work_directory: bool,
+}
+
+impl RuntimeCapabilities {
+    pub const fn desktop() -> Self {
+        Self {
+            runtime: RuntimeKind::Desktop,
+            can_restart_application: true,
+            can_change_work_directory: true,
+        }
+    }
+
+    pub const fn web() -> Self {
+        Self {
+            runtime: RuntimeKind::Web,
+            can_restart_application: false,
+            can_change_work_directory: false,
+        }
+    }
+}
+
+impl Default for RuntimeCapabilities {
+    fn default() -> Self {
+        Self::web()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -138,6 +180,7 @@ mod tests {
             platform: "linux".into(),
             arch: "x64".into(),
             work_dir_change: None,
+            runtime_capabilities: RuntimeCapabilities::web(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["cache_dir"], "/home/user/.cache/nomifun");
@@ -163,6 +206,7 @@ mod tests {
             platform: "darwin".into(),
             arch: "arm64".into(),
             work_dir_change: None,
+            runtime_capabilities: RuntimeCapabilities::desktop(),
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let parsed: SystemInfoResponse = serde_json::from_str(&serialized).unwrap();

@@ -736,6 +736,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         data_dir: services.data_dir.clone(),
         work_dir: services.work_dir.clone(),
         work_dir_is_cli_override: services.work_dir_is_cli_override,
+        runtime_capabilities: services.runtime_capabilities,
     }
 }
 

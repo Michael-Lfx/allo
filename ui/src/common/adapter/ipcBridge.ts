@@ -938,6 +938,12 @@ export interface IRendererLogEntry {
   data?: unknown;
 }
 
+export interface RuntimeCapabilities {
+  runtime: 'desktop' | 'web';
+  canRestartApplication: boolean;
+  canChangeWorkDirectory: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Application — stays IPC (Electron-native)
 // ---------------------------------------------------------------------------
@@ -959,6 +965,11 @@ export const application = {
         storage_generation: string;
         platform: string;
         arch: string;
+        runtime_capabilities?: {
+          runtime?: 'desktop' | 'web';
+          can_restart_application?: boolean;
+          can_change_work_directory?: boolean;
+        };
         work_dir_change?: {
           state: 'none' | 'completed' | 'failed';
           operation_id?: string;
@@ -977,6 +988,11 @@ export const application = {
       storageGeneration: raw.storage_generation,
       platform: raw.platform,
       arch: raw.arch,
+      runtimeCapabilities: {
+        runtime: raw.runtime_capabilities?.runtime === 'desktop' ? 'desktop' : 'web',
+        canRestartApplication: raw.runtime_capabilities?.can_restart_application === true,
+        canChangeWorkDirectory: raw.runtime_capabilities?.can_change_work_directory === true,
+      },
       workDirChange: raw.work_dir_change
         ? {
             state: raw.work_dir_change.state,

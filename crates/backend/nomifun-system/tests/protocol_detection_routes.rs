@@ -57,6 +57,7 @@ fn build_state(db: &nomifun_db::Database) -> SystemRouterState {
         data_dir: std::env::temp_dir(),
         work_dir: std::env::temp_dir(),
         work_dir_is_cli_override: false,
+        runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
     }
 }
 

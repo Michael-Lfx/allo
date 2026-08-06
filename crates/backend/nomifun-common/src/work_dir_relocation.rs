@@ -602,6 +602,69 @@ pub fn read_last_status(
     Ok(Some(status))
 }
 
+/// Read the human-facing relocation diagnostic without making it a startup
+/// dependency. The pending plan, dataset receipt, and binding markers remain
+/// authoritative; this last-status file is only a best-effort report for the
+/// settings page. A corrupt or hostile entry is quarantined when possible so
+/// the same warning does not repeat forever.
+pub fn read_last_status_best_effort(data_dir: &Path) -> Option<WorkDirRelocationStatus> {
+    match read_last_status(data_dir) {
+        Ok(status) => status,
+        Err(error) => {
+            tracing::warn!(
+                data_dir = %data_dir.display(),
+                error = %error,
+                "ignoring unreadable work-dir relocation last status"
+            );
+            if let Err(quarantine_error) = quarantine_last_status(data_dir) {
+                tracing::warn!(
+                    data_dir = %data_dir.display(),
+                    error = %quarantine_error,
+                    "could not quarantine unreadable work-dir relocation last status"
+                );
+            }
+            None
+        }
+    }
+}
+
+/// Move a malformed/oversized/symlinked last-status entry aside without ever
+/// following it. This is deliberately not used for pending plans or phase
+/// markers, whose failure must remain strict and block unsafe rebinding.
+pub fn quarantine_last_status(data_dir: &Path) -> Result<Option<PathBuf>, AppError> {
+    let path = data_dir.join(RELOCATION_RESULT_FILE);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Internal(format!(
+                "inspect work-dir relocation result {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+        return Err(AppError::Conflict(format!(
+            "refusing to quarantine non-file work-dir relocation result {}",
+            path.display()
+        )));
+    }
+
+    let quarantine = data_dir.join(format!(
+        "{RELOCATION_RESULT_FILE}.corrupt-{}-{}",
+        now_ms(),
+        Uuid::now_v7()
+    ));
+    fs::rename(&path, &quarantine).map_err(|error| {
+        AppError::Internal(format!(
+            "quarantine work-dir relocation result {} -> {}: {error}",
+            path.display(),
+            quarantine.display()
+        ))
+    })?;
+    Ok(Some(quarantine))
+}
+
 fn write_status(data_dir: &Path, status: &WorkDirRelocationStatus) -> Result<(), AppError> {
     let mut bytes = serde_json::to_vec_pretty(status).map_err(|error| {
         AppError::Internal(format!("serialize work-dir relocation result: {error}"))
@@ -1728,5 +1791,46 @@ mod tests {
         seed_dataset(data.path(), source.path());
         assert!(request_work_dir_relocation(data.path(), source.path(), target.path()).is_err());
         assert!(!plan_path(data.path()).exists());
+    }
+
+    #[test]
+    fn corrupt_last_status_is_quarantined_without_blocking_reads() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join(RELOCATION_RESULT_FILE);
+        fs::write(&path, b"not-json").unwrap();
+
+        assert!(read_last_status_best_effort(data.path()).is_none());
+        assert!(!path.exists());
+        assert!(fs::read_dir(data.path())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(RELOCATION_RESULT_FILE)));
+    }
+
+    #[test]
+    fn oversized_last_status_is_quarantined_without_blocking_reads() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join(RELOCATION_RESULT_FILE);
+        fs::write(&path, vec![b'x'; MAX_CONTROL_FILE_BYTES as usize + 1]).unwrap();
+
+        assert!(read_last_status_best_effort(data.path()).is_none());
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_last_status_is_quarantined_without_following_target() {
+        let data = tempfile::tempdir().unwrap();
+        let target = data.path().join("outside.json");
+        let path = data.path().join(RELOCATION_RESULT_FILE);
+        fs::write(&target, br#"{"state":"completed"}"#).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        assert!(read_last_status_best_effort(data.path()).is_none());
+        assert!(!path.exists());
+        assert!(target.exists());
     }
 }

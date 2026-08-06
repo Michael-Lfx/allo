@@ -14,7 +14,8 @@ import { useTranslation } from 'react-i18next';
 const DirInputItem: React.FC<{
   label: string;
   field: string;
-}> = ({ label, field }) => {
+  disabled?: boolean;
+}> = ({ label, field, disabled = false }) => {
   const { t } = useTranslation();
   return (
     <Form.Item label={label} field={field}>
@@ -46,11 +47,12 @@ const DirInputItem: React.FC<{
             </Tooltip>
             <Button
               type='text'
+              disabled={disabled}
               style={{ borderLeft: '1px solid var(--color-border-2)', borderRadius: '0 8px 8px 0' }}
               icon={<FolderOpen theme='outline' size='18' fill={iconColors.primary} />}
               onClick={(e) => {
                 e.stopPropagation();
-                handlePick();
+                if (!disabled) handlePick();
               }}
             />
           </div>

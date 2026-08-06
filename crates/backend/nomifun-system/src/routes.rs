@@ -17,7 +17,7 @@ use nomifun_api_types::{
     SetManagedModelServiceEnabledRequest, SupportLogsPackResponse, SystemInfoResponse,
     SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
     UpdateProviderModelRequest, UpdateProviderRequest, UpdateSettingsRequest, UpdateWorkDirRequest,
-    UpdateWorkDirResponse, WorkDirChangeState, WorkDirChangeStatus,
+    UpdateWorkDirResponse, RuntimeCapabilities, WorkDirChangeState, WorkDirChangeStatus,
     UpsertProviderConnectionRequest,
 };
 use nomifun_common::AppError;
@@ -54,6 +54,9 @@ pub struct SystemRouterState {
     pub work_dir: PathBuf,
     /// True when `--work-dir` has authoritative priority on every restart.
     pub work_dir_is_cli_override: bool,
+    /// Capabilities supplied by the host composition. Web and Desktop use
+    /// the same HTTP routes but expose different lifecycle operations.
+    pub runtime_capabilities: RuntimeCapabilities,
 }
 
 /// Build the system router (settings + client prefs + providers + system).
@@ -558,10 +561,11 @@ async fn get_system_info(
     State(state): State<SystemRouterState>,
 ) -> Result<Json<ApiResponse<SystemInfoResponse>>, AppError> {
     let mut info = crate::sysinfo::get_system_info();
-    info.work_dir_change = nomifun_common::work_dir_relocation::read_last_status(
+    info.runtime_capabilities = state.runtime_capabilities;
+    info.work_dir_change = nomifun_common::work_dir_relocation::read_last_status_best_effort(
         &state.data_dir,
-    )?
-    .map(|status| WorkDirChangeStatus {
+    )
+        .map(|status| WorkDirChangeStatus {
         state: match status.state {
             nomifun_common::work_dir_relocation::WorkDirRelocationState::Completed => {
                 WorkDirChangeState::Completed

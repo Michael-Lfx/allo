@@ -64,6 +64,7 @@ fn build_state(db: &nomifun_db::Database, version_check_service: VersionCheckSer
         data_dir: std::env::temp_dir(),
         work_dir: std::env::temp_dir(),
         work_dir_is_cli_override: false,
+        runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
     }
 }
 
@@ -147,6 +148,9 @@ async fn test_system_info_returns_all_fields() {
     );
     assert!(data["platform"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(data["arch"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(data["runtime_capabilities"]["runtime"], "web");
+    assert_eq!(data["runtime_capabilities"]["can_restart_application"], false);
+    assert_eq!(data["runtime_capabilities"]["can_change_work_directory"], false);
 }
 
 #[tokio::test]

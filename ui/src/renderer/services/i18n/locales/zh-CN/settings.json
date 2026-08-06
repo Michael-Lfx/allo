@@ -553,6 +553,7 @@
   "restartConfirm": "修改后将重启应用，是否继续？",
   "workDirChangeConfirmTitle": "迁移工作目录并重启？",
   "workDirChangeConfirmContent": "NomiFun 将重启并迁移当前受管的 conversations 会话文件。数据库、聊天记录、Provider、模型配置、默认模型和语言偏好都会保留；自定义外部 workspace 不会移动。新目录中不能已有“conversations”文件夹。是否继续？",
+  "workDirDesktopOnly": "工作目录只能在桌面应用中修改。",
   "workDirRelocating": "正在迁移工作目录并重启",
   "workDirRelocatingDesc": "请勿关闭应用，迁移完成后会自动恢复到原页面。",
   "workDirRelocationFailed": "工作目录迁移失败，应用继续使用旧工作目录。",

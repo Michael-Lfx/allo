@@ -52,6 +52,12 @@
     "failedDescription": "没有可用的模型缓存，请重试模型恢复。",
     "retry": "重试模型恢复"
   },
+  "startupRecovery": {
+    "title": "应用启动数据加载失败",
+    "description": "系统信息暂时无法读取。可以重试、打开支持日志，或退出当前账号。",
+    "retrySystemInfo": "重试系统信息",
+    "openLogs": "打开支持日志"
+  },
   "codeEditorErrorTitle": "代码编辑器加载失败",
   "codeEditorErrorDescription": "编辑器扩展发生异常，可以重试或关闭当前编辑器。",
   "reload": "重新加载",

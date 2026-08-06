@@ -553,6 +553,7 @@
   "restartConfirm": "Changes will restart the application. Continue?",
   "workDirChangeConfirmTitle": "Migrate the working directory and restart?",
   "workDirChangeConfirmContent": "NomiFun will restart and migrate the managed conversations files. The database, chats, Providers, model configuration, default model, and language preference remain unchanged; custom external workspaces are not moved. The new folder must not already contain a “conversations” folder. Continue?",
+  "workDirDesktopOnly": "The working directory can only be changed in the desktop app.",
   "workDirRelocating": "Migrating the working directory and restarting",
   "workDirRelocatingDesc": "Please keep the app open. It will return to the previous page after migration.",
   "workDirRelocationFailed": "Working-directory migration failed. The app continues using the previous working directory.",

@@ -149,6 +149,7 @@ const SystemModalContent: React.FC = () => {
 
   // Get system directory info
   const { data: systemInfo } = useSWR('system.dir.info', () => ipcBridge.application.systemInfo.invoke());
+  const canChangeWorkDirectory = systemInfo?.runtimeCapabilities.canChangeWorkDirectory === true;
 
   const handleOpenLogDir = useCallback(() => {
     if (!systemInfo?.logDir) return;
@@ -232,6 +233,7 @@ const SystemModalContent: React.FC = () => {
     async (_changedValue: unknown, allValues: Record<string, string>) => {
       if (initializingRef.current || savingRef.current || !systemInfo) return;
       const { workDir } = allValues;
+      if (!systemInfo.runtimeCapabilities.canChangeWorkDirectory) return;
       const needsRestart = workDir !== systemInfo.workDir;
       if (!needsRestart) return;
 
@@ -341,7 +343,16 @@ const SystemModalContent: React.FC = () => {
               </Collapse.Item>
             </Collapse>
             <Form form={form} layout='vertical' className='!mt-32px space-y-16px' onValuesChange={handleValuesChange}>
-              <DirInputItem label={t('settings.workDir')} field='workDir' />
+              <DirInputItem
+                label={t('settings.workDir')}
+                field='workDir'
+                disabled={!canChangeWorkDirectory}
+              />
+              {systemInfo && !canChangeWorkDirectory && (
+                <div className='mt-6px text-12px text-t-secondary'>
+                  {t('settings.workDirDesktopOnly')}
+                </div>
+              )}
               {systemInfo?.workDirChange?.state === 'failed' && (
                 <Alert
                   type='error'

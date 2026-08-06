@@ -9,7 +9,7 @@ use nomifun_ai_agent::{
     AcpSessionSyncService, AcpSkillManager, AgentFactoryDeps, AgentRegistry, AgentRuntimeRegistry,
     InMemoryAgentRuntimeRegistry, ManagedExtractMode, build_agent_factory,
 };
-use nomifun_api_types::{GatewayMcpConfig, RequirementMcpConfig};
+use nomifun_api_types::{GatewayMcpConfig, RequirementMcpConfig, RuntimeCapabilities};
 use nomifun_auth::{
     AuthPolicy, CompanionTokenValidator, CookieConfig, JwtService, QrTokenStore, resolve_jwt_secret,
 };
@@ -942,6 +942,7 @@ async fn forward_browser_inventory_events(
 pub struct AppHostCapabilities {
     pub managed_search: bool,
     pub managed_extract: ManagedExtractMode,
+    pub runtime_capabilities: RuntimeCapabilities,
 }
 
 impl AppHostCapabilities {
@@ -949,6 +950,7 @@ impl AppHostCapabilities {
         Self {
             managed_search: true,
             managed_extract: ManagedExtractMode::EvidenceBacked,
+            runtime_capabilities: RuntimeCapabilities::desktop(),
         }
     }
 
@@ -988,6 +990,7 @@ impl AppHostCapabilities {
         Self {
             managed_search: true,
             managed_extract,
+            runtime_capabilities: RuntimeCapabilities::desktop(),
         }
     }
 }
@@ -1145,6 +1148,7 @@ pub struct AppServices {
     pub data_dir: PathBuf,
     pub work_dir: PathBuf,
     pub work_dir_is_cli_override: bool,
+    pub runtime_capabilities: RuntimeCapabilities,
     /// Authentication policy (single source of truth, replaces `local: bool`).
     pub auth_policy: AuthPolicy,
     /// Per-boot secret the desktop's own webview presents to be trusted as the
@@ -2958,6 +2962,7 @@ impl AppServices {
             data_dir,
             work_dir,
             work_dir_is_cli_override,
+            runtime_capabilities: capabilities.runtime_capabilities,
             auth_policy,
             local_trust_secret,
             app_version,

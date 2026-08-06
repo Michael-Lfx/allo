@@ -182,7 +182,7 @@ pub use knowledge::{
 pub use lifecycle::{
     GitHubReleaseAsset, SupportLogsPackResponse, SystemInfoResponse, UpdateCheckRequest,
     UpdateCheckResult, UpdateReleaseInfo, UpdateWorkDirRequest, UpdateWorkDirResponse,
-    WorkDirChangeState, WorkDirChangeStatus,
+    RuntimeCapabilities, RuntimeKind, WorkDirChangeState, WorkDirChangeStatus,
 };
 pub use managed_model::{
     ManagedModel, ManagedModelHealthBatchResult, ManagedModelHealthErrorKind,

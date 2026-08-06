@@ -52,6 +52,12 @@
     "failedDescription": "No usable model cache is available. Retry model recovery to continue.",
     "retry": "Retry model recovery"
   },
+  "startupRecovery": {
+    "title": "Startup data could not be loaded",
+    "description": "System information is temporarily unavailable. Retry, open support logs, or sign out.",
+    "retrySystemInfo": "Retry system info",
+    "openLogs": "Open support logs"
+  },
   "codeEditorErrorTitle": "Code editor failed to load",
   "codeEditorErrorDescription": "An editor extension failed. Retry or close this editor to continue.",
   "reload": "Reload",
