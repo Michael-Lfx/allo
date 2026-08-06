@@ -8,7 +8,6 @@ import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSe
 import {
   Computer,
   Earth,
-  Headset,
   Info,
   Pic,
   Brain,
@@ -37,7 +36,6 @@ export const BUILTIN_TAB_IDS = [
   'insights',
   'moa',
   'media',
-  'public-companions',
   'presets',
   'skills',
   'mcp',
@@ -117,12 +115,6 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         label: t('settings.mediaNav'),
         icon: <Pic />,
         path: 'media',
-      },
-      'public-companions': {
-        id: 'public-companions',
-        label: t('publicCompanion.siderTitle', { defaultValue: '公开伙伴' }),
-        icon: <Headset />,
-        path: 'public-companions',
       },
       presets: {
         id: 'presets',

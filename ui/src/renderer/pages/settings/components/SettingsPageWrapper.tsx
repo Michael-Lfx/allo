@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { Computer, Earth, Headset, Info, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, System, Tool, TreeDiagram } from '@icon-park/react';
+import { Computer, Earth, Info, Pic, Brain, ChartPie, CloudStorage, Puzzle, Robot, System, Tool, TreeDiagram } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -66,12 +66,6 @@ export function getBuiltinSettingsNavItems(
       label: t('settings.mediaNav'),
       icon: <Pic theme='outline' size='16' />,
       path: 'media',
-    },
-    'public-companions': {
-      id: 'public-companions',
-      label: t('publicCompanion.siderTitle', { defaultValue: '公开伙伴' }),
-      icon: <Headset theme='outline' size='16' />,
-      path: 'public-companions',
     },
     presets: {
       id: 'presets',

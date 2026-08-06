@@ -6,11 +6,11 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('settings navigation', () => {
-  test('hides desktop companion, learning, and requirements from settings navigation', () => {
+  test('hides retired companion, learning, and requirements entries from settings navigation', () => {
     const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
     const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
 
-    for (const id of ['nomi', 'learn', 'requirements']) {
+    for (const id of ['nomi', 'public-companions', 'learn', 'requirements']) {
       expect(siderSource.includes(`id: '${id}'`)).toBe(false);
       expect(pageWrapperSource.includes(`id: '${id}'`)).toBe(false);
     }
