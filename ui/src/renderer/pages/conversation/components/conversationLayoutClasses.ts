@@ -32,3 +32,11 @@ export const CHAT_MESSAGE_ROW_METRICS_CLASSES = 'px-8px m-t-10px max-w-full md:m
  * residual sub-pixel drift at reveal is accepted and bounded.
  */
 export const CHAT_COMPOSER_SPACER_CLASSES = 'shrink-0 h-84px';
+
+/**
+ * Outer wrapper of every platform SendBox — centers the composer and pins it to
+ * the bottom of the chat column. The pending overlay's static composer replica
+ * shares it so the placeholder sits at the exact same X/width as the real one,
+ * eliminating horizontal shift at reveal.
+ */
+export const CHAT_COMPOSER_WRAPPER_CLASSES = 'max-w-800px w-full mx-auto flex flex-col mt-auto mb-16px';

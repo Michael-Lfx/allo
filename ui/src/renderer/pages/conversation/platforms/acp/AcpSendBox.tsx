@@ -43,6 +43,7 @@ import {
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
   warmupConversation,
   warmupConversationForPassiveMount,
@@ -638,7 +639,7 @@ Please check your local CLI tool authentication status`,
   };
 
   return (
-    <div className='max-w-800px w-full mx-auto flex flex-col mt-auto mb-16px'>
+    <div className={CHAT_COMPOSER_WRAPPER_CLASSES}>
       <CommandQueuePanel
         items={queuedCommands}
         paused={isQueuePaused}
