@@ -17,6 +17,6 @@ describe('cloud authentication model-environment contract', () => {
     const text = source();
     expect(text.includes('clearAvailableModelsCache()')).toBe(true);
     expect(text.includes('retryModelEnvironment')).toBe(true);
-    expect(text.includes('await refresh()')).toBe(true);
+    expect(text.includes('await refresh({ forceModelSync: true })')).toBe(true);
   });
 });

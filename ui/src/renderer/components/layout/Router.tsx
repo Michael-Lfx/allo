@@ -135,17 +135,17 @@ const getHashRouteRedirectUrl = () => {
 
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
   const { status: localStatus } = useAuth();
-  const { status: cloudStatus, ready: cloudReady } = useCloudAuth();
+  const { authState: cloudAuthState, ready: cloudReady } = useCloudAuth();
   const cloudGate = requiresCloudAuthGate();
   const authChecking =
-    localStatus === 'checking' || (cloudGate && (!cloudReady || cloudStatus === 'checking'));
+    localStatus === 'checking' || (cloudGate && (!cloudReady || cloudAuthState.phase === 'unknown'));
 
   if (!authChecking && localStatus !== 'authenticated') {
     return <Navigate to='/login' replace />;
   }
 
   // Desktop: Flowy account is the product key. WebUI: local instance admin is enough.
-  if (cloudGate && !authChecking && cloudStatus !== 'authenticated') {
+  if (cloudGate && !authChecking && cloudAuthState.phase === 'unauthenticated') {
     return <Navigate to='/cloud-login' replace />;
   }
 
