@@ -23,6 +23,9 @@ const SPEECH_LEAD_SECS: u32 = 1;
 const SPEECH_TAIL_SECS: u32 = 5;
 /// Dialogue shots should not be shorter than this even when the line is brief.
 const MIN_DIALOGUE_CLIP_SECS: u32 = 9;
+/// Extra seconds appended to every allocated shot after budget fitting so the
+/// clip has a soft landing before the next splice (Seedance max still applies).
+pub const SHOT_SPLICE_TAIL_PADDING_SECS: u32 = 2;
 
 /// Default look when the user leaves style empty.
 pub const DEFAULT_VISUAL_STYLE: &str = "cinematic film look, believable designed characters, natural wardrobe and lighting, clean healthy facial skin with clear readable features";
@@ -57,6 +60,9 @@ pub fn wants_stylized_non_photoreal(user_style: &str) -> bool {
         "cartoon",
         "toon",
         "manga",
+        "manhwa",
+        "webtoon",
+        "donghua",
         "comic",
         "cel-shad",
         "cel shad",
@@ -71,25 +77,49 @@ pub fn wants_stylized_non_photoreal(user_style: &str) -> bool {
         "watercolor",
         "ink-wash",
         "ink wash",
+        "oil painting",
+        "oil-paint",
+        "impasto",
         "pixar",
         "disney",
         "ghibli",
         "chibi",
+        "claymation",
+        "plasticine",
+        "stop-motion",
+        "stop motion",
+        "pixel-art",
+        "pixel art",
+        "isometric",
+        "diorama",
+        "blind-box",
+        "blind box",
+        "paper-cut",
+        "papercut",
     ];
     let positive_en = EN.iter().any(|n| positive_style_needle(&lower_raw, n));
     const ZH: &[&str] = &[
         "动画",
         "动漫",
         "二次元",
+        "国漫",
         "卡通",
         "漫画",
+        "韩漫",
         "插画",
         "手绘",
         "水彩",
         "水墨",
+        "油画",
         "日式",
         "赛璐璐",
         "绘本",
+        "黏土",
+        "定格",
+        "像素",
+        "盲盒",
+        "潮玩",
+        "等距",
     ];
     let positive_zh = ZH.iter().any(|n| positive_style_needle_zh(raw, n));
     positive_en || positive_zh
@@ -696,6 +726,9 @@ pub fn clip_duration_secs(target_total: Option<u32>, shot_count: usize) -> u32 {
 ///
 /// Prefer this over repeating [`clip_duration_secs`] when shot lengths should vary
 /// slightly so the last clip absorbs remainder seconds.
+///
+/// After fitting the budget, each shot gets [`SHOT_SPLICE_TAIL_PADDING_SECS`]
+/// (still clamped to [`MAX_CLIP_DURATION_SECS`]) so concatenated clips are less abrupt.
 pub fn allocate_clip_durations(target_total: Option<u32>, shot_count: usize) -> Vec<u32> {
     let n = shot_count.max(1);
     let target = normalize_target_duration_secs(target_total);
@@ -715,7 +748,17 @@ pub fn allocate_clip_durations(target_total: Option<u32>, shot_count: usize) -> 
             rem -= add;
         }
     }
+    apply_shot_splice_tail_padding(&mut durs);
     durs
+}
+
+/// Add splice-tail padding to finalized per-shot durations (≤ Seedance max).
+fn apply_shot_splice_tail_padding(durs: &mut [u32]) {
+    for d in durs.iter_mut() {
+        *d = d
+            .saturating_add(SHOT_SPLICE_TAIL_PADDING_SECS)
+            .clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS);
+    }
 }
 
 /// Estimate spoken seconds from `audio_desc` (dialogue + SFX text).
@@ -888,6 +931,9 @@ pub fn text_looks_like_dialogue(text: &str) -> bool {
 /// (`needs[i] >= MIN_DIALOGUE_CLIP_SECS`) or [`MIN_CLIP_DURATION_SECS`] otherwise.
 /// That can make the rendered sum slightly exceed `target` — preferred over
 /// cutting spoken lines mid-sentence.
+///
+/// Finally each shot receives [`SHOT_SPLICE_TAIL_PADDING_SECS`] (≤ max) so
+/// endings are less abrupt when clips are concatenated.
 pub fn allocate_clip_durations_for_content(
     target_total: Option<u32>,
     needs: &[u32],
@@ -990,6 +1036,8 @@ pub fn allocate_clip_durations_for_content(
             }
         }
     }
+    // Apply after budget fitting so compression cannot eat the splice breathing room.
+    apply_shot_splice_tail_padding(&mut durs);
     durs
 }
 
@@ -1056,6 +1104,19 @@ mod tests {
         assert!(wants_stylized_non_photoreal(
             "painted illustration style, detailed brushwork"
         ));
+        assert!(wants_stylized_non_photoreal(
+            "soft 3D claymation / stop-motion look, rounded plasticine forms"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "Chinese ink-wash painting animation, expressive brush strokes"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "Korean webtoon / manhwa illustration style, clean digital linework"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "premium pixel-art animation, deliberate low-resolution mosaic"
+        ));
+        assert!(wants_stylized_non_photoreal("黏土定格动画风格"));
         assert!(!wants_stylized_non_photoreal("cinematic film look"));
         assert!(!wants_stylized_non_photoreal(""));
         // Negated mentions must not flip cinematic prompts into stylized mode.
@@ -1221,8 +1282,8 @@ mod tests {
         assert_eq!(durs.len(), 3);
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
         assert!(durs.iter().sum::<u32>() >= 30.min(3 * MAX_CLIP_DURATION_SECS));
-        // Equal-ish spread for clean budgets.
-        assert!(durs.iter().all(|&d| d == 10));
+        // Equal-ish spread for clean budgets, then +splice tail padding.
+        assert!(durs.iter().all(|&d| d == 10 + SHOT_SPLICE_TAIL_PADDING_SECS));
     }
 
     #[test]
@@ -1279,7 +1340,7 @@ eleven twelve thirteen fourteen";
         let durs = allocate_clip_durations_for_content(Some(20), &needs);
         assert_eq!(durs.len(), 2);
         assert!(durs[0] >= 12);
-        assert!(durs[1] >= 5);
+        assert!(durs[1] >= 5 + SHOT_SPLICE_TAIL_PADDING_SECS);
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
         // Spare seconds go to the needier (dialogue) shot first.
         assert!(durs[0] >= durs[1]);
@@ -1287,11 +1348,15 @@ eleven twelve thirteen fourteen";
 
     #[test]
     fn allocate_for_content_fits_target_when_floors_overshoot() {
-        // Dialogue floors that exceed target compress toward dialogue-safe floors.
+        // Dialogue floors that exceed target compress toward dialogue-safe floors,
+        // then each shot gets splice-tail padding (may exceed the nominal target).
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(18), &needs);
-        assert_eq!(durs.iter().sum::<u32>(), 18);
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
+        assert_eq!(
+            durs.iter().sum::<u32>(),
+            18 + SHOT_SPLICE_TAIL_PADDING_SECS * 2
+        );
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS + SHOT_SPLICE_TAIL_PADDING_SECS));
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
     }
 
@@ -1299,8 +1364,13 @@ eleven twelve thirteen fourteen";
     fn allocate_for_content_caps_four_max_clips_to_forty() {
         let needs = vec![15, 15, 15, 15];
         let durs = allocate_clip_durations_for_content(Some(40), &needs);
-        assert_eq!(durs.iter().sum::<u32>(), 40);
+        // Budget fits to 40, then +2s/shot (capped at max) for splice tails.
+        assert_eq!(
+            durs.iter().sum::<u32>(),
+            40 + SHOT_SPLICE_TAIL_PADDING_SECS * 4
+        );
         assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
+        assert!(durs.iter().all(|&d| d <= MAX_CLIP_DURATION_SECS));
     }
 
     #[test]
@@ -1308,7 +1378,17 @@ eleven twelve thirteen fourteen";
         // Extreme under-budget: prefer exceeding target over 5s dialogue clips.
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(12), &needs);
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
-        assert_eq!(durs.iter().sum::<u32>(), MIN_DIALOGUE_CLIP_SECS * 2);
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS + SHOT_SPLICE_TAIL_PADDING_SECS));
+        assert_eq!(
+            durs.iter().sum::<u32>(),
+            (MIN_DIALOGUE_CLIP_SECS + SHOT_SPLICE_TAIL_PADDING_SECS) * 2
+        );
+    }
+
+    #[test]
+    fn splice_tail_padding_respects_seedance_max() {
+        let mut durs = vec![5, 13, 14, 15];
+        apply_shot_splice_tail_padding(&mut durs);
+        assert_eq!(durs, vec![7, 15, 15, 15]);
     }
 }
