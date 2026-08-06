@@ -23,6 +23,7 @@ use nomifun_companion::{companion_public_routes, companion_routes};
 use nomifun_customer_service::customer_service_routes;
 use nomifun_workshop::{workshop_public_routes, workshop_routes};
 use nomifun_creation::creation_routes;
+use nomifun_canvas::{video_canvas_public_routes, video_canvas_routes};
 use nomifun_conversation::{conversation_ops_routes, conversation_routes};
 use nomifun_cron::cron_routes;
 use nomifun_extension::{extension_routes, hub_routes, skill_routes};
@@ -893,6 +894,12 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    let video_canvas_authenticated = protect_instance_owner(
+        video_canvas_routes(states.video_canvas.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     let cloud_authenticated = cloud_routes(states.cloud)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1028,6 +1035,7 @@ pub fn create_router_with_all_state(
     // preview and canvas gallery thumbnail. GET-only, opaque bare UUIDv7 asset
     // and canvas ids; listing/upload/mutation stay authenticated.
     let workshop_public = workshop_public_routes(states.workshop);
+    let video_canvas_public = video_canvas_public_routes(states.video_canvas);
 
     // WebSocket upgrade route — exempt from CSRF (no cookie-based
     // double-submit) but still gets security response headers.
@@ -1131,6 +1139,7 @@ pub fn create_router_with_all_state(
         .merge(insights_authenticated)
         .merge(media_authenticated)
         .merge(vimax_authenticated)
+        .merge(video_canvas_authenticated)
         .merge(cloud_authenticated)
         .merge(webhook_authenticated)
         .merge(agent_execution_authenticated)
@@ -1166,6 +1175,7 @@ pub fn create_router_with_all_state(
     .merge(public_assets)
     .merge(companion_public)
     .merge(workshop_public)
+    .merge(video_canvas_public)
     .layer(middleware::from_fn(security_headers_middleware));
 
     // Raise the default request body limit from axum's 2MB default to

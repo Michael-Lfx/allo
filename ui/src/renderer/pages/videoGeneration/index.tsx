@@ -5,7 +5,7 @@
  * (theme tokens, rd-*, fill/primary).
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, Upload, VideoOne } from '@icon-park/react';
@@ -37,6 +37,7 @@ import {
 import styles from './index.module.css';
 
 type ListTab = 'recent' | 'tvShow';
+type WorkMode = 'agent' | 'canvas';
 
 function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
   const common: PlanBody = {
@@ -71,9 +72,44 @@ function titleForDraft(draft: VideoCreateDraft): string {
 const VideoGenerationListPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
+
+  const workMode: WorkMode =
+    searchParams.get('mode') === 'canvas' ? 'canvas' : 'agent';
+
+  const modeItems: SegmentedTabItem[] = useMemo(
+    () => [
+      {
+        key: 'agent',
+        label: t('videoGeneration.mode.agent', { defaultValue: 'Agent' }),
+      },
+      {
+        key: 'canvas',
+        label: (
+          <span className='inline-flex items-center gap-6px'>
+            {t('videoGeneration.mode.canvas', { defaultValue: 'Canvas' })}
+            <span
+              className='text-9px font-600 leading-none tracking-wide uppercase px-4px py-2px rd-4px bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'
+              aria-hidden='true'
+            >
+              {t('videoCanvas.dev.tag', { defaultValue: 'dev' })}
+            </span>
+          </span>
+        ),
+      },
+    ],
+    [t]
+  );
+
+  // Canvas mode lives on its own route tree.
+  useEffect(() => {
+    if (workMode === 'canvas') {
+      navigate('/video-generation/canvas', { replace: true });
+    }
+  }, [navigate, workMode]);
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -267,6 +303,33 @@ const VideoGenerationListPage: React.FC = () => {
     >
       {messageHolder}
       <div className='mx-auto flex w-full max-w-1180px box-border flex-col gap-26px'>
+        <div className='flex flex-wrap items-center justify-between gap-12px'>
+          <div>
+            <div className='flex items-center gap-10px mb-6px'>
+              <h1 className='m-0 text-22px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.title', { defaultValue: '视频生成' })}
+              </h1>
+            </div>
+            <p className='m-0 text-13px text-[var(--color-text-3)]'>
+              {t('videoGeneration.mode.agentHint', {
+                defaultValue: 'Agent 模式：一句话规划分镜并渲染成片。',
+              })}
+            </p>
+          </div>
+          <SegmentedTabs
+            size='sm'
+            items={modeItems}
+            activeKey={workMode}
+            onChange={(key) => {
+              if (key === 'canvas') {
+                navigate('/video-generation/canvas');
+              } else {
+                navigate('/video-generation');
+              }
+            }}
+          />
+        </div>
+
         <VideoCreateComposer loading={creating} onSubmit={(draft) => void handleCreate(draft)} />
 
         <section className='flex flex-col gap-12px'>

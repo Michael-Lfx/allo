@@ -1,6 +1,12 @@
 {
   "title": "Video Generation",
   "subtitle": "Start from an idea, script, or novel — plan artifacts and render a finished video.",
+  "mode": {
+    "agent": "Agent",
+    "canvas": "Canvas",
+    "agentHint": "Agent mode: plan storyboards from a prompt and render a film.",
+    "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control."
+  },
   "nav": {
     "entry": "Video Generation",
     "hoverCard": {

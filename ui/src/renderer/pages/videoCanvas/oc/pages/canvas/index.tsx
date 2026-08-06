@@ -1,0 +1,215 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { App, Button, Dropdown, Input, Modal, Select } from "antd";
+import { Download, FileUp, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+
+import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@oc/components/layout/workspace-page";
+import { WorkspaceLoadingState, WorkspaceState } from "@oc/components/layout/workspace-state";
+
+import { readZip } from "@oc/lib/zip";
+import { setMediaBlob } from "@oc/services/file-storage";
+import { setImageBlob } from "@oc/services/image-storage";
+import { CanvasProjectCard } from "@oc/components/canvas/canvas-project-card";
+import type { CanvasExportFile } from "@oc/types/canvas-export";
+import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
+import { useCanvasUiStore } from "@oc/stores/canvas/use-canvas-ui-store";
+import { exportCanvasProjects } from "@oc/lib/canvas/canvas-export";
+import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@oc/lib/canvas/canvas-drawing-storage";
+import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
+import { listProjects } from "@oc/services/api/projects";
+
+export default function CanvasPage() {
+    const { message } = App.useApp();
+    const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
+    const inputRef = useRef<HTMLInputElement>(null);
+    const autoOpenRef = useRef(false);
+    const [keyword, setKeyword] = useState("");
+    const [sort, setSort] = useState<"updated" | "name" | "nodes">("updated");
+    const [projectFilter, setProjectFilter] = useState("all");
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(24);
+    const hydrated = useCanvasStore((state) => state.hydrated);
+    const projects = useCanvasStore((state) => state.projects);
+    const importProject = useCanvasStore((state) => state.importProject);
+    const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
+    const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
+    const updateProject = useCanvasStore((state) => state.updateProject);
+    const [associationOpen, setAssociationOpen] = useState(false);
+    const [associationProjectId, setAssociationProjectId] = useState("");
+    const projectQuery = useQuery({ queryKey: ["projects"], queryFn: listProjects });
+
+    const mode = searchParams.get("mode");
+    const agentMode = mode === "new" || mode === "recent" || mode === "choose";
+    const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
+    const enterProject = (id: string) => {
+        navigate(`/canvas/${id}${agentQuery}`);
+    };
+    const createAndEnter = () => {
+        void createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`).then(({ id, syncError }) => {
+            if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
+            enterProject(id);
+        });
+    };
+    const filteredProjects = useMemo(() => {
+        const query = keyword.trim().toLowerCase();
+        const scoped = projects.filter((project) => projectFilter === "all" || (projectFilter === "independent" ? !project.projectId : project.projectId === projectFilter));
+        const values = query ? scoped.filter((project) => project.title.toLowerCase().includes(query)) : [...scoped];
+        values.sort((a, b) => sort === "name" ? a.title.localeCompare(b.title, "zh-CN") : sort === "nodes" ? b.nodes.length - a.nodes.length : new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+        return values;
+    }, [keyword, projectFilter, projects, sort]);
+    const projectNames = useMemo(() => new Map((projectQuery.data?.projects || []).map(({ project }) => [project.id, project.name])), [projectQuery.data]);
+    const visibleProjects = filteredProjects.slice((page - 1) * pageSize, page * pageSize);
+    const selectedProjects = projects.filter((project) => selectedIds.includes(project.id));
+    const associateSelected = async (nextProjectId = associationProjectId) => {
+        const projectId = nextProjectId || undefined;
+        selectedIds.forEach((id) => updateProject(id, { projectId }));
+        try {
+            await saveRemoteUserDataNow();
+            message.success(projectId ? "已加入项目" : "已移出项目，画布仍保留");
+            setAssociationOpen(false);
+        } catch (error) {
+            message.error(error instanceof Error ? `画布关系保存失败：${error.message}` : "画布关系保存失败");
+        }
+    };
+    const importCanvas = async (file?: File) => {
+        if (!file) return;
+        try {
+            const zip = await readZip(file);
+            const projectFile = zip.get("projects.json");
+            if (!projectFile) throw new Error("missing projects.json");
+            const data = JSON.parse(await projectFile.text()) as CanvasExportFile;
+            await Promise.all(
+                data.projects.flatMap((project) =>
+                    project.files.map(async (item) => {
+                        const blob = zip.get(item.path);
+                        if (!blob) return;
+                        const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
+                        await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
+                    }),
+                ),
+            );
+            await Promise.all(data.projects.map(async (item) => {
+                const drawingEngineById = new Map((item.drawingDocuments || []).map((document) => [document.drawingId, document.engine || "tldraw"]));
+                const importedProjectId = importProject({
+                    ...item.project,
+                    nodes: item.project.nodes.map((node) => node.type === "drawing" && node.metadata?.drawingId
+                        ? { ...node, metadata: { ...node.metadata, drawingEngine: drawingEngineById.get(node.metadata.drawingId) || node.metadata.drawingEngine || "tldraw" } }
+                        : node),
+                });
+                await Promise.all((item.drawingDocuments || []).map((document) => {
+                    const previewFile = document.previewPath ? zip.get(document.previewPath) : undefined;
+                    const preview = previewFile && !previewFile.type ? previewFile.slice(0, previewFile.size, "image/png") : previewFile;
+                    const renderFile = document.generationRender?.path ? zip.get(document.generationRender.path) : undefined;
+                    const renderBlob = renderFile && !renderFile.type ? renderFile.slice(0, renderFile.size, document.generationRender?.mimeType || "image/png") : renderFile;
+                    const render = renderBlob && document.generationRender
+                        ? {
+                              blob: renderBlob,
+                              pageId: document.generationRender.pageId,
+                              width: document.generationRender.width,
+                              height: document.generationRender.height,
+                              mimeType: document.generationRender.mimeType,
+                              background: document.generationRender.background,
+                          } satisfies CanvasDrawingRenderDraft
+                        : undefined;
+                    const engine = document.engine || "tldraw";
+                    return saveCanvasDrawing(importedProjectId, document.drawingId, engine, document.snapshot, {
+                        version: 2,
+                        engine,
+                        snapshot: document.snapshot,
+                        revision: Math.max(0, document.revision - 1),
+                        updatedAt: document.updatedAt,
+                        shapeCount: document.shapeCount,
+                        pageCount: document.pageCount,
+                    }, preview, render);
+                }));
+            }));
+            message.success(`已导入 ${data.projects.length} 个画布`);
+        } catch {
+            message.error("导入失败，请选择有效的画布压缩包");
+        } finally {
+            if (inputRef.current) inputRef.current.value = "";
+        }
+    };
+
+    useEffect(() => {
+        if (!hydrated || autoOpenRef.current || (mode !== "new" && mode !== "recent")) return;
+        autoOpenRef.current = true;
+        if (mode === "recent" && projects[0]?.id) {
+            enterProject(projects[0].id);
+            return;
+        }
+        void createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`).then(({ id, syncError }) => {
+            if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
+            enterProject(id);
+        });
+    }, [hydrated, message, mode, projects]);
+
+    if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">正在打开画布...</main>;
+
+    return (
+        <WorkspacePage grid className="canvas-library-page">
+                <PageHeader
+                    icon="canvas"
+                    title="画布"
+                    description="管理自由创作空间和已加入项目的制作画布。"
+                    meta={<span className="text-xs tabular-nums text-foreground/45">{hydrated ? `${filteredProjects.length} 个` : "载入中"}</span>}
+                    actions={(
+                        <>
+                        {projects.length ? (
+                                    <Dropdown menu={{ items: [{ key: "delete-all", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除全部画布", onClick: () => setDeleteIds(projects.map((project) => project.id)) }] }} trigger={["click"]}>
+                                <Button className="!h-9 !w-9 !p-0" aria-label="更多画布操作" title="更多操作" icon={<MoreHorizontal className="size-4" />} />
+                                    </Dropdown>
+                                ) : null}
+                        <Button className="!h-9 !px-3.5" disabled={!hydrated} icon={<FileUp className="size-3.5" />} onClick={() => inputRef.current?.click()}>导入</Button>
+                        <Button className="!h-9 !px-4" type="primary" disabled={!hydrated} icon={<Plus className="size-3.5" />} onClick={createAndEnter}>新建画布</Button>
+                        </>
+                    )}
+                />
+
+                <ListToolbar
+                    className="canvas-library-toolbar"
+                    active={Boolean(keyword || projectFilter !== "all" || sort !== "updated")}
+                    trailing={<span className="text-xs tabular-nums text-foreground/42">显示 {visibleProjects.length} / {filteredProjects.length}</span>}
+                    onReset={() => { setKeyword(""); setProjectFilter("all"); setSort("updated"); setPage(1); }}
+                >
+                    <div className="canvas-library-search min-w-[220px] flex-[1_1_420px]">
+                        <Input allowClear className="w-full" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索画布" aria-label="搜索画布" onChange={(event) => { setKeyword(event.target.value); setPage(1); }} />
+                    </div>
+                    <Select aria-label="按所属项目筛选" className="w-[168px]" value={projectFilter} onChange={(value) => { setProjectFilter(value); setPage(1); }} options={[{ label: "全部项目", value: "all" }, { label: "自由画布", value: "independent" }, ...(projectQuery.data?.projects || []).map(({ project }) => ({ label: project.name, value: project.id }))]} />
+                    <Select aria-label="画布排序" className="w-[136px]" value={sort} onChange={(value) => { setSort(value); setPage(1); }} options={[{ label: "最近更新", value: "updated" }, { label: "名称排序", value: "name" }, { label: "节点数量", value: "nodes" }]} />
+                </ListToolbar>
+
+                {selectedIds.length ? (
+                    <div className="app-canvas-selection-toolbar mt-2 flex min-h-10 flex-wrap items-center gap-2 rounded-md border px-3 py-1.5 text-xs">
+                        <strong className="mr-auto font-medium">已选 {selectedIds.length} 个画布</strong>
+                        <Button size="small" disabled={!hydrated || projectQuery.isLoading} onClick={() => { setAssociationProjectId(selectedProjects[0]?.projectId || ""); setAssociationOpen(true); }}>加入项目</Button>
+                        {selectedProjects.some((project) => project.projectId) ? <Button size="small" disabled={!hydrated} onClick={() => { setAssociationProjectId(""); void associateSelected(""); }}>移出项目</Button> : null}
+                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, `影策画布-${selectedIds.length}个画布`)}>导出</Button>
+                        <Button size="small" danger disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>删除</Button>
+                    </div>
+                ) : null}
+
+                {!hydrated ? (
+                    <WorkspaceLoadingState label="正在恢复画布" detail="读取本地缓存与账号同步状态" />
+                ) : visibleProjects.length ? (
+                    <CollectionGrid className="canvas-library-grid">
+                        {visibleProjects.map((project) => (
+                            <CanvasProjectCard key={project.id} project={project} projectName={project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined} />
+                        ))}
+                    </CollectionGrid>
+                ) : (
+                    <WorkspaceState icon="canvas" title={keyword ? "没有匹配的画布" : "创建一张可继续生长的画布"} description={keyword ? "换一个画布名称或重置筛选条件。" : "把文本、图片、视频和 Agent 操作连接成可追踪的创作流程。"} action={!keyword ? <Button type="primary" icon={<Plus className="size-3.5" />} onClick={createAndEnter}>新建画布</Button> : undefined} />
+                )}
+
+                <PaginationBar current={page} pageSize={pageSize} total={filteredProjects.length} pageSizeOptions={[12, 24, 48]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
+
+                <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
+                <Modal title="加入项目" open={associationOpen} okText="保存关联" cancelText="取消" okButtonProps={{ disabled: !associationProjectId, loading: projectQuery.isFetching }} onCancel={() => setAssociationOpen(false)} onOk={() => void associateSelected()}>
+                    <p className="mb-3 text-sm text-foreground/60">选中的画布会保留原有节点和本地媒体，只增加项目关联。</p>
+                    <Select className="w-full" value={associationProjectId || undefined} placeholder="选择项目" options={(projectQuery.data?.projects || []).map((item) => ({ label: item.project.name, value: item.project.id }))} onChange={setAssociationProjectId} />
+                </Modal>
+        </WorkspacePage>
+    );
+}

@@ -47,6 +47,7 @@ import media from './media.json';
 import cloudLogin from './cloudLogin.json';
 import learning from './learning.json';
 import videoGeneration from './videoGeneration.json';
+import videoCanvas from './videoCanvas.json';
 
 export default {
   common,
@@ -93,4 +94,5 @@ export default {
   cloudLogin,
   learning,
   videoGeneration,
+  videoCanvas,
 };

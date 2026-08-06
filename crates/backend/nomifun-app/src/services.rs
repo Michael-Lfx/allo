@@ -1214,6 +1214,8 @@ pub struct AppServices {
     pub media_service: Arc<nomifun_media::MediaApiService>,
     /// ViMax video-generation sessions / plan / render.
     pub vimax_service: Arc<nomifun_vimax::VimaxApiService>,
+    /// Video-generation Canvas mode (open-ai-canvas port) — independent of Workshop.
+    pub video_canvas_service: Arc<nomifun_canvas::CanvasService>,
     /// Flowy cloud account (email OTP login, whoami).
     pub cloud_service: Arc<nomifun_cloud::CloudService>,
     /// The process-wide browser authority. Browser-capable hosts inject one
@@ -2886,6 +2888,7 @@ impl AppServices {
             nomifun_vimax::VimaxApiService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open vimax service: {e}"))?,
         );
+        let video_canvas_service = nomifun_canvas::CanvasService::new(data_dir.clone());
         let cloud_service = Arc::new(
             nomifun_cloud::CloudService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open cloud service: {e}"))?,
@@ -2984,6 +2987,7 @@ impl AppServices {
             insights_service,
             media_service,
             vimax_service,
+            video_canvas_service,
             cloud_service,
             #[cfg(feature = "browser-use")]
             browser_session_hub: None,

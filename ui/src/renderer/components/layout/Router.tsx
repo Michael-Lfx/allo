@@ -38,6 +38,8 @@ const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/K
 const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
+const VideoCanvasListPage = React.lazy(() => import('@renderer/pages/videoCanvas'));
+const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
 // TODO: workshop/assets stay deferred (no routes until explicitly published)
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
 // const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
@@ -333,6 +335,14 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/learn' element={withRouteFallback(LearningPage)} />
           <Route path='/learn/:id' element={withRouteFallback(LearningPage)} />
           <Route path='/video-generation' element={withRouteFallback(VideoGenerationListPage)} />
+          <Route
+            path='/video-generation/canvas'
+            element={withRouteFallback(VideoCanvasListPage)}
+          />
+          <Route
+            path='/video-generation/canvas/:id'
+            element={withRouteFallback(VideoCanvasProjectPage)}
+          />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
           {/* workshop/assets deferred — keep pages in tree but unrouted */}
           {/*
