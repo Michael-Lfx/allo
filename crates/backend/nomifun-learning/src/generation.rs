@@ -102,7 +102,7 @@ Rules:
 - single_choice needs 3-5 distinct options and answer must exactly equal one option.
 - true_false answer must be a JSON boolean.
 - reflection answer must be null and asks the learner to explain or apply an idea.
-- Every activity binds a concept defined in the course blueprint.
+- Every activity binds a concept by its exact "key" as defined in the course blueprint.
 - Questions, answers, explanations, and the summary must be supported by the cited file excerpt.
 - Output JSON only, without Markdown fences or commentary."#;
 
@@ -388,7 +388,7 @@ fn build_lesson_prompt(
 ) -> String {
     let mut prompt = format!(
         "Course: {}\nModule {}/{}: {}\nLesson {}/{}: {}\nLesson purpose: {}\n\
-         Lesson concepts:\n",
+         Lesson concepts (use these exact keys when binding activities):\n",
         blueprint.title,
         module_index + 1,
         blueprint.modules.len(),
@@ -405,7 +405,8 @@ fn build_lesson_prompt(
             .find(|concept| &concept.key == concept_key);
         if let Some(concept) = concept {
             prompt.push_str(&format!(
-                "- {} — {}\n",
+                "- {} ({}) — {}\n",
+                concept.key,
                 concept.title,
                 concept.description.trim()
             ));
