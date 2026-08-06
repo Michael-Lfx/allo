@@ -24,6 +24,7 @@ import { useCallback, useMemo, useRef } from 'react';
 import { type TFunction } from 'i18next';
 import type { NavigateFunction } from 'react-router-dom';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { registerConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
 import type {
   PendingConversation,
@@ -32,6 +33,7 @@ import type {
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { hasGuidInitialPayload, planGuidEntry, isAutoWorkEntry } from './autoWorkEntry';
 import { persistGuidInitialMessageHandoff } from './guidInitialMessageHandoff';
+import { guidTransitionMark, guidTransitionStart } from './guidTransitionTiming';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import type { AvailableAgent, EffectiveAgentInfo } from '../types';
 import type {
@@ -284,12 +286,21 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
         assertCreatedConversationPreset(conversation, preset_id);
         attachPending?.(conversation.id);
+        guidTransitionMark('createResolved');
 
-        // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
-        // the new conversation before navigating, so they are live when the
-        // conversation page consumes the initial message.
+        // Advanced drafts (knowledge/AutoWork/IDMM) apply in the background
+        // while navigation proceeds; the destination awaits the config gate
+        // before sending the first turn, so they are still live before the
+        // runtime sees the message — the invariant is unchanged, only the
+        // navigation no longer blocks on it.
         advancePending?.('configuring');
-        await applyAdvancedConfig?.(conversation.id);
+        registerConversationConfig(
+          conversation.id,
+          (async () => {
+            await applyAdvancedConfig?.(conversation.id);
+            guidTransitionMark('configureSettled');
+          })()
+        );
 
         emitter.emit('chat.history.refresh');
 
@@ -310,6 +321,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        guidTransitionMark('navigateDispatched');
         return true;
       } catch (error: unknown) {
         console.error('Failed to create OpenClaw conversation:', error);
@@ -344,12 +356,21 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
         assertCreatedConversationPreset(conversation, preset_id);
         attachPending?.(conversation.id);
+        guidTransitionMark('createResolved');
 
-        // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
-        // the new conversation before navigating, so they are live when the
-        // conversation page consumes the initial message.
+        // Advanced drafts (knowledge/AutoWork/IDMM) apply in the background
+        // while navigation proceeds; the destination awaits the config gate
+        // before sending the first turn, so they are still live before the
+        // runtime sees the message — the invariant is unchanged, only the
+        // navigation no longer blocks on it.
         advancePending?.('configuring');
-        await applyAdvancedConfig?.(conversation.id);
+        registerConversationConfig(
+          conversation.id,
+          (async () => {
+            await applyAdvancedConfig?.(conversation.id);
+            guidTransitionMark('configureSettled');
+          })()
+        );
 
         emitter.emit('chat.history.refresh');
 
@@ -370,6 +391,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        guidTransitionMark('navigateDispatched');
         return true;
       } catch (error: unknown) {
         console.error('Failed to create Nanobot conversation:', error);
@@ -418,31 +440,42 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
         assertCreatedConversationPreset(conversation, preset_id);
         attachPending?.(conversation.id);
+        guidTransitionMark('createResolved');
 
-        // Push the Guid page's advanced drafts (knowledge/AutoWork/IDMM) onto
-        // the new conversation before navigating, so they are live when the
-        // conversation page consumes the initial message.
+        // Advanced drafts (knowledge/AutoWork/IDMM) apply in the background
+        // while navigation proceeds; the destination awaits the config gate
+        // before sending the first turn, so they are still live before the
+        // runtime sees the message — the invariant is unchanged, only the
+        // navigation no longer blocks on it.
         advancePending?.('configuring');
-        await applyAdvancedConfig?.(conversation.id);
+        registerConversationConfig(
+          conversation.id,
+          (async () => {
+            await applyAdvancedConfig?.(conversation.id);
 
-        // Goal 模式：在首条消息发出前把输入设为会话目标（等价 /goal <text>）。
-        // 无运行时的会话后端会直接写持久化快照，agent 首次构建时 restore 注入。
-        // 设定失败不阻断发送——降级为普通首条消息，仅提示用户。
-        if (goalMode && entryPlan.sendInitialMessage && input.trim()) {
-          try {
-            await ipcBridge.conversation.goalAction.invoke({
-              conversation_id: conversation.id,
-              action: 'set',
-              objective: input.trim(),
-            });
-            Message.success(
-              t('conversation.goal.toast.setStarted', { objective: summarizeGoalObjective(input) })
-            );
-          } catch (error) {
-            console.error('[useGuidSend] Failed to set goal for goal mode:', error);
-            Message.warning(t('guid.goalMode.applyFailed'));
-          }
-        }
+            // Goal 模式：在首条消息发出前把输入设为会话目标（等价 /goal <text>）。
+            // 无运行时的会话后端会直接写持久化快照，agent 首次构建时 restore 注入。
+            // 设定失败不阻断发送——降级为普通首条消息，仅提示用户。
+            // 目标端在消费首条消息前会 await 配置门，"goal 先于首条消息"的不变量不变。
+            if (goalMode && entryPlan.sendInitialMessage && input.trim()) {
+              try {
+                await ipcBridge.conversation.goalAction.invoke({
+                  conversation_id: conversation.id,
+                  action: 'set',
+                  objective: input.trim(),
+                });
+                Message.success(
+                  t('conversation.goal.toast.setStarted', { objective: summarizeGoalObjective(input) })
+                );
+              } catch (error) {
+                console.error('[useGuidSend] Failed to set goal for goal mode:', error);
+                Message.warning(t('guid.goalMode.applyFailed'));
+              }
+            }
+
+            guidTransitionMark('configureSettled');
+          })()
+        );
 
         emitter.emit('chat.history.refresh');
 
@@ -461,6 +494,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        guidTransitionMark('navigateDispatched');
         return true;
       } catch (error: unknown) {
         console.error('Failed to create Nomi conversation:', error);
@@ -532,9 +566,18 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
         assertCreatedConversationPreset(conversation, preset_id);
         attachPending?.(conversation.id);
+        guidTransitionMark('createResolved');
 
+        // Advanced drafts apply in the background while navigation proceeds —
+        // the destination awaits the config gate before the first turn.
         advancePending?.('configuring');
-        await applyAdvancedConfig?.(conversation.id);
+        registerConversationConfig(
+          conversation.id,
+          (async () => {
+            await applyAdvancedConfig?.(conversation.id);
+            guidTransitionMark('configureSettled');
+          })()
+        );
 
         emitter.emit('chat.history.refresh');
 
@@ -554,6 +597,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         seedConversationCache(conversation);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
+        guidTransitionMark('navigateDispatched');
         return true;
       } catch (error: unknown) {
         console.error('Failed to create ACP conversation:', error);
@@ -628,6 +672,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     }
     sendingRef.current = true;
     setLoading(true);
+    guidTransitionStart();
     beginPending?.({
       input,
       files: files.length > 0 ? files : undefined,

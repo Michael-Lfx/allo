@@ -42,6 +42,7 @@ import {
   useConversationStopAttemptGuard,
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { awaitConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { getConversationRuntimeAuthority } from '@/renderer/pages/conversation/utils/conversationRuntime';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
@@ -626,6 +627,10 @@ const BasicRuntimeSendBox: React.FC<{
         }
         const { input, files, idempotency_key } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
+        // Invariant: the guid page's background config (knowledge/IDMM/AutoWork)
+        // must settle before the first turn reaches the runtime. Navigation no
+        // longer blocks on it, so the ordering is enforced here instead.
+        await awaitConversationConfig(conversation_id);
         let resolvedWorkspace = workspacePath;
         if (config.workspaceResolution === 'at-initial-message') {
           const res = await getConversationOrNull(conversation_id);

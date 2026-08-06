@@ -1,5 +1,6 @@
 import type { ConversationId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
+import { guidTransitionEnd } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createPendingTransitionController,
@@ -75,6 +76,7 @@ export const PendingConversationProvider: React.FC<{ children: React.ReactNode }
   if (!controllerRef.current) {
     controllerRef.current = createPendingTransitionController({
       onChange: setSnapshot,
+      onSettled: guidTransitionEnd,
       exitDurationMs: () => (prefersReducedMotion() ? 0 : EXIT_DURATION_MS),
       subscribeReveal: (fn) => {
         emitter.on('conversation.transition.reveal', fn);

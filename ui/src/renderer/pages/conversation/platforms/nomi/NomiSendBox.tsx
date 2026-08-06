@@ -53,6 +53,7 @@ import {
   useConversationStopAttemptGuard,
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { awaitConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import {
   warmupConversation,
@@ -526,6 +527,10 @@ const NomiSendBox: React.FC<{
         }
         const { input, files, idempotency_key, inject_skills } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
+        // Invariant: the guid page's background config (knowledge/IDMM/goal)
+        // must settle before the first turn reaches the runtime. Navigation no
+        // longer blocks on it, so the ordering is enforced here instead.
+        await awaitConversationConfig(conversation_id);
         await executeCommand(
           { id: idempotency_key, input, files, injectSkills: inject_skills, initialOnly: true },
           undefined,

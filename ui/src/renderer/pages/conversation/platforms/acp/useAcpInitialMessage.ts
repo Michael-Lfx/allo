@@ -18,6 +18,7 @@ import {
   releaseInitialMessageDelivery,
 } from '../initialMessageDelivery';
 import { classifyPublicMessageDelivery } from '../publicMessageDelivery';
+import { awaitConversationConfig } from '../../utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '../../utils/conversationCreateError';
 
 type UseAcpInitialMessageParams = {
@@ -77,6 +78,10 @@ export const useAcpInitialMessage = ({
         }
         const { input, files, idempotency_key, inject_skills } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
+        // Invariant: the guid page's background config (knowledge/IDMM/AutoWork)
+        // must settle before the first turn reaches the runtime. Navigation no
+        // longer blocks on it, so the ordering is enforced here instead.
+        await awaitConversationConfig(conversation_id);
         const displayMessage = buildDisplayMessage(input, files, workspacePath || '');
 
         // POST first to obtain the server-assigned msg_id, then render the
