@@ -24,6 +24,9 @@ describe('CodeMirror shared seam', () => {
     expect(text.includes("'@codemirror/lang-markdown'")).toBe(true);
     expect(text.includes("'@codemirror/lang-html'")).toBe(true);
     expect(text.includes("@uiw/react-codemirror")).toBe(true);
+    expect(text.includes('failedModuleUrl')).toBe(true);
+    expect(text.includes('storageGeneration')).toBe(true);
+    expect(text.includes('codeMirrorVersions')).toBe(true);
   });
 
   test('all renderer callsites use the shared editor wrapper', () => {

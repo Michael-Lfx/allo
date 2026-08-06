@@ -6,12 +6,21 @@ import UnoCSS from 'unocss/vite';
 import unoConfig from './uno.config.ts';
 import { createUiBuildManifest } from '../scripts/ui-build-manifest';
 
-const uiPackage = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string };
+const uiPackage = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as {
+  version: string;
+  dependencies?: Record<string, string>;
+};
+const codeMirrorPackages = [
+  '@codemirror/state',
+  '@codemirror/view',
+  '@codemirror/language',
+  '@codemirror/commands',
+  '@lezer/common',
+] as const;
+const rawApiContractVersion = readFileSync(resolve(__dirname, '../ui-api-contract-version.txt'), 'utf8').trim();
+const manifest = createUiBuildManifest(uiPackage.version, rawApiContractVersion);
 
 function uiBuildManifestPlugin(): Plugin {
-  const rawApiContractVersion = readFileSync(resolve(__dirname, '../ui-api-contract-version.txt'), 'utf8').trim();
-  const manifest = createUiBuildManifest(uiPackage.version, rawApiContractVersion);
-
   return {
     name: 'nomifun-ui-build-manifest',
     apply: 'build' as const,
@@ -51,6 +60,10 @@ ${components.map((k: string) => `const ${k.trim()} = IconParkHOC(_${k.trim()})`)
 }
 
 const src = resolve(__dirname, 'src');
+const buildId = manifest.frontend_build_id;
+const codeMirrorRuntimeVersions = Object.fromEntries(
+  codeMirrorPackages.map((packageName) => [packageName, uiPackage.dependencies?.[packageName] ?? 'unknown'])
+);
 
 export default defineConfig(({ mode }) => {
   // WebUI dev mode (`vite --mode webdev`, driven by the UI `dev:web` script and
@@ -92,6 +105,10 @@ export default defineConfig(({ mode }) => {
       proxy,
     },
     plugins: [iconParkPlugin(), react(), UnoCSS({ ...unoConfig }), uiBuildManifestPlugin()],
+    define: {
+      __NOMI_BUILD_ID__: JSON.stringify(buildId),
+      __NOMI_CODEMIRROR_VERSIONS__: JSON.stringify(codeMirrorRuntimeVersions),
+    },
     resolve: {
       alias: {
         '@': src,

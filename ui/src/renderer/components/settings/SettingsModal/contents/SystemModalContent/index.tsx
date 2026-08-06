@@ -199,6 +199,13 @@ const SystemModalContent: React.FC = () => {
     if (systemInfo) {
       initializingRef.current = true;
       form.setFieldsValue({ workDir: systemInfo.workDir });
+      try {
+        if (window.sessionStorage.getItem('nomifun.relocationTarget') === systemInfo.workDir) {
+          window.sessionStorage.setItem('nomifun.relocationCompleted', '1');
+        }
+      } catch {
+        // Diagnostics are best effort and must not affect settings bootstrap.
+      }
       requestAnimationFrame(() => {
         initializingRef.current = false;
       });
@@ -284,7 +291,19 @@ const SystemModalContent: React.FC = () => {
           // Pass systemInfo.cacheDir as-is: cacheDir is no longer user-editable
           // (removed from UI), but the backend IPC interface still expects it.
           // Passing the current value ensures existing custom paths are preserved.
-          await ipcBridge.application.updateSystemInfo.invoke({ cacheDir: systemInfo.cacheDir, workDir });
+          const response = await ipcBridge.application.updateSystemInfo.invoke({
+            cacheDir: systemInfo.cacheDir,
+            workDir,
+          });
+          try {
+            if (response.operation_id) {
+              window.sessionStorage.setItem('nomifun.lastRelocationOperationId', response.operation_id);
+              window.sessionStorage.setItem('nomifun.relocationTarget', workDir);
+              window.sessionStorage.setItem('nomifun.relocationCompleted', '0');
+            }
+          } catch {
+            // Diagnostics are best effort and must not affect the restart path.
+          }
         } catch (persistError: unknown) {
           setIsRelocating(false);
           // A failure (or cancel) here means nothing was written, so reverting

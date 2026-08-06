@@ -6,6 +6,7 @@ import { json } from '@codemirror/lang-json';
 import { markdown } from '@codemirror/lang-markdown';
 import type { Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
+import { getBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -59,6 +60,32 @@ interface CodeMirrorErrorBoundaryState {
   error: Error | null;
 }
 
+function codeMirrorDiagnostics(error: Error, componentStack: string) {
+  let storageGeneration = 'unknown';
+  try {
+    storageGeneration = getBrowserStorageGeneration();
+  } catch {
+    // The editor can fail before bootstrap finishes; keep the diagnostic
+    // useful without making the error boundary throw a second error.
+  }
+  const message = `${error.message}\n${error.stack ?? ''}`;
+  const failedModuleUrl = message.match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
+  const session = typeof window !== 'undefined' ? window.sessionStorage : null;
+  return {
+    errorName: error.name,
+    errorMessage: error.message,
+    route: typeof window !== 'undefined' ? window.location.hash : 'unknown',
+    failedModuleUrl,
+    buildId: typeof __NOMI_BUILD_ID__ !== 'undefined' ? __NOMI_BUILD_ID__ : 'dev',
+    storageGeneration,
+    lastRelocationOperationId: session?.getItem('nomifun.lastRelocationOperationId') ?? null,
+    justCompletedRelocation: session?.getItem('nomifun.relocationCompleted') === '1',
+    codeMirrorVersions:
+      typeof __NOMI_CODEMIRROR_VERSIONS__ !== 'undefined' ? __NOMI_CODEMIRROR_VERSIONS__ : {},
+    componentStack,
+  };
+}
+
 class CodeMirrorErrorBoundary extends React.Component<
   CodeMirrorErrorBoundaryProps,
   CodeMirrorErrorBoundaryState
@@ -72,7 +99,7 @@ class CodeMirrorErrorBoundary extends React.Component<
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     // Keep the exact runtime extension error available for packaged-app
     // diagnostics while limiting the failure to this editor instance.
-    console.error('[CodeMirrorErrorBoundary] editor crashed:', error, info.componentStack);
+    console.error('[CodeMirrorErrorBoundary] editor crashed', codeMirrorDiagnostics(error, info.componentStack ?? ''));
   }
 
   render(): React.ReactNode {
@@ -114,6 +141,7 @@ class CodeMirrorErrorBoundary extends React.Component<
 
 export type CodeMirrorEditorProps = Omit<ReactCodeMirrorProps, 'extensions'> & {
   onClose?: () => void;
+  /** @internal The shared seam owns extension construction; business pages must not pass extensions. */
   extensions?: Extension[];
   language?: CodeMirrorLanguage;
   lineWrapping?: boolean;
