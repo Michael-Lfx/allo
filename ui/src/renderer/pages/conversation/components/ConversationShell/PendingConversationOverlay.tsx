@@ -6,6 +6,13 @@ import { Spin } from '@arco-design/web-react';
 import { Paperclip } from '@icon-park/react';
 import classNames from 'classnames';
 import { iconColors } from '@/renderer/styles/colors';
+import {
+  CHAT_COMPOSER_SPACER_CLASSES,
+  CHAT_CONTENT_COLUMN_CLASSES,
+  CHAT_HEADER_SPACER_CLASSES,
+  CHAT_MESSAGE_ROW_METRICS_CLASSES,
+  CHAT_SCROLL_AREA_CLASSES,
+} from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { usePendingConversation } from './PendingConversationContext';
 import styles from './PendingConversationOverlay.module.css';
 
@@ -64,15 +71,16 @@ const PendingConversationOverlay: React.FC = () => {
     >
       {/* Header-height spacer — keeps the message area aligned with the real
           ChatLayout header so the swap doesn't jump vertically. */}
-      <div className='shrink-0 min-h-44px pt-8px pb-10px' />
+      <div className={CHAT_HEADER_SPACER_CLASSES} />
 
-      <div className='flex-1 flex flex-col px-20px min-h-0 overflow-hidden'>
-        <div className='flex-1 overflow-y-auto py-10px min-h-0'>
+      <div className={classNames(CHAT_CONTENT_COLUMN_CLASSES, 'overflow-hidden')}>
+        <div className={CHAT_SCROLL_AREA_CLASSES}>
           {/* Echoed user message (right) — matches MessageText user bubble. */}
           {trimmedInput && (
             <div
               className={classNames(
-                'w-full min-w-0 flex justify-end px-8px m-t-10px max-w-full md:max-w-780px mx-auto',
+                'w-full min-w-0 flex justify-end',
+                CHAT_MESSAGE_ROW_METRICS_CLASSES,
                 styles.pendingUserBubbleEnter
               )}
             >
@@ -96,7 +104,8 @@ const PendingConversationOverlay: React.FC = () => {
           {/* Preset loading bubble (left) — same skin as the skeleton bubbles. */}
           <div
             className={classNames(
-              'w-full min-w-0 flex justify-start px-8px m-t-10px max-w-full md:max-w-780px mx-auto',
+              'w-full min-w-0 flex justify-start',
+              CHAT_MESSAGE_ROW_METRICS_CLASSES,
               styles.pendingAssistEnter
             )}
           >
@@ -129,7 +138,7 @@ const PendingConversationOverlay: React.FC = () => {
         </div>
 
         {/* Composer-height spacer so the layout footprint matches the real page. */}
-        <div className='shrink-0 h-84px' />
+        <div className={CHAT_COMPOSER_SPACER_CLASSES} />
       </div>
     </div>
   );

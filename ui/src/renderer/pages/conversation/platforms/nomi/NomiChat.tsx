@@ -10,6 +10,7 @@ import ConversationEmptyPrompt from '@renderer/pages/conversation/Messages/compo
 import TurnStatusRail from '@renderer/pages/conversation/Messages/components/TurnStatusRail';
 import GoalStatusNotice from '@/renderer/components/chat/GoalStatusNotice';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
+import { CHAT_CONTENT_COLUMN_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
   MessageListLoadingProvider,
   MessageListProvider,
@@ -114,7 +115,7 @@ const NomiChat: React.FC<{
   return (
     <ConversationProvider value={conversationValue}>
       <ConversationArtifactProvider conversation_id={conversation_id}>
-        <div className='flex-1 flex flex-col px-20px min-h-0'>
+        <div className={CHAT_CONTENT_COLUMN_CLASSES}>
           <FlexFullContainer>
             <MessageList
               className='flex-1'
