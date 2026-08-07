@@ -98,6 +98,18 @@ pub struct SupportLogsPackResponse {
     pub truncated: bool,
 }
 
+/// Optional correlation context for `POST /api/system/support-logs/pack`.
+///
+/// A turn-specific support report may include the bounded raw SSE diagnostic
+/// captured for that failed provider turn. An omitted id preserves the normal
+/// application-log-only archive.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackSupportLogsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
 /// Request body for `POST /api/system/check-update`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

@@ -11,6 +11,7 @@ import type {
   ICloudImLogUploadResponse,
   ICloudImMessage,
   ICloudImMessageList,
+  IPackSupportLogsRequest,
   ISupportLogsPackResponse,
 } from '@/common/adapter/ipcBridge';
 import { SUPPORT_CHAT_APP } from './supportChatTypes';
@@ -52,8 +53,8 @@ export const supportChatApi = {
     return cloudIm.uploadScreenshot.invoke(params);
   },
 
-  packLogs(): Promise<ISupportLogsPackResponse> {
-    return cloudIm.packSupportLogs.invoke();
+  packLogs(params: IPackSupportLogsRequest = {}): Promise<ISupportLogsPackResponse> {
+    return cloudIm.packSupportLogs.invoke(params);
   },
 
   uploadLogFromPath(params: {

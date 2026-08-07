@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use nomifun_api_types::SupportLogsPackResponse;
 use nomifun_common::AppError;
+use serde::Deserialize;
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
@@ -14,6 +15,9 @@ use zip::write::SimpleFileOptions;
 pub const MAX_RAW_BYTES: u64 = 40 * 1024 * 1024;
 /// Only include log files modified within this many days.
 pub const MAX_AGE_DAYS: u64 = 3;
+const FAILED_PROVIDER_SSE_DIRECTORY: &str = "diagnostics/failed-provider-sse";
+const MAX_FAILED_SSE_FILES: usize = 4;
+const MAX_FAILED_SSE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct CandidateLog {
@@ -21,6 +25,22 @@ struct CandidateLog {
     name: String,
     size: u64,
     modified: SystemTime,
+}
+
+#[derive(Debug, Clone)]
+struct FailedSseCapture {
+    sse_path: PathBuf,
+    metadata_path: PathBuf,
+    sse_file_name: String,
+    metadata_file_name: String,
+    size: u64,
+    modified: SystemTime,
+}
+
+#[derive(Debug, Deserialize)]
+struct FailedSseMetadata {
+    turn_id: Option<String>,
+    sse_file: String,
 }
 
 fn is_support_log_filename(name: &str) -> bool {
@@ -75,6 +95,82 @@ fn list_candidates(
 
     out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.size.cmp(&a.size)));
     Ok(out)
+}
+
+fn is_valid_turn_id(turn_id: &str) -> bool {
+    !turn_id.is_empty()
+        && turn_id.len() <= 64
+        && turn_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn is_simple_sse_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['/', '\\'])
+        && Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("sse"))
+}
+
+fn list_failed_sse_captures(data_dir: &Path, turn_id: &str) -> Result<Vec<FailedSseCapture>, AppError> {
+    if !is_valid_turn_id(turn_id) {
+        return Err(AppError::BadRequest("turnId must contain only letters, digits, '-' or '_'".into()));
+    }
+
+    let directory = data_dir.join(FAILED_PROVIDER_SSE_DIRECTORY);
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(&directory).map_err(|error| {
+        AppError::Internal(format!(
+            "cannot read failed provider SSE directory '{}': {error}",
+            directory.display()
+        ))
+    })?;
+
+    let mut captures = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| AppError::Internal(format!("failed SSE directory entry: {error}")))?;
+        let metadata_path = entry.path();
+        if !metadata_path.is_file()
+            || !metadata_path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        {
+            continue;
+        }
+        let metadata_file_name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(metadata_bytes) = std::fs::read(&metadata_path) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_slice::<FailedSseMetadata>(&metadata_bytes) else {
+            continue;
+        };
+        if metadata.turn_id.as_deref() != Some(turn_id) || !is_simple_sse_file_name(&metadata.sse_file) {
+            continue;
+        }
+
+        let sse_path = directory.join(&metadata.sse_file);
+        let Ok(sse_metadata) = sse_path.metadata() else {
+            continue;
+        };
+        if !sse_metadata.is_file() || sse_metadata.len() > MAX_FAILED_SSE_BYTES {
+            continue;
+        }
+        captures.push(FailedSseCapture {
+            sse_path,
+            metadata_path,
+            sse_file_name: metadata.sse_file,
+            metadata_file_name,
+            size: sse_metadata.len(),
+            modified: sse_metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        });
+    }
+
+    captures.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.size.cmp(&a.size)));
+    captures.truncate(MAX_FAILED_SSE_FILES);
+    Ok(captures)
 }
 
 fn select_files(candidates: Vec<CandidateLog>, max_raw_bytes: u64) -> (Vec<CandidateLog>, bool) {
@@ -160,9 +256,41 @@ fn write_redacted_log_entry(
     Ok(())
 }
 
+fn write_redacted_file_entry(
+    zip: &mut zip::ZipWriter<File>,
+    options: SimpleFileOptions,
+    entry_name: &str,
+    source: &Path,
+) -> Result<(), AppError> {
+    zip.start_file(entry_name, options).map_err(|error| {
+        AppError::Internal(format!("ZIP: start entry '{entry_name}': {error}"))
+    })?;
+    let bytes = std::fs::read(source)
+        .map_err(|error| AppError::Internal(format!("cannot read '{}': {error}", source.display())))?;
+    let redacted = nomi_redact::redact_secrets_owned(String::from_utf8_lossy(&bytes).into_owned());
+    zip.write_all(redacted.as_bytes())
+        .map_err(|error| AppError::Internal(format!("ZIP: write entry '{entry_name}': {error}")))
+}
+
 /// Pack recent logs under `log_dir` into a temp ZIP.
 pub fn pack_support_logs(log_dir: &Path) -> Result<SupportLogsPackResponse, AppError> {
     pack_support_logs_with_limits(log_dir, SystemTime::now(), MAX_RAW_BYTES, MAX_AGE_DAYS)
+}
+
+/// Pack application logs and, when the report names a failed turn, its bounded
+/// provider SSE capture. The ZIP uses Deflate compression for both inputs.
+pub fn pack_support_logs_with_failed_sse(
+    log_dir: &Path,
+    data_dir: &Path,
+    turn_id: Option<&str>,
+) -> Result<SupportLogsPackResponse, AppError> {
+    pack_support_logs_inner(
+        log_dir,
+        SystemTime::now(),
+        MAX_RAW_BYTES,
+        MAX_AGE_DAYS,
+        turn_id.map(|turn_id| (data_dir, turn_id)),
+    )
 }
 
 pub fn pack_support_logs_with_limits(
@@ -171,12 +299,26 @@ pub fn pack_support_logs_with_limits(
     max_raw_bytes: u64,
     max_age_days: u64,
 ) -> Result<SupportLogsPackResponse, AppError> {
+    pack_support_logs_inner(log_dir, now, max_raw_bytes, max_age_days, None)
+}
+
+fn pack_support_logs_inner(
+    log_dir: &Path,
+    now: SystemTime,
+    max_raw_bytes: u64,
+    max_age_days: u64,
+    failed_sse_request: Option<(&Path, &str)>,
+) -> Result<SupportLogsPackResponse, AppError> {
     let candidates = list_candidates(log_dir, now, max_age_days)?;
     let (selected, truncated) = select_files(candidates, max_raw_bytes);
+    let failed_sse_captures = match failed_sse_request {
+        Some((data_dir, turn_id)) => list_failed_sse_captures(data_dir, turn_id)?,
+        None => Vec::new(),
+    };
 
-    if selected.is_empty() {
+    if selected.is_empty() && failed_sse_captures.is_empty() {
         return Err(AppError::BadRequest(
-            "no recent log files found to upload".into(),
+            "no recent log files or matching failed provider SSE diagnostics found to upload".into(),
         ));
     }
 
@@ -215,6 +357,21 @@ pub fn pack_support_logs_with_limits(
         included_files.push(item.name.clone());
     }
 
+    for capture in &failed_sse_captures {
+        let sse_entry_name = format!("failed-provider-sse/{}", capture.sse_file_name);
+        write_redacted_file_entry(&mut zip, options, &sse_entry_name, &capture.sse_path)?;
+        included_files.push(sse_entry_name);
+
+        let metadata_entry_name = format!("failed-provider-sse/{}", capture.metadata_file_name);
+        write_redacted_file_entry(
+            &mut zip,
+            options,
+            &metadata_entry_name,
+            &capture.metadata_path,
+        )?;
+        included_files.push(metadata_entry_name);
+    }
+
     zip.finish().map_err(|e| {
         let _ = std::fs::remove_file(&zip_path);
         AppError::Internal(format!("ZIP finalize failed: {e}"))
@@ -236,7 +393,7 @@ pub fn pack_support_logs_with_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::time::Duration;
 
     fn write_log(dir: &Path, name: &str, bytes: usize, age: Duration) {
@@ -336,6 +493,65 @@ mod tests {
         std::io::Read::read_to_string(&mut entry, &mut body).unwrap();
         assert!(body.contains("[REDACTED_SECRET]"));
         assert!(!body.contains("abcdef0123456789ABCDEF"));
+        let _ = std::fs::remove_file(&result.zip_path);
+    }
+
+    #[test]
+    fn packs_only_the_matching_failed_provider_sse_with_deflate_compression() {
+        let log_dir = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let diagnostic_dir = data_dir.path().join(FAILED_PROVIDER_SSE_DIRECTORY);
+        std::fs::create_dir_all(&diagnostic_dir).unwrap();
+        let matching_sse_name = "capture-feedback.sse";
+        let matching_metadata_name = "capture-feedback.json";
+        std::fs::write(
+            diagnostic_dir.join(matching_sse_name),
+            "data: {\"message\":\"Authorization: Bearer abcdef0123456789ABCDEF\"}\n\n",
+        )
+        .unwrap();
+        std::fs::write(
+            diagnostic_dir.join(matching_metadata_name),
+            serde_json::json!({
+                "turn_id": "turn-feedback",
+                "sse_file": matching_sse_name,
+                "failure_reason": "malformed tool arguments"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(diagnostic_dir.join("other.sse"), "data: other\n\n").unwrap();
+        std::fs::write(
+            diagnostic_dir.join("other.json"),
+            serde_json::json!({"turn_id": "other-turn", "sse_file": "other.sse"}).to_string(),
+        )
+        .unwrap();
+
+        let result = pack_support_logs_with_failed_sse(
+            log_dir.path(),
+            data_dir.path(),
+            Some("turn-feedback"),
+        )
+        .unwrap();
+        assert_eq!(
+            result.included_files,
+            vec![
+                format!("failed-provider-sse/{matching_sse_name}"),
+                format!("failed-provider-sse/{matching_metadata_name}"),
+            ]
+        );
+
+        let file = File::open(&result.zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive
+            .by_name(&format!("failed-provider-sse/{matching_sse_name}"))
+            .unwrap();
+        assert_eq!(entry.compression(), CompressionMethod::Deflated);
+        let mut body = String::new();
+        entry.read_to_string(&mut body).unwrap();
+        assert!(body.contains("[REDACTED_SECRET]"));
+        assert!(!body.contains("abcdef0123456789ABCDEF"));
+        drop(entry);
+        assert!(archive.by_name("failed-provider-sse/other.sse").is_err());
         let _ = std::fs::remove_file(&result.zip_path);
     }
 }

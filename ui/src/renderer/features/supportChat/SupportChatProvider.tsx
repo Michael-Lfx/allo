@@ -412,7 +412,9 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         if (preparedLogPayload) return preparedLogPayload;
 
         const devicePromise = collectSupportDeviceInfo();
-        const packed = await supportChatApi.packLogs();
+        const packed = await supportChatApi.packLogs({
+          turnId: context.turnId ?? context.messageId,
+        });
         const [uploaded, device] = await Promise.all([
           supportChatApi.uploadLogFromPath({
             zipPath: packed.zipPath,

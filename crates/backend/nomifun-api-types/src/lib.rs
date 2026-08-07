@@ -180,7 +180,8 @@ pub use knowledge::{
     UpdateKnowledgeTagRequest,
 };
 pub use lifecycle::{
-    GitHubReleaseAsset, SupportLogsPackResponse, SystemInfoResponse, UpdateCheckRequest,
+    GitHubReleaseAsset, PackSupportLogsRequest, SupportLogsPackResponse, SystemInfoResponse,
+    UpdateCheckRequest,
     UpdateCheckResult, UpdateReleaseInfo, UpdateWorkDirRequest, UpdateWorkDirResponse,
     ReplaceWorkDirRelocationRequest, RuntimeCapabilities, RuntimeKind,
     WorkDirChangeState, WorkDirChangeStatus, WorkDirRelocationBackup,

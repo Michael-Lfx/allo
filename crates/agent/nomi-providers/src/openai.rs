@@ -11,6 +11,7 @@ use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomi_types::tool::{ToolDef, truncate_deferred_description};
 
 use crate::anthropic_shared::StreamOutcome;
+use crate::failed_sse_capture::{FailedSseCapture, FailedSseCaptureContext};
 use crate::{LlmProvider, ProviderError};
 
 /// Bound sparse provider indices before they reach `Vec` growth. A malformed
@@ -690,6 +691,7 @@ struct StreamState {
     /// untrustworthy. Once poisoned, no later chunk or `[DONE]` sentinel may
     /// resurrect accumulated calls or commit a terminal Done.
     fatal_error: bool,
+    fatal_reason: Option<String>,
 }
 
 impl StreamState {
@@ -704,18 +706,25 @@ impl StreamState {
             finish_seen: false,
             auto_tool_id: false,
             fatal_error: false,
+            fatal_reason: None,
         }
     }
 
     fn poison(&mut self, message: impl Into<String>) -> Vec<LlmEvent> {
+        let message = message.into();
         self.tool_calls.clear();
         self.pending_done = None;
         self.fatal_error = true;
-        vec![LlmEvent::Error(message.into())]
+        self.fatal_reason = Some(message.clone());
+        vec![LlmEvent::Error(message)]
     }
 
     fn fatal_error(&self) -> bool {
         self.fatal_error
+    }
+
+    fn fatal_reason(&self) -> Option<&str> {
+        self.fatal_reason.as_deref()
     }
 
     /// Atomically validate and emit structured calls plus the deferred Done
@@ -882,14 +891,31 @@ impl LlmProvider for OpenAIProvider {
         let auto_tool_id = self.compat.auto_tool_id();
         let client = client.clone();
         let url_clone = url.clone();
+        let failure_capture = FailedSseCaptureContext::for_openai_compatible(
+            &request.model,
+            crate::current_flowy_billing_turn_id(),
+        );
 
         tokio::spawn(async move {
-            let outcome = process_sse_stream(response, &tx, auto_tool_id).await;
+            let outcome = process_sse_stream_with_capture(
+                response,
+                &tx,
+                auto_tool_id,
+                Some(failure_capture.clone()),
+            )
+            .await;
             crate::retry::finish_stream_with_retry(
                 outcome,
                 &tx,
                 || crate::retry::send_and_check(&client, &url_clone, &headers, &body),
-                |resp| process_sse_stream(resp, &tx, auto_tool_id),
+                |resp| {
+                    process_sse_stream_with_capture(
+                        resp,
+                        &tx,
+                        auto_tool_id,
+                        Some(failure_capture.clone()),
+                    )
+                },
             )
             .await;
         });
@@ -898,14 +924,25 @@ impl LlmProvider for OpenAIProvider {
     }
 }
 
+#[cfg(test)]
 async fn process_sse_stream(
     response: reqwest::Response,
     tx: &mpsc::Sender<LlmEvent>,
     auto_tool_id: bool,
 ) -> StreamOutcome {
+    process_sse_stream_with_capture(response, tx, auto_tool_id, None).await
+}
+
+async fn process_sse_stream_with_capture(
+    response: reqwest::Response,
+    tx: &mpsc::Sender<LlmEvent>,
+    auto_tool_id: bool,
+    failure_capture_context: Option<FailedSseCaptureContext>,
+) -> StreamOutcome {
     use futures::StreamExt;
 
     let mut state = StreamState::new();
+    let mut failure_capture = failure_capture_context.map(FailedSseCapture::new);
     // Keep raw bytes until a complete SSE line is available. HTTP chunks may
     // split a multi-byte UTF-8 scalar; decoding each chunk independently would
     // inject U+FFFD into Chinese/tool arguments or corrupt otherwise valid JSON.
@@ -918,6 +955,8 @@ async fn process_sse_stream(
             Ok(c) => c,
             Err(e) => {
                 let err = ProviderError::Connection(e.to_string());
+                let reason = err.to_string();
+                persist_failed_sse_capture(failure_capture.as_ref(), Some(&reason));
                 return if emitted_content {
                     StreamOutcome::FailedPartial(err)
                 } else {
@@ -925,6 +964,9 @@ async fn process_sse_stream(
                 };
             }
         };
+        if let Some(capture) = failure_capture.as_mut() {
+            capture.record(&chunk);
+        }
         buffer.extend_from_slice(&chunk);
 
         // Process complete lines
@@ -937,6 +979,7 @@ async fn process_sse_stream(
                 ) {
                     let _ = tx.send(event).await;
                 }
+                persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
                 return StreamOutcome::Ok;
             };
             let line = line.trim();
@@ -955,7 +998,11 @@ async fn process_sse_stream(
                     state.infer_terminal_from_done();
                     // Atomically release staged calls and Done now that the
                     // legal usage-only tail has updated token counts.
-                    for event in state.drain_terminal_events() {
+                    let terminal_events = state.drain_terminal_events();
+                    if state.fatal_error() {
+                        persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
+                    }
+                    for event in terminal_events {
                         if tx.send(event).await.is_err() {
                             return StreamOutcome::Ok;
                         }
@@ -982,6 +1029,7 @@ async fn process_sse_stream(
                     // The parser already emitted the one actionable Error.
                     // Stop consuming immediately so a later valid-looking
                     // finish chunk or [DONE] cannot commit this turn.
+                    persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
                     return StreamOutcome::Ok;
                 }
             }
@@ -1000,6 +1048,7 @@ async fn process_sse_stream(
             ) {
                 let _ = tx.send(event).await;
             }
+            persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
             return StreamOutcome::Ok;
         }
     };
@@ -1010,11 +1059,16 @@ async fn process_sse_stream(
             ) {
                 let _ = tx.send(event).await;
             }
+            persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
             return StreamOutcome::Ok;
         };
         if data == "[DONE]" {
             state.infer_terminal_from_done();
-            for event in state.drain_terminal_events() {
+            let terminal_events = state.drain_terminal_events();
+            if state.fatal_error() {
+                persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
+            }
+            for event in terminal_events {
                 if tx.send(event).await.is_err() {
                     return StreamOutcome::Ok;
                 }
@@ -1037,6 +1091,7 @@ async fn process_sse_stream(
             }
         }
         if state.fatal_error() {
+            persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
             return StreamOutcome::Ok;
         }
     }
@@ -1046,7 +1101,11 @@ async fn process_sse_stream(
     // reaching this branch means the framed body ended normally, so complete
     // tool calls can be validated and committed just like a `[DONE]` stream.
     if state.finish_seen {
-        for event in state.drain_terminal_events() {
+        let terminal_events = state.drain_terminal_events();
+        if state.fatal_error() {
+            persist_failed_sse_capture(failure_capture.as_ref(), state.fatal_reason());
+        }
+        for event in terminal_events {
             if tx.send(event).await.is_err() {
                 return StreamOutcome::Ok;
             }
@@ -1056,11 +1115,33 @@ async fn process_sse_stream(
         let error = ProviderError::Connection(
             "OpenAI-compatible stream ended before finish_reason".to_string(),
         );
+        let reason = error.to_string();
+        persist_failed_sse_capture(failure_capture.as_ref(), Some(&reason));
         if emitted_content {
             StreamOutcome::FailedPartial(error)
         } else {
             StreamOutcome::FailedEmpty(error)
         }
+    }
+}
+
+fn persist_failed_sse_capture(capture: Option<&FailedSseCapture>, reason: Option<&str>) {
+    let Some(capture) = capture else {
+        return;
+    };
+    let reason = reason.unwrap_or("OpenAI-compatible stream failed without a diagnostic reason");
+    match capture.persist(reason) {
+        Ok(path) => tracing::warn!(
+            target: "nomi_providers",
+            path = %path.display(),
+            captured_bytes = std::fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or_default(),
+            "persisted failed OpenAI-compatible SSE diagnostic"
+        ),
+        Err(error) => tracing::warn!(
+            target: "nomi_providers",
+            error = %error,
+            "failed to persist OpenAI-compatible SSE diagnostic"
+        ),
     }
 }
 
@@ -1769,7 +1850,11 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id: bool) -> V
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_reasoning_delta, parse_sse_chunk, StreamState};
+    use super::{
+        extract_reasoning_delta, parse_sse_chunk, process_sse_stream_with_capture, StreamOutcome,
+        StreamState,
+    };
+    use crate::failed_sse_capture::FailedSseCaptureContext;
     use nomi_types::llm::LlmEvent;
     use nomi_types::message::StopReason;
     use serde_json::json;
@@ -3523,6 +3608,63 @@ mod tests {
             |event| matches!(event, LlmEvent::Error(message) if message.contains("call_split_bad"))
         ));
         assert!(state.pending_done.is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_arguments_persist_raw_failed_sse() {
+        let directory = std::env::temp_dir().join(format!(
+            "nomi-openai-sse-capture-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_bad\",\"function\":{\"name\":\"Write\",\"arguments\":\"{\\\"file_path\\\":\\\"index.html\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(body.to_owned())
+                .expect("build SSE response"),
+        );
+        let capture = FailedSseCaptureContext::with_directory(
+            directory.clone(),
+            "openai-compatible",
+            "test-model",
+            Some("turn-test".into()),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        assert!(matches!(
+            process_sse_stream_with_capture(response, &tx, false, Some(capture)).await,
+            StreamOutcome::Ok
+        ));
+        drop(tx);
+        assert!(matches!(
+            rx.recv().await,
+            Some(nomi_types::llm::LlmEvent::ToolUseDelta { .. })
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(nomi_types::llm::LlmEvent::Error(message)) if message.contains("malformed JSON arguments")
+        ));
+
+        let sse_path = std::fs::read_dir(&directory)
+            .expect("capture directory exists")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "sse"))
+            .expect("failed stream is persisted");
+        assert_eq!(std::fs::read_to_string(&sse_path).expect("read SSE"), body);
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sse_path.with_extension("json")).expect("read metadata"),
+        )
+        .expect("metadata JSON");
+        assert_eq!(metadata["turn_id"], "turn-test");
+        assert!(metadata["failure_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("malformed JSON arguments")));
+
+        std::fs::remove_dir_all(directory).expect("remove test diagnostics");
     }
 
     #[test]

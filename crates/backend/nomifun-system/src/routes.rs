@@ -14,7 +14,7 @@ use nomifun_api_types::{
     ModelProfileUpsertRequest, ProtocolDetectionResponse,
     ProviderConnectionResponse, ProviderModelKeyRequest, ProviderModelResponse, ProviderResponse,
     ResolveModelsRequest, ResolveModelsResponse, SetManagedModelEnabledRequest,
-    SetManagedModelServiceEnabledRequest, SupportLogsPackResponse, SystemInfoResponse,
+    SetManagedModelServiceEnabledRequest, PackSupportLogsRequest, SupportLogsPackResponse, SystemInfoResponse,
     SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
     UpdateProviderModelRequest, UpdateProviderRequest, UpdateSettingsRequest, UpdateWorkDirRequest,
     UpdateWorkDirResponse, ReplaceWorkDirRelocationRequest, RuntimeCapabilities,
@@ -603,9 +603,17 @@ async fn get_system_info(
     Ok(Json(ApiResponse::ok(info)))
 }
 
-async fn pack_support_logs() -> Result<Json<ApiResponse<SupportLogsPackResponse>>, AppError> {
+async fn pack_support_logs(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<PackSupportLogsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<SupportLogsPackResponse>>, AppError> {
+    let Json(request) = body.map_err(|error| AppError::BadRequest(error.to_string()))?;
     let info = crate::sysinfo::get_system_info();
-    let packed = crate::support_logs::pack_support_logs(std::path::Path::new(&info.log_dir))?;
+    let packed = crate::support_logs::pack_support_logs_with_failed_sse(
+        std::path::Path::new(&info.log_dir),
+        &state.data_dir,
+        request.turn_id.as_deref(),
+    )?;
     Ok(Json(ApiResponse::ok(packed)))
 }
 

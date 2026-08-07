@@ -6814,6 +6814,10 @@ export interface ISupportLogsPackResponse {
   truncated: boolean;
 }
 
+export interface IPackSupportLogsRequest {
+  turnId?: string;
+}
+
 export interface ICloudImMessageList {
   list: ICloudImMessage[];
 }
@@ -6883,5 +6887,7 @@ export const cloudIm = {
   markRead: httpPost<ICloudImConversation, { lastReadSeq: number }>('/api/cloud/im/read', (p) => ({
     lastReadSeq: p.lastReadSeq,
   })),
-  packSupportLogs: httpPost<ISupportLogsPackResponse, void>('/api/system/support-logs/pack'),
+  packSupportLogs: httpPost<ISupportLogsPackResponse, IPackSupportLogsRequest>(
+    '/api/system/support-logs/pack'
+  ),
 };

@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod anthropic_shared;
 pub mod bedrock;
 pub mod billing_turn;
+mod failed_sse_capture;
 pub mod openai;
 pub mod retry;
 pub mod vertex;
