@@ -13,6 +13,7 @@
 mod dto;
 mod fsio;
 mod generate;
+mod llm_proxy;
 mod routes;
 mod service;
 mod state;

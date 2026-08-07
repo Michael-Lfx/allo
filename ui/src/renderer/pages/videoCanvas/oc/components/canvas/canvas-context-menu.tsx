@@ -150,7 +150,7 @@ export function CanvasNodeContextMenu({
                 onPointerDown={(event) => event.stopPropagation()}
             >
                 <div className="absolute inset-x-8 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.toolbar.border}, transparent)` }} />
-                <div className="thin-scrollbar min-h-0 overflow-y-auto">
+                <div className={`min-h-0 overflow-x-hidden ${menu.type === "canvas" && !categoryOpen ? "overflow-y-hidden" : "hover-scrollbar overflow-y-auto"}`}>
                     {menu.type === "node" && isMedia && categoryOpen ? (
                         <>
                             <MenuHeader title="设置资产分类" description={node?.title || nodeTypeLabel(node)} onBack={() => setCategoryOpen(false)} />
@@ -318,7 +318,7 @@ function MenuButton({ icon, label, detail, shortcut, badge, chevron = false, act
     return (
         <button
             type="button"
-            className="canvas-menu-item group flex min-h-9 w-full items-center gap-2 rounded-lg border border-transparent px-1.5 py-1 text-left outline-none enabled:hover:border-black/10 enabled:hover:bg-black/5 focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-35 dark:enabled:hover:border-white/10 dark:enabled:hover:bg-white/8"
+            className="canvas-menu-item group flex min-h-9 w-full min-w-0 items-center gap-2 rounded-lg border border-transparent px-1.5 py-1 text-left outline-none enabled:hover:border-black/10 enabled:hover:bg-black/5 focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-35 dark:enabled:hover:border-white/10 dark:enabled:hover:bg-white/8"
             style={{ color, background: active ? theme.toolbar.activeBg : undefined, "--tw-ring-color": theme.node.muted } as CSSProperties}
             disabled={disabled}
             onClick={onClick}

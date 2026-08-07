@@ -56,6 +56,10 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
             "/api/video-canvas/tasks/{task_id}/cancel",
             post(cancel_task),
         )
+        .route(
+            "/api/video-canvas/llm/v1/chat/completions",
+            post(crate::llm_proxy::proxy_chat_completions),
+        )
         .with_state(state)
         .merge(upload)
 }

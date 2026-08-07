@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Result, Spin } from '@arco-design/web-react';
-import { AddOne, Delete, Search } from '@icon-park/react';
+import { Delete, Search } from '@icon-park/react';
 import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
@@ -17,6 +17,37 @@ import {
 import { createServerBackedCanvasProject } from './lib/ocBridge';
 import styles from './index.module.css';
 
+function CreateCanvasButton({
+  loading,
+  onClick,
+  children,
+  className,
+}: {
+  loading?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      type='button'
+      disabled={loading}
+      onClick={onClick}
+      className={[
+        styles.createButton,
+        loading ? styles.createButtonLoading : '',
+        className || '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <span className={styles.createButtonPlus} aria-hidden='true'>
+        {loading ? '…' : '＋'}
+      </span>
+      <span>{children}</span>
+    </button>
+  );
+}
 function formatTime(ms: number): string {
   try {
     return new Date(ms).toLocaleString();
@@ -150,14 +181,9 @@ const VideoCanvasListPage: React.FC = () => {
               if (key === 'agent') navigate('/video-generation');
             }}
           />
-          <Button
-            type='primary'
-            icon={<AddOne theme='outline' size={16} />}
-            loading={creating}
-            onClick={() => void handleCreate()}
-          >
+          <CreateCanvasButton loading={creating} onClick={() => void handleCreate()}>
             {t('videoCanvas.list.create', { defaultValue: '新建画布' })}
-          </Button>
+          </CreateCanvasButton>
         </div>
       </div>
 
@@ -196,9 +222,9 @@ const VideoCanvasListPage: React.FC = () => {
               defaultValue: '还没有画布项目。创建一个开始节点编排。',
             })}
           </p>
-          <Button type='primary' loading={creating} onClick={() => void handleCreate()}>
+          <CreateCanvasButton loading={creating} onClick={() => void handleCreate()}>
             {t('videoCanvas.list.createFirst', { defaultValue: '创建第一个画布' })}
-          </Button>
+          </CreateCanvasButton>
         </div>
       ) : (
         <div className={styles.grid}>

@@ -1,12 +1,12 @@
 import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
-import { saveAs } from "file-saver";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { downloadCanvasNodeMedia } from "@oc/lib/canvas/canvas-node-download";
 import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@oc/lib/canvas/canvas-project-domain";
-import { audioExtension, imageExtension, resetGenerationTaskMetadata } from "@oc/lib/canvas/canvas-project-generation";
+import { resetGenerationTaskMetadata } from "@oc/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib/generation-error";
 import { ensureCanvasNodeAsset } from "@oc/services/project-asset-sync";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@oc/types/canvas";
@@ -21,6 +21,7 @@ type UseCanvasNodeEditorOptions = {
     setDialogNodeId: Dispatch<SetStateAction<string | null>>;
     setToolbarNodeId: Dispatch<SetStateAction<string | null>>;
     setHoveredNodeId: Dispatch<SetStateAction<string | null>>;
+    onAssetSaved?: () => void;
 };
 
 export function useCanvasNodeEditor({
@@ -33,6 +34,7 @@ export function useCanvasNodeEditor({
     setDialogNodeId,
     setToolbarNodeId,
     setHoveredNodeId,
+    onAssetSaved,
 }: UseCanvasNodeEditorOptions) {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
@@ -154,10 +156,24 @@ export function useCanvasNodeEditor({
             .catch((error) => message.error(error instanceof Error ? error.message : "资产分类更新失败"));
     }, [canvasId, domainProjectId, message, nodesRef, queryClient, setNodes]);
 
-    const downloadNodeImage = useCallback((node: CanvasNodeData) => {
-        if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
-    }, []);
+    const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
+        if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return;
+        if (!node.metadata?.content?.trim() && !node.metadata?.storageKey?.trim()) {
+            message.error("当前节点没有可下载的内容");
+            return;
+        }
+        const hide = message.loading(node.type === CanvasNodeType.Video ? "正在保存视频…" : node.type === CanvasNodeType.Audio ? "正在保存音频…" : "正在保存图片…", 0);
+        try {
+            const result = await downloadCanvasNodeMedia(node);
+            if (result === "saved") message.success("文件已保存");
+            else message.success("已开始下载，请在浏览器下载栏查看");
+        } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") return;
+            message.error(error instanceof Error ? error.message : "下载失败");
+        } finally {
+            hide();
+        }
+    }, [message]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return message.error("当前节点类型不能保存为素材");
@@ -167,10 +183,11 @@ export function useCanvasNodeEditor({
             setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item));
             if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
             message.success(result.linkedToProject ? "已加入项目资产" : "已加入我的素材");
+            onAssetSaved?.();
         } catch (error) {
             message.error(error instanceof Error ? error.message : "素材保存失败");
         }
-    }, [canvasId, domainProjectId, message, queryClient, setNodes]);
+    }, [canvasId, domainProjectId, message, onAssetSaved, queryClient, setNodes]);
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
         setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, fontSize } } : node)));

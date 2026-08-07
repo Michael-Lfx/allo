@@ -24,8 +24,32 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 | POST | `/tasks` | 创建图/视频生成（Flowy） |
 | GET | `/tasks/{id}` | 轮询 |
 | POST | `/tasks/{id}/cancel` | **硬取消**（`CancellationToken` 中断 Seedance 轮询） |
+| POST | `/llm/v1/chat/completions` | **最小 LLM 代理**（转发 Flowy OpenAI chat；Agent 工具循环在客户端） |
 
 数据目录：`{data_dir}/video-canvas/`。
+
+## 前端调用约定（与 Workshop / ViMax 对齐）
+
+统一走 `httpBridge`：
+
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| JSON API | `httpRequest(method, '/api/...', body)` | `getBaseUrl()` + `buildBackendAuthHeaders` |
+| 上传 | `XMLHttpRequest` + auth 头 | 同 `uploadCanvasMedia` / workshop `uploadAsset` |
+| 媒体二进制 | `fetch(absoluteUrl, { headers: auth, credentials: 'omit' })` | 勿 `credentials: 'include'`（CORS `*`） |
+| 生图/生视频 | `POST /api/video-canvas/tasks` | 经 `task-center` → `FlowyImage` / `FlowyVideo` |
+| Agent 对话 | `streamCanvasChatCompletions` → `POST /api/video-canvas/llm/v1/chat/completions` | 工具循环在客户端；服务端只透传 chat |
+
+**不要**：相对路径裸 `fetch('/api/...')`（桌面会打到 Vite）、`/api/ai/custom`、OpenAI `/responses`、影策 OSS 直连。
+
+### Canvas Agent
+
+- **业务逻辑（工具、画布 ops、会话 UI）在前端** `oc/components/canvas/canvas-assistant-panel.tsx`
+- 服务端只做 Flowy `/chat/completions` 透传；文本模型来自 `modelProfile.resolve({ task: 'chat' })`，写入 OC `allo-chat` 渠道
+- 桌面开发：LLM / 媒体请求必须打到 `http://127.0.0.1:{backendPort}/api/...`，不能相对打到 Vite `5173`
+- 媒体 `fetch` 使用 `credentials: omit` + local-trust 头（后端 CORS 为 `*`，不能与 credentialed 请求共用）
+- 图/视频参考媒体用本地 `resource:` / `/api/video-canvas/media` 即可，不必经过影策 OSS 用户缓存门禁
+- 原 OC「影视 Agent 会话」依赖服务端拆解，**不迁到 allo 后端**；请用客户端 `canvas_*` 工具完成同样目标
 
 ### 生成映射（当前云端已支持）
 

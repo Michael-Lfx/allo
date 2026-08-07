@@ -47,6 +47,61 @@
   color: rgb(var(--primary-6));
 }
 
+.createButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(var(--primary-6), 0.12);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 6px 18px rgba(var(--primary-6), 0.14);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 120ms ease;
+}
+
+.createButton:hover:not(:disabled) {
+  background: rgba(var(--primary-6), 0.18);
+}
+
+.createButton:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.createButton:focus-visible {
+  outline: none;
+  border-color: rgb(var(--primary-6));
+  box-shadow:
+    0 0 0 2px rgba(var(--primary-6), 0.2),
+    0 6px 18px rgba(var(--primary-6), 0.14);
+}
+
+.createButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.createButtonLoading {
+  pointer-events: none;
+}
+
+.createButtonPlus {
+  color: rgb(var(--primary-6));
+  font-size: 16px;
+  line-height: 1;
+}
+
 .listToolbar {
   display: flex;
   align-items: center;

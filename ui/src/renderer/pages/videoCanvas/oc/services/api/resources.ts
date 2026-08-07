@@ -3,6 +3,7 @@
  */
 
 import { getActiveUserScope } from '@oc/lib/user-scope';
+import { buildBackendAuthHeaders } from '@/common/adapter/httpBridge';
 import {
   canvasMediaUrl,
   resolveCanvasUrl,
@@ -150,6 +151,17 @@ export async function importResourceFromUrl(
   });
 }
 
+function mediaFetchInit(method: 'GET' | 'HEAD' = 'GET'): RequestInit {
+  // Public media is auth-exempt, but desktop still benefits from local-trust.
+  // Never use credentials:'include' — backend CORS uses `*` which rejects credentialed cross-origin.
+  return {
+    method,
+    headers: buildBackendAuthHeaders(method),
+    credentials: 'omit',
+    cache: 'no-store',
+  };
+}
+
 export function getResource(id: string): Promise<RemoteResource> {
   const cacheKey = resourceCacheKey(id);
   const cached = resourceCache.get(cacheKey);
@@ -162,12 +174,12 @@ export function getResource(id: string): Promise<RemoteResource> {
     let mimeType = 'application/octet-stream';
     let size = 0;
     try {
-      const head = await fetch(publicUrl, { method: 'HEAD', credentials: 'include' });
+      const head = await fetch(publicUrl, mediaFetchInit('HEAD'));
       if (head.ok) {
         mimeType = head.headers.get('content-type') || mimeType;
         size = Number(head.headers.get('content-length') || 0);
       } else {
-        const get = await fetch(publicUrl, { credentials: 'include' });
+        const get = await fetch(publicUrl, mediaFetchInit('GET'));
         if (!get.ok) throw new Error('not found');
         mimeType = get.headers.get('content-type') || mimeType;
         size = Number(get.headers.get('content-length') || 0);
@@ -228,7 +240,7 @@ export async function resolveResourceUrl(storageKey?: string, fallback = '') {
 export async function getResourceBlob(storageKey: string) {
   const id = resourceIdFromStorageKey(storageKey);
   if (!id) return null;
-  const response = await fetch(resourceProxyFileUrl(id), { credentials: 'include' });
+  const response = await fetch(resourceProxyFileUrl(id), mediaFetchInit('GET'));
   if (!response.ok) return null;
   return response.blob();
 }

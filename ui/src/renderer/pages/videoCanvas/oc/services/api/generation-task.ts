@@ -126,7 +126,17 @@ async function prepareBackendImageReference(image: ReferenceImage) {
     if (resourceIdFromStorageKey(image.storageKey)) return backendImageReference(image, { storageKey: image.storageKey });
     const sourceUrl = image.url || image.dataUrl;
     if (/^https?:\/\//i.test(sourceUrl)) return backendImageReference(image, { url: sourceUrl });
-    const blob = image.storageKey ? await getImageBlob(image.storageKey) : sourceUrl ? await (await fetch(sourceUrl)).blob() : null;
+    // Relative allo media URLs (e.g. /api/video-canvas/media/{id}) are already on the server.
+    if (typeof sourceUrl === "string" && sourceUrl.includes("/api/video-canvas/media/")) {
+        const mediaId = sourceUrl.split("/api/video-canvas/media/")[1]?.split(/[?#]/)[0];
+        if (mediaId) return backendImageReference(image, { storageKey: resourceStorageKey(mediaId) });
+    }
+    let blob: Blob | null = null;
+    try {
+        blob = image.storageKey ? await getImageBlob(image.storageKey) : sourceUrl ? await (await fetch(sourceUrl)).blob() : null;
+    } catch (error) {
+        throw new Error(error instanceof Error ? `读取参考图片失败：${error.message}` : "读取参考图片失败");
+    }
     if (!blob) throw new Error("参考图片尚未保存，请重新上传后再生成");
     try {
         const resource = await uploadResourceFile(blob, "image", { fileName: image.name });

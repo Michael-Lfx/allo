@@ -7,7 +7,9 @@ import { shouldReduceCanvasMediaEffects } from "@oc/lib/canvas/canvas-performanc
 import { buildCanvasResourceReferences, buildNodeMentionReferences } from "@oc/lib/canvas/canvas-resource-references";
 import { buildSkillMentionReferences } from "@oc/lib/canvas/canvas-skill-mentions";
 import type { Skill } from "@oc/services/api/skills";
-import type { Asset, ImageAsset } from "@oc/stores/use-asset-store";
+import type { Asset, AudioAsset, ImageAsset, VideoAsset } from "@oc/stores/use-asset-store";
+
+export type CanvasTrayMediaAsset = ImageAsset | VideoAsset | AudioAsset;
 import type { DirectorScene } from "@oc/types/director";
 import { CanvasNodeType, type CanvasConnection, type CanvasMediaPerformanceMode, type CanvasNodeData, type ContextMenuState, type ViewportTransform } from "@oc/types/canvas";
 
@@ -125,7 +127,22 @@ export function useCanvasRenderModel({
     }, [nodes, reduceMediaEffects, renderHiddenNodeIds, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
 
     const imageAssets = useMemo(() => assets.filter((asset): asset is ImageAsset => asset.kind === "image"), [assets]);
+    const mediaAssets = useMemo(
+        () => assets.filter((asset): asset is CanvasTrayMediaAsset => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio"),
+        [assets],
+    );
     const canvasImageNodes = useMemo(() => nodes.filter((node) => node.type === CanvasNodeType.Image && Boolean(node.metadata?.content) && !collapsedBatchChildIds.has(node.id) && !(node.parentId && nodeById.get(node.parentId)?.metadata?.frame?.collapsed)), [collapsedBatchChildIds, nodeById, nodes]);
+    const canvasMediaNodes = useMemo(
+        () =>
+            nodes.filter(
+                (node) =>
+                    (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) &&
+                    Boolean(node.metadata?.content) &&
+                    !collapsedBatchChildIds.has(node.id) &&
+                    !(node.parentId && nodeById.get(node.parentId)?.metadata?.frame?.collapsed),
+            ),
+        [collapsedBatchChildIds, nodeById, nodes],
+    );
     const semanticNodesRef = useRef(nodes);
     const semanticNodes = useMemo(() => {
         const previous = semanticNodesRef.current;
@@ -263,6 +280,7 @@ export function useCanvasRenderModel({
         batchChildCountById,
         batchMotionById,
         canvasImageNodes,
+        canvasMediaNodes,
         configInputsById,
         connectionLayerBounds,
         contextMenuNode,
@@ -270,6 +288,7 @@ export function useCanvasRenderModel({
         displayConnections,
         frameChildrenById,
         imageAssets,
+        mediaAssets,
         infoNode,
         maskEditNode,
         mentionReferencesByNodeId,

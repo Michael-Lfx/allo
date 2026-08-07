@@ -1,11 +1,9 @@
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Link } from "react-router-dom";
-import { Bot, Check, ChevronDown, Clapperboard, Coins, Focus, FolderKanban, Gauge, Home, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Share2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowLeft, Bot, Clapperboard, Coins, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Share2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 
 import { useWalletBalance } from "@oc/hooks/use-wallet-balance";
-import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import type { CanvasContextSummary } from "@oc/lib/canvas/canvas-context-summary";
 import type { CanvasShortDramaProgress } from "@oc/lib/canvas/canvas-short-drama";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -73,22 +71,15 @@ export function CanvasTopBar({
     shortDramaGuide,
 }: CanvasTopBarProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const navigate = useNavigate();
     const user = useUserStore((state) => state.user);
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const { availableMicrocredits, refreshing } = useWalletBalance(user?.id, creditsEnabled);
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
-    const [workspaceModeOpen, setWorkspaceModeOpen] = useState(false);
-
-    const handleWorkspaceModeOpenChange = (next: boolean) => {
-        // 模式开关下拉向下展开，会覆盖展开中的短剧流程条，打开时先收起流程条避免重叠。
-        if (next && shortDramaGuide && !shortDramaGuide.collapsed) shortDramaGuide.onToggle();
-        setWorkspaceModeOpen(next);
-    };
+    const goCanvasList = () => navigate("/video-generation/canvas");
 
     const handleShortDramaGuideToggle = () => {
-        // 展开流程条会与模式开关下拉在顶部中心重叠，展开前先关闭模式开关。
-        if (shortDramaGuide?.collapsed) setWorkspaceModeOpen(false);
         shortDramaGuide?.onToggle();
     };
 
@@ -108,13 +99,23 @@ export function CanvasTopBar({
     return (
         <>
             <div className="pointer-events-none absolute left-0 right-0 top-0 z-[var(--z-toolbar)] flex h-[var(--canvas-topbar-h)] items-center justify-between px-[var(--canvas-inset-x)]">
-                <div className="pointer-events-auto flex min-w-0 items-center gap-3">
+                <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+                    <Tooltip title="返回画布列表">
+                        <button
+                            type="button"
+                            className="grid size-9 shrink-0 place-items-center rounded-full transition hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 dark:hover:bg-white/10"
+                            style={{ color: theme.node.text, background: theme.spatial.elevated, boxShadow: "0 8px 24px rgba(15,23,42,.08)", "--tw-ring-color": theme.accent.primary } as CSSProperties}
+                            onClick={goCanvasList}
+                            aria-label="返回画布列表"
+                        >
+                            <ArrowLeft className="size-4" />
+                        </button>
+                    </Tooltip>
                     <Dropdown
                         trigger={["click"]}
                         menu={{
                             items: [
-                                { key: "home", icon: <Home className="size-4" />, label: <Link to="/">主页</Link> },
-                                { key: "projects", icon: <LayoutGrid className="size-4" />, label: <Link to="/video-generation/canvas">画布</Link> },
+                                { key: "projects", icon: <LayoutGrid className="size-4" />, label: "画布列表", onClick: goCanvasList },
                                 { type: "divider" },
                                 { key: "new", icon: <Plus className="size-4" />, label: "新建画布", onClick: onCreateProject },
                                 { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: "删除当前画布", onClick: onDeleteProject },
@@ -142,7 +143,7 @@ export function CanvasTopBar({
                         </button>
                     </Dropdown>
 
-                    <div ref={titleRef} className="flex min-w-0 flex-col items-start">
+                    <div ref={titleRef} className="flex min-w-0 flex-col items-start" style={{ color: theme.node.text }}>
                         {isTitleEditing ? (
                             <input
                                 autoFocus
@@ -160,7 +161,13 @@ export function CanvasTopBar({
                             />
                         ) : (
                             <div className="flex min-w-0 items-center gap-0.5">
-                                <button type="button" className="max-w-[280px] truncate text-left text-base font-semibold tracking-normal transition-opacity hover:opacity-75" onClick={onStartTitleEditing} title="点击修改画布名称">
+                                <button
+                                    type="button"
+                                    className="max-w-[280px] truncate text-left text-base font-semibold tracking-normal transition-opacity hover:opacity-75"
+                                    style={{ color: theme.node.text }}
+                                    onClick={onStartTitleEditing}
+                                    title="点击修改画布名称"
+                                >
                                     {title}
                                 </button>
                                 <Tooltip title="重命名画布">
@@ -187,7 +194,7 @@ export function CanvasTopBar({
                     </div>
                 </div>
 
-                <CanvasWorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} open={workspaceModeOpen} onOpenChange={handleWorkspaceModeOpenChange} />
+                <CanvasWorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
 
                 <div className="pointer-events-auto flex items-center gap-1.5">
                     <Button type="text" className="!hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Search className="size-4" />} onClick={onOpenSearch} aria-label="搜索画布节点" title="搜索画布节点" />
@@ -283,97 +290,56 @@ export function CanvasTopBar({
     );
 }
 
-function CanvasWorkspaceModeSwitch({ mode, onChange, open, onOpenChange }: { mode: CanvasWorkspaceMode; onChange: (mode: CanvasWorkspaceMode) => void; open: boolean; onOpenChange: (open: boolean) => void }) {
+function CanvasWorkspaceModeSwitch({ mode, onChange }: { mode: CanvasWorkspaceMode; onChange: (mode: CanvasWorkspaceMode) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const reducedMotion = useReducedMotion();
-    const simple = mode === "simple";
-    const rootRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        if (!open) return;
-        const closeOnOutsidePress = (event: PointerEvent) => {
-            if (event.target instanceof Node && !rootRef.current?.contains(event.target)) onOpenChange(false);
-        };
-        const closeOnEscape = (event: KeyboardEvent) => {
-            if (event.key === "Escape") onOpenChange(false);
-        };
-        document.addEventListener("pointerdown", closeOnOutsidePress);
-        document.addEventListener("keydown", closeOnEscape);
-        return () => {
-            document.removeEventListener("pointerdown", closeOnOutsidePress);
-            document.removeEventListener("keydown", closeOnEscape);
-        };
-    }, [open, onOpenChange]);
-
-    const selectMode = (nextMode: CanvasWorkspaceMode) => {
-        if (nextMode !== mode) onChange(nextMode);
-        onOpenChange(false);
-    };
+    const items = [
+        { key: "simple" as const, label: "简洁", icon: <Sparkles className="size-3.5" />, title: "简洁模式：保留核心创作路径" },
+        { key: "professional" as const, label: "专业", icon: <Settings2 className="size-3.5" />, title: "专业模式：完整节点与生成控制" },
+    ];
 
     return (
-        <div ref={rootRef} className="aceternity-mode-switch pointer-events-auto absolute left-1/2 top-2 z-[var(--dock-z-popover)] -translate-x-1/2">
-            <motion.button
-                type="button"
-                whileHover={reducedMotion ? undefined : { y: -1 }}
-                whileTap={reducedMotion ? undefined : { scale: 0.97 }}
-                transition={aceternityMotion.spring.dock}
-                className="flex h-9 min-w-28 items-center gap-2 rounded-full px-2.5 text-left outline-none backdrop-blur-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
-                style={{ background: open ? theme.spatial.surface : theme.spatial.elevated, color: theme.node.text, boxShadow: "var(--workspace-overlay-shadow)", outlineColor: theme.accent.primary }}
-                aria-haspopup="listbox"
-                aria-expanded={open}
-                aria-label={`当前为${simple ? "简洁" : "专业"}模式，点击切换`}
-                onClick={() => onOpenChange(!open)}
+        <div
+            className="pointer-events-auto absolute left-1/2 top-2 z-[var(--dock-z-popover)] -translate-x-1/2"
+            role="group"
+            aria-label="画布工作模式"
+        >
+            <div
+                className="inline-flex h-9 items-center gap-0.5 rounded-full p-0.5 backdrop-blur-xl"
+                style={{
+                    background: theme.spatial.elevated,
+                    color: theme.node.text,
+                    boxShadow: "0 8px 24px rgba(15,23,42,.08)",
+                    border: `1px solid ${theme.toolbar.border}`,
+                }}
             >
-                <span className="grid size-6 shrink-0 place-items-center rounded-full" style={{ background: theme.toolbar.itemHover, color: theme.accent.primary }}>
-                    {simple ? <Sparkles className="size-3" /> : <Settings2 className="size-3" />}
-                </span>
-                <span className="min-w-0 flex-1 whitespace-nowrap text-[var(--fs-caption)] font-semibold leading-none">{simple ? "简洁模式" : "专业模式"}</span>
-                <motion.span animate={{ rotate: open ? 180 : 0 }} transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.dock} className="grid size-4 place-items-center" style={{ color: theme.node.muted }}>
-                    <ChevronDown className="size-3" />
-                </motion.span>
-            </motion.button>
-
-            <div className="absolute left-1/2 top-11 w-72 -translate-x-1/2" style={{ maxWidth: "calc(100vw - var(--space-8))" }}>
-                <AnimatePresence>
-                    {open ? (
-                        <motion.div
-                            role="listbox"
-                            aria-label="选择画布工作模式"
-                            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.92 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -6, scale: 0.95 }}
-                            transition={aceternityMotion.spring.panel}
-                            className="aceternity-floating-panel w-full overflow-hidden rounded-[var(--r-lg)] p-1.5 backdrop-blur-2xl"
-                            style={{ background: theme.spatial.elevated, color: theme.node.text, boxShadow: "var(--workspace-overlay-shadow)" }}
+                {items.map((item) => {
+                    const active = mode === item.key;
+                    return (
+                        <button
+                            key={item.key}
+                            type="button"
+                            title={item.title}
+                            aria-pressed={active}
+                            className="inline-flex h-8 min-w-[4.75rem] items-center justify-center gap-1.5 rounded-full px-3 text-[var(--fs-caption)] font-semibold leading-none transition-all duration-200 outline-none focus-visible:ring-2"
+                            style={{
+                                background: active ? theme.node.fill : "transparent",
+                                color: active ? theme.node.text : theme.node.muted,
+                                boxShadow: active ? `0 1px 4px ${theme.spatial.shadow}` : "none",
+                                ["--tw-ring-color" as string]: theme.accent.primary,
+                            }}
+                            onClick={() => {
+                                if (item.key !== mode) onChange(item.key);
+                            }}
                         >
-                            <ModeOption active={simple} motionEnabled={!reducedMotion} icon={<Sparkles className="size-4" />} title="简洁模式" description="保留核心创作路径，降低参数密度" theme={theme} onClick={() => selectMode("simple")} />
-                            <ModeOption active={!simple} motionEnabled={!reducedMotion} icon={<Settings2 className="size-4" />} title="专业模式" description="显示完整节点、导演台与生成控制" theme={theme} onClick={() => selectMode("professional")} />
-                        </motion.div>
-                    ) : null}
-                </AnimatePresence>
+                            <span className="grid place-items-center" style={{ color: active ? theme.accent.primary : theme.node.muted }}>
+                                {item.icon}
+                            </span>
+                            <span>{item.label}</span>
+                        </button>
+                    );
+                })}
             </div>
         </div>
-    );
-}
-
-type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
-
-function ModeOption({ active, motionEnabled, icon, title, description, theme, onClick }: { active: boolean; motionEnabled: boolean; icon: ReactNode; title: string; description: string; theme: CanvasTheme; onClick: () => void }) {
-    return (
-        <motion.button
-            type="button"
-            role="option"
-            aria-selected={active}
-            whileTap={motionEnabled ? { scale: 0.98 } : undefined}
-            transition={aceternityMotion.spring.dock}
-            className="group flex min-h-14 w-full items-center gap-3 rounded-[var(--r-md)] px-3 py-2 text-left outline-none transition-colors hover:bg-black/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 dark:hover:bg-white/8"
-            style={{ background: active ? theme.accent.primarySoft : "transparent", color: theme.node.text, outlineColor: theme.accent.primary }}
-            onClick={onClick}
-        >
-            <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] [&_svg]:size-3.5" style={{ background: theme.spatial.surface, color: active ? theme.accent.primary : theme.node.muted }}>{icon}</span>
-            <span className="min-w-0 flex-1"><span className="block text-[var(--fs-body)] font-semibold leading-none">{title}</span><span className="mt-1.5 block text-[var(--fs-caption)] leading-5" style={{ color: theme.node.muted }}>{description}</span></span>
-            <span className="grid size-5 shrink-0 place-items-center" style={{ color: theme.accent.primary, opacity: active ? 1 : 0 }}><Check className="size-3.5" /></span>
-        </motion.button>
     );
 }
 

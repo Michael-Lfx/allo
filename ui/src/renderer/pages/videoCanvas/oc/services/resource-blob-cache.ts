@@ -149,11 +149,18 @@ async function cacheTarget(storageKey: string): Promise<ResourceCacheMeta | null
     if (!resourceId) return null;
     const resource = await getResource(resourceId);
     const userScope = getActiveUserScope();
-    if (userScope === "guest" || resource.userId !== userScope) throw new Error("当前用户不能读取该媒体缓存");
+    // Allo `/api/video-canvas/media` is already auth-gated by the backend session.
+    // OC's IndexedDB user-scope gate must not block guest / allo-local media reads
+    // (that previously surfaced as「当前用户不能读取该媒体缓存」during i2v).
+    const alloLocal = resource.provider === "allo";
+    if (!alloLocal && (userScope === "guest" || resource.userId !== userScope)) {
+        throw new Error("当前用户不能读取该媒体缓存");
+    }
+    const scopeKey = alloLocal ? (userScope === "guest" ? "allo" : userScope) : userScope;
     const version = resourceVersion(resource);
     return {
-        key: `${userScope}:${resourceId}:${version}`,
-        userScope,
+        key: `${scopeKey}:${resourceId}:${version}`,
+        userScope: scopeKey,
         resourceId,
         version,
         size: resource.size || 0,

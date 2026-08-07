@@ -84,12 +84,25 @@ export async function resolveImageUrl(storageKey?: string, fallback = "", option
 }
 
 export async function getImageBlob(storageKey: string) {
-    if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
+    if (resourceIdFromStorageKey(storageKey)) {
+        try {
+            const cached = await getCachedResourceBlob(storageKey);
+            if (cached) return cached;
+        } catch {
+            // Fall through to direct media download (allo local / auth media serve).
+        }
+        const { getResourceBlob } = await import("@oc/services/api/resources");
+        return getResourceBlob(storageKey);
+    }
     return store.getItem<Blob>(storageKey);
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
-    if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
+    if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob).catch(() => {
+        const url = URL.createObjectURL(blob);
+        objectUrls.set(storageKey, url);
+        return url;
+    });
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -98,14 +111,18 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string; name?: string; type?: string; mimeType?: string }) {
     if (image.storageKey) {
-        const blob = await getImageBlob(image.storageKey);
-        if (blob) return blobToDataUrl(await normalizeImageBlob(blob, image.name || image.url));
+        try {
+            const blob = await getImageBlob(image.storageKey);
+            if (blob) return blobToDataUrl(await normalizeImageBlob(blob, image.name || image.url));
+        } catch {
+            // Prefer URL / public media fallback below.
+        }
     }
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
+    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || "")) || image.url || "";
     if (!url) return url;
     if (url.startsWith("data:image/")) return url;
     if (url.startsWith("data:")) return blobToDataUrl(await normalizeImageBlob(await (await fetch(url)).blob(), image.name));
-    const blob = await (await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" })).blob();
+    const blob = await (await fetch(url, { credentials: isResourceUrl(url) ? "omit" : "same-origin" })).blob();
     return blobToDataUrl(await normalizeImageBlob(blob, image.name || url));
 }
 
