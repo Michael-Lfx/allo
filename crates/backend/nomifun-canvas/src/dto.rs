@@ -9,6 +9,10 @@ pub struct CanvasProjectMeta {
     pub node_count: u32,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When set, this canvas was materialized from a ViMax Agent session.
+    /// Used to keep 「打开到 Canvas」 idempotent (one session → one project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_vimax_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

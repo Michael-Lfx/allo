@@ -870,17 +870,25 @@ const WorkspacePage: React.FC = () => {
     setMaterializing(true);
     try {
       const result = await materializeSessionToCanvas(sessionId);
-      const warnText =
-        result.warnings?.length > 0
-          ? `（注意：${result.warnings.slice(0, 2).join('；')}${result.warnings.length > 2 ? '…' : ''}）`
-          : '';
-      message.success(
-        t('videoGeneration.actions.openInCanvasOk', {
-          defaultValue: '已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体',
-          shots: result.shot_count,
-          media: result.media_count,
-        }) + warnText
-      );
+      if (result.reused) {
+        message.success(
+          t('videoGeneration.actions.openInCanvasReused', {
+            defaultValue: '已打开该工程对应的 Canvas（未新建）',
+          })
+        );
+      } else {
+        const warnText =
+          result.warnings?.length > 0
+            ? `（注意：${result.warnings.slice(0, 2).join('；')}${result.warnings.length > 2 ? '…' : ''}）`
+            : '';
+        message.success(
+          t('videoGeneration.actions.openInCanvasOk', {
+            defaultValue: '已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体',
+            shots: result.shot_count,
+            media: result.media_count,
+          }) + warnText
+        );
+      }
       navigate(`/video-generation/canvas/${encodeURIComponent(result.project_id)}`);
     } catch (e) {
       message.error(

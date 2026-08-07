@@ -25,6 +25,8 @@ pub struct MaterializeToCanvasResult {
     pub scene_count: u32,
     pub shot_count: u32,
     pub warnings: Vec<String>,
+    /// True when an existing canvas for this session was reopened (no new project).
+    pub reused: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +65,50 @@ pub async fn materialize_session_to_canvas(
     session_id: &str,
 ) -> Result<MaterializeToCanvasResult, AppError> {
     let session = vimax.get_session(session_id)?;
+
+    // Idempotent: one Agent session maps to one Canvas project.
+    if let Some(existing) = canvas.find_project_for_vimax_session(session_id).await? {
+        let project = canvas.get_project(&existing.project_id).await?;
+        let shot_count = project
+            .doc
+            .pointer("/alloCreative/film/scenes")
+            .and_then(|v| v.as_array())
+            .map(|scenes| {
+                scenes
+                    .iter()
+                    .map(|s| {
+                        s.get("shots")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len() as u32)
+                            .unwrap_or(0)
+                    })
+                    .sum()
+            })
+            .unwrap_or(existing.node_count);
+        let scene_count = project
+            .doc
+            .pointer("/alloCreative/film/scenes")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len() as u32)
+            .unwrap_or(0);
+        info!(
+            session_id = %session_id,
+            project_id = %existing.project_id,
+            "reusing existing canvas for vimax session"
+        );
+        return Ok(MaterializeToCanvasResult {
+            project_id: existing.project_id,
+            title: existing.title,
+            session_id: session.session_id,
+            node_count: existing.node_count,
+            media_count: 0,
+            scene_count,
+            shot_count,
+            warnings: vec![],
+            reused: true,
+        });
+    }
+
     let working_dir = vimax.working_dir(session_id)?;
 
     let film = scan_session_film(&session, &working_dir)
@@ -86,8 +132,14 @@ pub async fn materialize_session_to_canvas(
     let doc = build_canvas_document(&film, &media_ids);
 
     let title = format!("{}（Canvas）", film.title);
-    let meta = canvas.create_project(Some(title.clone())).await?;
+    let meta = canvas
+        .create_project_for_vimax_session(session_id, Some(title.clone()))
+        .await?;
     let meta = canvas.put_doc(&meta.project_id, doc).await?;
+    // put_doc may rewrite meta without the session binding — reaffirm link + field.
+    let meta = canvas
+        .set_vimax_session_on_project(&meta.project_id, session_id)
+        .await?;
 
     let shot_count = film.scenes.iter().map(|s| s.shots.len() as u32).sum();
     info!(
@@ -107,6 +159,7 @@ pub async fn materialize_session_to_canvas(
         scene_count: film.scenes.len() as u32,
         shot_count,
         warnings,
+        reused: false,
     })
 }
 
