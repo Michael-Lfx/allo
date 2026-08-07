@@ -314,6 +314,53 @@ impl CanvasService {
         self.store_media_bytes(bytes, kind, mime, ext, title).await
     }
 
+    /// Copy a local file into the canvas media store (avoids double-buffering large videos).
+    pub async fn ingest_local_file(
+        &self,
+        path: &Path,
+        kind: &str,
+        mime: &str,
+        ext: &str,
+        title: String,
+    ) -> Result<CanvasMediaMeta, AppError> {
+        self.ensure_dirs().await?;
+        let meta = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| AppError::BadRequest(format!("media file: {e}")))?;
+        if !meta.is_file() {
+            return Err(AppError::BadRequest(format!(
+                "not a file: {}",
+                path.display()
+            )));
+        }
+        if meta.len() as usize > MAX_MEDIA_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "media exceeds {MAX_MEDIA_BYTES} bytes"
+            )));
+        }
+        let media_id = generate_id();
+        let dest = self.media_dir().join(format!("{media_id}.{ext}"));
+        tokio::fs::copy(path, &dest)
+            .await
+            .map_err(|e| AppError::Internal(format!("copy media: {e}")))?;
+        let entry = MediaIndexEntry {
+            media_id: media_id.clone(),
+            kind: kind.to_string(),
+            title,
+            mime: mime.to_string(),
+            ext: ext.to_string(),
+            bytes: meta.len(),
+            width: None,
+            height: None,
+            duration_ms: None,
+            created_at: now_ms(),
+        };
+        let mut idx = self.load_media_index().await?;
+        idx.items.insert(0, entry.clone());
+        self.save_media_index(&idx).await?;
+        Ok(Self::entry_to_meta(&entry))
+    }
+
     pub async fn upload_media(
         &self,
         file_name: String,

@@ -63,6 +63,20 @@ impl VimaxApiService {
         self.inner.get_session(id).map_err(map_vimax_err)
     }
 
+    pub fn working_dir(&self, id: &str) -> Result<PathBuf, AppError> {
+        self.inner.working_dir(id).map_err(map_vimax_err)
+    }
+
+    pub fn set_session_final_video(
+        &self,
+        id: &str,
+        final_video: Option<String>,
+    ) -> Result<SessionRecord, AppError> {
+        self.inner
+            .set_final_video(id, final_video)
+            .map_err(map_vimax_err)
+    }
+
     pub async fn plan(
         &self,
         id: &str,

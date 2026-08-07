@@ -4,6 +4,7 @@ pub mod agents;
 pub mod artifact_edit;
 pub mod aspect;
 pub mod backends;
+pub mod creative;
 pub mod domain;
 pub mod error;
 pub mod json_util;
@@ -18,6 +19,10 @@ pub mod service;
 pub mod session;
 pub mod video_quality;
 
+pub use creative::{
+    build_canvas_document, scan_session_film, CreativeFilm, CreativeMediaFile, MediaIdMap,
+    CREATIVE_IR_VERSION,
+};
 pub use aspect::{
     DEFAULT_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS, aspect_prompt_clause, aspect_to_dashscope_size,
     aspect_to_seedream_size, aspect_to_upload_dims, image_request_extra_for_aspect,

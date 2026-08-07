@@ -21,6 +21,8 @@ export type CanvasProject = {
     showImageInfo: boolean;
     viewport: ViewportTransform;
     directorScenes: DirectorScene[];
+    /** Agent materialization sidecar from server doc.json */
+    alloCreative?: Record<string, unknown>;
 };
 
 type CanvasStore = {
@@ -32,7 +34,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "alloCreative">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };

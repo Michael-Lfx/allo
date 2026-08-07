@@ -13,6 +13,7 @@ nomifun-common.workspace = true
 nomifun-api-types.workspace = true
 nomifun-auth.workspace = true
 nomifun-cloud.workspace = true
+nomifun-canvas.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tower-http.workspace = true

@@ -195,6 +195,53 @@ export async function exportSession(
   );
 }
 
+export type MaterializeToCanvasResult = {
+  project_id: string;
+  title: string;
+  session_id: string;
+  node_count: number;
+  media_count: number;
+  scene_count: number;
+  shot_count: number;
+  warnings: string[];
+};
+
+/** High-fidelity Agent → Canvas projection (storyboard, cast bible, shots, camera tree). */
+export async function materializeSessionToCanvas(
+  id: string
+): Promise<MaterializeToCanvasResult> {
+  return httpRequest<MaterializeToCanvasResult>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(id)}/materialize-to-canvas`,
+    {}
+  );
+}
+
+export type SyncFromCanvasShot = {
+  scene_key: string;
+  shot_idx: number;
+  media_id: string;
+};
+
+export type SyncFromCanvasResult = {
+  session_id: string;
+  updated_shots: number;
+  final_video?: string | null;
+  warnings: string[];
+};
+
+/** Explicit write-back: Canvas shot videos → ViMax working_dir + optional re-concat. */
+export async function syncSessionFromCanvas(
+  id: string,
+  body: { project_id: string; shots?: SyncFromCanvasShot[]; reconcat?: boolean }
+): Promise<SyncFromCanvasResult> {
+  return httpRequest<SyncFromCanvasResult>(
+    'POST',
+    `${BASE}/sessions/${encodeURIComponent(id)}/sync-from-canvas`,
+    body
+  );
+}
+
 /** Import a local `.nomivimax` archive as a new session (new id). */
 export async function importSession(sourcePath: string): Promise<SessionSummary> {
   return httpRequest<SessionSummary>('POST', `${BASE}/sessions/import`, {

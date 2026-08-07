@@ -98,6 +98,8 @@ export type CanvasDocument = {
   connections: CanvasConnection[];
   viewport: ViewportTransform;
   backgroundMode: 'lines' | 'blank' | 'grid';
+  /** High-fidelity Agent→Canvas sidecar (camera tree, voice bible, write-back). */
+  alloCreative?: Record<string, unknown>;
 };
 
 export const CANVAS_DOC_SCHEMA = 1 as const;

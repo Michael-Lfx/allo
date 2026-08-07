@@ -1,5 +1,6 @@
 //! `nomifun-vimax` — HTTP surface for ViMax video generation (`/api/vimax/*`).
 
+pub mod materialize;
 pub mod routes;
 pub mod service;
 pub mod state;

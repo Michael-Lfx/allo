@@ -616,7 +616,10 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             services.media_service.clone(),
             services.media_service.data_dir().to_path_buf(),
         ),
-        vimax: VimaxRouterState::new(services.vimax_service.clone()),
+        vimax: VimaxRouterState::new(
+            services.vimax_service.clone(),
+            services.video_canvas_service.clone(),
+        ),
         video_canvas: CanvasRouterState::new(services.video_canvas_service.clone()),
         cloud: CloudRouterState::new(
             services.cloud_service.clone(),

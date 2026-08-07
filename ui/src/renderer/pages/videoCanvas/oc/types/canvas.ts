@@ -275,6 +275,8 @@ export type CanvasNodeMetadata = {
         maskStorageKey?: string;
     };
     portraitTexture?: PortraitTextureSettings;
+    /** ViMax materialization sidecar — preserved across regenerations / sync. */
+    alloVimax?: Record<string, unknown>;
 };
 
 export type CanvasNodeData = {

@@ -10,6 +10,7 @@ import { Button } from '@arco-design/web-react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import CanvasProjectPage from '@oc/pages/canvas/project';
 import { hydrateCanvasProjectFromServer, syncCanvasProjectToServer } from './lib/ocBridge';
+import VimaxProvenanceBar from './lib/VimaxProvenanceBar';
 import { syncOcConfigFromAlloMediaModels } from './lib/syncOcModels';
 import { videoCanvasQueryClient } from './lib/queryClient';
 import { getVideoCanvasAntTheme } from './lib/ocAntTheme';
@@ -171,7 +172,10 @@ const VideoCanvasProjectPage: React.FC = () => {
       <QueryClientProvider client={videoCanvasQueryClient}>
         <ConfigProvider theme={getVideoCanvasAntTheme(colorTheme === 'dark')}>
           <AntApp>
-            <CanvasProjectPage />
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+              <VimaxProvenanceBar projectId={canvasId} />
+              <CanvasProjectPage />
+            </div>
           </AntApp>
         </ConfigProvider>
       </QueryClientProvider>

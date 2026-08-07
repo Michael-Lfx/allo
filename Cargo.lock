@@ -6904,6 +6904,7 @@ dependencies = [
  "nomi-vimax",
  "nomifun-api-types",
  "nomifun-auth",
+ "nomifun-canvas",
  "nomifun-cloud",
  "nomifun-common",
  "reqwest 0.12.28",
