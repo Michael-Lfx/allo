@@ -29,6 +29,8 @@ describe('workspace file tree visual contract', () => {
   });
 
   test('defines dense, themed row states for desktop and mobile', () => {
+    expect(workspaceCss.includes('--workspace-tree-inset: 16px;')).toBe(true);
+    expect(workspaceCss.includes('padding: 0 var(--workspace-tree-inset) 12px !important;')).toBe(true);
     expect(workspaceCss.includes('--workspace-tree-row-height: 28px;')).toBe(true);
     expect(workspaceCss.includes('min-height: var(--workspace-tree-row-height);')).toBe(true);
     expect(workspaceCss.includes('height: var(--workspace-tree-row-height);')).toBe(true);

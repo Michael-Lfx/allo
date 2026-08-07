@@ -67,7 +67,7 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
         tabIndex={0}
         aria-expanded={expanded}
         data-testid='pinned-plan-summary'
-        className='flex h-28px items-center gap-6px rd-999px px-10px cursor-pointer select-none'
+        className='flex h-28px items-center gap-6px rd-full px-10px cursor-pointer select-none'
         style={{
           background: 'var(--color-bg-1)',
           border: '1px solid color-mix(in srgb, rgb(var(--primary-6)) 14%, var(--color-border-2))',
@@ -90,7 +90,8 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
         <span className='min-w-0 truncate text-12px font-600 leading-none'>
           {t('messages.planTodoList', { defaultValue: 'Task queue' })}
         </span>
-        <span className='ml-18px whitespace-nowrap text-12px leading-none tabular-nums'>
+        <span aria-hidden='true' className='h-12px w-1px shrink-0 bg-[var(--color-border-2)]' />
+        <span className='whitespace-nowrap text-12px leading-none tabular-nums'>
           {t('messages.planProgress', { done, total, defaultValue: '{{done}}/{{total}}' })}
         </span>
       </div>
@@ -99,38 +100,42 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
       {expanded && (
         <div
           data-testid='pinned-plan-popover'
-          className='absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-[calc(100%+8px)] z-10'
+          className='absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-[calc(100%+4px)] z-10'
         >
           <div
             data-testid='pinned-plan-list'
-            className='flex max-h-[180px] flex-col gap-6px overflow-y-auto rd-12px px-12px py-10px'
+            className='flex max-h-[164px] flex-col overflow-y-auto rd-10px p-4px'
             style={{
-              background: 'color-mix(in srgb, var(--color-bg-2) 92%, rgb(var(--primary-6)))',
-              border: '1px solid color-mix(in srgb, var(--color-border-2) 76%, transparent)',
-              boxShadow: '0 8px 22px rgba(15, 23, 42, 0.08)',
+              background: 'var(--color-bg-1)',
+              border: '1px solid color-mix(in srgb, var(--color-border-2) 88%, transparent)',
+              boxShadow: '0 10px 28px rgba(15, 23, 42, 0.12)',
             }}
           >
-            {entries.map((item, index) => (
-              <div key={index} className='flex min-h-22px flex-row items-center gap-8px text-12px leading-18px color-#86909C'>
-                {item.status === 'completed' ? (
-                  <IconCheckCircle fontSize={18} strokeWidth={4} className='flex shrink-0 color-#00B42A' />
-                ) : item.status === 'in_progress' ? (
-                  <div className='size-18px flex shrink-0 items-center justify-center'>
-                    <div className='size-11px rd-full b-2px b-solid' style={{ borderColor: 'var(--primary-6)' }}></div>
-                  </div>
-                ) : (
-                  <div className='size-18px flex shrink-0 items-center justify-center'>
-                    <div className='size-11px rd-full b-2px b-solid b-[rgba(201,205,212,1)]'></div>
-                  </div>
-                )}
-                <span
-                  className='min-w-0 flex-1 line-clamp-2'
-                  style={item.status === 'in_progress' ? { color: 'var(--text-primary)' } : undefined}
-                >
-                  {item.content}
-                </span>
-              </div>
-            ))}
+            {entries.map((item, index) => {
+              const itemClassName =
+                item.status === 'in_progress'
+                  ? 'bg-[rgba(var(--primary-6),0.07)] text-t-primary font-500'
+                  : item.status === 'completed'
+                    ? 'text-t-tertiary'
+                    : 'text-t-secondary';
+
+              return (
+                <div key={index} className={`flex min-h-24px flex-row items-center gap-8px rd-6px px-6px py-3px text-12px leading-18px ${itemClassName}`}>
+                  {item.status === 'completed' ? (
+                    <IconCheckCircle fontSize={16} strokeWidth={4} className='flex shrink-0 text-[rgb(var(--success-6))]' />
+                  ) : item.status === 'in_progress' ? (
+                    <div className='size-16px flex shrink-0 items-center justify-center'>
+                      <div className='size-8px rd-full b-2px b-solid' style={{ borderColor: 'var(--primary-6)' }}></div>
+                    </div>
+                  ) : (
+                    <div className='size-16px flex shrink-0 items-center justify-center'>
+                      <div className='size-8px rd-full b-2px b-solid b-[rgba(201,205,212,1)]'></div>
+                    </div>
+                  )}
+                  <span className='min-w-0 flex-1 line-clamp-2'>{item.content}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
