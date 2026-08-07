@@ -33,6 +33,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createContext } from '@renderer/utils/ui/createContext';
 import { addEventListener } from '@/renderer/utils/emitter';
 import { isAuthoritativeCompletionRuntimeIdle } from '../platforms/authoritativeTurnLifecyclePolicy';
+import {
+  ackConsumerReconciled,
+  filterFetchedRows,
+  getEpoch,
+  purgeCurrentRows,
+  retainConsumer,
+  type ConsumerId,
+} from './conversationMessageCoordinator';
+import { getFetchedMergeKey, getToolLifecycleKey } from './messageRowKeys';
 
 const [useMessageList, MessageListProvider, useUpdateMessageList] = createContext([] as TMessage[]);
 const [useMessageListLoading, MessageListLoadingProvider, useUpdateMessageListLoading] = createContext(false);
@@ -47,11 +56,6 @@ interface MessageIndex {
   tool_call_idIndex: Map<string, number>; // turn + acp tool_call_id -> index
   permission_call_idIndex: Map<string, number>; // permission.content.call_id -> index
 }
-
-const getToolLifecycleKey = (message: TMessage, callId: string): string => {
-  const turnId = message.turn_id || message.msg_id || message.message_id || message.id;
-  return `${turnId}:${callId}`;
-};
 
 function getMessageIndexKey(message: TMessage): string | undefined {
   if (!message.msg_id) return undefined;
@@ -576,51 +580,6 @@ export const useRemoveMessageByMsgId = () => {
   );
 };
 
-/**
- * Capture the frontend-local rows that belong to the old edit suffix.
- *
- * The target row's durable identity wins over timestamps. The timestamp
- * fallback only covers a stale/incomplete local cache. Capturing local `id`s
- * before the request means replacement stream rows that arrive before the HTTP
- * response are not accidentally removed on success.
- */
-export function snapshotEditSuffixLocalIds(
-  list: TMessage[],
-  targetMessageId: MessageId,
-  targetCreatedAt: number
-): Set<string> {
-  const targetIndex = list.findIndex(
-    (message) =>
-      message.position === 'right' &&
-      message.type === 'text' &&
-      (message.message_id === targetMessageId || message.msg_id === targetMessageId)
-  );
-  const suffix =
-    targetIndex >= 0
-      ? list.slice(targetIndex)
-      : list.filter((message) => (message.created_at ?? 0) >= targetCreatedAt);
-  return new Set(suffix.map((message) => message.id));
-}
-
-export function removeMessagesByLocalIds(
-  list: TMessage[],
-  localIds: ReadonlySet<string>
-): TMessage[] {
-  if (localIds.size === 0) return list;
-  return list.filter((message) => !localIds.has(message.id));
-}
-
-export const useRemoveMessagesByLocalIds = () => {
-  const update = useUpdateMessageList();
-
-  return useCallback(
-    (localIds: ReadonlySet<string>) => {
-      update((list) => removeMessagesByLocalIds(list, localIds));
-    },
-    [update]
-  );
-};
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -880,17 +839,6 @@ const getPersistedMessageId = (message: TMessage): MessageId => {
 const messageCursorOf = (message: TMessage): string =>
   `${message.created_at ?? 0}:${getPersistedMessageId(message)}`;
 
-const getFetchedMergeKey = (message: TMessage): string | undefined => {
-  if (!message.msg_id) return undefined;
-  if (message.type === 'tool_call' && message.content?.call_id) {
-    return `tool_call:${getToolLifecycleKey(message, message.content.call_id)}`;
-  }
-  if (message.type === 'acp_tool_call' && message.content?.update?.tool_call_id) {
-    return `acp_tool_call:${getToolLifecycleKey(message, message.content.update.tool_call_id)}`;
-  }
-  return `${message.type}:${message.msg_id}`;
-};
-
 const compareTranscriptOrder = (left: TMessage, right: TMessage): number => {
   const leftCreatedAt = left.created_at ?? Number.MAX_SAFE_INTEGER;
   const rightCreatedAt = right.created_at ?? Number.MAX_SAFE_INTEGER;
@@ -1014,6 +962,32 @@ export const mergeFetchedMessagesForConversation = (
 };
 
 /**
+ * Apply a freshly fetched DB page with the edit-resubmit barriers active for
+ * this conversation. Composition (the testable seam, also used by
+ * `useMessageLstCache`):
+ *
+ *  1. `filterFetchedRows` drops stale rows that belong to an armed/reconciling
+ *     barrier BEFORE the chronological union, so a pre-truncate DB snapshot can
+ *     never re-enter the list after the old suffix was removed.
+ *  2. `mergeFetchedMessagesForConversation` builds the chronological union.
+ *  3. `purgeCurrentRows` strips any barrier rows that still linger in the
+ *     current list once a barrier is reconciling (covers cross-instance rows
+ *     the capturing instance can no longer reach by local id).
+ *
+ * The standalone `mergeFetchedMessagesForConversation` export stays pure for
+ * callers that manage their own barrier filtering.
+ */
+export const applyFetchedMessages = (
+  currentList: TMessage[],
+  messages: TMessage[],
+  conversationId: ConversationId
+): TMessage[] => {
+  const filtered = filterFetchedRows(messages, conversationId);
+  const merged = mergeFetchedMessagesForConversation(currentList, filtered, conversationId);
+  return purgeCurrentRows(merged, conversationId);
+};
+
+/**
  * Loads a conversation's message history into the shared message-list store.
  *
  * Two modes:
@@ -1039,6 +1013,9 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   const loadingOlderRef = useRef(false);
   const newestLoadSequenceRef = useRef(0);
   const activeConversationRef = useRef<ConversationId>(key);
+  // This instance's coordinator consumer id (released on unmount/conversation
+  // switch). Held in a ref so loadMessages can ack its own reconciliation.
+  const consumerIdRef = useRef<ConsumerId | null>(null);
 
   // Providers are shared by the mounted chat surface. Invalidate outstanding
   // fetches synchronously when routing to another conversation so a slower old
@@ -1051,11 +1028,14 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // Merge a freshly fetched DB page (newest window or full list) with any
   // in-flight streaming messages for this conversation. During streaming the DB
   // may hold an older snapshot (2000ms save debounce), so we keep whichever
-  // version has more content and build a stable chronological union.
+  // version has more content and build a stable chronological union. The
+  // composition also runs the edit-resubmit barriers (filter stale fetched
+  // rows, purge reconciled suffix) so a pre-truncate snapshot cannot resurrect
+  // the old message/error tip.
   const mergeIntoList = useCallback(
     (messages: TMessage[]) => {
       update((currentList) => {
-        return mergeFetchedMessagesForConversation(currentList, messages, key);
+        return applyFetchedMessages(currentList, messages, key);
       });
     },
     [key, update]
@@ -1064,6 +1044,11 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   const loadMessages = useCallback(async (): Promise<TMessage[]> => {
     const loadSequence = newestLoadSequenceRef.current + 1;
     newestLoadSequenceRef.current = loadSequence;
+    // Capture the conversation epoch at request start. An edit-resubmit that
+    // succeeds while this fetch is in flight bumps the epoch; on return the
+    // captured epoch no longer matches and the (pre-truncate) snapshot is
+    // discarded wholesale instead of merged.
+    const capturedEpoch = getEpoch(key);
     const result = await ipcBridge.database.getConversationMessages.invoke(
       windowed
         ? { conversation_id: key, cursor: '', page_size: HISTORY_WINDOW_SIZE, content_mode: 'compact' }
@@ -1072,7 +1057,8 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     const messages = result?.items?.map(normalizeDbMessage);
     if (
       activeConversationRef.current !== key ||
-      newestLoadSequenceRef.current !== loadSequence
+      newestLoadSequenceRef.current !== loadSequence ||
+      capturedEpoch !== getEpoch(key)
     ) {
       return [];
     }
@@ -1085,6 +1071,10 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     }
     if (messages && Array.isArray(messages)) {
       mergeIntoList(messages);
+      // This replace fetch reflects the current epoch, so it confirms this
+      // consumer has reconciled past every earlier edit-resubmit barrier.
+      const consumerId = consumerIdRef.current;
+      if (consumerId) ackConsumerReconciled(key, consumerId, getEpoch(key));
       return messages;
     }
     return [];
@@ -1128,6 +1118,20 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       setLoadingOlder(false);
     }
   }, [key, update, windowed]);
+
+  // Register this message-list instance as a coordinator consumer for the
+  // conversation. Re-released on conversation switch/unmount so barriers do not
+  // wait on a dead consumer. A consumer mounting mid-reconciliation joins the
+  // in-flight barrier's pending set (see retainConsumer).
+  useEffect(() => {
+    if (!key) return;
+    const { consumerId, release } = retainConsumer(key);
+    consumerIdRef.current = consumerId;
+    return () => {
+      consumerIdRef.current = null;
+      release();
+    };
+  }, [key]);
 
   useEffect(() => {
     if (!key) return;
@@ -1193,6 +1197,21 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       if (settledConversationId !== key) return;
       void loadMessages().catch((error) => {
         console.warn('[useMessageLstCache] Failed to refresh messages after turn settle:', error);
+      });
+    });
+  }, [key, loadMessages]);
+
+  // Edit-resubmit reconciliation/failure refresh. On success the capturing
+  // instance already purged its suffix optimistically and inserted the new
+  // bubble; this authoritative reload replaces the optimistic state with the
+  // post-truncate DB and lets every consumer ack its barrier. On failure it
+  // restores the authoritative (un-truncated) history.
+  useEffect(() => {
+    if (!key) return;
+    return addEventListener('conversation.messages.refresh', (event) => {
+      if (event.conversationId !== key) return;
+      void loadMessages().catch((error) => {
+        console.warn('[useMessageLstCache] Failed to refresh messages after edit-resubmit:', error);
       });
     });
   }, [key, loadMessages]);

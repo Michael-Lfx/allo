@@ -6,6 +6,21 @@ export const collectSelectedFiles = (uploadFile: string[], atPath: Array<string 
   return Array.from(new Set([...uploadFile, ...atPathFiles]));
 };
 
+/**
+ * 附件集合差：从当前选择中精确移除本次已提交的附件（按路径匹配）。
+ * 路径提取与 collectSelectedFiles 一致（string 即路径，对象取 .path）。
+ * 提交 X 飞行中新增 Y → 仅剩 Y；飞行中删 X → 幂等；无新增 → 清空。
+ *
+ * Attachment set-difference: remove exactly the submitted attachments (matched
+ * by path) from the current selection. Path extraction mirrors collectSelectedFiles
+ * (a bare string is a path; an object yields .path). Submit X, add Y mid-flight →
+ * keep only Y; delete X mid-flight → idempotent; nothing added → emptied.
+ */
+export const removeSubmittedAttachments = <T extends string | FileOrFolderItem>(
+  current: readonly T[],
+  submittedAttachmentIds: ReadonlySet<string>
+): T[] => current.filter((item) => !submittedAttachmentIds.has(typeof item === 'string' ? item : item.path));
+
 export const buildDisplayMessage = (input: string, files: string[], workspacePath: string): string => {
   if (!files.length) return input;
   const normalizedWorkspace = workspacePath?.replace(/[\\/]+$/, '');

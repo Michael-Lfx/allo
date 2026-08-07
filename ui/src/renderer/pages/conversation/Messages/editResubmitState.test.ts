@@ -1,15 +1,20 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
-import type { TMessage } from '@/common/chat/chatLib';
-import type { ConversationId, MessageId } from '@/common/types/ids';
-import {
-  removeMessagesByLocalIds,
-  snapshotEditSuffixLocalIds,
-} from './hooks';
+/**
+ * Structural contract tests for the edit/resubmit pipeline. These assert on the
+ * *ordering* of source-level operations (read from disk) rather than runtime
+ * behavior — the behavioral race/resurrection coverage lives in
+ * `editResubmitResurrection.test.ts`.
+ *
+ * The contract under test:
+ *  - the old suffix is captured and the barrier armed BEFORE the request, and
+ *    the suffix/attachments are only dropped AFTER backend acceptance;
+ *  - SendBox clears edit state + input only inside the post-acceptance `.then`
+ *    (this portion is enforced by `editResubmitState` on main and turns green
+ *    once the SendBox timing fix lands).
+ */
 
-const conversationId = '019fa2b0-6dc2-75c1-9b50-2742e02df27a' as ConversationId;
-const targetMessageId = '019fa2b0-6dc2-75c1-9b50-2742e02df27b' as MessageId;
 const sendBoxSource = readFileSync(
   new URL('../../../components/chat/SendBox/index.tsx', import.meta.url),
   'utf8'
@@ -19,53 +24,46 @@ const nomiSendBoxSource = readFileSync(
   'utf8'
 );
 
-const textMessage = (
-  id: string,
-  position: 'left' | 'right',
-  createdAt: number,
-  messageId?: MessageId
-): TMessage => ({
-  id,
-  message_id: messageId,
-  msg_id: messageId,
-  conversation_id: conversationId,
-  type: 'text',
-  position,
-  created_at: createdAt,
-  content: { content: id },
-});
+describe('edit/resubmit pipeline structure', () => {
+  test('NomiSendBox captures + arms before the request and tears down only after acceptance', () => {
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    const capture = nomiHandler.indexOf('captureBarrier(');
+    const arm = nomiHandler.indexOf('armBarrier(conversation_id, operationId, capture);');
+    const invoke = nomiHandler.indexOf('editResubmit.invoke({');
+    const reconcile = nomiHandler.indexOf('beginEditResubmitReconciliation(conversation_id, operationId);');
+    const purge = nomiHandler.indexOf('purgeCurrentRows(list, conversation_id)');
+    // 附件集合差：提交时捕获已提交附件路径快照，成功后仅精确移除已提交项。
+    // Attachment set-difference: snapshot the submitted attachment paths at submit,
+    // then remove only those from the current selection after acceptance.
+    const submittedAttachmentSnapshot = nomiHandler.indexOf(
+      'const submittedAttachmentIds = new Set(filesToSend);'
+    );
+    const removeSubmitted = nomiHandler.indexOf('removeSubmittedAttachments(', invoke);
+    const fullClear = nomiHandler.indexOf('clearFiles();', invoke);
+    const failedRefresh = nomiHandler.indexOf("'edit-resubmit-failed'");
 
-describe('edit/resubmit local suffix replacement', () => {
-  test('uses the durable target identity instead of deleting every same-millisecond row', () => {
-    const list = [
-      textMessage('same-ms-before-target', 'left', 100),
-      textMessage('target', 'right', 100, targetMessageId),
-      textMessage('old-assistant-tail', 'left', 101),
-    ];
-
-    const captured = snapshotEditSuffixLocalIds(list, targetMessageId, 100);
-
-    expect([...captured]).toEqual(['target', 'old-assistant-tail']);
+    // Durable capture, then arm, then the request.
+    expect(capture).toBeGreaterThan(-1);
+    expect(arm).toBeGreaterThan(capture);
+    expect(invoke).toBeGreaterThan(arm);
+    expect(submittedAttachmentSnapshot).toBeGreaterThan(-1);
+    expect(invoke).toBeGreaterThan(submittedAttachmentSnapshot);
+    // Post-acceptance only: reconcile flips the barrier, the suffix purge runs,
+    // and the submitted attachments are removed via set-difference — all after invoke.
+    expect(reconcile).toBeGreaterThan(invoke);
+    expect(purge).toBeGreaterThan(reconcile);
+    expect(removeSubmitted).toBeGreaterThan(invoke);
+    // The full-clear helper must NOT appear in the edit-resubmit path (would wipe
+    // attachments added mid-flight).
+    expect(fullClear).toBe(-1);
+    // Failure path revokes the barrier and emits a failed refresh.
+    expect(failedRefresh).toBeGreaterThan(-1);
   });
 
-  test('keeps replacement stream rows that arrive before the HTTP response', () => {
-    const oldList = [
-      textMessage('stable-prefix', 'left', 99),
-      textMessage('target', 'right', 100, targetMessageId),
-      textMessage('old-assistant-tail', 'left', 101),
-    ];
-    const captured = snapshotEditSuffixLocalIds(oldList, targetMessageId, 100);
-    const replacement = textMessage('replacement-stream', 'left', 102);
-
-    const result = removeMessagesByLocalIds([...oldList, replacement], captured);
-
-    expect(result.map((message) => message.id)).toEqual([
-      'stable-prefix',
-      'replacement-stream',
-    ]);
-  });
-
-  test('clears edit state and the old suffix only after backend acceptance', () => {
+  test('SendBox clears edit state and the old suffix only after backend acceptance', () => {
     const editSubmitBranch = sendBoxSource.slice(
       sendBoxSource.indexOf('if (editingMsgId && onEditResubmit) {'),
       sendBoxSource.indexOf('// Cancel any pending warmup:')
@@ -81,19 +79,32 @@ describe('edit/resubmit local suffix replacement', () => {
     expect(accepted).toBeGreaterThan(submit);
     expect(exitEditMode).toBeGreaterThan(accepted);
     expect(clearInput).toBeGreaterThan(accepted);
+  });
 
-    const nomiHandler = nomiSendBoxSource.slice(
-      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
-      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+  test('retry path restores the retried text only when the input revision is unchanged', () => {
+    // The error-popup retry also goes through onEditResubmit; its failure must
+    // never overwrite what the user typed mid-flight (C2 inputRevision guard).
+    const retryBranch = sendBoxSource.slice(
+      sendBoxSource.indexOf("'sendbox.retry'"),
+      sendBoxSource.indexOf('// Bump the input revision on every composer change')
     );
-    const invoke = nomiHandler.indexOf('editResubmit.invoke({');
-    const removeOldSuffix = nomiHandler.indexOf(
-      'removeMessagesByLocalIds(oldSuffixLocalIds);'
+    const revisionSnapshot = retryBranch.indexOf(
+      'const submittedInputRevision = inputRevisionRef.current;',
+      retryBranch.indexOf("'sendbox.retry'")
     );
-    const clearAttachments = nomiHandler.indexOf('clearFiles();', invoke);
+    const setLoading = retryBranch.indexOf('setIsLoading(true);', retryBranch.indexOf("'sendbox.retry'"));
+    const restoreInput = retryBranch.indexOf('setInput(content);', retryBranch.indexOf("'sendbox.retry'"));
+    const guard = retryBranch.indexOf(
+      'inputRevisionRef.current === submittedInputRevision',
+      retryBranch.indexOf("'sendbox.retry'")
+    );
 
-    expect(invoke).toBeGreaterThan(-1);
-    expect(removeOldSuffix).toBeGreaterThan(invoke);
-    expect(clearAttachments).toBeGreaterThan(invoke);
+    expect(revisionSnapshot).toBeGreaterThan(-1);
+    expect(setLoading).toBeGreaterThan(-1);
+    // Snapshot before the request starts, guard before any restore.
+    expect(setLoading).toBeGreaterThan(revisionSnapshot);
+    expect(restoreInput).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(-1);
+    expect(restoreInput).toBeGreaterThan(guard);
   });
 });

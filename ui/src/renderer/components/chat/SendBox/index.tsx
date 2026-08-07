@@ -60,6 +60,13 @@ import ComposerSkillTokenInput, {
 import type { ComposerDraft } from '@/renderer/components/chat/composerDraft';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistory';
+import { uuid } from '@/common/utils';
+import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
+import {
+  clearEditingMessage,
+  setEditingMessage,
+  updateEditingMessage,
+} from '@/renderer/pages/conversation/Messages/editingMessageStore';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
@@ -328,6 +335,27 @@ const SendBox: React.FC<{
   const [editingMsgId, setEditingMsgId] = useState<MessageId | null>(null);
   const editingCreatedAtRef = useRef<number>(0);
   const editPrevDraftRef = useRef<string | null>(null);
+  // C3: 编辑态 store 的 owner 标识（本实例唯一、仅 owner 可清，双实例护栏）与
+  // 最新会话 id（事件监听器闭包可能捕获旧 conversationContext，写 store 前取 ref）。
+  // C3: owner identity in the editing store (unique per instance, only the owner
+  // may clear — dual-instance guard) plus the latest conversation id (event
+  // listener closures may capture a stale conversationContext; read the ref).
+  const editingOwnerIdRef = useRef<string | undefined>(undefined);
+  const conversationIdRef = useLatestRef(conversationContext?.conversation_id);
+  const editingOwnerId = (): string => {
+    if (editingOwnerIdRef.current === undefined) {
+      editingOwnerIdRef.current = uuid();
+    }
+    return editingOwnerIdRef.current;
+  };
+  // Edit-resubmit operation token: every UI side effect in the submit
+  // promise chain (.then/.catch/.finally) is gated on this so a stale
+  // operation can never clobber a newer one's input/edit/loading state.
+  const activeEditOperationRef = useRef<string | null>(null);
+  // Monotonic input revision (bumped on every `input` change) so the success
+  // callback can tell "user typed during the request" from "string happened to
+  // match" — only clear input when the user never touched it post-submit.
+  const inputRevisionRef = useRef(0);
   const [caretPosition, setCaretPosition] = useState(0);
   const [workspaceMentionItems, setWorkspaceMentionItems] = useState<FileOrFolderItem[]>([]);
   const [workspaceMentionLoading, setWorkspaceMentionLoading] = useState(false);
@@ -366,9 +394,26 @@ const SendBox: React.FC<{
       requestAnimationFrame(() => {
         tokenInputRef.current?.focusAtTextOffset(payload.content.length);
       });
+      // C3: 登记编辑中气泡（待提交，pending=false）。
+      // C3: register the bubble being edited (recalled, not yet submitted).
+      const cid = conversationIdRef.current;
+      if (cid) {
+        setEditingMessage(cid, { ownerId: editingOwnerId(), msgId: payload.msgId, pending: false });
+      }
     },
     [onEditResubmit, onSkillChipsChange]
   );
+
+  // C3: 卸载时清理本实例在编辑 store 中的登记（owner-guarded，双实例互不干扰）。
+  // C3: clear this instance's editing-store registration on unmount (owner-guarded;
+  // a sibling SendBox's registration is untouched).
+  useEffect(() => {
+    return () => {
+      const owner = editingOwnerIdRef.current;
+      const cid = conversationIdRef.current;
+      if (owner !== undefined && cid) clearEditingMessage(cid, owner);
+    };
+  }, []);
 
   useAddEventListener(
     'sendbox.retry',
@@ -377,6 +422,10 @@ const SendBox: React.FC<{
       const content = payload.content?.trim();
       if (!content) return;
       void (async () => {
+        // Snapshot the input revision so a retry failure restores the retried
+        // text only when the user never touched the composer mid-flight — never
+        // overwriting new typing (same protection as the edit-resubmit path).
+        const submittedInputRevision = inputRevisionRef.current;
         setIsLoading(true);
         try {
           if (onEditResubmit && payload.msgId && payload.createdAt) {
@@ -389,7 +438,9 @@ const SendBox: React.FC<{
             conversation_type: conversationContext?.type,
           });
         } catch {
-          setInput(content);
+          if (inputRevisionRef.current === submittedInputRevision) {
+            setInput(content);
+          }
         } finally {
           setIsLoading(false);
         }
@@ -397,6 +448,21 @@ const SendBox: React.FC<{
     },
     [conversationContext?.type, disabled, loading, isLoading, onEditResubmit, onSend]
   );
+
+  // Bump the input revision on every composer change so the edit-resubmit
+  // success/failure callbacks can detect mid-flight user edits by revision
+  // drift rather than brittle string equality.
+  useEffect(() => {
+    inputRevisionRef.current += 1;
+  }, [input]);
+
+  // Invalidate any in-flight edit-resubmit operation on unmount so its late
+  // callbacks cannot touch state (the token check makes them no-ops).
+  useEffect(() => {
+    return () => {
+      activeEditOperationRef.current = null;
+    };
+  }, []);
 
   // 集成预览面板的"添加到聊天"功能 / Integrate preview panel's "Add to chat" functionality
   const { setSendBoxHandler, domSnippets, removeDomSnippet, clearDomSnippets } = usePreviewContext();
@@ -1459,10 +1525,18 @@ const SendBox: React.FC<{
   };
 
   const cancelEdit = () => {
+    // A submit is already in flight — its promise chain owns the edit state
+    // until the backend accepts/rejects; canceling mid-flight would strand
+    // isLoading. Ignore the cancel click while a resubmit is pending.
+    if (isLoading) return;
     setEditingMsgId(null);
     const prev = editPrevDraftRef.current ?? '';
     editPrevDraftRef.current = null;
     setInput(prev);
+    // C3: 取消编辑 → 清除编辑中徽章（仅 owner 匹配才生效）。
+    // C3: cancel edit → clear the editing badge (owner-guarded).
+    const cid = conversationIdRef.current;
+    if (cid) clearEditingMessage(cid, editingOwnerId());
   };
 
   const submitGoalObjective = (objective: string) => {
@@ -1494,20 +1568,60 @@ const SendBox: React.FC<{
       const finalMessage = input;
       const targetId = editingMsgId;
       const targetCreatedAt = editingCreatedAtRef.current;
-      const previousDraft = editPrevDraftRef.current ?? '';
-      setEditingMsgId(null);
-      editPrevDraftRef.current = null;
-      setInput('');
+      // Stamp this resubmit with an operation token and snapshot the input
+      // revision. Edit state + input are cleared ONLY after backend acceptance
+      // (the .then below); a stale operation or a user who typed mid-flight must
+      // not have its input/edit/loading state touched.
+      const operationId = uuid();
+      activeEditOperationRef.current = operationId;
+      const submittedInputRevision = inputRevisionRef.current;
+      const isCurrentOperation = () => activeEditOperationRef.current === operationId;
+      const ownerId = editingOwnerId();
+      const cid = conversationIdRef.current;
       setIsLoading(true);
+      // C3: 重发在飞 → 徽章转「重发中」（仅 owner 匹配生效）。
+      // C3: resubmit in flight → badge flips to "resubmitting" (owner-guarded).
+      if (cid) updateEditingMessage(cid, ownerId, { pending: true, operationId });
       onEditResubmit(targetId, targetCreatedAt, finalMessage)
+        .then(() => {
+          // Backend accepted: exit edit mode. Only clear the composer when the
+          // user never modified it after submit (revision unchanged); otherwise
+          // preserve whatever they are now typing.
+          const outcome = resolveEditResubmitOutcome({
+            isCurrentOperation: isCurrentOperation(),
+            revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+            status: 'success',
+          });
+          if (outcome.stale) return;
+          if (outcome.clearInput) setInput('');
+          if (outcome.exitEditMode) {
+            setEditingMsgId(null);
+            editPrevDraftRef.current = null;
+          }
+          // C3: 接受后消息已被替换，清除编辑中徽章（owner-guarded）。
+          // C3: after acceptance the message is replaced — clear the badge.
+          if (cid) clearEditingMessage(cid, ownerId);
+        })
         .catch(() => {
-          setInput(finalMessage);
-          editPrevDraftRef.current = previousDraft;
-          setEditingMsgId(targetId);
-          editingCreatedAtRef.current = targetCreatedAt;
+          // Backend rejected: stay in edit mode so the user can adjust and retry.
+          // Restore the submitted text only if the user didn't change it mid-flight.
+          const outcome = resolveEditResubmitOutcome({
+            isCurrentOperation: isCurrentOperation(),
+            revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+            status: 'failure',
+          });
+          if (outcome.stale) return;
+          if (outcome.restoreSubmittedInput) setInput(finalMessage);
+          // C3: 失败后仍处编辑态，徽章回落为「编辑中」。
+          // C3: still editing after a failure — badge drops back to "editing".
+          if (cid) updateEditingMessage(cid, ownerId, { pending: false });
         })
         .finally(() => {
-          setIsLoading(false);
+          // Lowering isLoading depends only on the operation token, not the
+          // outcome status — a stale operation's promise must not toggle it.
+          if (isCurrentOperation()) {
+            setIsLoading(false);
+          }
         });
       return;
     }
