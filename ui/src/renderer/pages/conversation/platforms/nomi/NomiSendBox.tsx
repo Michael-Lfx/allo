@@ -3,6 +3,8 @@
 import { conversationTarget, type ConversationId, type MessageId, parseMessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
+import type { ISendMessageResult } from '@/common/adapter/ipcBridge';
+import { isBackendRequestError } from '@/common/adapter/httpBridge';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
@@ -131,6 +133,34 @@ const useSendBoxDraft = (conversation_id: ConversationId) => {
     content,
     setContent,
   };
+};
+
+// P1-2: a 'network'/'timeout' rejection is AMBIGUOUS — it cannot prove the
+// backend never executed (connection reset or lost response AFTER a durable
+// truncate looks identical to a refused connection). Consult the authoritative
+// DB: if the edit target is gone from the newest window, the truncate is
+// durable and the request must be treated as succeeded. The edit target is by
+// construction inside the visible tail (the windowed list renders the newest
+// ~60 rows), so a single 200-row window needs no cursor walk. A verification
+// that itself fails returns false (not proven ⇒ true failure path), which is
+// the safe degradation: revoke + failed refresh, exactly like before.
+const verifyEditResubmitTarget = async (
+  conversationId: ConversationId,
+  msgId: MessageId
+): Promise<boolean> => {
+  try {
+    const page = await ipcBridge.database.getConversationMessages.invoke({
+      conversation_id: conversationId,
+      cursor: '',
+      page_size: 200,
+      content_mode: 'compact',
+    });
+    return !(page?.items ?? []).some(
+      (message) => message.message_id === msgId || message.msg_id === msgId
+    );
+  } catch {
+    return false;
+  }
 };
 
 const NomiSendBox: React.FC<{
@@ -679,16 +709,55 @@ const NomiSendBox: React.FC<{
       armBarrier(conversation_id, operationId, capture);
       setWaitingResponse(true);
       const displayMessage = buildDisplayMessage(message, filesToSend, workspacePath);
+      // Domain 1 (transport): a rejection here means the request never settled
+      // with a definitive answer. Only this domain may revoke the barrier.
+      let res: ISendMessageResult;
       try {
-        const res = await ipcBridge.conversation.editResubmit.invoke({
+        res = await ipcBridge.conversation.editResubmit.invoke({
           conversation_id,
           msg_id: msgId,
           input: displayMessage,
           files: filesToSend,
           idempotency_key: uuidv7(),
         });
+      } catch (error) {
+        // P1-2: a network/timeout rejection is ambiguous — the truncate may
+        // already be durable. Verify against the authoritative DB first: target
+        // gone ⇒ treat as success (no revoke, no failure toast; without `res`
+        // there is no optimistic bubble, so the reconcile refresh alone
+        // reconverges the transcript). Only a proven failure revokes.
+        if (isBackendRequestError(error) && (error.kind === 'network' || error.kind === 'timeout')) {
+          const targetGone = await verifyEditResubmitTarget(conversation_id, msgId);
+          if (targetGone) {
+            emitter.emit('conversation.messages.refresh', {
+              conversationId: conversation_id,
+              reason: 'edit-resubmit-reconcile',
+            });
+            return;
+          }
+        }
+        // 失败：撤销屏障（恢复对陈旧 fetch 的放行），发失败刷新恢复权威历史。
+        revokeBarrier(conversation_id, operationId);
+        emitter.emit('conversation.messages.refresh', {
+          conversationId: conversation_id,
+          reason: 'edit-resubmit-failed',
+        });
+        setWaitingResponse(false);
+        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        throw error;
+      }
+      // Domain 2 (post-accept): the 202 means the DB truncate is already
+      // durable. A local exception in here must NEVER revoke the (already
+      // reconciling) barrier — the transcript reconverges via the reconcile
+      // refresh regardless of what fails below.
+      try {
         // 成功：翻转屏障为 reconciling（原子递增会话 epoch），再直删本实例旧后缀。
-        beginEditResubmitReconciliation(conversation_id, operationId);
+        const reconciledEpoch = beginEditResubmitReconciliation(conversation_id, operationId);
+        if (reconciledEpoch === undefined) {
+          // P2-2 fail-closed: the barrier armed above must still exist. Losing
+          // it is an invariant violation, not a request failure — surface as such.
+          throw new Error('edit-resubmit reconciliation barrier missing');
+        }
         updateMessageList((list) => purgeCurrentRows(list, conversation_id));
         // 附件集合差：函数式更新读取最新 uploadFile，atPath 经 ref 取最新值；
         // 仅移除已提交项，飞行中新增的附件保留。nomi.selected.file.clear 为零监听死事件，不再发射。
@@ -729,11 +798,12 @@ const NomiSendBox: React.FC<{
           reason: 'edit-resubmit-reconcile',
         });
       } catch (error) {
-        // 失败：撤销屏障（恢复对陈旧 fetch 的放行），发失败刷新恢复权威历史。
-        revokeBarrier(conversation_id, operationId);
+        // Post-accept failure: the barrier stays (never revoked) — re-emit the
+        // reconcile refresh so the transcript reconverges from the truncated
+        // DB, then surface the local error.
         emitter.emit('conversation.messages.refresh', {
           conversationId: conversation_id,
-          reason: 'edit-resubmit-failed',
+          reason: 'edit-resubmit-reconcile',
         });
         setWaitingResponse(false);
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));

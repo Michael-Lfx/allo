@@ -264,6 +264,11 @@ const initializeConversationListSyncStore = () => {
   isStoreInitialized = true;
   refreshConversations();
 
+  // CHANNEL CONTRACT: 'chat.history.refresh' refreshes the sidebar conversation
+  // list ONLY (this is its sole listener). Message transcripts reload through
+  // 'conversation.messages.refresh' consumed by Messages/hooks.ts — never add a
+  // message-list listener here (drift is pinned by
+  // refreshChannelDrift.structure.test.ts).
   addEventListener('chat.history.refresh', refreshConversations);
   // WebSocket delivery has no replay: any gap (reconnect, server lag resync)
   // may have dropped conversation.listChanged frames (delete/create while

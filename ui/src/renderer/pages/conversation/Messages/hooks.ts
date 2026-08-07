@@ -35,11 +35,13 @@ import { addEventListener } from '@/renderer/utils/emitter';
 import { isAuthoritativeCompletionRuntimeIdle } from '../platforms/authoritativeTurnLifecyclePolicy';
 import {
   ackConsumerReconciled,
-  filterFetchedRows,
+  captureReconciliationSnapshot,
+  filterRowsBySnapshot,
   getEpoch,
-  purgeCurrentRows,
+  purgeRowsBySnapshot,
   retainConsumer,
   type ConsumerId,
+  type ReconciliationSnapshot,
 } from './conversationMessageCoordinator';
 import { getFetchedMergeKey, getToolLifecycleKey } from './messageRowKeys';
 
@@ -962,17 +964,20 @@ export const mergeFetchedMessagesForConversation = (
 };
 
 /**
- * Apply a freshly fetched DB page with the edit-resubmit barriers active for
- * this conversation. Composition (the testable seam, also used by
- * `useMessageLstCache`):
+ * Apply a freshly fetched DB page under a FROZEN reconciliation snapshot (the
+ * testable seam, also used by `useMessageLstCache`):
  *
- *  1. `filterFetchedRows` drops stale rows that belong to an armed/reconciling
- *     barrier BEFORE the chronological union, so a pre-truncate DB snapshot can
- *     never re-enter the list after the old suffix was removed.
+ *  1. `filterRowsBySnapshot` drops stale rows that belong to an armed/
+ *     reconciling barrier BEFORE the chronological union, so a pre-truncate DB
+ *     snapshot can never re-enter the list after the old suffix was removed.
  *  2. `mergeFetchedMessagesForConversation` builds the chronological union.
- *  3. `purgeCurrentRows` strips any barrier rows that still linger in the
- *     current list once a barrier is reconciling (covers cross-instance rows
- *     the capturing instance can no longer reach by local id).
+ *  3. `purgeRowsBySnapshot` strips any barrier rows that still linger in the
+ *     current list (only when the snapshot held a reconciling barrier).
+ *
+ * The snapshot must be captured by the caller at fetch-acceptance time (before
+ * enqueueing the React updater). React may run the updater after the barrier
+ * has been ack-retired; a live coordinator lookup here would then find no
+ * barrier and silently skip the purge, resurrecting the old suffix.
  *
  * The standalone `mergeFetchedMessagesForConversation` export stays pure for
  * callers that manage their own barrier filtering.
@@ -980,11 +985,11 @@ export const mergeFetchedMessagesForConversation = (
 export const applyFetchedMessages = (
   currentList: TMessage[],
   messages: TMessage[],
-  conversationId: ConversationId
+  snapshot: ReconciliationSnapshot
 ): TMessage[] => {
-  const filtered = filterFetchedRows(messages, conversationId);
-  const merged = mergeFetchedMessagesForConversation(currentList, filtered, conversationId);
-  return purgeCurrentRows(merged, conversationId);
+  const filtered = filterRowsBySnapshot(messages, snapshot);
+  const merged = mergeFetchedMessagesForConversation(currentList, filtered, snapshot.conversationId);
+  return purgeRowsBySnapshot(merged, snapshot);
 };
 
 /**
@@ -1029,13 +1034,17 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // in-flight streaming messages for this conversation. During streaming the DB
   // may hold an older snapshot (2000ms save debounce), so we keep whichever
   // version has more content and build a stable chronological union. The
-  // composition also runs the edit-resubmit barriers (filter stale fetched
-  // rows, purge reconciled suffix) so a pre-truncate snapshot cannot resurrect
-  // the old message/error tip.
+  // composition applies the edit-resubmit barrier rules frozen into a snapshot
+  // at acceptance time, so a pre-truncate snapshot cannot resurrect the old
+  // message/error tip even if the updater runs after the barrier retired.
   const mergeIntoList = useCallback(
     (messages: TMessage[]) => {
+      // Freeze the reconciliation rules NOW, before enqueueing: React may defer
+      // the updater past the barrier's retirement (a later consumer ack deletes
+      // it), and a live lookup inside the updater would then silently no-op.
+      const snapshot = captureReconciliationSnapshot(key);
       update((currentList) => {
-        return applyFetchedMessages(currentList, messages, key);
+        return applyFetchedMessages(currentList, messages, snapshot);
       });
     },
     [key, update]
@@ -1072,7 +1081,10 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     if (messages && Array.isArray(messages)) {
       mergeIntoList(messages);
       // This replace fetch reflects the current epoch, so it confirms this
-      // consumer has reconciled past every earlier edit-resubmit barrier.
+      // consumer has reconciled past every earlier edit-resubmit barrier. The
+      // ack intentionally fires synchronously here — it may retire the barrier
+      // BEFORE the updater above commits; that is safe because the updater
+      // already captured its reconciliation snapshot at acceptance time.
       const consumerId = consumerIdRef.current;
       if (consumerId) ackConsumerReconciled(key, consumerId, getEpoch(key));
       return messages;
@@ -1088,6 +1100,10 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     if (!cursor) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
+    // P2-1: fence on the conversation epoch, same as loadMessages — an
+    // edit-resubmit success mid-flight bumps it, and applying this pre-truncate
+    // page would prepend the old suffix back above the live tail.
+    const capturedEpoch = getEpoch(key);
     try {
       const result = await ipcBridge.database.getConversationMessages.invoke({
         conversation_id: key,
@@ -1096,7 +1112,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
         content_mode: 'compact',
       });
       const older = result?.items?.map(normalizeDbMessage) ?? [];
-      if (activeConversationRef.current !== key) return;
+      if (activeConversationRef.current !== key || capturedEpoch !== getEpoch(key)) return;
       hasMoreRef.current = Boolean(result?.has_more);
       setHasMore(hasMoreRef.current);
       if (older.length) {
@@ -1206,6 +1222,11 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // bubble; this authoritative reload replaces the optimistic state with the
   // post-truncate DB and lets every consumer ack its barrier. On failure it
   // restores the authoritative (un-truncated) history.
+  // CHANNEL CONTRACT: this event is the ONLY message-list refresh channel —
+  // its sole consumer is this hook (per mounted list instance). The sibling
+  // 'chat.history.refresh' event refreshes the sidebar conversation list only
+  // and must never gain a message-list listener (drift is pinned by
+  // refreshChannelDrift.structure.test.ts).
   useEffect(() => {
     if (!key) return;
     return addEventListener('conversation.messages.refresh', (event) => {

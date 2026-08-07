@@ -33,6 +33,10 @@ import { getFetchedMergeKey } from './messageRowKeys';
  *    purges each consumer's current list once `reconciling`. Consumers ack
  *    individually; a barrier is deleted only once every consumer that was
  *    active at success time has applied a post-success authoritative fetch.
+ *  - `captureReconciliationSnapshot` freezes the barrier rules at fetch
+ *    acceptance time, because React functional updaters may execute after the
+ *    barrier has been ack-retired — consulting the live coordinator inside a
+ *    deferred updater would silently disable filtering/purging.
  *
  * The module is pure TypeScript (no React, no emitter) so the race scenarios
  * are unit-testable with deferred Promises.
@@ -162,20 +166,33 @@ export const armBarrier = (
  * every active consumer into `pendingConsumers` → return the new epoch. A
  * single authoritative fetch at the latest epoch simultaneously confirms every
  * earlier reconciling barrier (two successive edits need only one refresh).
+ *
+ * FAIL CLOSED (P2-2): returns `undefined` without touching the epoch when the
+ * coordinator or the barrier is missing. An orphan epoch bump would discard
+ * every innocent in-flight fetch for no reason — and the three ways the barrier
+ * can be absent (already revoked on failure / already ack-retired after a
+ * successful begin / no consumers at all) each leave nothing to fence.
  */
 export const beginEditResubmitReconciliation = (
   conversationId: ConversationId,
   operationId: string
-): number => {
-  const coordinator = getOrCreate(conversationId);
+): number | undefined => {
+  const coordinator = coordinators.get(conversationId);
+  if (!coordinator) return undefined;
+  const barrier = coordinator.barriers.get(operationId);
+  if (!barrier) {
+    console.warn(
+      '[conversation-message-coordinator]',
+      `reconcile refused conv=${conversationId}: barrier missing`,
+      { operationId }
+    );
+    return undefined;
+  }
   coordinator.epoch += 1;
   const newEpoch = coordinator.epoch;
-  const barrier = coordinator.barriers.get(operationId);
-  if (barrier) {
-    barrier.phase = 'reconciling';
-    barrier.successEpoch = newEpoch;
-    barrier.pendingConsumers = new Set(coordinator.consumers);
-  }
+  barrier.phase = 'reconciling';
+  barrier.successEpoch = newEpoch;
+  barrier.pendingConsumers = new Set(coordinator.consumers);
   // A transition: if every consumer has already gone (e.g. the capturing
   // instance unmounted before the success callback landed), the empty pending
   // set means nothing will ever ack — retire the barrier now rather than leak.
@@ -191,14 +208,30 @@ export const beginEditResubmitReconciliation = (
 
 /** Stop filtering for this operation (backend failed). The caller is
  * responsible for emitting the failed-refresh event; this only drops the
- * barrier. */
-export const revokeBarrier = (conversationId: ConversationId, operationId: string): void => {
+ * barrier.
+ *
+ * MONOTONIC (P0-3): only an `armed` barrier may be revoked — once the backend
+ * accepted and the barrier flipped to `reconciling`, the truncate is already
+ * durable and the barrier must survive until its consumers ack. Returns whether
+ * the barrier was actually deleted. */
+export const revokeBarrier = (conversationId: ConversationId, operationId: string): boolean => {
   const coordinator = coordinators.get(conversationId);
-  if (!coordinator) return;
+  if (!coordinator) return false;
+  const barrier = coordinator.barriers.get(operationId);
+  if (!barrier) return false;
+  if (barrier.phase !== 'armed') {
+    console.warn(
+      '[conversation-message-coordinator]',
+      `revoke refused conv=${conversationId}: barrier already reconciling`,
+      { operationId }
+    );
+    return false;
+  }
   coordinator.barriers.delete(operationId);
   // C4: 屏障撤销（请求失败）。Barrier revoked (request failed).
   console.debug('[conversation-message-coordinator]', `revoke conv=${conversationId}`, { operationId });
   maybeDestroy(conversationId);
+  return true;
 };
 
 /**
@@ -326,6 +359,98 @@ export const purgeCurrentRows = (
     });
   }
   return purged;
+};
+
+/**
+ * Immutable reconciliation rule-set frozen at the moment a fetch is ACCEPTED
+ * (epoch check passed). React functional updaters may execute long after
+ * enqueue — by then another consumer's ack may have retired the barrier, so an
+ * updater that consults the live coordinator would find nothing and skip the
+ * purge, resurrecting the old suffix as permanent streamingOnly rows. Capturing
+ * the rules into a snapshot makes the deferred updater independent of the
+ * barrier's later lifetime.
+ *
+ * Field semantics mirror the live helpers exactly:
+ *  - `mergeKeys`/`serverIds`: union over ALL barriers (armed + reconciling) —
+ *    the fetched-row filter predicate (same as `filterFetchedRows`). Armed
+ *    barriers must be included: in a multi-edit chain one refresh can ack and
+ *    retire an earlier barrier before this updater runs, and dropping armed
+ *    rules would regress the armed-phase filtering V5 established.
+ *  - `purgeMergeKeys`/`purgeServerIds`/`localIds`: reconciling barriers only —
+ *    the current-list purge predicate (same as `purgeCurrentRows`). An armed
+ *    barrier's suffix is still legitimate until its own success, so it must
+ *    never purge the current list.
+ *  - `purge`: whether any reconciling barrier existed at capture time.
+ */
+export interface ReconciliationSnapshot {
+  conversationId: ConversationId;
+  mergeKeys: ReadonlySet<string>;
+  serverIds: ReadonlySet<string>;
+  purgeMergeKeys: ReadonlySet<string>;
+  purgeServerIds: ReadonlySet<string>;
+  localIds: ReadonlySet<string>;
+  purge: boolean;
+}
+
+/** Read-only freeze of the current barrier rules. Never creates a coordinator;
+ * an absent coordinator (or no barriers) yields empty sets with purge:false. */
+export const captureReconciliationSnapshot = (
+  conversationId: ConversationId
+): ReconciliationSnapshot => {
+  const mergeKeys = new Set<string>();
+  const serverIds = new Set<string>();
+  const purgeMergeKeys = new Set<string>();
+  const purgeServerIds = new Set<string>();
+  const localIds = new Set<string>();
+  let purge = false;
+  const coordinator = coordinators.get(conversationId);
+  if (coordinator) {
+    for (const barrier of coordinator.barriers.values()) {
+      for (const key of barrier.mergeKeys) mergeKeys.add(key);
+      for (const id of barrier.serverIds) serverIds.add(id);
+      if (barrier.phase === 'reconciling') {
+        purge = true;
+        for (const key of barrier.mergeKeys) purgeMergeKeys.add(key);
+        for (const id of barrier.serverIds) purgeServerIds.add(id);
+        for (const id of barrier.localIds) localIds.add(id);
+      }
+    }
+  }
+  return { conversationId, mergeKeys, serverIds, purgeMergeKeys, purgeServerIds, localIds, purge };
+};
+
+/** Snapshot-based twin of `filterFetchedRows`: drop fetched DB rows captured in
+ * the snapshot (fetched rows are durable, so localIds never apply). */
+export const filterRowsBySnapshot = (
+  rows: TMessage[],
+  snapshot: ReconciliationSnapshot
+): TMessage[] => {
+  if (!snapshot.mergeKeys.size && !snapshot.serverIds.size) return rows;
+  return rows.filter((row) => {
+    const key = getFetchedMergeKey(row);
+    if (key && snapshot.mergeKeys.has(key)) return false;
+    if (row.message_id && snapshot.serverIds.has(row.message_id)) return false;
+    return true;
+  });
+};
+
+/** Snapshot-based twin of `purgeCurrentRows`: drop current-list rows belonging
+ * to barriers that were reconciling at capture time (localIds included). */
+export const purgeRowsBySnapshot = (
+  rows: TMessage[],
+  snapshot: ReconciliationSnapshot
+): TMessage[] => {
+  if (!snapshot.purge) return rows;
+  if (!snapshot.purgeMergeKeys.size && !snapshot.purgeServerIds.size && !snapshot.localIds.size) {
+    return rows;
+  }
+  return rows.filter((row) => {
+    const key = getFetchedMergeKey(row);
+    if (key && snapshot.purgeMergeKeys.has(key)) return false;
+    if (row.message_id && snapshot.purgeServerIds.has(row.message_id)) return false;
+    if (snapshot.localIds.has(row.id)) return false;
+    return true;
+  });
 };
 
 /**
