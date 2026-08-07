@@ -79,6 +79,13 @@ struct MediaIndexEntry {
     created_at: i64,
 }
 
+/// session_id → canvas project_id for idempotent Agent→Canvas opens.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct VimaxSessionLinks {
+    #[serde(default)]
+    sessions: HashMap<String, String>,
+}
+
 pub struct NewGenerationRequest {
     pub mode: String,
     pub prompt: String,
@@ -129,6 +136,10 @@ impl CanvasService {
 
     fn media_index_path(&self) -> PathBuf {
         self.media_dir().join("index.json")
+    }
+
+    fn vimax_links_path(&self) -> PathBuf {
+        self.root().join("vimax_session_links.json")
     }
 
     pub async fn ensure_dirs(&self) -> Result<(), AppError> {
@@ -189,6 +200,7 @@ impl CanvasService {
             node_count: 0,
             created_at: now,
             updated_at: now,
+            source_vimax_session_id: None,
         };
         let dir = self.project_dir(&id);
         ensure_dir(&dir).await?;
@@ -196,6 +208,167 @@ impl CanvasService {
         write_atomic(&dir.join("doc.json"), DEFAULT_DOC.as_bytes()).await?;
         info!(project_id = %id, "video-canvas project created");
         Ok(meta)
+    }
+
+    /// Create a canvas project bound to a ViMax session (idempotent materialize target).
+    pub async fn create_project_for_vimax_session(
+        &self,
+        session_id: &str,
+        title: Option<String>,
+    ) -> Result<CanvasProjectMeta, AppError> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Err(AppError::BadRequest("session_id required".into()));
+        }
+        let mut meta = self.create_project(title).await?;
+        meta.source_vimax_session_id = Some(session_id.to_string());
+        meta.updated_at = now_ms();
+        write_json_file(
+            &self.project_dir(&meta.project_id).join("meta.json"),
+            &meta,
+        )
+        .await?;
+        self.bind_vimax_session(session_id, &meta.project_id)
+            .await?;
+        Ok(meta)
+    }
+
+    /// Resolve the canvas project for a ViMax session, if one still exists.
+    ///
+    /// Lookup order: link index → meta.source_vimax_session_id → doc.alloCreative.sessionId.
+    /// When found via a fallback path, the link index is repaired.
+    pub async fn find_project_for_vimax_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<CanvasProjectMeta>, AppError> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Ok(None);
+        }
+        self.ensure_dirs().await?;
+
+        if let Some(project_id) = self.load_vimax_link(session_id).await? {
+            if let Ok(project) = self.get_project(&project_id).await {
+                return Ok(Some(project.meta));
+            }
+            // Stale link — drop and continue discovery.
+            self.unbind_vimax_session(session_id).await?;
+        }
+
+        let mut best: Option<CanvasProjectMeta> = None;
+        for meta in self.list_projects().await? {
+            let linked = meta
+                .source_vimax_session_id
+                .as_deref()
+                .is_some_and(|s| s == session_id);
+            let doc_linked = if linked {
+                true
+            } else {
+                self.project_doc_links_session(&meta.project_id, session_id)
+                    .await
+                    .unwrap_or(false)
+            };
+            if !doc_linked {
+                continue;
+            }
+            let take = best
+                .as_ref()
+                .map(|b| meta.updated_at > b.updated_at)
+                .unwrap_or(true);
+            if take {
+                best = Some(meta);
+            }
+        }
+
+        if let Some(meta) = &best {
+            // Repair meta + link for next time.
+            if meta.source_vimax_session_id.as_deref() != Some(session_id) {
+                let _ = self
+                    .set_vimax_session_on_project(&meta.project_id, session_id)
+                    .await;
+            }
+            let _ = self
+                .bind_vimax_session(session_id, &meta.project_id)
+                .await;
+        }
+        Ok(best)
+    }
+
+    async fn project_doc_links_session(
+        &self,
+        project_id: &str,
+        session_id: &str,
+    ) -> Result<bool, AppError> {
+        let doc: Value = read_json_file(&self.project_dir(project_id).join("doc.json")).await?;
+        let linked = doc
+            .pointer("/alloCreative/sessionId")
+            .and_then(|v| v.as_str())
+            == Some(session_id)
+            || doc
+                .pointer("/alloCreative/writeBack/sessionId")
+                .and_then(|v| v.as_str())
+                == Some(session_id);
+        Ok(linked)
+    }
+
+    pub async fn set_vimax_session_on_project(
+        &self,
+        project_id: &str,
+        session_id: &str,
+    ) -> Result<CanvasProjectMeta, AppError> {
+        validate_project_id(project_id)?;
+        let dir = self.project_dir(project_id);
+        let mut meta: CanvasProjectMeta = read_json_file(&dir.join("meta.json")).await?;
+        meta.source_vimax_session_id = Some(session_id.trim().to_string());
+        meta.updated_at = now_ms();
+        write_json_file(&dir.join("meta.json"), &meta).await?;
+        self.bind_vimax_session(session_id, project_id).await?;
+        Ok(meta)
+    }
+
+    async fn load_vimax_links(&self) -> Result<VimaxSessionLinks, AppError> {
+        self.ensure_dirs().await?;
+        match read_json_file::<VimaxSessionLinks>(&self.vimax_links_path()).await {
+            Ok(v) => Ok(v),
+            Err(_) => Ok(VimaxSessionLinks::default()),
+        }
+    }
+
+    async fn save_vimax_links(&self, links: &VimaxSessionLinks) -> Result<(), AppError> {
+        write_json_file(&self.vimax_links_path(), links).await
+    }
+
+    async fn load_vimax_link(&self, session_id: &str) -> Result<Option<String>, AppError> {
+        let links = self.load_vimax_links().await?;
+        Ok(links.sessions.get(session_id).cloned())
+    }
+
+    pub async fn bind_vimax_session(
+        &self,
+        session_id: &str,
+        project_id: &str,
+    ) -> Result<(), AppError> {
+        let mut links = self.load_vimax_links().await?;
+        links
+            .sessions
+            .insert(session_id.trim().to_string(), project_id.to_string());
+        self.save_vimax_links(&links).await
+    }
+
+    pub async fn unbind_vimax_session(&self, session_id: &str) -> Result<(), AppError> {
+        let mut links = self.load_vimax_links().await?;
+        links.sessions.remove(session_id.trim());
+        self.save_vimax_links(&links).await
+    }
+
+    pub async fn unbind_project_from_vimax_links(&self, project_id: &str) -> Result<(), AppError> {
+        let mut links = self.load_vimax_links().await?;
+        let before = links.sessions.len();
+        links.sessions.retain(|_, pid| pid != project_id);
+        if links.sessions.len() != before {
+            self.save_vimax_links(&links).await?;
+        }
+        Ok(())
     }
 
     pub async fn get_project(&self, id: &str) -> Result<ProjectWithDoc, AppError> {
@@ -266,6 +439,7 @@ impl CanvasService {
         tokio::fs::remove_dir_all(&dir)
             .await
             .map_err(|e| AppError::Internal(format!("delete project: {e}")))?;
+        let _ = self.unbind_project_from_vimax_links(id).await;
         Ok(())
     }
 

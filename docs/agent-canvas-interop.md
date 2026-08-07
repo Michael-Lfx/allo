@@ -32,6 +32,8 @@
 
 合并成片走本机 `POST /api/video-canvas/media/concat`（与 Agent ffmpeg 同源），不再依赖 unpkg WASM。
 
+**幂等**：同一 Agent `session_id` 多次「打开到 Canvas」复用同一画布项目（`meta.source_vimax_session_id` + `vimax_session_links.json`），不会新建副本；已有微调不会被覆盖。
+
 
 ## 代码位置
 

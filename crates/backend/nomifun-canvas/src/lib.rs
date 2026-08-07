@@ -9,6 +9,7 @@
 //! - `projects/{id}/doc.json` — opaque frontend canvas document
 //! - `media/{id}.{ext}` — uploaded / generated binaries
 //! - `media/index.json` — media index
+//! - `vimax_session_links.json` — session_id → project_id (idempotent materialize)
 
 mod dto;
 mod fsio;

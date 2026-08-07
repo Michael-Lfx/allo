@@ -204,6 +204,8 @@ export type MaterializeToCanvasResult = {
   scene_count: number;
   shot_count: number;
   warnings: string[];
+  /** Existing canvas for this Agent session was reopened. */
+  reused?: boolean;
 };
 
 /** High-fidelity Agent → Canvas projection (storyboard, cast bible, shots, camera tree). */
