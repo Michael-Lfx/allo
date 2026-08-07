@@ -12,6 +12,7 @@ pub mod relay_error_code;
 pub mod response_middleware;
 pub mod routes;
 pub mod routes_aux;
+pub mod routes_trace;
 pub mod runtime_state;
 mod turn_gate;
 pub mod service;
@@ -38,6 +39,7 @@ pub use execution_conversation_boundary::{
 };
 pub use routes::conversation_routes;
 pub use routes_aux::conversation_ops_routes;
+pub use routes_trace::conversation_trace_routes;
 pub use service::{
     ConversationService, ConversationSupervisionHook, DELIVERY_NOTIFY_ORIGIN,
     DeliveryNotifyRegistration, IdempotentMessageDelivery, IdmmTurnScope,

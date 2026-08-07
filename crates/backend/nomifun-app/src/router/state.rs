@@ -868,10 +868,18 @@ pub fn build_conversation_state(
         ),
     );
     conversation_service.with_session_lifecycle(session_lifecycle.clone());
+    let agent_trace_hub = Arc::new(nomifun_ai_agent::AgentTraceHub::new(
+        services.data_dir.clone(),
+        Some(Arc::new(SqliteClientPreferenceRepository::new(
+            services.database.pool().clone(),
+        )) as Arc<dyn nomifun_db::IClientPreferenceRepository>),
+    ));
+    conversation_service.with_agent_trace_hub(agent_trace_hub.clone());
     ConversationRouterState {
         service: conversation_service,
         runtime_registry: services.agent_runtime_registry.clone(),
         session_lifecycle: Some(session_lifecycle),
+        agent_trace_hub: Some(agent_trace_hub),
     }
 }
 

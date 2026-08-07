@@ -62,6 +62,8 @@ nomi-process-runtime = { path = "crates/shared/nomi-process-runtime" }
 nomi-types = { path = "crates/agent/nomi-types" }
 nomi-protocol = { path = "crates/agent/nomi-protocol" }
 nomi-compact = { path = "crates/agent/nomi-compact" }
+nomi-agent-trace = { path = "crates/agent/nomi-agent-trace" }
+nomi-agent-eval = { path = "crates/agent/nomi-agent-eval" }
 nomi-config = { path = "crates/agent/nomi-config" }
 nomi-providers = { path = "crates/agent/nomi-providers" }
 nomi-tools = { path = "crates/agent/nomi-tools" }

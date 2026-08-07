@@ -1,5 +1,6 @@
 //! Agent runtime lifecycle, per-conversation runtime registration, and skill management.
 pub(crate) mod runtime_state;
+pub mod agent_trace;
 pub mod artifact_store;
 pub mod boot_process_reaper;
 pub mod runtime_handle;
@@ -64,6 +65,10 @@ pub enum ManagedExtractMode {
 pub use nomi_config;
 pub use nomi_types;
 
+pub use agent_trace::{
+    AgentTraceHub, TraceApiError, TraceIndexEntry, TurnTrace, TurnTraceCollector, TurnTraceContext,
+    DEVELOPER_MODE_PREF_KEY,
+};
 pub use runtime_state::AgentRuntimeState;
 pub use boot_process_reaper::{
     AgentProcessReapReport, ConversationProcessReapVerdict, reap_orphan_agent_processes,

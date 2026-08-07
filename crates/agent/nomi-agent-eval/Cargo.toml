@@ -1,0 +1,33 @@
+[package]
+name = "nomi-agent-eval"
+description = "Deterministic, feature-gated agent conversation evaluation harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Gates the `agent_eval` example binary. The library always builds (including tests).
+agent-eval = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+regex.workspace = true
+nomi-agent-trace.workspace = true
+nomi-redact.workspace = true
+
+[dev-dependencies]
+clap.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "agent_eval"
+required-features = ["agent-eval"]

@@ -108,6 +108,10 @@ pub struct SupportLogsPackResponse {
 pub struct PackSupportLogsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// When set (and developer mode is enabled), include matching agent-turn
+    /// traces from `diagnostics/agent-traces/` under `agent-traces/` in the ZIP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 /// Request body for `POST /api/system/check-update`.

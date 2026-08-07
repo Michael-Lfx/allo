@@ -79,6 +79,7 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
         .route("/api/conversations/active-count", get(active_runtime_count))
         .route("/api/conversations/clone", post(clone))
         .route("/api/messages/search", get(search_messages))
+        .merge(crate::routes_trace::conversation_trace_routes())
         .with_state(state)
 }
 
