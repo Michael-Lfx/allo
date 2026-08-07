@@ -78,7 +78,18 @@ pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapsho
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    format!("[Loaded Skills]\n{sections}\n[/Loaded Skills]\n\n[Current User Request]\n{content}")
+    format!(
+        "[Loaded Skills]\n\
+         The user explicitly selected these Skills. Their instructions are already active for this turn.\n\
+         Apply them directly. Do not call the Skill tool to load or invoke a selected Skill by name;\n\
+         that tool only exposes the runtime-native Skill catalog and may not contain this selection.\n\
+         If a selected Skill refers to a slash command or another Skill, perform the described workflow directly\n\
+         instead of using the Skill tool to load that reference.\n\n\
+         {sections}\n\
+         [/Loaded Skills]\n\n\
+         [Current User Request]\n\
+         {content}"
+    )
 }
 
 /// Attach the immutable conversation preset to the first prompt understood by
@@ -377,6 +388,9 @@ mod tests {
         );
 
         assert!(content.contains("[Loaded Skills]"));
+        assert!(content.contains("instructions are already active for this turn"));
+        assert!(content.contains("Do not call the Skill tool to load or invoke a selected Skill"));
+        assert!(content.contains("perform the described workflow directly"));
         assert!(content.contains("Inspect the PDF before answering."));
         assert!(content.ends_with("Summarize the document"));
     }

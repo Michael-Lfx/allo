@@ -13,7 +13,8 @@ use nomifun_api_types::{
     NamedPathResponse, ReadPresetRuleRequest, ReadBuiltinResourceRequest, ReadSkillInfoRequest,
     ReadSkillInfoResponse, RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse,
     ScannedSkillResponse, SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse,
-    SkillCatalogSource, SkillId, SkillListItemResponse, SkillMarketMcpConfigRequest,
+    SkillCatalogSource, SkillId,
+    SkillListItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallResponse, SkillMarketPackageRequest,
     SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
     WritePresetRuleRequest,
@@ -30,14 +31,6 @@ fn to_source_response(source: SkillSource) -> SkillSourceResponse {
         SkillSource::Builtin => SkillSourceResponse::Builtin,
         SkillSource::Custom => SkillSourceResponse::Custom,
         SkillSource::Extension => SkillSourceResponse::Extension,
-    }
-}
-
-fn to_catalog_source(source: SkillSource) -> SkillCatalogSource {
-    match source {
-        SkillSource::Builtin => SkillCatalogSource::Builtin,
-        SkillSource::Custom => SkillCatalogSource::User,
-        SkillSource::Extension => SkillCatalogSource::Extension,
     }
 }
 
@@ -190,12 +183,11 @@ async fn list_catalog_skills(
         .await?
         .into_iter()
         .map(|item| {
-            let source = to_catalog_source(item.source);
             SkillCatalogItemResponse {
-                skill_id: SkillId::new(source, item.source_key.as_deref(), &item.local_key),
+                skill_id: SkillId::new(item.source, item.source_key.as_deref(), &item.local_key),
                 name: item.name,
                 description: item.description,
-                source,
+                source: item.source,
                 source_key: item.source_key,
             }
         })
@@ -684,6 +676,7 @@ mod tests {
             builtin_rules_dir: tmp.path().join("builtin-rules"),
             preset_rules_dir: tmp.path().join("preset-rules"),
             preset_skills_dir: tmp.path().join("preset-skills"),
+            catalog_roots: Default::default(),
         };
         let ext_mgr = Arc::new(ExternalPathsManager::with_file(tmp.path().join("paths.json")).await);
         std::mem::forget(tmp);

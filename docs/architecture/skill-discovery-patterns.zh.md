@@ -27,6 +27,18 @@ Skill 只是在当前待发送内容中加入其 source-qualified ID；它不执
 描述和来源。例如，同名 Skill 可分别表示为 `builtin:writer` 和
 `user:writer`。这样 UI、Preset 和加载器不会因重名而把来源猜错。
 
+目录当前聚合以下受信任来源：
+
+- 内置 Skill；
+- 应用数据目录中的用户 Skill；
+- 全局 `~/.agents/skills`，以 `user:agents:<name>` 标识；
+- 后端启动时当前项目的 `.agents/skills`，以
+  `project:workspace:<name>` 标识。
+
+全局和项目目录缺失时不会影响其他目录。任意由设置页临时扫描的外部
+目录不会自动进入 `/`；这类目录仍须显式导入，避免把未经用户选择的
+文件直接注入 Agent 上下文。
+
 `cron`、`nomifun-skills` 和 `skill-creator` 是系统自动注入能力：它们不
 出现在 Skill catalog，也不会在启动器的 Skill 分组中被用户选择。
 

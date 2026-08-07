@@ -658,6 +658,7 @@ mod tests {
             builtin_rules_dir: dir.join("rules"),
             preset_rules_dir: dir.join("preset-rules"),
             preset_skills_dir: dir.join("preset-skills"),
+            catalog_roots: Default::default(),
         })
     }
 

@@ -71,6 +71,7 @@ async fn fixture_embedded() -> Fixture {
         builtin_rules_dir: data_dir.join("builtin-rules"),
         preset_rules_dir: data_dir.join("preset-rules"),
         preset_skills_dir: data_dir.join("preset-skills"),
+        catalog_roots: Default::default(),
     };
     let ext_paths_mgr = Arc::new(ExternalPathsManager::with_file(data_dir.join("paths.json")).await);
     states.skill = SkillRouterState {

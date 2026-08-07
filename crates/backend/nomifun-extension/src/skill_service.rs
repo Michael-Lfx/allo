@@ -28,6 +28,10 @@ static BUILTIN_SKILLS: Dir<'static> =
 /// [`resolve_skill_paths`] when building [`SkillPaths`].
 pub const BUILTIN_SKILLS_ENV_VAR: &str = "NOMIFUN_BUILTIN_SKILLS_PATH";
 
+const AGENT_SKILLS_DIR: &str = ".agents/skills";
+const GLOBAL_AGENT_SKILLS_SOURCE_KEY: &str = "agents";
+const PROJECT_AGENT_SKILLS_SOURCE_KEY: &str = "workspace";
+
 /// Expose the embedded builtin skills corpus for startup
 /// materialization. Consumers outside this crate should not depend on
 /// `include_dir` directly.
@@ -98,6 +102,8 @@ pub struct SkillPaths {
     pub preset_rules_dir: PathBuf,
     /// Preset-level skills directory (~/.nomifun/preset-skills/).
     pub preset_skills_dir: PathBuf,
+    /// Stable roots for Skills discovered outside application data.
+    pub catalog_roots: CatalogSkillRoots,
 }
 
 /// Resolve standard skill paths.
@@ -128,6 +134,7 @@ pub fn resolve_skill_paths(app_resource_dir: &Path, data_dir: &Path) -> SkillPat
         builtin_rules_dir: app_resource_dir.join(BUILTIN_RULES_DIR_NAME),
         preset_rules_dir: data_dir.join(PRESET_RULES_DIR_NAME),
         preset_skills_dir: data_dir.join(PRESET_SKILLS_DIR_NAME),
+        catalog_roots: CatalogSkillRoots::discover(),
     }
 }
 
@@ -372,7 +379,7 @@ pub struct SkillListItem {
 pub struct SkillCatalogItem {
     pub name: String,
     pub description: String,
-    pub source: SkillSource,
+    pub source: SkillCatalogSource,
     /// Source-owner key, used by multi-owner sources such as extensions and
     /// MCP servers. `None` means the source has a single catalog owner.
     pub source_key: Option<String>,
@@ -380,6 +387,29 @@ pub struct SkillCatalogItem {
     /// frontmatter display name because two directories may declare the same
     /// name.
     pub local_key: String,
+}
+
+/// Filesystem roots that contribute Skills to the user-facing catalog.
+///
+/// The global root follows the Agent Skills convention (`~/.agents/skills`).
+/// The project root is captured from the backend process's current working
+/// directory, allowing a checked-out project's `.agents/skills` directory to
+/// travel with the project without copying it into application data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CatalogSkillRoots {
+    pub global_agent_skills_dir: Option<PathBuf>,
+    pub project_agent_skills_dir: Option<PathBuf>,
+}
+
+impl CatalogSkillRoots {
+    fn discover() -> Self {
+        Self {
+            global_agent_skills_dir: dirs::home_dir().map(|home| home.join(AGENT_SKILLS_DIR)),
+            project_agent_skills_dir: std::env::current_dir()
+                .ok()
+                .map(|project_dir| project_dir.join(AGENT_SKILLS_DIR)),
+        }
+    }
 }
 
 /// Immutable source content resolved for one explicit `LoadSkill` request.
@@ -451,34 +481,25 @@ pub async fn list_available_skills(
 /// precedence, and built-in auto-injected system Skills are not exposed as
 /// user-selectable entries.
 pub async fn list_catalog_skills(paths: &SkillPaths) -> Result<Vec<SkillCatalogItem>, ExtensionError> {
-    let mut catalog: Vec<SkillCatalogItem> = list_builtin_skills(paths)
-        .await
+    list_catalog_skills_with_roots(paths, &paths.catalog_roots).await
+}
+
+/// List the catalog from the roots captured during application startup.
+async fn list_catalog_skills_with_roots(
+    paths: &SkillPaths,
+    roots: &CatalogSkillRoots,
+) -> Result<Vec<SkillCatalogItem>, ExtensionError> {
+    let mut catalog: Vec<SkillCatalogItem> = catalog_skill_files(paths, roots, true)
+        .await?
         .into_iter()
-        .filter(|item| !is_system_owned_builtin(item))
-        .map(|item| {
-            let local_key = builtin_catalog_local_key(&item);
-            SkillCatalogItem {
-                name: item.name,
-                description: item.description,
-                source: item.source,
-                source_key: None,
-                local_key,
-            }
+        .map(|candidate| SkillCatalogItem {
+            name: candidate.name,
+            description: candidate.description,
+            source: candidate.source,
+            source_key: candidate.source_key,
+            local_key: candidate.local_key,
         })
         .collect();
-
-    if let Ok(entries) = scan_skill_dirs(&paths.user_skills_dir).await {
-        catalog.extend(entries.into_iter().map(|item| {
-            let local_key = user_catalog_local_key(&paths.user_skills_dir, &item.path, &item.name);
-            SkillCatalogItem {
-                name: item.name,
-                description: item.description,
-                source: SkillSource::Custom,
-                source_key: None,
-                local_key,
-            }
-        }));
-    }
 
     catalog.sort_by(|left, right| {
         catalog_source_sort_key(left.source)
@@ -497,7 +518,16 @@ pub async fn load_catalog_skills(
     paths: &SkillPaths,
     skill_ids: &[String],
 ) -> Result<Vec<LoadedCatalogSkill>, ExtensionError> {
-    let candidates = catalog_skill_files(paths).await?;
+    load_catalog_skills_with_roots(paths, &paths.catalog_roots, skill_ids).await
+}
+
+/// Load selected catalog Skills from the roots captured during application startup.
+async fn load_catalog_skills_with_roots(
+    paths: &SkillPaths,
+    roots: &CatalogSkillRoots,
+    skill_ids: &[String],
+) -> Result<Vec<LoadedCatalogSkill>, ExtensionError> {
+    let candidates = catalog_skill_files(paths, roots, false).await?;
     let mut loaded = Vec::with_capacity(skill_ids.len());
 
     for skill_id in skill_ids {
@@ -530,6 +560,8 @@ struct CatalogSkillFile {
     name: String,
     description: String,
     source: SkillCatalogSource,
+    source_key: Option<String>,
+    local_key: String,
     location: CatalogSkillLocation,
 }
 
@@ -539,40 +571,105 @@ enum CatalogSkillLocation {
     File(PathBuf),
 }
 
-async fn catalog_skill_files(paths: &SkillPaths) -> Result<Vec<CatalogSkillFile>, ExtensionError> {
+async fn catalog_skill_files(
+    paths: &SkillPaths,
+    roots: &CatalogSkillRoots,
+    tolerate_user_root_error: bool,
+) -> Result<Vec<CatalogSkillFile>, ExtensionError> {
     let mut candidates = Vec::new();
     for item in list_builtin_skills(paths).await {
         if is_system_owned_builtin(&item) {
             continue;
         }
-        let Some(relative_location) = item.relative_location else {
+        let Some(relative_location) = item.relative_location.clone() else {
             continue;
         };
-        let local_key = relative_location
-            .strip_suffix(&format!("/{SKILL_MANIFEST_FILE}"))
-            .unwrap_or(&item.name);
+        let local_key = builtin_catalog_local_key(&item);
+        let name = item.name;
         let source = SkillCatalogSource::Builtin;
         candidates.push(CatalogSkillFile {
-            skill_id: SkillId::new(source, None, local_key).as_str().to_owned(),
-            name: item.name,
+            skill_id: SkillId::new(source, None, &local_key).as_str().to_owned(),
+            name,
             description: item.description,
             source,
+            source_key: None,
+            local_key,
             location: CatalogSkillLocation::Builtin(relative_location),
         });
     }
 
-    for item in scan_skill_dirs(&paths.user_skills_dir).await? {
-        let local_key = user_catalog_local_key(&paths.user_skills_dir, &item.path, &item.name);
-        let source = SkillCatalogSource::User;
+    let user_root_result = extend_catalog_with_directory(
+        &mut candidates,
+        &paths.user_skills_dir,
+        SkillCatalogSource::User,
+        None,
+    )
+    .await;
+    if let Err(error) = user_root_result {
+        if tolerate_user_root_error {
+            warn!(path = %paths.user_skills_dir.display(), error = %error, "skipping unavailable user Skill root");
+        } else {
+            return Err(error);
+        }
+    }
+
+    if let Some(global_agent_skills_dir) = roots.global_agent_skills_dir.as_deref() {
+        extend_catalog_with_optional_directory(
+            &mut candidates,
+            global_agent_skills_dir,
+            SkillCatalogSource::User,
+            Some(GLOBAL_AGENT_SKILLS_SOURCE_KEY),
+        )
+        .await?;
+    }
+
+    if let Some(project_agent_skills_dir) = roots.project_agent_skills_dir.as_deref() {
+        extend_catalog_with_optional_directory(
+            &mut candidates,
+            project_agent_skills_dir,
+            SkillCatalogSource::Project,
+            Some(PROJECT_AGENT_SKILLS_SOURCE_KEY),
+        )
+        .await?;
+    }
+
+    Ok(candidates)
+}
+
+async fn extend_catalog_with_optional_directory(
+    candidates: &mut Vec<CatalogSkillFile>,
+    root: &Path,
+    source: SkillCatalogSource,
+    source_key: Option<&str>,
+) -> Result<(), ExtensionError> {
+    match extend_catalog_with_directory(candidates, root, source, source_key).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            warn!(path = %root.display(), error = %error, "skipping unavailable optional Skill root");
+            Ok(())
+        }
+    }
+}
+
+async fn extend_catalog_with_directory(
+    candidates: &mut Vec<CatalogSkillFile>,
+    root: &Path,
+    source: SkillCatalogSource,
+    source_key: Option<&str>,
+) -> Result<(), ExtensionError> {
+    for item in scan_skill_dirs(root).await? {
+        let local_key = catalog_local_key(root, &item.path, &item.name);
         candidates.push(CatalogSkillFile {
-            skill_id: SkillId::new(source, None, &local_key).as_str().to_owned(),
+            skill_id: SkillId::new(source, source_key, &local_key).as_str().to_owned(),
             name: item.name,
             description: item.description,
             source,
+            source_key: source_key.map(str::to_owned),
+            local_key,
             location: CatalogSkillLocation::File(PathBuf::from(item.path).join(SKILL_MANIFEST_FILE)),
         });
     }
-    Ok(candidates)
+    Ok(())
 }
 
 fn builtin_catalog_local_key(item: &SkillListItem) -> String {
@@ -584,9 +681,9 @@ fn builtin_catalog_local_key(item: &SkillListItem) -> String {
         .to_owned()
 }
 
-fn user_catalog_local_key(user_root: &Path, location: &str, fallback: &str) -> String {
+fn catalog_local_key(root: &Path, location: &str, fallback: &str) -> String {
     Path::new(location)
-        .strip_prefix(user_root)
+        .strip_prefix(root)
         .ok()
         .map(|path| path.to_string_lossy().replace('\\', "/"))
         .filter(|key| !key.is_empty())
@@ -601,11 +698,14 @@ fn is_system_owned_builtin(item: &SkillListItem) -> bool {
             .is_some_and(|path| path.starts_with(&format!("{BUILTIN_AUTO_SKILLS_SUBDIR}/")))
 }
 
-fn catalog_source_sort_key(source: SkillSource) -> &'static str {
+fn catalog_source_sort_key(source: SkillCatalogSource) -> &'static str {
     match source {
-        SkillSource::Builtin => "builtin",
-        SkillSource::Custom => "user",
-        SkillSource::Extension => "extension",
+        SkillCatalogSource::Builtin => "builtin",
+        SkillCatalogSource::User => "user",
+        SkillCatalogSource::Project => "project",
+        SkillCatalogSource::Extension => "extension",
+        SkillCatalogSource::Mcp => "mcp",
+        SkillCatalogSource::Legacy => "legacy",
     }
 }
 
@@ -1880,6 +1980,7 @@ mod tests {
             builtin_rules_dir: tmp.path().join("rules"),
             preset_rules_dir: tmp.path().join("preset-rules"),
             preset_skills_dir: tmp.path().join("preset-skills"),
+            catalog_roots: Default::default(),
         }
     }
 
@@ -2146,6 +2247,7 @@ mod tests {
             builtin_rules_dir: rules_dir,
             preset_rules_dir: tmp.path().join(PRESET_RULES_DIR_NAME),
             preset_skills_dir: tmp.path().join(PRESET_SKILLS_DIR_NAME),
+            catalog_roots: Default::default(),
         };
 
         let content = read_builtin_rule(&paths, "code-review.md").await.unwrap();
@@ -2792,6 +2894,7 @@ mod tests {
             builtin_rules_dir: base.join(BUILTIN_RULES_DIR_NAME),
             preset_rules_dir: base.join(PRESET_RULES_DIR_NAME),
             preset_skills_dir: base.join(PRESET_SKILLS_DIR_NAME),
+            catalog_roots: Default::default(),
         }
     }
 

@@ -29,6 +29,7 @@ fn make_paths(base: &Path) -> SkillPaths {
         builtin_rules_dir: base.join("builtin-rules"),
         preset_rules_dir: base.join("preset-rules"),
         preset_skills_dir: base.join("preset-skills"),
+        catalog_roots: Default::default(),
     }
 }
 

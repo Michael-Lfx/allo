@@ -9,9 +9,12 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use nomifun_api_types::SkillCatalogSource;
 use nomifun_extension::external_paths::ExternalPathsManager;
 use nomifun_extension::skill_routes::{SkillRouterState, skill_routes};
-use nomifun_extension::skill_service::SkillPaths;
+use nomifun_extension::skill_service::{
+    CatalogSkillRoots, SkillPaths,
+};
 use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -55,6 +58,7 @@ async fn fixture() -> Fixture {
         builtin_rules_dir: root.join("builtin-rules"),
         preset_rules_dir: root.join("preset-rules"),
         preset_skills_dir: root.join("preset-skills"),
+        catalog_roots: Default::default(),
     };
     let db = nomifun_db::init_database_memory().await.unwrap();
     let state = SkillRouterState {
@@ -124,8 +128,7 @@ async fn catalog_loader_returns_the_selected_source_qualified_markdown_snapshot(
         .await
         .expect("catalog lists skills");
     assert!(catalog.iter().any(|skill| {
-        skill.source == nomifun_extension::skill_service::SkillSource::Custom
-            && skill.local_key == "local-pdf"
+        skill.source == SkillCatalogSource::User && skill.local_key == "local-pdf"
     }));
 
     let loaded = nomifun_extension::skill_service::load_catalog_skills(
@@ -139,4 +142,59 @@ async fn catalog_loader_returns_the_selected_source_qualified_markdown_snapshot(
     assert_eq!(loaded[0].skill_id, "user:local-pdf");
     assert!(loaded[0].content.contains("User PDF workflow"));
     assert_eq!(loaded[0].source, "user");
+}
+
+#[tokio::test]
+async fn catalog_lists_and_loads_global_agent_and_project_skills() {
+    let fixture = fixture().await;
+    let global_agent_skills_dir = fixture._temp.path().join("global").join(".agents").join("skills");
+    let project_agent_skills_dir = fixture._temp.path().join("project").join(".agents").join("skills");
+    write_skill(
+        &global_agent_skills_dir,
+        "global-review",
+        "review",
+        "Global agent review workflow",
+    );
+    write_skill(
+        &project_agent_skills_dir,
+        "project-review",
+        "review",
+        "Project review workflow",
+    );
+    let roots = CatalogSkillRoots {
+        global_agent_skills_dir: Some(global_agent_skills_dir),
+        project_agent_skills_dir: Some(project_agent_skills_dir),
+    };
+    let mut paths = fixture.paths.clone();
+    paths.catalog_roots = roots;
+
+    let catalog = nomifun_extension::skill_service::list_catalog_skills(&paths)
+        .await
+        .expect("catalog lists global and project Skills");
+    assert!(catalog.iter().any(|skill| {
+        skill.name == "review"
+            && skill.source == SkillCatalogSource::User
+            && skill.source_key.as_deref() == Some("agents")
+            && skill.local_key == "global-review"
+    }));
+    assert!(catalog.iter().any(|skill| {
+        skill.name == "review"
+            && skill.source == SkillCatalogSource::Project
+            && skill.source_key.as_deref() == Some("workspace")
+            && skill.local_key == "project-review"
+    }));
+
+    let loaded = nomifun_extension::skill_service::load_catalog_skills(
+        &paths,
+        &[
+            "user:agents:global-review".to_owned(),
+            "project:workspace:project-review".to_owned(),
+        ],
+    )
+    .await
+    .expect("selected global and project Skills load");
+
+    assert_eq!(loaded.len(), 2);
+    assert!(loaded[0].content.contains("Global agent review workflow"));
+    assert!(loaded[1].content.contains("Project review workflow"));
 }

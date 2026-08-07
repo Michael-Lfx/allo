@@ -2168,12 +2168,10 @@ pub async fn build_extension_states(
     let index_manager = HubIndexManager::new(hub_dir, registry.clone());
     let installer = HubInstaller::new(index_manager.clone(), registry.clone());
 
-    let app_resource_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| p.parent().map(|pp| pp.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let skill_paths = nomifun_extension::resolve_skill_paths(&app_resource_dir, &skill_data_dir);
+    // The catalog must use the same roots captured at boot as conversation
+    // loading; otherwise a changed process CWD could advertise an unresolvable
+    // project Skill.
+    let skill_paths = services.skill_paths.as_ref().clone();
 
     let ext_paths_mgr = Arc::new(ExternalPathsManager::new(&skill_data_dir).await);
 

@@ -109,7 +109,6 @@ const TITLE_TASK_TIMEOUT: Duration = Duration::from_secs(15);
 const DELETE_CORE_GRACE: Duration = Duration::from_secs(5);
 const DELETE_CLEANUP_ITEM_GRACE: Duration = Duration::from_secs(5);
 const TURN_WRITEBACK_CANCEL_GRACE: Duration = Duration::from_secs(10);
-const MAX_EXPLICIT_SKILL_SNAPSHOT_BYTES: usize = 64 * 1024;
 
 fn dedupe_skill_ids(skill_ids: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -1247,13 +1246,6 @@ impl ConversationService {
                     "Selected Skill has invalid immutable instructions".to_owned(),
                 ));
             }
-        }
-        let total_bytes = snapshots.iter().map(|skill| skill.content.len()).sum::<usize>();
-        if total_bytes > MAX_EXPLICIT_SKILL_SNAPSHOT_BYTES {
-            return Err(AppError::BadRequest(format!(
-                "Selected Skill instructions exceed the {} byte per-turn budget",
-                MAX_EXPLICIT_SKILL_SNAPSHOT_BYTES
-            )));
         }
         Ok(snapshots)
     }

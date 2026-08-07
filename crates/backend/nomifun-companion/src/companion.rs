@@ -1191,6 +1191,7 @@ mod skill_resolution_tests {
             builtin_rules_dir: root.join("builtin-rules"),
             preset_rules_dir: root.join("preset-rules"),
             preset_skills_dir: root.join("preset-skills"),
+            catalog_roots: Default::default(),
         }
     }
 

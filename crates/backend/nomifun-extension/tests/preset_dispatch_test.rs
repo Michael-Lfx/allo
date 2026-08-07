@@ -139,6 +139,7 @@ async fn router_with_dispatcher(dispatcher: Arc<FakeDispatcher>) -> axum::Router
         builtin_rules_dir: root.join("builtin-rules"),
         preset_rules_dir: root.join("preset-rules"),
         preset_skills_dir: root.join("preset-skills"),
+        catalog_roots: Default::default(),
     };
     let ext_mgr = Arc::new(ExternalPathsManager::with_file(root.join("paths.json")).await);
     std::mem::forget(tmp);

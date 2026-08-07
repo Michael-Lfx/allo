@@ -11106,6 +11106,62 @@ async fn send_message_allows_load_only_catalog_skills_and_persists_the_snapshot_
 }
 
 #[tokio::test]
+async fn send_message_allows_large_explicit_skill_snapshot() {
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    let snapshot_content = "x".repeat(64 * 1024 + 1);
+    let resolver: Arc<dyn SkillResolver> = Arc::new(CatalogSkillResolver::with_snapshot(
+        ResolvedSkillSnapshot {
+            skill_id: "user:large-skill".to_owned(),
+            name: "large-skill".to_owned(),
+            source: "user".to_owned(),
+            version_hash: "a".repeat(64),
+            content: snapshot_content.clone(),
+        },
+    ));
+    let service = ConversationService::new(
+        Arc::<str>::from(SQLITE_TEST_OWNER),
+        std::env::temp_dir(),
+        Arc::new(MockBroadcaster::new()),
+        resolver,
+        runtime_registry.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(SQLITE_TEST_OWNER, make_create_req())
+        .await
+        .unwrap();
+    let request: SendMessageRequest = serde_json::from_value(json!({
+        "content": "",
+        "inject_skills": ["user:large-skill"]
+    }))
+    .unwrap();
+
+    send_message_with_test_key(
+        &service,
+        SQLITE_TEST_OWNER,
+        &conversation.conversation_id,
+        "large-explicit-skill-snapshot",
+        request,
+        &runtime_registry,
+    )
+    .await
+    .expect("large selected Skill instructions should be accepted");
+    wait_for_turn_released(&service, &conversation.conversation_id).await;
+
+    let snapshots = repo
+        .get_skill_loads(&conversation.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].content.len(), snapshot_content.len());
+}
+
+#[tokio::test]
 async fn first_turn_loads_source_qualified_preset_skills_without_filtering_the_launcher_request() {
     let database = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));

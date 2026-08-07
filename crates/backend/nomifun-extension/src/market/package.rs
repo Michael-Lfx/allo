@@ -378,6 +378,7 @@ mod tests {
             builtin_rules_dir: tmp.path().join("builtin-rules"),
             preset_rules_dir: tmp.path().join("preset-rules"),
             preset_skills_dir: tmp.path().join("preset-skills"),
+            catalog_roots: Default::default(),
         };
         std::mem::forget(tmp);
         paths
