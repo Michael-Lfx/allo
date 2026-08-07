@@ -2695,6 +2695,7 @@ export type I18nKey =
   | 'messages.knowledgeWriteback.written'
   | 'messages.moa.progress'
   | 'messages.moa.referenceTitle'
+  | 'messages.newContentBelow'
   | 'messages.noOptionsAvailable'
   | 'messages.openLinkFailed'
   | 'messages.option'

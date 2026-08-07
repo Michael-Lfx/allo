@@ -3,7 +3,7 @@
 import { Message } from '@arco-design/web-react';
 import { Copy, Down, Up } from '@icon-park/react';
 import katex from 'katex';
-import React, { useRef, useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import MermaidBlock from './MermaidBlock';
@@ -23,13 +23,16 @@ type CodeBlockProps = {
   node?: unknown;
   hiddenCodeCopyButton?: boolean;
   codeStyle?: React.CSSProperties;
+  isStreaming?: boolean;
   [key: string]: unknown;
 };
 
 function CodeBlock(props: CodeBlockProps) {
   const { t } = useTranslation();
+  const blockId = useId();
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [currentTheme, setCurrentTheme] = useState<'light' | 'dark'>(
     () => (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'light'
   );
@@ -53,7 +56,7 @@ function CodeBlock(props: CodeBlockProps) {
     }
   };
 
-  const { children, className, node: _node, hiddenCodeCopyButton: _h, codeStyle: _c, ...rest } = props;
+  const { children, className, node: _node, hiddenCodeCopyButton, codeStyle: _c, isStreaming = false, ...rest } = props;
   const match = /language-(\w+)/.exec(className || '');
   const language = match?.[1] || 'text';
 
@@ -88,6 +91,7 @@ function CodeBlock(props: CodeBlockProps) {
   const formattedContent = formatCode(children);
   const totalLines = formattedContent.split('\n').length;
   const canCollapse = totalLines > PREVIEW_LINES;
+  const isEffectivelyExpanded = isStreaming || expanded;
   const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
   const diffLines = isDiff ? formattedContent.split('\n') : [];
   const isDark = currentTheme === 'dark';
@@ -114,12 +118,14 @@ function CodeBlock(props: CodeBlockProps) {
   const footerTextColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.35)';
   const borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
   const bgColor = isDark ? 'rgba(255,255,255,0.04)' : 'var(--bg-2)';
+  const codeContentId = `${blockId}-content`;
+  const footerId = `${blockId}-footer`;
 
   return (
     <div
       ref={containerRef}
       style={{ width: '100%', minWidth: 0, maxWidth: '100%', ...props.codeStyle }}
-      className='group'
+      className='markdown-code-block'
     >
       <div style={{ backgroundColor: bgColor, borderRadius: '8px', overflow: 'hidden' }}>
         {/* Header */}
@@ -136,47 +142,52 @@ function CodeBlock(props: CodeBlockProps) {
           </span>
           {/* Buttons: always visible on touch devices, hover-only on pointer devices */}
           <div
-            className='opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity'
+            className='markdown-code-toolbar'
             style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
           >
-            {canCollapse && (
-              <span title={expanded ? t('common.collapse') : t('common.expand')} style={{ display: 'flex' }}>
+            {canCollapse && !isStreaming && (
+              <button
+                type='button'
+                title={expanded ? t('common.collapse') : t('common.expand')}
+                aria-label={expanded ? t('common.collapse') : t('common.expand')}
+                aria-expanded={expanded}
+                aria-controls={codeContentId}
+                className='markdown-code-action'
+                onClick={toggleExpanded}
+              >
                 {expanded ? (
-                  <Up
-                    theme='outline'
-                    size='14'
-                    style={{ cursor: 'pointer', display: 'block' }}
-                    fill={iconFill}
-                    onClick={toggleExpanded}
-                  />
+                  <Up theme='outline' size='14' style={{ display: 'block' }} fill={iconFill} />
                 ) : (
-                  <Down
-                    theme='outline'
-                    size='14'
-                    style={{ cursor: 'pointer', display: 'block' }}
-                    fill={iconFill}
-                    onClick={toggleExpanded}
-                  />
+                  <Down theme='outline' size='14' style={{ display: 'block' }} fill={iconFill} />
                 )}
-              </span>
+              </button>
             )}
-            <span title={t('common.copy')} style={{ display: 'flex' }}>
-              <Copy
-                theme='outline'
-                size='14'
-                style={{ cursor: 'pointer', display: 'block' }}
-                fill={iconFill}
+            {!hiddenCodeCopyButton && (
+              <button
+                type='button'
+                title={t('common.copy')}
+                aria-label={t('common.copy')}
+                className='markdown-code-action'
                 onClick={handleCopy}
-              />
-            </span>
+              >
+                <Copy theme='outline' size='14' style={{ display: 'block' }} fill={iconFill} />
+              </button>
+            )}
           </div>
         </div>
 
         {/* Code content — always full content, clipped by maxHeight when collapsed */}
         <div
+            ref={(node) => {
+              contentRef.current = node;
+              if (node && isStreaming) {
+                node.scrollTop = node.scrollHeight;
+              }
+            }}
+          id={codeContentId}
           style={{
-            maxHeight: canCollapse && !expanded ? `${COLLAPSED_HEIGHT}px` : 'none',
-            overflowY: 'hidden',
+            maxHeight: canCollapse && !isEffectivelyExpanded ? `${COLLAPSED_HEIGHT}px` : 'none',
+            overflowY: isStreaming ? 'auto' : 'hidden',
             overflowX: 'visible',
           }}
         >
@@ -216,16 +227,30 @@ function CodeBlock(props: CodeBlockProps) {
         </div>
 
         {/* Footer */}
-        {canCollapse && (
-          <div
+        {canCollapse && !isStreaming && (
+          <button
+            type='button'
+            id={footerId}
+            aria-expanded={expanded}
+            aria-controls={codeContentId}
+            aria-label={
+              expanded
+                ? t('common.collapse')
+                : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })
+            }
             style={{
               display: 'flex',
               justifyContent: 'center',
               alignItems: 'center',
+              width: '100%',
               padding: '6px 12px',
               cursor: 'pointer',
               gap: '4px',
               borderTop: `1px solid ${borderColor}`,
+              borderLeft: 0,
+              borderRight: 0,
+              borderBottom: 0,
+              background: 'transparent',
             }}
             onClick={toggleExpanded}
           >
@@ -237,7 +262,7 @@ function CodeBlock(props: CodeBlockProps) {
             ) : (
               <Down theme='outline' size='12' fill={footerTextColor} />
             )}
-          </div>
+          </button>
         )}
       </div>
     </div>

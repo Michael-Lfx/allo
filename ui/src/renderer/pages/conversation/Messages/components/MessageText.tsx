@@ -29,31 +29,38 @@ import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { peekTurnCredits } from '@/renderer/pages/conversation/platforms/nomi/fetchTurnCredits';
+import MessageCronBadge from './MessageCronBadge';
+import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
+import AgentMessageAvatar from './AgentMessageAvatar';
+import { splitStreamingMarkdown } from './streamingMarkdown';
 
 const BUBBLE_ENTER_FRESH_MS = 1500;
 
 /**
- * Format a timestamp for message display.
- * Today: "HH:mm", older: "MM-DD HH:mm".
+ * Format a timestamp for message display using locale-aware formatting.
  */
-export const formatMessageTime = (timestamp: number): string => {
+export const formatMessageTime = (timestamp: number, locale?: string): string => {
   const date = new Date(timestamp);
   const now = new Date();
-  const hours = date.getHours().toString().padStart(2, '0');
-  const minutes = date.getMinutes().toString().padStart(2, '0');
-  const time = `${hours}:${minutes}`;
+  const resolvedLocale = locale ?? (typeof navigator !== 'undefined' ? navigator.language : 'en-US');
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
 
-  if (
-    date.getFullYear() !== now.getFullYear() ||
-    date.getMonth() !== now.getMonth() ||
-    date.getDate() !== now.getDate()
-  ) {
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    return `${month}-${day} ${time}`;
+  if (sameDay) {
+    return new Intl.DateTimeFormat(resolvedLocale, { hour: '2-digit', minute: '2-digit' }).format(date);
   }
-  return time;
+
+  return new Intl.DateTimeFormat(resolvedLocale, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 };
+
+export const formatMessageTimeIso = (timestamp: number): string => new Date(timestamp).toISOString();
 
 const formatTurnCreditDetails = (calls: TurnCreditUsageData['calls']): string | undefined => {
   if (!calls?.length) return undefined;
@@ -66,9 +73,6 @@ const formatTurnCreditDetails = (calls: TurnCreditUsageData['calls']): string | 
 
   return [...creditsByModel].map(([modelName, credits]) => `${modelName}: ${credits}`).join('\n');
 };
-import MessageCronBadge from './MessageCronBadge';
-import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
-import AgentMessageAvatar from './AgentMessageAvatar';
 
 const CODE_STYLE = { marginTop: 4, marginBlock: 4 };
 
@@ -327,9 +331,10 @@ const MessageText: React.FC<{
   message: IMessageText;
   hideActions?: boolean;
   actionsOnly?: boolean;
+  isStreaming?: boolean;
   /** Prefer list-assigned turn id (turn_actions) over message.msg_id for credit lookup. */
   creditTurnId?: MessageId;
-}> = ({ message, hideActions = false, actionsOnly = false, creditTurnId }) => {
+}> = ({ message, hideActions = false, actionsOnly = false, isStreaming = false, creditTurnId }) => {
   // Filter think tags from content before rendering
   // 在渲染前过滤 think 标签
   const contentToRender = useMemo(() => {
@@ -346,6 +351,10 @@ const MessageText: React.FC<{
 
   const { text, files } = parseMessageFileMarker(contentToRender, message.position);
   const { data, json } = useFormatContent(text);
+  const streamingParts = useMemo(
+    () => (isStreaming && !json && typeof data === 'string' ? splitStreamingMarkdown(data) : undefined),
+    [data, isStreaming, json]
+  );
   const { t } = useTranslation();
   const [showCopyAlert, setShowCopyAlert] = useState(false);
   const isUserMessage = message.position === 'right';
@@ -459,15 +468,16 @@ const MessageText: React.FC<{
 
   const copyButton = (
     <Tooltip content={t('common.copy', { defaultValue: 'Copy' })}>
-      <div
+      <button
+        type='button'
         data-testid='message-copy-action'
-        className='flex h-24px w-24px shrink-0 items-center justify-center rd-6px cursor-pointer text-t-secondary hover:bg-3'
+        className='flex h-24px w-24px shrink-0 items-center justify-center rd-6px cursor-pointer text-t-secondary hover:bg-3 border-0 bg-transparent'
         onClick={handleCopy}
         style={{ lineHeight: 0 }}
         aria-label={t('common.copy', { defaultValue: 'Copy' })}
       >
         <Copy theme='outline' size='16' fill='currentColor' />
-      </div>
+      </button>
     </Tooltip>
   );
 
@@ -523,9 +533,12 @@ const MessageText: React.FC<{
       {copyButton}
       {editButton}
       {message.created_at && (
-        <span className='message-text-actions__time text-12px leading-20px text-inherit select-none'>
+        <time
+          className='message-text-actions__time text-12px leading-20px text-inherit select-none'
+          dateTime={formatMessageTimeIso(message.created_at)}
+        >
           {formatMessageTime(message.created_at)}
-        </span>
+        </time>
       )}
       {showTurnCredits && turnCredits ? (
         <Tooltip
@@ -630,14 +643,39 @@ const MessageText: React.FC<{
               </CollapsibleContent>
             ) : (
               <div data-testid='message-text-content'>
-                <MarkdownView
-                  codeStyle={CODE_STYLE}
-                  fontSize={MESSAGE_BODY_FONT_SIZE}
-                  lineHeight={MESSAGE_BODY_LINE_HEIGHT}
-                  allowUnverifiedImages={isUserMessage}
-                >
-                  {data}
-                </MarkdownView>
+                {streamingParts ? (
+                  <div className='message-streaming-content'>
+                    {streamingParts.stablePrefix ? (
+                      <MarkdownView
+                        codeStyle={CODE_STYLE}
+                        fontSize={MESSAGE_BODY_FONT_SIZE}
+                        lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                        allowUnverifiedImages={isUserMessage}
+                      >
+                        {streamingParts.stablePrefix}
+                      </MarkdownView>
+                    ) : null}
+                    {streamingParts.tailKind === 'code' ? (
+                      <div className='message-streaming-code'>
+                        <div className='message-streaming-code__language'>{streamingParts.codeLanguage}</div>
+                        <pre className='message-streaming-code__content'>
+                          <code>{streamingParts.codeContent}</code>
+                        </pre>
+                      </div>
+                    ) : streamingParts.tail ? (
+                      <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>{streamingParts.tail}</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <MarkdownView
+                    codeStyle={CODE_STYLE}
+                    fontSize={MESSAGE_BODY_FONT_SIZE}
+                    lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                    allowUnverifiedImages={isUserMessage}
+                  >
+                    {data}
+                  </MarkdownView>
+                )}
               </div>
             )}
           </div>

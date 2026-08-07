@@ -21,7 +21,12 @@ describe('Markdown typography controls', () => {
     expect(shadowSource.includes("const resolvedLineHeight = lineHeight ?? (isMobile ? '19.6px' : '28px');")).toBe(true);
     expect(shadowSource.includes('const usesExplicitTypography = Boolean(fontSize || lineHeight);')).toBe(true);
     expect(shadowSource.includes("margin-block-start: ${usesExplicitTypography ? '10px' : '16px'};")).toBe(true);
-    expect(shadowSource.includes("font-size: ${usesExplicitTypography ? resolvedFontSize : '24px'};")).toBe(true);
-    expect(shadowSource.includes("font-size: ${usesExplicitTypography ? resolvedFontSize : '16px'};")).toBe(true);
+    expect(shadowSource.includes("font-size: ${usesExplicitTypography ? '18px' : '24px'};")).toBe(true);
+    expect(shadowSource.includes("font-size: ${usesExplicitTypography ? '16px' : '18px'};")).toBe(true);
+    expect(shadowSource.includes("font-size: ${usesExplicitTypography ? '15px' : '16px'};")).toBe(true);
+    expect(shadowSource.includes('a:focus-visible')).toBe(true);
+    expect(shadowSource.includes("'--color-link':")).toBe(true);
+    expect(shadowSource.includes('markdown-code-toolbar')).toBe(true);
+    expect(shadowSource.includes('markdown-code-block:focus-within')).toBe(true);
   });
 });

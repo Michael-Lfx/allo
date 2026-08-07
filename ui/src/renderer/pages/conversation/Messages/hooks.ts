@@ -514,7 +514,7 @@ export function drainPendingMessageUpdates(
 export const useAddOrUpdateMessage = () => {
   const update = useUpdateMessageList();
   const pendingRef = useRef<PendingMessageUpdate[]>([]);
-  const rafRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   const flush = useCallback(() => {
     rafRef.current = null;
@@ -528,10 +528,10 @@ export const useAddOrUpdateMessage = () => {
   useEffect(() => {
     return () => {
       if (rafRef.current !== null) {
-        clearTimeout(rafRef.current);
+        cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      // Navigation can race the zero-delay batch timer. Drain synchronously so
+      // Navigation can race the animation-frame batch. Drain synchronously so
       // cleanup never discards the final user/stream message in that task.
       flush();
     };
@@ -544,7 +544,7 @@ export const useAddOrUpdateMessage = () => {
       }
       pendingRef.current.push({ message, add });
       if (rafRef.current === null) {
-        rafRef.current = setTimeout(flush);
+        rafRef.current = requestAnimationFrame(flush);
       }
     },
     [flush]

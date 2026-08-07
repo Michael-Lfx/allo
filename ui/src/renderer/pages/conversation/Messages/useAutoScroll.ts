@@ -1,5 +1,4 @@
 
-
 /**
  * useAutoScroll - Auto-scroll hook for a plain scroll container
  *
@@ -13,17 +12,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TMessage } from '@/common/chat/chatLib';
 
 const PROGRAMMATIC_SCROLL_GUARD_MS = 150;
-const USER_LAYOUT_CHANGE_GUARD_MS = 600;
-const AT_BOTTOM_THRESHOLD_PX = 100;
 // Must absorb sub-pixel scroll rounding on HiDPI/fractional-DPR displays, where
 // scrollTop can settle ~1-3px off an integer "bottom"; too small a threshold
 // (was 4) makes auto-follow intermittently think the user scrolled away and
 // stop following streaming output.
-const FOLLOW_BOTTOM_THRESHOLD_PX = 12;
+export const FOLLOW_BOTTOM_THRESHOLD_PX = 12;
+/** Show the scroll-to-bottom affordance as soon as auto-follow would stop. */
+export const SCROLL_BUTTON_THRESHOLD_PX = 12;
 
 interface UseAutoScrollOptions {
   messages: TMessage[];
   itemCount: number;
+  /** When true, Virtuoso `followOutput` owns tail pinning; skip ResizeObserver scroll nudges. */
+  virtuosoMode?: boolean;
 }
 
 interface ScrollElementIntoViewOptions {
@@ -31,36 +32,49 @@ interface ScrollElementIntoViewOptions {
   block?: ScrollLogicalPosition;
 }
 
+type FollowOutputMode = false | 'auto';
+
 interface UseAutoScrollReturn {
   handleScrollerRef: (ref: HTMLDivElement | null) => void;
   handleContentRef: (ref: HTMLDivElement | null) => void;
   handleScroll: (e: React.UIEvent<HTMLDivElement>) => void;
   handleWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
-  handlePointerDown: () => void;
+  handlePointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   showScrollButton: boolean;
+  /** True when the user intentionally left the bottom (shows "new content" label). */
+  hasNewContentBelow: boolean;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   scrollElementIntoView: (element: HTMLElement | null, options?: ScrollElementIntoViewOptions) => void;
+  pauseAutoFollow: () => void;
   hideScrollButton: () => void;
+  /** Virtuoso followOutput resolver — keeps tail pinned without fighting manual scroll. */
+  resolveFollowOutput: (isAtBottom: boolean) => FollowOutputMode;
 }
 
 const getBottomGap = (element: HTMLElement): number => {
   return element.scrollHeight - element.clientHeight - element.scrollTop;
 };
 
-export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): UseAutoScrollReturn {
+export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: UseAutoScrollOptions): UseAutoScrollReturn {
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [hasNewContentBelow, setHasNewContentBelow] = useState(false);
 
   const userScrolledRef = useRef(false);
+  const userIntentPausedRef = useRef(false);
+  const showScrollButtonRef = useRef(false);
+  const hasNewContentBelowRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const lastContentScrollHeightRef = useRef(0);
   const previousListLengthRef = useRef(messages.length);
   const previousLastIdRef = useRef<string | undefined>(messages[messages.length - 1]?.id);
   const lastProgrammaticScrollTimeRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
   const pendingAutoFollowFrameRef = useRef<number | null>(null);
   const userInputActiveRef = useRef(false);
-  const resizeAutoFollowBlockedUntilRef = useRef(0);
+  const virtuosoModeRef = useRef(virtuosoMode);
+  virtuosoModeRef.current = virtuosoMode;
 
   const markProgrammaticScroll = useCallback(() => {
     lastProgrammaticScrollTimeRef.current = Date.now();
@@ -68,18 +82,66 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
 
   const updateBottomState = useCallback((element: HTMLDivElement) => {
     const bottomGap = getBottomGap(element);
-    const withinButtonThreshold = bottomGap <= AT_BOTTOM_THRESHOLD_PX;
+    const withinButtonThreshold = bottomGap <= SCROLL_BUTTON_THRESHOLD_PX;
     const pinnedToBottom = bottomGap <= FOLLOW_BOTTOM_THRESHOLD_PX;
-    setShowScrollButton(!withinButtonThreshold);
+    const nextShowButton = !withinButtonThreshold;
+    const nextHasNew = userScrolledRef.current && !withinButtonThreshold;
+
+    if (nextShowButton !== showScrollButtonRef.current) {
+      showScrollButtonRef.current = nextShowButton;
+      setShowScrollButton(nextShowButton);
+    }
+    if (nextHasNew !== hasNewContentBelowRef.current) {
+      hasNewContentBelowRef.current = nextHasNew;
+      setHasNewContentBelow(nextHasNew);
+    }
 
     if (pinnedToBottom) {
       userScrolledRef.current = false;
+      userIntentPausedRef.current = false;
       userInputActiveRef.current = false;
+      if (hasNewContentBelowRef.current) {
+        hasNewContentBelowRef.current = false;
+        setHasNewContentBelow(false);
+      }
       lastProgrammaticScrollTimeRef.current = Date.now() - (PROGRAMMATIC_SCROLL_GUARD_MS - 50);
     }
 
     return pinnedToBottom;
   }, []);
+
+  const pauseAutoFollow = useCallback(() => {
+    userIntentPausedRef.current = true;
+    userScrolledRef.current = true;
+    if (!scrollerEl || getBottomGap(scrollerEl) <= SCROLL_BUTTON_THRESHOLD_PX) {
+      return;
+    }
+    showScrollButtonRef.current = true;
+    hasNewContentBelowRef.current = true;
+    setShowScrollButton(true);
+    setHasNewContentBelow(true);
+  }, [scrollerEl]);
+
+  const followContentGrowth = useCallback(() => {
+    if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
+
+    const prevHeight = lastContentScrollHeightRef.current;
+    const newHeight = scrollerEl.scrollHeight;
+    if (prevHeight === 0) {
+      lastContentScrollHeightRef.current = newHeight;
+      return;
+    }
+
+    const delta = newHeight - prevHeight;
+    lastContentScrollHeightRef.current = newHeight;
+    if (delta <= 0) return;
+
+    const gap = getBottomGap(scrollerEl);
+    if (gap > FOLLOW_BOTTOM_THRESHOLD_PX + delta) return;
+
+    markProgrammaticScroll();
+    scrollerEl.scrollTop += delta;
+  }, [markProgrammaticScroll, scrollerEl]);
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = 'smooth') => {
@@ -90,15 +152,20 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
         top: scrollerEl.scrollHeight - scrollerEl.clientHeight,
         behavior,
       });
+      lastContentScrollHeightRef.current = scrollerEl.scrollHeight;
       userScrolledRef.current = false;
+      userIntentPausedRef.current = false;
+      showScrollButtonRef.current = false;
+      hasNewContentBelowRef.current = false;
       setShowScrollButton(false);
+      setHasNewContentBelow(false);
     },
     [itemCount, markProgrammaticScroll, scrollerEl]
   );
 
   const scheduleAutoFollow = useCallback(() => {
-    if (!scrollerEl || userScrolledRef.current) return;
-    if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;
+    if (virtuosoModeRef.current) return;
+    if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
 
     if (pendingAutoFollowFrameRef.current !== null) {
       cancelAnimationFrame(pendingAutoFollowFrameRef.current);
@@ -106,14 +173,18 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
 
     pendingAutoFollowFrameRef.current = requestAnimationFrame(() => {
       pendingAutoFollowFrameRef.current = null;
-      if (!scrollerEl || userScrolledRef.current) return;
+      if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
 
-      const gap = getBottomGap(scrollerEl);
-      if (gap > 2) {
-        scrollToBottom('auto');
-      }
+      followContentGrowth();
     });
-  }, [scrollerEl, scrollToBottom]);
+  }, [followContentGrowth, scrollerEl]);
+
+  const resolveFollowOutput = useCallback((isAtBottom: boolean): FollowOutputMode => {
+    if (!isAtBottom || userIntentPausedRef.current || userScrolledRef.current) {
+      return false;
+    }
+    return 'auto';
+  }, []);
 
   const handleScrollerRef = useCallback((ref: HTMLDivElement | null) => {
     setScrollerEl(ref);
@@ -127,8 +198,7 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
     (element: HTMLElement | null, options?: ScrollElementIntoViewOptions) => {
       if (!element) return;
 
-      userScrolledRef.current = false;
-      setShowScrollButton(false);
+      pauseAutoFollow();
       markProgrammaticScroll();
       element.scrollIntoView({
         behavior: options?.behavior ?? 'smooth',
@@ -136,7 +206,7 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
         inline: 'nearest',
       });
     },
-    [markProgrammaticScroll]
+    [markProgrammaticScroll, pauseAutoFollow]
   );
 
   const handleScroll = useCallback(
@@ -174,10 +244,16 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
     }
   }, []);
 
-  const handlePointerDown = useCallback(() => {
-    userInputActiveRef.current = true;
-    resizeAutoFollowBlockedUntilRef.current = Date.now() + USER_LAYOUT_CHANGE_GUARD_MS;
-  }, []);
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      userInputActiveRef.current = true;
+      const target = event.target;
+      if (target instanceof Element && target.closest('[aria-expanded]')) {
+        pauseAutoFollow();
+      }
+    },
+    [pauseAutoFollow]
+  );
 
   useEffect(() => {
     if (!scrollerEl || !contentEl) return;
@@ -219,8 +295,8 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
     if (!grewAtBottom) return;
 
     if (lastMessage?.position !== 'right') return;
+    if (userIntentPausedRef.current || userScrolledRef.current) return;
 
-    userScrolledRef.current = false;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         scrollToBottom('auto');
@@ -238,7 +314,11 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;
+    userIntentPausedRef.current = false;
+    showScrollButtonRef.current = false;
+    hasNewContentBelowRef.current = false;
     setShowScrollButton(false);
+    setHasNewContentBelow(false);
   }, []);
 
   return {
@@ -248,8 +328,11 @@ export function useAutoScroll({ messages, itemCount }: UseAutoScrollOptions): Us
     handleWheel,
     handlePointerDown,
     showScrollButton,
+    hasNewContentBelow,
     scrollToBottom,
     scrollElementIntoView,
+    pauseAutoFollow,
     hideScrollButton,
+    resolveFollowOutput,
   };
 }

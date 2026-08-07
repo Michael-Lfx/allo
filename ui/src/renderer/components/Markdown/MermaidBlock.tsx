@@ -172,53 +172,58 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
               {'<mermaid>'}
             </span>
             {svg && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <div
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }} role='group' aria-label={t('preview.preview')}>
+                <button
+                  type='button'
                   style={{
                     cursor: 'pointer',
                     color: viewMode === 'preview' ? 'var(--text-primary)' : 'var(--text-secondary)',
                     fontSize: '12px',
                     lineHeight: '20px',
+                    border: 0,
+                    background: 'transparent',
+                    padding: 0,
                   }}
-                  onMouseDown={(event: React.MouseEvent) => {
-                    if (event.button === 0) {
-                      event.preventDefault();
-                      preferredViewModeRef.current = 'preview';
-                      setViewMode('preview');
-                    }
+                  aria-pressed={viewMode === 'preview'}
+                  onClick={() => {
+                    preferredViewModeRef.current = 'preview';
+                    setViewMode('preview');
                   }}
                 >
                   {t('preview.preview')}
-                </div>
-                <span style={{ color: 'var(--text-secondary)', fontSize: '12px', lineHeight: '20px' }}>/</span>
-                <div
+                </button>
+                <span style={{ color: 'var(--text-secondary)', fontSize: '12px', lineHeight: '20px' }} aria-hidden='true'>
+                  /
+                </span>
+                <button
+                  type='button'
                   style={{
                     cursor: 'pointer',
                     color: viewMode === 'source' ? 'var(--text-primary)' : 'var(--text-secondary)',
                     fontSize: '12px',
                     lineHeight: '20px',
+                    border: 0,
+                    background: 'transparent',
+                    padding: 0,
                   }}
-                  onMouseDown={(event: React.MouseEvent) => {
-                    if (event.button === 0) {
-                      event.preventDefault();
-                      preferredViewModeRef.current = 'source';
-                      setViewMode('source');
-                    }
+                  aria-pressed={viewMode === 'source'}
+                  onClick={() => {
+                    preferredViewModeRef.current = 'source';
+                    setViewMode('source');
                   }}
                 >
                   {t('preview.source')}
-                </div>
+                </button>
               </div>
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             {showOpenInPanelButton && canOpenInPanel && (
-              <PreviewOpen
+              <button
+                type='button'
                 data-testid='mermaid-open-in-panel'
-                theme='outline'
-                size='18'
-                style={{ cursor: 'pointer', flexShrink: 0 }}
-                fill='var(--text-secondary)'
+                className='border-0 bg-transparent p-0 cursor-pointer flex items-center'
+                aria-label={t('preview.openInPanelTooltip')}
                 title={t('preview.openInPanelTooltip')}
                 onClick={() => {
                   previewContext?.openPreview(`\`\`\`mermaid\n${code}\n\`\`\``, 'markdown', {
@@ -226,14 +231,16 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
                     editable: false,
                   });
                 }}
-              />
+              >
+                <PreviewOpen theme='outline' size='18' style={{ flexShrink: 0 }} fill='var(--text-secondary)' />
+              </button>
             )}
-            <Copy
+            <button
+              type='button'
               data-testid='mermaid-copy'
-              theme='outline'
-              size='18'
-              style={{ cursor: 'pointer', flexShrink: 0 }}
-              fill='var(--text-secondary)'
+              className='border-0 bg-transparent p-0 cursor-pointer flex items-center'
+              aria-label={t('common.copy')}
+              title={t('common.copy')}
               onClick={() => {
                 void copyText(code)
                   .then(() => {
@@ -243,7 +250,9 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
                     Message.error(t('common.copyFailed'));
                   });
               }}
-            />
+            >
+              <Copy theme='outline' size='18' style={{ flexShrink: 0 }} fill='var(--text-secondary)' />
+            </button>
           </div>
         </div>
 

@@ -51,6 +51,7 @@ import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileSer
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
+import { useBasicRuntimeTurnSurface } from '@/renderer/pages/conversation/platforms/BasicRuntimeTurnContext';
 import { Message, Tag } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -213,11 +214,17 @@ const BasicRuntimeSendBox: React.FC<{
 
   // Ref mirror of aiProcessing for immediate access in stream handlers.
   // 使用 ref 同步状态，以便在事件处理程序中立即访问
+  const sharedTurnSurface = useBasicRuntimeTurnSurface();
+  const syncSharedAiProcessing = sharedTurnSurface?.setAiProcessing;
   const aiProcessingRef = useRef(false);
-  const setAiProcessing = useCallback((value: boolean) => {
-    aiProcessingRef.current = value;
-    setAiProcessingState(value);
-  }, []);
+  const setAiProcessing = useCallback(
+    (value: boolean) => {
+      aiProcessingRef.current = value;
+      setAiProcessingState(value);
+      syncSharedAiProcessing?.(value);
+    },
+    [syncSharedAiProcessing]
+  );
 
   const {
     beginLocalTurn,

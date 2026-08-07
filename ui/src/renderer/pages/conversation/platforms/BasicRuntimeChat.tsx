@@ -14,9 +14,10 @@ import {
   useMessageLstCache,
 } from '@renderer/pages/conversation/Messages/hooks';
 import HOC from '@renderer/utils/ui/HOC';
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import { useConversationResponseMessages } from '@renderer/pages/conversation/Messages/useConversationResponseMessages';
+import { BasicRuntimeTurnProvider } from '@renderer/pages/conversation/platforms/BasicRuntimeTurnContext';
 
 export interface BasicRuntimeChatProps {
   conversation_id: ConversationId;
@@ -51,23 +52,57 @@ export function createBasicRuntimeChat(
     emptySlot,
     loadedSkills,
   }) => {
-    useMessageLstCache(conversation_id);
-    useConversationResponseMessages(conversation_id);
+    const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
+    const turnSurface = useConversationResponseMessages(conversation_id, {
+      stream: type === 'openclaw-gateway' ? 'openclaw' : 'conversation',
+    });
     const updateLocalImage = LocalImageView.useUpdateLocalImage();
     useEffect(() => {
       updateLocalImage({ root: workspace });
     }, [updateLocalImage, workspace]);
+    const conversationValue = useMemo(
+      () => ({
+        conversation_id: conversation_id,
+        workspace,
+        type,
+        cron_job_id,
+        hideSendBox,
+        readOnly,
+        loadedSkills,
+        isProcessing: turnSurface.isProcessing,
+        activeTurnId: turnSurface.activeTurnId,
+        activeRequestMessageId: turnSurface.activeRequestMessageId,
+      }),
+      [
+        conversation_id,
+        workspace,
+        type,
+        cron_job_id,
+        hideSendBox,
+        readOnly,
+        loadedSkills,
+        turnSurface.isProcessing,
+        turnSurface.activeTurnId,
+        turnSurface.activeRequestMessageId,
+      ]
+    );
     return (
-      <ConversationProvider
-        value={{ conversation_id: conversation_id, workspace, type, cron_job_id, hideSendBox, readOnly, loadedSkills }}
-      >
-        <div className='flex-1 flex flex-col px-20px min-h-0'>
-          <FlexFullContainer>
-            <MessageList className='flex-1' emptySlot={emptySlot}></MessageList>
-          </FlexFullContainer>
-          {!readOnly && !hideSendBox && <PlatformSendBox conversation_id={conversation_id} />}
-        </div>
-      </ConversationProvider>
+      <BasicRuntimeTurnProvider value={turnSurface}>
+        <ConversationProvider value={conversationValue}>
+          <div className='flex-1 flex flex-col px-20px min-h-0'>
+            <FlexFullContainer>
+              <MessageList
+                className='flex-1'
+                emptySlot={emptySlot}
+                onLoadOlder={historyPaging.loadOlder}
+                hasMoreOlder={historyPaging.hasMore}
+                loadingOlder={historyPaging.loadingOlder}
+              />
+            </FlexFullContainer>
+            {!readOnly && !hideSendBox && <PlatformSendBox conversation_id={conversation_id} />}
+          </div>
+        </ConversationProvider>
+      </BasicRuntimeTurnProvider>
     );
   };
   BasicRuntimeChat.displayName = `BasicRuntimeChat(${type})`;
