@@ -27,12 +27,18 @@ import { useSlashCommands } from '@/renderer/hooks/chat/useSlashCommands';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
 import { useLatestRef } from '@/renderer/hooks/ui/useLatestRef';
 import {
-  snapshotEditSuffixLocalIds,
   useAddOrUpdateMessage,
   useMessageList,
   useRemoveMessageByMsgId,
-  useRemoveMessagesByLocalIds,
+  useUpdateMessageList,
 } from '@/renderer/pages/conversation/Messages/hooks';
+import {
+  armBarrier,
+  beginEditResubmitReconciliation,
+  captureBarrier,
+  purgeCurrentRows,
+  revokeBarrier,
+} from '@/renderer/pages/conversation/Messages/conversationMessageCoordinator';
 import { savePreferredMode } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
 import {
   shouldEnqueueConversationCommand,
@@ -66,7 +72,7 @@ import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
-import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
+import { buildDisplayMessage, collectSelectedFiles, removeSubmittedAttachments } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { Alert, Button, Message, Tag } from '@arco-design/web-react';
 import { Brain, Shield } from '@icon-park/react';
@@ -284,7 +290,7 @@ const NomiSendBox: React.FC<{
   const removeMessageByMsgId = useRemoveMessageByMsgId();
   const messageList = useMessageList();
   const messageListRef = useLatestRef(messageList);
-  const removeMessagesByLocalIds = useRemoveMessagesByLocalIds();
+  const updateMessageList = useUpdateMessageList();
   const { setSendBoxHandler } = usePreviewContext();
   const [isStopping, setIsStopping] = useState(false);
   const showStrongBusy =
@@ -651,17 +657,26 @@ const NomiSendBox: React.FC<{
     [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
   );
 
-  // 编辑最近一条用户消息并截断重跑。请求成功前保留旧消息和附件；成功后只移除
-  // 请求发出时捕获的旧本地行，避免误删 HTTP 返回前已到达的 replacement stream。
+  // 编辑最近一条用户消息并截断重跑。请求成功前不改动消息列表与附件；成功后通过
+  // 会话消息协调器收束：arm 屏障挡住陈旧 fetch 复活旧消息/报错行，成功时翻转至
+  // reconciling 并按 mergeKeys/serverIds/localIds 清理后缀，再发权威刷新让各消费者确认。
   const handleEditResubmit = useCallback(
     async (msgId: MessageId, createdAt: number, message: string) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
       maybeWarnNonVisionModel(filesToSend);
-      const oldSuffixLocalIds = snapshotEditSuffixLocalIds(
-        messageListRef.current,
-        msgId,
-        createdAt
-      );
+      // 稳定 id = 路径：成功后仅精确移除本次提交项，保留飞行中新增的附件。
+      // Stable id = path: on success remove only the items submitted this turn,
+      // preserving attachments added mid-flight (set-difference, not full clear).
+      const submittedAttachmentIds = new Set(filesToSend);
+      const operationId = uuid();
+      // Fail closed: if the target row can't be located by durable identity, do
+      // not arm, do not send — surface a generic error and keep the user's edit.
+      const capture = captureBarrier(messageListRef.current, msgId, createdAt);
+      if (!capture) {
+        Message.error(t('conversation.editMessage.failed'));
+        throw new Error('edit-resubmit target message not found');
+      }
+      armBarrier(conversation_id, operationId, capture);
       setWaitingResponse(true);
       const displayMessage = buildDisplayMessage(message, filesToSend, workspacePath);
       try {
@@ -672,9 +687,20 @@ const NomiSendBox: React.FC<{
           files: filesToSend,
           idempotency_key: uuidv7(),
         });
-        removeMessagesByLocalIds(oldSuffixLocalIds);
-        clearFiles();
-        emitter.emit('nomi.selected.file.clear');
+        // 成功：翻转屏障为 reconciling（原子递增会话 epoch），再直删本实例旧后缀。
+        beginEditResubmitReconciliation(conversation_id, operationId);
+        updateMessageList((list) => purgeCurrentRows(list, conversation_id));
+        // 附件集合差：函数式更新读取最新 uploadFile，atPath 经 ref 取最新值；
+        // 仅移除已提交项，飞行中新增的附件保留。nomi.selected.file.clear 为零监听死事件，不再发射。
+        // Attachment set-difference: functional update reads the latest uploadFile, atPath via ref;
+        // remove only submitted items, keep attachments added mid-flight.
+        // nomi.selected.file.clear has zero listeners (dead event) — no longer emitted.
+        setUploadFile((prev) => removeSubmittedAttachments(prev, submittedAttachmentIds));
+        const currentAtPath = atPathRef.current;
+        const remainingAtPath = removeSubmittedAttachments(currentAtPath, submittedAttachmentIds);
+        if (remainingAtPath.length !== currentAtPath.length) {
+          setAtPath(remainingAtPath);
+        }
         const disposition = classifyPublicMessageDelivery(res);
         if (disposition === 'fresh') {
           markTurnAccepted();
@@ -697,7 +723,18 @@ const NomiSendBox: React.FC<{
         }
         emitter.emit('chat.history.refresh');
         if (filesToSend.length > 0) emitter.emit('nomi.workspace.refresh');
+        // 权威刷新：用截断后的 DB 重建转录，并让每个消费者确认其屏障。
+        emitter.emit('conversation.messages.refresh', {
+          conversationId: conversation_id,
+          reason: 'edit-resubmit-reconcile',
+        });
       } catch (error) {
+        // 失败：撤销屏障（恢复对陈旧 fetch 的放行），发失败刷新恢复权威历史。
+        revokeBarrier(conversation_id, operationId);
+        emitter.emit('conversation.messages.refresh', {
+          conversationId: conversation_id,
+          reason: 'edit-resubmit-failed',
+        });
         setWaitingResponse(false);
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
         throw error;
@@ -708,12 +745,13 @@ const NomiSendBox: React.FC<{
       conversation_id,
       uploadFile,
       workspacePath,
-      clearFiles,
+      setAtPath,
+      setUploadFile,
       markTurnAccepted,
       maybeWarnNonVisionModel,
       reconcilePublicDeliveryReplay,
       messageListRef,
-      removeMessagesByLocalIds,
+      updateMessageList,
       addOrUpdateMessage,
       setActiveMsgId,
       setWaitingResponse,

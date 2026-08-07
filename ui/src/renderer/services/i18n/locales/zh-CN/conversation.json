@@ -769,7 +769,9 @@
   },
   "editMessage": {
     "action": "编辑",
-    "banner": "正在编辑消息——发送后将从这里重新生成"
+    "banner": "正在编辑消息——发送后将从这里重新生成",
+    "editingBadge": "编辑中",
+    "failed": "重发编辑后的消息失败，请重试。"
   },
   "slashCommands": {
     "compact": {

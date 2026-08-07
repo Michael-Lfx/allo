@@ -59,6 +59,14 @@ interface EventTypes {
   // GET-poll fallback confirms the runtime is idle, so the transcript
   // reloads even when every WebSocket frame was lost.
   'conversation.turn.settled': [ConversationId];
+  // 编辑重发收束/失败后的权威消息刷新（本地合成）：成功后用截断后的 DB 重建转录并让
+  // 各消费者确认屏障；失败后恢复未截断的权威历史。
+  // Authoritative message refresh after edit-resubmit reconcile/failure (local
+  // synthetic): on success, rebuild the transcript from the truncated DB and let
+  // every consumer ack its barrier; on failure, restore the un-truncated history.
+  'conversation.messages.refresh': [
+    { conversationId: ConversationId; reason: 'edit-resubmit-reconcile' | 'edit-resubmit-failed' },
+  ];
   // Guid→会话页转场揭示信号：目标页首条用户气泡已提交（或无需首条消息的入口
   // 已完成挂载）,PendingConversationOverlay 据此握手退出。无转场时发射无副作用。
   // Guid→conversation transition reveal: the destination committed the first

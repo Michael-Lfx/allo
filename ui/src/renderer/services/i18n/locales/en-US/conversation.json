@@ -769,7 +769,9 @@
   },
   "editMessage": {
     "action": "Edit",
-    "banner": "Editing message — sending will re-run from here"
+    "banner": "Editing message — sending will re-run from here",
+    "editingBadge": "Editing",
+    "failed": "Couldn't resend the edited message. Please try again."
   },
   "slashCommands": {
     "compact": {
