@@ -1819,6 +1819,7 @@ fn complete_main_thread_setup(
             .title("Flowy")
             .inner_size(1280.0, 832.0)
             .min_inner_size(880.0, 600.0)
+            .center()
             .initialization_script(&init_script);
     // macOS: Overlay makes the titlebar transparent + extends content under
     // it, but it does NOT hide the native title text. With the title still
