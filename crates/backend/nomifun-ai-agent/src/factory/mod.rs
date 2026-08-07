@@ -229,6 +229,12 @@ pub struct AgentFactoryDeps {
     /// the tool is registered into the in-process engine and allow-listed past
     /// the approval gate. `None` (standalone) leaves it unregistered.
     pub knowledge_writeback: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>>,
+    /// Optional sink enabling the nomi native `learning_generate_course` tool.
+    /// When `Some` AND the session has mounted knowledge bases, the tool is
+    /// registered into the in-process engine and allow-listed past the approval
+    /// gate, letting the agent write markdown with `knowledge_write` and then
+    /// turn the base into a course. `None` (standalone) leaves it unregistered.
+    pub learning_course: Option<Arc<dyn nomi_agent::learning_tools::LearningCourseSink>>,
     /// Optional persona prompt provider for companion_session conversations that
     /// carry no `extra.system_prompt` (Channel Agent sessions).
     pub companion_prompt: Option<Arc<dyn CompanionPromptProvider>>,

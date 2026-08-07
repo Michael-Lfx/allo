@@ -144,6 +144,16 @@ export type ConfigKeyMap = {
     | undefined;
   'channels.wecom.companion_id': CompanionId | undefined;
   'skillsMarket.enabled': boolean | undefined;
+  // Learning module (spaced repetition) knobs, read by the backend learning
+  // service from client preferences.
+  // Target recall probability for the FSRS scheduler (0.7–0.99; default 0.9).
+  'learning.desiredRetention': number | undefined;
+  // Custom FSRS model weights; empty/absent means the library defaults.
+  'learning.fsrsParameters': number[] | undefined;
+  // Max due-review items fetched per review queue load (default 30).
+  'learning.reviewSessionLimit': number | undefined;
+  // Max questions in a diagnostic plan (default 10).
+  'learning.diagnosticLimit': number | undefined;
   // Global MoA (Mixture-of-Agents) defaults for new sessions, stored as a
   // MoaSettings JSON string (snake_case wire shape). Read by the backend agent
   // factory as the fallback when a conversation carries no explicit extra.moa.

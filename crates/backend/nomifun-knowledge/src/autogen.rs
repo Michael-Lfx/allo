@@ -54,6 +54,13 @@ pub const SAMPLE_MAX_PER_FILE: usize = 4 * 1024;
 /// Sampling budget: total cap across all sampled excerpts.
 pub const SAMPLE_MAX_TOTAL: usize = 60 * 1024;
 
+/// Learning-course generation samples a wider corpus so per-lesson documents
+/// stay grounded: more files, larger excerpts, higher total budget. The
+/// overview prompt keeps the default (smaller) budget above.
+pub const LEARNING_SAMPLE_MAX_FILES: usize = 40;
+pub const LEARNING_SAMPLE_MAX_PER_FILE: usize = 8 * 1024;
+pub const LEARNING_SAMPLE_MAX_TOTAL: usize = 160 * 1024;
+
 /// Generated descriptions are clamped to this many chars before persisting.
 pub const DESCRIPTION_MAX_CHARS: usize = 120;
 
@@ -225,13 +232,33 @@ pub fn build_polish_prompt(name: &str, draft: &str) -> String {
 /// order up to [`SAMPLE_MAX_FILES`], each excerpt capped at
 /// [`SAMPLE_MAX_PER_FILE`] bytes, total capped at [`SAMPLE_MAX_TOTAL`].
 pub async fn sample_base_files(root: &Path) -> Vec<(String, String)> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || sample_base_files_blocking(&root))
+    sample_base_files_with_budget(root, SAMPLE_MAX_FILES, SAMPLE_MAX_PER_FILE, SAMPLE_MAX_TOTAL)
         .await
-        .unwrap_or_default()
 }
 
-fn sample_base_files_blocking(root: &Path) -> Vec<(String, String)> {
+/// Like [`sample_base_files`], but with explicit sampling budgets. Callers
+/// that need richer corpora (for example course generation) pass larger
+/// values without affecting the default overview budget.
+pub async fn sample_base_files_with_budget(
+    root: &Path,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> Vec<(String, String)> {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        sample_base_files_blocking(&root, max_files, max_per_file, max_total)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn sample_base_files_blocking(
+    root: &Path,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> Vec<(String, String)> {
     if !root.is_dir() {
         return Vec::new();
     }
@@ -249,11 +276,11 @@ fn sample_base_files_blocking(root: &Path) -> Vec<(String, String)> {
 
     let mut samples = Vec::new();
     let mut total = 0usize;
-    for rel in rels.into_iter().take(SAMPLE_MAX_FILES) {
-        if total >= SAMPLE_MAX_TOTAL {
+    for rel in rels.into_iter().take(max_files) {
+        if total >= max_total {
             break;
         }
-        let budget = SAMPLE_MAX_PER_FILE.min(SAMPLE_MAX_TOTAL - total);
+        let budget = max_per_file.min(max_total - total);
         let Some(excerpt) = read_prefix_lossy(&root.join(&rel), budget) else {
             continue;
         };
@@ -336,6 +363,57 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(sample_base_files(dir.path()).await.is_empty());
         assert!(sample_base_files(&dir.path().join("nope")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sampling_with_budget_honors_custom_limits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        for i in 0..10 {
+            std::fs::write(root.join(format!("f{i:02}.md")), format!("# 文件 {i}\n正文")).unwrap();
+        }
+        // 6 KB: beyond the overview per-file cap (4 KB) but within the
+        // learning per-file cap (8 KB), so the budget variants diverge.
+        std::fs::write(root.join("big.md"), "x".repeat(6 * 1024)).unwrap();
+
+        // Small budgets: 2 files, 256 bytes per file, 512 bytes total.
+        let samples = sample_base_files_with_budget(root, 2, 256, 512).await;
+        assert!(samples.len() <= 2, "{samples:?}");
+        let total: usize = samples.iter().map(|(_, s)| s.len()).sum();
+        assert!(total <= 512, "{total}");
+        assert!(
+            samples.iter().all(|(_, s)| s.len() <= 256),
+            "{samples:?}"
+        );
+
+        // Default overview budget truncates big.md at 4 KB.
+        let default = sample_base_files(root).await;
+        let default_big = default
+            .iter()
+            .find(|(rel, _)| rel == "big.md")
+            .expect("big.md sampled");
+        assert!(default_big.1.len() <= SAMPLE_MAX_PER_FILE);
+
+        // Learning budgets exceed the overview defaults: big.md keeps its
+        // full 6 KB and the total stays under the learning cap.
+        let wide = sample_base_files_with_budget(
+            root,
+            LEARNING_SAMPLE_MAX_FILES,
+            LEARNING_SAMPLE_MAX_PER_FILE,
+            LEARNING_SAMPLE_MAX_TOTAL,
+        )
+        .await;
+        let wide_total: usize = wide.iter().map(|(_, s)| s.len()).sum();
+        assert!(wide_total <= LEARNING_SAMPLE_MAX_TOTAL);
+        let big = wide
+            .iter()
+            .find(|(rel, _)| rel == "big.md")
+            .expect("big.md sampled");
+        assert!(
+            big.1.len() > SAMPLE_MAX_PER_FILE,
+            "learning per-file budget must exceed the overview cap"
+        );
+        assert!(big.1.len() <= LEARNING_SAMPLE_MAX_PER_FILE);
     }
 
     #[test]

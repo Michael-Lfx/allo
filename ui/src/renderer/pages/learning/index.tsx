@@ -3,9 +3,13 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
+  Badge,
   Button,
   Card,
+  Checkbox,
   Collapse,
+  Drawer,
+  Dropdown,
   Empty,
   Input,
   Message,
@@ -14,13 +18,17 @@ import {
   Radio,
   Select,
   Spin,
+  Table,
+  Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from '@arco-design/web-react';
 
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import Markdown from '@renderer/components/Markdown';
 import KnowledgeModelSelector, {
   useKnowledgeAutogenModel,
@@ -29,12 +37,15 @@ import { learningApi } from './api';
 import type {
   Activity,
   AttemptResult,
+  ConceptRef,
   CourseDetail,
   CourseSummary,
   DiagnosticPlan,
   DueReview,
   Lesson,
   LessonStatus,
+  QuestionEntry,
+  ReviewAnswerResult,
   ReviewRating,
 } from './types';
 
@@ -90,9 +101,11 @@ function statusLabel(status: LessonStatus, t: Translate): string {
 function CourseCard({
   course,
   onOpen,
+  onDelete,
 }: {
   course: CourseSummary;
   onOpen: (id: string) => void;
+  onDelete: () => void;
 }) {
   const { t } = useTranslation();
   const percent =
@@ -102,6 +115,11 @@ function CourseCard({
   return (
     <Card
       className='h-full'
+      extra={
+        <Button size='mini' type='text' status='danger' onClick={onDelete}>
+          {t('learning.deleteCourse')}
+        </Button>
+      }
       title={
         <div className='min-w-0'>
           <div className='truncate text-16px font-600'>{course.title}</div>
@@ -130,55 +148,1145 @@ function CourseCard({
   );
 }
 
-function ReviewQueue({
-  reviews,
-  busyId,
+function ReviewCard({
+  review,
+  busy,
+  locked,
+  onAnswer,
+  onForget,
   onRate,
+  onSkip,
+  onDismiss,
 }: {
-  reviews: DueReview[];
-  busyId: string | null;
-  onRate: (id: string, rating: ReviewRating) => void;
+  review: DueReview;
+  busy: boolean;
+  locked: boolean;
+  onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
+  onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
+  onRate: (review: DueReview, rating: ReviewRating) => void;
+  onSkip: (review: DueReview) => void;
+  onDismiss: (reviewId: string) => void;
 }) {
   const { t } = useTranslation();
-  const labels: Record<ReviewRating, string> = {
-    again: t('learning.reviewAgain'),
-    hard: t('learning.reviewHard'),
-    good: t('learning.reviewGood'),
-    easy: t('learning.reviewEasy'),
+  const [response, setResponse] = useState<unknown>();
+  const [result, setResult] = useState<ReviewAnswerResult | null>(null);
+  const [wasForgot, setWasForgot] = useState(false);
+  const question = review.question;
+  const hasResponse =
+    typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
+  const answerText = (value: unknown): string => {
+    if (typeof value === 'boolean') {
+      return value ? t('learning.trueLabel') : t('learning.falseLabel');
+    }
+    return typeof value === 'string' ? value : '';
   };
-  const ratings: ReviewRating[] = ['again', 'hard', 'good', 'easy'];
-  if (reviews.length === 0) {
-    return <Empty description={t('learning.noReviews')} />;
-  }
   return (
-    <div className='flex flex-col gap-10px'>
-      {reviews.map((review) => (
-        <div
-          key={review.id}
-          className='rounded-10px border border-solid border-[var(--color-border-2)] p-12px'
+    <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
+      <div className='mb-12px flex flex-wrap items-center gap-x-6px gap-y-6px text-12px'>
+        {review.source === 'custom' ? (
+          <Tag size='small' color='purple'>
+            {t('learning.reviewCustomSource')}
+          </Tag>
+        ) : (
+          <>
+            <span className='rounded-6px bg-[var(--color-fill-2)] px-8px py-2px font-500 text-t-secondary'>
+              {review.course_title ?? t('learning.deletedCourse')}
+            </span>
+            <span className='text-t-tertiary'>›</span>
+            <span className='rounded-6px bg-[var(--color-fill-2)] px-8px py-2px font-500 text-t-secondary'>
+              {review.module_title ?? '—'}
+            </span>
+            <span className='text-t-tertiary'>›</span>
+            <span className='rounded-6px bg-[var(--color-fill-2)] px-8px py-2px font-500 text-t-secondary'>
+              {review.lesson_title ?? '—'}
+            </span>
+          </>
+        )}
+        {review.concept_title !== null && (
+          <Tag size='small' color='arcoblue'>
+            {t('learning.reviewConceptLabel')}: {review.concept_title}
+          </Tag>
+        )}
+      </div>
+      <div className='mb-12px text-16px font-500 leading-relaxed text-t-primary'>
+        {question.prompt}
+      </div>
+      {question.kind === 'single_choice' && (
+        <Radio.Group
+          direction='vertical'
+          disabled={result !== null || locked}
+          value={response as string | undefined}
+          onChange={(value) => setResponse(value)}
         >
-          <div className='flex flex-wrap items-center justify-between gap-8px'>
-            <div>
-              <div className='font-600 text-t-primary'>{review.concept_title}</div>
-              <div className='mt-2px text-12px text-t-tertiary'>{review.course_title}</div>
+          {question.options.map((option) => (
+            <Radio key={option} value={option}>
+              {option}
+            </Radio>
+          ))}
+        </Radio.Group>
+      )}
+      {question.kind === 'true_false' && (
+        <Radio.Group
+          disabled={result !== null || locked}
+          value={response === undefined ? undefined : String(response)}
+          onChange={(value) => setResponse(value === 'true')}
+        >
+          <Radio value='true'>{t('learning.trueLabel')}</Radio>
+          <Radio value='false'>{t('learning.falseLabel')}</Radio>
+        </Radio.Group>
+      )}
+      {result === null && (
+        <div className='mt-12px flex items-center gap-8px'>
+          <Button
+            type='primary'
+            size='small'
+            disabled={!hasResponse || locked}
+            loading={busy}
+            onClick={() =>
+              void onAnswer(review, response).then((answerResult) => {
+                if (answerResult) {
+                  setResult(answerResult);
+                }
+              })
+            }
+          >
+            {t('learning.reviewSubmitAnswer')}
+          </Button>
+          <Button
+            size='small'
+            disabled={locked}
+            loading={busy}
+            onClick={() =>
+              void onForget(review).then((answerResult) => {
+                if (answerResult) {
+                  setWasForgot(true);
+                  setResult(answerResult);
+                }
+              })
+            }
+          >
+            {t('learning.reviewForgot')}
+          </Button>
+          <Button
+            size='small'
+            type='text'
+            disabled={locked}
+            loading={busy}
+            onClick={() => onSkip(review)}
+          >
+            {t('learning.reviewSkip')}
+          </Button>
+        </div>
+      )}
+      {result !== null && result.correct && (
+        <div className='mt-12px flex flex-col gap-10px rounded-10px border border-solid border-[var(--color-success-light-3)] bg-[var(--color-success-light-1)] p-14px'>
+          <Text type='success' className='font-500'>
+            {t('learning.correct')}
+            {result.feedback ? ` · ${result.feedback}` : ''}
+          </Text>
+          <Text type='secondary' className='text-13px'>
+            {t('learning.reviewRatePrompt')}
+          </Text>
+          <div className='grid grid-cols-3 gap-8px'>
+            <Button
+              status='warning'
+              type='outline'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'hard')}
+            >
+              {t('learning.reviewHard')}
+            </Button>
+            <Button
+              type='primary'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'good')}
+            >
+              {t('learning.reviewGood')}
+            </Button>
+            <Button
+              status='success'
+              type='outline'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'easy')}
+            >
+              {t('learning.reviewEasy')}
+            </Button>
+          </div>
+        </div>
+      )}
+      {result !== null && !result.correct && (
+        <div className='mt-12px flex flex-col gap-8px rounded-10px border border-solid border-[var(--color-danger-light-3)] bg-[var(--color-danger-light-1)] p-14px'>
+          <Text type='error' className='font-500'>
+            {wasForgot ? t('learning.reviewForgotMarked') : t('learning.reviewWrongMarkedAgain')}
+          </Text>
+          {result.correct_answer !== null && (
+            <Text type='secondary'>
+              {t('learning.reviewCorrectAnswer')}: {answerText(result.correct_answer)}
+            </Text>
+          )}
+          {result.feedback && <Text type='secondary'>{result.feedback}</Text>}
+          <Button
+            type='primary'
+            status='danger'
+            size='small'
+            className='self-start'
+            disabled={locked}
+            onClick={() => onDismiss(review.id)}
+          >
+            {t('learning.reviewNext')}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewSessionModal({
+  open,
+  queue,
+  busyId,
+  onAnswer,
+  onForget,
+  onRate,
+  onSkip,
+  onClose,
+}: {
+  open: boolean;
+  queue: DueReview[];
+  busyId: string | null;
+  onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
+  onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
+  onRate: (review: DueReview, rating: ReviewRating) => Promise<boolean>;
+  onSkip: (review: DueReview) => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (open) setIndex(0);
+  }, [open]);
+  const current = queue[index];
+  const advance = () => setIndex((value) => value + 1);
+  return (
+    <Modal
+      title={t('learning.reviewSessionTitle')}
+      visible={open}
+      footer={null}
+      style={{ width: 780 }}
+      maskClosable={false}
+      onCancel={() => {
+        if (busyId === null) onClose();
+      }}
+    >
+      {current === undefined ? (
+        <div className='flex flex-col items-center gap-14px py-32px'>
+          <Text type='secondary'>{t('learning.reviewSessionDone')}</Text>
+          <Button type='primary' onClick={onClose}>
+            {t('learning.reviewSessionClose')}
+          </Button>
+        </div>
+      ) : (
+        <div className='flex flex-col gap-12px'>
+          <div className='flex items-center gap-12px'>
+            <span className='shrink-0 rounded-full bg-[var(--color-primary-light-1)] px-12px py-2px text-13px font-600 text-[var(--color-primary-6)]'>
+              {Math.min(index + 1, queue.length)} / {queue.length}
+            </span>
+            <div className='flex-1'>
+              <Progress
+                percent={Math.round((Math.min(index, queue.length) / queue.length) * 100)}
+                showText={false}
+                size='small'
+                className='!my-0'
+              />
             </div>
-            <div className='flex flex-wrap gap-6px'>
-              {ratings.map((rating) => (
-                <Button
-                  key={rating}
-                  size='mini'
-                  loading={busyId === review.id}
-                  disabled={busyId !== null && busyId !== review.id}
-                  onClick={() => onRate(review.id, rating)}
-                >
-                  {labels[rating]}
-                </Button>
+          </div>
+          <ReviewCard
+            key={current.id}
+            review={current}
+            busy={busyId === current.id}
+            locked={busyId !== null && busyId !== current.id}
+            onAnswer={onAnswer}
+            onForget={onForget}
+            onRate={(review, rating) =>
+              void onRate(review, rating).then((handled) => {
+                if (handled) advance();
+              })
+            }
+            onSkip={(review) =>
+              void onSkip(review).then((handled) => {
+                if (handled) advance();
+              })
+            }
+            onDismiss={advance}
+          />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function CourseDeleteDialog({
+  course,
+  onClose,
+  onDeleted,
+}: {
+  course: CourseSummary;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const { t } = useTranslation();
+  const [deleteReviews, setDeleteReviews] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal
+      title={t('learning.deleteCourseTitle')}
+      visible
+      style={{ width: 480 }}
+      confirmLoading={busy}
+      okText={t('learning.deleteCourseConfirm')}
+      okButtonProps={{ status: 'danger' }}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => {
+        setBusy(true);
+        learningApi
+          .deleteCourse(course.id, deleteReviews)
+          .then(() => {
+            Message.success(t('learning.deleteCourseDone'));
+            onDeleted();
+          })
+          .catch((actionError) => {
+            Message.error(
+              actionError instanceof Error ? actionError.message : t('learning.actionFailed')
+            );
+          })
+          .finally(() => setBusy(false));
+      }}
+    >
+      <Paragraph className='mt-0'>
+        {t('learning.deleteCourseHint', { title: course.title })}
+      </Paragraph>
+      <Checkbox checked={deleteReviews} onChange={setDeleteReviews}>
+        {t('learning.deleteCourseReviews')}
+      </Checkbox>
+      <Paragraph type='secondary' className='!mb-0 mt-6px text-12px'>
+        {deleteReviews
+          ? t('learning.deleteCourseReviewsOn')
+          : t('learning.deleteCourseReviewsOff')}
+      </Paragraph>
+    </Modal>
+  );
+}
+
+function QuestionEditDialog({
+  entry,
+  onClose,
+  onSaved,
+}: {
+  entry: QuestionEntry;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const [prompt, setPrompt] = useState(entry.prompt ?? '');
+  const [options, setOptions] = useState<string[]>(entry.options);
+  const [answer, setAnswer] = useState<unknown>(entry.answer ?? undefined);
+  const [explanation, setExplanation] = useState(entry.explanation ?? '');
+  const [busy, setBusy] = useState(false);
+  const isSingleChoice = entry.question_kind === 'single_choice';
+  const save = async () => {
+    if (prompt.trim().length === 0) {
+      Message.error(t('learning.questionPromptRequired'));
+      return;
+    }
+    const cleanedOptions = options.map((option) => option.trim()).filter((option) => option !== '');
+    if (isSingleChoice) {
+      if (cleanedOptions.length < 2) {
+        Message.error(t('learning.questionOptionsRequired'));
+        return;
+      }
+      if (typeof answer !== 'string' || !cleanedOptions.includes(answer)) {
+        Message.error(t('learning.questionAnswerInvalid'));
+        return;
+      }
+    } else if (typeof answer !== 'boolean') {
+      Message.error(t('learning.questionAnswerInvalid'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await learningApi.updateQuestion(entry, {
+        prompt: prompt.trim(),
+        options: isSingleChoice ? cleanedOptions : [],
+        answer,
+        explanation: explanation.trim(),
+      });
+      Message.success(t('learning.questionSaved'));
+      onSaved();
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={t('learning.questionEditTitle')}
+      visible
+      style={{ width: 560 }}
+      confirmLoading={busy}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => void save()}
+    >
+      <div className='flex flex-col gap-14px'>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionPromptLabel')}</div>
+          <Input.TextArea
+            value={prompt}
+            onChange={setPrompt}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+        {isSingleChoice ? (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionOptions')}</div>
+            <div className='flex flex-col gap-6px'>
+              {options.map((option, index) => (
+                <div key={index} className='flex items-center gap-6px'>
+                  <Radio checked={answer === option} onChange={() => setAnswer(option)} />
+                  <Input
+                    value={option}
+                    onChange={(value) =>
+                      setOptions((current) =>
+                        current.map((item, itemIndex) => (itemIndex === index ? value : item))
+                      )
+                    }
+                  />
+                  <Button
+                    size='mini'
+                    type='text'
+                    status='danger'
+                    disabled={options.length <= 2}
+                    onClick={() => {
+                      setOptions((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                      if (answer === option) {
+                        setAnswer(undefined);
+                      }
+                    }}
+                  >
+                    {t('learning.questionOptionRemove')}
+                  </Button>
+                </div>
               ))}
+              <div>
+                <Button size='small' onClick={() => setOptions((current) => [...current, ''])}>
+                  {t('learning.questionOptionAdd')}
+                </Button>
+              </div>
+            </div>
+            <Text type='secondary' className='text-12px'>
+              {t('learning.questionAnswerHint')}
+            </Text>
+          </div>
+        ) : (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
+            <Radio.Group
+              value={answer === true ? 'true' : answer === false ? 'false' : undefined}
+              onChange={(value) => setAnswer(value === 'true')}
+            >
+              <Radio value='true'>{t('learning.trueLabel')}</Radio>
+              <Radio value='false'>{t('learning.falseLabel')}</Radio>
+            </Radio.Group>
+          </div>
+        )}
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionExplanation')}</div>
+          <Input.TextArea
+            value={explanation}
+            onChange={setExplanation}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function formatReviewTime(value: number | null): string {
+  return value === null ? '—' : new Date(value).toLocaleString();
+}
+
+function questionStateMeta(
+  entry: QuestionEntry,
+  t: (key: string) => string
+): { label: string; color: string } {
+  if (entry.state === 'unlearned') {
+    return { label: t('learning.questionStateUnlearned'), color: 'gray' };
+  }
+  if (entry.state === 'new') {
+    return { label: t('learning.questionStateNew'), color: 'blue' };
+  }
+  if (entry.state === 'due') {
+    return { label: t('learning.questionStateDue'), color: 'red' };
+  }
+  return { label: t('learning.questionStateScheduled'), color: 'green' };
+}
+
+const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at'];
+const QUESTION_COLUMNS_STORAGE_KEY = 'learning.questionTableColumns';
+
+function loadVisibleQuestionColumns(): string[] {
+  try {
+    const raw = localStorage.getItem(QUESTION_COLUMNS_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return QUESTION_SELECTABLE_COLUMNS.filter((key) => parsed.includes(key));
+      }
+    }
+  } catch {
+    // Corrupted storage falls back to the default column set.
+  }
+  return [...QUESTION_SELECTABLE_COLUMNS];
+}
+
+function QuestionCreateDialog({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const [kind, setKind] = useState<'true_false' | 'single_choice'>('true_false');
+  const [prompt, setPrompt] = useState('');
+  const [options, setOptions] = useState<string[]>(['', '']);
+  const [answer, setAnswer] = useState<unknown>(undefined);
+  const [explanation, setExplanation] = useState('');
+  const [conceptId, setConceptId] = useState<string | undefined>(undefined);
+  const [conceptRefs, setConceptRefs] = useState<ConceptRef[]>([]);
+  const [conceptsLoading, setConceptsLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const isSingleChoice = kind === 'single_choice';
+
+  useEffect(() => {
+    let cancelled = false;
+    setConceptsLoading(true);
+    learningApi
+      .listConceptRefs()
+      .then((refs) => {
+        if (!cancelled) setConceptRefs(refs);
+      })
+      .catch(() => {
+        // Concept binding is optional; keep the dialog usable if listing fails.
+      })
+      .finally(() => {
+        if (!cancelled) setConceptsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = async () => {
+    if (prompt.trim().length === 0) {
+      Message.error(t('learning.questionPromptRequired'));
+      return;
+    }
+    const cleanedOptions = options.map((option) => option.trim()).filter((option) => option !== '');
+    if (isSingleChoice) {
+      if (cleanedOptions.length < 2) {
+        Message.error(t('learning.questionOptionsRequired'));
+        return;
+      }
+      if (typeof answer !== 'string' || !cleanedOptions.includes(answer)) {
+        Message.error(t('learning.questionAnswerInvalid'));
+        return;
+      }
+    } else if (typeof answer !== 'boolean') {
+      Message.error(t('learning.questionAnswerInvalid'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await learningApi.createCustomQuestion({
+        kind,
+        prompt: prompt.trim(),
+        options: isSingleChoice ? cleanedOptions : [],
+        answer,
+        explanation: explanation.trim(),
+        concept_id: conceptId ?? null,
+      });
+      Message.success(t('learning.questionCreated'));
+      onSaved();
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const switchKind = (next: 'true_false' | 'single_choice') => {
+    if (next === kind) return;
+    setKind(next);
+    setAnswer(undefined);
+  };
+
+  return (
+    <Modal
+      title={t('learning.questionCreateTitle')}
+      visible
+      style={{ width: 560 }}
+      confirmLoading={busy}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => void save()}
+    >
+      <div className='flex flex-col gap-14px'>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionKind')}</div>
+          <Radio.Group
+            value={kind}
+            onChange={(value) => switchKind(value as 'true_false' | 'single_choice')}
+          >
+            <Radio value='true_false'>{t('learning.kindTrueFalse')}</Radio>
+            <Radio value='single_choice'>{t('learning.kindSingleChoice')}</Radio>
+          </Radio.Group>
+        </div>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionPromptLabel')}</div>
+          <Input.TextArea
+            value={prompt}
+            onChange={setPrompt}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+        {isSingleChoice ? (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionOptions')}</div>
+            <div className='flex flex-col gap-6px'>
+              {options.map((option, index) => (
+                <div key={index} className='flex items-center gap-6px'>
+                  <Radio checked={answer === option} onChange={() => setAnswer(option)} />
+                  <Input
+                    value={option}
+                    onChange={(value) =>
+                      setOptions((current) =>
+                        current.map((item, itemIndex) => (itemIndex === index ? value : item))
+                      )
+                    }
+                  />
+                  <Button
+                    size='mini'
+                    type='text'
+                    status='danger'
+                    disabled={options.length <= 2}
+                    onClick={() => {
+                      setOptions((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                      if (answer === option) {
+                        setAnswer(undefined);
+                      }
+                    }}
+                  >
+                    {t('learning.questionOptionRemove')}
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button size='small' onClick={() => setOptions((current) => [...current, ''])}>
+                  {t('learning.questionOptionAdd')}
+                </Button>
+              </div>
+            </div>
+            <Text type='secondary' className='text-12px'>
+              {t('learning.questionAnswerHint')}
+            </Text>
+          </div>
+        ) : (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
+            <Radio.Group
+              value={answer === true ? 'true' : answer === false ? 'false' : undefined}
+              onChange={(value) => setAnswer(value === 'true')}
+            >
+              <Radio value='true'>{t('learning.trueLabel')}</Radio>
+              <Radio value='false'>{t('learning.falseLabel')}</Radio>
+            </Radio.Group>
+          </div>
+        )}
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionExplanation')}</div>
+          <Input.TextArea
+            value={explanation}
+            onChange={setExplanation}
+            autoSize={{ minRows: 2 }}
+          />
+        </div>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionConceptBind')}</div>
+          <Select
+            className='w-full'
+            allowClear
+            loading={conceptsLoading}
+            value={conceptId}
+            placeholder={t('learning.questionConceptBindPlaceholder')}
+            onChange={(value: string | undefined) => setConceptId(value)}
+          >
+            {conceptRefs.map((concept) => (
+              <Select.Option key={concept.concept_id} value={concept.concept_id}>
+                {concept.title}
+                {concept.course_title !== null ? ` · ${concept.course_title}` : ''}
+              </Select.Option>
+            ))}
+          </Select>
+          <Text type='secondary' className='text-12px'>
+            {t('learning.questionConceptBindHint')}
+          </Text>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function QuestionManager({ onMutated }: { onMutated: () => void }) {
+  const { t } = useTranslation();
+  const [entries, setEntries] = useState<QuestionEntry[]>([]);
+  const [courses, setCourses] = useState<CourseSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [courseFilter, setCourseFilter] = useState<string | undefined>(undefined);
+  const [stateFilter, setStateFilter] = useState<string | undefined>(undefined);
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState<QuestionEntry | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(loadVisibleQuestionColumns);
+  const [detailEntry, setDetailEntry] = useState<QuestionEntry | null>(null);
+  const persistVisibleColumns = (next: string[]) => {
+    setVisibleColumns(next);
+    try {
+      localStorage.setItem(QUESTION_COLUMNS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Storage is unavailable; keep the in-memory selection only.
+    }
+  };
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [questionRows, courseRows] = await Promise.all([
+        learningApi.listQuestions({
+          course_id: courseFilter,
+          state: stateFilter,
+          search: search.trim() === '' ? undefined : search.trim(),
+        }),
+        learningApi.listCourses(),
+      ]);
+      setEntries(questionRows);
+      setCourses(courseRows);
+    } catch (actionError) {
+      Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [courseFilter, stateFilter, search, t]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  const confirmDelete = (entry: QuestionEntry) => {
+    const isCustom = entry.source === 'custom';
+    if (!isCustom && entry.review_item_id === null) {
+      return;
+    }
+    Modal.confirm({
+      title: isCustom
+        ? t('learning.questionDeleteCustomTitle')
+        : t('learning.questionDeleteTitle'),
+      content: isCustom
+        ? t('learning.questionDeleteCustomHint')
+        : t('learning.questionDeleteHint'),
+      okButtonProps: { status: 'danger' },
+      onOk: async () => {
+        try {
+          if (isCustom) {
+            await learningApi.deleteCustomQuestion(entry.question_id);
+          } else if (entry.review_item_id !== null) {
+            await learningApi.deleteReviewItem(entry.review_item_id);
+          }
+          Message.success(t('learning.questionDeleted'));
+          await load();
+          onMutated();
+        } catch (actionError) {
+          Message.error(
+            actionError instanceof Error ? actionError.message : t('learning.actionFailed')
+          );
+        }
+      },
+    });
+  };
+  const promptColumn = {
+    title: t('learning.questionPrompt'),
+    render: (_value: unknown, entry: QuestionEntry) => {
+      const text = entry.prompt ?? '—';
+      return (
+        <Tooltip content={text} position='tl'>
+          <span className='line-clamp-2 block'>{text}</span>
+        </Tooltip>
+      );
+    },
+  };
+  const sourceColumn = {
+    title: t('learning.questionSource'),
+    dataIndex: 'source',
+    width: 220,
+    render: (_value: unknown, entry: QuestionEntry) =>
+      entry.source === 'custom' ? (
+        <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
+      ) : (
+        <div className='flex flex-col gap-2px'>
+          <span className='truncate'>{entry.concept_title ?? '—'}</span>
+          <span className='truncate text-12px text-t-tertiary'>
+            {entry.course_title ?? t('learning.deletedCourse')}
+          </span>
+        </div>
+      ),
+  };
+  const stateColumn = {
+    title: t('learning.questionState'),
+    dataIndex: 'state',
+    width: 130,
+    render: (_value: unknown, entry: QuestionEntry) => {
+      const state = questionStateMeta(entry, t);
+      const hint =
+        entry.state === 'unlearned'
+          ? t('learning.questionStateUnlearnedHint')
+          : entry.state === 'new'
+            ? t('learning.questionStateNewHint')
+            : entry.state === 'due'
+              ? t('learning.questionStateDueHint')
+              : t('learning.questionStateScheduledHint');
+      return (
+        <Tooltip content={hint} position='tl'>
+          <Tag color={state.color}>{state.label}</Tag>
+        </Tooltip>
+      );
+    },
+  };
+  const dueColumn = {
+    title: t('learning.questionDueAt'),
+    dataIndex: 'due_at',
+    width: 170,
+    sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
+    render: (value: number | null) => formatReviewTime(value),
+  };
+  const actionsColumn = {
+    title: t('learning.questionActions'),
+    width: 130,
+    render: (_value: unknown, entry: QuestionEntry) => (
+      <div className='flex gap-6px'>
+        <Button
+          size='mini'
+          type='text'
+          onClick={(event) => {
+            event.stopPropagation();
+            setEditing(entry);
+          }}
+        >
+          {t('learning.questionEdit')}
+        </Button>
+        <Button
+          size='mini'
+          type='text'
+          status='danger'
+          disabled={entry.source === 'course' && entry.review_item_id === null}
+          onClick={(event) => {
+            event.stopPropagation();
+            confirmDelete(entry);
+          }}
+        >
+          {t('learning.questionDelete')}
+        </Button>
+      </div>
+    ),
+  };
+  const columns = [
+    promptColumn,
+    ...(visibleColumns.includes('source') ? [sourceColumn] : []),
+    ...(visibleColumns.includes('state') ? [stateColumn] : []),
+    ...(visibleColumns.includes('due_at') ? [dueColumn] : []),
+    actionsColumn,
+  ];
+  return (
+    <div className='flex flex-col gap-12px'>
+      <div className='flex flex-wrap items-center gap-8px'>
+        <Select
+          className='w-240px'
+          allowClear
+          placeholder={t('learning.questionFilterCourse')}
+          value={courseFilter}
+          onChange={(value: string | undefined) => setCourseFilter(value)}
+        >
+          {courses.map((course) => (
+            <Select.Option key={course.id} value={course.id}>
+              {course.title}
+            </Select.Option>
+          ))}
+        </Select>
+        <Select
+          className='w-160px'
+          allowClear
+          placeholder={t('learning.questionFilterState')}
+          value={stateFilter}
+          onChange={(value: string | undefined) => setStateFilter(value)}
+        >
+          <Select.Option value='unlearned'>{t('learning.questionStateUnlearned')}</Select.Option>
+          <Select.Option value='new'>{t('learning.questionStateNew')}</Select.Option>
+          <Select.Option value='due'>{t('learning.questionStateDue')}</Select.Option>
+          <Select.Option value='scheduled'>{t('learning.questionStateScheduled')}</Select.Option>
+        </Select>
+        <Input.Search
+          className='w-240px'
+          allowClear
+          placeholder={t('learning.questionSearchPlaceholder')}
+          onSearch={(value) => setSearch(value)}
+        />
+        <div className='ml-auto flex items-center gap-8px'>
+          <Dropdown
+            position='br'
+            trigger='click'
+            droplist={
+              <div className='rounded-8px border border-[var(--color-border-2)] bg-[var(--color-bg-popup)] p-10px'>
+                <Checkbox.Group
+                  value={visibleColumns}
+                  onChange={(value) => persistVisibleColumns(value as string[])}
+                >
+                  <div className='flex flex-col gap-6px'>
+                    {QUESTION_SELECTABLE_COLUMNS.map((key) => (
+                      <Checkbox key={key} value={key}>
+                        {key === 'source'
+                          ? t('learning.questionSource')
+                          : key === 'state'
+                            ? t('learning.questionState')
+                            : t('learning.questionDueAt')}
+                      </Checkbox>
+                    ))}
+                  </div>
+                </Checkbox.Group>
+              </div>
+            }
+          >
+            <Button>{t('learning.questionColumnsConfig')}</Button>
+          </Dropdown>
+          <Button type='primary' onClick={() => setCreating(true)}>
+            {t('learning.questionCreate')}
+          </Button>
+        </div>
+      </div>
+      <Alert type='info' content={t('learning.questionQueueLegend')} />
+      <Table
+        rowKey={(entry: QuestionEntry) =>
+          `${entry.source}:${entry.question_id}:${entry.concept_id ?? '-'}`
+        }
+        loading={loading}
+        data={entries}
+        columns={columns}
+        pagination={{ pageSize: 20, showTotal: true }}
+        onRow={(record: QuestionEntry) => ({
+          onClick: () => setDetailEntry(record),
+        })}
+        noDataElement={<Empty description={t('learning.questionEmpty')} />}
+      />
+      {detailEntry !== null && (
+        <QuestionDetailDrawer
+          entry={detailEntry}
+          onClose={() => setDetailEntry(null)}
+          onEdit={(entry) => {
+            setDetailEntry(null);
+            setEditing(entry);
+          }}
+          onDelete={(entry) => {
+            setDetailEntry(null);
+            confirmDelete(entry);
+          }}
+        />
+      )}
+      {editing !== null && (
+        <QuestionEditDialog
+          entry={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void load();
+            onMutated();
+          }}
+        />
+      )}
+      {creating && (
+        <QuestionCreateDialog
+          onClose={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
+            void load();
+            onMutated();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function QuestionDetailDrawer({
+  entry,
+  onClose,
+  onEdit,
+  onDelete,
+}: {
+  entry: QuestionEntry;
+  onClose: () => void;
+  onEdit: (entry: QuestionEntry) => void;
+  onDelete: (entry: QuestionEntry) => void;
+}) {
+  const { t } = useTranslation();
+  const state = questionStateMeta(entry, t);
+  const isSingleChoice = entry.question_kind === 'single_choice';
+  const deletable = entry.source === 'custom' || entry.review_item_id !== null;
+  const inQueue = entry.source === 'course' && entry.state !== 'unlearned';
+  const metrics = [
+    {
+      label: t('learning.questionLastReviewed'),
+      value: formatReviewTime(entry.last_reviewed_at),
+    },
+    { label: t('learning.questionReviewCount'), value: String(entry.review_count) },
+    { label: t('learning.questionLapseCount'), value: String(entry.lapse_count) },
+    { label: t('learning.questionStability'), value: entry.stability_days.toFixed(1) },
+    { label: t('learning.questionDifficulty'), value: entry.difficulty.toFixed(1) },
+  ];
+  return (
+    <Drawer
+      title={t('learning.questionDetailTitle')}
+      visible
+      width={480}
+      onCancel={onClose}
+      footer={
+        <div className='flex justify-end gap-8px'>
+          <Button status='danger' disabled={!deletable} onClick={() => onDelete(entry)}>
+            {t('learning.questionDelete')}
+          </Button>
+          <Button type='primary' onClick={() => onEdit(entry)}>
+            {t('learning.questionEdit')}
+          </Button>
+        </div>
+      }
+    >
+      <div className='flex flex-col gap-16px'>
+        <div>
+          <div className='mb-8px flex flex-wrap items-center gap-6px'>
+            <Tag color={state.color}>{state.label}</Tag>
+            {entry.question_kind !== null && (
+              <Tag>
+                {entry.question_kind === 'single_choice'
+                  ? t('learning.kindSingleChoice')
+                  : t('learning.kindTrueFalse')}
+              </Tag>
+            )}
+          </div>
+          <div className='text-16px font-600 leading-relaxed'>{entry.prompt ?? '—'}</div>
+        </div>
+        <div className='text-12px text-t-tertiary'>
+          {entry.source === 'custom'
+            ? t('learning.questionCustomSource')
+            : [entry.course_title ?? t('learning.deletedCourse'), entry.concept_title]
+                .filter((part) => part !== null && part !== undefined)
+                .join(' › ')}
+        </div>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionQueueSection')}</div>
+          <div className='flex flex-col gap-8px'>
+            <div className='flex flex-wrap items-center gap-8px'>
+              {entry.source === 'custom' ? (
+                <Tag color='purple'>{t('learning.questionQueueCustom')}</Tag>
+              ) : inQueue ? (
+                <Tag color='green'>{t('learning.questionQueueInQueue')}</Tag>
+              ) : (
+                <Tag color='gray'>{t('learning.questionQueueNotInQueue')}</Tag>
+              )}
+              {inQueue && entry.due_at !== null && (
+                <Text type='secondary'>
+                  {t('learning.questionDueAt')}: {formatReviewTime(entry.due_at)}
+                </Text>
+              )}
+            </div>
+            <div className='text-13px text-t-secondary'>
+              {entry.source === 'custom'
+                ? t('learning.questionQueueHintCustom')
+                : inQueue
+                  ? t('learning.questionQueueHintIn')
+                  : t('learning.questionQueueHintOut')}
             </div>
           </div>
         </div>
-      ))}
-    </div>
+        {isSingleChoice && entry.options.length > 0 && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionOptions')}</div>
+            <div className='flex flex-col gap-6px'>
+              {entry.options.map((option, index) => {
+                const isAnswer = entry.answer === option;
+                return (
+                  <div
+                    key={index}
+                    className={`flex items-center rounded-8px border px-12px py-8px text-13px ${
+                      isAnswer
+                        ? 'border-[var(--color-success-light-3)] bg-[var(--color-success-light-1)]'
+                        : 'border-[var(--color-border-2)]'
+                    }`}
+                  >
+                    <span>{option}</span>
+                    {isAnswer && (
+                      <Tag size='small' color='green' className='ml-8px'>
+                        {t('learning.questionDetailCorrectAnswer')}
+                      </Tag>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {!isSingleChoice && typeof entry.answer === 'boolean' && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
+            <Tag color='green'>
+              {entry.answer ? t('learning.trueLabel') : t('learning.falseLabel')}
+            </Tag>
+          </div>
+        )}
+        {entry.explanation !== null && entry.explanation.trim() !== '' && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionExplanation')}</div>
+            <div className='text-13px text-t-secondary'>{entry.explanation}</div>
+          </div>
+        )}
+        <div>
+          <div className='mb-6px font-500'>{t('learning.questionDetailMetrics')}</div>
+          <div className='grid grid-cols-2 gap-8px'>
+            {metrics.map((metric) => (
+              <div
+                key={metric.label}
+                className='rounded-8px bg-[var(--color-fill-2)] px-12px py-8px'
+              >
+                <div className='text-12px text-t-tertiary'>{metric.label}</div>
+                <div className='mt-2px text-14px font-500'>{metric.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Drawer>
   );
 }
 
@@ -425,11 +1533,9 @@ function LessonBlock({
   onAttempt: (activity: Activity, response: unknown) => void;
 }) {
   const { t } = useTranslation();
-  const nextStatus: LessonStatus =
-    lesson.status === 'not_started' ? 'in_progress' : 'completed';
   return (
     <div className='flex flex-col gap-14px'>
-      {lesson.summary && <Paragraph className='m-0 text-t-secondary'>{lesson.summary}</Paragraph>}
+      {lesson.summary && <Markdown className='text-13px'>{lesson.summary}</Markdown>}
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
         <Text type='secondary'>
@@ -440,9 +1546,9 @@ function LessonBlock({
             size='small'
             type='primary'
             loading={busyId === lesson.id}
-            onClick={() => onProgress(lesson, nextStatus)}
+            onClick={() => onProgress(lesson, 'completed')}
           >
-            {nextStatus === 'in_progress' ? t('learning.start') : t('learning.complete')}
+            {t('learning.complete')}
           </Button>
         )}
       </div>
@@ -457,6 +1563,7 @@ function LessonBlock({
       {lesson.activities.length > 0 && (
         <div className='flex flex-col gap-10px'>
           <div className='text-13px font-600 text-t-secondary'>{t('learning.activities')}</div>
+          {!enrolled && <Alert type='warning' content={t('learning.enrollToPractice')} />}
           {lesson.activities.map((activity) => (
             <ActivityBlock
               key={activity.id}
@@ -664,6 +1771,10 @@ const LearningPage: React.FC = () => {
   const { choice: modelChoice, setChoice: setModelChoice } = useKnowledgeAutogenModel();
   const [courses, setCourses] = useState<CourseSummary[]>([]);
   const [reviews, setReviews] = useState<DueReview[]>([]);
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const [sessionQueue, setSessionQueue] = useState<DueReview[]>([]);
+  const [deletingCourse, setDeletingCourse] = useState<CourseSummary | null>(null);
+  const [listTab, setListTab] = useState('courses');
   const [detail, setDetail] = useState<CourseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -679,14 +1790,18 @@ const LearningPage: React.FC = () => {
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
   const [diagnosticIndex, setDiagnosticIndex] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
+  const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
+  const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
 
+  const initialLoaded = useRef(false);
   const load = useCallback(async () => {
-    setLoading(true);
+    // 只有首次加载才进入全屏加载态，避免刷新时卸载重建整棵页面子树（包括复习弹窗）
+    if (!initialLoaded.current) setLoading(true);
     setError(null);
     try {
       const [nextCourses, nextReviews, nextDetail] = await Promise.all([
         learningApi.listCourses(),
-        learningApi.listDueReviews(),
+        learningApi.listDueReviews(reviewSessionLimit),
         id ? learningApi.getCourse(id) : Promise.resolve(null),
       ]);
       setCourses(nextCourses);
@@ -695,9 +1810,10 @@ const LearningPage: React.FC = () => {
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
+      initialLoaded.current = true;
       setLoading(false);
     }
-  }, [id]);
+  }, [id, reviewSessionLimit]);
 
   useEffect(() => {
     void load();
@@ -793,7 +1909,7 @@ const LearningPage: React.FC = () => {
     if (!id) return;
     setBusyId('diagnostic');
     try {
-      const plan = await learningApi.getDiagnostic(id);
+      const plan = await learningApi.getDiagnostic(id, diagnosticLimit);
       if (plan.items.length === 0) {
         Message.warning(t('learning.noDiagnosticQuestions'));
         return;
@@ -806,7 +1922,7 @@ const LearningPage: React.FC = () => {
     } finally {
       setBusyId(null);
     }
-  }, [id, t]);
+  }, [id, t, diagnosticLimit]);
 
   const submitDiagnostic = useCallback(
     async (activity: Activity, response: unknown) => {
@@ -869,14 +1985,16 @@ const LearningPage: React.FC = () => {
   );
 
   const rateReview = useCallback(
-    async (reviewId: string, rating: ReviewRating) => {
-      setBusyId(reviewId);
+    async (review: DueReview, rating: ReviewRating): Promise<boolean> => {
+      setBusyId(review.id);
       try {
-        await learningApi.rateReview(reviewId, rating);
+        await learningApi.rateReview(review.source, review.id, rating);
         Message.success(t('learning.reviewRecorded'));
         await load();
+        return true;
       } catch (actionError) {
         Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return false;
       } finally {
         setBusyId(null);
       }
@@ -884,10 +2002,84 @@ const LearningPage: React.FC = () => {
     [load, t]
   );
 
+  const skipReview = useCallback(
+    async (review: DueReview): Promise<boolean> => {
+      setBusyId(review.id);
+      try {
+        await learningApi.skipReview(review.source, review.id);
+        Message.success(t('learning.reviewSkipped'));
+        await load();
+        return true;
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return false;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, t]
+  );
+
+  const startReviewSession = useCallback(async () => {
+    setBusyId('review-session');
+    try {
+      // 每次开刷前重新拉取到期队列，避免使用会话期间过期的快照
+      const fresh = await learningApi.listDueReviews(reviewSessionLimit);
+      setReviews(fresh);
+      if (fresh.length === 0) {
+        Message.info(t('learning.noReviews'));
+        return;
+      }
+      setSessionQueue(fresh);
+      setSessionOpen(true);
+    } catch (sessionError) {
+      Message.error(
+        sessionError instanceof Error ? sessionError.message : t('learning.actionFailed')
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }, [reviewSessionLimit, t]);
+
+  const answerReview = useCallback(
+    async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
+      setBusyId(review.id);
+      try {
+        return await learningApi.answerReview(review.source, review.id, response);
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return undefined;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [t]
+  );
+
+  const forgetReview = useCallback(
+    async (review: DueReview): Promise<ReviewAnswerResult | undefined> => {
+      setBusyId(review.id);
+      try {
+        return await learningApi.answerReview(review.source, review.id, null, true);
+      } catch (actionError) {
+        Message.error(actionError instanceof Error ? actionError.message : t('learning.actionFailed'));
+        return undefined;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [t]
+  );
+
   const courseGrid = useMemo(
     () =>
       courses.map((course) => (
-        <CourseCard key={course.id} course={course} onOpen={(courseId) => navigate(`/learn/${courseId}`)} />
+        <CourseCard
+          key={course.id}
+          course={course}
+          onOpen={(courseId) => navigate(`/learn/${courseId}`)}
+          onDelete={() => setDeletingCourse(course)}
+        />
       )),
     [courses, navigate]
   );
@@ -949,24 +2141,78 @@ const LearningPage: React.FC = () => {
           </Button>
         </div>
       </div>
-      {error && <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
-      <Alert type='info' content={t('learning.packContract')} />
+      {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
+      <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
 
-      <section>
-        <Title heading={5}>{t('learning.courses')}</Title>
-        {courses.length === 0 ? (
-          <Empty description={t('learning.noCourses')} />
-        ) : (
-          <div className='grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-14px'>
-            {courseGrid}
+      {reviews.length > 0 && (
+        <div className='flex flex-wrap items-center justify-between gap-12px rounded-12px border border-solid border-[var(--color-primary-6)] bg-[var(--color-primary-light-1)] px-20px py-16px'>
+          <div className='flex items-baseline gap-8px'>
+            <Title heading={5} className='!m-0'>
+              {t('learning.reviews')}
+            </Title>
+            <Text type='secondary'>
+              {t('learning.reviewDueCount', { count: reviews.length })}
+            </Text>
           </div>
-        )}
+          <Badge count={reviews.length}>
+            <Button
+              type='primary'
+              size='large'
+              loading={busyId === 'review-session'}
+              onClick={() => void startReviewSession()}
+            >
+              {t('learning.startReview')}
+            </Button>
+          </Badge>
+        </div>
+      )}
+
+      <section key='learn-tabs'>
+        <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line'>
+          <Tabs.TabPane key='courses' title={t('learning.courses')} destroyOnHide={false}>
+            {courses.length === 0 ? (
+              <Empty description={t('learning.noCourses')} />
+            ) : (
+              <div className='grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-14px'>
+                {courseGrid}
+              </div>
+            )}
+          </Tabs.TabPane>
+          <Tabs.TabPane
+            key='questions'
+            title={t('learning.questionManagement')}
+            destroyOnHide={false}
+          >
+            <QuestionManager onMutated={() => void load()} />
+          </Tabs.TabPane>
+        </Tabs>
       </section>
 
-      <section>
-        <Title heading={5}>{t('learning.reviews')}</Title>
-        <ReviewQueue reviews={reviews} busyId={busyId} onRate={rateReview} />
-      </section>
+      <ReviewSessionModal
+        key='review-session'
+        open={sessionOpen}
+        queue={sessionQueue}
+        busyId={busyId}
+        onAnswer={answerReview}
+        onForget={forgetReview}
+        onRate={rateReview}
+        onSkip={skipReview}
+        onClose={() => {
+          setSessionOpen(false);
+          // 会话结束时刷新列表，让角标与下次入队状态保持一致
+          void load();
+        }}
+      />
+      {deletingCourse !== null && (
+        <CourseDeleteDialog
+          course={deletingCourse}
+          onClose={() => setDeletingCourse(null)}
+          onDeleted={() => {
+            setDeletingCourse(null);
+            void load();
+          }}
+        />
+      )}
 
         <Modal
         title={t('learning.generateTitle')}

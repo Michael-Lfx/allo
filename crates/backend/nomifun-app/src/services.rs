@@ -2433,6 +2433,11 @@ impl AppServices {
             knowledge_service.clone(),
             knowledge_completer,
         );
+        // Seed the tutorial knowledge base and example course once per binary
+        // version. Failures are non-fatal: the app still boots without them.
+        if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
+            tracing::warn!(%error, "tutorial learning content seed failed; continuing");
+        }
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases
         // search/read and policy-gated write tools over a stdio bridge. It owns
@@ -2853,6 +2858,14 @@ impl AppServices {
             // bases + write-back enabled, so a read-only session never sees it.
             knowledge_writeback: Some(Arc::new(nomifun_ai_agent::LiveKnowledgeWritebackSink {
                 service: knowledge_service.clone(),
+            })),
+            // Live learning-course sink: registers the native
+            // learning_generate_course tool over the shared LearningService so
+            // the agent can write markdown into a mounted base (knowledge_write)
+            // and then turn that base into a course. Gated downstream on
+            // owner authority + mounted bases.
+            learning_course: Some(Arc::new(nomifun_ai_agent::LiveLearningCourseSink {
+                service: learning_service.clone(),
             })),
             companion_prompt: Some(
                 companion_service.clone() as Arc<dyn nomifun_ai_agent::CompanionPromptProvider>

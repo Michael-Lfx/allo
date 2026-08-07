@@ -13,9 +13,13 @@ nomifun-common.workspace = true
 nomifun-db.workspace = true
 nomifun-knowledge.workspace = true
 axum.workspace = true
+fsrs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+async-trait.workspace = true
+nomifun-realtime.workspace = true
+tempfile.workspace = true

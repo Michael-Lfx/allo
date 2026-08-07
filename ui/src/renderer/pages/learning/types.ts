@@ -1,6 +1,8 @@
 export type ActivityKind = 'single_choice' | 'true_false' | 'reflection';
 export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
+export type ReviewSource = 'course' | 'custom';
+export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled';
 
 export interface GenerateCourseRequest {
   knowledge_base_id: string;
@@ -90,16 +92,89 @@ export interface AttemptResult {
   feedback: string;
 }
 
+export interface ReviewQuestion {
+  activity_id: string | null;
+  kind: ActivityKind;
+  prompt: string;
+  options: string[];
+}
+
 export interface DueReview {
   id: string;
-  enrollment_id: string;
-  course_id: string;
-  course_title: string;
-  concept_id: string;
-  concept_title: string;
+  source: ReviewSource;
+  enrollment_id: string | null;
+  course_id: string | null;
+  course_title: string | null;
+  module_title: string | null;
+  lesson_title: string | null;
+  concept_id: string | null;
+  concept_title: string | null;
+  question: ReviewQuestion;
   due_at: number;
   stability_days: number;
   difficulty: number;
   review_count: number;
   lapse_count: number;
+}
+
+export interface ReviewResult {
+  id: string;
+  due_at: number;
+  stability_days: number;
+  difficulty: number;
+  review_count: number;
+  lapse_count: number;
+}
+
+export interface ReviewAnswerResult {
+  correct: boolean;
+  feedback: string;
+  correct_answer: unknown | null;
+  rated: ReviewResult | null;
+}
+
+export interface QuestionEntry {
+  source: ReviewSource;
+  question_id: string;
+  review_item_id: string | null;
+  state: QuestionState;
+  course_id: string | null;
+  course_title: string | null;
+  concept_id: string | null;
+  concept_title: string | null;
+  question_kind: ActivityKind | null;
+  prompt: string | null;
+  options: string[];
+  answer: unknown | null;
+  explanation: string | null;
+  due_at: number | null;
+  overdue: boolean;
+  stability_days: number;
+  difficulty: number;
+  review_count: number;
+  lapse_count: number;
+  last_reviewed_at: number | null;
+  updated_at: number;
+}
+
+export interface UpdateQuestionRequest {
+  prompt: string;
+  options?: string[];
+  answer: unknown;
+  explanation?: string;
+}
+
+export interface CreateCustomQuestionRequest {
+  kind: Exclude<ActivityKind, 'reflection'>;
+  prompt: string;
+  options?: string[];
+  answer: unknown;
+  explanation?: string;
+  concept_id?: string | null;
+}
+
+export interface ConceptRef {
+  concept_id: string;
+  title: string;
+  course_title: string | null;
 }

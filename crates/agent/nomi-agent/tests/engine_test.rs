@@ -1289,3 +1289,223 @@ async fn test_engine_api_error_handling() {
         other => panic!("expected ApiError(\"test error\"), got: {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Prefix-cache regression guards (feat/cache-hit-optimization)
+//
+// The system prompt is the cache-stable prefix: dynamic per-turn content
+// (date, plan mode instructions, ContextContributor injections) must ride
+// the turn tail (last user message), never the system prompt. These tests
+// pin that invariant at the engine level.
+// ---------------------------------------------------------------------------
+
+struct FullRequestRecordingProvider {
+    requests: Arc<Mutex<Vec<LlmRequest>>>,
+    responses: Mutex<Vec<Vec<LlmEvent>>>,
+}
+
+impl FullRequestRecordingProvider {
+    fn new(responses: Vec<Vec<LlmEvent>>) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            responses: Mutex::new(responses),
+        }
+    }
+
+    fn requests(&self) -> Arc<Mutex<Vec<LlmRequest>>> {
+        Arc::clone(&self.requests)
+    }
+}
+
+#[async_trait]
+impl LlmProvider for FullRequestRecordingProvider {
+    async fn stream(
+        &self,
+        request: &LlmRequest,
+    ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        self.requests.lock().unwrap().push(request.clone());
+        let events = self.responses.lock().unwrap().remove(0);
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            for event in events {
+                let _ = tx.send(event).await;
+            }
+        });
+        Ok(rx)
+    }
+}
+
+/// Join all text blocks of a message for assertion purposes.
+fn message_text(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+struct StaticContributor {
+    content: String,
+}
+
+#[async_trait]
+impl nomi_agent::context_contributor::ContextContributor for StaticContributor {
+    async fn pre_turn_context(&self) -> Option<String> {
+        Some(self.content.clone())
+    }
+
+    fn label(&self) -> &str {
+        "test_contributor"
+    }
+}
+
+#[tokio::test]
+async fn contributor_context_rides_turn_tail_not_system_prompt() {
+    let provider = Arc::new(FullRequestRecordingProvider::new(vec![vec![
+        LlmEvent::TextDelta("done".to_string()),
+        done(StopReason::EndTurn),
+    ]]));
+    let requests = provider.requests();
+
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    engine.register_context_contributor(Arc::new(StaticContributor {
+        content: "RAG_MEMORY_SNAPSHOT".to_string(),
+    }));
+
+    engine
+        .execute_turn("hello", "")
+        .await
+        .expect("engine should succeed");
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+
+    // The system prompt must stay the byte-stable cache prefix: no dynamic
+    // contributor content, no date.
+    assert_eq!(
+        request.system, "You are a test assistant.",
+        "system prompt must be byte-identical to the configured prompt"
+    );
+    assert!(
+        !request.system.contains("RAG_MEMORY_SNAPSHOT"),
+        "contributor content must NOT be merged into the system prompt"
+    );
+    assert!(
+        !request.system.contains("Current date"),
+        "date must NOT be in the system prompt"
+    );
+
+    // Dynamic content rides the turn tail (prepended to the last user message).
+    let last = request
+        .messages
+        .last()
+        .expect("messages should not be empty");
+    assert_eq!(last.role, Role::User);
+    let text = message_text(last);
+    assert!(
+        text.contains("[Context]") && text.contains("RAG_MEMORY_SNAPSHOT"),
+        "contributor content must ride the turn tail, got: {text}"
+    );
+    assert!(text.contains("Current date:"), "date must ride the turn tail");
+    assert!(text.contains("hello"), "user text must survive the prepend");
+}
+
+#[tokio::test]
+async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
+    let provider = Arc::new(FullRequestRecordingProvider::new(vec![
+        vec![
+            LlmEvent::ToolUse {
+                id: "enter-plan".to_string(),
+                name: "EnterPlanMode".to_string(),
+                input: json!({}),
+                extra: None,
+            },
+            done(StopReason::ToolUse),
+        ],
+        vec![
+            LlmEvent::TextDelta("planning".to_string()),
+            done(StopReason::EndTurn),
+        ],
+    ]));
+    let requests = provider.requests();
+
+    let plan_active = Arc::new(AtomicBool::new(false));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(
+        nomi_agent::plan::tools::EnterPlanModeTool::new(Arc::clone(&plan_active)),
+    ));
+    // EnterPlanMode is deferred — activate it via tool search first.
+    let search = nomi_tools::tool_search::ToolSearchTool::new(registry.deferred_state());
+    assert!(
+        !search
+            .execute(json!({"query": "EnterPlanMode"}))
+            .await
+            .is_error
+    );
+
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        registry,
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    engine.set_plan_active_flag(plan_active.clone());
+
+    engine
+        .execute_turn("enter plan mode", "")
+        .await
+        .expect("engine should succeed");
+    assert!(
+        plan_active.load(Ordering::SeqCst),
+        "plan mode should be active after EnterPlanMode"
+    );
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+
+    // Plan mode must be active on the second request: it filters the tool
+    // list down to Info tools, hiding EnterPlanMode itself.
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .all(|tool| tool.name != "EnterPlanMode"),
+        "plan mode tool filtering should be active on the second request"
+    );
+
+    // Prefix-cache invariant: toggling plan mode must NOT change the system
+    // prompt, and the plan instructions must not live there.
+    assert_eq!(
+        requests[0].system, requests[1].system,
+        "system prompt must stay byte-stable across the plan mode toggle"
+    );
+    assert!(
+        !requests[1].system.contains("# Plan Mode"),
+        "plan mode instructions must NOT be appended to the system prompt"
+    );
+
+    // Plan instructions ride the turn tail. After the tool result the last
+    // message is the fresh user message appended by inject_turn_tail_context.
+    let last = requests[1]
+        .messages
+        .last()
+        .expect("messages should not be empty");
+    assert_eq!(last.role, Role::User);
+    let text = message_text(last);
+    assert!(
+        text.contains("# Plan Mode"),
+        "plan mode instructions must ride the turn tail, got: {text}"
+    );
+}

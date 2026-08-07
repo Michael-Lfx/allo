@@ -933,9 +933,10 @@ impl AgentEngine {
     }
 
     /// Register a per-turn [`ContextContributor`] (§3.5). The backend uses this
-    /// to inject dynamic context (knowledge RAG, memory, …) into the system
-    /// prompt without the engine hard-coding the source. No-op effect on prompts
-    /// until at least one is registered.
+    /// to inject dynamic context (knowledge RAG, memory, …) into the turn tail
+    /// (last user message) without the engine hard-coding the source, keeping
+    /// the system prompt byte-stable for prefix caching. No-op effect on
+    /// prompts until at least one is registered.
     pub fn register_context_contributor(
         &mut self,
         contributor: std::sync::Arc<dyn crate::context_contributor::ContextContributor>,
@@ -1333,30 +1334,15 @@ impl AgentEngine {
             // the live registry as an implicit allow-list.
             let tool_authority = ProviderToolAuthority::from_request_tools(&tools);
 
-            // Build system prompt: append plan mode instructions when active
-            let system = if self.plan_state.is_active {
-                format!(
-                    "{}\n\n{}",
-                    self.system_prompt,
-                    plan_prompt::plan_mode_instructions()
-                )
-            } else {
-                self.system_prompt.clone()
-            };
-
-            // §3.5: let registered contributors inject dynamic per-turn context
-            // (knowledge RAG, memory, …). No-op when none are registered.
-            let system = if self.context_contributors.is_empty() {
-                system
-            } else {
-                let mut extras = Vec::new();
-                for contributor in &self.context_contributors {
-                    if let Some(extra) = contributor.pre_turn_context().await {
-                        extras.push(extra);
-                    }
-                }
-                crate::context_contributor::merge_pre_turn_context(system, extras)
-            };
+            // Cache-first design: the system prompt is the cache-stable
+            // prefix. It must stay byte-stable across turns so the provider's
+            // automatic prefix cache stays warm. Dynamic content (plan mode
+            // instructions, RAG/memory injections from ContextContributor)
+            // rides the **turn tail** — it is injected into the messages array
+            // (prepended to the last user message) instead of the system
+            // prompt. This mirrors DeepSeek-Reasonix's cache-stable prefix
+            // design.
+            let system = self.system_prompt.clone();
 
             // Host resource notifications use the trusted system channel, not
             // Role::User. Drain as late as possible before constructing the
@@ -1379,6 +1365,19 @@ impl AgentEngine {
                 "Current date: {}",
                 chrono::Local::now().format("%Y-%m-%d")
             ));
+            // Plan mode instructions ride the turn tail instead of the system
+            // prompt so toggling plan mode doesn't break the prefix cache.
+            if self.plan_state.is_active {
+                turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
+            }
+            // §3.5: let registered contributors inject dynamic per-turn context
+            // (knowledge RAG, memory, …) into the turn tail. No-op when none
+            // are registered.
+            for contributor in &self.context_contributors {
+                if let Some(extra) = contributor.pre_turn_context().await {
+                    turn_tail_extras.push(extra);
+                }
+            }
             if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
                 turn_tail_extras.push(ctx);
             }
@@ -2323,6 +2322,13 @@ impl AgentEngine {
                     // A no-op autocompact (too few messages to fold) must not
                     // suppress the emergency gate — context was not reduced.
                     compacted = result.messages_summarized > 0;
+                    if compacted {
+                        // Notify the cache detector that a compaction happened —
+                        // the next cache miss should be attributed to Compaction,
+                        // not TtlExpiry. Mirrors Reasonix's RewriteVersion
+                        // increment.
+                        self.cache_detector.notify_compaction();
+                    }
                 }
                 Err(auto::CompactError::CircuitBroken { .. }) => {
                     // Already tripped; logged at circuit-breaker level

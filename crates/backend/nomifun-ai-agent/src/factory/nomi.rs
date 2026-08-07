@@ -810,6 +810,15 @@ pub(super) async fn build(
         None
     };
 
+    // Course-generation wiring for the native learning_generate_course tool:
+    // turns a mounted knowledge base into a learning course through the
+    // backend learning service. Owner-authority only, same posture as the
+    // knowledge retrieval sinks above; the manager further gates registration
+    // on mounted bases.
+    let learning_course_sink = is_instance_owner
+        .then(|| deps.learning_course.clone())
+        .flatten();
+
     let knowledge_prelude: Option<String> = if overrides.knowledge_mounts.is_empty() {
         None
     } else {
@@ -854,6 +863,7 @@ pub(super) async fn build(
         knowledge_writeback_sink,
         knowledge_write_bases,
         knowledge_writeback_staged,
+        learning_course_sink,
         if is_instance_owner && overrides.companion {
             deps.companion_skill_sink.clone()
         } else {
