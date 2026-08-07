@@ -569,6 +569,17 @@ export interface ISetSummonParams {
   skill_exclusions?: string[];
 }
 
+/**
+ * Deadline for the destructive edit-resubmit POST. Without it `httpRequest`
+ * never settles on a hung connection, leaving the barrier armed and the
+ * composer locked forever. 30s matches the KB-read convention; the rewind +
+ * truncate + insert itself is millisecond-scale, so this is pure headroom. On
+ * expiry the request aborts with `BackendRequestError kind:'timeout'` — the
+ * backend may STILL be executing (abort ≠ not-executed), so the renderer
+ * verifies against the authoritative DB before treating it as a failure.
+ */
+const EDIT_RESUBMIT_TIMEOUT_MS = 30_000;
+
 export const conversation = {
   create: withResponseMap(
     httpPost<unknown, ICreateConversationParams>('/api/conversations', (p) => {
@@ -739,7 +750,7 @@ export const conversation = {
         content: p.input,
         files: p.files,
         },
-        { idempotencyKey }
+        { idempotencyKey, timeoutMs: EDIT_RESUBMIT_TIMEOUT_MS }
       );
       return fromApiSendMessageResult(result);
     },

@@ -352,6 +352,10 @@ const SendBox: React.FC<{
   // promise chain (.then/.catch/.finally) is gated on this so a stale
   // operation can never clobber a newer one's input/edit/loading state.
   const activeEditOperationRef = useRef<string | null>(null);
+  // Retry operation token (P1-1): the sendbox.retry path shares the composer
+  // with edit-resubmit, so it gets the same mutex treatment — admission,
+  // token-gated callbacks, and release in finally.
+  const activeRetryOperationRef = useRef<string | null>(null);
   // Monotonic input revision (bumped on every `input` change) so the success
   // callback can tell "user typed during the request" from "string happened to
   // match" — only clear input when the user never touched it post-submit.
@@ -385,6 +389,10 @@ const SendBox: React.FC<{
     'sendbox.edit',
     (payload) => {
       if (!onEditResubmit) return;
+      // P2-3: a resubmit already in flight owns the composer — a second edit
+      // request mid-flight would rewrite the input under a destructive request.
+      // isLoading covers the settled-render case; the ref covers same-tick.
+      if (isLoading || activeEditOperationRef.current !== null) return;
       editPrevDraftRef.current = latestInputRef.current;
       editingCreatedAtRef.current = payload.createdAt;
       setEditingMsgId(payload.msgId);
@@ -401,7 +409,7 @@ const SendBox: React.FC<{
         setEditingMessage(cid, { ownerId: editingOwnerId(), msgId: payload.msgId, pending: false });
       }
     },
-    [onEditResubmit, onSkillChipsChange]
+    [onEditResubmit, onSkillChipsChange, isLoading]
   );
 
   // C3: 卸载时清理本实例在编辑 store 中的登记（owner-guarded，双实例互不干扰）。
@@ -419,9 +427,16 @@ const SendBox: React.FC<{
     'sendbox.retry',
     (payload) => {
       if (disabled || loading || isLoading) return;
+      // P1-1: isLoading is React state and cannot block two retry events in the
+      // same render tick — the synchronously-updated ref is the real mutex.
+      if (activeRetryOperationRef.current !== null) return;
+      // Cross-entry: an edit resubmit in flight owns the composer.
+      if (activeEditOperationRef.current !== null) return;
       const content = payload.content?.trim();
       if (!content) return;
       void (async () => {
+        const retryOperationId = uuid();
+        activeRetryOperationRef.current = retryOperationId;
         // Snapshot the input revision so a retry failure restores the retried
         // text only when the user never touched the composer mid-flight — never
         // overwriting new typing (same protection as the edit-resubmit path).
@@ -438,11 +453,19 @@ const SendBox: React.FC<{
             conversation_type: conversationContext?.type,
           });
         } catch {
-          if (inputRevisionRef.current === submittedInputRevision) {
+          // Restore the retried text only when THIS retry is still the current
+          // operation AND the user never touched the composer mid-flight.
+          if (
+            activeRetryOperationRef.current === retryOperationId &&
+            inputRevisionRef.current === submittedInputRevision
+          ) {
             setInput(content);
           }
         } finally {
-          setIsLoading(false);
+          if (activeRetryOperationRef.current === retryOperationId) {
+            activeRetryOperationRef.current = null;
+            setIsLoading(false);
+          }
         }
       })();
     },
@@ -461,6 +484,7 @@ const SendBox: React.FC<{
   useEffect(() => {
     return () => {
       activeEditOperationRef.current = null;
+      activeRetryOperationRef.current = null;
     };
   }, []);
 
@@ -1565,6 +1589,13 @@ const SendBox: React.FC<{
     // 编辑模式：提交走截断重跑而非普通发送。
     if (editingMsgId && onEditResubmit) {
       if (isLoading || !input.trim()) return;
+      // P0-2: isLoading is React state and cannot block two submits inside the
+      // same render tick — the synchronously-updated operation ref is the real
+      // mutex. A resubmit already in flight rejects the second one outright, so
+      // only one destructive truncate request is ever sent.
+      if (activeEditOperationRef.current !== null) return;
+      // Cross-entry: a retry in flight owns the composer.
+      if (activeRetryOperationRef.current !== null) return;
       const finalMessage = input;
       const targetId = editingMsgId;
       const targetCreatedAt = editingCreatedAtRef.current;
@@ -1619,7 +1650,12 @@ const SendBox: React.FC<{
         .finally(() => {
           // Lowering isLoading depends only on the operation token, not the
           // outcome status — a stale operation's promise must not toggle it.
+          // Releasing the ref here is what unlocks the admission mutex above:
+          // without it every later submit would be rejected forever. .then and
+          // .catch run before .finally in the same chain, so their
+          // isCurrentOperation() reads still see the token.
           if (isCurrentOperation()) {
+            activeEditOperationRef.current = null;
             setIsLoading(false);
           }
         });

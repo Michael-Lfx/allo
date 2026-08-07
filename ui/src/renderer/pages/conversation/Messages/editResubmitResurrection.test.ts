@@ -9,6 +9,7 @@ import {
   armBarrier,
   beginEditResubmitReconciliation,
   captureBarrier,
+  captureReconciliationSnapshot,
   describeConversation,
   filterFetchedRows,
   getEpoch,
@@ -60,7 +61,10 @@ const oldSuffix = (): TMessage[] => [
   errorTip('old-error-tip', 102, errorTipMessageId),
 ];
 
-/** Mirrors the loadMessages apply step: discard on epoch drift, else compose. */
+/** Mirrors the loadMessages apply step: discard on epoch drift, else capture
+ * the reconciliation snapshot and compose with it (the snapshot freeze happens
+ * at acceptance time, before the updater would run — exactly like
+ * mergeIntoList). */
 const applyFetch = (
   currentList: TMessage[],
   fetched: TMessage[],
@@ -68,7 +72,7 @@ const applyFetch = (
   capturedEpoch: number
 ): TMessage[] => {
   if (capturedEpoch !== getEpoch(conversationId)) return currentList;
-  return applyFetchedMessages(currentList, fetched, conversationId);
+  return applyFetchedMessages(currentList, fetched, captureReconciliationSnapshot(conversationId));
 };
 
 const ids = (list: TMessage[]): string[] => list.map((message) => message.id);
@@ -257,7 +261,7 @@ describe('failure convergence', () => {
     const restored = applyFetchedMessages(
       [textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId)],
       oldSuffix(),
-      conversationId
+      captureReconciliationSnapshot(conversationId)
     );
     expect(ids(restored)).toEqual(['prefix', 'target', 'old-assistant', 'old-error-tip']);
     // No leak: the revoked barrier is gone, and acking a now-absent barrier is a no-op.
@@ -270,7 +274,7 @@ describe('failure convergence', () => {
     const { consumerId } = retainConsumer(conversationId);
     const capture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
     armBarrier(conversationId, 'op-retry', capture);
-    const epoch = beginEditResubmitReconciliation(conversationId, 'op-retry');
+    const epoch = beginEditResubmitReconciliation(conversationId, 'op-retry')!;
 
     // First refresh attempt fails (network) — loadMessages never acks.
     expect(describeConversation(conversationId).barriers.length).toBe(1);
@@ -337,7 +341,7 @@ describe('multi-consumer reconciliation', () => {
     applyFetchedMessages(
       [textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId)],
       [textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId)],
-      conversationId
+      captureReconciliationSnapshot(conversationId)
     );
     expect(getEpoch(conversationId)).toBe(before);
     a.release();
@@ -388,7 +392,7 @@ describe('row identity coverage & isolation', () => {
       textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId),
       textMessage('older', 'left', 50, '019fa2b0-6dc2-75c1-9b50-2742e02df250' as MessageId),
     ];
-    const result = applyFetchedMessages([], fetched, conversationId);
+    const result = applyFetchedMessages([], fetched, captureReconciliationSnapshot(conversationId));
     expect(ids(result).sort()).toEqual(['older', 'prefix']);
   });
 
@@ -438,7 +442,7 @@ describe('row identity coverage & isolation', () => {
       textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId),
       { ...optimistic, id: `db:${newMessageId}` },
     ];
-    const result = applyFetchedMessages([optimistic], fetched, conversationId);
+    const result = applyFetchedMessages([optimistic], fetched, captureReconciliationSnapshot(conversationId));
     const newUserRows = result.filter(
       (message) => message.message_id === newMessageId
     );
@@ -446,5 +450,163 @@ describe('row identity coverage & isolation', () => {
 
     ackConsumerReconciled(conversationId, consumerId, getEpoch(conversationId));
     expect(describeConversation(conversationId).barriers).toEqual([]);
+  });
+});
+
+describe('deferred updater race (P0-1)', () => {
+  test('an updater executing after the barrier retired still reconciles from its frozen snapshot', () => {
+    // Models React's deferred functional updates: loadMessages enqueues
+    // update(updater) and acks SYNCHRONOUSLY (hooks.ts); the updater runs
+    // later. With two consumers the second ack retires the barrier BEFORE the
+    // first updater executes. The frozen snapshot keeps the reconciliation
+    // rules alive past the barrier's deletion; consulting the live coordinator
+    // here would find nothing and resurrect the old suffix (RED-recorded
+    // against the previous live-lookup API: the suffix stayed in the list).
+    const a = retainConsumer(conversationId);
+    const b = retainConsumer(conversationId);
+    const capture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
+    armBarrier(conversationId, 'op-deferred', capture);
+    beginEditResubmitReconciliation(conversationId, 'op-deferred');
+    const epoch = getEpoch(conversationId);
+
+    const pendingUpdaters: Array<(list: TMessage[]) => TMessage[]> = [];
+    const cleanPage = [
+      textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId),
+    ];
+
+    // B's authoritative refresh is accepted: capture the snapshot, enqueue the
+    // updater, then ack synchronously (exactly the mergeIntoList ordering).
+    const snapshotB = captureReconciliationSnapshot(conversationId);
+    expect(snapshotB.purge).toBe(true);
+    pendingUpdaters.push((list) => applyFetchedMessages(list, cleanPage, snapshotB));
+    ackConsumerReconciled(conversationId, b.consumerId, epoch);
+    expect(describeConversation(conversationId).barriers.length).toBe(1); // A still owes
+
+    // A's authoritative refresh is accepted the same way → barrier retires.
+    const snapshotA = captureReconciliationSnapshot(conversationId);
+    pendingUpdaters.push((list) => applyFetchedMessages(list, cleanPage, snapshotA));
+    ackConsumerReconciled(conversationId, a.consumerId, epoch);
+    expect(describeConversation(conversationId).barriers).toEqual([]);
+
+    // React commits only now: both deferred updaters execute AFTER the barrier
+    // is gone, against a list that still holds the old suffix.
+    let list: TMessage[] = oldSuffix();
+    for (const updater of pendingUpdaters) list = updater(list);
+
+    expect(ids(list)).toEqual(['prefix']);
+
+    a.release();
+    b.release();
+  });
+
+  test('an armed barrier captured in the snapshot still filters stale fetched rows after retirement', () => {
+    // Fetch accepted while the barrier is still ARMED (edit in flight). The
+    // edit then succeeds and every consumer acks — retiring the barrier before
+    // the deferred updater runs. The frozen armed rules must still filter the
+    // stale pre-truncate page (armed rules filter fetched rows but must NOT
+    // purge the current list: the suffix is legitimate until success).
+    const a = retainConsumer(conversationId);
+    const capture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
+    armBarrier(conversationId, 'op-armed-snap', capture);
+
+    const snapshot = captureReconciliationSnapshot(conversationId);
+    expect(snapshot.purge).toBe(false);
+    expect(snapshot.mergeKeys.size).toBeGreaterThan(0);
+
+    beginEditResubmitReconciliation(conversationId, 'op-armed-snap');
+    ackConsumerReconciled(conversationId, a.consumerId, getEpoch(conversationId));
+    expect(describeConversation(conversationId).barriers).toEqual([]);
+
+    // Deferred updater runs now: the stale page's suffix rows are filtered out
+    // even though the barrier is gone.
+    const result = applyFetchedMessages([], oldSuffix(), snapshot);
+    expect(ids(result)).toEqual(['prefix']);
+
+    a.release();
+  });
+
+  test('a mixed snapshot (reconciling + armed) purges only the reconciling suffix', () => {
+    // op-1 reconciling, op-2 armed at capture time. V5 semantics: armed
+    // barriers filter fetched rows but leave the current list alone — op-2's
+    // suffix stays until its own success/failure.
+    const a = retainConsumer(conversationId);
+    const firstCapture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
+    armBarrier(conversationId, 'op-mix-1', firstCapture);
+    beginEditResubmitReconciliation(conversationId, 'op-mix-1');
+
+    const secondTarget = '019fa2b0-6dc2-75c1-9b50-2742e02df2c0' as MessageId;
+    const secondSuffix = [
+      textMessage('new-bubble', 'right', 200, secondTarget),
+      errorTip('new-error-tip', 201, '019fa2b0-6dc2-75c1-9b50-2742e02df2c1' as MessageId),
+    ];
+    const secondCapture = captureBarrier(secondSuffix, secondTarget, 200)!;
+    armBarrier(conversationId, 'op-mix-2', secondCapture);
+
+    const snapshot = captureReconciliationSnapshot(conversationId);
+    expect(snapshot.purge).toBe(true);
+
+    // Current list holds both suffixes; fetched page is stale for both.
+    const currentList = [...oldSuffix(), ...secondSuffix];
+    const fetched = [
+      textMessage('prefix', 'left', 90, '019fa2b0-6dc2-75c1-9b50-2742e02df290' as MessageId),
+      ...oldSuffix().slice(1),
+      ...secondSuffix,
+    ];
+    const result = applyFetchedMessages(currentList, fetched, snapshot);
+
+    // op-1's suffix purged from the current list; op-2's armed suffix kept
+    // (current-list copy survives) but its stale fetched copies filtered.
+    expect(ids(result).sort()).toEqual(['new-bubble', 'new-error-tip', 'prefix'].sort());
+
+    a.release();
+  });
+});
+
+describe('barrier monotonicity & fail-closed begin (P0-3 / P2-2)', () => {
+  test('revokeBarrier refuses a reconciling barrier and keeps it alive for acks', () => {
+    // P0-3: once the backend has accepted (reconciling), a local failure must
+    // NEVER revoke the barrier — the transition is one-way armed→reconciling.
+    const { consumerId } = retainConsumer(conversationId);
+    const capture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
+    armBarrier(conversationId, 'op-mono', capture);
+    const epoch = beginEditResubmitReconciliation(conversationId, 'op-mono');
+
+    expect(revokeBarrier(conversationId, 'op-mono')).toBe(false);
+    expect(describeConversation(conversationId).barriers.length).toBe(1);
+    expect(describeConversation(conversationId).barriers[0].phase).toBe('reconciling');
+
+    // The surviving barrier still retires through the normal ack path.
+    ackConsumerReconciled(conversationId, consumerId, epoch!);
+    expect(describeConversation(conversationId).barriers).toEqual([]);
+  });
+
+  test('revokeBarrier deletes an armed barrier and reports true', () => {
+    retainConsumer(conversationId);
+    const capture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
+    armBarrier(conversationId, 'op-armed-revoke', capture);
+
+    expect(revokeBarrier(conversationId, 'op-armed-revoke')).toBe(true);
+    expect(describeConversation(conversationId).barriers).toEqual([]);
+  });
+
+  test('revokeBarrier on an unknown operation is a no-op reporting false', () => {
+    retainConsumer(conversationId);
+    expect(revokeBarrier(conversationId, 'op-nope')).toBe(false);
+  });
+
+  test('beginEditResubmitReconciliation fails closed without bumping the epoch', () => {
+    // P2-2: a missing barrier must NOT bump the epoch — an orphan bump would
+    // discard every innocent in-flight fetch for no reason. The consumer keeps
+    // the coordinator alive so the epoch is observable.
+    retainConsumer(conversationId);
+    expect(beginEditResubmitReconciliation(conversationId, 'op-unknown')).toBeUndefined();
+    expect(getEpoch(conversationId)).toBe(0);
+
+    // Also fail closed when the coordinator exists but the barrier was revoked.
+    const capture = captureBarrier(oldSuffix(), targetMessageId, 100)!;
+    armBarrier(conversationId, 'op-gone', capture);
+    revokeBarrier(conversationId, 'op-gone');
+    expect(beginEditResubmitReconciliation(conversationId, 'op-gone')).toBeUndefined();
+    expect(getEpoch(conversationId)).toBe(0);
   });
 });
