@@ -2,6 +2,8 @@ import { useSyncExternalStore } from 'react';
 
 import type { ConversationId, MessageId } from '@/common/types/ids';
 
+export type EditingMessagePhase = 'editing' | 'submitting' | 'confirming';
+
 /**
  * 跨树共享的「正在编辑/重发」气泡状态（SendBox 写入，MessageText 读取）。
  * SendBox 与 MessageText 不构成父子关系，故用模块级 store + useSyncExternalStore
@@ -23,6 +25,10 @@ export interface EditingMessageState {
   /** True while an edit-resubmit request is in flight; False while merely
    * recalled into the composer, not yet submitted. */
   pending: boolean;
+  /** Explicit lifecycle phase; optional for compatibility with older store snapshots. */
+  phase?: EditingMessagePhase;
+  /** Wake the current same-key confirmation attempt; never starts a new edit. */
+  continueConfirmation?: () => void;
   /** 当前飞行操作的 operation token（与 SendBox 的 activeEditOperationRef 对齐）。 */
   /** The in-flight operation token (aligned with SendBox's activeEditOperationRef). */
   operationId?: string;

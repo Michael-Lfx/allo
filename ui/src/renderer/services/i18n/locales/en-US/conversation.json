@@ -771,6 +771,8 @@
     "action": "Edit",
     "banner": "Editing message — sending will re-run from here",
     "editingBadge": "Editing",
+    "confirmingBadge": "Confirming resend result",
+    "continueConfirmation": "Continue checking",
     "failed": "Couldn't resend the edited message. Please try again."
   },
   "slashCommands": {

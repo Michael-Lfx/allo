@@ -1011,6 +1011,8 @@ export type I18nKey =
   | 'conversation.dropdown.presetPresets'
   | 'conversation.editMessage.action'
   | 'conversation.editMessage.banner'
+  | 'conversation.editMessage.confirmingBadge'
+  | 'conversation.editMessage.continueConfirmation'
   | 'conversation.editMessage.editingBadge'
   | 'conversation.editMessage.failed'
   | 'conversation.emptyCards.companionAction'

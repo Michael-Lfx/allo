@@ -408,6 +408,12 @@ const fromApiSendMessageResult = (result: ISendMessageResult): ISendMessageResul
   result_ok: result.result_ok ?? null,
   result_text: result.result_text ?? null,
   result_error: result.result_error ?? null,
+  ...(result.result_error_code !== undefined
+    ? { result_error_code: result.result_error_code ?? null }
+    : {}),
+  ...(result.result_error_retryable !== undefined
+    ? { result_error_retryable: result.result_error_retryable ?? null }
+    : {}),
 });
 
 const requireConversationIdempotencyKey = (value: unknown): string => {
@@ -579,6 +585,7 @@ export interface ISetSummonParams {
  * verifies against the authoritative DB before treating it as a failure.
  */
 const EDIT_RESUBMIT_TIMEOUT_MS = 30_000;
+const EDIT_RESUBMIT_STATE_TIMEOUT_MS = 5_000;
 
 export const conversation = {
   create: withResponseMap(
@@ -753,6 +760,23 @@ export const conversation = {
         { idempotencyKey, timeoutMs: EDIT_RESUBMIT_TIMEOUT_MS }
       );
       return fromApiSendMessageResult(result);
+    },
+  },
+  editResubmitState: {
+    provider: () => {},
+    invoke: async (p: {
+      conversation_id: ConversationId;
+      msg_id: MessageId;
+      idempotency_key: string;
+    }): Promise<IEditResubmitObservation> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const result = await httpRequest<IEditResubmitObservation>(
+        'GET',
+        `/api/conversations/${p.conversation_id}/messages/${p.msg_id}/edit-resubmit/state`,
+        undefined,
+        { idempotencyKey, timeoutMs: EDIT_RESUBMIT_STATE_TIMEOUT_MS }
+      );
+      return fromApiEditResubmitObservation(result);
     },
   },
   getSlashCommands: httpGet<
@@ -2903,7 +2927,31 @@ export interface ISendMessageResult {
   result_ok: boolean | null;
   result_text: string | null;
   result_error: string | null;
+  result_error_code?: string | null;
+  result_error_retryable?: boolean | null;
 }
+
+export type EditResubmitReceiptState = 'missing' | 'accepted' | 'completed';
+
+export interface IEditResubmitObservation {
+  receipt_state: EditResubmitReceiptState;
+  delivery: ISendMessageResult | null;
+  replacement_message_id: MessageId | null;
+  target_exists: boolean;
+  replacement_exists: boolean | null;
+}
+
+const fromApiEditResubmitObservation = (
+  result: IEditResubmitObservation
+): IEditResubmitObservation => ({
+  ...result,
+  delivery: result.delivery ? fromApiSendMessageResult(result.delivery) : null,
+  replacement_message_id:
+    result.replacement_message_id == null
+      ? null
+      : parseMessageId(result.replacement_message_id),
+  replacement_exists: result.replacement_exists ?? null,
+});
 
 export interface IConfirmMessageParams {
   confirm_key: string;

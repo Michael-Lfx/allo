@@ -297,24 +297,23 @@ describe('conversation send idempotency wiring', () => {
     expect(complete > reveal).toBe(true);
   });
 
-  test('keeps edit replays behind authoritative reconciliation', () => {
-    const post = nomiSource.indexOf('editResubmit.invoke({');
-    const classification = nomiSource.indexOf(
-      'const disposition = classifyPublicMessageDelivery(res);',
-      post
-    );
-    const fresh = nomiSource.indexOf("if (disposition === 'fresh') {", classification);
-    const replayBranch = nomiSource.indexOf('} else {', fresh);
-    const closeOrReconcile = nomiSource.indexOf(
-      'reconcilePublicDeliveryReplay(res.completed);',
-      replayBranch
+  test('keeps edit replays behind exact observation and authoritative reconciliation', () => {
+    const editStart = nomiSource.indexOf('const handleEditResubmit = useCallback(');
+    const editEnd = nomiSource.indexOf('// Steering injects into the turn', editStart);
+    const editHandler = nomiSource.slice(editStart, editEnd);
+    const post = editHandler.indexOf('editResubmit.invoke({');
+    const observation = editHandler.indexOf('editResubmitState.invoke({', post);
+    const resolution = editHandler.indexOf('resolveEditResubmitRecovery', observation);
+    const reconcile = editHandler.indexOf(
+      'reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);',
+      resolution
     );
 
     expect(post >= 0).toBe(true);
-    expect(classification > post).toBe(true);
-    expect(fresh > classification).toBe(true);
-    expect(replayBranch > fresh).toBe(true);
-    expect(closeOrReconcile > replayBranch).toBe(true);
+    expect(observation > post).toBe(true);
+    expect(resolution > observation).toBe(true);
+    expect(reconcile > resolution).toBe(true);
+    expect(editHandler).not.toContain('reconcilePublicDeliveryReplay(res.completed);');
   });
 
   test('does not confuse a completed steer receipt with parent turn completion', () => {

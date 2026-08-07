@@ -8,11 +8,10 @@ import { describe, expect, test } from 'bun:test';
  * `editResubmitResurrection.test.ts`.
  *
  * The contract under test:
- *  - the old suffix is captured and the barrier armed BEFORE the request, and
- *    the suffix/attachments are only dropped AFTER backend acceptance;
- *  - SendBox clears edit state + input only inside the post-acceptance `.then`
- *    (this portion is enforced by `editResubmitState` on main and turns green
- *    once the SendBox timing fix lands).
+ *  - the old suffix is captured and the barrier armed BEFORE the request;
+ *  - a read-only exact edit receipt observation decides whether reconciliation
+ *    is allowed; a response or a paginated window never does that by itself;
+ *  - SendBox clears edit state only after the typed resolution is terminal.
  */
 
 const sendBoxSource = readFileSync(
@@ -33,7 +32,12 @@ describe('edit/resubmit pipeline structure', () => {
     const capture = nomiHandler.indexOf('captureBarrier(');
     const arm = nomiHandler.indexOf('armBarrier(conversation_id, operationId, capture);');
     const invoke = nomiHandler.indexOf('editResubmit.invoke({');
-    const reconcile = nomiHandler.indexOf('beginEditResubmitReconciliation(conversation_id, operationId);');
+    const observe = nomiHandler.indexOf('editResubmitState.invoke({');
+    const confirming = nomiHandler.indexOf("onPhaseChange?.('confirming', continueConfirmation)");
+    const reconcile = nomiHandler.indexOf(
+      'reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);'
+    );
+    const cleanup = nomiHandler.indexOf('clearSubmittedDraftAttachments();');
     const purge = nomiHandler.indexOf('purgeCurrentRows(list, conversation_id)');
     // 附件集合差：提交时捕获已提交附件路径快照，成功后仅精确移除已提交项。
     // Attachment set-difference: snapshot the submitted attachment paths at submit,
@@ -53,8 +57,11 @@ describe('edit/resubmit pipeline structure', () => {
     expect(invoke).toBeGreaterThan(submittedAttachmentSnapshot);
     // Post-acceptance only: reconcile flips the barrier, the suffix purge runs,
     // and the submitted attachments are removed via set-difference — all after invoke.
-    expect(reconcile).toBeGreaterThan(invoke);
-    expect(purge).toBeGreaterThan(reconcile);
+    expect(observe).toBeGreaterThan(invoke);
+    expect(confirming).toBeGreaterThan(invoke);
+    expect(reconcile).toBeGreaterThan(observe);
+    expect(cleanup).toBeGreaterThan(nomiHandler.indexOf("recovery.kind === 'success'"));
+    expect(purge).toBeGreaterThan(-1);
     expect(removeSubmitted).toBeGreaterThan(invoke);
     // The full-clear helper must NOT appear in the edit-resubmit path (would wipe
     // attachments added mid-flight).
@@ -69,9 +76,9 @@ describe('edit/resubmit pipeline structure', () => {
       sendBoxSource.indexOf('// Cancel any pending warmup:')
     );
     const submit = editSubmitBranch.indexOf(
-      'onEditResubmit(targetId, targetCreatedAt, finalMessage)'
+      'onEditResubmit(\n        targetId,\n        targetCreatedAt,\n        finalMessage,\n        operationId,'
     );
-    const accepted = editSubmitBranch.indexOf('.then(() => {', submit);
+    const accepted = editSubmitBranch.indexOf('.then((resolution) => {', submit);
     const exitEditMode = editSubmitBranch.indexOf('setEditingMsgId(null);', submit);
     const clearInput = editSubmitBranch.indexOf("setInput('');", submit);
 
@@ -148,75 +155,40 @@ describe('retry operation mutex (P1-1)', () => {
   });
 });
 
-describe('ambiguous transport outcome verification (P1-2)', () => {
-  test('network/timeout failures consult the authoritative DB before revoking', () => {
-    // A 'network'/'timeout' rejection cannot prove the backend did NOT execute
-    // (connection reset / response lost after a durable truncate). Revoking
-    // straight away would show a false "resend failed" toast for a message that
-    // was actually sent. The transport catch must first check whether the
-    // target message is gone (truncate durable ⇒ treat as success).
+describe('authoritative edit outcome verification (P1-2)', () => {
+  test('ambiguous failures use the exact receipt observation and never scan a history window', () => {
+    // A transport or HTTP rejection cannot prove the backend did NOT execute.
+    // Recovery must use the edit-specific receipt plus exact target/replacement
+    // identities, and it must reuse the same operation key.
     const nomiHandler = nomiSendBoxSource.slice(
       nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
       nomiSendBoxSource.indexOf('// Steering injects into the turn')
     );
-    const firstTry = nomiHandler.indexOf('try {');
-    const secondTry = nomiHandler.indexOf('try {', firstTry + 1);
-    const transportDomain = nomiHandler.slice(firstTry, secondTry);
-
-    const kindCheck = transportDomain.indexOf('isBackendRequestError(error)');
-    const verify = transportDomain.indexOf('verifyEditResubmitTarget(');
-    const revoke = transportDomain.indexOf('revokeBarrier(');
-
-    expect(kindCheck).toBeGreaterThan(-1);
-    expect(verify).toBeGreaterThan(kindCheck);
-    // Verification runs BEFORE any revoke — only a proven failure revokes.
-    expect(revoke).toBeGreaterThan(verify);
-    // The true-failure path still emits the failed refresh.
-    expect(transportDomain).toContain("'edit-resubmit-failed'");
-
-    // The verifier itself reads the newest DB window (the edit target is always
-    // inside the visible tail) and treats its own failure as "not proven".
-    const verifierStart = nomiSendBoxSource.indexOf('verifyEditResubmitTarget = async');
-    expect(verifierStart).toBeGreaterThan(-1);
-    const verifier = nomiSendBoxSource.slice(verifierStart, verifierStart + 900);
-    expect(verifier).toContain('getConversationMessages');
-    expect(verifier).toContain('page_size: 200');
+    expect(nomiHandler).toContain('editResubmitState.invoke({');
+    expect(nomiHandler).toContain('idempotency_key: operationId');
+    expect(nomiHandler).toContain('resolveEditResubmitRecovery');
+    expect(nomiHandler).not.toContain('verifyEditResubmitTarget');
+    expect(nomiHandler).not.toContain('getConversationMessages');
+    expect(nomiHandler).not.toContain('page_size: 200');
+    expect(nomiHandler.indexOf('revokeBarrier(')).toBeGreaterThan(
+      nomiHandler.indexOf("recovery.kind === 'safe_failure'")
+    );
   });
 });
 
-describe('dual failure domains (P0-3)', () => {
-  test('NomiSendBox splits transport failure from post-acceptance failure; only the former revokes', () => {
-    // P0-3: after the backend's 202 the transcript is already truncated — a
-    // local exception in the post-acceptance path must NEVER revoke the
-    // (already reconciling) barrier. Revoke belongs exclusively to the
-    // transport-failure domain.
+describe('authoritative failure domains (P0-3)', () => {
+  test('post-mutation failure keeps the barrier and returns a typed draft-preserving result', () => {
     const nomiHandler = nomiSendBoxSource.slice(
       nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
       nomiSendBoxSource.indexOf('// Steering injects into the turn')
     );
-    const invoke = nomiHandler.indexOf('editResubmit.invoke({');
-    const firstTry = nomiHandler.indexOf('try {');
-    const secondTry = nomiHandler.indexOf('try {', firstTry + 1);
-
-    // Two try blocks: the transport await sits in the first, the post-accept
-    // reconciliation work in the second.
-    expect(firstTry).toBeGreaterThan(-1);
-    expect(secondTry).toBeGreaterThan(invoke);
-
-    // Every revokeBarrier call lives in the transport domain (before the
-    // second try); the post-accept domain contains none.
-    let revokeAt = nomiHandler.indexOf('revokeBarrier(');
-    while (revokeAt !== -1) {
-      expect(revokeAt).toBeLessThan(secondTry);
-      revokeAt = nomiHandler.indexOf('revokeBarrier(', revokeAt + 1);
-    }
-    expect(nomiHandler.indexOf('revokeBarrier(')).toBeGreaterThan(-1);
-
-    // The post-accept domain still converges via a reconcile refresh, never a
-    // failed refresh.
-    const postAccept = nomiHandler.slice(secondTry);
-    expect(postAccept).toContain("'edit-resubmit-reconcile'");
-    expect(postAccept).not.toContain("'edit-resubmit-failed'");
+    expect(nomiHandler).toContain("recovery.kind === 'post_mutation_failure'");
+    expect(nomiHandler).toContain("return { kind: 'post_mutation_failure', error }");
+    expect(nomiHandler).toContain("reason: 'edit-resubmit-reconcile'");
+    expect(nomiHandler).toContain("reason: 'edit-resubmit-failed'");
+    expect(nomiHandler.indexOf("reason: 'edit-resubmit-failed'")).toBeGreaterThan(
+      nomiHandler.indexOf("recovery.kind === 'safe_failure'")
+    );
   });
 });
 
@@ -231,7 +203,7 @@ describe('edit submit mutex (P0-2 / P2-3)', () => {
       sendBoxSource.indexOf('// Cancel any pending warmup:')
     );
     const submit = editSubmitBranch.indexOf(
-      'onEditResubmit(targetId, targetCreatedAt, finalMessage)'
+      'onEditResubmit(\n        targetId,\n        targetCreatedAt,\n        finalMessage,\n        operationId,'
     );
     const mutexAdmission = editSubmitBranch.indexOf(
       'if (activeEditOperationRef.current !== null) return;'

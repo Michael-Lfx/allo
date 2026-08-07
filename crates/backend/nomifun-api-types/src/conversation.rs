@@ -182,6 +182,34 @@ pub struct SendMessageResponse {
     pub result_error_retryable: Option<bool>,
 }
 
+/// Durable read-only observation for one edit/resubmit operation.
+///
+/// `missing` means that this exact edit receipt has not been claimed. The
+/// message-presence fields are queried by durable message identity, never by a
+/// paginated history window, so callers can distinguish an in-flight claim
+/// from a transcript that has already crossed the destructive boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EditResubmitReceiptState {
+    Missing,
+    Accepted,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditResubmitStateResponse {
+    pub receipt_state: EditResubmitReceiptState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<SendMessageResponse>,
+    /// The durable replacement candidate owned by the exact edit receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_message_id: Option<String>,
+    pub target_exists: bool,
+    /// `None` while no accepted receipt has supplied a replacement message ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_exists: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationRuntimeStateKind {
