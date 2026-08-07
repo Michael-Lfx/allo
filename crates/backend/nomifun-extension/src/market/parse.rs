@@ -535,7 +535,7 @@ pub(super) fn parse_skillhub_packages(body: &str) -> Vec<SkillMarketItemResponse
 }
 
 fn parse_skillhub_package_item(item: &serde_json::Value) -> Option<SkillMarketItemResponse> {
-    let slug = json_text(item, "slug", 96)?;
+    let slug = item.get("slug")?.as_str()?.trim().to_string();
     if !is_market_slug(&slug) {
         return None;
     }
@@ -1274,6 +1274,19 @@ mod tests {
         assert!(market_https_image_url("https://cloudcache.tencent-cloud.com/x.svg").is_none());
         assert!(market_https_image_url("https://user:pass@cloudcache.tencent-cloud.com/x.avif").is_none());
         assert!(market_https_image_url("javascript:alert(1)").is_none());
+    }
+
+    #[test]
+    fn parse_skillhub_packages_rejects_overlong_slug_without_truncating_it() {
+        let body = serde_json::json!({
+            "skillSets": [{
+                "slug": "a".repeat(97),
+                "displayName": "Overlong package"
+            }]
+        })
+        .to_string();
+
+        assert!(parse_skillhub_packages(&body).is_empty());
     }
 
     #[test]

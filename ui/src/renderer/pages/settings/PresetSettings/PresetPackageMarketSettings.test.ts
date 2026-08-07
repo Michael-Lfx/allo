@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { BackendHttpError } from '@/common/adapter/httpBridge';
 import { parsePresetId } from '@/common/types/ids';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import {
